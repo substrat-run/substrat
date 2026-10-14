@@ -111,6 +111,29 @@ a path: `provisionTenantStore` returns an opaque `ref` — here a `tstore__…�
 filename, in production a minted D1 id — and `openTenantStore` turns it back into a store.
 The prefix exists so a store file can never collide with a scope database.
 
+### Scope stores
+
+A [scope store](/concepts/scope-stores) is answered here by a runner, one per kind, which the
+kind ships. `scopeStoreRunnersFor` reads the bindings from the vertical's own declaration, so
+the bindings a dev host answers are the ones a push declares:
+
+```ts
+import { SqliteScopeHost, scopeStoreRunnersFor } from '@substrat-run/adapter-sqlite';
+
+const host = new SqliteScopeHost({
+  dir: './data',
+  scopeStores: {
+    // `graphRunner` is the kind's own factory; the map takes the runner it returns.
+    runners: scopeStoreRunnersFor(manifest.runtimeNeeds.scopeStores, {
+      graph: graphRunner({ dir: './data/graph' }),
+    }),
+  },
+});
+```
+
+Two bindings of one kind share its runner. A declared kind with no runner is refused, and so
+is a runner given under a key that is not its `kind`.
+
 ## Debugging is opening a file
 
 Scope databases run in WAL mode and can be opened read-only with any SQLite tool, which is

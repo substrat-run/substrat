@@ -119,4 +119,29 @@ Later:
 
 ## Writing a kind for the pure adapter
 
-A kind that runs on the pure adapter ships a `ScopeStoreRunner`: `kind`, `start`, `stop`, and `invoke(address, request)`. The address is `{ tenantId, vertical, scopeId, binding }`. A host starts each runner once, on the first store call. If one runner's `start` throws, the next call starts only the runners that have not started. `close` waits for a start in flight, starts no runner after that, and then calls `stop` on every runner. A `stop` that throws does not keep the others from being called. One failure is rethrown as it is, and several as an `AggregateError`. What a runner answers is tracked on [#2213](https://github.com/substrat-run/substrat/issues/2213).
+A kind that runs on the pure adapter ships a `ScopeStoreRunner`: `kind`, `start`, `stop`, and `invoke(address, request)`. The address is `{ tenantId, vertical, scopeId, binding }`. A host starts each runner once, on the first store call. If one runner's `start` throws, the next call starts only the runners that have not started. `close` waits for a start in flight, starts no runner after that, and then calls `stop` on every runner. A `stop` that throws does not keep the others from being called. One failure is rethrown as it is, and several as an `AggregateError`.
+
+What a runner answers:
+
+- One object per whole address. Two addresses that differ in any one field never share an object.
+- `stop` without `start` resolves. A `stop` and then a `start` serve the same objects: they outlive the process, not the runner.
+- Every answer is the envelope, `{ result }` or `{ error: { code, status, body? } }`. An operation the kind does not know is an error answer, not a throw.
+- `substrat.size` answers `{ bytes }`.
+- `substrat.export` answers `{ tables }`, each in the scope-dump table shape.
+- `substrat.import` takes `{ tables }`, replaces the whole object, and answers `{ tables }` as the count it wrote.
+- `substrat.wipe` answers `{}` and leaves an empty object, also for an address nothing was written to.
+- `substrat.erase` takes `{ subjectId }` and answers `{ erased }`, counting what it removed. A subject with nothing on the object, a repeat included, answers `{ erased: 0 }`.
+
+`scopeStoreRunnerContractSuite` in [`@substrat-run/contract-tests`](../reference/contract-tests.md) holds a runner to each of these. A kind runs it in its own repository, with one write and one read of its own catalog:
+
+```ts
+import { scopeStoreRunnerContractSuite } from '@substrat-run/contract-tests';
+
+scopeStoreRunnerContractSuite('graph', {
+  makeRunner: () => graphRunner({ dir }),
+  write: { operation: 'apply', input: change },
+  read: { operation: 'inspect' },
+});
+```
+
+A dev host reads its bindings from the vertical's declaration with [`scopeStoreRunnersFor`](../reference/adapter-sqlite.md#scope-stores). How a blob cell is spelled in an export that crosses JSON is not settled yet, and the suite does not assert one.

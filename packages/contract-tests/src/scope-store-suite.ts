@@ -1,106 +1,53 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { errorCodeOf, platformActorId, principalId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
-import { ulid, type ScopeHost, type ScopeStoreAddress, type ScopeStoreRunner, type StoreCallReport } from '@substrat-run/kernel';
+import { errorCodeOf, platformActorId, principalId, scopeId, storeEraseInput, tenantId, type ScopeId } from '@substrat-run/contracts';
+import { ulid, type ScopeHost, type ScopeStoreRunner, type StoreCallReport } from '@substrat-run/kernel';
 import { STORE_CALL_SINK_KEY, tallyStoreCall, type StoreCallTally } from '@substrat-run/kernel/invocation-line';
+import { counterScopeStoreRunner, invalidStoreInput, objectNameOf } from './counter-runner.js';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 
 /**
- * A counter in the process. One number per address, so two scopes and two
- * verticals stay apart when the host passes the address it built.
+ * The trivial kind, with what this suite reads back about the host's calls:
+ * `address` (what the host handed in), `erased` (the subjects erased on this object),
+ * `wiped` (every object wiped), and `fail-wipe` (`true` makes each later `substrat.wipe`
+ * answer 503, until `false`).
  */
-function counterRunner(): ScopeStoreRunner {
-  const objects = new Map<string, number>();
+function instrumentedCounterRunner(): ScopeStoreRunner {
+  const counter = counterScopeStoreRunner();
   const erased = new Map<string, Set<string>>();
   const wiped = new Set<string>();
-  // `fail-wipe` makes every later `substrat.wipe` fail, until it is turned off again.
   let failWipe = false;
-  const key = (address: ScopeStoreAddress) =>
-    `${address.tenantId}/${address.vertical}/${address.scopeId}/${address.binding}`;
   return {
-    kind: 'counter',
-    async start() {},
-    async stop() {},
+    ...counter,
     async invoke(address, request) {
-      const current = objects.get(key(address)) ?? 0;
-      if (request.operation === 'read') return { result: current };
-      if (request.operation === 'address') {
-        return {
-          result: {
-            tenantId: address.tenantId,
-            vertical: address.vertical,
-            scopeId: address.scopeId,
-            binding: address.binding,
-          },
-        };
-      }
-      if (request.operation === 'increment') {
-        const by =
-          typeof request.input === 'object' &&
-          request.input !== null &&
-          typeof Reflect.get(request.input, 'by') === 'number'
-            ? Number(Reflect.get(request.input, 'by'))
-            : 1;
-        const next = current + by;
-        objects.set(key(address), next);
-        return { result: next };
-      }
-      if (request.operation === 'substrat.size') return { result: { bytes: current } };
-      if (request.operation === 'fail-wipe') {
-        failWipe = request.input === true;
-        return { result: failWipe };
-      }
-      if (request.operation === 'substrat.wipe') {
-        if (failWipe) return { error: { code: 'unavailable', status: 503 } };
-        objects.set(key(address), 0);
-        wiped.add(key(address));
-        return { result: {} };
-      }
-      if (request.operation === 'wiped') return { result: [...wiped] };
-      if (request.operation === 'substrat.erase') {
-        const subjectId =
-          typeof request.input === 'object' && request.input !== null
-            ? Reflect.get(request.input, 'subjectId')
-            : undefined;
-        if (typeof subjectId !== 'string' || subjectId.length === 0) {
-          return { error: { code: 'validation_failed', status: 400 } };
+      const id = objectNameOf(address);
+      switch (request.operation) {
+        case 'address': {
+          const { tenantId, vertical, scopeId, binding } = address;
+          return { result: { tenantId, vertical, scopeId, binding } };
         }
-        const subjects = erased.get(key(address)) ?? new Set<string>();
-        const already = subjects.has(subjectId);
-        subjects.add(subjectId);
-        erased.set(key(address), subjects);
-        return { result: { erased: already ? 0 : 1 } };
+        case 'erased':
+          return { result: [...(erased.get(id) ?? [])] };
+        case 'wiped':
+          return { result: [...wiped] };
+        case 'fail-wipe':
+          if (typeof request.input !== 'boolean') return invalidStoreInput('fail-wipe takes a boolean');
+          failWipe = request.input;
+          return { result: failWipe };
+        case 'substrat.wipe':
+          if (failWipe) return { error: { code: 'unavailable', status: 503 } };
+          wiped.add(id);
+          return counter.invoke(address, request);
+        case 'substrat.erase': {
+          const answer = await counter.invoke(address, request);
+          if ('result' in answer) {
+            const { subjectId } = storeEraseInput.parse(request.input);
+            erased.set(id, (erased.get(id) ?? new Set<string>()).add(subjectId));
+          }
+          return answer;
+        }
+        default:
+          return counter.invoke(address, request);
       }
-      if (request.operation === 'erased') {
-        return { result: [...(erased.get(key(address)) ?? [])] };
-      }
-      if (request.operation === 'substrat.export') {
-        return {
-          result: {
-            tables: [
-              {
-                name: 'counter',
-                ddl: 'CREATE TABLE counter (n INTEGER NOT NULL)',
-                columns: ['n'],
-                rows: [[current]],
-              },
-            ],
-          },
-        };
-      }
-      if (request.operation === 'substrat.import') {
-        const tables =
-          typeof request.input === 'object' && request.input !== null
-            ? Reflect.get(request.input, 'tables')
-            : undefined;
-        const count = Array.isArray(tables) ? tables.length : 0;
-        const first = Array.isArray(tables) ? tables[0] : undefined;
-        const rows = typeof first === 'object' && first !== null ? Reflect.get(first, 'rows') : undefined;
-        const row = Array.isArray(rows) ? rows[0] : undefined;
-        const cell = Array.isArray(row) ? row[0] : undefined;
-        objects.set(key(address), typeof cell === 'number' ? cell : 0);
-        return { result: { tables: count } };
-      }
-      return { error: { code: 'unknown_operation', status: 400 } };
     },
   };
 }
@@ -126,7 +73,7 @@ export function scopeStoreContractSuite(
     const otherVertical = scopeId.parse(ulid());
 
     beforeAll(async () => {
-      fixture = await makeFixture({ runners: [{ binding: 'GRAPH', runner: counterRunner() }] });
+      fixture = await makeFixture({ runners: [{ binding: 'GRAPH', runner: instrumentedCounterRunner() }] });
       host = fixture.host;
       await host.admin.createTenant(staff, { id: tenant, slug: `t-${tenant.toLowerCase()}`, name: 'T' });
       await host.provisionScope(staff, { tenantId: tenant, scopeId: scopeA, vertical: 'docs' });
@@ -247,12 +194,15 @@ export function scopeStoreContractSuite(
       expect(errorCodeOf(refusal)).toBe('not_found');
     });
 
-    it('an erasure reaches the store, and a second one counts zero', async () => {
+    it("an erasure reaches the store and takes the subject's part, and a second one counts zero", async () => {
       const subject = ulid();
+      const store = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
+      const before = Number(await store.invoke('read'));
+      await store.invoke('increment', { by: 2, subjectId: subject });
       const first = await host.admin.shredSubject(staff, tenant, scopeA, subject);
       expect(first.storeErasures).toEqual([{ binding: 'GRAPH', erased: 1 }]);
-      const store = await host.getScopeStore(principal, tenant, scopeA, 'GRAPH');
       expect(await store.invoke('erased')).toEqual([subject]);
+      expect(await store.invoke('read')).toBe(before);
       const again = await host.admin.shredSubject(staff, tenant, scopeA, subject);
       expect(again.storeErasures).toEqual([{ binding: 'GRAPH', erased: 0 }]);
     });
@@ -445,7 +395,7 @@ export function scopeStoreContractSuite(
         expect(refusal).toBeDefined();
         expect((await host.admin.getScopeRecord(staff, tenant, doomed))?.status).toBe('archived');
         const dump = await host.admin.exportScope(staff, tenant, doomed);
-        expect(dump.stores.find((one) => one.binding === 'GRAPH')?.tables[0]?.rows).toEqual([[7]]);
+        expect(dump.stores.find((one) => one.binding === 'GRAPH')?.tables[0]?.rows).toEqual([[null, 7]]);
         expect(dump.tables.map((table) => table.name)).toContain(PROBE_TABLE.name);
       } finally {
         await store.invoke('fail-wipe', false);
