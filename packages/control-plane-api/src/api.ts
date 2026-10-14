@@ -1616,9 +1616,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // the body, so it costs nothing on the success path and discloses nothing on the failure
   // one. Two mechanisms hold the rule, and they cover different things: this package's test
   // setup fails any test in which the tripwire fires, which covers every refusal a test
-  // REACHES; `test/problem-source.test.ts` scans this file and covers every refusal WRITTEN
-  // here, reached or not. In production the tripwire is the line an operator searches the
-  // worker's logs for, should a client report a refusal it could not parse.
+  // REACHES; `test/problem-source.test.ts` scans this file, reached or not, and refuses any
+  // response it builds with a failure status outside the problem helpers — and any construct
+  // whose status it could not judge (`c.status(`, `c.newResponse(`, `c.html(`, a generic
+  // `c.json<T>(`, a `Response` init it cannot read). In production the tripwire is the line
+  // an operator searches the worker's logs for, should a client report a refusal it could
+  // not parse.
   //
   // Registered first, so it sees the answer every other layer settled on, `onError`'s included.
   app.use('*', async (c, next) => {

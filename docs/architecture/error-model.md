@@ -320,10 +320,17 @@ already answer their expected refusal as a value.
      never the body) whenever it answers 400 or more with any other media type, and the
      package's test setup fails the test in which that happened: that covers every refusal a
      test *reaches*, whatever produced it, and in production it is the line an operator
-     searches the worker's logs for. It does not cover a branch no test reaches — about a third
-     of the refusals in `api.ts` when this landed — so `test/problem-source.test.ts` scans
-     `api.ts` itself and refuses any response it builds with a status of 400 or more outside
-     the problem helpers: that covers every refusal *written* there, reached or not.
+     searches the worker's logs for. It does not cover a branch no test reaches — 109 of the
+     267 refusals in `api.ts` (about 41%) when this landed — so `test/problem-source.test.ts`
+     scans `api.ts` itself, reached or not. It judges the status argument of every `.json(`,
+     `.text(` and `.body(` and the init of every `new Response(` / `Response.json(`, refusing
+     a status of 400 or more outside the problem helpers; and it refuses outright each
+     construct whose status it could not judge — `c.status(`, `c.newResponse(`, `c.html(`, a
+     generic `c.json<T>(`, a `Response` init held in a variable or written as `{ status }`.
+     `api.ts` uses none of them, so a refusal can only be written there in a shape the scan
+     reads. It is a scanner rather than an AST walk (the workspace's `typescript` is the
+     native 7.x compiler, with no JS API), and it skips strings, templates, comments and regex
+     literals; an unterminated one fails the test with its line rather than hanging.
    - **Still open, surface by surface:** `vertical-host`'s `/internal` 501s and its live
      reads; the control-plane worker's own routes (`apps/control-plane`), CLI auth, the
      builder and the dashboard's 401s, `dev-issuer`; a `requestId` on the control plane's
