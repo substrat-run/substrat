@@ -196,6 +196,7 @@ Open proposals. A document leaves when it is decided — to `architecture/` rewr
 | [booking-social.md](rfc/booking-social.md) | `building` | Booking engine shipped; the cross-tenant social tier is not. |
 | [callout-concept.md](rfc/callout-concept.md) | `historical` | The Callout field-service concept — the first demo vertical, which the workorder, invoicing and protocol engines were cut against; the demo is gone, the argument stays. |
 | [callout-testrun.md](rfc/callout-testrun.md) | `historical` | The original test-run spec the first engines (workorder, invoicing) were cut from — kept after the Callout demo was removed. |
+| [cross-scope-read.md](rfc/cross-scope-read.md) | `proposed` | A read for the screen that lists a principal's scopes — declared, run by the host, checked by every scope it touches. #1581. |
 | [disclosure-register.md](rfc/disclosure-register.md) | `proposed` | Can the platform say which processors hold data about one subject? Argues #860 against the two positions it must survive; lands on not-yet-in-this-shape, and on one live erasure hole found while arguing. Revision 2 takes the forks and recommends a derived register plus a declared superset. |
 | [docs-restructure.md](rfc/docs-restructure.md) | `building` | Audit of docs/ and the restructure. All four phases executed; the prose rewrite is what remains. |
 | [error-model.md](rfc/error-model.md) | `superseded` | Moved — the error-model RFC shipped in @substrat-run/contracts and now lives in architecture/. |
