@@ -2176,9 +2176,12 @@ export interface CloudflareScopeHostOptions {
   checker?: PermissionChecker;
   /**
    * Scope stores answered in this isolate (#2213). When a binding has a runner
-   * here, `getScopeStore` uses it. Otherwise it reads `SUBSTRAT_STORE_<BINDING>`
-   * from the worker env. `vertical`, when set, is the only vertical this host serves.
-   * A deployed vertical has no control plane, so that field is where the slug comes from.
+   * here, `getScopeStore` uses it. A direct binding reads `SUBSTRAT_STORE_<BINDING>`
+   * from the worker env, and only when `transport` is `'binding'`: an ambient
+   * namespace is not a store this host was given. With no control plane, no runner
+   * and no transport, the call takes the platform hop (#2288). `vertical`, when set,
+   * is the only vertical this host serves. A deployed vertical has no control plane,
+   * so that field is where the slug comes from.
    */
   scopeStores?: ScopeStoreHostOptions;
   /**
@@ -2535,6 +2538,20 @@ function isScopeStoreNamespace(value: unknown): value is ScopeStoreNamespace {
 
 const SCOPE_STORE_BINDING_PREFIX = `${PLATFORM_BINDING_PREFIX}STORE_`;
 
+/**
+ * `platform` unless this host was given another way to reach a store (#2288).
+ * A control plane keeps the direct binding, which is how the directory's own host
+ * and the binding tests address an object. A runner is in-process. `transport`
+ * set by the caller wins, including `'binding'`, which is the only thing that
+ * reads an ambient `SUBSTRAT_STORE_*` namespace.
+ */
+function scopeStoreTransportOf(options: CloudflareScopeHostOptions): 'platform' | 'binding' {
+  if (options.scopeStores?.transport) return options.scopeStores.transport;
+  if ((options.scopeStores?.runners?.length ?? 0) > 0) return 'binding';
+  if (options.controlPlane) return 'binding';
+  return 'platform';
+}
+
 /** Bindings this script declares by having a `SUBSTRAT_STORE_*` namespace. */
 function ambientScopeStoreBindings(): string[] {
   const names: string[] = [];
@@ -2760,7 +2777,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.scopeNs = options.scope;
     this.scopeStoreVertical = options.scopeStores?.vertical;
     this.scopeStoreKinds = options.scopeStores?.kinds ?? {};
-    this.scopeStoreTransport = options.scopeStores?.transport ?? 'binding';
+    this.scopeStoreTransport = scopeStoreTransportOf(options);
     this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
     this.scopeStoreLifecycle = scopeStoreLifecycleOf(this.scopeStoreRunners);
     this.cpLess = !options.controlPlane;
@@ -4840,8 +4857,13 @@ export class CloudflareScopeHost implements ScopeHost {
     return vertical;
   }
 
-  /** Configured runners, or the ambient namespaces when none were handed in. */
+  /**
+   * Configured runners, or the ambient namespaces when this host was told to use a
+   * direct binding. The platform hop holds no object in this isolate, so an ambient
+   * namespace is not one of its stores.
+   */
   private scopeStoreBindingNames(): string[] {
+    if (this.scopeStoreTransport === 'platform') return [];
     if (this.scopeStoreRunners.size > 0) return [...this.scopeStoreRunners.keys()];
     return ambientScopeStoreBindings();
   }

@@ -43,13 +43,13 @@ const store = await host.getScopeStore(principal, tenantId, scopeId, 'GRAPH');
 const count = await store.invoke('increment', { by: 1 });
 ```
 
-On the platform path the call leaves the vertical as a fetch of `store.substrat.internal`. The egress worker hands it to the router, together with who the caller is. The vertical cannot change that part: it comes from the dispatch, not from the request. The router refuses a `substrat.*` operation, a scope other than the one the request was routed to, and a binding the running version does not declare. Then it addresses the store script. A Cloudflare host takes this path when it is created with `scopeStores: { transport: 'platform' }`. Its default is still the direct binding below.
+On the platform path the call leaves the vertical as a fetch of `store.substrat.internal`. The egress worker hands it to the router, together with who the caller is. The vertical cannot change that part: it comes from the dispatch, not from the request. The router refuses a `substrat.*` operation, a scope other than the one the request was routed to, and a binding the running version does not declare. Then it addresses the store script. A Cloudflare host takes this path unless it was given a control plane, a runner, or `scopeStores: { transport: 'binding' }`.
 
 `invoke` takes an operation and its input, and nothing else. Idempotency belongs to a scope operation, and a store call has none. An operation name is a fixed label: no `@`, no whitespace and no `:`, at most 64 characters. Any other name is refused before the call leaves the vertical. So is a name that starts with `substrat.`. `substrat.export`, `substrat.import`, `substrat.size`, `substrat.wipe` and `substrat.erase` are the platform's operations. The control plane calls the store script for those itself. The vertical is not on that path.
 
 The call on the wire is `{ operation, input }`. The answer is `{ result }`, or `{ error: { code, status, body } }`, where `status` is an HTTP error status from 400 to 599. An answer with any other status is not the envelope, and it arrives as `bad_envelope`. A store error arrives as `StoreError`. The platform code comes from the HTTP status. The store's own `code` travels in `storeCode`. Its `body` travels in `storeBody` only for a 4xx whose JSON is at most 1 KiB (`STORE_BODY_MAX_BYTES`). A client can read that body, so a 5xx body, a larger one, or one that is not JSON stays in the store. The vertical's own code gets the same filtered `storeBody`.
 
-A direct binding exists for local development and for tests. It is not an isolation boundary. The hop above is meant to be the hosted isolation boundary, and it is not finished: it is not the default yet, and the checks the store script runs on each call are not built (see [Known limits](#known-limits)).
+A direct binding exists for local development and for tests, and only when the host is created with `transport: 'binding'`. An ambient `SUBSTRAT_STORE_*` namespace is not used otherwise. The binding is not an isolation boundary. The checks the store script runs on each call are not built yet (see [Known limits](#known-limits)).
 
 ## The invocation line
 
@@ -103,7 +103,7 @@ These are open, and are tracked in the [scope-stores RFC](https://github.com/sub
 
 Before the first kind:
 
-- **The hosted path is not the default.** A Cloudflare host defaults to the direct binding, and nothing in production sets the platform path yet.
+- **The store script does not check the envelope yet.** The hop is the default for a host with no control plane and no runner. The signature and the remembered name are still to be checked inside the store.
 - **The store's checks on each call.** What the platform sends a store script does not yet bind the operation, the audience or the time, and no store script checks it yet. The checks are planned in an entry module the platform supplies in front of the kind.
 - **Unroute before wipe.** No path stops routing a scope before it wipes the scope's stores, and an erasure is not fenced against a deploy that lands while it runs.
 - **Orphaned bindings.** Every lifecycle path reads only the current version's bindings. Objects under a binding a later version dropped, or declared as another kind, are out of reach of wipe, erase and the meter.

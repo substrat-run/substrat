@@ -56,7 +56,8 @@ export interface ScopeStoreHostOptions {
   /**
    * `platform` fetches `store.substrat.internal`. The router signs and addresses
    * the object. `binding` is the direct namespace, for local development and
-   * tests, and is not an isolation boundary.
+   * tests, and is not an isolation boundary. On the Cloudflare host the omitted
+   * value is `platform` unless a control plane or a runner was given.
    */
   readonly transport?: 'platform' | 'binding';
 }
