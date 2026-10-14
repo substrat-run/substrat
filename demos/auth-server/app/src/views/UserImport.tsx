@@ -1,11 +1,9 @@
 import { useState } from 'react';
 import { importUsers } from '../api';
-import { batchesOf, inFileRows, parseImportFile, unverifiedNotice } from '../user-import-file';
+import { batchesOf, inFileRows, mergeBatchResults, parseImportFile, unverifiedNotice } from '../user-import-file';
 import {
   DRY_RUN_LIMIT,
   IMPORT_BATCH_LIMIT,
-  emptyCounts,
-  emptyUnverified,
   type ImportEntry,
   type ImportOutcome,
   type ImportResult,
@@ -44,17 +42,13 @@ export function ImportUsers({ onImported }: { onImported: () => void }) {
   };
 
   const write = async (users: ImportEntry[]): Promise<ImportResult> => {
-    const merged: ImportResult = { dryRun: false, results: [], counts: emptyCounts(), unverified: emptyUnverified() };
+    const results: ImportResult[] = [];
     for (const [i, batch] of batchesOf(users).entries()) {
       const first = i * IMPORT_BATCH_LIMIT;
       setBusy(`Importing ${first + 1}–${first + batch.length} of ${users.length}…`);
-      const result = await inFileRows(first, () => importUsers(batch, false));
-      merged.results.push(...result.results);
-      for (const [k, v] of Object.entries(result.counts) as [ImportOutcome['outcome'], number][]) merged.counts[k] += v;
-      merged.unverified.unasserted += result.unverified.unasserted;
-      merged.unverified.unverified += result.unverified.unverified;
+      results.push(await inFileRows(first, () => importUsers(batch, false)));
     }
-    return merged;
+    return mergeBatchResults(results);
   };
 
   const load = async (picked: File | undefined) => {

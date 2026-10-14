@@ -1,4 +1,11 @@
-import { IMPORT_BATCH_LIMIT, type ImportEntry, type ImportResult } from '../../src/user-import-wire.js';
+import {
+  IMPORT_BATCH_LIMIT,
+  emptyCounts,
+  emptyUnverified,
+  type ImportEntry,
+  type ImportOutcome,
+  type ImportResult,
+} from '../../src/user-import-wire.js';
 
 export type { ImportEntry };
 
@@ -186,11 +193,23 @@ export function unverifiedNotice(result: Pick<ImportResult, 'dryRun' | 'counts' 
   }
   if (unverified > 0) {
     lines.push(
-      `${of(unverified)} ${unverified === 1 ? 'is' : 'are'} marked not verified in the file and ` +
+      `${of(unverified)} ${unverified === 1 ? 'is' : 'are'} read as not verified from the file and ` +
         `${result.dryRun ? 'will be' : 'were'} imported that way.`,
     );
   }
   return lines;
+}
+
+/** The real run's batches as one report: outcomes in file order, every count summed. */
+export function mergeBatchResults(batches: ImportResult[]): ImportResult {
+  const merged: ImportResult = { dryRun: false, results: [], counts: emptyCounts(), unverified: emptyUnverified() };
+  for (const result of batches) {
+    merged.results.push(...result.results);
+    for (const [k, v] of Object.entries(result.counts) as [ImportOutcome['outcome'], number][]) merged.counts[k] += v;
+    merged.unverified.unasserted += result.unverified.unasserted;
+    merged.unverified.unverified += result.unverified.unverified;
+  }
+  return merged;
 }
 
 /** Split into the server's write batch size (`IMPORT_BATCH_LIMIT`). */
