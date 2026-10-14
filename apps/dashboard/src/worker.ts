@@ -31,6 +31,7 @@ import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } fro
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
 import { dashboardRoutes, domainBinding, type appEvent, type domainRow, type installAppInput, type installStep, type memberRow } from './routes.js';
 import { mountRoutes } from '@substrat-run/vertical-host';
+import { dashboardRequestId, withRequestIdOf } from './request-id.js';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
 import { MODULES, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wiring.js';
@@ -818,6 +819,10 @@ const promoteBody = z.object({
 const bindAckBody = bindAcknowledgement.optional();
 
 const app = new Hono<{ Bindings: Env }>();
+
+// #2192: an id on every answer, minted here and never taken from the request — first, so
+// every route below (and `onError`'s envelope) is covered.
+app.use('*', dashboardRequestId());
 
 // The Dashboard SPA (apps/dashboard/web) is served by the Workers Assets binding
 // configured in wrangler.jsonc: asset requests are answered before this worker
@@ -5959,7 +5964,7 @@ app.get('/api/github/workflow-preview', async (c) => {
  * ours on the plane's refusal — or on a message pattern — would be a claim we cannot make.
  */
 const problem = (c: Context, status: number, detail?: string): Response =>
-  c.body(JSON.stringify(problemForStatus(status, detail)), status as ContentfulStatusCode, {
+  c.body(JSON.stringify(withRequestIdOf(problemForStatus(status, detail), c)), status as ContentfulStatusCode, {
     'content-type': PROBLEM_CONTENT_TYPE,
   });
 
@@ -5973,7 +5978,7 @@ app.onError((err, c) => {
   // #1756: an Update or a Bind refused for the apps it would break — which are the team's own,
   // so the refusal carries them for the confirm to name.
   if (err instanceof ExportBreakRefused) {
-    return c.json({ error: m, detail: m, exportBreaks: { affected: err.breaks } }, 409);
+    return c.json(withRequestIdOf({ error: m, detail: m, exportBreaks: { affected: err.breaks } }, c), 409);
   }
   // A ControlPlaneError carries the plane's OWN status. Honor it rather than letting the
   // `: 400` default below flatten an upstream 5xx to a 400 — that mislabels a server/upstream
@@ -5986,7 +5991,7 @@ app.onError((err, c) => {
   const declared = errorCodeOf(err);
   if (declared !== undefined && err instanceof Error) {
     const body = toProblem(err, c.req.path);
-    return c.body(JSON.stringify(body), body.status as ContentfulStatusCode, {
+    return c.body(JSON.stringify(withRequestIdOf(body, c)), body.status as ContentfulStatusCode, {
       'content-type': PROBLEM_CONTENT_TYPE,
     });
   }

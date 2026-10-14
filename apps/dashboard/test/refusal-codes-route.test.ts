@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { platformActorId, principalId, problemDetail, scopeId, substratError, tenantId, toProblem, type ScopeId } from '@substrat-run/contracts';
+import { REQUEST_ID_HEADER, platformActorId, principalId, problemDetail, scopeId, substratError, tenantId, toProblem, type ScopeId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
@@ -138,6 +138,20 @@ describe('the dashboard answers a refusal by its code, not its sentence (#113)',
       status: 404,
       detail: "'nobody.example.com' is not bound to this app",
     });
+  });
+
+  it('a declared refusal, rendered from its own declaration, carries the request id (#2192)', async () => {
+    const res = await app.request(
+      '/api/teams/delete',
+      { method: 'POST', headers: { 'content-type': 'application/json', cookie: `sb_session=${MANAGER_SUB}` }, body: JSON.stringify({ confirm: TEAM_NAME }) },
+      env,
+    );
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(res.status, JSON.stringify(body)).toBe(403);
+    // The declared form: its code is on the body, which the status-only form never carries.
+    expect(body.code, JSON.stringify(body)).toBe('permission_denied');
+    expect(body.requestId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(body.requestId).toBe(res.headers.get(REQUEST_ID_HEADER));
   });
 
   it('the twin: a refusal that is not a missing binding keeps the route\'s 409', async () => {
