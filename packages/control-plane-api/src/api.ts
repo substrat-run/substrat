@@ -6732,14 +6732,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // uniform whether or not anything is deployed. Existing scopes keep serving.
     const registered = (await c.var.admin.listVerticals(c.get('actor'))).find((v) => v.slug === slug);
     if (registered?.installsBlocked) {
-      return c.json({ error: `new installs of vertical '${slug}' are blocked` }, 403);
+      return refuse(c, 'forbidden', `new installs of vertical '${slug}' are blocked`);
     }
     // Static binding first (milestone-one shape), then the dispatch resolver for a
     // pushed vertical — the provisioning mirror of the router's verticalFor.
     const vertical =
       options.verticals?.[slug] ?? (await options.resolveVertical?.(slug, c.get('actor')));
     if (!vertical) {
-      return c.json({ error: `no deployment is bound for vertical '${slug}'` }, 501);
+      return refuseStatus(c, 501, `no deployment is bound for vertical '${slug}'`);
     }
     const input = provisionInstanceBody.parse(await c.req.json());
     // #310: the platform is the authoritative source of the tenant's entitlements — it
@@ -6881,7 +6881,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             message: e.message,
           }, e);
         }
-        return c.json({ error: e.message }, failedWith(c, e));
+        return refuseStatus(c, failedWith(c, e), e.message);
       }
       throw e;
     }
@@ -7128,7 +7128,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // principal, never trusted from the body.
       input.slug = effectiveSlug(p, input.slug);
       const owner = await ownerOf(p.actor, input.slug);
-      if (owner !== undefined && owner !== p.tenantId) return c.json({ error: 'forbidden' }, 403);
+      if (owner !== undefined && owner !== p.tenantId) return refuse(c, 'forbidden', 'forbidden');
       input.ownerTenant = p.tenantId;
     }
     await c.var.admin.registerVertical(c.get('actor'), input);
@@ -7144,7 +7144,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // A builder reading a vertical it does not own gets 404 — indistinguishable from
     // absent, the same fail-closed reflex K-3 uses for a cross-tenant scope.
     if (await notReadable(p, slug)) {
-      return c.json({ error: 'not found' }, 404);
+      return refuse(c, 'not_found', 'not found');
     }
     const page = pageParams(c);
     const entries = await c.var.admin.listVersions(c.get('actor'), slug, page);
@@ -7157,12 +7157,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // the same fail-closed cross-check `(tenantId, scopeId)` makes (K-3) — a mismatch is
     // a client bug, not a silent publish under the wrong vertical.
     if (input.verticalSlug !== c.req.param('slug')) {
-      return c.json({ error: 'verticalSlug does not match the path' }, 400);
+      return refuse(c, 'validation_failed', 'verticalSlug does not match the path');
     }
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, input.verticalSlug);
     if (await notOwned(p, slug)) {
-      return c.json({ error: 'forbidden' }, 403);
+      return refuse(c, 'forbidden', 'forbidden');
     }
     input.verticalSlug = slug;
     // `manifestJson` is a string the schema cannot look inside, and every reader parses it
@@ -7178,13 +7178,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       try {
         raw = JSON.parse(input.manifestJson);
       } catch {
-        return c.json({ error: 'manifestJson is not valid JSON' }, 400);
+        return refuse(c, 'validation_failed', 'manifestJson is not valid JSON');
       }
       const refuse = (issue: { path: PropertyKey[]; message: string }, under: string[] = []) =>
-        c.json(
-          { error: `manifestJson is not a deploy manifest: ${[...under, ...issue.path].join('.') || '(root)'}: ${issue.message}` },
-          400,
-        );
+        refuse(c, 'validation_failed', `manifestJson is not a deploy manifest: ${[...under, ...issue.path].join('.') || '(root)'}: ${issue.message}`);
       const checked = storedDeployManifest.safeParse(raw);
       if (!checked.success) return refuse(checked.error.issues[0]!);
       // #1869: a registry handed to this route now is NEW, so it answers to the push-time rule on
@@ -7210,7 +7207,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
     if (await notReadable(p, slug)) {
-      return c.json({ error: 'not found' }, 404);
+      return refuse(c, 'not_found', 'not found');
     }
     const json = await c.var.admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
     const registry = json ? (storedDeployManifest.parse(JSON.parse(json)).registry ?? null) : null;
@@ -7229,7 +7226,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
     if (await notOwned(p, slug)) {
-      return c.json({ error: 'not found' }, 404);
+      return refuse(c, 'not_found', 'not found');
     }
     // `versionMigrations` refuses a version of another vertical, so `base` cannot reach one.
     const migrationsOf = (id: string) => c.var.admin.versionMigrations(c.get('actor'), slug, id);
@@ -7252,7 +7249,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
     if (await notReadable(p, slug)) {
-      return c.json({ error: 'not found' }, 404);
+      return refuse(c, 'not_found', 'not found');
     }
     const json = await c.var.admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
     const parsed = json ? storedDeployManifest.parse(JSON.parse(json)) : null;
@@ -7276,7 +7273,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
     if (await notReadable(p, slug)) {
-      return c.json({ error: 'not found' }, 404);
+      return refuse(c, 'not_found', 'not found');
     }
     const json = await c.var.admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
     const parsed = json ? storedDeployManifest.parse(JSON.parse(json)) : null;
@@ -7305,7 +7302,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
     if (await notReadable(p, slug)) {
-      return c.json({ error: 'not found' }, 404);
+      return refuse(c, 'not_found', 'not found');
     }
     const json = await c.var.admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
     const parsed = json ? storedDeployManifest.parse(JSON.parse(json)) : null;
@@ -7325,7 +7322,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
     if (await notReadable(p, slug)) {
-      return c.json({ error: 'not found' }, 404);
+      return refuse(c, 'not_found', 'not found');
     }
     const json = await c.var.admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
     const assets = json ? (storedDeployManifest.parse(JSON.parse(json)).assets ?? null) : null;
@@ -7353,7 +7350,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
     if (await notOwned(p, slug)) {
-      return c.json({ error: 'not found' }, 404);
+      return refuse(c, 'not_found', 'not found');
     }
     await c.var.admin.requestPublish(c.get('actor'), slug);
     return c.json({ slug, requested: true });
@@ -7413,7 +7410,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const slug = c.req.param('slug');
     // 404, not 403: a slug this tenant does not own reads as absent, the same
     // existence-hiding reflex the registry's other per-slug reads use (K-3).
-    if (await notOwned(c.get('principal'), slug)) return c.json({ error: 'not found' }, 404);
+    if (await notOwned(c.get('principal'), slug)) return refuse(c, 'not_found', 'not found');
     await c.var.admin.deleteVertical(c.get('actor'), slug);
     return c.json({ slug, deleted: true });
   });
@@ -7422,7 +7419,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));
     if (await notReadable(p, slug)) {
-      return c.json({ error: 'not found' }, 404);
+      return refuse(c, 'not_found', 'not found');
     }
     const page = pageParams(c);
     const entries = await c.var.admin.listChannels(c.get('actor'), slug, page);
@@ -7437,11 +7434,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const slug = await resolveVerticalId(c, c.req.param('slug'));
     const rawChannel = c.req.param('channel');
     if (rawChannel !== 'prod') {
-      return c.json({ error: `channel '${rawChannel}' is retired — only 'prod' has history` }, 400);
+      return refuse(c, 'validation_failed', `channel '${rawChannel}' is retired — only 'prod' has history`);
     }
     const channel = channelName.parse(rawChannel);
     if (await notOwned(p, slug)) {
-      return c.json({ error: 'not found' }, 404);
+      return refuse(c, 'not_found', 'not found');
     }
     const page = pageParams(c);
     const entries = await c.var.admin.listChannelHistory(c.get('actor'), slug, channel, page);
@@ -7674,7 +7671,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const pin = confinedTenant(p);
     if (pin) {
       const v = await verticalOf(p.actor, slug);
-      if (!v || v.ownerTenant !== pin) return c.json({ error: 'forbidden' }, 403);
+      if (!v || v.ownerTenant !== pin) return refuse(c, 'forbidden', 'forbidden');
     }
     const breaks = await promoteImpactOf(c.get('actor'), slug, channel, versionId);
     const { visible, otherTenants } = narrowToCaller(breaks, pin);
@@ -7688,21 +7685,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // with the honest alternative — a non-prod environment is a scope with data, a preview.
     const rawChannel = c.req.param('channel');
     if (rawChannel !== 'prod') {
-      return c.json(
-        {
-          error:
-            `channel '${rawChannel}' is retired — 'prod' is the only channel. To run a version ` +
-            `against non-prod data, create a preview: 'substrat preview create --tag <tag>'.`,
-        },
-        400,
-      );
+      return refuse(c, 'validation_failed', `channel '${rawChannel}' is retired — 'prod' is the only channel. To run a version ` +
+            `against non-prod data, create a preview: 'substrat preview create --tag <tag>'.`);
     }
     const channel = channelName.parse(rawChannel);
     const promotePin = confinedTenant(p);
     if (promotePin) {
       // A confined principal promotes only verticals its tenant owns.
       const v = await verticalOf(p.actor, slug);
-      if (!v || v.ownerTenant !== promotePin) return c.json({ error: 'forbidden' }, 403);
+      if (!v || v.ownerTenant !== promotePin) return refuse(c, 'forbidden', 'forbidden');
       // …and a BUILDER promotes prod only while the vertical is PRIVATE (not listed).
       // A private vertical's blast radius is the owning tenant itself, and dev/staging
       // already run the same bundle in the same sandbox, so a staff prod gate there
@@ -7716,7 +7707,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // a tenant may do inside its own. Taking the gate away from them here would be a
       // capability change hidden in a security fix.
       if (p.kind === 'builder' && channel === 'prod' && v.listed) {
-        return c.json({ error: 'promotion to prod is staff-only for a listed vertical' }, 403);
+        return refuse(c, 'forbidden', 'promotion to prod is staff-only for a listed vertical');
       }
     }
     const { versionId, acknowledge } = promoteVersionBody.parse(await c.req.json());
@@ -7754,7 +7745,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           exportBreaksUnavailable: `which apps it breaks could not be read: ${e instanceof Error ? e.message : String(e)}`,
         }),
       );
-      return c.json({ error: listing.exportBreaks ? exportBreakRefusal(counted) : err.message, ...listing }, 409);
+      return refuse(c, 'conflict', listing.exportBreaks ? exportBreakRefusal(counted) : err.message, listing);
     }
     // The in-place serve (#286), prod only, AFTER every promote gate has passed —
     // uploading first would deploy to live scopes before the acknowledgement check.
@@ -7779,13 +7770,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       } catch (e) {
         const detail = e instanceof Error ? e.message : String(e);
         console.error('serve.inplace.failed', { slug, versionId, detail });
-        return c.json(
-          {
-            error: 'promoted, but the in-place serve failed — scopes still run the previous code; promote again to retry',
-            detail,
-          },
-          502,
-        );
+        return refuseStatus(c, 502, 'promoted, but the in-place serve failed — scopes still run the previous code; promote again to retry', { detail });
       }
     }
     // #1756: served, and every install that could move has moved and been backfilled, but one
@@ -7794,11 +7779,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // version. It is left where it is. Promoting again acknowledged moves it.
     if (adopted.refused.length > 0 || adopted.refusal) {
       const sentence = adopted.refused.length > 0 ? bindExportBreakRefusal(adopted.refused) : adopted.refusal!;
-      return c.json(
+      return refuse(
+        c,
+        'conflict',
+        `promoted and served, but an app still on its own version was not moved onto the serving script: ` +
+          `${sentence}. Promote again with the export-break acknowledgement to move it`,
         {
-          error:
-            `promoted and served, but an app still on its own version was not moved onto the serving script: ` +
-            `${sentence}. Promote again with the export-break acknowledgement to move it`,
           ...(adopted.refused.length > 0 ? { exportBreaks: { affected: adopted.refused } } : {}),
           // Narrowed as the success answer's is: a builder never reads another tenant's id here.
           ...(backfill.minted.length || backfill.error
@@ -7814,7 +7800,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
               })()
             : {}),
         },
-        409,
       );
     }
     const promoted = (await c.var.admin.listChannels(c.get('actor'), slug)).find(
@@ -7856,12 +7841,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // tenant); for everything else admission still gates serving.
   app.post('/verticals/:slug/deploy', async (c) => {
     if (!options.deployVertical) {
-      return c.json({ error: 'deploy is not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'deploy is not configured on this control plane');
     }
     const p = c.get('principal');
     const form = await c.req.formData();
     const raw = form.get('manifest');
-    if (typeof raw !== 'string') return c.json({ error: 'missing manifest part' }, 400);
+    if (typeof raw !== 'string') return refuse(c, 'validation_failed', 'missing manifest part');
     const manifest = deployManifest.parse(JSON.parse(raw));
 
     // §4 sandbox contract, before anything reaches the namespace.
@@ -7900,23 +7885,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     let ownerTenant: TenantId | null;
     if (p.kind === 'builder') {
       if (pin && pin !== p.tenantSlug && pin !== p.tenantId) {
-        return c.json(
-          { error: `push is pinned to workspace '${pin}' but this session acts for '${p.tenantSlug}'` },
-          403,
-        );
+        return refuse(c, 'forbidden', `push is pinned to workspace '${pin}' but this session acts for '${p.tenantSlug}'`);
       }
       slug = effectiveSlug(p, bare);
       // A builder pushes to a slug it owns, or claims an unregistered one (§3).
       const existingOwner = await ownerOf(c.get('actor'), slug);
       if (existingOwner !== undefined && existingOwner !== p.tenantId) {
-        return c.json({ error: 'forbidden' }, 403);
+        return refuse(c, 'forbidden', 'forbidden');
       }
       ownerTenant = p.tenantId;
     } else if (pin) {
       const workspace = (await c.var.admin.listTenants(c.get('actor'))).find(
         (t) => t.slug === pin || t.id === pin,
       );
-      if (!workspace) return c.json({ error: `unknown workspace '${pin}'` }, 404);
+      if (!workspace) return refuse(c, 'not_found', `unknown workspace '${pin}'`);
       // Back-compat: a BARE slug already registered as the pinned tenant's (a staff
       // hand-registration predating prefixed claims) stays addressable as itself.
       // Otherwise the claim lands under the tenant prefix, exactly like a builder push —
@@ -7925,7 +7907,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       slug = bareOwner === workspace.id ? bare : `${workspace.slug}/${bare}`;
       const existingOwner = slug === bare ? bareOwner : await ownerOf(c.get('actor'), slug);
       if (existingOwner !== undefined && existingOwner !== workspace.id) {
-        return c.json({ error: `vertical '${slug}' is not owned by workspace '${pin}'` }, 403);
+        return refuse(c, 'forbidden', `vertical '${slug}' is not owned by workspace '${pin}'`);
       }
       ownerTenant = workspace.id;
     } else {
@@ -7939,7 +7921,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // before anything is uploaded. Registration refuses it too; this is the deploy half, for a
     // registry id that predates the rule, so it can never put a script under a platform name.
     const collision = platformScriptCollision(slug);
-    if (collision) return c.json({ error: platformScriptRefusal(slug, collision) }, 422);
+    if (collision) return refuseStatus(c, 422, platformScriptRefusal(slug, collision));
 
     // #388: refuse the SILENT lineage fork. A first push of a registry id that does not
     // exist yet, whose product name (the slug's tail) matches an existing lineage this
@@ -7979,17 +7961,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
               ? 'owned by this same workspace'
               : `owned by tenant ${v.ownerTenant}`;
         const named = siblings.map((v) => `'${v.slug}' (${owner(v)}${v.listed ? ', listed' : ''})`).join(', ');
-        return c.json(
-          {
-            error:
-              `this push would CREATE a new vertical '${slug}' — a separate lineage beside ${named}. ` +
+        return refuse(c, 'conflict', `this push would CREATE a new vertical '${slug}' — a separate lineage beside ${named}. ` +
               `Installs of the existing lineage never update from pushes to '${slug}'. If you meant to ` +
               `update it, fix the project's identity first: package.json \`substrat.slug\` and ` +
               `\`substrat.tenant\` (or --tenant) decide where a push lands. To deliberately run a ` +
-              `separate same-named lineage, re-run with --allow-fork.`,
-          },
-          409,
-        );
+              `separate same-named lineage, re-run with --allow-fork.`);
       }
     }
 
@@ -8013,7 +7989,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       });
     }
     if (!modules.some((m) => m.name === manifest.entry)) {
-      return c.json({ error: `entry module '${manifest.entry}' is not among the uploaded files` }, 400);
+      return refuse(c, 'validation_failed', `entry module '${manifest.entry}' is not among the uploaded files`);
     }
 
     // The static-asset half of the §4 sandbox contract (self-serve-deploy.md §4.1). The
@@ -8027,29 +8003,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     for (const file of manifest.assets?.files ?? []) {
       const part = assetParts.get(file.path);
       if (!part) {
-        return c.json(
-          { error: `asset '${file.path}' is named in the manifest but was not uploaded` },
-          400,
-        );
+        return refuse(c, 'validation_failed', `asset '${file.path}' is named in the manifest but was not uploaded`);
       }
       const content = new Uint8Array(await part.arrayBuffer());
       if (content.byteLength !== file.size) {
-        return c.json(
-          { error: `asset '${file.path}' declares ${file.size} bytes but ${content.byteLength} arrived` },
-          400,
-        );
+        return refuse(c, 'validation_failed', `asset '${file.path}' declares ${file.size} bytes but ${content.byteLength} arrived`);
       }
       const actual = await assetHash(content, file.path);
       if (actual !== file.hash) {
-        return c.json(
-          {
-            error:
-              `asset '${file.path}' does not match its declared content hash ` +
+        return refuse(c, 'validation_failed', `asset '${file.path}' does not match its declared content hash ` +
               `(declared ${file.hash}, computed ${actual}) — the hash is the runtime's shared dedup key, ` +
-              `so a mismatch is refused rather than stored`,
-          },
-          400,
-        );
+              `so a mismatch is refused rather than stored`);
       }
       assets.push({
         path: file.path,
@@ -8064,13 +8028,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // An unlisted asset part would be uploaded by nothing and served by nothing; saying so
       // beats silently dropping it, because the builder's page would 404 with no explanation.
       const extra = [...assetParts.keys()].slice(0, 5).join(', ');
-      return c.json(
-        {
-          error:
-            `${assetParts.size} uploaded asset part(s) are absent from the manifest (${extra}${assetParts.size > 5 ? ', …' : ''})`,
-        },
-        400,
-      );
+      return refuse(c, 'validation_failed', `${assetParts.size} uploaded asset part(s) are absent from the manifest (${extra}${assetParts.size > 5 ? ', …' : ''})`);
     }
 
     // #1902: whether this version's uploads carry the platform's scope sweeper — decided here,
@@ -8078,7 +8036,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // upload of it reuses the answer. A declaration that contradicts itself is refused now,
     // while it is still a push; it can never become a promote or a backout that refuses.
     const sweeper = platformSweeperDecision(manifest, { entry: manifest.entry, modules });
-    if ('refuse' in sweeper) return c.json({ error: sweeper.refuse }, 422);
+    if ('refuse' in sweeper) return refuseStatus(c, 422, sweeper.refuse);
 
     // Mint the version id first: the deploymentRef (the dispatch script name) is keyed
     // on it, so it is CF-valid and unique per version.
@@ -8131,8 +8089,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }, e);
       c.set('failureRecorded', true);
       return rejected
-        ? c.json({ error: 'deploy rejected', detail }, 422)
-        : c.json({ error: 'deploy upload failed', detail }, 502);
+        ? refuseStatus(c, 422, 'deploy rejected', { detail })
+        : refuseStatus(c, 502, 'deploy upload failed', { detail });
     }
 
     // Register-then-publish, both idempotent-ish below the seam: a first push of a
