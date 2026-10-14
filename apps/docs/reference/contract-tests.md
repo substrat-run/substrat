@@ -109,7 +109,11 @@ Both shipped adapters run every suite in that file **except `grantExpiryContract
 host only** — and the reason is one property of the runtime, not three omissions. The
 capability suite's expiry transitions are the grant suite's reason again: both hosts judge
 a capability with one kernel predicate, which the kernel's own tests pin against an expired
-row, and the moment it expires is read inside the ScopeDO.
+row, and the moment it expires is read inside the ScopeDO. The ScopeDO's own transitions are
+held in the Cloudflare adapter's `contract.test.ts` without a clock: the predicate compares a
+stored instant with the wall clock, so moving the stored instant behind it is how the DO's
+clock sees that time has passed. The same three clocks are covered: a capability's
+`expiresAt`, a session's TTL and a platform `become`.
 
 Each of those suites is about the *passage of time*. Grant expiry proves the transition: a
 grant that is live now and denied an hour later. Facet recency proves that a bucket's
