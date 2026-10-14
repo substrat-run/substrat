@@ -1,15 +1,15 @@
 ---
 status: proposed
 layer: kernel
-description: A connector shape for sources that hold files rather than records (#1578) — enumerate a tree incrementally and resumably, move bytes as streams, follow a change feed with a walk as the floor, write back only where the binding allows it. Recommends running the walk as a #1577 job run whose record lives in the scope and whose passes run where the credential is; leaves three forks to a human.
+description: A connector shape for sources that hold files rather than records (#1578) — enumerate a tree incrementally and resumably, move bytes as streams, follow a change feed with a walk as the floor, write back only where the binding allows it. Recommends running the walk as a #1577 job run whose record lives in the scope and whose passes run where the credential is; leaves four forks to a human.
 ---
 
 # RFC: file-bearing sources
 
 **Status: proposed. Nothing here is agreed.** It answers
 [#1578](https://github.com/substrat-run/substrat/issues/1578), which asks whether the connector
-framework survives a second shape. It recommends; a human decides. The three decisions it asks
-for are §9, and they are open: the recommendation in §5 is one answer to Q1, not the answer.
+framework survives a second shape. It recommends; a human decides. The decisions it asks for
+are §9, and they are open: the recommendation in §5 is one answer to Q1, not the answer.
 
 Written against `origin/main` at `c95e6d73a`. References are to sections and symbols, not
 lines.
@@ -42,10 +42,10 @@ contract-tested against a fixture provider.
 | Credentials, health, dead letters | The connection store, `ConnectorConnection.fetch` with `settleConnectionUse`, routed dispatch as a `connector:<provider>` platform intent, `MAX_PLATFORM_REQUEST_ATTEMPTS` then `recordOpsFailure` ([connections.md](../architecture/connections.md) §3.7, §4.2). | None. #1578 says these are right and must not be duplicated; this RFC reuses all of them. |
 | Landing data in a vertical | The bind pattern: `bindPlanimaScope` / `bindFortnoxScope` check `connectionGrantsInScope`, store a binding in connector state, and `syncPlanimaScope` lands pages through `getConnectorScope(connectionId, scopeId).invoke(<the vertical's operation>)`. | Written twice, once per connector. A third copy is the moment to extract it. |
 | A resumable walk | The #1577 job driver (`packages/kernel/src/job-run.ts`): one live run per `(module, job, instance)`, a committed `cursor`, `counters`, a per-pass step ledger, leases (#2034). The run row lives in the **scope**. The pass engine (`runDueJobRuns`) runs on the coordinator against a `JobRunStore` port; on Cloudflare that port is RPC to the scope DO. [scheduler.md](../architecture/scheduler.md) §6 names #1578 as its expected first consumer. | Nothing bridges it to a connector. A hosted vertical's job runs in the vertical's deployment, which holds no credential; the connector runs in the control plane, which holds no run table. |
-| Cursor state today | `put/get/listConnectorState` — opaque JSON in the directory, keyed by connection, no compare-and-set, no lease. Fortnox and Planima keep a `contentHash` there and re-read everything each pass. | No provider cursor anywhere. No change-feed or etag code in the repo. |
-| Bytes off the pipe | Attachments already skip it: `buildAttachmentSurface` writes R2 first, then sends the metadata row to the DO. `getConnectorAttachments(connectionId, scopeId)` lands bytes as a connection; `ScopedConnectorConnection.openAttachment` reads them in a dispatch. | **Every hop buffers.** `ConnectorResponse` has `arrayBuffer()` and no `body`; `ConnectorRequestInit.body` is `string \| Uint8Array`; `AttachmentUploadInput.body` is a `Uint8Array`; `TenantBlobStore.get/put` are whole-buffer; the hosted `ConnectorDelegation.uploadAttachment` is one buffered multipart. There is no upload size cap anywhere, so the ceiling is the worker's memory. |
+| Cursor state today | `put/get/listConnectorState` — opaque JSON in the directory, keyed by connection, no compare-and-set, no lease. Fortnox and Planima keep a `contentHash` there and re-read everything each pass; the connection inspector's activity renders it on the connection's door. | No provider cursor anywhere. No change-feed or etag code in the repo. |
+| Bytes off the pipe | Attachments already skip it: `buildAttachmentSurface` writes R2 first, then sends the metadata row to the DO. `getConnectorAttachments(connectionId, scopeId)` lands bytes as a connection; `ScopedConnectorConnection.openAttachment` reads them in a dispatch. | **Every hop buffers.** `ConnectorResponse` has `arrayBuffer()` and no `body`; `ConnectorRequestInit.body` is `string \| Uint8Array`; `AttachmentUploadInput.body` is a `Uint8Array`; `TenantBlobStore.get/put` are whole-buffer; the hosted `ConnectorDelegation.uploadAttachment` is one buffered multipart, and `openAttachment` returns raw bytes with the record in a header but is buffered at both ends. `ConnectorDelegation` has no remove. There is no upload size cap anywhere, so the ceiling is the worker's memory. |
 | Read-only | Only by absence: a connector with no write grants, and a doc comment saying "read-only". | Nothing refuses. |
-| Freshness | `recordConnectionUse` (did the last call work) and the sweep-run row (did the pass run). | Neither says how much of a tree has been seen, how far behind its feed is, or whether the last walk finished. |
+| Freshness | `recordConnectionUse` (did the last call work) and the sweep-run row (did the pass run). A job run's row is read by `ScopeHost.jobRuns`, which no dashboard, control-plane or vertical-host surface calls today. | Neither says how much of a tree has been seen, how far behind its feed is, or whether the last walk finished. |
 | The Graph connector | App-only Graph, a per-connection certificate, `microsoft365MailSender`. Its `sweep` is a no-op. #2101 specifies drive documents for it. | No drive, `driveItem` or `/delta` code. |
 
 Scope stores ([scope-stores.md](scope-stores.md)) were checked as a home for a mirrored tree and
@@ -60,8 +60,9 @@ store door (that RFC's Q6), and a kind is a service, not bytes.
    one invocation. → The walk is a job run (§5.2). Resumability is the driver's, not the
    connector's.
 2. **Bytes must not ride with the metadata.** → Metadata lands through the vertical's operation;
-   bytes land as attachments, as streams (§6).
-3. **Freshness means something different.** → The run record *is* the freshness record (§7).
+   bytes land as attachments, as streams, and only when they changed (§5.4, §6).
+3. **Freshness means something different.** → A platform-owned envelope on the run's cursor is
+   the freshness record (§7).
 
 ## 4. The facet
 
@@ -85,7 +86,7 @@ interface FileSource {
 
 interface FilePage {
   entries: FileEntry[];
-  /** Opaque to the platform. Committed only after the page has landed. */
+  /** The connector's own position. Opaque to the platform, which only wraps it (§7). */
   cursor: string;
   /** How this page was produced — a provider change feed, or a walk. */
   feed: 'changes' | 'walk';
@@ -99,7 +100,7 @@ interface FileEntry {
   kind: 'file' | 'folder';
   size?: number;
   modifiedAt?: string;        // ISO 8601
-  etag?: string;              // the provider's version token, the basis of §8's conflict rule
+  etag?: string;              // the provider's version token, the basis of §5.4 and §8
   removed?: true;             // a tombstone from a change feed
 }
 
@@ -140,13 +141,16 @@ deployments.
 pages through `enumerate` with a budget per connection, keeps the cursor under
 `putConnectorState`, and lands pages through the extracted bind.
 
-- \+ No new trust surface. It is the shape #2101 is written in.
+- \+ No new trust surface. It is the shape #2101 is written in. Every value the walk acts on is
+  held where the credential is.
+- \+ Freshness is in connector state, which the connection inspector already renders on the
+  connection's door (Planima's activity shows its `lastSync`). No new read path for the
+  dashboard.
 - − It rebuilds what #1577 already built — a cursor, a lease, a run record, coalescing —
   in the directory. Connector state has no compare-and-set, so two sweeps of one connection
   need a lease added there too. That is the duplication the human's DRY rule forbids, and it
   is the second time the repo would have written a durable cursor.
-- − Freshness lives in the directory, where the vertical cannot read it and the dashboard reads
-  it through a different path from every other run.
+- − The vertical cannot read the freshness of its own mirror without a new door.
 - − The sweep has no budget or lease today (`runPlatformSweep`'s connector phase); A has to add
   both, for this one consumer.
 
@@ -159,8 +163,8 @@ reaches a scope store.
 - − On a hosted vertical the job handler is the vertical author's code. B puts provider calls,
   spending a tenant's credential, in code the platform did not review — where a connector is
   host code, never module code (D-18's third bucket), and is registered and pinned by the
-  platform (the reasoning D-63 applies to store kinds). A
-  credentialed proxy is also the largest new trust surface of the three.
+  platform (the reasoning D-63 applies to store kinds). A credentialed proxy is also the largest
+  new trust surface of the three.
 
 **C (recommended) — the run record lives in the scope; the pass runs where the credential is.**
 The walk is a job run like any other. What changes is who drives it: the control plane runs the
@@ -169,11 +173,14 @@ already uses for `invoke` and `uploadAttachment`.
 
 - \+ One cursor, one lease, one run record, one coalescing rule — #1577's, unchanged.
 - \+ The credential stays in platform connector code. The vertical never sees it.
-- \+ Freshness is a `JobRun` row in the scope, which the vertical, the dashboard and an agent
-  already read through `jobRuns`.
-- \+ Self-host is the same code in-process, as dispatch is (connections.md §4.2).
-- − A new delegated surface: the `JobRunStore` port over the vertical's platform-gated
-  `/internal/connector-*` routes.
+- \+ The freshness record is in the vertical's own scope, where its host code can read it through
+  `ScopeHost.jobRuns` (no screen does yet).
+- − The run state the platform acts on (the run's instance, payload and cursor) is held in the
+  vertical's scope, so C carries the requirements of §5.3. They are what C costs in design.
+- − A new delegated surface: the `JobRunStore` port, plus a remove and a run read, over the
+  vertical's platform-gated `/internal/connector-*` routes.
+- − No dashboard or control-plane surface reads a job run today. The connection's door needs a
+  delegated read to show freshness, where A reuses the inspector path it already has.
 - − The control plane relays bytes (provider → control plane → the vertical's worker → R2).
   Acceptable only once §6 streams them; buffered, it is a memory ceiling per file.
 
@@ -186,31 +193,105 @@ And the driver already steps over a run whose job it does not register, *"anothe
 deployment's"*, without failing it. So:
 
 1. **A run owned by a connector** is a job run whose module is the connector's (for example
-   `connector:<provider>`), instance = the binding. `startJobRun` coalesces a second start onto
-   the live one, so a binding has at most one walk.
+   `connector:<provider>`) and whose instance is the binding's id. `startJobRun` coalesces a
+   second start onto the live one, so a binding has at most one walk.
 2. **The vertical's own driver** (its `ScopeSweeperDO` with `runJobs`) does not register that
-   job, so it steps over the run and leaves it due. Nothing new is needed for that, but §9 Q1's
-   detail notes one starvation case.
-3. **The control plane drives it**: a connector phase, per live binding, calls `runDueJobRuns`
-   with a `JobRunStore` that delegates each port method (`startOrJoin`, `dueKeys`, `claim`,
-   `begin`, `miss`, `list`, `patch`, `commitPass`, `beginStep`, `recordStep`) to the vertical,
-   and a `handlerFor` that answers only for its own connector's runs. `ConnectorDelegation` gains
-   that port beside `invoke`; the vertical's `/internal/connector-*` routes gain its endpoints,
-   gated like the others and restricted to runs whose module is a connector the scope's
-   connection grants name.
-4. **A pass** is: `enumerate` from the committed cursor → land the page's metadata through the
-   binding's operation (one `pass.step`) → land each new or changed file's bytes as an attachment
-   (one `pass.step` per file, keyed by entry id and etag, so a retried step re-lands nothing) →
-   return `{ cursor, done: false }`. `caughtUp` ends the pass early; the run stays alive and
-   becomes due again at the binding's interval. A walk is never `done` while the binding lives.
-5. **The budget** — how many passes per tick, how many entries per page — is exactly the number
-   scheduler.md §6 declined to fix "before a single real walk has said what that budget should
-   be". The fixture and then the Graph connector are what set it.
+   job, so it steps over the run and leaves it due.
+3. **The control plane drives only the runs it owns.** It starts from its own directory: the
+   live bindings of each connection, never the runs a scope lists. `JobDueKey` today is
+   `{ id, module_id, job }` and `handlerFor` sees only `module_id` and `job`, so the selection
+   cannot tell one binding's run from another. C therefore requires `dueKeys` (or a sibling
+   port method) to carry `instance` and to take the set of modules the caller drives, and the
+   control plane's `handlerFor` answers only for a `(module, job, instance)` whose instance is a
+   live binding in its own directory for that scope. The same filter answers Q1's starvation
+   detail.
+4. **The control plane reaches the run store through delegation.** `ConnectorDelegation` gains
+   the port's methods (`startOrJoin`, `dueKeys`, `claim`, `begin`, `miss`, `list`, `patch`,
+   `commitPass`, `beginStep`, `recordStep`); the vertical's `/internal/connector-*` routes gain
+   their endpoints, gated like the others.
+5. **A connector-owned run lands only as the connection.** `pass.scope()` opens the system door
+   as `system:<module_id>` today. For a connector-owned run the platform's `openScope` is
+   `getConnectorScope(connectionId, scopeId)` — the connection's grants, the permission diff's
+   view of it — and the system door is refused for that module.
+6. **A pass** is: verify the cursor envelope (§5.3) → `enumerate` from it → land the page's
+   metadata through the binding's operation (one `pass.step`) → land each new or changed file's
+   bytes (§5.4, one `pass.step` per file) → return the new sealed envelope. `caughtUp` ends the
+   pass early; the run stays alive and becomes due again at the binding's interval.
+7. **The budget** is exactly the number scheduler.md §6 declined to fix "before a single real
+   walk has said what that budget should be". It is stated in round trips to the vertical's
+   deployment, because each port method is one: per pass, `claim`, `begin` and `commitPass`
+   plus one landing invoke per page; per changed file, `beginStep`, `recordStep`, the upload and
+   the `landed` invoke (§5.4), and a remove when it replaces bytes. Those, plus the provider's
+   calls, are what the control plane's per-invocation subrequest and duration limits bound. The
+   fixture and then the Graph connector are what set the numbers.
 
-The landing operation is the vertical's, declared on the binding and granted to the connection
-exactly as `bindPlanimaScope` does it, so `lint:connector-grants` and the permission diff see it.
-Extracting that bind from Planima and Fortnox into one helper is part of this work, not a
+The landing operations are the vertical's, declared on the binding and granted to the connection
+exactly as `bindPlanimaScope` does it, so `lint:connector-grants` and the permission diff see
+them. Extracting that bind from Planima and Fortnox into one helper is part of this work, not a
 side-quest: the file source would otherwise be the third copy.
+
+### 5.3 What C requires of the platform
+
+Under C the platform acts with a tenant's credential on state that is stored in the vertical's
+scope. These are requirements of option C, not refinements of it:
+
+- **The platform does not trust run state held in the scope.** It treats every value read
+  through the delegated run store — instance, payload, cursor, counters — as input to be
+  checked, never as configuration.
+- **The binding is resolved from the control plane's own directory.** The connection, root,
+  mode, landing operations and caps come from the binding record the control plane wrote at
+  bind time, looked up by the run's instance. The run's payload carries nothing the platform
+  relies on.
+- **The cursor is sealed by the platform.** What the platform commits as the run's `cursor` is
+  the §7 envelope, authenticated with a control-plane key and bound to the connection, the
+  binding and the root. A pass whose envelope does not verify does not call the provider; the
+  run fails with that reason, and a restart (§5.5) begins from a cursor the platform issued. A
+  cursor can only continue a walk the platform itself started.
+
+### 5.4 Landing, and why a re-walk does not re-land bytes
+
+The step ledger is dropped when a pass commits (`JobRunStore.commitPass`), so step memoisation
+only protects a pass that failed before committing. A change feed that expires into a walk, a
+failed run started again, or a re-bind all present every entry again. What makes those cheap is
+a comparison before the transfer, not the ledger:
+
+- **The landing operation upserts by provider entry id** and returns, per entry, the
+  `EntityRef` the vertical holds it as and the etag of the bytes the vertical currently has
+  (null if none). A re-presented entry whose etag matches lands no bytes.
+- **Bytes attach to that entity.** `AttachmentUploadInput.entity` is required, so the entity
+  comes from the landing operation's output, and its type is one of the vertical's
+  `attachmentTargets`, with write granted to the connection.
+- **A changed etag replaces.** Upload the new bytes, then a second vertical operation
+  (`landed`, declared on the binding) records `{ entryId, attachmentId, etag }` and returns the
+  attachment it superseded, which the platform then removes. Upload-then-record-then-remove
+  means a failure between steps leaves an extra attachment, never a missing one.
+- **A tombstone removes bytes.** `land` with a `removed` entry returns the attachment ids it
+  held; the platform removes them. What happens to the vertical's own row is the vertical's
+  choice inside its operation.
+- **Remove needs a delegated verb.** `ConnectorDelegation` has `uploadAttachment` and
+  `openAttachment` and no remove; `getConnectorAttachments(...).remove` exists on the host and
+  is not delegated. C and A both need it added.
+
+The exact operation pair is a proposal; the requirement is that bytes are compared before they
+are moved, and that replacing and removing are specified rather than left to each connector.
+
+### 5.5 The run's lifecycle
+
+- **Bind** starts the run (`startOrJoin`, instance = binding id, cursor null).
+- **A run that fails** (attempts exhausted, or a §5.3 refusal) is terminal under #1577. The
+  control plane, on a later drive, finds the binding's run `failed` and starts a new one after a
+  backoff. Its payload carries the failed run's last committed envelope, which the new run
+  verifies before using it; if it does not verify, the new run starts from null and §5.4 keeps
+  that from re-landing unchanged bytes. The vertical never restarts a connector-owned run.
+- **Unbind and connection revoke end the run before the binding is dropped.** Ending is a pass
+  like any other: the control plane claims the run, finds the binding marked ended in its own
+  directory, and returns `done`. The binding record keeps an ended marker until that pass has
+  committed, so a revoke cascade cannot drop the record and leave the run behind.
+- **An orphaned run** — one whose binding the directory does not know — is ended the same way
+  when the control plane finds it, and in the meantime the `dueKeys` module filter (§5.2 step 3)
+  keeps it out of the vertical's own driver's snapshot, so it costs a row and nothing else.
+- **The mirror on unbind** — the rows and attachments already landed — is a human decision
+  (Q4).
 
 ## 6. Bytes as streams
 
@@ -223,22 +304,51 @@ worker. Four seams buffer today, and each widens additively:
 | `ConnectorResponse` | `text`, `json`, `arrayBuffer` | adds `body: ReadableStream<Uint8Array> \| null` (a Web `Response` already has it) |
 | `ConnectorRequestInit.body` | `string \| Uint8Array` | also a `ReadableStream` with a declared length |
 | `AttachmentUploadInput.body` | `Uint8Array` | also a `ByteStream`; `sha256` computed while streaming, the row written after the object, as today |
-| `ConnectorDelegation.uploadAttachment` / `openAttachment` | one buffered multipart | the body as the request/response stream, metadata in headers |
+| `ConnectorDelegation.uploadAttachment` | one buffered multipart (`meta` + `body`) | the body as the request stream, the metadata in headers |
+| `ConnectorDelegation.openAttachment` | raw bytes with the record in a header, buffered at both ends | the same wire shape, streamed at both ends |
 
 `TenantBlobStore.put` takes a stream with a known length (R2 accepts one). Order and
 compensation stay what `buildAttachmentSurface` does now: object first, row second, delete on
 refusal. None of this is file-source-specific — the sealed-PDF path and mail attachments benefit
 the same way — which is why it is the first PR in §10 and not part of the facet.
 
+**A size cap.** Once bytes stream, worker memory stops being the implicit ceiling, and nothing
+bounds a single file or a binding's total. The binding declares `maxFileBytes` (and optionally a
+total byte budget); an entry whose `size` is over it is not read, and is counted as skipped in
+the §7 envelope so an operator can see what the mirror left out. The defaults are open (§9).
+
 ## 7. Freshness
 
-#1578 asks three questions. The run record answers each without a new table:
+#1578 asks three questions. The connector's cursor is opaque (§4), and the run's `counters` are
+numbers that `pass.count` only adds to — they cannot hold a time or a feed kind, and over a run
+that never ends they measure throughput, not coverage. So the platform owns a small envelope
+around the connector's cursor, and that envelope is what the run commits as its `cursor`:
+
+```ts
+// sketch
+interface FileCursorEnvelope {
+  v: 1;
+  inner: string;               // the connector's cursor, untouched
+  feed: 'changes' | 'walk';    // what the last pass ran on
+  walkStartedAt: string | null;
+  walkFinishedAt: string | null;
+  caughtUpAt: string | null;   // the last pass that ended caught up
+  endedBy: 'caughtUp' | 'budget' | 'error';
+  seen: number;                // entries presented since `walkStartedAt`; reset when a walk starts
+  skipped: number;             // over the size cap (§6), since the same point
+  mac: string;                 // §5.3
+}
+```
 
 | Question | Where it is |
 |---|---|
-| How much of the tree has been seen? | `counters` on the run (`entries`, `files`, `bytes`, `removed`), which `pass.count` already maintains |
-| How far behind the change feed is the scope? | The time since the last pass that returned `caughtUp`, plus the `feed` that pass ran on, recorded on the run's counters or cursor envelope |
-| Did the last walk finish, or was it cut off? | `feed: 'walk'` with `caughtUp` false and the pass ended by budget = cut off, resuming at the committed cursor; the run's `attempts` and `last_error` say whether it is failing rather than merely long |
+| How much of the tree has been seen? | `seen` since the current walk began, beside the count of live entries the vertical's own rows hold |
+| How far behind the change feed is the scope? | Now minus `caughtUpAt`, read with `feed` |
+| Did the last walk finish, or was it cut off? | `walkFinishedAt` against `walkStartedAt`, and `endedBy: 'budget'` for a pass the budget stopped; the run's `attempts` and `last_error` say whether it is failing rather than merely long |
+
+No new table: the envelope rides in the existing `cursor` column, and `counters` stay what they
+are, throughput. Under C the connection's door reads it through the delegated run read; under A
+the same envelope would sit in connector state, where the inspector already looks.
 
 Connection health stays where it is (`recordConnectionUse`): a provider that refuses the
 credential is a connection problem, a walk that is behind is a run problem, and an operator
@@ -246,12 +356,17 @@ should see them as two things.
 
 ## 8. Write-back and read-only
 
-**Read-only is refused by the platform, not by the connector.** The binding carries a mode,
-`read` or `read-write`. The platform wraps the connector's `FileSource` before any code sees it,
-and on a `read` binding the wrapper's type has no `write` and its runtime refuses one — so a
-connector cannot forget the rule and a vertical cannot reach around it. A `read-write` binding
-exists only when the registration's `FileSource` has `write` and the tenant chose it when
-binding.
+**Read-only on the typed path.** The binding carries a mode, `read` or `read-write`. The platform
+wraps the connector's `FileSource` before the walk or a write uses it, and on a `read` binding
+the wrapper's type has no `write` and its runtime refuses one. A `read-write` binding exists
+only when the registration's `FileSource` has `write` and the tenant chose it when binding.
+
+What that guarantees, stated exactly: nothing the vertical does, and no platform path that goes
+through the wrapper, can write through a `read` binding. It does not constrain the connector's
+own code: its `dispatch` and `sweep` still receive a `ConnectorConnection` whose `fetch` can send
+any method, so against the connector itself the guarantee is what review of that connector
+gives, as it is for every connector today. The only enforcement independent of connector code is
+a read-only grant on the provider credential itself, which lives with the connection (Q2).
 
 **Writes are event-dispatched**, the Scrive pattern: the vertical emits an event naming
 attachment ids and a target; the connector's dispatch reads them (streamed, §6) and calls the
@@ -270,40 +385,62 @@ Each is open. The RFC's recommendation is stated with its cost so it can be reje
 
 **Q1 — Where the walk runs: C or A (§5.1).** B is argued against above and not offered.
 
-- *C* reuses #1577 whole, keeps freshness in the scope, and costs a new delegated port (the
-  `JobRunStore` methods over `/internal/connector-*`) plus a control-plane phase that drives
-  runs. One detail to settle with it: `dueKeys` snapshots up to `JOB_DRIVE_SCAN_MAX` keys, and
-  the vertical's driver steps over connector-owned ones; a scope with many due connector runs
-  could fill that snapshot and starve the vertical's own jobs. Likely answer: `dueKeys` takes the
-  module set the caller can run. Small, but it is a change to the port.
-- *A* costs nothing in trust surface and ships soonest, and costs a second durable cursor, a
-  lease added to connector state, and a freshness record nothing else reads. It is the cheaper
-  first step and the more expensive second one.
-- *Recommendation:* C.
+- *C* reuses #1577 whole and costs: a new delegated port (the `JobRunStore` methods, a run read
+  and a remove over `/internal/connector-*`); a control-plane phase that drives runs; the §5.3
+  requirements (directory-resolved bindings, a platform-sealed cursor); and a delegated read
+  before the connection's door can show freshness. It also needs the `dueKeys` change in §5.2
+  step 3: today the snapshot holds up to `JOB_DRIVE_SCAN_MAX` keys and the vertical's driver
+  steps over connector-owned ones, so a scope with many due connector runs could fill the
+  snapshot and starve the vertical's own jobs.
+- *A* costs nothing in trust surface, shows freshness through the inspector path the dashboard
+  already has, and ships soonest. It costs a second durable cursor, a lease and a budget added
+  to connector state and the sweep, and a freshness record the vertical cannot read.
+- *Recommendation:* C, because the cursor, lease and run record are the hard part and #1577
+  already proved them; but the freshness argument favours A today, and the §5.3 requirements
+  are C's alone.
 
-**Q2 — Where the read-only mode lives: on the binding, or on the connection row.**
+**Q2 — Where the read-only mode lives: on the binding, on the connection row, or on the
+provider credential.**
 
 - *On the binding* (recommended for v1): set when a scope is bound, which is control-plane host
   code (`bind*Scope`), not the connection relay. A tenant can bind one connection read-only into
-  one scope and read-write into another — which is real: an archive scope and a working scope
-  against one drive. It needs **no change** under `/internal/connections/*`.
+  one scope and read-write into another — an archive scope and a working scope against one
+  drive. It needs **no change** under `/internal/connections/*`. It holds on the typed path
+  (§8), not against the connector's own code.
 - *On the connection row*: one switch per connection, visible on the connection's own door. It
-  would change the connection store and the `/internal/connections/upsert` relay, which is an
-  area that needs the owner's approval before any change. It also cannot express the
-  per-scope case above.
-- They are not exclusive: a connection-level ceiling intersected with a binding-level choice is
-  the general form. v1 does not need the ceiling.
+  would change the connection store and the `/internal/connections/upsert` relay, an area that
+  needs the owner's approval before any change. It cannot express the per-scope case above and
+  is no stronger than the binding against connector code.
+- *On the provider credential*: the tenant grants the credential read-only scopes at the
+  provider (a read-only consent scope, or a read role on the site). This is the only option the
+  connector's own code cannot get past. It is per provider, it lives in the connection and its
+  consent round — the excluded relay and consent code — and it means a read-write binding needs
+  a second connection.
+- They compose: a provider-side read-only credential is a ceiling, and the binding's mode is the
+  choice under it. v1 needs only the binding.
 
 **Q3 — Does #2101 wait for this shape.**
 
 - *Wait:* #2101 becomes the second `FileSource` (the fixture being the first), its delta token
-  is the run's cursor, its folder fence is §4's root, and its writes go through §8's wrapper. It
+  is the inner cursor, its folder fence is §4's root, and its writes go through §8's wrapper. It
   lands later and lands once.
 - *Don't wait:* #2101 ships as written (delta token in connector state, its own fence, its own
   bind), and this shape is extracted from it afterwards. It lands sooner and is then rewritten,
   and the shape is decided by one implementation instead of two — the thing #1578 warns about.
 - *Recommendation:* wait, and amend #2101's body to point at the accepted RFC once it is
   accepted. Not before.
+
+**Q4 — What happens to the mirror on unbind.**
+
+- *Keep:* the rows and attachments are the vertical's data, landed through its own operations;
+  unbinding stops updates and leaves them. The vertical removes them with its own operations if
+  it wants to. Nothing the platform does is irreversible.
+- *Remove:* the platform removes every attachment the binding landed and calls a declared
+  vertical operation to drop the rows. Closer to "a mirror", and irreversible.
+- *Recommendation:* keep.
+
+**Smaller points left open:** the size-cap defaults and whether a per-binding byte budget is
+needed (§6); the exact landing-operation pair (§5.4); the budget numbers (§5.2 step 7).
 
 ## 10. Sequence, if accepted
 
@@ -313,17 +450,20 @@ Each a separate PR, each additive, each with its own changeset.
    `AttachmentUploadInput`, `TenantBlobStore.put` and the two attachment delegations. Proven on
    workerd with a body larger than the worker could buffer.
 2. **The facet and its contract suite**: `FileSource`, `FilePage`, `FileEntry`, the platform
-   wrapper (root fence, read-only, §8), a fixture provider with an optional change feed and an
-   expirable feed token, and `fileSourceContractSuite` in `packages/contract-tests`. The suite
-   asserts: an interrupted walk resumes at the committed cursor and loses nothing; a retried pass
-   re-lands nothing; an expired feed token falls back to a walk; bytes read back with the
-   recorded sha256; a path outside the root is refused before the provider is called; a `read`
-   binding has no `write` by type and refuses one at run time; an `ifMatch` mismatch is a
-   conflict, not an overwrite.
+   wrapper (root fence, read-only, size cap), a fixture provider with an optional change feed and
+   an expirable feed token, and `fileSourceContractSuite` in `packages/contract-tests`. The suite
+   asserts: an interrupted walk resumes at the committed cursor and loses nothing; a re-walk
+   re-lands no unchanged bytes; an expired feed token falls back to a walk; bytes read back with
+   the recorded sha256; a path outside the root is refused before the provider is called; a
+   `read` binding has no `write` by type and refuses one at run time; an `ifMatch` mismatch is a
+   conflict, not an overwrite; an entry over the cap is skipped and counted.
 3. **The bind, extracted**: one helper behind `bindPlanimaScope`, `bindFortnoxScope` and the file
-   source's bind, with the mode on the binding (Q2).
-4. **The driver bridge** (Q1 = C): the delegated `JobRunStore`, its vertical-host endpoints, the
-   control-plane phase that drives connector-owned runs, and the `dueKeys` module filter.
+   source's bind, with the mode, caps and landing operations on the binding (Q2), and the ended
+   marker of §5.5.
+4. **The driver bridge** (Q1 = C): the delegated `JobRunStore`, run read and remove; their
+   vertical-host endpoints; the `dueKeys` instance and module filter; the sealed envelope (§5.3,
+   §7); the control-plane phase that drives, restarts and ends connector-owned runs; the
+   connection-only `openScope`.
 5. **The Graph drive source** (#2101, amended): the second implementation, verified against a
    real tenant.
 
@@ -332,7 +472,8 @@ Each a separate PR, each additive, each with its own changeset.
 - **No change** to `packages/control-plane-api/src/connect-state.ts`,
   `apps/dashboard/src/connect-round.ts`, `apps/social-relay`,
   `packages/control-plane-api/src/wfp.ts`, `/internal/email/*` or `/internal/connections/*`. v1
-  avoids the last by putting the mode on the binding (Q2).
+  avoids the last by putting the mode on the binding (Q2); the provider-credential option in Q2
+  would need the owner's approval because it does not.
 - No live listing. Module code cannot fetch, and no screen asks the provider "what is in the
   folder now"; the mirror is what a screen reads.
 - No bidirectional merge. A conflict is reported (§8), not resolved by the platform.
