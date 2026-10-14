@@ -2036,7 +2036,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/tenants/:tenantId', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const tenant = await c.var.admin.getTenant(c.get('actor'), tenantId);
-    if (!tenant) return c.json({ error: `unknown tenant: ${tenantId}` }, 404);
+    if (!tenant) return refuse(c, 'not_found', `unknown tenant: ${tenantId}`);
     return c.json(tenant);
   });
 
@@ -2075,14 +2075,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = c.get('actor');
     const { backup: wantsBackup } = await readJsonBody(c, reapScopeBody);
     const tenant = await c.var.admin.getTenant(actor, tenantId);
-    if (!tenant) return c.json({ error: `unknown tenant: ${tenantId}` }, 404);
+    if (!tenant) return refuse(c, 'not_found', `unknown tenant: ${tenantId}`);
     if (tenant.status !== 'deleting') {
-      return c.json(
-        {
-          error: `tenant ${tenantId} is ${tenant.status}, not deleting — only a deleting tenant may be reaped`,
-        },
-        409,
-      );
+      return refuse(c, 'conflict', `tenant ${tenantId} is ${tenant.status}, not deleting — only a deleting tenant may be reaped`);
     }
     try {
       for (const scope of await c.var.admin.listScopes(actor, { tenantId })) {
@@ -2109,7 +2104,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json(await c.var.admin.getTenant(actor, tenantId));
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, failedWith(c, e));
+        return refuseStatus(c, failedWith(c, e), e.message);
       }
       throw e;
     }
@@ -2136,10 +2131,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // `builder`, a plan-gated feature, a key no vertical asked for. And never the plan
       // half: an expiry, a quota or a plan name is pricing, which is not the tenant's.
       if (plan.expiresAt != null || plan.quota != null || plan.plan != null) {
-        return c.json({ error: 'a tenant credential grants entitlements without plan fields' }, 403);
+        return refuse(c, 'forbidden', 'a tenant credential grants entitlements without plan fields');
       }
       if (!(await tenantGrantable(p, key))) {
-        return c.json({ error: `entitlement '${key}' is not declared by a vertical this tenant can install` }, 403);
+        return refuse(c, 'forbidden', `entitlement '${key}' is not declared by a vertical this tenant can install`);
       }
     }
     await c.var.admin.grantEntitlement(c.get('actor'), tenantId, key, plan);
@@ -2411,7 +2406,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // worse this week" is the question it exists for.
   app.get('/connections/calls', async (c) => {
     if (!options.observability?.connectorCallsSeries) {
-      return c.json({ error: 'connector-call analytics are not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'connector-call analytics are not configured on this control plane');
     }
     const input = z
       .object({
@@ -2429,7 +2424,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // credential can reach only this path, never the fleet-wide sibling above.
   app.get('/tenants/:tenantId/connections/calls', async (c) => {
     if (!options.observability?.connectorCallsSeries) {
-      return c.json({ error: 'connector-call analytics are not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'connector-call analytics are not configured on this control plane');
     }
     const input = z.object({
       tenantId: tenantIdSchema,
@@ -2525,7 +2520,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const raw = await c.req.json();
     const body = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
     if (body.tenantId !== undefined && body.tenantId !== tenantId) {
-      return c.json({ error: 'body tenantId disagrees with the route tenant' }, 400);
+      return refuse(c, 'validation_failed', 'body tenantId disagrees with the route tenant');
     }
     try {
       return c.json(
@@ -2535,7 +2530,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       if (err instanceof ConnectionRelayError && err.status < 500) {
         // A refusal carries the provider's own answer, so a console can show WHY rather
         // than "save failed" — the whole point of checking before writing.
-        return c.json({ error: err.message, ...(err.probe ? { probe: err.probe } : {}) }, err.status);
+        return refuseStatus(c, err.status, err.message, err.probe ? { probe: err.probe } : undefined);
       }
       // A 5xx relay refusal (#603: this deployment holds no seal key) is the PLATFORM
       // failing, not the caller — rethrown so the shared boundary maps it (still a 503
@@ -2554,7 +2549,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const id = c.req.param('id');
     const rows = await c.var.admin.listConnections(c.get('actor'), { tenantId, includeRevoked: true });
     const row = rows.find((r) => r.id === id);
-    if (!row) return c.json({ error: 'unknown connection' }, 404);
+    if (!row) return refuse(c, 'not_found', 'unknown connection');
     if (row.status !== 'revoked') await c.var.admin.revokeConnection(c.get('actor'), row.id);
     return c.body(null, 204);
   });
@@ -2596,7 +2591,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       scopeId,
       id: connectLinkId.parse(c.req.param('linkId')),
     });
-    return link ? c.json(link) : c.json({ error: 'unknown connect link' }, 404);
+    return link ? c.json(link) : refuse(c, 'not_found', 'unknown connect link');
   });
 
   // The callback's spend. A refusal is a 200 carrying the typed reason, not an error status:
@@ -2640,7 +2635,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       scopeId,
       id: connectLinkId.parse(c.req.param('linkId')),
     });
-    return link ? c.body(null, 204) : c.json({ error: 'unknown connect link' }, 404);
+    return link ? c.body(null, 204) : refuse(c, 'not_found', 'unknown connect link');
   });
 
   /**
@@ -2682,10 +2677,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   app.post('/tenants/:tenantId/connections/:id/verify', async (c) => {
     const row = await inspectableConnection(c);
-    if (!row) return c.json({ error: 'unknown connection' }, 404);
+    if (!row) return refuse(c, 'not_found', 'unknown connection');
     const probe = options.connectionInspectors?.[row.provider]?.probe;
     if (!probe) {
-      return c.json({ error: `no probe registered for provider '${row.provider}'` }, 501);
+      return refuseStatus(c, 501, `no probe registered for provider '${row.provider}'`);
     }
     return c.json(connectionProbe.parse(await probe(c.var.host, row)));
   });
@@ -2704,10 +2699,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   app.get('/tenants/:tenantId/connections/:id/activity', async (c) => {
     const row = await inspectableConnection(c);
-    if (!row) return c.json({ error: 'unknown connection' }, 404);
+    if (!row) return refuse(c, 'not_found', 'unknown connection');
     const activity = options.connectionInspectors?.[row.provider]?.activity;
     if (!activity) {
-      return c.json({ error: `no activity view registered for provider '${row.provider}'` }, 501);
+      return refuseStatus(c, 501, `no activity view registered for provider '${row.provider}'`);
     }
     const source = connectionActivitySource.catch('ledger').parse(c.req.query('source'));
     const live = c.req.query('live') === '1';
@@ -2725,10 +2720,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   app.get('/tenants/:tenantId/connections/:id/credential', async (c) => {
     const row = await inspectableConnection(c);
-    if (!row) return c.json({ error: 'unknown connection' }, 404);
+    if (!row) return refuse(c, 'not_found', 'unknown connection');
     const credential = options.connectionInspectors?.[row.provider]?.credential;
     if (!credential) {
-      return c.json({ error: `no credential view registered for provider '${row.provider}'` }, 501);
+      return refuseStatus(c, 501, `no credential view registered for provider '${row.provider}'`);
     }
     return c.json(connectionCredential.parse(await credential(c.var.host, row)));
   });
@@ -2740,9 +2735,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   app.get('/tenants/:tenantId/connections/:id/certificate', async (c) => {
     const row = await inspectableConnection(c);
-    if (!row) return c.json({ error: 'unknown connection' }, 404);
+    if (!row) return refuse(c, 'not_found', 'unknown connection');
     const certificate = await options.connectionInspectors?.[row.provider]?.certificate?.(c.var.host, row);
-    if (!certificate) return c.json({ error: 'this connection signs in with no certificate' }, 404);
+    if (!certificate) return refuse(c, 'not_found', 'this connection signs in with no certificate');
     return c.json(connectionCertificate.parse(certificate));
   });
 
