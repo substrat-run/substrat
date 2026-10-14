@@ -1,7 +1,7 @@
 ---
 status: proposed
 layer: kernel
-description: A connector shape for sources that hold files rather than records (#1578) — enumerate a tree incrementally and resumably, move bytes as streams, follow a change feed with a walk as the floor, write back only where the binding allows it. Recommends running the walk as a #1577 job run whose record lives in the scope and whose passes run where the credential is; leaves four forks to a human.
+description: A connector shape for sources that hold files rather than records (#1578) — enumerate a tree incrementally and resumably, move bytes as streams, follow a change feed with a walk as the floor, write back only where the binding allows it. Recommends running the walk as a #1577 job run whose record lives in the scope and whose passes run where the credential is; leaves five forks to a human.
 ---
 
 # RFC: file-bearing sources
@@ -200,11 +200,11 @@ deployment's"*, without failing it. So:
 3. **The control plane drives only the runs it owns.** It starts from its own directory: the
    live bindings of each connection, never the runs a scope lists. `JobDueKey` today is
    `{ id, module_id, job }` and `handlerFor` sees only `module_id` and `job`, so the selection
-   cannot tell one binding's run from another. C therefore requires `dueKeys` (or a sibling
-   port method) to carry `instance` and to take the set of modules the caller drives, and the
-   control plane's `handlerFor` answers only for a `(module, job, instance)` whose instance is a
-   live binding in its own directory for that scope. The same filter answers Q1's starvation
-   detail.
+   cannot tell one binding's run from another. C therefore requires two port changes: `dueKeys`
+   (or a sibling port method) carries `instance` and takes the set of modules the caller drives,
+   and `handlerFor` is passed `instance` too. The control plane's `handlerFor` then answers only
+   for a `(module, job, instance)` whose instance is a live binding in its own directory for that
+   scope. The module filter also answers Q1's starvation detail.
 4. **The control plane reaches the run store through delegation.** `ConnectorDelegation` gains
    the port's methods (`startOrJoin`, `dueKeys`, `claim`, `begin`, `miss`, `list`, `patch`,
    `commitPass`, `beginStep`, `recordStep`); the vertical's `/internal/connector-*` routes gain
@@ -256,18 +256,34 @@ failed run started again, or a re-bind all present every entry again. What makes
 a comparison before the transfer, not the ledger:
 
 - **The landing operation upserts by provider entry id** and returns, per entry, the
-  `EntityRef` the vertical holds it as and the etag of the bytes the vertical currently has
-  (null if none). A re-presented entry whose etag matches lands no bytes.
+  `EntityRef` the vertical holds it as, and the attachment id and etag of the bytes the vertical
+  currently has (null if none). A re-presented entry whose etag matches lands no bytes.
 - **Bytes attach to that entity.** `AttachmentUploadInput.entity` is required, so the entity
   comes from the landing operation's output, and its type is one of the vertical's
   `attachmentTargets`, with write granted to the connection.
-- **A changed etag replaces.** Upload the new bytes, then a second vertical operation
-  (`landed`, declared on the binding) records `{ entryId, attachmentId, etag }` and returns the
-  attachment it superseded, which the platform then removes. Upload-then-record-then-remove
-  means a failure between steps leaves an extra attachment, never a missing one.
-- **A tombstone removes bytes.** `land` with a `removed` entry returns the attachment ids it
-  held; the platform removes them. What happens to the vertical's own row is the vertical's
-  choice inside its operation.
+- **A changed etag replaces, by compare-and-set.** Upload the new bytes, then a second vertical
+  operation (`landed`, declared on the binding) records `{ entryId, attachmentId, etag }` **only
+  if** the entry still holds the attachment and etag `land` reported for this pass. On a match it
+  makes the new attachment current and moves the old one to the binding's superseded set. On a
+  mismatch it records nothing and answers `stale`, and the platform removes the attachment it
+  just uploaded, which nothing references. A pass that outlived its lease while a newer pass
+  landed a newer etag therefore cannot record older bytes over newer ones, and cannot remove the
+  newer attachment: it only ever removes what it uploaded itself or what the vertical has
+  marked superseded.
+- **Superseded attachments are removed by the control plane, and cannot leak.** Each `land` call
+  returns, beside its per-entry rows, up to a page of the binding's superseded attachments not
+  yet removed, oldest first, whether or not their entries are in this page. The pass removes them
+  (the remove is idempotent: an attachment already gone is not an error) and acknowledges them
+  in its next `land` call, which drops them from the set. A remove that never ran is offered
+  again by the next pass, so a superseded attachment is removed eventually rather than never.
+- **The lease is sized against the cap.** One file's step — read, upload, `landed`, remove — has
+  to fit between two lease renewals, which happen only at step boundaries. The job's `leaseMs`
+  is derived from the binding's `maxFileBytes` (§6) over a floor transfer rate, and an entry the
+  lease cannot cover is skipped and counted, as an over-cap one is. The lease keeps an overrun
+  rare; the compare-and-set keeps it correct when it happens anyway.
+- **A tombstone removes bytes.** `land` with a `removed` entry moves the attachment it held to
+  the superseded set, and the removal above takes it from there. What happens to the vertical's
+  own row is the vertical's choice inside its operation.
 - **Remove needs a delegated verb.** `ConnectorDelegation` has `uploadAttachment` and
   `openAttachment` and no remove; `getConnectorAttachments(...).remove` exists on the host and
   is not delegated. C and A both need it added.
@@ -283,13 +299,22 @@ are moved, and that replacing and removing are specified rather than left to eac
   backoff. Its payload carries the failed run's last committed envelope, which the new run
   verifies before using it; if it does not verify, the new run starts from null and §5.4 keeps
   that from re-landing unchanged bytes. The vertical never restarts a connector-owned run.
-- **Unbind and connection revoke end the run before the binding is dropped.** Ending is a pass
-  like any other: the control plane claims the run, finds the binding marked ended in its own
-  directory, and returns `done`. The binding record keeps an ended marker until that pass has
-  committed, so a revoke cascade cannot drop the record and leave the run behind.
-- **An orphaned run** — one whose binding the directory does not know — is ended the same way
-  when the control plane finds it, and in the meantime the `dueKeys` module filter (§5.2 step 3)
-  keeps it out of the vertical's own driver's snapshot, so it costs a row and nothing else.
+- **Unbind ends the run before the binding is dropped.** Ending is a pass like any other: the
+  control plane claims the run, finds the binding marked ended in its own directory, and returns
+  `done`. Unbinding is the bind helper's (§10 step 3), control-plane host code, so the binding
+  record can keep an ended marker until that pass has committed.
+- **Connection revoke cannot do the same without changing the revoke path.** On `main`,
+  `revokeConnection` deletes every connector-state row of the connection in the same step, on
+  both adapters, and the bindings are connector state. The control plane drives only from its own
+  directory, so once a revoke has deleted the bindings it never finds those runs again. Ending
+  them needs the revoke path to keep an ended marker per binding until each end pass commits —
+  a change to the revoke used by the dashboard and by the connection relay's replace path, which
+  is an excluded area and needs the owner's approval. The alternative is to accept that a
+  revoked connection's runs stay behind as inert rows. That is Q5.
+- **An orphaned run** — one whose binding the directory does not know — is ended when the
+  control plane finds it under a binding it still knows. One left by a revoke is not found (Q5).
+  Either way the `dueKeys` module filter (§5.2 step 3) keeps it out of the vertical's own
+  driver's snapshot, so it costs a row and nothing else.
 - **The mirror on unbind** — the rows and attachments already landed — is a human decision
   (Q4).
 
@@ -333,7 +358,7 @@ interface FileCursorEnvelope {
   walkStartedAt: string | null;
   walkFinishedAt: string | null;
   caughtUpAt: string | null;   // the last pass that ended caught up
-  endedBy: 'caughtUp' | 'budget' | 'error';
+  endedBy: 'caughtUp' | 'budget'; // a failed pass commits no cursor; failure is on the run row
   seen: number;                // entries presented since `walkStartedAt`; reset when a walk starts
   skipped: number;             // over the size cap (§6), since the same point
   mac: string;                 // §5.3
@@ -342,7 +367,7 @@ interface FileCursorEnvelope {
 
 | Question | Where it is |
 |---|---|
-| How much of the tree has been seen? | `seen` since the current walk began, beside the count of live entries the vertical's own rows hold |
+| How much of the tree has been seen? | `seen` since the current walk began, beside the count of live entries the vertical's own rows hold. `seen` counts presentations, not distinct entries: across change-feed passes one entry changed twice is counted twice, so it can overcount. The vertical's row count is the distinct measure |
 | How far behind the change feed is the scope? | Now minus `caughtUpAt`, read with `feed` |
 | Did the last walk finish, or was it cut off? | `walkFinishedAt` against `walkStartedAt`, and `endedBy: 'budget'` for a pass the budget stopped; the run's `attempts` and `last_error` say whether it is failing rather than merely long |
 
@@ -439,6 +464,22 @@ provider credential.**
   vertical operation to drop the rows. Closer to "a mirror", and irreversible.
 - *Recommendation:* keep.
 
+**Q5 — What a connection revoke does to its runs (§5.5).**
+
+- *Change the revoke path:* `revokeConnection` keeps an ended marker per binding instead of
+  deleting it with the rest of the connection's state, and the control plane ends each run and
+  then drops the marker. Every run ends, and the scope's record says why. It changes the revoke
+  used by the dashboard and the connection relay's replace path — an excluded area, so it needs
+  the owner's approval, and v1 as §11 states it does not include it.
+- *Accept inert rows:* revoke stays as it is. A revoked connection's runs stay `running` in
+  their scopes, never claimed again. The module filter keeps them out of the vertical's driver,
+  so they cost a row each; but the scope's record says "running" about a walk that has stopped,
+  and a later re-bind of a new connection starts a new run beside it.
+- *Recommendation:* change the revoke path, with the owner's approval, because a record that
+  says "running" about a stopped walk is the freshness lie §7 exists to prevent. If that approval
+  is not given, inert rows are an acceptable v1, and the freshness read should show a run whose
+  binding the directory does not know as stopped rather than running.
+
 **Smaller points left open:** the size-cap defaults and whether a per-binding byte budget is
 needed (§6); the exact landing-operation pair (§5.4); the budget numbers (§5.2 step 7).
 
@@ -472,8 +513,9 @@ Each a separate PR, each additive, each with its own changeset.
 - **No change** to `packages/control-plane-api/src/connect-state.ts`,
   `apps/dashboard/src/connect-round.ts`, `apps/social-relay`,
   `packages/control-plane-api/src/wfp.ts`, `/internal/email/*` or `/internal/connections/*`. v1
-  avoids the last by putting the mode on the binding (Q2); the provider-credential option in Q2
-  would need the owner's approval because it does not.
+  avoids the last by putting the mode on the binding (Q2). Two options this RFC presents would
+  touch excluded code and need the owner's approval: the provider-credential option in Q2, and
+  changing `revokeConnection` in Q5.
 - No live listing. Module code cannot fetch, and no screen asks the provider "what is in the
   folder now"; the mirror is what a screen reads.
 - No bidirectional merge. A conflict is reported (§8), not resolved by the platform.
