@@ -38,15 +38,9 @@ export function dashboardRequestId(): MiddlewareHandler {
  */
 function logFailedRequest(c: Context, requestId: string): void {
   const err = c.error;
+  const error = err === undefined ? undefined : (err instanceof Error ? `${err.name}: ${err.message}` : String(err)).slice(0, 500);
   console.error(
-    JSON.stringify({
-      event: 'dashboard.request-failed',
-      requestId,
-      method: c.req.method,
-      path: c.req.path,
-      status: c.res.status,
-      ...(err ? { error: err instanceof Error ? `${err.name}: ${err.message}`.slice(0, 500) : String(err).slice(0, 500) } : {}),
-    }),
+    JSON.stringify({ event: 'dashboard.request-failed', requestId, method: c.req.method, path: c.req.path, status: c.res.status, error }),
   );
 }
 
