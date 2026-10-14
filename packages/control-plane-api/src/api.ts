@@ -102,6 +102,7 @@ import {
   z,
   PROBLEM_CONTENT_TYPE,
   toProblem,
+  validationIssuesFrom,
   redrainEventsInput,
   importCursorMove,
   importCursorAcknowledgementMissing,
@@ -5118,7 +5119,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const body = snapshotScopeBody.parse(await c.req.json().catch(() => ({})));
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     try {
       const { snapId, replay } = await orchestratedSnapshot(c, tenantId, scope, body);
       const record = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, snapId);
@@ -5126,7 +5127,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ ...record, ...storeReplayFields(replay ? [replay] : []) }, 201);
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, failedWith(c, e));
+        return refuseStatus(c, failedWith(c, e), e.message);
       }
       throw e;
     }
@@ -5203,12 +5204,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const actor = c.get('actor');
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     if (!scope.forkedFrom) {
-      return c.json(
-        { error: `scope ${scopeId} is not a fork — only snapshots may be deleted` },
-        409,
-      );
+      return refuse(c, 'conflict', `scope ${scopeId} is not a fork — only snapshots may be deleted`);
     }
     try {
       // Vertical's storage first, then the in-process delete (refusal re-check,
@@ -5220,7 +5218,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ deleted: scopeId, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, failedWith(c, e));
+        return refuseStatus(c, failedWith(c, e), e.message);
       }
       throw e;
     }
@@ -5280,11 +5278,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/tenants/:tenantId/scopes/:scopeId/backups', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
-    if (!options.scopeBackups) return c.json({ error: 'no backup target configured' }, 501);
+    if (!options.scopeBackups) return refuseStatus(c, 501, 'no backup target configured');
     // Reads the directory, not the store, for the tenant cross-check: the store is keyed
     // by (tenant, scope) but nothing there proves the caller's tenant owns the scope.
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     return c.json(await options.scopeBackups.list({ tenantId, scopeId }));
   });
 
@@ -5295,11 +5293,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const capturedAt = c.req.param('capturedAt');
-    if (!options.scopeBackups) return c.json({ error: 'no backup target configured' }, 501);
+    if (!options.scopeBackups) return refuseStatus(c, 501, 'no backup target configured');
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     const dump = await options.scopeBackups.get({ tenantId, scopeId, capturedAt });
-    if (!dump) return c.json({ error: `no backup for scope ${scopeId} at ${capturedAt}` }, 404);
+    if (!dump) return refuse(c, 'not_found', `no backup for scope ${scopeId} at ${capturedAt}`);
     // Unseal on the way out (#37). The bytes in the store stay sealed — this is the
     // authorized read opening them with the keys the platform holds. A subject shredded
     // since the copy was taken opens to a null payload, which is exactly the erasure
@@ -5316,12 +5314,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     try {
       return c.json(await backupScope(c, tenantId, scope), 201);
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, failedWith(c, e));
+        return refuseStatus(c, failedWith(c, e), e.message);
       }
       throw e;
     }
@@ -5349,7 +5347,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // so a wildcard or an injection attempt is a 400 and never reaches the UPDATE.
     const subjectId = dataSubjectIdSchema.parse(c.req.param('subjectId'));
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     const copies = await listAllScopeScriptCopies(c.var.admin, c.get('actor'), tenantId, scopeId);
     // A move in flight can still restore a copy no inventory read now would name. Its entries
     // settle when it confirms or fails, or, if it died, when the sweep finds its lease run out.
@@ -5414,7 +5412,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // bytes. This is also the answer to "is the backup actually running?", which is the
   // question an unrehearsed backup story never has a way to ask.
   app.get('/directory/backups', async (c) => {
-    if (!options.directoryBackups) return c.json({ error: 'no directory backup target configured' }, 501);
+    if (!options.directoryBackups) return refuseStatus(c, 501, 'no directory backup target configured');
     return c.json(await options.directoryBackups.list());
   });
 
@@ -5422,7 +5420,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // hand before touching the directory, and the way a fresh deployment gets its first
   // copy without waiting a day for the cron.
   app.post('/directory/backups', async (c) => {
-    if (!options.directoryBackups) return c.json({ error: 'no directory backup target configured' }, 501);
+    if (!options.directoryBackups) return refuseStatus(c, 501, 'no directory backup target configured');
     const result = await backupDirectoryIfDue({
       admin: c.var.admin,
       store: options.directoryBackups,
@@ -5437,10 +5435,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // control plane offers (every tenant, every hostname, every identity), so staff-only
   // and audited by `exportDirectory` underneath.
   app.get('/directory/backups/:capturedAt', async (c) => {
-    if (!options.directoryBackups) return c.json({ error: 'no directory backup target configured' }, 501);
+    if (!options.directoryBackups) return refuseStatus(c, 501, 'no directory backup target configured');
     const capturedAt = c.req.param('capturedAt');
     const dump = await options.directoryBackups.get({ capturedAt });
-    if (!dump) return c.json({ error: `no directory backup at ${capturedAt}` }, 404);
+    if (!dump) return refuse(c, 'not_found', `no directory backup at ${capturedAt}`);
     return c.json(dump);
   });
 
@@ -5454,21 +5452,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // replacing them is the intent. An EMPTY directory — the actual disaster, a fresh DO
   // with nothing in it — needs no such ceremony.
   app.post('/directory/restore', async (c) => {
-    if (!options.directoryBackups) return c.json({ error: 'no directory backup target configured' }, 501);
+    if (!options.directoryBackups) return refuseStatus(c, 501, 'no directory backup target configured');
     const body = restoreDirectoryBody.parse(await c.req.json().catch(() => ({})));
     const dump = await options.directoryBackups.get({ capturedAt: body.capturedAt });
-    if (!dump) return c.json({ error: `no directory backup at ${body.capturedAt}` }, 404);
+    if (!dump) return refuse(c, 'not_found', `no directory backup at ${body.capturedAt}`);
     const actor = c.get('actor');
     const live = await c.var.admin.listTenants(actor, { limit: 1 });
     if (live.length > 0 && !body.overwrite) {
-      return c.json(
-        {
-          error:
-            'the directory is not empty — a restore REPLACES it, so anything created ' +
-            'since this copy was taken would be lost; pass overwrite=true to confirm',
-        },
-        409,
-      );
+      return refuse(c, 'conflict', 'the directory is not empty — a restore REPLACES it, so anything created ' +
+            'since this copy was taken would be lost; pass overwrite=true to confirm');
     }
     await c.var.admin.restoreDirectory(actor, dump);
     return c.json({ capturedAt: dump.capturedAt, tables: dump.tables.length });
@@ -5522,7 +5514,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
   app.post('/previews/repair-serving-pins', async (c) => {
     if (!options.resolveVerticalVersion || !options.resolveVerticalRef) {
-      return c.json({ error: 'repairing serving pins needs dispatch resolution for both ends' }, 501);
+      return refuseStatus(c, 501, 'repairing serving pins needs dispatch resolution for both ends');
     }
     const { cursor, limit, dryRun } = await readJsonBody(c, repairServingPinsBody);
     const actor = c.get('actor');
@@ -5703,12 +5695,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const actor = c.get('actor');
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     if (!isPrimaryScope(scope)) {
-      return c.json({ error: 'clear-copy-mark refused: the directory says this scope is a copy (a preview or a fork)' }, 409);
+      return refuse(c, 'conflict', 'clear-copy-mark refused: the directory says this scope is a copy (a preview or a fork)');
     }
     const vertical = await verticalForScope(c, scope);
-    if (!vertical) return c.json({ error: await diagnoseUnboundScope(actor, scope) }, 501);
+    if (!vertical) return refuseStatus(c, 501, await diagnoseUnboundScope(actor, scope));
     const { cleared } = await vertical.clearCopyMark(scopeId, { kind: scope.kind, forkedFrom: scope.forkedFrom });
     await c.var.admin.recordCopyMark(actor, { action: 'clear', tenantId, scopeId, outcome: cleared ? 'cleared' : 'absent' });
     return c.json({ cleared });
@@ -5735,20 +5727,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = c.get('actor');
     const parsed = redrainEventsInput.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) {
-      return c.json({ error: 'body must be { drainedBefore: <ISO 8601 instant> } — the end of the window to reopen' }, 400);
+      return refuse(c, 'validation_failed', 'body must be { drainedBefore: <ISO 8601 instant> } — the end of the window to reopen');
     }
     // Refused at the door rather than left to the adapters: an instant in the future
     // reopens rows the drain shipped AFTER the rebuild, which is exactly the double-write
     // the required instant exists to prevent. Host code, so it may read the real clock.
     if (Date.parse(parsed.data.drainedBefore) > Date.now()) {
-      return c.json(
-        {
-          error:
-            `drainedBefore ${parsed.data.drainedBefore} is in the future — it would reopen rows ` +
-            'already shipped to the rebuilt table. Pass the instant the old table stopped receiving.',
-        },
-        400,
-      );
+      return refuse(c, 'validation_failed', `drainedBefore ${parsed.data.drainedBefore} is in the future — it would reopen rows ` +
+            'already shipped to the rebuilt table. Pass the instant the old table stopped receiving.');
     }
     // The input schema also carries `countOnly` (#1545), and this route does not honour it:
     // its answer (`redrained`, `more`) is a statement that rows moved. Ignoring the field
@@ -5757,13 +5743,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // caller is told where counting lives. Refused whatever its value: on this route the
     // field has no meaning at all, and "accepted when false" is a rule nobody can rely on.
     if (parsed.data.countOnly !== undefined) {
-      return c.json(
-        { error: 'countOnly is not honoured here — POST the same body to …/redrain-count for a read-only count' },
-        400,
-      );
+      return refuse(c, 'validation_failed', 'countOnly is not honoured here — POST the same body to …/redrain-count for a read-only count');
     }
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     // The instant alone, never `parsed.data`, so the field cannot reach the adapter from
     // this door even if the refusal above is ever relaxed.
     const redrained = await c.var.admin.redrainEvents(actor, tenantId, scopeId, {
@@ -5795,23 +5778,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = c.get('actor');
     const parsed = redrainEventsInput.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) {
-      return c.json({ error: 'body must be { drainedBefore: <ISO 8601 instant> } — the window to count' }, 400);
+      return refuse(c, 'validation_failed', 'body must be { drainedBefore: <ISO 8601 instant> } — the window to count');
     }
     // The same future refusal as the reopen. A count of a window that has not closed yet
     // is not dangerous, it is meaningless — and a dry run whose instant this door accepts
     // and the real run rejects would be the worst kind of rehearsal.
     if (Date.parse(parsed.data.drainedBefore) > Date.now()) {
-      return c.json(
-        {
-          error:
-            `drainedBefore ${parsed.data.drainedBefore} is in the future — it would count rows ` +
-            'already shipped to the rebuilt table. Pass the instant the old table stopped receiving.',
-        },
-        400,
-      );
+      return refuse(c, 'validation_failed', `drainedBefore ${parsed.data.drainedBefore} is in the future — it would count rows ` +
+            'already shipped to the rebuilt table. Pass the instant the old table stopped receiving.');
     }
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     const redrainable = await c.var.admin.redrainEvents(actor, tenantId, scopeId, {
       drainedBefore: parsed.data.drainedBefore,
       countOnly: true,
@@ -5835,17 +5812,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/tenants/:tenantId/lake/events', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     if (!options.lakeQuery) {
-      return c.json({ error: 'the Tier-2 lake is not queryable on this control plane' }, 501);
+      return refuseStatus(c, 501, 'the Tier-2 lake is not queryable on this control plane');
     }
     const parsed = lakeEventsInput.safeParse(c.req.query());
     if (!parsed.success) {
-      return c.json({ error: 'invalid lake query', issues: parsed.error.issues.map((i) => ({ path: i.path, message: i.message })) }, 400);
+      // `errors` is the declared member (#113); `issues`, zod's own shape, is what this route
+      // answered before it and stays for the clients that read it. Carried rather than built by
+      // `coded`, which would answer a field list with its canonical sentence instead of this one.
+      return refuse(c, 'validation_failed', 'invalid lake query', {
+        errors: validationIssuesFrom(parsed.error),
+        issues: parsed.error.issues.map((i) => ({ path: i.path, message: i.message })),
+      });
     }
     let page;
     try {
       page = await queryLakeEvents(options.lakeQuery, tenantId, parsed.data);
     } catch (err) {
-      if (err instanceof LakeQueryError) return c.json({ error: err.message }, 502);
+      if (err instanceof LakeQueryError) return refuseStatus(c, 502, err.message);
       throw err;
     }
     // The filters, not the page: the same projection every other read logs.
@@ -5868,12 +5851,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // parses; `backup` tri-states on purpose (see the ordering comment below).
     const { backup: wantsBackup } = await readJsonBody(c, reapScopeBody);
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     if (scope.status !== 'archived') {
-      return c.json(
-        { error: `scope ${scopeId} is ${scope.status}, not archived — only an archived scope may be reaped` },
-        409,
-      );
+      return refuse(c, 'conflict', `scope ${scopeId} is ${scope.status}, not archived — only an archived scope may be reaped`);
     }
     // Refuse a scope that still resolves a hostname BEFORE any delegation — the vertical's
     // `deleteScope` below wipes the hosted DO's bytes, so this must gate ahead of it, not
@@ -5882,14 +5862,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // the same guard because releasing every name is the point there.)
     const boundNames = await c.var.admin.listHostnames(actor, { scopeId, limit: 1 });
     if (boundNames.length > 0) {
-      return c.json(
-        {
-          error:
-            `scope ${scopeId} still resolves hostname '${boundNames[0]!.hostname}' — ` +
-            `unbind it before reaping (reap wipes storage and cannot be undone)`,
-        },
-        409,
-      );
+      return refuse(c, 'conflict', `scope ${scopeId} still resolves hostname '${boundNames[0]!.hostname}' — ` +
+            `unbind it before reaping (reap wipes storage and cannot be undone)`);
     }
     // The recoverable copy, BEFORE any byte is wiped (#493). Ordering is the whole
     // guarantee: `backupScope` has to have resolved — durably stored — before
@@ -5907,17 +5881,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         backup = await backupScope(c, tenantId, scope);
       } catch (e) {
         if (e instanceof ControlPlaneError) {
-          return c.json({ error: e.message }, failedWith(c, e));
+          return refuseStatus(c, failedWith(c, e), e.message);
         }
-        return c.json(
-          {
-            error:
-              'backup failed — the scope was NOT reaped and its data is intact; ' +
-              'retry, or reap with backup=false to accept an unrecoverable wipe',
-            detail: e instanceof Error ? e.message : String(e),
-          },
-          502,
-        );
+        return refuseStatus(c, 502, 'backup failed — the scope was NOT reaped and its data is intact; ' +
+              'retry, or reap with backup=false to accept an unrecoverable wipe', { detail: e instanceof Error ? e.message : String(e) });
       }
     }
     try {
@@ -5931,7 +5898,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ ...reaped, backup, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, failedWith(c, e));
+        return refuseStatus(c, failedWith(c, e), e.message);
       }
       throw e;
     }
@@ -5948,19 +5915,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const actor = c.get('actor');
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     // Residency (K-7/K-32): jurisdiction pins EXECUTION, not just storage. A pull
     // lands the data on a machine outside the platform's control, so anything
     // pinned tighter than `global` is refused until a compliant path exists.
     if (scope.jurisdiction !== 'global') {
-      return c.json(
-        {
-          error:
-            `scope ${scopeId} is pinned to '${scope.jurisdiction}' — a local pull would ` +
-            `move its data outside that jurisdiction; refused (K-32, preview-and-snapshots.md §6)`,
-        },
-        403,
-      );
+      return refuse(c, 'forbidden', `scope ${scopeId} is pinned to '${scope.jurisdiction}' — a local pull would ` +
+            `move its data outside that jurisdiction; refused (K-32, preview-and-snapshots.md §6)`);
     }
     const full = c.req.query('full') === 'true';
     try {
@@ -5987,7 +5948,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ ...dump, tables: await maskDump(tables, mask), stores: [], masked: true });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, failedWith(c, e));
+        return refuseStatus(c, failedWith(c, e), e.message);
       }
       throw e;
     }
@@ -6014,7 +5975,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const actor = c.get('actor');
     const tenant = await c.var.admin.getTenant(actor, tenantId);
-    if (!tenant) return c.json({ error: `unknown tenant: ${tenantId}` }, 404);
+    if (!tenant) return refuse(c, 'not_found', `unknown tenant: ${tenantId}`);
 
     // Every scope, tombstones included: an archived or reaped scope is part of the
     // tenant's history, and an export that quietly dropped them would misrepresent what
@@ -6028,16 +5989,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // partial is the failure mode worth avoiding.
     const pinned = scopes.filter((s) => s.jurisdiction !== 'global');
     if (pinned.length > 0) {
-      return c.json(
-        {
-          error:
-            `tenant ${tenantId} has ${pinned.length} scope(s) pinned to a jurisdiction ` +
+      return refuse(c, 'forbidden', `tenant ${tenantId} has ${pinned.length} scope(s) pinned to a jurisdiction ` +
             `(${[...new Set(pinned.map((s) => s.jurisdiction))].join(', ')}) — an export would ` +
             `move that data out of the region it was promised; refused (K-32). Export the ` +
-            `global scopes individually, or wait for a per-jurisdiction path.`,
-        },
-        403,
-      );
+            `global scopes individually, or wait for a per-jurisdiction path.`);
     }
 
     const full = c.req.query('full') === 'true';
@@ -6124,7 +6079,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json(body);
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, failedWith(c, e));
+        return refuseStatus(c, failedWith(c, e), e.message);
       }
       throw e;
     }
@@ -6147,7 +6102,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const actor = c.get('actor');
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     const raw: unknown = await c.req.json();
     const dump = scopeDump.parse(raw);
     // #1869: where the uploaded file says it came from, when the caller had to set the dump's
@@ -6157,14 +6112,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // A backup with no tables is not a scope dump — name that plainly rather than letting
     // the empty replay reach the checker and surface as a bare `internal error` (#321).
     if (dump.tables.length === 0) {
-      return c.json({ error: 'restore refused: the backup has no tables — not a scope dump' }, 422);
+      return refuseStatus(c, 422, 'restore refused: the backup has no tables — not a scope dump');
     }
     // #2207: the dump's stores against the destination's declaration, before anything is written.
     if (options.platformScopeStores) {
       try {
         await refuseUndeclaredDumpStores(c, scope, dump.stores);
       } catch (e) {
-        if (e instanceof ControlPlaneError) return c.json({ error: e.message }, failedWith(c, e));
+        if (e instanceof ControlPlaneError) return refuseStatus(c, failedWith(c, e), e.message);
         throw e;
       }
     }
@@ -6229,7 +6184,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // reconcile); a clear that fails here must not hide the restore's own error.
       await c.var.admin.markScopeProvisioned(actor, tenantId, scopeId, null).catch(() => undefined);
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, failedWith(c, e));
+        return refuseStatus(c, failedWith(c, e), e.message);
       }
       // A restore throw is driven by the caller-supplied dump (a shape the target cannot
       // load, a DDL the engine rejects), so DISCLOSE it as an actionable 422 rather than
@@ -6237,7 +6192,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // secondary obs #2). The route is staff/owner-gated and the detail is about the
       // dump the caller sent, not another tenant's state.
       const detail = e instanceof Error ? e.message : String(e);
-      return c.json({ error: 'restore failed — the backup could not be loaded', detail }, 422);
+      return refuseStatus(c, 422, 'restore failed — the backup could not be loaded', { detail });
     }
   });
 
@@ -6250,7 +6205,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const actor = c.get('actor');
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     const vertical = await verticalForScope(c, scope);
     return c.json(
       vertical
@@ -6268,7 +6223,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const actor = c.get('actor');
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     const vertical = await verticalForScope(c, scope);
     return c.json(
       vertical
@@ -6290,7 +6245,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       .parse(await c.req.json());
     const actor = c.get('actor');
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     try {
       const vertical = await verticalForScope(c, scope);
       const result = await c.var.admin.rewindScope(actor, tenantId, scopeId, bookmark, {
@@ -6312,7 +6267,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json(answer);
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ error: e.message }, failedWith(c, e));
+        return refuseStatus(c, failedWith(c, e), e.message);
       }
       throw e;
     }
@@ -6332,7 +6287,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ adopted: scopeId, ...r });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json(exportBreakBody(e), failedWith(c, e));
+        return refuseStatus(c, failedWith(c, e), e.message, exportBreaksOf(e));
       }
       throw e;
     }
@@ -6350,12 +6305,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const adoptPin = confinedTenant(p);
     if (adoptPin) {
       const v = await verticalOf(actor, slug);
-      if (!v || v.ownerTenant !== adoptPin) return c.json({ error: 'forbidden' }, 403);
+      if (!v || v.ownerTenant !== adoptPin) return refuse(c, 'forbidden', 'forbidden');
     }
     const v = await verticalOf(actor, slug);
-    if (!v) return c.json({ error: `unknown vertical '${slug}'` }, 404);
+    if (!v) return refuse(c, 'not_found', `unknown vertical '${slug}'`);
     if (v.ownerTenant === null) {
-      return c.json({ error: 'adopt-serving is a private-vertical operation' }, 409);
+      return refuse(c, 'conflict', 'adopt-serving is a private-vertical operation');
     }
     const owned = (
       await c.var.admin.listScopes(actor, { tenantId: v.ownerTenant, vertical: slug })
@@ -6370,7 +6325,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json({ ...exportBreakBody(e), adopted, alreadyAdopted }, failedWith(c, e));
+        return refuseStatus(c, failedWith(c, e), e.message, { ...exportBreaksOf(e), adopted, alreadyAdopted });
       }
       throw e;
     }
@@ -6393,7 +6348,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // another tenant's private vertical, which a confined caller must not even learn exists
     // (404, as `GET /verticals/:slug` answers it).
     if (await notReadable(c.get('principal'), vertical)) {
-      return c.json({ error: `unknown vertical: ${vertical}` }, 404);
+      return refuse(c, 'not_found', `unknown vertical: ${vertical}`);
     }
     try {
       const r = await rebindScopeOntoVertical(c, tenantId, scopeId, vertical, {
@@ -6404,7 +6359,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ rebound: scopeId, vertical, ...r });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
-        return c.json(exportBreakBody(e), failedWith(c, e));
+        return refuseStatus(c, failedWith(c, e), e.message, exportBreaksOf(e));
       }
       throw e;
     }
@@ -6475,7 +6430,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const { script } = keptScriptQuery.parse(c.req.query());
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     const kept = await (await keptHolder(script)).keptCopy(scopeId);
     return c.json({ scopeId, script, kept, routesTo: await routeOf(c, scope) });
   });
@@ -6494,20 +6449,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const { script, full } = keptExportQuery.parse(c.req.query());
     const actor = c.get('actor');
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     if (scope.jurisdiction !== 'global') {
-      return c.json(
-        {
-          error:
-            `scope ${scopeId} is pinned to '${scope.jurisdiction}' — a local pull would ` +
-            `move its data outside that jurisdiction; refused (K-32, preview-and-snapshots.md §6)`,
-        },
-        403,
-      );
+      return refuse(c, 'forbidden', `scope ${scopeId} is pinned to '${scope.jurisdiction}' — a local pull would ` +
+            `move its data outside that jurisdiction; refused (K-32, preview-and-snapshots.md §6)`);
     }
     const holder = await keptHolder(script);
     const kept = await holder.keptCopy(scopeId);
-    if (!kept) return c.json({ error: `scope ${scopeId} has no kept copy in '${script}'` }, 409);
+    if (!kept) return refuse(c, 'conflict', `scope ${scopeId} has no kept copy in '${script}'`);
     const dump = await c.var.admin.exportScope(actor, tenantId, scopeId);
     const tables = await holder.exportScope(scopeId);
     if (full === 'true') return c.json({ ...dump, tables, masked: false, script, kept });
@@ -6521,20 +6470,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const body = await readJsonBody(c, resolveKeptBody);
     const actor = c.get('actor');
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     const holder = await keptHolder(body.script);
     const kept = await holder.keptCopy(scopeId);
-    if (!kept) return c.json({ error: `scope ${scopeId} has no kept copy in '${body.script}'` }, 409);
+    if (!kept) return refuse(c, 'conflict', `scope ${scopeId} has no kept copy in '${body.script}'`);
     const route = await routeOf(c, scope);
     // `release` is for a kept copy the scope routes to (a rollback bound it after a carry kept
     // it); the other two act on a kept copy the scope has left, against the store it runs on.
     if (body.action === 'release' ? route !== body.script : !route || route === body.script) {
-      return c.json({
-        error:
-          body.action === 'release'
+      return refuse(c, 'conflict', body.action === 'release'
             ? `scope ${scopeId} routes to '${route ?? '(nothing)'}', not to the kept copy in '${body.script}'; release is for a kept copy that is live`
-            : `scope ${scopeId} routes to '${route ?? '(nothing)'}', so there is no live copy to resolve against`,
-      }, 409);
+            : `scope ${scopeId} routes to '${route ?? '(nothing)'}', so there is no live copy to resolve against`);
     }
     const at = new Date().toISOString();
     const revisionOf = async (client: VerticalClient): Promise<string | null> => {
@@ -6567,7 +6513,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (body.action === 'release') {
       const out = await holder.releaseKeptCopy({ scopeId, revision: revisionBefore, ...markCopy, ...stampFence });
       if ('refused' in out) {
-        return c.json({ error: `the kept copy of scope ${scopeId} ${out.refused === 'changed' ? 'changed since it was read' : 'is no longer kept'}; nothing was released` }, 412);
+        return refuse(c, 'precondition_failed', `the kept copy of scope ${scopeId} ${out.refused === 'changed' ? 'changed since it was read' : 'is no longer kept'}; nothing was released`);
       }
       await record('release', revisionBefore);
       return c.json({ scopeId, script: body.script, action: 'release', revisionBefore });
@@ -6576,7 +6522,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (body.action === 'discard') {
       const out = await holder.discardKeptCopy({ scopeId, revision: revisionBefore, carriedTo: route!, at, ...markCopy, ...stampFence });
       if ('refused' in out) {
-        return c.json({ error: `the kept copy of scope ${scopeId} ${out.refused === 'changed' ? 'changed since it was read' : 'is no longer kept'}; nothing was discarded` }, 412);
+        return refuse(c, 'precondition_failed', `the kept copy of scope ${scopeId} ${out.refused === 'changed' ? 'changed since it was read' : 'is no longer kept'}; nothing was discarded`);
       }
       const revisionAfter = await revisionOf(holder);
       await record('discard', revisionAfter);
@@ -6585,11 +6531,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
     // restore-forward: the acknowledgement names what is replaced, as the marker says it.
     if (body.acknowledge.replacesLiveWritesSince !== kept.keptAt) {
-      return c.json({
-        error:
-          `a restore forward replaces what the live store took since ${kept.keptAt}; acknowledge exactly that ` +
-          `(acknowledge.replacesLiveWritesSince: '${kept.keptAt}')`,
-      }, 409);
+      return refuse(c, 'conflict', `a restore forward replaces what the live store took since ${kept.keptAt}; acknowledge exactly that ` +
+          `(acknowledge.replacesLiveWritesSince: '${kept.keptAt}')`);
     }
     // Fenced on the binding through the whole resolution (Codex #2008 r8): the kept copy goes only
     // once its data is in the store the scope still routes to. Every refusal below leaves it kept.
@@ -6604,21 +6547,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       );
     };
     const moved = () =>
-      c.json({
-        error:
-          `scope ${scopeId} was re-pointed while the kept copy was being restored forward, so nothing was resolved ` +
-          `and the kept copy in '${body.script}' stays kept; read it again and resolve it again`,
-      }, 409);
+      refuse(c, 'conflict', `scope ${scopeId} was re-pointed while the kept copy was being restored forward, so nothing was resolved ` +
+          `and the kept copy in '${body.script}' stays kept; read it again and resolve it again`);
     // The live store as read now, and nothing else, is what gets replaced. The binding read again
     // after the marker ties the marker to the live store: a move that landed before this read
     // (its wipe minting a tombstone here) changed the binding, and is refused.
     const liveMarker = await live.loadMarker(scopeId);
     if (liveMarker === 'unfenced') {
-      return c.json({ error: `the deployment serving scope ${scopeId} ('${liveScript}') predates the fence (#1722); re-push it, then resolve` }, 409);
+      return refuse(c, 'conflict', `the deployment serving scope ${scopeId} ('${liveScript}') predates the fence (#1722); re-push it, then resolve`);
     }
     if (!(await bindingHeld())) return moved();
     if ((await isCarriedAway(live, scope)) || (await live.keptCopy(scopeId))) {
-      return c.json({ error: `the store scope ${scopeId} routes to in '${liveScript}' is not a live store (wiped or kept); nothing was resolved` }, 409);
+      return refuse(c, 'conflict', `the store scope ${scopeId} routes to in '${liveScript}' is not a live store (wiped or kept); nothing was resolved`);
     }
     const dump = await retryTransient(() => holder.exportScope(scopeId));
     // #2185: before the load as well as after it, so a throw once the kept copy has landed (the
@@ -6655,11 +6595,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       ...stampFence,
     });
     if ('refused' in wiped) {
-      return c.json({
-        error:
-          `restored forward into '${route}', but the kept copy in '${body.script}' changed since it was read, so it ` +
-          `stays kept: read it again and resolve it again`,
-      }, 409);
+      return refuse(c, 'conflict', `restored forward into '${route}', but the kept copy in '${body.script}' changed since it was read, so it ` +
+          `stays kept: read it again and resolve it again`);
     }
     return c.json({ scopeId, script: body.script, action: 'restore-forward', liveScript, revisionBefore, revisionAfter });
   });
@@ -6716,7 +6653,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     };
     if (snapshot) {
       if (!scope) {
-        return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+        return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
       }
       const vertical = await verticalForScope(c, scope);
       if (vertical) {
