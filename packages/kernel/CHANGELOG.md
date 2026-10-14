@@ -1,5 +1,64 @@
 # @substrat-run/kernel
 
+## 0.147.0
+
+### Minor Changes
+
+- cb957bc: `getScopeStore` is a door of its own. It checks the tenant and the scope, builds the object name itself, and returns a stub whose `invoke` takes an operation and an input. A `substrat.*` operation is refused before the store is called. A store that answers `{ error }` becomes a `StoreError`, whose taxonomy code comes from the status and whose own code and body ride along. The Cloudflare host reads `SUBSTRAT_STORE_<BINDING>` from the worker env, a direct binding for local development and tests; a hosted upload carries no store binding. The pure adapter checks the directory and then calls the `ScopeStoreRunner` configured for that binding; with no runner configured it refuses.
+- 4d14a81: Subject erasure reaches scope stores. `shredSubject` calls `substrat.erase` after the scope-side redaction and before the subject key is destroyed, so a store that errors leaves the key and a retry converges. The receipt gains `storeErasures`. An orchestrated erasure calls the stores once, through the platform's own path to the store script, and passes that result into `finalizeSubjectShred`.
+
+  Erasure fails closed (#2242). A scope that may hold a store has its stores erased, and one whose stores cannot be named or reached refuses the erasure (503) with the key kept. A Cloudflare host with no control plane, a store binding and no `scopeStores.vertical` refuses `unavailable` instead of answering an empty list. The control plane's rule is gated on the store-kind registry, so while no kind is registered erasure proceeds as before. `ControlPlaneApiOptions.storeKinds` names the registry a control plane judges against (`STORE_KINDS` by default).
+
+- 1ce756e: An invocation line names the scope-store calls a request made: the binding, the operation, whether it succeeded, and how long it took. The vertical passes nothing. The platform runs each request in an `AsyncLocalStorage`, and a store stub reads the request's record from there. An observer passed to `getScopeStore` still wins, and a call made outside a request is neither logged nor refused. The input is not on the line, and neither is the store's error body. A request that made none keeps the line it had. A request that made more than 16 has its first 16 named and the rest counted in `storeCallsDropped`.
+
+  A store operation name is now a fixed label: no `@`, no whitespace, no `:`, at most 64 characters (`storeOperationName`). The door refuses any other name before the call, so it never reaches a line. A kind's catalog is held to the same rule.
+
+  The platform entry imports `node:async_hooks`. A wrapped script that has neither `nodejs_als` nor `nodejs_compat` is uploaded with `nodejs_als` appended to its flags. A script that opts out with `no_nodejs_als` keeps its flags; with no `nodejs_compat` either, its line names no store calls.
+
+- b854efd: A scope dump carries its scope stores. `stores` lists each binding with its kind and opaque tables, and defaults to an empty list, so a dump from before stores still loads. On a host that runs its stores itself (the pure adapter, in dev and in tests), export, import, restore and snapshot carry them, and reap and fork delete wipe them before the scope's own storage goes. A restore refuses, before anything is written, a binding that is not bound, a store of another kind, and stores for a scope with no vertical. The scope's tables load before its stores. A backup copies the stores unsealed, and a masked export omits them.
+
+  Hosted, the control plane reaches the stores through its own path to the store script (#2254), never through the vertical. With no store kind registered it reaches none, and every copy runs as before.
+
+- 23840a7: The storage gauge samples scope stores. Each binding's size is kept beside the scope database, one row per day, and `/meters` adds it up when a sample exists. The sweep reads them on the same pass as the database, at most once a day, and retention drops them on the same horizon. A day that measured no store at all is recorded, so a version that drops its last binding stops being billed for it. A deployment that cannot read store sizes is not counted as failing, and one scope's store read is bounded by a deadline, so a hung store fails that scope rather than the whole pass.
+- 1ad1426: The platform can call a scope store's reserved operations. `substrat.size` answers `{ bytes }`, `substrat.erase` takes `{ subjectId }` and answers `{ erased }`, `substrat.export` answers `{ tables }`, `substrat.import` takes `{ tables }`, replaces the object and answers how many tables it wrote, and `substrat.wipe` answers `{}`. `callReservedStoreOperation` is the only caller, and it refuses any other name. `HostAdmin.scopeStoreSizes` reads each declared binding and writes the access log.
+- b4bb938: A restore re-erases tombstoned subjects from scope stores without ever refusing the restore. The replay reads the target scope's erasure marks and, when the source is a scope of the same tenant on this host, the source's too. When the source is unknown (another host's backup, an upload, a deleted snapshot), the restore still lands and returns `storeErasureIncomplete: true` with `storeErasureSourceUnknown: true`; the restore route answers `incomplete` and `sourceUnknown`. The result is present only when `storeErasuresReplayed > 0` or `storeErasureIncomplete`; absent means no erasure had to be replayed and none is missing, which is also what `restoreScope` returned before. The kernel exports `replayStoreErasures`, which both adapters and the control plane use. A hosted snapshot reports its fork's replay on its answer the same way. The restore route refuses, before any write, a dump store whose binding the destination's version does not declare or whose kind differs. The control plane now names a scope's stores from the version its script runs, through one resolver, `scopeStoresOf`, used for backup, full pull, the full tenant export, snapshot, reap, restore, erasure and the sweep. Before, an install on the serving pin was backed up, reaped, restored and erased without its store. The router's route read applies the same rule, and gives a scope pinned to a script other than the current serving one no store. A store list that cannot be resolved refuses with 503 once a store kind is registered (`mayHoldScopeStores` in contracts), and a hosted control plane with no route to the store scripts refuses rather than skips (`unreachablePlatformScopeStores`). A store-call validator is no longer duplicated: the store-call request uses contracts' `storeOperationName`, which also refuses whitespace other than a space. An orchestrated shred with no platform path to the stores no longer hands the host an empty erasure list, so a host with co-located stores erases them in the finalize, as its direct shred does. A vertical no longer serves `/internal/scope-store-sizes`, `/internal/scope-store-erase`, `/internal/scope-store-export` or `/internal/scope-store-import`, and `VerticalClient` loses `scopeStoreSizes`, `scopeStoreErase`, `scopeStoreExport` and `scopeStoreImport`: the control plane signs the object name and calls the store script itself, for size, erase, export, import and wipe, so the vertical holds neither the store namespace nor the key.
+- cb957bc: A scope-store kind can ship a runner: `kind`, `start`, `stop`, and `invoke(address, request)` where the address is the tenant, the vertical, the scope and the binding. The pure adapter binds those runners on the host. The Cloudflare adapter uses a runner when one is configured and the injected binding otherwise. The same contract suite runs on both: a declared binding reaches its object, an undeclared binding is refused, two scopes do not share an object, two verticals do not share an object, and a reserved operation is refused by the stub.
+
+### Patch Changes
+
+- 9926c53: A list of any length is one SQL parameter (#2248).
+
+  A Durable Object refuses a statement that binds more than 100 parameters, so
+  `WHERE id IN (${ids.map(() => '?').join(', ')})` passes every test with a small fixture and
+  fails the first hosted call whose list outgrew it.
+
+  - `inList(values)` from `@substrat-run/contracts` returns `{ sql, params }`: write
+    `id IN ${list.sql}` and bind `...list.params`. The list travels as one JSON array and is
+    read back with `json_each`, which is SQLite's own and runs the same on both adapters. An
+    empty list matches nothing. Strings and finite numbers only; `NaN` and `Infinity` throw
+    rather than turning into `null`. Pass values in the column's own type: a numeric column
+    converts a numeric string, but a TEXT column never matches a number, so pass TEXT ids as
+    strings.
+  - `boundary-lint` rule **R12** refuses a hand-built `IN (${…})` placeholder list in module
+    code and names `inList`. A list of fixed, short length opts out in a
+    `boundary-lint-allow R12` … `boundary-lint-end R12` block.
+  - On the node adapter, the bound-parameter refusal now names the way round it after the
+    Durable Object's own words. The message still starts with `too many SQL variables at offset N: SQLITE_ERROR`.
+
+- 8ff761c: The control plane now refuses a vertical's own durable-object binding that takes a per-tenant or scope store's name, as the push already did. Both use `storeNamesOfBindings`. A scope store's error envelope is read only with a status from 400 to 599, and a `StoreError` carries the store's body to a client only for a 4xx whose JSON is at most 1 KiB (`STORE_BODY_MAX_BYTES`). Both adapters start and stop scope-store runners through `scopeStoreLifecycleOf`. A retried start no longer starts a runner twice. `close` waits for a start in flight, so no runner starts after it, and then calls `stop` on every runner even when one throws, reporting several failures as an `AggregateError`. An own durable-object binding is also compared with the injected per-tenant and scope runtime names, as every static binding is.
+- Updated dependencies [9926c53]
+- Updated dependencies [8ff761c]
+- Updated dependencies [cb957bc]
+- Updated dependencies [cb957bc]
+- Updated dependencies [4d14a81]
+- Updated dependencies [5b1c20f]
+- Updated dependencies [1ce756e]
+- Updated dependencies [b854efd]
+- Updated dependencies [23840a7]
+- Updated dependencies [1ad1426]
+- Updated dependencies [b4bb938]
+  - @substrat-run/contracts@0.147.0
+
 ## 0.146.0
 
 ### Minor Changes
@@ -6342,7 +6401,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

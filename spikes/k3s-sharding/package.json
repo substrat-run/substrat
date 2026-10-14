@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/spike-k3s-sharding",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "description": "Spike for #1638 — scopes sharded across processes: placement, a fenced lease, a router, and a kill-mid-write test (layer 1, no cluster)",
   "license": "AGPL-3.0-only",
