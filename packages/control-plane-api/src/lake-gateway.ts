@@ -86,11 +86,14 @@ function literal(value: string): string {
 /**
  * One page of a tenant's events, newest first, as SQL.
  *
- * `DISTINCT` because the drain is at-least-once: a retried batch lands twice, as rows that
- * are identical column for column, and the lake's own rule is to dedupe on id before
- * reading anything. Keyset on `id` (a ULID, so time-ordered) rather than on `occurred_at`,
- * so the cursor is a string comparison every engine agrees on. One row over the limit is
- * asked for, to know whether there is a next page without a second query.
+ * No `DISTINCT`. The drain is at-least-once, so a retried batch lands twice, but asking the
+ * engine to dedupe makes it dedupe the whole filtered set before it can apply the limit, and
+ * R2 SQL names large deduplicating sorts as a timeout risk. Duplicates share an id and the
+ * order is by id, so they arrive adjacent; `queryLakeEvents` collapses them, and pages off
+ * the engine's own window so a duplicate can shorten a page but never end the walk early.
+ * Keyset on `id` (a ULID, so time-ordered) rather than on `occurred_at`, so the cursor is a
+ * string comparison every engine agrees on. One row over the limit is asked for, to know
+ * whether there is a next page without a second query.
  */
 export function compileLakeEvents(tenantId: TenantId, input: LakeEventsInput): string {
   const where = [`tenant_id = ${literal(tenantId)}`];
@@ -107,7 +110,7 @@ export function compileLakeEvents(tenantId: TenantId, input: LakeEventsInput): s
   if (input.until !== undefined) where.push(`occurred_at < ${literal(input.until)}`);
   if (input.cursor !== undefined) where.push(`id < ${literal(input.cursor)}`);
   return (
-    `SELECT DISTINCT ${COLUMNS.join(', ')}, (impersonation IS NOT NULL) AS impersonated ` +
+    `SELECT ${COLUMNS.join(', ')}, (impersonation IS NOT NULL) AS impersonated ` +
     `FROM ${LAKE_TABLE} WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT ${input.limit + 1}`
   );
 }
@@ -168,16 +171,22 @@ export async function queryLakeEvents(
   // Every row, before any is decoded or dropped: the check is about what the engine
   // returned, not about what this page would have shown.
   if (rows.some((r) => r.tenant_id !== tenantId)) throw new LakeTenantMismatchError(tenantId);
-  // DISTINCT collapses exact duplicates; this collapses any the engine still let through.
+  // The page is the engine's first `limit` rows, deduplicated by id, and the next page starts
+  // after the last of THOSE rows. Deciding "more" from the deduplicated list instead would
+  // end the walk early whenever a duplicate fell inside the window: `limit + 1` rows with
+  // one copy among them dedupe to `limit` events and read as the last page.
+  const window = rows.slice(0, input.limit);
+  const more = rows.length > input.limit;
   const seen = new Set<string>();
-  const events: LakeEvent[] = [];
-  for (const row of rows) {
+  const page: LakeEvent[] = [];
+  for (const row of window) {
     const event = toEvent(row);
     if (seen.has(event.id)) continue;
     seen.add(event.id);
-    events.push(event);
+    page.push(event);
   }
-  const page = events.slice(0, input.limit);
-  const more = events.length > input.limit;
-  return { events: page, nextCursor: more ? (page[page.length - 1]?.id ?? null) : null, consistency: 'eventual' };
+  // Rows arrive ordered by id, so the window's last row is a copy of the last event or that
+  // event itself: its id is the cursor either way.
+  const nextCursor = more ? (page[page.length - 1]?.id ?? null) : null;
+  return { events: page, nextCursor, consistency: 'eventual' };
 }

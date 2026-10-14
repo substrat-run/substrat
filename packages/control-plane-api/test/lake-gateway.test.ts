@@ -218,6 +218,26 @@ describe('queryLakeEvents over a real table (#1334)', () => {
     expect(seen).toEqual([7, 6, 5, 4, 3, 2, 1, 0].map((i) => ids[i]));
   });
 
+  it('keeps walking when duplicates fall at a page boundary: none repeated, none skipped', async () => {
+    const boundary = sqliteLake();
+    try {
+      for (const i of [0, 1, 2, 3, 4, 5, 6, 7]) boundary.insert(event(i));
+      // Copies straddling the first and second page edges at limit 3 (7 6 5 | 5 4 4 3 …).
+      for (const i of [5, 4, 4]) boundary.insert(event(i));
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      for (let pages = 0; pages < 10; pages++) {
+        const page = await queryLakeEvents(boundary.engine, A, input({ limit: '3', ...(cursor ? { cursor } : {}) }));
+        seen.push(...idsOf(page));
+        if (!page.nextCursor) break;
+        cursor = page.nextCursor;
+      }
+      expect(seen).toEqual([7, 6, 5, 4, 3, 2, 1, 0].map((i) => ids[i]));
+    } finally {
+      boundary.db.close();
+    }
+  });
+
   it('answers with the envelope only: no payload, subject, authorization or impersonation detail', async () => {
     const page = await queryLakeEvents(lake.engine, A, input());
     const text = JSON.stringify(page);
@@ -251,6 +271,18 @@ describe('the cross-tenant check (#1334)', () => {
     const { tenant_id: _gone, ...headless } = rowOf(A, 0);
     const engine: LakeQueryEngine = { query: async () => [headless] };
     await expect(queryLakeEvents(engine, A, input())).rejects.toBeInstanceOf(LakeTenantMismatchError);
+  });
+
+  it('says there is more when a full window deduplicates below the limit', async () => {
+    // limit 2, the engine's window of 3 holds one copy: two rows deduplicate to one event, and
+    // a cursor taken from the deduplicated list would have said this was the last page.
+    const engine: LakeQueryEngine = { query: async () => [rowOf(A, 5), rowOf(A, 5), rowOf(A, 4)] };
+    const page = await queryLakeEvents(engine, A, input({ limit: '2' }));
+    expect(idsOf(page)).toEqual([ids[5]]);
+    expect(page.nextCursor).toBe(ids[5]);
+    // The positive twin: a window that is not full is the last page.
+    const last = await queryLakeEvents({ query: async () => [rowOf(A, 5), rowOf(A, 5)] }, A, input({ limit: '2' }));
+    expect(last.nextCursor).toBeNull();
   });
 
   it("passes a page that is wholly the tenant's own", async () => {
