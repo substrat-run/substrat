@@ -311,12 +311,19 @@ already answer their expected refusal as a value.
      Statuses and the `error` sentence are unchanged at every site, and every member a route
      carried beside `error` (`probe`, `operationId`, `exportBreaks`, `issues`, a downstream
      `detail`, …) is carried verbatim. The lake query's 400 also gains the declared `errors`.
-     A request no route matches is a `not_found` problem rather than Hono's text 404.
-     **The witness:** the API logs `control-plane.non-problem-refusal` (method, route pattern,
-     status — never the raw path, never the body) whenever it answers 400 or more with any
-     other media type, and the package's test setup fails the test in which that happened, so
-     the whole route suite holds the rule. In production the same line is what an operator
-     searches the worker's logs for.
+     Where the API is the top-level app (the node server, a self-host), a request no route
+     matches is a `not_found` problem rather than Hono's text 404; the hosted worker mounts it
+     under `/api`, and Hono never calls a mounted app's `notFound`, so there the worker's own
+     fallback still answers, as before.
+     **Two witnesses, covering different things.** The API logs
+     `control-plane.non-problem-refusal` (method, route pattern, status — never the raw path,
+     never the body) whenever it answers 400 or more with any other media type, and the
+     package's test setup fails the test in which that happened: that covers every refusal a
+     test *reaches*, whatever produced it, and in production it is the line an operator
+     searches the worker's logs for. It does not cover a branch no test reaches — about a third
+     of the refusals in `api.ts` when this landed — so `test/problem-source.test.ts` scans
+     `api.ts` itself and refuses any response it builds with a status of 400 or more outside
+     the problem helpers: that covers every refusal *written* there, reached or not.
    - **Still open, surface by surface:** `vertical-host`'s `/internal` 501s and its live
      reads; the control-plane worker's own routes (`apps/control-plane`), CLI auth, the
      builder and the dashboard's 401s, `dev-issuer`; a `requestId` on the control plane's

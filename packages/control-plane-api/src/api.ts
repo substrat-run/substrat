@@ -1614,8 +1614,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // `control-plane.non-problem-refusal` with the method, the route PATTERN (never the raw
   // path, which carries tenant and scope ids) and the status. It reads one header and never
   // the body, so it costs nothing on the success path and discloses nothing on the failure
-  // one. This package's test setup fails any test in which it fires, so the whole route suite
-  // is the witness that the rule holds; in production it is the line an operator searches the
+  // one. Two mechanisms hold the rule, and they cover different things: this package's test
+  // setup fails any test in which the tripwire fires, which covers every refusal a test
+  // REACHES; `test/problem-source.test.ts` scans this file and covers every refusal WRITTEN
+  // here, reached or not. In production the tripwire is the line an operator searches the
   // worker's logs for, should a client report a refusal it could not parse.
   //
   // Registered first, so it sees the answer every other layer settled on, `onError`'s included.
@@ -1626,7 +1628,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   });
 
-  // A request no route matches is a refusal too, and Hono's default answers it as text.
+  // A request no route matches is a refusal too, and Hono's default answers it as text. This
+  // answers only where this app is the top-level one (the node server, a self-host): Hono never
+  // calls a MOUNTED sub-app's `notFound`, so under the hosted worker's `app.route('/api', …)`
+  // the worker's own fallback still answers an unmatched path.
   app.notFound((c) => refuse(c, 'not_found', 'no such route'));
 
   // The 5xx backstop: every 5xx this API answers lands an ops-failure row, however it was
@@ -1636,7 +1641,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // that catch a ControlPlaneError and answer it themselves: a preview re-push whose bind failed
   // after a clean carry answered 502 with a reference and left no row behind.
   //
-  // Registered first, so it wraps every other middleware and route. 501 stays out: an honest
+  // Registered ahead of every middleware but the tripwire, so it wraps every route. 501 stays out: an honest
   // not-implemented is a capability statement, not a failure. 4xx stay out too: they are
   // refusals the caller can already read. Actor is unset only when the request failed before
   // authentication, where nothing worth recording refuses. A throw a step already recorded,
