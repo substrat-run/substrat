@@ -1,4 +1,5 @@
 import {
+  LIST_PAGE_MAX,
   mayHoldScopeStores,
   scopeStoresDeclaredIn,
   STORE_KINDS,
@@ -138,19 +139,18 @@ export async function unrouteScope(
 }
 
 /**
- * The scope stores of the version a scope's deployment runs (#2207). A scope on its vertical's
- * serving pin runs the serving pointer's version, and any other scope its bound version; this
- * is the version the router reads a scope's stores from (`READ_ROUTE_SQL`). Provisioning sets the
- * serving pin and no bound version, so reading the bound version alone answers "no store" for an
- * ordinary install whose store the router serves. A pin that names another script than the
- * pointer's is unknown, as #2242's erasure gate has it.
+ * The stores of the version a scope's deployment runs (#2207). A scope on its vertical's serving
+ * pin runs the serving pointer's version, and any other scope its bound version; this is the
+ * version the router reads (`READ_ROUTE_SQL`) and the one a restore may import into (L8).
+ * Provisioning sets the serving pin and no bound version, so reading the bound version alone
+ * answers "no store" for an ordinary install whose store the router serves. A pin that names
+ * another script than the pointer's is unknown, as #2242's erasure gate has it.
  *
  * The gate is `mayHoldScopeStores`: with no kind registered nothing can hold a store, and the
  * answer is none. Otherwise a version that cannot be named, a manifest that cannot be read, or one
- * the gate says may hold a store without naming it refuses (503), rather than let a backup, a
- * wipe, a replay or an erasure skip a store that may hold data.
+ * the gate says may hold a store without naming it refuses (503).
  */
-export async function scopeStoresOf(
+export async function runningVersionStoresOf(
   admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest'>,
   actor: PlatformActorId,
   scope: Pick<Scope, 'id' | 'vertical' | 'verticalVersionId' | 'servingRef'>,
@@ -169,6 +169,58 @@ export async function scopeStoresOf(
   const declared = typeof manifestJson === 'string' && scopeStoresDeclaredIn(manifestJson) ? declaredStoresOf(manifestJson) : [];
   if (declared.length > 0) return declared;
   throw new ControlPlaneError(503, `scope ${scope.id} may hold scope stores, and the version it runs cannot say which`);
+}
+
+/**
+ * Every (binding, kind) any version of the scope's vertical has declared (#2286, L17), on top of
+ * {@link runningVersionStoresOf}. Export, wipe, erasure and the meter reach a binding a later
+ * version dropped. The running version is still resolved first, so an unknown one refuses before
+ * the union is read. The same binding declared as two kinds, or a manifest that cannot be read,
+ * refuses (503). A version with no manifest predates stores and adds none.
+ *
+ * Not the router's check and not a restore's import check. Those stay on the running version:
+ * a vertical calls only what its current code declares, and a restore imports only what the
+ * destination currently declares.
+ */
+export async function scopeStoresOf(
+  admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest' | 'listVersions'>,
+  actor: PlatformActorId,
+  scope: Pick<Scope, 'id' | 'vertical' | 'verticalVersionId' | 'servingRef'>,
+  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+): Promise<DeclaredScopeStore[]> {
+  const current = await runningVersionStoresOf(admin, actor, scope, kinds);
+  if (!scope.vertical || !mayHoldScopeStores(undefined, kinds)) return current;
+  const union = new Map(current.map((store) => [store.binding, store.kind]));
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await admin.listVersions(actor, scope.vertical, {
+      limit: LIST_PAGE_MAX,
+      ...(cursor ? { cursor } : {}),
+    });
+    for (const version of page) {
+      let manifestJson: string | null;
+      try {
+        manifestJson = await admin.versionManifest(actor, scope.vertical, version.id);
+      } catch {
+        throw new ControlPlaneError(503, 'scope store declarations could not be read');
+      }
+      if (manifestJson === null) continue;
+      for (const store of declaredStoresOf(manifestJson)) {
+        const previous = union.get(store.binding);
+        if (previous !== undefined && previous !== store.kind) {
+          throw new ControlPlaneError(
+            503,
+            `scope store '${store.binding}' is declared as both '${previous}' and '${store.kind}'`,
+          );
+        }
+        union.set(store.binding, store.kind);
+      }
+    }
+    const last = page.at(-1);
+    if (page.length < LIST_PAGE_MAX || !last) break;
+    cursor = last.id;
+  }
+  return [...union].map(([binding, kind]) => ({ binding, kind }));
 }
 
 function asControlPlane(error: unknown): never {

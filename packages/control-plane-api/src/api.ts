@@ -165,7 +165,7 @@ import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } fro
 import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
-import { pinnedServingVersionId, sameDeclaredStores, scopeStoresOf, unrouteScope } from './platform-scope-stores.js';
+import { pinnedServingVersionId, runningVersionStoresOf, sameDeclaredStores, scopeStoresOf, unrouteScope } from './platform-scope-stores.js';
 import { assertNoUnreachableScopeCopies, listAllScopeScriptCopies, reapScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
@@ -1564,7 +1564,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   ): Promise<void> => {
     if (stores.length === 0) return;
     if (!scope.vertical) throw new ControlPlaneError(422, 'restore refused: the dump names stores and the scope names no vertical');
-    const declared = new Map((await manifestStores(c, scope)).map((d) => [d.binding, d.kind]));
+    // The destination's running version only (L8). The lifecycle union would admit a binding
+    // that version dropped, and the import would write an object nothing in the new code reads.
+    const declared = new Map((await runningVersionStoresOf(c.var.admin, c.get('actor'), scope, options.storeKinds)).map((d) => [d.binding, d.kind]));
     for (const store of stores) {
       const kind = declared.get(store.binding);
       if (kind === undefined) {

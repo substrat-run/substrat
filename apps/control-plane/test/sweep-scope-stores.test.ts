@@ -23,6 +23,7 @@ describe('the sweep reaches a serving-pinned store, and never skips one silently
   const admin = {
     verticalServing: async () => ({ ref: 'graphy-stable', versionId: 'served', doClasses: [], migrationTag: 't' }),
     versionManifest: async () => manifest,
+    listVersions: async () => [{ id: 'served' }],
   };
   const status = (e: unknown) => (e as { status?: number } | undefined)?.status;
   const refusal = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e);

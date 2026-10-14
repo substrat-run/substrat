@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { platformActorId, scopeId, substratError } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { scopeStoresOf } from '../src/index.js';
+import { runningVersionStoresOf, scopeStoresOf } from '../src/index.js';
 
 /**
  * #2207: the control plane names a scope's stores from the version its deployment runs, by the
@@ -24,6 +24,7 @@ describe('scopeStoresOf (#2207)', () => {
       return serving ? { ref: 'stable', versionId: serving, doClasses: [], migrationTag: 't' } : null;
     },
     versionManifest: async (_a: unknown, _v: string, versionId: string) => manifests[versionId] ?? null,
+    listVersions: async () => Object.keys(manifests).map((versionId) => ({ id: versionId })),
   });
   const ask = (a: ReturnType<typeof admin>, scope: { servingRef: string | null; verticalVersionId: string | null }, kinds: never[] = registered) =>
     scopeStoresOf(a, actor, { id, vertical: 'docs', ...scope }, kinds);
@@ -36,8 +37,11 @@ describe('scopeStoresOf (#2207)', () => {
     expect(await ask(admin({ served: manifest(GRAPH), bound: manifest([]) }, 'served'), { servingRef: 'stable', verticalVersionId: 'bound' })).toEqual(GRAPH);
   });
 
-  it('a scope off the pin reads its bound version', async () => {
-    expect(await ask(admin({ served: manifest(GRAPH), bound: manifest([]) }, 'served'), { servingRef: null, verticalVersionId: 'bound' })).toEqual([]);
+  it('a scope off the pin still reaches a store only an older version declared (#2286)', async () => {
+    const a = admin({ served: manifest(GRAPH), bound: manifest([]) }, 'served');
+    const scope = { servingRef: null, verticalVersionId: 'bound' as string | null };
+    expect(await ask(a, scope)).toEqual(GRAPH);
+    expect(await runningVersionStoresOf(a, actor, { id, vertical: 'docs', ...scope }, registered)).toEqual([]);
   });
 
   it('a scope with no vertical has no store, and nothing is read', async () => {
@@ -66,4 +70,19 @@ describe('scopeStoresOf (#2207)', () => {
       expect(await ask(a, scope, [])).toEqual([]);
     });
   }
+
+  it('the same binding declared as two kinds refuses (#2286)', async () => {
+    const a = admin({
+      served: manifest(GRAPH),
+      older: manifest([{ binding: 'GRAPH', kind: 'counter' }]),
+    }, 'served');
+    const refusal = await ask(a, { servingRef: 'stable', verticalVersionId: null }).then(() => undefined, (e: unknown) => e);
+    expect((refusal as { status?: number } | undefined)?.status).toBe(503);
+  });
+
+  it('a historical manifest that does not read refuses (#2286)', async () => {
+    const a = admin({ served: manifest(GRAPH), older: '{nope' }, 'served');
+    const refusal = await ask(a, { servingRef: 'stable', verticalVersionId: null }).then(() => undefined, (e: unknown) => e);
+    expect((refusal as { status?: number } | undefined)?.status).toBe(503);
+  });
 });

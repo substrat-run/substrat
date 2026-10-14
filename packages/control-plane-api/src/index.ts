@@ -117,6 +117,7 @@ export {
   callPlatformScopeStore,
   pinnedServingVersionId,
   platformScopeStoresFor,
+  runningVersionStoresOf,
   sameDeclaredStores,
   scopeStoresOf,
   unrouteScope,
