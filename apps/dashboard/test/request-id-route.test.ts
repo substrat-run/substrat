@@ -60,7 +60,7 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
   let dir: string;
   let host: SqliteScopeHost;
   let env: Record<string, unknown>;
-  /** When set, the plane answers every call with this 500 instead. */
+  /** When set, the plane answers every call but the credential mint with a 500. */
   let planeDown: boolean;
 
   beforeEach(async () => {
@@ -84,7 +84,8 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
       CP_SERVICE_TOKEN: SERVICE_TOKEN,
       CONTROL_PLANE_SVC: {
         fetch: async (url: string | URL | Request, init?: RequestInit) => {
-          if (planeDown) {
+          // The credential mint answers; the read after it is what fails, and its detail is relayed.
+          if (planeDown && !String(url).endsWith('/tenant-tokens')) {
             return new Response(JSON.stringify({ type: 'about:blank', title: 'Internal Server Error', status: 500, code: 'internal', detail: 'refused Bearer eyJhbGciOi.secret-jwt token=abc' }), {
               status: 500,
               headers: { 'content-type': 'application/problem+json' },
@@ -154,7 +155,16 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
 
     const lines = logged.filter((l) => l.includes('dashboard.request-failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatchObject({ event: 'dashboard.request-failed', requestId: id, method: 'GET', path: '/api/deployments', status: res.status });
+    expect(lines[0]).toEqual({
+      event: 'dashboard.request-failed',
+      requestId: id,
+      method: 'GET',
+      path: '/api/deployments',
+      status: res.status,
+      errorName: 'ControlPlaneError',
+      errorCode: 'internal',
+      upstreamStatus: 500,
+    });
     // The plane's detail is free text the dashboard did not write: it is never logged.
     expect(logged.join('\n')).not.toMatch(/bearer|eyJhbGciOi|secret-jwt|token=abc/i);
   });
