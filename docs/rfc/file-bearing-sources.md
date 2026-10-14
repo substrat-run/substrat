@@ -217,6 +217,23 @@ deployment's"*, without failing it. So:
    metadata through the binding's operation (one `pass.step`) → land each new or changed file's
    bytes (§5.4, one `pass.step` per file) → return the new sealed envelope. `caughtUp` ends the
    pass early; the run stays alive and becomes due again at the binding's interval.
+
+   **Steps are named by the page they land.** `enumerate` is a provider call outside the step
+   ledger, and #1577's determinism rule binds a step's name to the payload and to earlier
+   results. A pass retried after a kill or a takeover enumerates again from the same committed
+   cursor and, on a change feed, may get a different page. If the landing step had a fixed name,
+   the retry would reuse the first attempt's memoised `land` answer for a page it did not get,
+   and commit a cursor past entries it never landed. So the metadata step is named by a digest of
+   the page it lands (`land:<sha256 of the canonical page>`) and each bytes step by
+   `bytes:<entryId>:<etag>`. A retry that gets the same page reuses its steps; one that gets a
+   different page runs new ones, and the first attempt's rows are dropped at commit.
+
+   The alternative — `enumerate` as the pass's first ledgered step, so a retry reuses the
+   recorded page — is not proposed for two reasons. The page would be provider data held in the
+   scope's step ledger and read back to decide what to land and which cursor to commit, which is
+   exactly what §5.3 says the platform does not trust. And a page memo is bounded by the step
+   row a DO will store, which would cap the page size by a storage limit rather than by the
+   budget.
 7. **The budget** is exactly the number scheduler.md §6 declined to fix "before a single real
    walk has said what that budget should be". It is stated in round trips to the vertical's
    deployment, because each port method is one: per pass, `claim`, `begin` and `commitPass`
@@ -270,12 +287,28 @@ a comparison before the transfer, not the ledger:
   landed a newer etag therefore cannot record older bytes over newer ones, and cannot remove the
   newer attachment: it only ever removes what it uploaded itself or what the vertical has
   marked superseded.
-- **Superseded attachments are removed by the control plane, and cannot leak.** Each `land` call
-  returns, beside its per-entry rows, up to a page of the binding's superseded attachments not
-  yet removed, oldest first, whether or not their entries are in this page. The pass removes them
-  (the remove is idempotent: an attachment already gone is not an error) and acknowledges them
-  in its next `land` call, which drops them from the set. A remove that never ran is offered
-  again by the next pass, so a superseded attachment is removed eventually rather than never.
+- **`stale` is followed by a fresh comparison, not the end of the step.** The compare-and-set
+  stops older bytes overwriting newer ones, but a stale pass could still record its older bytes
+  *first*; if `stale` simply ended the entry's step, the current pass would move its cursor past
+  the change and leave the older etag current. So on `stale` the step re-reads the entry's held
+  attachment and etag from the vertical — a new invoke, never the memoised `land` answer — and
+  compares again. If the held etag is the one this pass enumerated, the step is done. Otherwise it
+  renews its lease at a step boundary and tries the compare-and-set again, with the same upload,
+  against the freshly read state. The loop ends when the compare-and-set succeeds, when the held
+  etag matches, when the lease renewal is refused (the run belongs to another pass, whose commit
+  this pass can no longer make, so it stops without writing), or after a small fixed number of
+  tries, which fails the step and so the pass, without committing its cursor. Whenever it ends
+  without recording the upload, the step removes that upload, which nothing references. Only the
+  pass holding the lease can complete a retry, so the newest holder's view is the one that stays
+  current.
+- **Superseded attachments are removed by the control plane.** Each `land` call returns, beside
+  its per-entry rows, up to a page of the binding's superseded attachments not yet removed,
+  oldest first, whether or not their entries are in this page. The pass removes them (the remove
+  is idempotent: an attachment already gone is not an error) and acknowledges them in its next
+  `land` call, which drops them from the set. A remove that never ran is offered again by the
+  next pass. That holds while the binding lives and through its end pass (§5.5), which drains the
+  set; a binding that ends without an end pass — Q5's inert-rows option — leaves its remaining
+  superseded attachments in the tenant's bucket, referenced by nothing.
 - **The lease is sized against the cap.** One file's step — read, upload, `landed`, remove — has
   to fit between two lease renewals, which happen only at step boundaries. The job's `leaseMs`
   is derived from the binding's `maxFileBytes` (§6) over a floor transfer rate, and an entry the
@@ -299,18 +332,29 @@ are moved, and that replacing and removing are specified rather than left to eac
   backoff. Its payload carries the failed run's last committed envelope, which the new run
   verifies before using it; if it does not verify, the new run starts from null and §5.4 keeps
   that from re-landing unchanged bytes. The vertical never restarts a connector-owned run.
-- **Unbind ends the run before the binding is dropped.** Ending is a pass like any other: the
-  control plane claims the run, finds the binding marked ended in its own directory, and returns
-  `done`. Unbinding is the bind helper's (§10 step 3), control-plane host code, so the binding
-  record can keep an ended marker until that pass has committed.
-- **Connection revoke cannot do the same without changing the revoke path.** On `main`,
-  `revokeConnection` deletes every connector-state row of the connection in the same step, on
-  both adapters, and the bindings are connector state. The control plane drives only from its own
-  directory, so once a revoke has deleted the bindings it never finds those runs again. Ending
-  them needs the revoke path to keep an ended marker per binding until each end pass commits —
-  a change to the revoke used by the dashboard and by the connection relay's replace path, which
-  is an excluded area and needs the owner's approval. The alternative is to accept that a
-  revoked connection's runs stay behind as inert rows. That is Q5.
+- **Unbind ends the run before the binding is dropped.** Ending is a pass: the control plane
+  claims the run, finds the binding marked ended in its own directory, and runs the **end pass**.
+  The end pass calls the provider for nothing. It makes one final `land` call with no entries,
+  which returns the binding's remaining superseded attachments, removes them, acknowledges them,
+  repeats until the set is empty, and returns `done`. Unbinding is the bind helper's (§10 step
+  3), control-plane host code, so the binding record can keep an ended marker until that pass
+  has committed.
+- **Every door the end pass uses requires a live connection.** `getConnectorScope` and
+  `getConnectorAttachments` refuse a revoked connection, and the delegated run store would sit
+  behind the same gate. So the end pass has to run *before* the connection is revoked: the
+  ordering is end-before-tombstone. The other way round — a run-store and attachment door with no
+  live-connection gate, usable after revoke — is not proposed; it would be a door that acts as a
+  connection that no longer exists.
+- **Connection revoke cannot do that without changing the revoke path.** On `main`,
+  `revokeConnection` deletes every connector-state row of the connection and tombstones the
+  connection in the same step, on both adapters, and the bindings are connector state. Once that
+  has happened the control plane, which drives only from its own directory, never finds those
+  runs again, and the doors would refuse it if it did. Ending them needs revoke to become two
+  steps — mark the connection's bindings ended and stop provider calls, let the control plane run
+  each end pass, then tombstone the connection and delete its state. That changes the revoke used
+  by the dashboard and by the connection relay's replace path, which is an excluded area and
+  needs the owner's approval. The alternative is to accept that a revoked connection's runs stay
+  behind as inert rows, and its superseded attachments with them. That is Q5.
 - **An orphaned run** — one whose binding the directory does not know — is ended when the
   control plane finds it under a binding it still knows. One left by a revoke is not found (Q5).
   Either way the `dueKeys` module filter (§5.2 step 3) keeps it out of the vertical's own
@@ -360,7 +404,7 @@ interface FileCursorEnvelope {
   caughtUpAt: string | null;   // the last pass that ended caught up
   endedBy: 'caughtUp' | 'budget'; // a failed pass commits no cursor; failure is on the run row
   seen: number;                // entries presented since `walkStartedAt`; reset when a walk starts
-  skipped: number;             // over the size cap (§6), since the same point
+  skipped: number;             // over the size cap (§6) or the lease (§5.4), since the same point
   mac: string;                 // §5.3
 }
 ```
@@ -466,15 +510,19 @@ provider credential.**
 
 **Q5 — What a connection revoke does to its runs (§5.5).**
 
-- *Change the revoke path:* `revokeConnection` keeps an ended marker per binding instead of
-  deleting it with the rest of the connection's state, and the control plane ends each run and
-  then drops the marker. Every run ends, and the scope's record says why. It changes the revoke
-  used by the dashboard and the connection relay's replace path — an excluded area, so it needs
-  the owner's approval, and v1 as §11 states it does not include it.
+- *Change the revoke path:* revoke becomes end-before-tombstone (§5.5). It marks the
+  connection's bindings ended and stops provider calls; the control plane runs each binding's
+  end pass while the connection's doors still answer; then the connection is tombstoned and its
+  state deleted. Every run ends, the scope's record says why, and the superseded set is drained.
+  It changes the revoke used by the dashboard and the connection relay's replace path — an
+  excluded area, so it needs the owner's approval, and v1 as §11 states it does not include it.
+  A revoke that must take effect at once (a leaked credential) still does: provider calls stop at
+  the first step, and only the platform's own cleanup in the tenant's scope continues.
 - *Accept inert rows:* revoke stays as it is. A revoked connection's runs stay `running` in
   their scopes, never claimed again. The module filter keeps them out of the vertical's driver,
   so they cost a row each; but the scope's record says "running" about a walk that has stopped,
-  and a later re-bind of a new connection starts a new run beside it.
+  a later re-bind of a new connection starts a new run beside it, and the binding's remaining
+  superseded attachments stay in the tenant's bucket, referenced by nothing.
 - *Recommendation:* change the revoke path, with the owner's approval, because a record that
   says "running" about a stopped walk is the freshness lie §7 exists to prevent. If that approval
   is not given, inert rows are an acceptable v1, and the freshness read should show a run whose
@@ -502,9 +550,10 @@ Each a separate PR, each additive, each with its own changeset.
    source's bind, with the mode, caps and landing operations on the binding (Q2), and the ended
    marker of §5.5.
 4. **The driver bridge** (Q1 = C): the delegated `JobRunStore`, run read and remove; their
-   vertical-host endpoints; the `dueKeys` instance and module filter; the sealed envelope (§5.3,
-   §7); the control-plane phase that drives, restarts and ends connector-owned runs; the
-   connection-only `openScope`.
+   vertical-host endpoints; the `dueKeys` instance and module filter and `instance` on
+   `handlerFor`; the sealed envelope (§5.3, §7); page-digest step names (§5.2 step 6); the
+   control-plane phase that drives, restarts and ends connector-owned runs, with the end pass of
+   §5.5; the connection-only `openScope`.
 5. **The Graph drive source** (#2101, amended): the second implementation, verified against a
    real tenant.
 
