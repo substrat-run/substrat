@@ -39,7 +39,10 @@ vi.mock('@substrat-run/adapter-cloudflare', () => ({
 }));
 vi.mock('@substrat-run/oidc-rp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@substrat-run/oidc-rp')>()),
-  mountOidcRoutes: () => undefined,
+  // A stand-in route where the worker mounts the real ones, so the case below holds the order:
+  // a middleware registered after this route would never run for it.
+  mountOidcRoutes: (app: { get(path: string, h: (c: { redirect(url: string): Response }) => Response): void }) =>
+    app.get('/api/auth/login', (c) => c.redirect('https://issuer.example/authorize')),
   verifySession: async (_env: unknown, token: string | undefined) => (token ? { id: token } : null),
 }));
 
@@ -106,6 +109,13 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
       { headers: { ...(opts.sub ? { cookie: `sb_session=${opts.sub}` } : {}), ...opts.headers } },
       env,
     );
+
+  it('the OIDC routes are covered: the middleware is mounted ahead of them', async () => {
+    const res = await get('/auth/login');
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('https://issuer.example/authorize');
+    expect(res.headers.get(REQUEST_ID_HEADER)).toMatch(ULID);
+  });
 
   it('a success carries the header', async () => {
     const res = await get('/deployments', { sub: OWNER_SUB });

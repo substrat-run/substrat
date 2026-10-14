@@ -7,7 +7,7 @@ import { platformActorId, principalId, scopeId, tenantId, type ScopeId } from '@
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
-import { problemDetail } from '@substrat-run/contracts';
+import { REQUEST_ID_HEADER, problemDetail } from '@substrat-run/contracts';
 import { exportBreaksIn, sendWithExportBreakAck, type BrokenApp } from '../web/src/lib/bind-ack.js';
 
 /**
@@ -165,6 +165,19 @@ describe('an Update or a Bind refused for what it would break (#1756)', () => {
     expect(refused.exportBreaks).toMatchObject([{ scopeId: deskScope, vertical: CONSUMER, type: TYPE, incoming: null }]);
     expect(await boundTo()).toBe(v.exporting);
     expect(await updatedLines()).toBe(0);
+  });
+
+  it('the refusal carries the request id it was answered under (#2192), and nothing else beside the apps', async () => {
+    const res = await app.request(
+      `/api/apps/${appScope}/update`,
+      { method: 'POST', headers: { 'content-type': 'application/json', cookie: `sb_session=${OWNER_SUB}` }, body: '{}' },
+      env,
+    );
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(res.status).toBe(409);
+    expect(Object.keys(body).sort()).toEqual(['detail', 'error', 'exportBreaks', 'requestId']);
+    expect(body.requestId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(body.requestId).toBe(res.headers.get(REQUEST_ID_HEADER));
   });
 
   it('a Bind refused names them too; the confirm is shown them, and a yes binds', async () => {

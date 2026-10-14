@@ -24,6 +24,17 @@ function appUnderTest() {
   app.get('/throws-500', () => {
     throw new Error('the plane is down');
   });
+  app.get('/throws-long', () => {
+    throw new Error('x'.repeat(2000));
+  });
+  // An upgrade. Node's `Response` refuses a 101, so the status is set on a real response the
+  // way workerd's would read; a copy of it (what `c.header` makes of an answered response)
+  // would throw here, as it would drop the socket there.
+  app.get('/upgrade', () => {
+    const res = new Response(null, { status: 200, headers: { 'x-upgrade': 'yes' } });
+    Object.defineProperty(res, 'status', { value: 101 });
+    return res;
+  });
   // `Response.redirect`'s headers are immutable, as a response handed straight back from a
   // `fetch` has.
   app.get('/passthrough', () => Response.redirect('https://example.com/elsewhere', 302));
@@ -86,6 +97,25 @@ describe('the dashboard request id (#2192)', () => {
     });
     // The query string (a consent code, a state token) never reaches the log.
     expect(String(logged[0]![0])).not.toContain('secret-consent-code');
+  });
+
+  it("the logged error is capped at 500 characters", async () => {
+    const logged: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => void logged.push(String(args[0])));
+    const res = await appUnderTest().request('/throws-long');
+    expect(res.status).toBe(500);
+    expect(logged).toHaveLength(1);
+    const line = JSON.parse(logged[0]!) as { error: string; requestId: string };
+    expect(line.error).toHaveLength(500);
+    expect(line.error.startsWith('Error: xxx')).toBe(true);
+    expect(line.requestId).toBe(res.headers.get(REQUEST_ID_HEADER));
+  });
+
+  it('an upgrade (101) is handed back untouched: not copied, so no header', async () => {
+    const res = await appUnderTest().request('/upgrade');
+    expect(res.status).toBe(101);
+    expect(res.headers.get('x-upgrade')).toBe('yes');
+    expect(res.headers.get(REQUEST_ID_HEADER)).toBeNull();
   });
 
   it('a success or a 4xx logs nothing', async () => {
