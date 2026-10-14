@@ -22,7 +22,7 @@ import { clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, clientSignInRoute, readSignInPolicy } from './sign-in-policy.js';
 import { readSignInLog, signInLoggerFor, type SignInLogQuery } from './sign-in-log.js';
 import { optionalTwilioFrom } from './twilio.js';
-import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, deliveredConfig, isTruthy, putDeliveredConfig, supabaseBridgeFrom } from './settings.js';
+import { ACCOUNT_LINKING, ALLOW_SIGNUP, MACHINE_SCOPES, accountLinkingMode, deliveredConfig, isTruthy, machineScopesOf, putDeliveredConfig, supabaseBridgeFrom } from './settings.js';
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import {
   bankIdApiUrl,
@@ -192,6 +192,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // Re-read per request (this whole method is), so the dashboard's sign-up toggle takes
       // effect on the next request rather than the next deploy.
       allowSignup: overrides?.allowSignup ?? isTruthy(cfg[ALLOW_SIGNUP]),
+      // The machine-client ceiling, on the same per-request read: narrowing it takes the dropped
+      // scopes out of the next token minted. A refused value reads as none (`machineScopesOf`).
+      machineScopes: machineScopesOf(cfg[MACHINE_SCOPES]).scopes,
       // Federated sign-in, read from the registry on the same per-request basis — a provider
       // enabled in the dashboard answers the next request.
       socialProviders: socialProvidersFrom(providers),

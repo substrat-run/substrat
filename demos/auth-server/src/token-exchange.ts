@@ -116,33 +116,39 @@ interface Credentials {
 }
 
 /**
+ * HTTP Basic client credentials (RFC 6749 §2.3.1): `null` when the header is not Basic,
+ * `'malformed'` when it is but does not decode. The halves are form-urlencoded before
+ * base64, so `+` is a space and `%xx` an octet.
+ */
+export function basicCredentialsOf(
+  authorization: string | null | undefined,
+): { clientId: string; clientSecret: string } | 'malformed' | null {
+  const basic = authorization?.match(/^Basic\s+(\S+)\s*$/i)?.[1];
+  if (basic === undefined) return null;
+  try {
+    const decoded = atob(basic);
+    const colon = decoded.indexOf(':');
+    if (colon < 0) return 'malformed';
+    const unform = (s: string) => decodeURIComponent(s.replace(/\+/g, ' '));
+    return { clientId: unform(decoded.slice(0, colon)), clientSecret: unform(decoded.slice(colon + 1)) };
+  } catch {
+    return 'malformed';
+  }
+}
+
+/**
  * The client's credentials, from exactly one of RFC 6749 §2.3.1's two presentations. Using
  * both is refused, as the RFC asks. Basic's halves are form-urlencoded before base64, so `+`
  * is a space and `%xx` an octet.
  */
 function credentialsOf(form: URLSearchParams, authorization: string | null): Credentials | TokenExchangeAnswer {
-  const basic = authorization?.match(/^Basic\s+(\S+)\s*$/i)?.[1];
+  const basic = basicCredentialsOf(authorization);
   const postedId = form.get('client_id');
   const postedSecret = form.get('client_secret');
-  if (basic !== undefined) {
+  if (basic !== null) {
     if (postedSecret !== null) return refuse('invalid_request', 'use one client authentication method, not two');
-    let decoded: string;
-    try {
-      decoded = atob(basic);
-    } catch {
-      return refuse('invalid_client', 'malformed Basic credentials', true);
-    }
-    const colon = decoded.indexOf(':');
-    if (colon < 0) return refuse('invalid_client', 'malformed Basic credentials', true);
-    const unform = (s: string) => decodeURIComponent(s.replace(/\+/g, ' '));
-    let clientId: string;
-    let clientSecret: string;
-    try {
-      clientId = unform(decoded.slice(0, colon));
-      clientSecret = unform(decoded.slice(colon + 1));
-    } catch {
-      return refuse('invalid_client', 'malformed Basic credentials', true);
-    }
+    if (basic === 'malformed') return refuse('invalid_client', 'malformed Basic credentials', true);
+    const { clientId, clientSecret } = basic;
     if (postedId !== null && postedId !== clientId) return refuse('invalid_request', 'client_id does not match the credentials');
     return { clientId, clientSecret, method: 'client_secret_basic' };
   }

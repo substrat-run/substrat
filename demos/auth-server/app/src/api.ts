@@ -853,9 +853,15 @@ async function admin<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-/** `web` keeps a secret on a server; `native` is a public client (PKCE, no usable secret). */
-export type ApplicationType = 'web' | 'native';
-export const APPLICATION_TYPES: ApplicationType[] = ['web', 'native'];
+/**
+ * `web` keeps a secret on a server; `native` is a public client (PKCE, no usable secret).
+ * Both are relying parties a person signs into. `machine` is not: it is an unattended client
+ * that authenticates with its own secret (`client_credentials`), so it has no redirect URIs,
+ * no consent and no sign-in policy. The plugin knows only the first two; `machine` is this
+ * issuer's name for a client whose one grant is `client_credentials` (`src/admin-api.ts`).
+ */
+export type ApplicationType = 'web' | 'native' | 'machine';
+export const APPLICATION_TYPES: ApplicationType[] = ['web', 'native', 'machine'];
 
 /**
  * A registered relying party, in the plugin's RFC 7591 wire shape. The secret is never here
@@ -880,6 +886,8 @@ export interface RegisteredClient {
   client_id_issued_at?: number;
   metadata?: Record<string, unknown>;
   client_secret_set?: boolean;
+  /** What a `machine` client may be granted — a subset of the issuer's `MACHINE_SCOPES`. */
+  client_credentials_scopes?: string[];
   /**
    * The issuer's own admin console (`src/console-client.ts`), rather than an application
    * somebody registered. It has no redirect URIs, no secret and no Remove button — what it
@@ -888,16 +896,30 @@ export interface RegisteredClient {
   builtin?: boolean;
 }
 
-/** The editable half of a client — what the new/edit form collects. */
+/** The editable half of a relying party — what the new/edit form collects. */
 export interface ClientDraft {
   client_name: string;
-  application_type: ApplicationType;
+  application_type: 'web' | 'native';
   redirect_uris: string[];
   logo_uri?: string;
   metadata?: Record<string, unknown>;
   skip_consent: boolean;
   enable_end_session: boolean;
   post_logout_redirect_uris: string[];
+  disabled: boolean;
+}
+
+/**
+ * The editable half of a machine client. Every sign-in field is absent rather than empty: the
+ * admin API refuses each of them on a machine client, so a draft that cannot carry them is
+ * one that cannot be refused for them.
+ */
+export interface MachineClientDraft {
+  client_name: string;
+  application_type: 'machine';
+  client_credentials_scopes: string[];
+  logo_uri?: string;
+  metadata?: Record<string, unknown>;
   disabled: boolean;
 }
 
@@ -911,7 +933,7 @@ export async function listOAuthClients(): Promise<RegisteredClient[]> {
  * stored hashed, so no endpoint can return it later.
  */
 export async function createOAuthClient(
-  draft: ClientDraft,
+  draft: ClientDraft | MachineClientDraft,
 ): Promise<{ client: RegisteredClient; clientSecret: string }> {
   // Through our worker, which calls the plugin's `SERVER_ONLY` admin endpoint: it mints the
   // id, mints and hashes the secret, and validates the redirect URIs — and it is the only
@@ -922,7 +944,9 @@ export async function createOAuthClient(
     // so an empty one is a 400 rather than "no post-logout targets". Omit it instead; our own
     // PATCH accepts `[]` and is what clears a list that already exists.
     body: JSON.stringify(
-      draft.post_logout_redirect_uris.length ? draft : { ...draft, post_logout_redirect_uris: undefined },
+      draft.application_type === 'machine' || draft.post_logout_redirect_uris.length
+        ? draft
+        : { ...draft, post_logout_redirect_uris: undefined },
     ),
   });
   return { client: created, clientSecret: created.client_secret ?? '' };
@@ -933,7 +957,10 @@ export async function createOAuthClient(
  * the caller to be the client's registrant, so an operator cannot rename or disable an
  * application someone else registered, and `disabled` is not in its update body at all.
  */
-export async function updateOAuthClient(clientId: string, update: Partial<ClientDraft>): Promise<RegisteredClient> {
+export async function updateOAuthClient(
+  clientId: string,
+  update: Partial<ClientDraft> | Partial<MachineClientDraft>,
+): Promise<RegisteredClient> {
   return admin(`/clients/${encodeURIComponent(clientId)}`, { method: 'PATCH', body: JSON.stringify(update) });
 }
 
@@ -965,6 +992,13 @@ export type AccountLinkingMode = 'link' | 'block';
 export interface IssuerSettings {
   allowSignup: boolean;
   accountLinking: AccountLinkingMode;
+  /**
+   * `MACHINE_SCOPES` — what a machine client may be granted. Read-only: it is set in the
+   * issuer's environment, not here, so the settings PATCH does not take it.
+   */
+  machineScopes: string[];
+  /** Why `MACHINE_SCOPES` was refused, when it was — `machineScopes` is then empty. */
+  machineScopesError?: string;
 }
 
 export async function issuerSettings(): Promise<IssuerSettings> {
@@ -972,7 +1006,9 @@ export async function issuerSettings(): Promise<IssuerSettings> {
 }
 
 /** A partial patch: only the settings named are written, so one control cannot revert another. */
-export async function setIssuerSettings(patch: Partial<IssuerSettings>): Promise<IssuerSettings> {
+export async function setIssuerSettings(
+  patch: Partial<Pick<IssuerSettings, 'allowSignup' | 'accountLinking'>>,
+): Promise<IssuerSettings> {
   return admin('/settings', { method: 'PATCH', body: JSON.stringify(patch) });
 }
 

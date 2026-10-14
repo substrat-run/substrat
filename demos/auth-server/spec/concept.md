@@ -86,6 +86,18 @@ later read could return it even deliberately. `skip_consent` is a column now rat
   through the same sign-up route and is deliberately exempt, or a default install could never
   create anybody. Someone a relying party sent here can sign **up** and resume that authorize
   request, landing back at the application rather than on this dashboard.
+- **What a machine client may be granted.** `MACHINE_SCOPES` (scopes separated by spaces or
+  commas) is declared the same way and read on the same per-request rebuild, but the dashboard
+  only reads it: it is the operator's ceiling on unattended credentials, set where the issuer's
+  environment is. A **machine** application
+  (`client_credentials`, #2267) has no redirect URIs, consent or sign-in policy; it is stored as
+  the plugin's `web` type with `client_credentials` as its only grant, and its kind is fixed once
+  registered. Unset, no machine client can be registered or get a token. A sign-in scope
+  (`openid`, `profile`, `email`, `offline_access`) in the list refuses the whole list. The
+  token endpoint holds every request to the list as it is now, so a scope removed from it stops
+  being minted on the next request. Machine scopes are kept out of a person's sign-in: they
+  are stripped from every authorize request, and self-registered clients stay on the sign-in
+  scopes. They are advertised in discovery's `scopes_supported`.
 
 That SPA is **two surfaces behind one origin**, and the second is easy to miss: besides the
 dashboard it serves the issuer's own user-facing OIDC pages, `/login` and `/consent`. Those
