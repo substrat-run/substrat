@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { batchesOf, csvRows, inFileRows, mergeBatchResults, parseImportFile, unverifiedNotice } from '../app/src/user-import-file.js';
+import type { ImportOutcome } from '../src/user-import-wire.js';
 
 /**
  * The browser half of "Import users": a dropped file → the import body. The server holds
@@ -127,8 +128,8 @@ it('reads a spelling other than 1/true/yes as not verified — which is why the 
 });
 
 it('sums every count across the real run’s batches, the unverified ones included', () => {
-  const created = (id: string, emailVerified: boolean | null) =>
-    ({ id, outcome: 'created', password: false, accounts: [], skippedAccounts: [], emailVerified }) as const;
+  const created = (id: string, emailVerified: boolean | null): ImportOutcome =>
+    ({ id, outcome: 'created', password: false, accounts: [], skippedAccounts: [], emailVerified });
   const merged = mergeBatchResults([
     {
       dryRun: false,
