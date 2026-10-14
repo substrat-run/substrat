@@ -39,6 +39,7 @@ export * from './idempotency.js';
 export * from './connections.js';
 export * from './connection-health.js';
 export * from './control-plane.js';
+export * from './lake.js';
 export * from './findings.js';
 export * from './permission.js';
 export * from './impersonation.js';

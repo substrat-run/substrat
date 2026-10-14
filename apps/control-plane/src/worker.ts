@@ -87,6 +87,8 @@ import {
   createCfDoNamespaceReader,
   createR2AccessLogSink,
   createPipelinesEventSink,
+  createR2SqlEngine,
+  type LakeQueryEngine,
   createR2BackupStore,
   createR2DirectoryBackupStore,
   backupDirectoryIfDue,
@@ -269,6 +271,18 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * above, and the reason a deployment that ships nowhere is a supported one.
    */
   SUBSTRAT_OUTBOX_STREAM?: { send(records: readonly Record<string, unknown>[]): Promise<unknown> };
+  /**
+   * Reads the Tier-2 lake with R2 SQL (#1334) — an R2 "Admin Read only" token scoped to the
+   * lake bucket, pushed by `scripts/secrets.mjs`. Read-only on purpose; the catalog's write
+   * token never reaches a worker.
+   */
+  R2_SQL_TOKEN?: string;
+  /**
+   * The lake's bucket — `LAKE.bucket` in `scripts/lake-provision.mjs`. Deliberately NOT a
+   * checked-in var yet: the R2 SQL client has not been run against the real lake, so the
+   * gateway stays off (its route 501s) until an operator has smoke-tested it and sets this.
+   */
+  LAKE_BUCKET?: string;
   /** Shared secret a connected vertical presents (x-service-token) to register. */
   SERVICE_TOKEN?: string;
   /**
@@ -620,6 +634,15 @@ function platformRuntimeFor(env: Env): PlatformRuntime | undefined {
  * Same credential slot as the WfP uploader (Workers scripts read); absent ⇒ the route 501s
  * and the console keeps the list-level link.
  */
+/**
+ * The Tier-2 lake's query engine (#1334). All three of the account, the read-only token and
+ * the bucket, or nothing — and nothing is what keeps `GET …/lake/events` answering 501.
+ */
+function lakeQueryFor(env: Env): LakeQueryEngine | undefined {
+  if (!env.CF_ACCOUNT_ID || !env.R2_SQL_TOKEN || !env.LAKE_BUCKET) return undefined;
+  return createR2SqlEngine({ accountId: env.CF_ACCOUNT_ID, bucket: env.LAKE_BUCKET, token: env.R2_SQL_TOKEN });
+}
+
 function doNamespacesFor(env: Env): DoNamespaceReader | undefined {
   if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
   return createCfDoNamespaceReader({ accountId: env.CF_ACCOUNT_ID, apiToken: env.CF_API_TOKEN });
@@ -2689,6 +2712,8 @@ export default {
         fetchVerticalAsset: fetchVerticalAssetFor(env),
         patchScriptBindings: patchScriptBindingsFor(env),
         observability: observabilityFor(env),
+        // #1334: the lake's query engine. Absent unless fully configured ⇒ the lake route 501s.
+        lakeQuery: lakeQueryFor(env),
         // #605: the same connector closure the dispatch and the sweep already use, in its
         // third role — answering FOR a connection instead of acting through one. The
         // control plane is the only place that can: it holds the directory, the secret

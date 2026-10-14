@@ -258,6 +258,11 @@ export {
 // The same seam's Pipelines shape — kernel-design §5.3's Cloudflare row for event
 // transport. Which one a deployment binds is its choice; the drain never learns.
 export { createPipelinesEventSink } from './pipelines-sink.js';
+// #1334 — the lake's query engine seam, and its R2 SQL row. The gateway that scopes every
+// read to one tenant stays inside the API; a host only chooses the engine.
+export type { LakeQueryEngine } from './lake-gateway.js';
+export { createR2SqlEngine } from './r2-sql-engine.js';
+export type { R2SqlEngineOptions } from './r2-sql-engine.js';
 // #40 — the scheduled directory copy. Exported as a function the CP worker's cron calls,
 // not as a route with a timer behind it: this package stays library-only, exactly as the
 // platform-request drain does (the recurrence has to come from a deployment, #444).

@@ -178,11 +178,18 @@ from a version later found to be faulty.
 
 Here is what **is not built**, stated where you would otherwise assume it was:
 
-- **No query gateway.** Nothing in the product runs R2 SQL on anyone's behalf. A tenant cannot
-  query its own lake rows, and no dashboard or console view is backed by the lake. Today the
-  lake is queried by whoever holds read credentials for the bucket, which means operators.
-- **No tenant scoping on reads.** Every tenant's events share one table, and the sink cannot
-  partition, so a tenant-scoped read would have to be enforced by the missing gateway.
+- **A gateway exists, and it is off.** `GET /tenants/:tenantId/lake/events` on the control
+  plane reads one tenant's events, newest first, filtered by scope, type, entity, actor,
+  operation, version, impersonation and time window. The tenant comes only from the path:
+  the filters have no tenant field and unknown keys are refused, the gateway writes
+  `tenant_id = '<that tenant>'` as the first condition of every query and builds the SQL
+  itself from a closed list of columns, and an answer that holds any row of another tenant is
+  refused whole. It returns the envelope only: no payload, subject, authorization chain or
+  impersonation record, because of the next point. Every read writes an access-log row before
+  anything is returned. It is staff only, and it answers 501 until an operator configures it:
+  its R2 SQL client has not yet been run against the real lake. The console and the dashboard
+  do not call it yet, so a tenant still cannot query its own lake rows. Until it is switched on, the lake is
+  queried, as before, by whoever holds read credentials for the bucket, which means operators.
 - **No erasure in the lake.** Payloads ship as they are in the outbox, with `subject_id`
   alongside. That column exists so "delete every row for this subject" can be expressed as a
   query, but nothing runs it yet. Erasure is handled in Tier 1. **Until lake erasure is built,

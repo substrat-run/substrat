@@ -6,6 +6,7 @@ import {
   withLabel,
   RESERVED_LABEL_SEPARATOR,
   adminAction,
+  lakeEventsInput,
   ownerTransferInput,
   memberInviteInput,
   memberRoleInput,
@@ -234,6 +235,8 @@ import type {
 import { backupDirectoryIfDue } from './directory-backup.js';
 import { deployedDoClasses, platformSweeperDecision } from './platform-entry.js';
 import { STORAGE_PAGE_DEFAULT, STORAGE_PAGE_MAX, readStoragePage } from './storage-meter.js';
+import { queryLakeEvents, type LakeQueryEngine } from './lake-gateway.js';
+import { LakeQueryError } from './r2-sql-engine.js';
 import {
   isCustomHostname,
   validateBindableHostname,
@@ -473,6 +476,12 @@ export interface ControlPlaneApiOptions {
    * means forgetting that costs a feature, never a leak.
    */
   observability?: ObservabilityReader;
+  /**
+   * The Tier-2 lake's query engine (#1334), host-injected like `observability` so this
+   * package holds no lake credential. Absent ⇒ `GET /tenants/:tenantId/lake/events` 501s.
+   * Every read goes through `lake-gateway.ts`, which is what scopes it to one tenant.
+   */
+  lakeQuery?: LakeQueryEngine;
   /**
    * Per-provider connection **inspectors** (#605), keyed by provider slug — what makes
    * an integration something an operator can interrogate rather than trust.
@@ -5769,6 +5778,47 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       countOnly: true,
     });
     return c.json({ redrainable, drainedBefore: parsed.data.drainedBefore });
+  });
+
+  // #1334 — one tenant's events from the Tier-2 lake, through the gateway that scopes them
+  // (`lake-gateway.ts`): the tenant is this path segment and nothing else, the filters are a
+  // closed `.strict()` list with no tenant in it, and a row of any other tenant fails the
+  // read whole. Envelope only — no payload until erasure reaches the lake.
+  //
+  // Staff only, by default-deny: on neither BUILDER_ROUTES nor TENANT_ROUTES. A tenant's
+  // own credential reaching this is a separate decision, with a dashboard call site and a
+  // member permission in front of it.
+  //
+  // K-24: the access row is written AFTER the engine answers and BEFORE anything is
+  // returned, and a failed write fails the request — rows whose disclosure went unrecorded
+  // are what the access log exists to prevent. A refused or failed query discloses nothing
+  // and leaves no row.
+  app.get('/tenants/:tenantId/lake/events', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    if (!options.lakeQuery) {
+      return c.json({ error: 'the Tier-2 lake is not queryable on this control plane' }, 501);
+    }
+    const parsed = lakeEventsInput.safeParse(c.req.query());
+    if (!parsed.success) {
+      return c.json({ error: 'invalid lake query', issues: parsed.error.issues.map((i) => ({ path: i.path, message: i.message })) }, 400);
+    }
+    let page;
+    try {
+      page = await queryLakeEvents(options.lakeQuery, tenantId, parsed.data);
+    } catch (err) {
+      if (err instanceof LakeQueryError) return c.json({ error: err.message }, 502);
+      throw err;
+    }
+    // The filters, not the page: the same projection every other read logs.
+    const { cursor: _cursor, limit: _limit, ...filters } = parsed.data;
+    await c.var.admin.recordDelegatedRead(c.get('actor'), {
+      method: 'lakeEvents',
+      tenantId,
+      scopeId: parsed.data.scopeId ?? null,
+      params: filters,
+      resultCount: page.events.length,
+    });
+    return c.json(page);
   });
 
   app.post('/tenants/:tenantId/scopes/:scopeId/reap', async (c) => {
