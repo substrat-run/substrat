@@ -7,6 +7,7 @@ import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
 import { scopeDumpTable } from './introspection.js';
 import { substratError } from './errors.js';
+import { STORE_KIND_ID } from './script-names.js';
 import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
 
 // The deploy manifest is the JSON part a `substrat push` sends alongside the
@@ -349,15 +350,19 @@ const storeCatalogOperation = storeOperationName.refine((name) => !name.startsWi
     message: 'a catalog operation cannot use the substrat. prefix — those names are the platform’s',
   });
 
+/** A store kind id: `[a-z0-9]+` (RFC scope-stores §10.7, L20). Part of every store script name. */
+export const storeKindId = z.string().regex(STORE_KIND_ID, { message: 'a store kind id is [a-z0-9]+' });
+
 /**
- * A store kind, pinned the way a connector is: an exact release, the script and class
+ * A store kind, pinned the way a connector is: an exact release, the class
  * the platform runs, the catalog a vertical may call, and every reserved operation.
  * The list itself is {@link STORE_KINDS}. Empty until a kind is reviewed in.
  */
 export const storeKindRegistration = z.object({
-  kind: z.literal('graph'),
+  // Held to the kind-id grammar first (L20), so a second kind cannot be added outside it.
+  kind: storeKindId.pipe(z.literal('graph')),
   release: z.string().min(1),
-  script: z.string().min(1),
+  // No script name: the platform names the upload `scopeStoreScriptName(vertical, kind)`.
   className: z.string().min(1),
   operations: z.array(storeCatalogOperation),
   platformOperations: z.array(z.enum(RESERVED_STORE_OPERATIONS)).refine(
@@ -408,8 +413,8 @@ export function mayHoldScopeStores(
 
 /**
  * A platform-run object, one per scope (#2207). The builder names the binding and the
- * kind. The kind has no default. The platform injects `SUBSTRAT_STORE_<BINDING>` at
- * push; the vertical never writes that binding.
+ * kind. The kind has no default. A scope store adds no binding to the vertical's upload
+ * (RFC scope-stores §10.7, L1): the vertical reaches it only through the platform's hop.
  */
 export const scopeStoreNeed = z.object({
   binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
@@ -611,10 +616,11 @@ function isPerTenantRuntimeName(name: string, binding: string): boolean {
  *
  * A static wrangler binding is compared to the name that lands on the worker,
  * not to the declaration. An own store's durable-object binding IS that store,
- * so passing it again counts the name twice; {@link storeNamesOfBindings} omits it. A
- * per-tenant store is injected as `BINDING__<tenant>`, and a scope store as
- * `SUBSTRAT_STORE_<BINDING>`. A static binding spelled `DB` or `GRAPH` is not
- * either of those.
+ * so passing it again counts the name twice; push omits those names. A
+ * per-tenant store is injected as `BINDING__<tenant>`. A scope store is not bound
+ * on a hosted worker at all; `SUBSTRAT_STORE_<BINDING>` is the name a dev or test
+ * host binds it under, so a static binding of that name is refused here as the
+ * store's runtime name. A static binding spelled `DB` or `GRAPH` is neither of those.
  */
 export function assertStoreBindingsDistinct(input: {
   readonly own?: readonly { binding: string }[];
@@ -1656,8 +1662,9 @@ export const deployManifest = z.object({
   /** Per-tenant blob stores (#473) — same carry-for-provisioning rule as `tenantStores`:
    *  never a static binding; the platform mints one bucket per tenant and injects it. */
   blobStores: z.array(blobStoreNeed).default([]),
-  /** Platform-run objects, one per scope (#2207). Never a static binding: the platform
-   *  injects `SUBSTRAT_STORE_<BINDING>` for a registered kind and refuses the rest. */
+  /** Platform-run objects, one per scope (#2207). Never a binding on the vertical's upload
+   *  (L1): the vertical reaches one only through the platform's hop. An unregistered kind is
+   *  refused. */
   scopeStores: z.array(scopeStoreNeed).default([]),
   /** The vertical's static files (#340): routing config + the full path/hash/size/type
    *  manifest. Never a binding — native assets are a top-level upload path, so they do not

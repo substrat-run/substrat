@@ -182,7 +182,7 @@ import { createPseudonymizer } from './pseudonymize.js';
 import { openDump, sealDump, type SubjectSealer } from './seal.js';
 import {
   assertSandboxContract,
-  scopeStoreScriptBindings,
+  verticalUploadBindings,
   deployManifest,
   storedDeployManifest,
   pushedPermissionRegistry,
@@ -357,8 +357,9 @@ export interface ControlPlaneApiOptions {
    */
   resolveVerticalRef?: (deploymentRef: string) => Promise<VerticalClient | undefined>;
   /**
-   * The registered scope-store kinds (#2207) this control plane injects at a serving upload
-   * and judges subject erasure against (#2242). `STORE_KINDS` unless a test registers one.
+   * The registered scope-store kinds (#2207) this control plane judges subject erasure and
+   * scope-store copies against (#2242). An upload binds no store (L1), so nothing here is
+   * injected into a vertical's script. `STORE_KINDS` unless a test registers one.
    */
   storeKinds?: readonly StoreKindRegistration[];
   /** #1722: how long a copy move owns its ledger entries, and so how long its restore may land
@@ -7404,7 +7405,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         compatibilityFlags: manifest.compatibilityFlags,
         modules,
         doClasses,
-        bindings: [...manifest.bindings, ...storeBindings, ...scopeStoreScriptBindings(manifest.scopeStores, options.storeKinds ?? STORE_KINDS)],
+        // #2210: a declared scope store adds no binding to either upload (L1), held at both call
+        // sites with a kind registered by upload-scope-store-bindings.test.ts.
+        bindings: verticalUploadBindings({ vertical: slug, manifest, platformBindings: storeBindings }),
         // #1242: the version now being served, injected as `SUBSTRAT_VERSION_ID` so the
         // scope host stamps the signals `version` dimension. The serving script is one
         // stable script updated in place, so this refresh is what keeps the binding
@@ -7977,7 +7980,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         compatibilityFlags: manifest.compatibilityFlags,
         modules,
         doClasses: manifest.doClasses,
-        bindings: manifest.bindings,
+        bindings: verticalUploadBindings({ vertical: slug, manifest, platformBindings: [] }),
         // #1242: the freshly minted version id — this archive script IS that version,
         // and a preview routed at it stamps the signals `version` dimension honestly.
         versionId: id,

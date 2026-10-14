@@ -37,7 +37,6 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
   const graph: StoreKindRegistration = {
     kind: 'graph',
     release: '0.0.0-test',
-    script: 'store-graph',
     className: 'GraphStore',
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],

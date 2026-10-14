@@ -1,5 +1,6 @@
 import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { defineConfig } from 'vitest/config';
+import { signedStoreFixtureWorker } from './test/signed-store-fixture.js';
 
 export default defineConfig({
   // `process.env` inside workerd is not the runner's, so an opt-in from the environment is decided
@@ -12,7 +13,15 @@ export default defineConfig({
   // The contract suites carry state across `it` blocks (e.g. a guard write read back by a later
   // test), and the plugin never rolls storage back per test. Fresh scope/tenant ids per suite
   // (ulid) keep suites isolated.
-  plugins: [cloudflareTest({ wrangler: { configPath: './wrangler.jsonc' } })],
+  plugins: [
+    cloudflareTest({
+      wrangler: { configPath: './wrangler.jsonc' },
+      // #2210: the store is a second script. The key is its var, not the vertical's.
+      miniflare: {
+        workers: [signedStoreFixtureWorker],
+      },
+    }),
+  ],
   test: {
     include: ['test/**/*.test.ts'],
     passWithNoTests: true,
