@@ -114,15 +114,22 @@ async function registerMachine(cookie: string, scopes: string[], extra: Record<s
   return (await res.json()) as WireClient & { client_secret: string };
 }
 
-/** A `client_credentials` request, authenticated the RFC 6749 default way (HTTP Basic). */
-function token(clientId: string, secret: string, scope?: string): Promise<Response> {
+/**
+ * A `client_credentials` request, authenticated the RFC 6749 default way (HTTP Basic). `posted`
+ * also puts a `client_id` in the form, which RFC 6749 allows beside Basic only if it agrees.
+ */
+function token(clientId: string, secret: string, scope?: string, posted?: string): Promise<Response> {
   return call('/api/auth/oauth2/token', {
     method: 'POST',
     headers: {
       'content-type': 'application/x-www-form-urlencoded',
       authorization: `Basic ${btoa(`${encodeURIComponent(clientId)}:${encodeURIComponent(secret)}`)}`,
     },
-    body: new URLSearchParams({ grant_type: 'client_credentials', ...(scope ? { scope } : {}) }).toString(),
+    body: new URLSearchParams({
+      grant_type: 'client_credentials',
+      ...(scope ? { scope } : {}),
+      ...(posted ? { client_id: posted } : {}),
+    }).toString(),
   });
 }
 
@@ -445,6 +452,25 @@ describe('the token endpoint, for a machine client', () => {
     expect(((await res.json()) as { error?: string }).error).toBe('invalid_client');
   });
 
+  it('refuses a request that posts one client and authenticates as another', async () => {
+    const admin = await signIn();
+    const a = await registerMachine(admin, ['reports:read']);
+    const b = await registerMachine(admin, ['billing:write']);
+    // With and without a scope: the identity is ambiguous either way, so no default is chosen.
+    for (const scope of [undefined, 'billing:write']) {
+      const res = await token(b.client_id, b.client_secret, scope, a.client_id);
+      expect(res.status, String(scope)).toBe(400);
+      expect(((await res.json()) as { error?: string }).error).toBe('invalid_client');
+    }
+  });
+
+  it('accepts a posted client_id that agrees with Basic', async () => {
+    const b = await registerMachine(await signIn(), ['billing:write']);
+    const res = await token(b.client_id, b.client_secret, undefined, b.client_id);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { scope?: string }).scope).toBe('billing:write');
+  });
+
   it('works again after its secret is rotated, and only with the new one', async () => {
     const admin = await signIn();
     const machine = await registerMachine(admin, ['reports:read']);
@@ -556,12 +582,32 @@ describe('which client a token request claims to be', () => {
   const assertion = (payload: unknown) => `${b64url({ alg: 'ES256' })}.${b64url(payload)}.sig`;
   const basic = (id: string) => new Headers({ authorization: `Basic ${btoa(`${encodeURIComponent(id)}:s`)}` });
 
-  it('reads the posted id, then Basic, then a private_key_jwt assertion’s sub', () => {
-    expect(tokenRequestClientId({ body: { client_id: 'posted' }, headers: basic('basic') })).toBe('posted');
+  it('reads the posted id, Basic, or a private_key_jwt assertion’s sub, whichever is present', () => {
+    expect(tokenRequestClientId({ body: { client_id: 'posted' } })).toBe('posted');
     expect(tokenRequestClientId({ body: {}, headers: basic('basic') })).toBe('basic');
     expect(tokenRequestClientId({ body: { client_assertion: assertion({ sub: 'asserted', iss: 'asserted' }) } })).toBe(
       'asserted',
     );
+  });
+
+  it('says the identities conflict when two presentations name different clients', () => {
+    const conflict = 'conflict';
+    expect(tokenRequestClientId({ body: { client_id: 'posted' }, headers: basic('basic') })).toBe(conflict);
+    expect(tokenRequestClientId({ body: { client_id: 'posted', client_assertion: assertion({ sub: 'asserted' }) } })).toBe(
+      conflict,
+    );
+    expect(
+      tokenRequestClientId({ body: { client_assertion: assertion({ sub: 'asserted' }) }, headers: basic('basic') }),
+    ).toBe(conflict);
+  });
+
+  it('agrees when they all name the same client, and ignores Basic it cannot decode', () => {
+    expect(tokenRequestClientId({ body: { client_id: 'same' }, headers: basic('same') })).toBe('same');
+    expect(tokenRequestClientId({ body: { client_id: 'same', client_assertion: assertion({ sub: 'same' }) } })).toBe(
+      'same',
+    );
+    const malformed = new Headers({ authorization: 'Basic !!!' });
+    expect(tokenRequestClientId({ body: { client_id: 'posted' }, headers: malformed })).toBe('posted');
   });
 
   it('claims nobody from nothing, or from an assertion it cannot read', () => {

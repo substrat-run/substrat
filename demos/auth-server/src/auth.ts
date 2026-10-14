@@ -357,19 +357,34 @@ async function withoutMachineScopes(
  * before the plugin verifies anything, which is fine for the one use it has: choosing whose
  * stored scopes to narrow. A claim that is false fails the plugin's own authentication next.
  *
+ * When two presentations name DIFFERENT clients the answer is `'conflict'`, never a pick: a
+ * request posting client A while authenticating as B would otherwise narrow B to A's stored
+ * scopes. RFC 6749 §2.3.1 and RFC 7523 §3 both require the posted `client_id` to agree with
+ * the credential, so a disagreement is a malformed request, refused before anything is read.
+ * Basic credentials that do not decode name nobody here, as before; the plugin refuses them.
+ *
  * Exported for its test: an assertion-authenticated client is the one a narrowing that read
  * only the first two presentations would have let through unnarrowed.
  */
-export function tokenRequestClientId(ctx: Pick<ScopeHookCtx, 'body' | 'headers'>): string | undefined {
+export function tokenRequestClientId(ctx: Pick<ScopeHookCtx, 'body' | 'headers'>): string | 'conflict' | undefined {
   const body = ctx.body as Record<string, unknown> | undefined;
-  if (typeof body?.client_id === 'string' && body.client_id) return body.client_id;
+  const posted = typeof body?.client_id === 'string' && body.client_id ? body.client_id : undefined;
   const basic = basicCredentialsOf(ctx.headers?.get('authorization'));
-  if (basic && basic !== 'malformed') return basic.clientId;
-  if (typeof body?.client_assertion !== 'string') return undefined;
+  const claimed = new Set(
+    [posted, basic && basic !== 'malformed' ? basic.clientId : undefined, assertionSubject(body?.client_assertion)].filter(
+      (id): id is string => id !== undefined,
+    ),
+  );
+  if (claimed.size > 1) return 'conflict';
+  return [...claimed][0];
+}
+
+/** A `private_key_jwt` assertion's `sub`, unverified — or undefined when it has none to read. */
+function assertionSubject(assertion: unknown): string | undefined {
+  if (typeof assertion !== 'string') return undefined;
   try {
-    const payload = body.client_assertion.split('.')[1] ?? '';
-    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
-    const sub = (JSON.parse(json) as { sub?: unknown }).sub;
+    const payload = assertion.split('.')[1] ?? '';
+    const sub = (JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as { sub?: unknown }).sub;
     return typeof sub === 'string' && sub ? sub : undefined;
   } catch {
     return undefined;
@@ -396,13 +411,15 @@ async function machineGrantCeiling(ctx: ScopeHookCtx, machineScopes: readonly st
   const refuse = (error: string, error_description: string) =>
     new APIError('BAD_REQUEST', { error, error_description });
   if (!machineScopes.length) throw refuse('unauthorized_client', 'this issuer grants no machine scopes');
+  // Before the scope is looked at, so an ambiguous identity is refused whether or not it asked.
+  const clientId = tokenRequestClientId(ctx);
+  if (clientId === 'conflict') throw refuse('invalid_client', 'the client_id does not match the client credentials');
   const asked = scopeList(typeof body.scope === 'string' ? body.scope : undefined);
   if (asked) {
     const outside = asked.filter((s) => !machineScopes.includes(s));
     if (outside.length) throw refuse('invalid_scope', `The following scopes are invalid: ${outside.join(', ')}`);
     return;
   }
-  const clientId = tokenRequestClientId(ctx);
   // Fail closed: with no client to read, the stored scopes cannot be narrowed, and letting the
   // request through would let the plugin mint all of them.
   if (!clientId) throw refuse('invalid_client', 'client authentication is required');
