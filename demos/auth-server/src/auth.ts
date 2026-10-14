@@ -513,6 +513,15 @@ function betterAuthFor(deps: AuthDeps) {
         // forced.
         allowPublicClientPrelogin: true,
         /**
+         * How long a login page stays usable: the plugin signs the authorize query with an `exp`
+         * of `codeExpiresIn`, and every sign-in step that carries it (password, SMS, BankID)
+         * is refused as `invalid_signature` after that. Ten minutes — the default — is too
+         * short for a first-time phone enrolment (type a number, wait for the SMS, find the
+         * code). The same option is the authorization code's lifetime, which is single-use and
+         * PKCE-bound, so the cost of a longer window is a longer-lived unspent code.
+         */
+        codeExpiresIn: 30 * 60,
+        /**
          * RESOURCE INDICATORS (RFC 8707), for the MCP endpoint every vertical mounts (#1619).
          *
          * A token for a `resource` is minted only if an `oauth_resource` row names it. Here

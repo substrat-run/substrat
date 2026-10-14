@@ -17,7 +17,9 @@ export const phonePlugin = (verifier: PhoneVerifier | undefined) => ({
       return ctx.json({ available: Boolean(verifier), enrolled: Boolean(user.phoneNumber), emailVerified: user.emailVerified, suffix: user.phoneNumber?.slice(-4) ?? null });
     }),
     phoneSend: createAuthEndpoint('/phone/send', {
-      method: 'POST', use: [sessionMiddleware], body: z.object({ phoneNumber: phoneNumber.optional() }),
+      method: 'POST', use: [sessionMiddleware], // `oauth_query` is declared so the oauthProvider before-hook (which reads it off ANY body) is
+      // what refuses an expired sign-in here — before an SMS is paid for, not after.
+      body: z.object({ phoneNumber: phoneNumber.optional(), oauth_query: z.string().optional() }),
     }, async (ctx) => {
       if (!verifier) throw new APIError('SERVICE_UNAVAILABLE', { message: 'SMS verification is not configured' });
       const { session, user } = ctx.context.session;
