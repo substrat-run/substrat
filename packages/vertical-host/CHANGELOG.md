@@ -1,5 +1,51 @@
 # @substrat-run/vertical-host
 
+## 0.147.0
+
+### Minor Changes
+
+- d5a7045: Smaller MCP tool results. A result is now sent once, as compact JSON in the text block, where it used to be sent twice (a text block and `structuredContent`) and indented. A read whose output names its columns also takes an optional `fields` argument that keeps only those columns of each entry; an unknown name is refused in-band with the valid ones listed.
+- 7a1ab65: An app that keeps no owner of record (no `resolveOwner` hook) now receives what each new version declares on its existing installs. Until now its reconcile answered 501, so an install provisioned before a version that adds a peer, a schedule or a connection grant never received it, and a peer's calls stayed refused.
+
+  The platform's reconcile and `substrat scope provision` now ask for the ownerless reconcile (`ownerless: 'seat'`). The vertical seats only the tuples its running version declares: schedule grants, peer permissions, and the connection grants the platform delivers. It also re-applies the switches the platform recorded off. It changes nothing else. It writes no owner, leaves roles, entitlements, identity links and sealing keys as they are, and reconciles no entity-grant shapes. It answers `owner: null`. `substrat scope provision` then says the owner was not re-sourced, and that a locked-out owner is not repaired by it. An app that keeps an owner of record but has none for the install still answers 409, and is retried until the record exists. An entitlements delivery does not ask for the ownerless reconcile and is refused as before. `adapter-cloudflare` adds `seatScopeLocal`, which only seats a scope already provisioned for that tenant.
+
+  The console's "Re-run provisioning" says the same when no owner was re-sourced. The "What this app calls" panel now names the second reason a target can grant an app nothing: its install predates the version that declares the app as a peer.
+
+- 4d14a81: Subject erasure reaches scope stores. `shredSubject` calls `substrat.erase` after the scope-side redaction and before the subject key is destroyed, so a store that errors leaves the key and a retry converges. The receipt gains `storeErasures`. An orchestrated erasure calls the stores once, through the platform's own path to the store script, and passes that result into `finalizeSubjectShred`.
+
+  Erasure fails closed (#2242). A scope that may hold a store has its stores erased, and one whose stores cannot be named or reached refuses the erasure (503) with the key kept. A Cloudflare host with no control plane, a store binding and no `scopeStores.vertical` refuses `unavailable` instead of answering an empty list. The control plane's rule is gated on the store-kind registry, so while no kind is registered erasure proceeds as before. `ControlPlaneApiOptions.storeKinds` names the registry a control plane judges against (`STORE_KINDS` by default).
+
+- 1ce756e: An invocation line names the scope-store calls a request made: the binding, the operation, whether it succeeded, and how long it took. The vertical passes nothing. The platform runs each request in an `AsyncLocalStorage`, and a store stub reads the request's record from there. An observer passed to `getScopeStore` still wins, and a call made outside a request is neither logged nor refused. The input is not on the line, and neither is the store's error body. A request that made none keeps the line it had. A request that made more than 16 has its first 16 named and the rest counted in `storeCallsDropped`.
+
+  A store operation name is now a fixed label: no `@`, no whitespace, no `:`, at most 64 characters (`storeOperationName`). The door refuses any other name before the call, so it never reaches a line. A kind's catalog is held to the same rule.
+
+  The platform entry imports `node:async_hooks`. A wrapped script that has neither `nodejs_als` nor `nodejs_compat` is uploaded with `nodejs_als` appended to its flags. A script that opts out with `no_nodejs_als` keeps its flags; with no `nodejs_compat` either, its line names no store calls.
+
+- b854efd: A scope dump carries its scope stores. `stores` lists each binding with its kind and opaque tables, and defaults to an empty list, so a dump from before stores still loads. On a host that runs its stores itself (the pure adapter, in dev and in tests), export, import, restore and snapshot carry them, and reap and fork delete wipe them before the scope's own storage goes. A restore refuses, before anything is written, a binding that is not bound, a store of another kind, and stores for a scope with no vertical. The scope's tables load before its stores. A backup copies the stores unsealed, and a masked export omits them.
+
+  Hosted, the control plane reaches the stores through its own path to the store script (#2254), never through the vertical. With no store kind registered it reaches none, and every copy runs as before.
+
+- 1ad1426: The platform can call a scope store's reserved operations. `substrat.size` answers `{ bytes }`, `substrat.erase` takes `{ subjectId }` and answers `{ erased }`, `substrat.export` answers `{ tables }`, `substrat.import` takes `{ tables }`, replaces the object and answers how many tables it wrote, and `substrat.wipe` answers `{}`. `callReservedStoreOperation` is the only caller, and it refuses any other name. `HostAdmin.scopeStoreSizes` reads each declared binding and writes the access log.
+- b4bb938: A restore re-erases tombstoned subjects from scope stores without ever refusing the restore. The replay reads the target scope's erasure marks and, when the source is a scope of the same tenant on this host, the source's too. When the source is unknown (another host's backup, an upload, a deleted snapshot), the restore still lands and returns `storeErasureIncomplete: true` with `storeErasureSourceUnknown: true`; the restore route answers `incomplete` and `sourceUnknown`. The result is present only when `storeErasuresReplayed > 0` or `storeErasureIncomplete`; absent means no erasure had to be replayed and none is missing, which is also what `restoreScope` returned before. The kernel exports `replayStoreErasures`, which both adapters and the control plane use. A hosted snapshot reports its fork's replay on its answer the same way. The restore route refuses, before any write, a dump store whose binding the destination's version does not declare or whose kind differs. The control plane now names a scope's stores from the version its script runs, through one resolver, `scopeStoresOf`, used for backup, full pull, the full tenant export, snapshot, reap, restore, erasure and the sweep. Before, an install on the serving pin was backed up, reaped, restored and erased without its store. The router's route read applies the same rule, and gives a scope pinned to a script other than the current serving one no store. A store list that cannot be resolved refuses with 503 once a store kind is registered (`mayHoldScopeStores` in contracts), and a hosted control plane with no route to the store scripts refuses rather than skips (`unreachablePlatformScopeStores`). A store-call validator is no longer duplicated: the store-call request uses contracts' `storeOperationName`, which also refuses whitespace other than a space. An orchestrated shred with no platform path to the stores no longer hands the host an empty erasure list, so a host with co-located stores erases them in the finalize, as its direct shred does. A vertical no longer serves `/internal/scope-store-sizes`, `/internal/scope-store-erase`, `/internal/scope-store-export` or `/internal/scope-store-import`, and `VerticalClient` loses `scopeStoreSizes`, `scopeStoreErase`, `scopeStoreExport` and `scopeStoreImport`: the control plane signs the object name and calls the store script itself, for size, erase, export, import and wipe, so the vertical holds neither the store namespace nor the key.
+
+### Patch Changes
+
+- Updated dependencies [9926c53]
+- Updated dependencies [8ff761c]
+- Updated dependencies [cb957bc]
+- Updated dependencies [cb957bc]
+- Updated dependencies [4d14a81]
+- Updated dependencies [5b1c20f]
+- Updated dependencies [1ce756e]
+- Updated dependencies [b854efd]
+- Updated dependencies [23840a7]
+- Updated dependencies [1ad1426]
+- Updated dependencies [b4bb938]
+- Updated dependencies [cb957bc]
+  - @substrat-run/contracts@0.147.0
+  - @substrat-run/kernel@0.147.0
+  - @substrat-run/model-providers@0.5.37
+
 ## 0.146.0
 
 ### Minor Changes

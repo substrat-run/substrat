@@ -1,5 +1,40 @@
 # @substrat-run/cli
 
+## 0.43.0
+
+### Minor Changes
+
+- cb957bc: A vertical can declare `scopeStores`: one platform-run object per scope, a binding plus a kind. The only kind is `graph`, and it has no default. A hosted upload carries no store binding: the vertical's calls go through the platform. A binding already used by another store is refused, and so is `ATTACHMENTS`. A kind with no registration is refused by the push and again by the control plane. No kind is registered yet, so declaring a scope store does not deploy one.
+
+### Patch Changes
+
+- 7a1ab65: An app that keeps no owner of record (no `resolveOwner` hook) now receives what each new version declares on its existing installs. Until now its reconcile answered 501, so an install provisioned before a version that adds a peer, a schedule or a connection grant never received it, and a peer's calls stayed refused.
+
+  The platform's reconcile and `substrat scope provision` now ask for the ownerless reconcile (`ownerless: 'seat'`). The vertical seats only the tuples its running version declares: schedule grants, peer permissions, and the connection grants the platform delivers. It also re-applies the switches the platform recorded off. It changes nothing else. It writes no owner, leaves roles, entitlements, identity links and sealing keys as they are, and reconciles no entity-grant shapes. It answers `owner: null`. `substrat scope provision` then says the owner was not re-sourced, and that a locked-out owner is not repaired by it. An app that keeps an owner of record but has none for the install still answers 409, and is retried until the record exists. An entitlements delivery does not ask for the ownerless reconcile and is refused as before. `adapter-cloudflare` adds `seatScopeLocal`, which only seats a scope already provisioned for that tenant.
+
+  The console's "Re-run provisioning" says the same when no owner was re-sourced. The "What this app calls" panel now names the second reason a target can grant an app nothing: its install predates the version that declares the app as a peer.
+
+- 8ff761c: The control plane now refuses a vertical's own durable-object binding that takes a per-tenant or scope store's name, as the push already did. Both use `storeNamesOfBindings`. A scope store's error envelope is read only with a status from 400 to 599, and a `StoreError` carries the store's body to a client only for a 4xx whose JSON is at most 1 KiB (`STORE_BODY_MAX_BYTES`). Both adapters start and stop scope-store runners through `scopeStoreLifecycleOf`. A retried start no longer starts a runner twice. `close` waits for a start in flight, so no runner starts after it, and then calls `stop` on every runner even when one throws, reporting several failures as an `AggregateError`. An own durable-object binding is also compared with the injected per-tenant and scope runtime names, as every static binding is.
+- 873d117: A restore or an import that carries scope stores is refused before any write when the destination scope runs a vertical other than the one the host is pinned to, or when a store in the dump names no kind. Before, the pin was checked only after the scope's tables had been replaced or the scope created, and a store with no kind skipped the kind check. A Cloudflare host with no control plane now exports, imports and wipes a scope's stores under the vertical it was given. Before, each of these refused because it read a directory the host does not have. None of the three is refused on a scope that is not active: a reap backs up and wipes an archived scope, and a snapshot or a full pull may copy a suspended one. `substrat scope pull` writes a pull that carries scope stores as the `.dump.json`, so restoring it restores the stores too, and removes a `.sqlite` an earlier pull of the same scope left. A `.sqlite` file holds only the scope's tables.
+- b854efd: `substrat scope restore` of a `.dump.json` sends the dump's scope stores back, and a full pull keeps a dump's `stores` where the host has them. A masked pull sends an empty store list, because those tables cannot be pseudonymized. A restore body that omits `stores` leaves the live stores untouched.
+- Updated dependencies [9926c53]
+- Updated dependencies [7a1ab65]
+- Updated dependencies [8ff761c]
+- Updated dependencies [cb957bc]
+- Updated dependencies [cb957bc]
+- Updated dependencies [4d14a81]
+- Updated dependencies [5b1c20f]
+- Updated dependencies [1ce756e]
+- Updated dependencies [b854efd]
+- Updated dependencies [23840a7]
+- Updated dependencies [b854efd]
+- Updated dependencies [1ad1426]
+- Updated dependencies [b4bb938]
+  - @substrat-run/contracts@0.147.0
+  - @substrat-run/boundary-lint@0.8.0
+  - @substrat-run/control-plane-client@0.1.12
+  - @substrat-run/model-view@0.2.51
+
 ## 0.42.0
 
 ### Minor Changes
