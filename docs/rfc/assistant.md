@@ -222,8 +222,23 @@ forks an engine: a vertical composes the engine and adds its own persona and ren
 authenticated principal ([mcp.ts](../../packages/vertical-host/src/mcp.ts)). The in-app
 assistant should reuse that derivation and that call path, so there is one list of "what can
 be done and who may do it". The MCP door stays for Claude and others; the assistant is the
-second door onto the same operations. (I read the header and exports, not the full invocation
-path; §15.)
+second door onto the same operations.
+
+What reading `mountMcp` end to end (P0) showed, and what it changes here:
+
+- **The tool list is static.** `mcpToolsOf(operations)` is derived from declarations fixed at
+  deploy. `tools/list` is deliberately **not** filtered by what the caller may do: the file
+  says why (ticket0 routes 59 operations and its admin role holds 16 of its 19 permission
+  keys, so a permission filter would remove almost nothing), and that `ScopeStub` has no way
+  to read a principal's keys (connectors have `grants()`; a stub does not). Curation is
+  `mcp: false` per operation today, and per-consumer scoping later (#111).
+- **A call is `stub.invoke(operation, input)` on a stub resolved per request.** The principal
+  is the stub's, so authority is the user's by construction, and a refusal is returned
+  **in-band** (`isError`) for the model to read. A 401 is the one error that is not swallowed.
+- **So the assistant's curation is the explicit `assistant.expose` opt-in (§6.1), not a
+  permission filter.** Fifty-nine tools in a prompt is also a cost and an accuracy problem, not
+  only a safety one. The derivation and call path are reusable as they are; the default is
+  inverted (MCP is on unless `mcp: false`; the assistant is off unless exposed).
 
 ## 5. The parts
 
@@ -290,9 +305,32 @@ derivation from operations; context assembly (§7); and the handoff.
    assistant fits that mechanism; it looks like a natural first non-trivial kind.
 3. **Cloudflare's `AIChatAgent` in the vertical's worker.** Rejected in §3.1.
 
-I recommend prototyping 1 and 2 against measured criteria (time to first token, survive a
-disconnect mid-turn, hibernation behaviour, cost at idle) before choosing. The protocol in
-§5.1 is identical either way, so the choice does not leak to clients.
+**P0 ran both** ([spikes/assistant-thread/FINDINGS.md](../../spikes/assistant-thread/FINDINGS.md),
+local workerd, a scripted model). What it showed:
+
+- **The placement is not the load-bearing choice.** A record with a single-writer lease and
+  fencing, plus a loop that decides its next step from the record, made both placements pass
+  every correctness assertion with the same loop code: exact resume after a disconnect,
+  approvals bound to an input digest, recovery of a run cut off mid-step, one turn started
+  when two sends race. Build those first and the placement can change later without touching
+  the engine, the protocol or the clients.
+- **Option 2 is the better coordinator, for product reasons.** A reply that arrives from
+  outside any user request (a human agent answering after a handoff) has nowhere to be pushed
+  from in option 1 except a client polling the record, which lagged 57 to 91 ms at the median
+  against about 0 for a push. A run that dies with nobody watching stays dead in option 1 until
+  the user returns, and was finished by the object's own alarm in option 2 (2.7 to 2.8 s, no
+  client). And the documentation caps `waitUntil` at 30 s after the client leaves, which a
+  multi-tool turn can exceed; that cap did **not** reproduce locally, so it rests on the docs
+  until P0b.
+- **Option 1 is a legitimate first step** for short turns with no human participant, because
+  it needs no new object and the loop is the same.
+- **Recommendation:** placement-agnostic loop and record in P1, option 2 as the live
+  coordinator, option 1 as the fallback shape and not a second implementation. Confirm it
+  deployed (P0b) before relying on it.
+
+The protocol in §5.1 is identical either way, so the choice does not leak to clients. How a
+vertical is given the object (a scope-store kind, or a class the uploader supplies as it does
+for the scope sweeper) is still open.
 
 ### 5.4 Inference
 
@@ -372,8 +410,15 @@ exists.
 
 Tools are the vertical's operations. The host invokes each as the signed-in user's principal.
 The assistant therefore needs no permission model of its own: the user's role is the ceiling.
-`tools/list` for a thread contains only operations the user may call, so the model is not even
-offered what it cannot do, and a denied call is still refused by the operation itself.
+A call the user may not make is refused by the operation itself and comes back in-band for the
+model to read, as it does over MCP today.
+
+What the model is **offered** is the set of operations declared `assistant.expose`, which is a
+curation decision made per operation in the model and reviewed in the PR. Narrowing that set
+further by what *this* user may call would be a least-privilege floor and would shrink the
+prompt, but it needs a read of a principal's grants that `ScopeStub` does not have today
+(§4.1). It is worth adding for a narrow role (a customer or a trainee) and buys little for an
+admin; it is an open item, not something this design assumes.
 
 An operation opts in, in the model:
 
@@ -690,9 +735,9 @@ is the real critical path.
 
 ## 15. What I could not verify
 
-- **`mountMcp`'s invocation path.** I read its header and export list, not the whole file. The
-  claim that the assistant can reuse tool derivation and the call path as the user needs a
-  careful read before P1.
+- **`mountMcp`'s invocation path** was read end to end in P0 and §4.1 is corrected from it.
+  Not yet checked: the cost of a real `stub.invoke` of an engine operation (permission check,
+  events, outbox) against the spike's raw log append, which is the P0b measurement.
 - **ticket0's conversation entities.** I did not read `spec/model.ts` for how a mirrored thread
   maps onto them; the mirror design depends on it.
 - **Scope-store fit.** I read the opening of [scope-stores.md](scope-stores.md) only.
@@ -713,9 +758,10 @@ is the real critical path.
 
 1. **Wire format.** Own a Zod schema shaped like the AI SDK's `UIMessage` parts and adapt at the
    edge (recommended), or adopt the AI SDK's types directly, or adopt AG-UI.
-2. **Where a live thread runs.** Request plus `waitUntil`, a Durable Object per thread (a
-   scope-store kind), or both behind one protocol. Recommendation: prototype 1 and 2, decide on
-   measured resume behaviour and idle cost.
+2. **Where a live thread runs.** P0 (local) recommends a Durable Object per thread as the live
+   coordinator over a placement-agnostic loop and record, with request plus `waitUntil` as the
+   fallback shape (§5.3). Deployed confirmation (P0b) is owed, as is how the object is provided
+   to a vertical: a scope-store kind, or a class the uploader supplies.
 3. **Engine name and scope.** `engine-assistant` (recommended, to avoid colliding with ticket0's
    own "conversation"), and whether participants and handoff belong in it or in a vertical's
    side table.
@@ -749,7 +795,7 @@ is the real critical path.
 
 | Phase | Work | Exit |
 |---|---|---|
-| P0 | Spike: the loop, stream and resume on both placements against the training-plan app; measure first-token time, reconnect, idle cost, bundle size | Q1 and Q2 answered with numbers |
+| P0 | **Done locally** (`spikes/assistant-thread`): the loop, stream and resume on both placements, with a scripted model on local workerd. **P0b, deployed and with a real model, is still owed**: the 30 s cap, eviction, first-token time, the real append, idle cost | Q2 answered for correctness; P0b answers the rest |
 | P1 | `contracts` schema; `engine-assistant`; `mountAssistant`; `assistant-client`; the scenario driver and fake model; first evals | A scripted coach conversation passes in the vertical's suite, including permission, approval-digest and injection cases |
 | P2 | `<substrat-assistant>` and the React wrapper; first consumer behind a flag | §10 acceptance run passes on the first consumer |
 | P3 | Second consumer (CRM); memory with the view-and-delete UI | Acceptance run passes; erasure test removes memory and derived summaries |
