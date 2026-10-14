@@ -4,10 +4,12 @@
  *
  * Held to the contract on the pure host only, for the reason `grantExpiryContractSuite`
  * gives: the Durable-Object host takes no clock (`clock?: never`, #956), because the
- * instant that matters is read inside the ScopeDO. What makes the DO's answer the same
- * is that both hosts call ONE predicate — `capabilityLive` / `capabilityExchangeable` in
- * the kernel — for the checker, the session door and the exchange alike; the kernel's
- * evaluator tests pin that predicate against an expired row directly.
+ * instant that matters is read inside the ScopeDO. Both hosts call ONE predicate —
+ * `capabilityLive` / `capabilityExchangeable` in the kernel — for the checker, the session
+ * door and the exchange alike, and the kernel's evaluator tests pin it against an expired
+ * row directly. The DO's own transitions are asserted in adapter-cloudflare's
+ * `test/contract.test.ts` (#1686), the one way its wall clock can see time pass: each
+ * stored instant moved behind it, in the ScopeDO's SQLite, for the same three clocks.
  *
  * Three clocks run out here, and each has a positive twin one step before it:
  * the capability's own `expiresAt`, a session's TTL, and a platform `become`'s expiry.

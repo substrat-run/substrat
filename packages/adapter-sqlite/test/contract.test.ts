@@ -488,7 +488,8 @@ attachmentTextContractSuite('adapter-sqlite', async (options = {}) => {
 });
 
 // #1672: the expiry TRANSITIONS, which need a clock the test can move — pure host only,
-// like `grantExpiryContractSuite` (the DO host takes no clock, #956).
+// like `grantExpiryContractSuite` (the DO host takes no clock, #956). The DO's own
+// transitions are adapter-cloudflare's, by moving each stored instant behind its wall clock.
 capabilityExpiryContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-cap-expiry-'));
   const clock = manualClock();

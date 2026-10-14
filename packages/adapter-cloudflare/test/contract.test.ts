@@ -20,6 +20,8 @@ import {
   scopeId,
   tenantId,
   type EntitlementGrant,
+  type EntityRef,
+  type MintedCapability,
   type ModuleId,
   type ProjectedConnectionGrant,
   type RoleDefinition,
@@ -27,7 +29,7 @@ import {
   type ScopeTable,
   type TenantId,
 } from '@substrat-run/contracts';
-import { ATTACHMENT_TEXT_JOB, ATTACHMENT_TEXT_MODULE, PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, JOB_DEFER_MS, JOB_RUN_DUE_AT, JOB_ADMISSION_MISS_MAX, JOB_LEASE_TOO_SHORT_NOTE, admissionBackoffMs, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
+import { ATTACHMENT_TEXT_JOB, capabilityTokenHash, ATTACHMENT_TEXT_MODULE, PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type SwitchSql, type JobPassContext, JOB_DEFER_MS, JOB_RUN_DUE_AT, JOB_ADMISSION_MISS_MAX, JOB_LEASE_TOO_SHORT_NOTE, admissionBackoffMs, SYSTEM_DOOR_WAIT } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
   capabilityAttachmentContractSuite,
@@ -35,6 +37,7 @@ import {
   attachmentTextContractSuite,
   type AttachmentTextHostOptions,
   capabilityContractSuite,
+  capMod,
   becomeMintContractSuite,
   bindingInviteContractSuite,
   impersonationContractSuite,
@@ -268,9 +271,9 @@ impersonationContractSuite('adapter-cloudflare', async () => {
 // resolves the session inside its queue, and runs the kernel's checker branch; the
 // coordinator hashes the session token and refuses a success the DO did not acknowledge.
 // The DEFAULT tuple checker, for the impersonation suite's reason. `capMod` is in
-// `contractTestModules`, so the ScopeDO carries it at code time. The expiry TRANSITIONS are
-// asserted on the pure host only (the DO takes no clock, #956) — both hosts call one
-// `capabilityLive` predicate, which the kernel's evaluator tests pin directly.
+// `contractTestModules`, so the ScopeDO carries it at code time. The expiry TRANSITIONS under
+// an injected clock are the pure host's (`capabilityExpiryContractSuite`); the DO's own are
+// the describe below.
 capabilityContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
@@ -278,6 +281,111 @@ capabilityContractSuite('adapter-cloudflare', async () => {
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
   return { host, cleanup: async () => host.close() };
+});
+
+// #1686: the expiry TRANSITIONS on the DO path, with no clock seam. The DO host takes no
+// clock (#956): the ScopeDO reads the wall clock itself, for the session door, the exchange
+// and the checker alike. So time passes here the one way the DO's clock can see it: the
+// stored instant is moved behind the wall clock, in the ScopeDO's own SQLite, past `ctx.sql`.
+// The kernel compares that instant with `now` and nothing else, so an instant moved back
+// is, to the DO, the instant reached. Each clock of `capabilityExpiryContractSuite` has its
+// case here, and each its twin that is not yet past.
+describe('capability expiry on the DO path, the stored instant past the wall clock (#1686)', () => {
+  const CAP_READ = permissionKey.parse('cap:read');
+  const HOUR = 60 * 60_000;
+  const t1 = tenantId.parse(ulid());
+  const s1 = scopeId.parse(ulid());
+  const alice = principalId.parse(ulid());
+  const seat = principalId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const folder: EntityRef = { entityType: 'folder', entityId: 'F' };
+  let host: CloudflareScopeHost;
+
+  const scopeSql = (sql: string, ...params: SqlStorageValue[]) =>
+    runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s1)), (_, state) => {
+      state.storage.sql.exec(sql, ...params);
+    });
+  const aMinuteAgo = () => new Date(Date.now() - 60_000).toISOString();
+  const later = () => new Date(Date.now() + HOUR).toISOString();
+  const share = async (spec: Record<string, unknown>) =>
+    (await host.getScope(alice, t1, s1)).invoke<MintedCapability>('cap/share', { entity: folder, permissions: [CAP_READ], ...spec });
+  const session = async (secret: string): Promise<string> => {
+    const ex = await host.exchangeCapability(t1, s1, secret);
+    if (ex?.kind !== 'session') throw new Error(`expected a session, got ${JSON.stringify(ex)}`);
+    return ex.sessionToken;
+  };
+  const read = async (token: string) => (await host.getCapabilityScope(token, t1, s1)).invoke('cap/read', { entity: folder });
+  const refusal = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e);
+
+  beforeAll(async () => {
+    host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    });
+    host.registerModule(capMod);
+    await host.admin.createTenant(staff, { id: t1, slug: `cap-do-expiry-${ulid().toLowerCase()}`, name: 'Cap DO expiry' });
+    await host.admin.grantEntitlement(staff, t1, 'cap');
+    await host.provisionScope(staff, { tenantId: t1, scopeId: s1, vertical: 'cap-vertical' });
+    await host.admin.activateScope(staff, t1, s1);
+    await host.admin.defineRole(staff, t1, { key: 'owner', permissions: [CAP_READ], source: 'vertical' });
+    await host.admin.assignRole(staff, { principalId: alice, roleKey: 'owner', node: { tenantId: t1, scopeId: null } });
+  });
+
+  afterAll(async () => {
+    await host.close();
+  });
+
+  it("a capability past its own expiry acts no more and exchanges no more; its sibling still does", async () => {
+    const expiring = await share({ expiresAt: later() });
+    const sibling = await share({ expiresAt: later() });
+    const token = await session(expiring.secret);
+    const siblingToken = await session(sibling.secret);
+    await expect(read(token)).resolves.toBeTruthy();
+
+    await scopeSql('UPDATE _substrat_capabilities SET expires_at = ? WHERE id = ?', aMinuteAgo(), expiring.id);
+    // The session row still runs to the capability's original expiry: what refuses is the
+    // capability's own instant, judged by the DO's clock.
+    expect(errorCodeOf(await refusal(read(token)))).toBe('unauthenticated');
+    expect(await host.exchangeCapability(t1, s1, expiring.secret)).toBeNull();
+
+    await expect(read(siblingToken)).resolves.toBeTruthy();
+    expect((await host.exchangeCapability(t1, s1, sibling.secret))?.kind).toBe('session');
+  });
+
+  it('a session past its TTL acts no more; the link itself exchanges again', async () => {
+    const minted = await share({});
+    const token = await session(minted.secret);
+    const other = await session(minted.secret);
+    await expect(read(token)).resolves.toBeTruthy();
+
+    await scopeSql(
+      'UPDATE _substrat_capability_sessions SET expires_at = ? WHERE token_hash = ?',
+      aMinuteAgo(),
+      await capabilityTokenHash(token),
+    );
+    expect(errorCodeOf(await refusal(read(token)))).toBe('unauthenticated');
+
+    // The other session of the same capability is not past its TTL, and the link is not
+    // past anything: both still act.
+    await expect(read(other)).resolves.toBeTruthy();
+    await expect(read(await session(minted.secret))).resolves.toBeTruthy();
+  });
+
+  it('a platform `become` past its expiry exchanges no more, and takes no use; its twin still does', async () => {
+    const mint = () => host.admin.mintCapability(staff, t1, s1, { principal: seat, expiresAt: later(), maxUses: 5 });
+    const expiring = await mint();
+    const twin = await mint();
+
+    await scopeSql('UPDATE _substrat_capabilities SET expires_at = ? WHERE id = ?', aMinuteAgo(), expiring.id);
+    expect(await host.exchangeCapability(t1, s1, expiring.secret)).toBeNull();
+    const uses = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s1)), (_, state) =>
+      state.storage.sql.exec('SELECT uses FROM _substrat_capabilities WHERE id = ?', expiring.id).one(),
+    );
+    expect(uses).toEqual({ uses: 0 });
+
+    expect((await host.exchangeCapability(t1, s1, twin.secret))?.kind).toBe('principal');
+  });
 });
 
 // #1686: a principal's `become` capability, on the DO path — the bound and the mint in one
