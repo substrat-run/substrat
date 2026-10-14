@@ -2,14 +2,14 @@ import { build } from 'esbuild';
 import { Miniflare } from 'miniflare';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { scopeStoreObjectName, scopeStoreScriptName, signScopeStoreName } from '@substrat-run/contracts';
+import { bytesToBase64Url, issueScopeStoreEnvelope, scopeStoreObjectName, scopeStoreScriptName } from '@substrat-run/contracts';
 
 /**
  * The scope-store hop on workerd (#2207).
  *
  * A vertical fetches `store.substrat.internal`. Egress hands the call to the
  * router's `ScopeStoreCalls` entrypoint with the dispatch parameters, and the
- * router signs the object name and addresses the store script. The vertical
+ * router signs the envelope and addresses the store script. The vertical
  * holds neither the namespace nor the key.
  *
  * The workers vitest pool cannot start a Durable Object on a second script, so
@@ -23,7 +23,6 @@ import { scopeStoreObjectName, scopeStoreScriptName, signScopeStoreName } from '
 const TENANT = '01JTESTATTACHTENANT000000A';
 const SCOPE = '01J00000000000000000000S01';
 const OTHER = '01J00000000000000000000S02';
-const KEY = 'store-hop-key';
 const SCRIPT = scopeStoreScriptName('docs', 'graph');
 
 const VERTICAL = `export default {
@@ -57,11 +56,24 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === '/calls') return Response.json({ calls });
     calls += 1;
-    const body = await request.json();
-    const name = typeof body.objectName === 'string' ? body.objectName : '';
-    const mac = request.headers.get('x-substrat-store-mac') ?? '';
-    const audience = request.headers.get('x-substrat-store-audience') ?? '';
-    if (!(await verify(env.SUBSTRAT_STORE_HMAC_KEY, name, mac))) return new Response('unauthorized', { status: 401 });
+    const raw = await request.text();
+    const body = JSON.parse(raw);
+    const canonicalBytes = base64UrlToBytes(request.headers.get('x-substrat-store-envelope') ?? '');
+    const signature = request.headers.get('x-substrat-store-signature') ?? '';
+    if (!canonicalBytes) return new Response('unauthorized', { status: 401 });
+    const canonical = new TextDecoder().decode(canonicalBytes);
+    const lines = canonical.split('\\n');
+    if (lines.length !== 7) return new Response('unauthorized', { status: 401 });
+    const audience = lines[1];
+    const name = lines[2];
+    const digest = lines[4];
+    const iat = Number(lines[5]);
+    if (!Number.isInteger(iat) || Math.abs(Math.floor(Date.now() / 1000) - iat) > 60) return new Response('unauthorized', { status: 401 });
+    if (name !== body.objectName) return new Response('unauthorized', { status: 401 });
+    const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw));
+    const hex = [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    if (hex !== digest) return new Response('unauthorized', { status: 401 });
+    if (!(await verify(env.SUBSTRAT_STORE_CALLER_KEY, canonical, signature))) return new Response('unauthorized', { status: 401 });
     if (String(body.operation ?? '').startsWith('substrat.') && audience !== 'platform') {
       return Response.json({ error: { code: 'forbidden', status: 403 } }, { status: 403 });
     }
@@ -83,21 +95,30 @@ function base64UrlToBytes(value) {
     return bytes;
   } catch { return undefined; }
 }
-async function verify(secret, objectName, signature) {
-  const bytes = base64UrlToBytes(signature);
-  if (!bytes) return false;
-  const copy = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(copy).set(bytes);
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
-  return crypto.subtle.verify('HMAC', key, copy, new TextEncoder().encode(objectName));
+async function verify(publicKey, canonical, signature) {
+  const keyBytes = base64UrlToBytes(publicKey);
+  const sigBytes = base64UrlToBytes(signature);
+  if (!keyBytes || !sigBytes) return false;
+  const keyCopy = new ArrayBuffer(keyBytes.byteLength);
+  new Uint8Array(keyCopy).set(keyBytes);
+  const sigCopy = new ArrayBuffer(sigBytes.byteLength);
+  new Uint8Array(sigCopy).set(sigBytes);
+  try {
+    const key = await crypto.subtle.importKey('raw', keyCopy, { name: 'Ed25519' }, false, ['verify']);
+    return crypto.subtle.verify('Ed25519', key, sigCopy, new TextEncoder().encode(canonical));
+  } catch { return false; }
 }
 `;
 
 let egressBundle = '';
 let routerBundle = '';
 let mf: Miniflare;
+let callerKey = '';
 
 beforeAll(async () => {
+  const pair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+  callerKey = bytesToBase64Url(new Uint8Array(await crypto.subtle.exportKey('pkcs8', pair.privateKey)));
+  const callerPublic = bytesToBase64Url(new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey)));
   const egress = await build({
     entryPoints: [fileURLToPath(new URL('../src/worker.ts', import.meta.url).href)],
     bundle: true,
@@ -147,16 +168,17 @@ beforeAll(async () => {
       {
         name: 'router',
         modules: [{ type: 'ESModule', path: 'worker.mjs', contents: routerBundle }],
-        compatibilityDate: '2025-01-01',
-        bindings: { STORE_HMAC_KEY: KEY },
+        // Ed25519 in WebCrypto needs a workerd this new. 2025-01-01 does not sign.
+        compatibilityDate: '2026-03-01',
+        bindings: { STORE_CALLER_KEY: callerKey },
         serviceBindings: { STORE: SCRIPT },
       },
       {
         name: SCRIPT,
         modules: true,
         script: STORE,
-        compatibilityDate: '2025-01-01',
-        bindings: { SUBSTRAT_STORE_HMAC_KEY: KEY },
+        compatibilityDate: '2026-03-01',
+        bindings: { SUBSTRAT_STORE_CALLER_KEY: callerPublic },
         durableObjects: { STORE: 'StoreObject' },
       },
     ],
@@ -179,7 +201,7 @@ async function call(body: unknown): Promise<{ status: number; text: string }> {
 describe('a vertical reaches only its own scope store (#2207)', () => {
   it('tenant 1 cannot open tenant 2, and a signature for another name does not', async () => {
     const own = await call({ scopeId: SCOPE, binding: 'GRAPH', operation: 'read' });
-    expect(own.status).toBe(200);
+    expect(own.status, own.text).toBe(200);
     expect(own.text).toContain(scopeStoreObjectName(TENANT, 'docs', SCOPE, 'GRAPH'));
 
     const before = await (await mf.getWorker(SCRIPT)).fetch('https://store/calls');
@@ -194,17 +216,25 @@ describe('a vertical reaches only its own scope store (#2207)', () => {
 
     const ownName = scopeStoreObjectName(TENANT, 'docs', SCOPE, 'GRAPH');
     const otherName = scopeStoreObjectName(TENANT, 'docs', OTHER, 'GRAPH');
+    const attackBody = JSON.stringify({ objectName: otherName, operation: 'read' });
+    const issued = await issueScopeStoreEnvelope({
+      privateKey: callerKey,
+      aud: 'caller',
+      name: otherName,
+      op: 'read',
+      body: attackBody,
+    });
     const store = await mf.getWorker(SCRIPT);
     const attacked = await store.fetch('https://store/invoke', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-substrat-store-mac': await signScopeStoreName(KEY, otherName),
-        'x-substrat-store-audience': 'caller',
+        'x-substrat-store-envelope': issued.header,
+        'x-substrat-store-signature': issued.signature,
         'x-substrat-store-address': ownName,
       },
-      body: JSON.stringify({ objectName: otherName, operation: 'read' }),
+      body: attackBody,
     });
     expect(attacked.status).toBe(401);
-  });
+  }, 20_000);
 });

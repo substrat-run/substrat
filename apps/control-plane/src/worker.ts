@@ -528,10 +528,11 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   DISPATCH?: DispatchNamespace;
   /**
-   * Signs scope-store object names (#2207). The same secret the store script
-   * holds. A vertical is not given it. Unset ⇒ a reserved store call is refused.
+   * PKCS8 Ed25519 private key, base64url, for audience `platform` (#2287). The
+   * store script holds only the public key. A vertical is not given this one.
+   * Unset ⇒ a reserved store call is refused.
    */
-  STORE_HMAC_KEY?: string;
+  STORE_PLATFORM_KEY?: string;
   /**
    * Seals connection credentials at rest (#101/#574) — base64(url) of 32 bytes
    * (`openssl rand -base64 32`), same convention as the dashboard's box. The
@@ -1431,16 +1432,16 @@ export function storeStorageReaderFor(
  * one that refuses every call (503), never an absent one: absent means a co-located host, and a
  * hosted control plane that skipped its stores would back up, wipe and erase without them.
  */
-function platformStoresFor(env: Pick<Env, 'DISPATCH' | 'STORE_HMAC_KEY'>): PlatformScopeStores {
-  return env.DISPATCH && env.STORE_HMAC_KEY
+function platformStoresFor(env: Pick<Env, 'DISPATCH' | 'STORE_PLATFORM_KEY'>): PlatformScopeStores {
+  return env.DISPATCH && env.STORE_PLATFORM_KEY
     ? platformScopeStoresFor({
-        hmacKey: env.STORE_HMAC_KEY,
+        platformKey: env.STORE_PLATFORM_KEY,
         fetch: (scriptName, request) => env.DISPATCH!.get(scriptName).fetch(request),
       })
     : unreachablePlatformScopeStores();
 }
 
-type StoreReadAdmin = Pick<HostAdmin, 'verticalServing' | 'versionManifest'>;
+type StoreReadAdmin = Pick<HostAdmin, 'verticalServing' | 'versionManifest' | 'listVersions'>;
 
 /**
  * `substrat.wipe` on each store the scope's running version declares, before its own bytes go
@@ -1448,7 +1449,7 @@ type StoreReadAdmin = Pick<HostAdmin, 'verticalServing' | 'versionManifest'>;
  * sweep records it and the scope is not reaped past a store that may hold data.
  */
 export async function wipeDeclaredScopeStores(
-  env: Pick<Env, 'DISPATCH' | 'STORE_HMAC_KEY'>,
+  env: Pick<Env, 'DISPATCH' | 'STORE_PLATFORM_KEY'>,
   admin: StoreReadAdmin,
   scope: Scope,
   kinds: readonly StoreKindRegistration[] = STORE_KINDS,
@@ -1461,7 +1462,7 @@ export async function wipeDeclaredScopeStores(
 
 /** Each declared store's size, for the storage gauge (#2207). Refuses as the wipe does. */
 export async function declaredStoreSizes(
-  env: Pick<Env, 'DISPATCH' | 'STORE_HMAC_KEY'>,
+  env: Pick<Env, 'DISPATCH' | 'STORE_PLATFORM_KEY'>,
   admin: StoreReadAdmin,
   scope: Scope,
   kinds: readonly StoreKindRegistration[] = STORE_KINDS,

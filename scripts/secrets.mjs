@@ -96,6 +96,8 @@ const MANIFEST = {
       SERVICE_TOKEN: 'SERVICE_TOKEN',
       PLATFORM_SECRET: 'PLATFORM_SECRET',
       ROUTER_SECRET: 'ROUTER_SECRET',
+      // PKCS8 Ed25519, base64url. Signs audience `platform`. Not the router's key. Optional until a store kind is served.
+      STORE_PLATFORM_KEY: 'STORE_PLATFORM_KEY',
       PUSH_TOKEN_SECRET: 'CP_PUSH_TOKEN_SECRET',
       // A DEDICATED value (#1602) — never the push-token secret and never
       // PLATFORM_SECRET, same reasoning as PUSH_TOKEN_SECRET above but its own key,
@@ -215,6 +217,8 @@ const MANIFEST = {
     secrets: {
       PLATFORM_SECRET: 'PLATFORM_SECRET',
       ROUTER_SECRET: 'ROUTER_SECRET',
+      // PKCS8 Ed25519, base64url. Signs audience `caller`. Optional until a store kind is served.
+      STORE_CALLER_KEY: 'STORE_CALLER_KEY',
     },
   },
 };

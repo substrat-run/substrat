@@ -6,15 +6,15 @@ import { handleStoreCall, type StoreCallCaller } from '../../router/src/store-ca
  * for by one service binding.
  *
  * `handleStoreCall` is the production function: it refuses another scope,
- * signs the object name, and chooses the script. Miniflare's local dispatch
+ * signs the envelope, and chooses the script. Miniflare's local dispatch
  * namespace does not host a user worker, so `get` here checks that script
  * name and fetches the store the suite bound.
  */
-export class ScopeStoreCalls extends WorkerEntrypoint<{ STORE_HMAC_KEY: string; STORE: Fetcher }> {
+export class ScopeStoreCalls extends WorkerEntrypoint<{ STORE_CALLER_KEY: string; STORE: Fetcher }> {
   invoke(caller: StoreCallCaller, request: unknown) {
     return handleStoreCall(
       {
-        STORE_HMAC_KEY: this.env.STORE_HMAC_KEY,
+        STORE_CALLER_KEY: this.env.STORE_CALLER_KEY,
         DISPATCH: {
           get: (scriptName) => ({
             fetch: (req) => {

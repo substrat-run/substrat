@@ -8,7 +8,7 @@ import { RESERVED_STORE_OPERATIONS, storeOperationName } from './deploy.js';
  * A vertical fetches `store.substrat.internal`. It names a binding, an operation
  * and an input. It does not name a script, an object or a key: the egress worker
  * hands the call to the router with the dispatch parameters the router set, and
- * the router is what signs the object name and addresses the store script.
+ * the router is what signs the envelope and addresses the store script.
  * `*.substrat.internal` is in no DNS zone, so a call from inside a Durable Object
  * — which an outbound worker does not see — fails instead of leaving the isolate.
  */

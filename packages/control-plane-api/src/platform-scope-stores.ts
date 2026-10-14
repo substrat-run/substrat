@@ -3,9 +3,9 @@ import {
   mayHoldScopeStores,
   scopeStoresDeclaredIn,
   STORE_KINDS,
+  issueScopeStoreEnvelope,
   scopeStoreObjectName,
   scopeStoreScriptName,
-  signScopeStoreName,
   storeEraseResult,
   storeExportResult,
   storeSizeResult,
@@ -23,11 +23,12 @@ import { storedDeployManifest } from './deploy.js';
 /**
  * A reserved scope-store call, made by the control plane straight at the store
  * script (#2207). The vertical is not on this path: it holds neither the
- * namespace nor the key. The key signs the object name here, and the audience
- * is `platform`, which is the only audience a `substrat.*` operation accepts.
+ * namespace nor the key. The key signs the envelope here, audience `platform`,
+ * which is the only audience a `substrat.*` operation accepts.
  */
 export interface PlatformScopeStoreDispatch {
-  readonly hmacKey: string;
+  /** PKCS8 Ed25519 private key, base64url. Signs audience `platform`. */
+  readonly platformKey: string;
   fetch(scriptName: string, request: Request): Promise<Response>;
 }
 
@@ -230,30 +231,42 @@ function asControlPlane(error: unknown): never {
   throw error;
 }
 
-/** Sign `objectName` and POST the reserved operation at that kind's script. */
+/** Sign the envelope and POST the reserved operation at that kind's script. */
 export async function callPlatformScopeStore(
   dispatch: PlatformScopeStoreDispatch,
   target: PlatformScopeStoreTarget,
   operation: ReservedStoreOperation,
   input?: unknown,
 ): Promise<unknown> {
-  if (!dispatch.hmacKey) {
+  if (!dispatch.platformKey) {
     throw new ControlPlaneError(503, 'this control plane holds no scope-store key');
   }
   try {
     return await callReservedStoreOperation(async (request) => {
       const objectName = scopeStoreObjectName(target.tenantId, target.vertical, target.scopeId, target.binding);
-      const mac = await signScopeStoreName(dispatch.hmacKey, objectName);
+      const body = JSON.stringify({ ...request, objectName });
+      let issued;
+      try {
+        issued = await issueScopeStoreEnvelope({
+          privateKey: dispatch.platformKey,
+          aud: 'platform',
+          name: objectName,
+          op: request.operation,
+          body,
+        });
+      } catch {
+        throw new ControlPlaneError(503, 'this control plane holds no scope-store key');
+      }
       const response = await dispatch.fetch(
         scopeStoreScriptName(target.vertical, target.kind),
         new Request('https://scope-store/invoke', {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            'x-substrat-store-mac': mac,
-            'x-substrat-store-audience': 'platform',
+            'x-substrat-store-envelope': issued.header,
+            'x-substrat-store-signature': issued.signature,
           },
-          body: JSON.stringify({ ...request, objectName }),
+          body,
         }),
       );
       try {

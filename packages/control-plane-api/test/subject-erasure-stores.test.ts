@@ -265,8 +265,9 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         expect(await keyKept()).toBe(false);
       });
 
-      // The serving script runs the serving pointer's version, not the scope's bound one, so
-      // that manifest is the one read. A pointer naming another script is a version unknown.
+      // Erasure reaches every binding any version of the vertical declared (#2286), so a
+      // binding that exists only on the bound version is still erased. A pointer naming
+      // another script is a version unknown.
       const onServingScript = async (opts: { boundStores?: unknown[]; servedStores?: unknown[]; pointerRef?: string }) => {
         // Its own vertical: a serving pointer is the vertical's, and would reroute later binds.
         const slug = `served-${ulid().toLowerCase().slice(-10)}`;
@@ -296,11 +297,11 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       };
       const stores = [{ binding: 'GRAPH', kind: 'graph' }];
 
-      it('on the serving script, the served version decides, not the bound one', async () => {
+      it('on the serving script, a binding declared only on the bound version is still erased (#2286)', async () => {
         const served = await onServingScript({ servedStores: stores });
         expect(served).toEqual({ status: 200, asked: served.expected, expected: served.expected, keyKept: false });
         const boundOnly = await onServingScript({ boundStores: stores });
-        expect(boundOnly).toEqual({ status: 200, asked: [], expected: boundOnly.expected, keyKept: false });
+        expect(boundOnly).toEqual({ status: 200, asked: boundOnly.expected, expected: boundOnly.expected, keyKept: false });
       });
 
       // Stricter than asking (#2207): a version unknown names no binding to erase, so it refuses.
@@ -331,13 +332,15 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       });
 
       it('a binding added while the stores are erased keeps the key (#2285)', async () => {
-        const scope = await sealedScope();
-        const version = await publish(stores);
+        const slug = `added-${ulid().toLowerCase().slice(-10)}`;
+        await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+        const scope = await sealedScope(slug);
+        const version = await publish(stores, slug);
         await host.admin.bindScopeVersion(staff, t, scope.s, version.id);
         const caller: PlatformScopeStores = {
           ...unreachablePlatformScopeStores(),
           eraseSubject: async () => {
-            const added = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }]);
+            const added = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }], slug);
             await host.admin.bindScopeVersion(staff, t, scope.s, added.id);
             return [{ binding: 'GRAPH', erased: 1 }];
           },

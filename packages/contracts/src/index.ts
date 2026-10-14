@@ -22,6 +22,7 @@ export * from './ids.js';
 export * from './registry.js';
 export * from './script-names.js';
 export * from './scope-store-mac.js';
+export * from './scope-store-envelope.js';
 export * from './scope-store-transport.js';
 export * from './routing.js';
 export * from './invocation-record.js';

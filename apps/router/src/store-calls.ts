@@ -1,7 +1,7 @@
 import {
+  issueScopeStoreEnvelope,
   scopeStoreObjectName,
   scopeStoreScriptName,
-  signScopeStoreName,
   storeCallRequest,
   type StoreCallRequest,
 } from '@substrat-run/contracts';
@@ -23,14 +23,15 @@ export type StoreCallOutcome =
   | { ok: false; status: number; message: string };
 
 export interface StoreCallEnv {
-  readonly STORE_HMAC_KEY?: string;
+  /** PKCS8 Ed25519 private key, base64url. Signs audience `caller`. The store holds only the public key. */
+  readonly STORE_CALLER_KEY?: string;
   readonly DISPATCH?: {
     get(scriptName: string): { fetch(request: Request): Promise<Response> };
   };
 }
 
 /**
- * Sign the object name and address that kind's script. The key stays here.
+ * Sign the envelope and address that kind's script. The private key stays here.
  * A reserved operation is not signed with the caller key: the platform calls
  * those directly, with its own key.
  */
@@ -54,25 +55,41 @@ export async function handleStoreCall(
   if (!declared) {
     return { ok: false, status: 404, message: `store call refused: '${request.binding}' is not a store this version declares` };
   }
-  if (!env.STORE_HMAC_KEY) {
+  if (!env.STORE_CALLER_KEY) {
     return { ok: false, status: 503, message: 'this router is not configured for scope stores' };
   }
   if (!env.DISPATCH) {
     return { ok: false, status: 503, message: 'this router cannot dispatch scope stores' };
   }
   const objectName = scopeStoreObjectName(caller.tenantId, caller.vertical, request.scopeId, request.binding);
-  const mac = await signScopeStoreName(env.STORE_HMAC_KEY, objectName);
+  const body = JSON.stringify({ ...request, objectName });
+  let issued;
+  try {
+    issued = await issueScopeStoreEnvelope({
+      privateKey: env.STORE_CALLER_KEY,
+      aud: 'caller',
+      name: objectName,
+      op: request.operation,
+      body,
+    });
+  } catch {
+    return { ok: false, status: 503, message: 'this router is not configured for scope stores' };
+  }
   const script = env.DISPATCH.get(scopeStoreScriptName(caller.vertical, declared.kind));
   const response = await script.fetch(
     new Request('https://scope-store/invoke', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-substrat-store-mac': mac, 'x-substrat-store-audience': 'caller' },
-      body: JSON.stringify({ ...request, objectName }),
+      headers: {
+        'content-type': 'application/json',
+        'x-substrat-store-envelope': issued.header,
+        'x-substrat-store-signature': issued.signature,
+      },
+      body,
     }),
   );
-  const body: unknown = await response.json().catch(() => null);
+  const result: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     return { ok: false, status: response.status, message: 'the scope store refused the call' };
   }
-  return { ok: true, status: response.status, body };
+  return { ok: true, status: response.status, body: result };
 }

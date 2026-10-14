@@ -24,7 +24,8 @@ describe('the sweep reaches a serving-pinned store, and never skips one silently
     verticalServing: async () => ({ ref: 'graphy-stable', versionId: 'served', doClasses: [], migrationTag: 't' }),
     versionManifest: async () => manifest,
     listVersions: async () => [{ id: 'served' }],
-  };
+    // The sweep reads a version's id and then its manifest. The rest of a version row is not used.
+  } as unknown as Parameters<typeof wipeDeclaredScopeStores>[1];
   const status = (e: unknown) => (e as { status?: number } | undefined)?.status;
   const refusal = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e);
 
@@ -36,7 +37,8 @@ describe('the sweep reaches a serving-pinned store, and never skips one silently
   it('with a route, a serving-pinned install is wiped and sized through its store script', async () => {
     const asked: string[] = [];
     const routed = {
-      STORE_HMAC_KEY: 'test-store-key',
+      // The shared vector's PKCS8 key (packages/contracts/test/vectors/scope-store-envelope.json).
+      STORE_PLATFORM_KEY: 'MC4CAQAwBQYDK2VwBCIEIOPA7a30FgDjM6aB-oV3_tRs_eDbRaDFHMxNOY5aAiZJ',
       DISPATCH: {
         get: (script: string) => ({
           fetch: async (request: Request) => {
