@@ -754,10 +754,15 @@ export type {
 export {
   runPlatformSweep,
   startPlatformSweeper,
-  SCHEDULE_STATE_DDL,
-  SCHEDULE_STATE_REBUILD,
-  scheduleStateHasKind,
+  StorageReadUnsupported,
+  PROVISION_RECONCILE_BATCH,
+  CROSS_VERTICAL_CONSUMERS_PER_PASS,
+  runCrossVerticalFrom,
+  registryImportCandidates,
+  crossVerticalHealth,
 } from './platform-sweep.js';
+export { SCHEDULE_STATE_DDL, SCHEDULE_STATE_REBUILD, scheduleStateHasKind } from './schedule-state.js';
+export type { ScheduleSweepReport, ScheduleStateKind } from './schedule-state.js';
 export type {
   AccessLogSink,
   EventSink,
@@ -770,30 +775,31 @@ export type {
   PlatformSweepOptions,
   PlatformSweepReport,
   PlatformSweeperHandle,
-  ScheduleSweepReport,
-  ScheduleStateKind,
   StartPlatformSweeperOptions,
   StorageGaugeSweepOptions,
   StorageGaugeSweepReport,
+  CandidatesHint,
+  CrossVerticalEdge,
+  CrossVerticalOptions,
+  CrossVerticalReach,
+  CrossVerticalReport,
+  ProvisionReconcileReport,
 } from './platform-sweep.js';
-export { StorageReadUnsupported } from './platform-sweep.js';
 // #1653: which scopes are the real install, and which version runs on them — shared so
 // every receipt writer and the sweep answer both questions the same way.
+export { isPrimaryScope, isPrimaryScopeRow, INERT_SCOPE_REASON, runningVersionOf } from './scope-identity.js';
+export type { ServingPointer } from './scope-identity.js';
 export {
-  isPrimaryScope,
-  isPrimaryScopeRow,
-  INERT_SCOPE_REASON,
-  runningVersionOf,
-  PROVISION_RECONCILE_BATCH,
-  CROSS_VERTICAL_CONSUMERS_PER_PASS,
-  runCrossVerticalFrom,
-  registryImportCandidates,
-  crossVerticalHealth,
   exportBreaksOf,
   exportBreakRefusal,
   isExportBreakRefusal,
   bindExportBreaksOf,
   scopeMoveOf,
+  bindExportBreakRefusal,
+  BIND_EXPORT_BREAK_REFUSAL,
+  isBindExportBreakRefusal,
+} from './export-break.js';
+export {
   PROVISIONED_VERSIONS_SQL,
   installsReconciledOf,
   installsReconciledNote,
@@ -803,21 +809,8 @@ export {
   boundShapesOfColumn,
   provisionedVersionsParams,
   strandJudgmentsOf,
-  bindExportBreakRefusal,
-  BIND_EXPORT_BREAK_REFUSAL,
-  isBindExportBreakRefusal,
-} from './platform-sweep.js';
-export type {
-  CandidatesHint,
-  CrossVerticalEdge,
-  CrossVerticalOptions,
-  CrossVerticalReach,
-  CrossVerticalReport,
-  ProvisionReconcileReport,
-  ServingPointer,
-  InstallsReconciled,
-  StrandJudgment,
-} from './platform-sweep.js';
+} from './install-receipts.js';
+export type { InstallsReconciled, StrandJudgment } from './install-receipts.js';
 export {
   migrationProgress,
 } from './migration-progress.js';
