@@ -25,8 +25,8 @@ scopeStoreRunnerContractSuite('counter', counterFixture(counterScopeStoreRunner)
 /** The counter, with one operation answered differently. */
 function overriding(
   override: (
-    request: StoreRequest,
     address: ScopeStoreAddress,
+    request: StoreRequest,
     inner: ScopeStoreRunner,
   ) => Promise<StoreResponse> | undefined,
 ): () => ScopeStoreRunner {
@@ -34,7 +34,7 @@ function overriding(
     const inner = counterScopeStoreRunner();
     return {
       ...inner,
-      invoke: (address, request) => override(request, address, inner) ?? inner.invoke(address, request),
+      invoke: (address, request) => override(address, request, inner) ?? inner.invoke(address, request),
     };
   };
 }
@@ -59,14 +59,9 @@ const TWINS: { breaks: string; makeRunner: () => ScopeStoreRunner }[] = [
   {
     breaks: 'the object is keyed on the whole address: tenant, vertical, scope and binding',
     // Keyed on the scope alone: two tenants, verticals or bindings would share an object.
-    makeRunner: () => {
-      const inner = counterScopeStoreRunner();
-      return {
-        ...inner,
-        invoke: (address, request) =>
-          inner.invoke({ tenantId: 't', vertical: 'v', scopeId: address.scopeId, binding: 'b' }, request),
-      };
-    },
+    makeRunner: overriding((address, request, inner) =>
+      inner.invoke({ tenantId: 't', vertical: 'v', scopeId: address.scopeId, binding: 'b' }, request),
+    ),
   },
   {
     breaks: 'a stop and a start serve the same repositories',
@@ -85,21 +80,21 @@ const TWINS: { breaks: string; makeRunner: () => ScopeStoreRunner }[] = [
   },
   {
     breaks: 'a kind call answers the envelope, and an unknown operation answers its error',
-    makeRunner: overriding((request) => {
+    makeRunner: overriding((_address, request) => {
       if (request.operation === 'conformance-unknown-operation') throw new Error('unknown operation');
       return undefined;
     }),
   },
   {
     breaks: 'substrat.size answers { bytes }',
-    makeRunner: overriding((request) =>
+    makeRunner: overriding((_address, request) =>
       request.operation === 'substrat.size' ? Promise.resolve({ result: { size: 1 } }) : undefined,
     ),
   },
   {
     breaks: 'substrat.import replaces the whole object and answers the tables it wrote',
     // Adds the imported count to what is there, instead of replacing it.
-    makeRunner: overriding((request, address, inner) => {
+    makeRunner: overriding((address, request, inner) => {
       if (request.operation !== 'substrat.import') return undefined;
       return (async () => {
         await inner.invoke(address, { operation: 'increment', input: { by: 1 } });
@@ -110,13 +105,13 @@ const TWINS: { breaks: string; makeRunner: () => ScopeStoreRunner }[] = [
   {
     breaks: 'substrat.wipe answers {} and leaves an empty object, also where nothing was written',
     // Answers {} and keeps the data.
-    makeRunner: overriding((request) =>
+    makeRunner: overriding((_address, request) =>
       request.operation === 'substrat.wipe' ? Promise.resolve({ result: {} }) : undefined,
     ),
   },
   {
     breaks: 'substrat.erase answers { erased }, and a repeat erases nothing more',
-    makeRunner: overriding((request) =>
+    makeRunner: overriding((_address, request) =>
       request.operation === 'substrat.erase' ? Promise.resolve({ result: { erased: 1 } }) : undefined,
     ),
   },

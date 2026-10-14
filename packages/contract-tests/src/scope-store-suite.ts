@@ -1,9 +1,56 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { errorCodeOf, platformActorId, principalId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
+import { errorCodeOf, platformActorId, principalId, scopeId, storeEraseInput, tenantId, type ScopeId } from '@substrat-run/contracts';
 import { ulid, type ScopeHost, type ScopeStoreRunner, type StoreCallReport } from '@substrat-run/kernel';
 import { STORE_CALL_SINK_KEY, tallyStoreCall, type StoreCallTally } from '@substrat-run/kernel/invocation-line';
-import { counterScopeStoreRunner } from './counter-runner.js';
+import { counterScopeStoreRunner, invalidStoreInput, objectNameOf } from './counter-runner.js';
 import type { ScopeHostFixture } from './scope-host-suite.js';
+
+/**
+ * The trivial kind, with what this suite reads back about the host's calls:
+ * `address` (what the host handed in), `erased` (the subjects erased on this object),
+ * `wiped` (every object wiped), and `fail-wipe` (`true` makes each later `substrat.wipe`
+ * answer 503, until `false`).
+ */
+function instrumentedCounterRunner(): ScopeStoreRunner {
+  const counter = counterScopeStoreRunner();
+  const erased = new Map<string, Set<string>>();
+  const wiped = new Set<string>();
+  let failWipe = false;
+  return {
+    ...counter,
+    async invoke(address, request) {
+      const id = objectNameOf(address);
+      switch (request.operation) {
+        case 'address': {
+          const { tenantId, vertical, scopeId, binding } = address;
+          return { result: { tenantId, vertical, scopeId, binding } };
+        }
+        case 'erased':
+          return { result: [...(erased.get(id) ?? [])] };
+        case 'wiped':
+          return { result: [...wiped] };
+        case 'fail-wipe':
+          if (typeof request.input !== 'boolean') return invalidStoreInput('fail-wipe takes a boolean');
+          failWipe = request.input;
+          return { result: failWipe };
+        case 'substrat.wipe':
+          if (failWipe) return { error: { code: 'unavailable', status: 503 } };
+          wiped.add(id);
+          return counter.invoke(address, request);
+        case 'substrat.erase': {
+          const answer = await counter.invoke(address, request);
+          if ('result' in answer) {
+            const { subjectId } = storeEraseInput.parse(request.input);
+            erased.set(id, (erased.get(id) ?? new Set<string>()).add(subjectId));
+          }
+          return answer;
+        }
+        default:
+          return counter.invoke(address, request);
+      }
+    },
+  };
+}
 
 /**
  * Scope stores on every adapter (#2213). The fixture is handed the runner, so
@@ -26,7 +73,7 @@ export function scopeStoreContractSuite(
     const otherVertical = scopeId.parse(ulid());
 
     beforeAll(async () => {
-      fixture = await makeFixture({ runners: [{ binding: 'GRAPH', runner: counterScopeStoreRunner() }] });
+      fixture = await makeFixture({ runners: [{ binding: 'GRAPH', runner: instrumentedCounterRunner() }] });
       host = fixture.host;
       await host.admin.createTenant(staff, { id: tenant, slug: `t-${tenant.toLowerCase()}`, name: 'T' });
       await host.provisionScope(staff, { tenantId: tenant, scopeId: scopeA, vertical: 'docs' });

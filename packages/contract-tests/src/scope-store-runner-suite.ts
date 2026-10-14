@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { storeResponse, type StoreRequest } from '@substrat-run/contracts';
+import { storeResponse, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import {
   callReservedStoreOperation,
+  callScopeStore,
   ulid,
   type ScopeStoreAddress,
   type ScopeStoreRunner,
@@ -38,9 +39,9 @@ const UNKNOWN_OPERATION = 'conformance-unknown-operation';
  * The runner contract (#2213, RFC §7) as a list of checks, so a broken runner can be
  * shown to fail the one it breaks. {@link scopeStoreRunnerContractSuite} runs them all.
  *
- * Every reserved call goes through the kernel's `callReservedStoreOperation`, the
- * caller both hosts use, so an answer is held to the same envelope and result schema
- * a host would hold it to.
+ * Every call goes through the kernel's callers both hosts use (`callScopeStore`,
+ * `callReservedStoreOperation`), so an answer is held to the same envelope and result
+ * schema a host would hold it to.
  *
  * A restart is `stop()` then `start()` on the same runner instance: what a host does
  * between a `close` and the next first store call. A kind's repositories must survive
@@ -57,24 +58,16 @@ export function scopeStoreRunnerChecks(fixture: ScopeStoreRunnerFixture): ScopeS
       await runner.stop();
     }
   };
-  const call = async (runner: ScopeStoreRunner, address: ScopeStoreAddress, request: StoreRequest) => {
-    const answer = storeResponse.parse(await runner.invoke(address, request));
-    if ('error' in answer) {
-      throw new Error(`'${request.operation}' answered ${answer.error.code} (${answer.error.status})`);
-    }
-    return answer.result;
-  };
+  const call = (runner: ScopeStoreRunner, address: ScopeStoreAddress, request: StoreRequest) =>
+    callScopeStore((r) => runner.invoke(address, r), request.operation, request.input);
   const read = (runner: ScopeStoreRunner, address: ScopeStoreAddress) => call(runner, address, fixture.read);
   const write = (runner: ScopeStoreRunner, address: ScopeStoreAddress) => call(runner, address, fixture.write);
-  const reserved = (runner: ScopeStoreRunner, address: ScopeStoreAddress) => ({
-    size: () => callReservedStoreOperation((r) => runner.invoke(address, r), 'substrat.size'),
-    wipe: () => callReservedStoreOperation((r) => runner.invoke(address, r), 'substrat.wipe'),
-    exportTables: () => callReservedStoreOperation((r) => runner.invoke(address, r), 'substrat.export'),
-    importTables: (tables: unknown) =>
-      callReservedStoreOperation((r) => runner.invoke(address, r), 'substrat.import', { tables }),
-    erase: (subjectId: string) =>
-      callReservedStoreOperation((r) => runner.invoke(address, r), 'substrat.erase', { subjectId }),
-  });
+  const reserved = <O extends ReservedStoreOperation>(
+    runner: ScopeStoreRunner,
+    address: ScopeStoreAddress,
+    operation: O,
+    input?: unknown,
+  ) => callReservedStoreOperation((r) => runner.invoke(address, r), operation, input);
 
   return [
     {
@@ -129,18 +122,14 @@ export function scopeStoreRunnerChecks(fixture: ScopeStoreRunnerFixture): ScopeS
     {
       name: 'a stop and a start serve the same repositories',
       async run() {
-        const runner = await fixture.makeRunner();
-        const address = freshAddress();
-        try {
-          await runner.start();
+        await withRunner(async (runner) => {
+          const address = freshAddress();
           await write(runner, address);
           const written = await read(runner, address);
           await runner.stop();
           await runner.start();
           expect(await read(runner, address)).toEqual(written);
-        } finally {
-          await runner.stop();
-        }
+        });
       },
     },
     {
@@ -149,7 +138,7 @@ export function scopeStoreRunnerChecks(fixture: ScopeStoreRunnerFixture): ScopeS
         await withRunner(async (runner) => {
           const address = freshAddress();
           await write(runner, address);
-          const { bytes } = await reserved(runner, address).size();
+          const { bytes } = await reserved(runner, address, 'substrat.size');
           expect(Number.isInteger(bytes)).toBe(true);
         });
       },
@@ -160,7 +149,7 @@ export function scopeStoreRunnerChecks(fixture: ScopeStoreRunnerFixture): ScopeS
         await withRunner(async (runner) => {
           const address = freshAddress();
           await write(runner, address);
-          const { tables } = await reserved(runner, address).exportTables();
+          const { tables } = await reserved(runner, address, 'substrat.export');
           expect(tables.length).toBeGreaterThan(0);
         });
       },
@@ -176,8 +165,8 @@ export function scopeStoreRunnerChecks(fixture: ScopeStoreRunnerFixture): ScopeS
           await write(runner, target);
           // The target holds more than the source, so a merge cannot pass for a replace.
           expect(await read(runner, target)).not.toEqual(await read(runner, source));
-          const { tables } = await reserved(runner, source).exportTables();
-          const imported = await reserved(runner, target).importTables(tables);
+          const { tables } = await reserved(runner, source, 'substrat.export');
+          const imported = await reserved(runner, target, 'substrat.import', { tables });
           expect(imported.tables).toBe(tables.length);
           expect(await read(runner, target)).toEqual(await read(runner, source));
         });
@@ -190,9 +179,9 @@ export function scopeStoreRunnerChecks(fixture: ScopeStoreRunnerFixture): ScopeS
           const address = freshAddress();
           const empty = await read(runner, freshAddress());
           await write(runner, address);
-          expect(await reserved(runner, address).wipe()).toEqual({});
+          expect(await reserved(runner, address, 'substrat.wipe')).toEqual({});
           expect(await read(runner, address)).toEqual(empty);
-          expect(await reserved(runner, freshAddress()).wipe()).toEqual({});
+          expect(await reserved(runner, freshAddress(), 'substrat.wipe')).toEqual({});
         });
       },
     },
@@ -203,8 +192,8 @@ export function scopeStoreRunnerChecks(fixture: ScopeStoreRunnerFixture): ScopeS
           const address = freshAddress();
           const subjectId = ulid();
           await write(runner, address);
-          await reserved(runner, address).erase(subjectId);
-          expect(await reserved(runner, address).erase(subjectId)).toEqual({ erased: 0 });
+          await reserved(runner, address, 'substrat.erase', { subjectId });
+          expect(await reserved(runner, address, 'substrat.erase', { subjectId })).toEqual({ erased: 0 });
         });
       },
     },
