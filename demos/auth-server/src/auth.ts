@@ -351,12 +351,29 @@ async function withoutMachineScopes(
   return scope !== undefined && kept.length === asked.length ? undefined : kept.join(' ');
 }
 
-/** The client id a token request authenticates as — the form body's, or HTTP Basic's. */
-function tokenRequestClientId(ctx: ScopeHookCtx): string | undefined {
+/**
+ * The client id a token request CLAIMS to authenticate as — the form body's, HTTP Basic's, or a
+ * `private_key_jwt` assertion's `sub` (RFC 7523 §3, where `client_id` is optional). Read
+ * before the plugin verifies anything, which is fine for the one use it has: choosing whose
+ * stored scopes to narrow. A claim that is false fails the plugin's own authentication next.
+ *
+ * Exported for its test: an assertion-authenticated client is the one a narrowing that read
+ * only the first two presentations would have let through unnarrowed.
+ */
+export function tokenRequestClientId(ctx: Pick<ScopeHookCtx, 'body' | 'headers'>): string | undefined {
   const body = ctx.body as Record<string, unknown> | undefined;
   if (typeof body?.client_id === 'string' && body.client_id) return body.client_id;
   const basic = basicCredentialsOf(ctx.headers?.get('authorization'));
-  return basic && basic !== 'malformed' ? basic.clientId : undefined;
+  if (basic && basic !== 'malformed') return basic.clientId;
+  if (typeof body?.client_assertion !== 'string') return undefined;
+  try {
+    const payload = body.client_assertion.split('.')[1] ?? '';
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+    const sub = (JSON.parse(json) as { sub?: unknown }).sub;
+    return typeof sub === 'string' && sub ? sub : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -386,8 +403,11 @@ async function machineGrantCeiling(ctx: ScopeHookCtx, machineScopes: readonly st
     return;
   }
   const clientId = tokenRequestClientId(ctx);
-  // No id, or an unknown one: the plugin refuses it with its own error.
-  const client = clientId ? await findClientScopes(ctx, clientId) : null;
+  // Fail closed: with no client to read, the stored scopes cannot be narrowed, and letting the
+  // request through would let the plugin mint all of them.
+  if (!clientId) throw refuse('invalid_client', 'client authentication is required');
+  // An unknown id is the plugin's to refuse, with its own error; it mints nothing for it.
+  const client = await findClientScopes(ctx, clientId);
   if (!client) return;
   const granted = (client.clientCredentialsScopes ?? []).filter((s) => machineScopes.includes(s));
   if (!granted.length) throw refuse('unauthorized_client', 'client has no authorized client_credentials scopes');

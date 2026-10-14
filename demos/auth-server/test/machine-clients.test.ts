@@ -5,7 +5,7 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { MockEmailTransport } from '@substrat-run/adapter-email';
 import { schema } from '../src/auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
-import { buildAuth, type Auth } from '../src/auth.js';
+import { buildAuth, tokenRequestClientId, type Auth } from '../src/auth.js';
 import { createAdminApi } from '../src/admin-api.js';
 import { MACHINE_SCOPES, machineScopesOf } from '../src/settings.js';
 import type { SqlExec } from '../src/introspect.js';
@@ -434,6 +434,17 @@ describe('the token endpoint, for a machine client', () => {
     }
   });
 
+  it('refuses a scope-less request it cannot tie to a client, rather than letting all through', async () => {
+    await registerMachine(await signIn(), ['reports:read']);
+    const res = await call('/api/auth/oauth2/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'client_credentials' }).toString(),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error?: string }).error).toBe('invalid_client');
+  });
+
   it('works again after its secret is rotated, and only with the new one', async () => {
     const admin = await signIn();
     const machine = await registerMachine(admin, ['reports:read']);
@@ -536,5 +547,26 @@ describe('discovery', () => {
   it('advertises only the sign-in scopes without MACHINE_SCOPES — what it said before', async () => {
     cfg = {};
     expect((await advertised()).scopes_supported?.sort()).toEqual(['email', 'offline_access', 'openid', 'profile']);
+  });
+});
+
+describe('which client a token request claims to be', () => {
+  const b64url = (value: unknown) =>
+    btoa(JSON.stringify(value)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const assertion = (payload: unknown) => `${b64url({ alg: 'ES256' })}.${b64url(payload)}.sig`;
+  const basic = (id: string) => new Headers({ authorization: `Basic ${btoa(`${encodeURIComponent(id)}:s`)}` });
+
+  it('reads the posted id, then Basic, then a private_key_jwt assertion’s sub', () => {
+    expect(tokenRequestClientId({ body: { client_id: 'posted' }, headers: basic('basic') })).toBe('posted');
+    expect(tokenRequestClientId({ body: {}, headers: basic('basic') })).toBe('basic');
+    expect(tokenRequestClientId({ body: { client_assertion: assertion({ sub: 'asserted', iss: 'asserted' }) } })).toBe(
+      'asserted',
+    );
+  });
+
+  it('claims nobody from nothing, or from an assertion it cannot read', () => {
+    expect(tokenRequestClientId({ body: {} })).toBeUndefined();
+    expect(tokenRequestClientId({ body: { client_assertion: 'not-a-jwt' } })).toBeUndefined();
+    expect(tokenRequestClientId({ body: { client_assertion: assertion({ iss: 'no-sub' }) } })).toBeUndefined();
   });
 });
