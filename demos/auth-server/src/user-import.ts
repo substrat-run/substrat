@@ -24,10 +24,8 @@ import {
  * What one entry may carry, and what becomes of it:
  *
  *  - the user row — id, email, name, whether the email was verified, when they joined. An
- *    entry with no `emailVerified` is stored as unverified, never guessed verified; the result
- *    counts those people (`unverified.unasserted`) apart from the ones the file marks `false`,
- *    because an export that dropped the column is a lockout at every relying party that
- *    identifies someone by address (#1359), and the dry run is where that is cheap to see;
+ *    entry with no `emailVerified` is stored as unverified, never guessed verified, and the
+ *    result counts such new people (`UnverifiedCounts`) so a dry run shows the lockout first;
  *  - a password, as the old issuer's bcrypt hash. Stored as the `credential` account Better
  *    Auth's own sign-up writes, and checked by `legacyAwarePassword` until they next set one;
  *  - the upstream identities they signed in with (`github` + GitHub's numeric user id, …), as
