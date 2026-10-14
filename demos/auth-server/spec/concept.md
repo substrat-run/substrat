@@ -86,9 +86,10 @@ later read could return it even deliberately. `skip_consent` is a column now rat
   through the same sign-up route and is deliberately exempt, or a default install could never
   create anybody. Someone a relying party sent here can sign **up** and resume that authorize
   request, landing back at the application rather than on this dashboard.
-- **What a machine client may be granted.** `MACHINE_SCOPES` is declared the same way and read
-  on the same per-request rebuild, but the dashboard only reads it: it is the operator's ceiling
-  on unattended credentials, set where the issuer's environment is. A **machine** application
+- **What a machine client may be granted.** `MACHINE_SCOPES` (scopes separated by spaces or
+  commas) is declared the same way and read on the same per-request rebuild, but the dashboard
+  only reads it: it is the operator's ceiling on unattended credentials, set where the issuer's
+  environment is. A **machine** application
   (`client_credentials`, #2267) has no redirect URIs, consent or sign-in policy; it is stored as
   the plugin's `web` type with `client_credentials` as its only grant, and its kind is fixed once
   registered. Unset, no machine client can be registered or get a token. A sign-in scope
