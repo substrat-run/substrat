@@ -115,8 +115,11 @@ export type {
 } from './vertical-client.js';
 export {
   callPlatformScopeStore,
+  pinnedServingVersionId,
   platformScopeStoresFor,
+  sameDeclaredStores,
   scopeStoresOf,
+  unrouteScope,
   unreachablePlatformScopeStores,
   type PlatformScopeStoreDispatch,
   type PlatformScopeStores,

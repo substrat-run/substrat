@@ -165,7 +165,7 @@ import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } fro
 import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
-import { scopeStoresOf } from './platform-scope-stores.js';
+import { pinnedServingVersionId, sameDeclaredStores, scopeStoresOf, unrouteScope } from './platform-scope-stores.js';
 import { assertNoUnreachableScopeCopies, listAllScopeScriptCopies, reapScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
@@ -5136,6 +5136,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   const reapScopeStorage = async (c: ReqCtx, scope: Scope): Promise<boolean> => {
     const actor = c.get('actor');
+    // #2285: stop routing before the wipe. A call that lands between the wipe and the
+    // delete would recreate the store object, and nothing left could reach it.
+    await unrouteScope(c.var.admin, actor, scope);
     // #2207: the stores first, on every path below: a routed scope's copies are reaped through
     // their scripts, and a store is per scope, not per script.
     await wipePlatformStores(c, scope);
@@ -5323,13 +5326,43 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // version that declares none is not asked. One that cannot be resolved while a kind is
     // registered refuses (503): the key must not be destroyed while a store may hold the subject.
     const reach = await platformStoresOf(c, scope);
+    // The list the erasure is judged against, including an empty one (#2285). Undefined only
+    // when this control plane does not call stores: the host erases its own then.
+    const storesAtStart = options.platformScopeStores && scope.vertical
+      ? (reach?.stores ?? [])
+      : undefined;
+    const servingVersionAtStart = await pinnedServingVersionId(c.var.admin, c.get('actor'), scope);
     // Not asked is `undefined`, not `[]` (#2242): with no platform path the host's own stores
     // (the pure adapter's co-located runners) are erased in its shred or its finalize.
     const eraseStores = async (): Promise<StoreErasure[] | undefined> =>
       reach ? reach.caller.eraseSubject({ tenantId, scopeId, vertical: reach.vertical, subjectId, stores: reach.stores }) : undefined;
+    /**
+     * A bind or a promote that landed while the stores were being erased (#2285, L19). The key
+     * stays: the retry reads the new set. A 503 from a version that can no longer be named
+     * propagates the same way — the key is not destroyed around it.
+     */
+    const refuseMovedStores = async (): Promise<void> => {
+      if (storesAtStart !== undefined) {
+        const again = await manifestStores(c, scope);
+        if (!sameDeclaredStores(storesAtStart, again)) {
+          throw new ControlPlaneError(
+            412,
+            `scope ${scopeId}'s store bindings changed during subject erasure; the key is kept, retry after it settles`,
+          );
+        }
+      }
+      const servingNow = await pinnedServingVersionId(c.var.admin, c.get('actor'), scope);
+      if (servingNow !== servingVersionAtStart) {
+        throw new ControlPlaneError(
+          412,
+          `scope ${scopeId}'s serving version changed during subject erasure; the key is kept, retry after it settles`,
+        );
+      }
+    };
     /** The host's own shred, with the platform's store erasure first: a store that errors keeps the key. */
     const shredHere = async () => {
       const storeErasures = await eraseStores();
+      await refuseMovedStores();
       const receipt = await c.var.admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId);
       return { ...receipt, storeErasures: [...receipt.storeErasures, ...(storeErasures ?? [])] };
     };
@@ -5356,9 +5389,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     if (bySlug) redactions.push(await bySlug.redactSubject(scopeId, subjectId));
     const storeErasures = await eraseStores();
+    await refuseMovedStores();
     return c.json(await c.var.admin.finalizeSubjectShred(c.get('actor'), tenantId, scopeId, subjectId, redactions, {
       versionId: scope.verticalVersionId, servingRef: scope.servingRef ?? null, epoch: erasureEpoch,
-      copyCount: copies.length,
+      copyCount: copies.length, servingVersionId: servingVersionAtStart,
     }, storeErasures).catch(relayHostRefusal));
   });
 
@@ -9004,6 +9038,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // place, so the retry a PR-close job makes still finds it — after the row is gone, nothing
     // would name those clients again. A clean room never had one.
     await retireClientsOfReapedScope(previewAuthDeps(c), preview);
+    // #2285: a preview is still routed until its row goes. Unroute before the wipe.
+    await unrouteScope(c.var.admin, c.get('actor'), preview);
     await wipePlatformStores(c, preview);
     let storageStranded = false;
     if (options.resolveVerticalRef) {

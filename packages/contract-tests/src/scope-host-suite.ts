@@ -6126,6 +6126,44 @@ export function scopeHostContractSuite(
         .toEqual([null]);
     });
 
+    it('an erasure claim fails when the serving version is not the one it read, and the key stays (#2285)', async () => {
+      const slug = `pin-${ulid().toLowerCase().slice(-8)}`;
+      await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+      const versionId = ulid();
+      const ref = `${slug}-serving`;
+      await host.admin.publishVersion(staff, {
+        id: versionId,
+        verticalSlug: slug,
+        version: `1.0.${versionId.slice(-4).toLowerCase()}`,
+        manifestDigest: `m-${versionId}`,
+        permissionDigest: 'p',
+        migrationDigest: 'g',
+        deploymentRef: ref,
+        manifestJson: JSON.stringify({
+          version: '1.0.0', entry: 'index.js', compatibilityDate: '2026-07-01',
+          registry: { permissions: [], roles: [], entityGrants: [] },
+          digests: { manifest: 'm', permission: 'p', migration: 'g' },
+        }),
+      });
+      await host.admin.admitVersion(staff, versionId);
+      const s = scopeId.parse(ulid());
+      const subject = ulid();
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s, vertical: slug });
+      const [sealed] = await host.admin.sealSubjectPayloads(staff, t1, s, [{ subjectId: subject, plaintext: 'private' }]);
+      await host.admin.setVerticalServing(staff, slug, { ref, versionId, doClasses: ['ScopeDO'], migrationTag: 'v1' });
+      await host.admin.setScopeServingRef(staff, t1, s, ref);
+      const redacted = [{ events: 0, intents: 0, jobRuns: 0, idempotencyResults: 0, intentIds: [],
+        vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] } }];
+      const expected = { versionId: null, servingRef: ref, epoch: 0, copyCount: 0, servingVersionId: ulid() };
+      await expectRefusal(host.admin.finalizeSubjectShred(staff, t1, s, subject, redacted, expected), 'precondition_failed');
+      expect(await host.admin.openSubjectPayloads(staff, t1, s, [{ subjectId: subject, sealed: sealed! }]))
+        .toEqual(['private']);
+      expect((await host.admin.finalizeSubjectShred(staff, t1, s, subject, redacted,
+        { ...expected, servingVersionId: versionId })).keyDestroyed).toBe(true);
+      expect(await host.admin.openSubjectPayloads(staff, t1, s, [{ subjectId: subject, sealed: sealed! }]))
+        .toEqual([null]);
+    });
+
     // #1722 (Codex #2008 r7): the admin-log record of a staff resolution of a kept copy. The
     // resolution itself runs in the vertical's store; the directory only records it, in full.
     it('records a kept-copy resolution in the admin log, before and after, and refuses an unknown scope', async () => {

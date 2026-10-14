@@ -330,6 +330,63 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         expect(await keyKept()).toBe(true);
       });
 
+      it('a binding added while the stores are erased keeps the key (#2285)', async () => {
+        const scope = await sealedScope();
+        const version = await publish(stores);
+        await host.admin.bindScopeVersion(staff, t, scope.s, version.id);
+        const caller: PlatformScopeStores = {
+          ...unreachablePlatformScopeStores(),
+          eraseSubject: async () => {
+            const added = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }]);
+            await host.admin.bindScopeVersion(staff, t, scope.s, added.id);
+            return [{ binding: 'GRAPH', erased: 1 }];
+          },
+        };
+        const api = createControlPlaneApi({
+          host,
+          authenticate: UNSAFE_devPlatformActorAuth(),
+          storeKinds: [graph],
+          resolveVerticalRef: async (r) => (r === version.ref ? (redactOnly as unknown as VerticalClient) : undefined),
+          platformScopeStores: caller,
+        });
+        const res = await shred(api, scope.s, scope.subject);
+        expect(res.status).toBe(412);
+        expect(await scope.keyKept()).toBe(true);
+      });
+
+      it('a promote onto the same serving script that adds a binding keeps the key (#2285)', async () => {
+        const slug = `moved-${ulid().toLowerCase().slice(-10)}`;
+        await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+        const scope = await sealedScope(slug);
+        const served = await publish(stores, slug);
+        const servingRef = `${slug}-serving`;
+        await host.admin.bindScopeVersion(staff, t, scope.s, served.id);
+        await host.admin.setVerticalServing(staff, slug, {
+          ref: servingRef, versionId: served.id, doClasses: ['ScopeDO'], migrationTag: 'v1',
+        });
+        await host.admin.setScopeServingRef(staff, t, scope.s, servingRef);
+        const caller: PlatformScopeStores = {
+          ...unreachablePlatformScopeStores(),
+          eraseSubject: async () => {
+            const next = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }], slug);
+            await host.admin.setVerticalServing(staff, slug, {
+              ref: servingRef, versionId: next.id, doClasses: ['ScopeDO'], migrationTag: 'v1',
+            });
+            return [{ binding: 'GRAPH', erased: 1 }];
+          },
+        };
+        const api = createControlPlaneApi({
+          host,
+          authenticate: UNSAFE_devPlatformActorAuth(),
+          storeKinds: [graph],
+          resolveVerticalRef: async (r) => (r === servingRef ? (redactOnly as unknown as VerticalClient) : undefined),
+          platformScopeStores: caller,
+        });
+        const res = await shred(api, scope.s, scope.subject);
+        expect(res.status).toBe(412);
+        expect(await scope.keyKept()).toBe(true);
+      });
+
       it('a version that declares a store is asked', async () => {
         const { s, subject, keyKept, api, asked } = await bound([{ binding: 'GRAPH', kind: 'graph' }]);
         const res = await shred(api, s, subject);

@@ -94,6 +94,49 @@ export function declaredStoresOf(manifestJson: string | null): DeclaredScopeStor
   return parsed.data.scopeStores;
 }
 
+/** The same bindings, whatever order the two manifests listed them in. */
+export function sameDeclaredStores(
+  left: readonly DeclaredScopeStore[],
+  right: readonly DeclaredScopeStore[],
+): boolean {
+  const key = (stores: readonly DeclaredScopeStore[]) =>
+    stores.map((store) => `${store.binding}\0${store.kind}`).sort().join('\n');
+  return key(left) === key(right);
+}
+
+/**
+ * The version a scope pinned to its vertical's serving script is running (#2285). Null when the
+ * scope is not on that pin, or the pin names a script the pointer no longer serves: the bound
+ * version decides then, and a subject-erasure claim does not fence the pointer.
+ */
+export async function pinnedServingVersionId(
+  admin: Pick<HostAdmin, 'verticalServing'>,
+  actor: PlatformActorId,
+  scope: Pick<Scope, 'vertical' | 'servingRef'>,
+): Promise<string | null> {
+  if (!scope.vertical || !scope.servingRef) return null;
+  const pointer = await admin.verticalServing(actor, scope.vertical).catch(() => null);
+  return pointer?.ref === scope.servingRef ? pointer.versionId : null;
+}
+
+/**
+ * Stop the router serving a scope, before its stores are wiped (#2285, L6). The router admits a
+ * scope only while one of its hostnames is `active`, and it reads that row on every request, so
+ * unbinding is immediate. Unbind is idempotent: a retry after a failed wipe finds nothing left
+ * to remove. A hostname set merely non-active would not hold — the issuance reconcile heals a
+ * platform hostname back to `active`.
+ */
+export async function unrouteScope(
+  admin: Pick<HostAdmin, 'listHostnames' | 'unbindHostname'>,
+  actor: PlatformActorId,
+  scope: Pick<Scope, 'tenantId' | 'id'>,
+): Promise<void> {
+  const hostnames = await admin.listHostnames(actor, { tenantId: scope.tenantId, scopeId: scope.id });
+  for (const hostname of hostnames) {
+    await admin.unbindHostname(actor, hostname.hostname);
+  }
+}
+
 /**
  * The scope stores of the version a scope's deployment runs (#2207). A scope on its vertical's
  * serving pin runs the serving pointer's version, and any other scope its bound version; this

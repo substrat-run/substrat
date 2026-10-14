@@ -3691,7 +3691,18 @@ export interface HostAdmin {
   finalizeSubjectShred(
     actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
     subjectId: string, redactions: readonly SubjectRedactionCounts[],
-    expected: { versionId: string | null; servingRef: string | null; epoch: number; copyCount: number },
+    expected: {
+      versionId: string | null;
+      servingRef: string | null;
+      epoch: number;
+      copyCount: number;
+      /**
+       * The serving pointer's version when the erasure read a scope pinned to it (#2285).
+       * The claim requires that version to still be the one the pointer serves. Omitted,
+       * the claim does not fence the pointer — a caller that resolved no pin.
+       */
+      servingVersionId?: string | null;
+    },
     /**
      * What the serving script's stores erased (#2068). The coordinator calls
      * `substrat.erase` once — store objects are per vertical, not per script copy —

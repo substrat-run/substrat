@@ -3309,7 +3309,10 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null,
-    expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number): boolean {
+    expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number,
+    expectedServingVersionId: string | null = null): boolean {
+    // #2285: a promote can move the pointer's version while the scope's own serving_ref stays.
+    // A null expected version means the erasure did not resolve through the pointer.
     return this.sql.exec(
       `UPDATE scopes SET erasure_epoch = COALESCE(erasure_epoch, 0) + 1
        WHERE tenant_id = ? AND scope_id = ? AND vertical_version_id IS ?
@@ -3318,8 +3321,14 @@ export class ControlPlaneDO extends DurableObject {
            WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id
              AND copy.state = 'pending')
          AND (SELECT COUNT(*) FROM scope_script_copies AS copy
-           WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id) = ?`,
+           WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id) = ?
+         AND (? IS NULL OR EXISTS (
+           SELECT 1 FROM verticals
+           WHERE verticals.slug = scopes.vertical
+             AND verticals.serving_ref IS scopes.serving_ref
+             AND verticals.serving_version_id IS ?))`,
       tenantId, scopeId, expectedVersionId, expectedServingRef, expectedEpoch, expectedCopyCount,
+      expectedServingVersionId, expectedServingVersionId,
     ).rowsWritten > 0;
   }
 

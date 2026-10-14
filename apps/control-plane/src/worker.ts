@@ -136,6 +136,7 @@ import {
   type DoNamespaceReader,
   platformScopeStoresFor,
   scopeStoresOf,
+  unrouteScope,
   unreachablePlatformScopeStores,
   type PlatformScopeStores,
 } from '@substrat-run/control-plane-api';
@@ -1936,6 +1937,8 @@ export default {
           rec,
         );
         if (rec) {
+          // #2285: an expired fork can still be routed. Unbind before the wipe.
+          await unrouteScope(host.admin, SWEEP_ACTOR, rec);
           await wipeDeclaredScopeStores(env, host.admin, rec);
         }
         if (resolveRef) {

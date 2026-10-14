@@ -10916,6 +10916,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions, expected, storeErasures) => {
         if (redactions.length === 0) throw substratError('conflict', 'subject erasure has no confirmed scope redaction');
+        const servingVersionId = expected.servingVersionId ?? null;
         const claimed = this.directory.prepare(
           `UPDATE scopes SET erasure_epoch = COALESCE(erasure_epoch, 0) + 1
            WHERE tenant_id = ? AND scope_id = ? AND vertical_version_id IS ?
@@ -10924,8 +10925,14 @@ export class SqliteScopeHost implements ScopeHost {
                WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id
                  AND copy.state = 'pending')
              AND (SELECT COUNT(*) FROM scope_script_copies AS copy
-               WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id) = ?`,
-        ).run(tenantId, scopeId, expected.versionId, expected.servingRef, expected.epoch, expected.copyCount);
+               WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id) = ?
+             AND (? IS NULL OR EXISTS (
+               SELECT 1 FROM verticals
+               WHERE verticals.slug = scopes.vertical
+                 AND verticals.serving_ref IS scopes.serving_ref
+                 AND verticals.serving_version_id IS ?))`,
+        ).run(tenantId, scopeId, expected.versionId, expected.servingRef, expected.epoch, expected.copyCount,
+          servingVersionId, servingVersionId);
         if (claimed.changes === 0) throw substratError('precondition_failed', 'scope route or copy inventory changed during subject erasure; retry after it settles');
         // The pure adapter has one co-located scope store. Its existing atomic shred is
         // the final local redaction and key destruction, after remote copies confirmed.
