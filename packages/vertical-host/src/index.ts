@@ -135,7 +135,6 @@ import {
   type EntityRef,
   type Visibility,
   type RoleDefinition,
-  scopeDumpTable,
   type ScopeDumpTable,
   type ScopeTable,
   type ScopeQueryResult,
@@ -1477,69 +1476,8 @@ export function mountPlatformSurface<Env extends object>(
     return c.json({ bytes: await host.databaseSizeLocal(scope) });
   });
 
-  // #2207: each scope store's size. Metadata only. A host that predates the method
-  // answers 501, because an empty list would be read as "this scope has no stores".
-  app.get('/internal/scope-store-sizes', async (c) => {
-    const scope = scopeIdOf.parse(c.req.query('scopeId'));
-    const tenant = tenantIdOf.parse(c.req.query('tenantId'));
-    const host = deps.hostFor(c.env);
-    if (!host.scopeStoreSizesLocal) {
-      return c.json({ error: 'this deployment cannot read scope store sizes (#2207). Redeploy it' }, 501);
-    }
-    return c.json({ stores: await host.scopeStoreSizesLocal(tenant, scope) });
-  });
-
-  // #2068: erase one subject from each scope store in this deployment. The control
-  // plane calls the serving script once, then destroys the key. A host that predates
-  // the method answers 501, because an empty list would look like nothing to erase.
-  app.post('/internal/scope-store-erase', async (c) => {
-    const body = z
-      .object({ tenantId: tenantIdOf, scopeId: scopeIdOf, subjectId: z.string().min(1) })
-      .strict()
-      .parse(await c.req.json());
-    const host = deps.hostFor(c.env);
-    if (!host.scopeStoreEraseLocal) {
-      return c.json({ error: 'this deployment cannot erase a scope store (#2068). Redeploy it' }, 501);
-    }
-    return c.json({
-      storeErasures: await host.scopeStoreEraseLocal(body.tenantId, body.scopeId, body.subjectId),
-    });
-  });
-
-  // #2211: the scope stores a backup copies. A host that predates the method answers
-  // 501, which the control plane reads as "this deployment has no store export".
-  app.get('/internal/scope-store-export', async (c) => {
-    const scope = scopeIdOf.parse(c.req.query('scopeId'));
-    const tenant = tenantIdOf.parse(c.req.query('tenantId'));
-    const host = deps.hostFor(c.env);
-    if (!host.scopeStoreExportLocal) {
-      return c.json({ error: 'this deployment cannot export scope stores (#2211). Redeploy it' }, 501);
-    }
-    return c.json({ stores: await host.scopeStoreExportLocal(tenant, scope) });
-  });
-
-  app.post('/internal/scope-store-import', async (c) => {
-    const body = z
-      .object({
-        tenantId: tenantIdOf,
-        scopeId: scopeIdOf,
-        stores: z.array(z.object({ binding: z.string(), kind: z.string().min(1).optional(), tables: z.array(z.unknown()) })),
-      })
-      .strict()
-      .parse(await c.req.json());
-    const host = deps.hostFor(c.env);
-    if (!host.scopeStoreImportLocal) {
-      return c.json({ error: 'this deployment cannot import scope stores (#2211). Redeploy it' }, 501);
-    }
-    // The kind rides along so the host can refuse a dump of another kind before it writes (L8).
-    const stores = body.stores.map((store) => ({
-      binding: store.binding,
-      ...(store.kind ? { kind: store.kind } : {}),
-      tables: z.array(scopeDumpTable).parse(store.tables),
-    }));
-    await host.scopeStoreImportLocal(body.tenantId, body.scopeId, stores);
-    return c.json({ tables: stores.length });
-  });
+  // Scope stores are not reached through this script (#2207). The control plane
+  // signs the object name and calls the store script in the dispatch namespace.
 
   // #286: the PITR bookmarks one scope recorded before its migration passes — the rewind
   // points a backout offers. Metadata only; no scope bytes cross the boundary.

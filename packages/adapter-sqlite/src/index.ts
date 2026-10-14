@@ -739,11 +739,13 @@ import {
   type ReservedStoreResult,
   callScopeStore,
   observeStoreCall,
+  replayStoreErasures,
   scopeStoreLifecycleOf,
   scopeStoreRunnersOf,
   type ScopeStoreHostOptions,
   type ScopeStoreLifecycle,
   type ScopeStoreRunner,
+  type StoreErasureReplay,
 } from '@substrat-run/kernel';
 import {
   attributedView,
@@ -4022,7 +4024,7 @@ export class SqliteScopeHost implements ScopeHost {
     scopeId: ScopeId,
     dump: ScopeDumpInput,
     opts?: { sourceScopeId?: ScopeId },
-  ): Promise<void> {
+  ): Promise<StoreErasureReplay | void> {
     // Restore never creates a scope (that is importScope) — an unknown target fails closed.
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
@@ -4038,14 +4040,26 @@ export class SqliteScopeHost implements ScopeHost {
       this.reassertSwitchesInTurn(rt, actor, tenantId, scopeId, undefined, (action, after) => rows.push([action, after])),
     );
     await this.importScopeStores(tenantId, scopeId, dump.stores);
+    const replay = await this.replayShreddedStoreErasures(
+      actor,
+      tenantId,
+      scopeId,
+      (opts?.sourceScopeId ?? dump.scopeId) as ScopeId,
+    );
     for (const [action, after] of rows) this.recordAdmin(actor, action, { tenantId, scopeId }, null, after);
     this.recordAdmin(
       actor,
       'restoreScope',
       { tenantId, scopeId },
       null,
-      { sourceScopeId: dump.scopeId, tables: dump.tables.length, capturedAt: dump.capturedAt },
+      {
+        sourceScopeId: dump.scopeId,
+        tables: dump.tables.length,
+        capturedAt: dump.capturedAt,
+        ...replay,
+      },
     );
+    return replay;
   }
 
   async snapshotScope(
@@ -4076,6 +4090,7 @@ export class SqliteScopeHost implements ScopeHost {
     if (source.verticalVersionId) {
       await this.admin.bindScopeVersion(actor, tenantId, snapshotId, source.verticalVersionId);
     }
+    await this.replayShreddedStoreErasures(actor, tenantId, snapshotId, scopeId);
     return snapshotId;
   }
 
@@ -4268,6 +4283,18 @@ export class SqliteScopeHost implements ScopeHost {
     return sizes;
   }
 
+  /** The vertical whose stores this scope has on this host, or nothing when it has none. */
+  private storeVerticalOf(scopeId: ScopeId): string | undefined {
+    if (this.scopeStoreRunners.size === 0) return undefined;
+    const row = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(scopeId) as
+      | { vertical: string | null }
+      | undefined;
+    const vertical = row?.vertical ?? undefined;
+    if (!vertical) return undefined;
+    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) return undefined;
+    return vertical;
+  }
+
   /**
    * `substrat.erase` on each declared binding. A store error throws, so the caller
    * can leave the subject key untouched. Fail closed (#2242): an empty answer means
@@ -4281,16 +4308,11 @@ export class SqliteScopeHost implements ScopeHost {
     subjectId: string,
   ): Promise<{ binding: string; erased: number }[]> {
     const bindings = [...this.scopeStoreRunners.keys()];
-    if (bindings.length === 0) return [];
-    const row = this.directory.prepare('SELECT vertical FROM scopes WHERE scope_id = ?').get(scopeId) as
-      | { vertical: string | null }
-      | undefined;
-    const vertical = row?.vertical;
     // Shred calls this for every scope. No vertical names no store object, and a
     // vertical this host is not pinned to is one its runners never served: both hold
     // nothing here, and the key is still destroyed.
+    const vertical = this.storeVerticalOf(scopeId);
     if (!vertical) return [];
-    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) return [];
     const erasures: { binding: string; erased: number }[] = [];
     for (const binding of bindings) {
       const { erased } = await this.invokeReservedStore(
@@ -4378,6 +4400,28 @@ export class SqliteScopeHost implements ScopeHost {
         { tables: store.tables },
       );
     }
+  }
+
+  /**
+   * `substrat.erase` again for every tombstoned subject (#2207), on the target's and the
+   * source's marks (`replayStoreErasures`). A target this host names no store for (no
+   * runner, or no vertical a store is kept for) has nothing to replay into: nothing is read.
+   */
+  private async replayShreddedStoreErasures(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    target: ScopeId,
+    source: ScopeId,
+  ): Promise<StoreErasureReplay | undefined> {
+    if (!this.storeVerticalOf(target)) return undefined;
+    return replayStoreErasures({
+      admin: this.admin,
+      actor,
+      tenantId,
+      target,
+      source,
+      erase: async (subjectId) => (await this.eraseScopeStores(tenantId, target, subjectId)).length,
+    });
   }
 
   /** `substrat.wipe` on each declared binding, before the scope's own storage goes. */
@@ -10731,6 +10775,20 @@ export class SqliteScopeHost implements ScopeHost {
       },
       // `stamp` is the erasure epoch an orchestrated erasure's claim compared (#1722). A direct shred
       // claims nothing and records the epoch it ran under: the backfill orders erasures by them.
+      listShreddedSubjects: async (actor, tenantId, scopeId, cursor) => {
+        this.assertScope(tenantId, scopeId);
+        const rows = this.directory
+          .prepare(
+            `SELECT subject_id FROM _substrat_subject_keys
+              WHERE scope_id = ? AND tenant_id = ? AND shredded_at IS NOT NULL AND subject_id > ?
+              ORDER BY subject_id LIMIT 101`,
+          )
+          .all(scopeId, tenantId, cursor ?? '') as { subject_id: string }[];
+        const subjects = rows.slice(0, 100).map((row) => row.subject_id);
+        const nextCursor = rows.length > 100 ? (subjects[99] ?? null) : null;
+        this.recordAccess(actor, 'listShreddedSubjects', { tenantId, scopeId }, null, subjects.length);
+        return { subjects, nextCursor };
+      },
       shredSubject: async (
         actor,
         tenantId,

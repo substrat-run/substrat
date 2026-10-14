@@ -137,6 +137,22 @@ export function subjectErasureContractSuite(
       ]);
     });
 
+    it('lists a tombstoned subject and not one that was never erased', async () => {
+      const who = subject();
+      const other = subject();
+      await seed(who);
+      await seed(other);
+      // s1 is shared with the tests above, which shred subjects of their own: assert on these two.
+      const before = await host.admin.listShreddedSubjects(staff, t1, s1);
+      expect(before.subjects).not.toContain(who);
+      expect(before.subjects).not.toContain(other);
+      await host.admin.shredSubject(staff, t1, s1, who);
+      const listed = await host.admin.listShreddedSubjects(staff, t1, s1);
+      expect(listed.subjects).toContain(who);
+      expect(listed.subjects).not.toContain(other);
+      expect(listed.nextCursor).toBeNull();
+    });
+
     it('blanks every declared erasable column on every row a subject column names, and only those', async () => {
       const who = subject();
       const { other, note, edited, decoy } = await seed(who);

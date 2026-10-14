@@ -1,6 +1,14 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
-import { errorCodeOf, StoreError } from '@substrat-run/contracts';
-import { callReservedStoreOperation, callScopeStore, observeStoreCall, scopeStoreLifecycleOf, type ScopeStoreRunner } from '../src/scope-store.js';
+import { errorCodeOf, platformActorId, scopeId, StoreError, substratError, tenantId, type ScopeId } from '@substrat-run/contracts';
+import {
+  callReservedStoreOperation,
+  callScopeStore,
+  observeStoreCall,
+  replayStoreErasures,
+  scopeStoreLifecycleOf,
+  type ScopeStoreRunner,
+} from '../src/scope-store.js';
+import { ulid } from '../src/ulid.js';
 import {
   STORE_CALL_LOG_CAP,
   STORE_CALL_SINK_KEY,
@@ -251,6 +259,84 @@ describe('callReservedStoreOperation (#2207)', () => {
     expect(imported).toEqual({ tables: 1 });
     const wiped = await callReservedStoreOperation(async () => ({ result: {} }), 'substrat.wipe');
     expect(wiped).toEqual({});
+  });
+});
+
+describe('replayStoreErasures (#2207)', () => {
+  const actor = platformActorId.parse(ulid());
+  const tenant = tenantId.parse(ulid());
+  const target = scopeId.parse(ulid());
+  const source = scopeId.parse(ulid());
+
+  /** Marks per scope, served in pages of `size`, as the directory serves them. A scope absent here is unknown. */
+  const adminOf = (marks: Map<ScopeId, string[]>, size = 2, fault?: Error) => ({
+    listShreddedSubjects: async (_a: unknown, _t: unknown, scope: ScopeId, cursor?: string) => {
+      if (fault && scope === source) throw fault;
+      const all = marks.get(scope);
+      if (!all) throw substratError('not_found', `unknown scope for tenant: (${tenant}, ${scope})`);
+      const from = cursor ? all.indexOf(cursor) + 1 : 0;
+      const subjects = all.slice(from, from + size);
+      return { subjects, nextCursor: from + size < all.length ? (subjects.at(-1) ?? null) : null };
+    },
+  });
+  const run = (admin: ReturnType<typeof adminOf>, erase: (s: string) => Promise<number>, from = source) =>
+    replayStoreErasures({ admin, actor, tenantId: tenant, target, source: from, erase });
+
+  it('walks every page of both scopes and erases each subject once', async () => {
+    const erased: string[] = [];
+    const result = await run(
+      adminOf(new Map([[target, ['a', 'b', 'c']], [source, ['b', 'c', 'd', 'e', 'f']]])),
+      async (s) => {
+        erased.push(s);
+        return 1;
+      },
+    );
+    expect(erased.sort()).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+    expect(result).toEqual({ storeErasuresReplayed: 6, storeErasureIncomplete: false });
+  });
+
+  it('reads the target once when the source is the target', async () => {
+    let lists = 0;
+    const admin = adminOf(new Map([[target, ['a']]]));
+    const counted = { listShreddedSubjects: (...args: Parameters<typeof admin.listShreddedSubjects>) => {
+      lists += 1;
+      return admin.listShreddedSubjects(...args);
+    } };
+    expect(await run(counted, async () => 1, target)).toEqual({ storeErasuresReplayed: 1, storeErasureIncomplete: false });
+    expect(lists).toBe(1);
+  });
+
+  it("an unknown source is reported, and the target's marks are still erased", async () => {
+    const erased: string[] = [];
+    const result = await run(adminOf(new Map([[target, ['a']]])), async (s) => {
+      erased.push(s);
+      return 1;
+    });
+    expect(erased).toEqual(['a']);
+    expect(result).toEqual({ storeErasuresReplayed: 1, storeErasureIncomplete: true, storeErasureSourceUnknown: true });
+  });
+
+  it('nothing to replay and nothing missing answers nothing, as a restore did before stores', async () => {
+    expect(await run(adminOf(new Map([[target, []], [source, []]])), async () => 1)).toBeUndefined();
+  });
+
+  it('any other failure to read the source is thrown, not called unknown', async () => {
+    const refusal = await run(
+      adminOf(new Map([[target, []], [source, []]]), 2, substratError('unavailable', 'directory down')),
+      async () => 1,
+    ).then(() => undefined, (e: unknown) => e);
+    expect(errorCodeOf(refusal)).toBe('unavailable');
+  });
+
+  it('a failed erase marks the replay incomplete and the rest still run', async () => {
+    const erased: string[] = [];
+    const result = await run(adminOf(new Map([[target, ['a', 'b']], [source, []]])), async (s) => {
+      if (s === 'a') throw new StoreError({ code: 'unavailable', status: 503 });
+      erased.push(s);
+      return 1;
+    });
+    expect(erased).toEqual(['b']);
+    expect(result).toEqual({ storeErasuresReplayed: 1, storeErasureIncomplete: true });
   });
 });
 

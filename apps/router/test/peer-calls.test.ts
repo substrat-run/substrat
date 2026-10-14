@@ -228,6 +228,8 @@ describe('the router’s peer entrypoint (#1706)', () => {
         hosts: [],
         scope: TARGET_SCOPE,
         calls: null,
+        // #2207: a peer dispatch carries no store list, so the target's store calls are refused.
+        stores: null,
         depth: 2,
         // A peer call only ever dispatches to a primary instance (#2005).
         primary: true,

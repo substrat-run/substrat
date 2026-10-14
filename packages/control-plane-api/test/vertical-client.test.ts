@@ -588,60 +588,6 @@ describe('VerticalClient — database size (#1524)', () => {
     await expect(answering(404, '404 Not Found').databaseSize(s)).rejects.toThrow();
   });
 
-  it('asks the scope-store-sizes route and reads the list', async () => {
-    const seen: string[] = [];
-    const sizes = await answering(200, JSON.stringify({ stores: [{ binding: 'GRAPH', bytes: 12 }] }), seen).scopeStoreSizes(t, s);
-    expect(sizes).toEqual([{ binding: 'GRAPH', bytes: 12 }]);
-    expect(new URL(seen[0]!).pathname).toBe('/internal/scope-store-sizes');
-    expect(new URL(seen[0]!).searchParams.get('scopeId')).toBe(s);
-    expect(new URL(seen[0]!).searchParams.get('tenantId')).toBe(t);
-  });
-
-  it('asks the scope-store-erase route and reads the list', async () => {
-    const seen: { url: string; body: string }[] = [];
-    const client = new VerticalClient({
-      fetch: (async (input: string, init?: RequestInit) => {
-        seen.push({ url: String(input), body: String(init?.body ?? '') });
-        return new Response(JSON.stringify({ storeErasures: [{ binding: 'GRAPH', erased: 1 }] }), { status: 200 });
-      }) as unknown as typeof fetch,
-      platformSecret: 'secret',
-    });
-    await expect(client.scopeStoreErase(t, s, 'subject-1')).resolves.toEqual([{ binding: 'GRAPH', erased: 1 }]);
-    expect(new URL(seen[0]!.url).pathname).toBe('/internal/scope-store-erase');
-    expect(JSON.parse(seen[0]!.body)).toEqual({ tenantId: t, scopeId: s, subjectId: 'subject-1' });
-  });
-
-  it('asks the scope-store export and import routes', async () => {
-    const table = { name: 'counter', ddl: 'CREATE TABLE counter (n INTEGER NOT NULL)', columns: ['n'], rows: [[4]] };
-    const seen: { url: string; body: string }[] = [];
-    const client = new VerticalClient({
-      fetch: (async (input: string, init?: RequestInit) => {
-        seen.push({ url: String(input), body: String(init?.body ?? '') });
-        return new Response(JSON.stringify({ stores: [{ binding: 'GRAPH', kind: 'counter', tables: [table] }] }), { status: 200 });
-      }) as unknown as typeof fetch,
-      platformSecret: 'secret',
-    });
-    await expect(client.scopeStoreExport(t, s)).resolves.toEqual([{ binding: 'GRAPH', kind: 'counter', tables: [table] }]);
-    expect(new URL(seen[0]!.url).pathname).toBe('/internal/scope-store-export');
-    await expect(client.scopeStoreImport(t, s, [{ binding: 'GRAPH', kind: 'counter', tables: [table] }])).resolves.toBeUndefined();
-    expect(new URL(seen[1]!.url).pathname).toBe('/internal/scope-store-import');
-    expect(JSON.parse(seen[1]!.body)).toEqual({ tenantId: t, scopeId: s, stores: [{ binding: 'GRAPH', kind: 'counter', tables: [table] }] });
-  });
-
-  it('a 200 without a store list is a wire disagreement, not an empty scope', async () => {
-    await expect(answering(200, JSON.stringify({})).scopeStoreExport(t, s)).rejects.toThrow(/without a store list/);
-  });
-
-  it('a 200 without an erasure list is a wire disagreement, not an empty store', async () => {
-    await expect(answering(200, JSON.stringify({})).scopeStoreErase(t, s, 'subject-1')).rejects.toThrow(/without an erasure list/);
-  });
-
-  it('a 200 without a store size list is a wire disagreement, not an empty scope', async () => {
-    for (const body of [{}, { stores: { binding: 'GRAPH', bytes: 1 } }, { stores: [{ binding: 'graph', bytes: 1 }] }, { stores: [{ binding: 'GRAPH', bytes: -1 }] }]) {
-      await expect(answering(200, JSON.stringify(body)).scopeStoreSizes(t, s)).rejects.toThrow(/without a size list/);
-    }
-  });
-
   it('a refusal carries the raw body, so a route miss can be told from the enveloped 404 (#1524)', async () => {
     const refused = async (status: number, body: string) =>
       (await answering(status, body).databaseSize(s).then(() => null, (e: unknown) => e)) as ControlPlaneError;

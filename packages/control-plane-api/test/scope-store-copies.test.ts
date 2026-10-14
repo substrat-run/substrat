@@ -13,23 +13,26 @@ import {
   type ScopeDump,
   type StoreKindRegistration,
 } from '@substrat-run/contracts';
-import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import {
   createControlPlaneApi,
   DEV_ACTOR_HEADER,
+  unreachablePlatformScopeStores,
   UNSAFE_devPlatformActorAuth,
-  VerticalClient,
+  type PlatformScopeStores,
   type ScopeBackupStore,
+  type VerticalClient,
 } from '../src/index.js';
 
 /**
- * The platform's copies of a scope (backup, full pull, snapshot, and the reap that backs
- * up first) must not depend on a deployment serving the scope-store routes (#2243 r3). A
- * deployment built before them answers 404, and a deployment whose host lacks the method
- * answers 501: both hold no store, so the copy proceeds without one. With no store kind
- * registered, no deployment is asked at all, which is how these copies ran before stores.
+ * The platform's copies of a scope (backup, full pull, snapshot, and the reap that wipes
+ * first) reach its stores through the platform (#2207), never through the vertical: a
+ * deployment built before stores, or one that serves no store route, changes nothing
+ * (#2243). What decides is the version the scope runs. With no store kind registered no
+ * store is asked, and the copies run as they did before stores. With one registered, a
+ * version that declares none is not asked either, and a version that cannot be named
+ * refuses the copy rather than dropping a store it may hold.
  */
-describe('scope-store copies tolerate a deployment without the routes (#2243)', () => {
+describe('scope-store copies through the platform (#2243, #2207)', () => {
   let dir: string;
   let host: SqliteScopeHost;
   const staff = platformActorId.parse(ulid());
@@ -71,45 +74,73 @@ describe('scope-store copies tolerate a deployment without the routes (#2243)', 
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const docsScope = async () => {
+  /** A `docs` scope, bound to a version whose manifest declares `scopeStores` (none when absent). */
+  let docsRegistered = false;
+  const docsScope = async (bind?: { scopeStores?: unknown[] }) => {
     const s = scopeId.parse(ulid());
     await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'docs' });
     await host.admin.activateScope(staff, t, s);
+    if (bind) {
+      if (!docsRegistered) {
+        await host.admin.registerVertical(staff, { slug: 'docs', name: 'docs', source: 'cli' });
+        docsRegistered = true;
+      }
+      const id = ulid();
+      await host.admin.publishVersion(staff, {
+        id,
+        verticalSlug: 'docs',
+        version: `1.0.${id.slice(-4).toLowerCase()}`,
+        manifestDigest: `m-${id}`,
+        permissionDigest: 'p',
+        migrationDigest: 'g',
+        deploymentRef: `docs-${id.toLowerCase()}`,
+        manifestJson: JSON.stringify({
+          version: '1.0.0',
+          entry: 'index.js',
+          compatibilityDate: '2026-07-01',
+          registry: { permissions: [], roles: [], entityGrants: [] },
+          digests: { manifest: 'm', permission: 'p', migration: 'g' },
+          ...(bind.scopeStores ? { scopeStores: bind.scopeStores } : {}),
+        }),
+      });
+      await host.admin.admitVersion(staff, id);
+      await host.admin.bindScopeVersion(staff, t, s, id);
+    }
     return s;
   };
 
-  /** A deployment that serves everything a copy needs, and answers `status` for the store routes. */
-  const deployment = (status: number | 'unasked') => {
+  /** A deployment with no store route at all, and a platform caller that records what is asked. */
+  const deployment = {
+    exportScope: async () => [],
+    snapshotScope: async () => ({ tables: 0 }),
+    deleteScope: async () => undefined,
+  } as unknown as VerticalClient;
+  const platform = () => {
     const asked: string[] = [];
-    const client = {
-      exportScope: async () => [],
-      snapshotScope: async () => ({ tables: 0 }),
-      deleteScope: async () => undefined,
-      scopeStoreExport: async () => {
-        asked.push('export');
-        if (status === 'unasked') throw new Error('the store export should not be asked');
-        throw new ControlPlaneError(status, `answered ${status}`);
-      },
-      scopeStoreImport: async () => {
-        asked.push('import');
-        throw new Error('nothing to import');
-      },
+    const refuse = unreachablePlatformScopeStores();
+    const caller: PlatformScopeStores = {
+      exportStores: async (input) => (asked.push('export'), refuse.exportStores(input)),
+      importStores: async (input) => (asked.push('import'), refuse.importStores(input)),
+      eraseSubject: async (input) => (asked.push('erase'), refuse.eraseSubject(input)),
+      wipeStores: async (input) => (asked.push('wipe'), refuse.wipeStores(input)),
+      sizeStores: async (input) => (asked.push('size'), refuse.sizeStores(input)),
     };
-    return { client: client as unknown as VerticalClient, asked };
+    return { caller, asked };
   };
 
-  const appWith = (client: VerticalClient, storeKinds?: readonly StoreKindRegistration[]) =>
+  const appWith = (platformScopeStores: PlatformScopeStores, storeKinds?: readonly StoreKindRegistration[]) =>
     createControlPlaneApi({
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       scopeBackups: backups,
-      verticals: { docs: client },
+      verticals: { docs: deployment },
+      platformScopeStores,
       ...(storeKinds ? { storeKinds } : {}),
     });
 
   /** Each copy the platform takes, through `api`. Every one must succeed with no store. */
-  const everyCopy = async (api: ReturnType<typeof createControlPlaneApi>) => {
-    const s = await docsScope();
+  const everyCopy = async (api: ReturnType<typeof createControlPlaneApi>, bind?: { scopeStores?: unknown[] }) => {
+    const s = await docsScope(bind);
     const backup = await api.request(`/tenants/${t}/scopes/${s}/backups`, { method: 'POST', headers: auth });
     expect(backup.status).toBe(201);
     expect([...held.values()].at(-1)?.stores).toEqual([]);
@@ -124,43 +155,35 @@ describe('scope-store copies tolerate a deployment without the routes (#2243)', 
     expect(((await reap.json()) as { status: string }).status).toBe('reaped');
   };
 
-  it('a deployment built before the routes (404) holds no store: every copy proceeds', async () => {
-    const { client, asked } = deployment(404);
-    await everyCopy(appWith(client, [graph]));
-    expect(asked.filter((a) => a === 'export').length).toBeGreaterThan(0);
-    expect(asked).not.toContain('import');
-  });
-
-  it('a deployment whose host lacks the method (501) holds no store: every copy proceeds', async () => {
-    const { client } = deployment(501);
-    await everyCopy(appWith(client, [graph]));
-  });
-
-  it('any other answer refuses the copy rather than dropping a store it may hold', async () => {
-    const { client } = deployment(503);
-    const api = appWith(client, [graph]);
-    const s = await docsScope();
-    const backup = await api.request(`/tenants/${t}/scopes/${s}/backups`, { method: 'POST', headers: auth });
-    expect(backup.status).toBeGreaterThanOrEqual(500);
-    const pull = await api.request(`/tenants/${t}/scopes/${s}/export?full=true`, { headers: auth });
-    expect(pull.status).toBeGreaterThanOrEqual(500);
-  });
-
-  it('with no store kind registered, no deployment is asked: the copies run as before stores', async () => {
-    const { client, asked } = deployment('unasked');
-    await everyCopy(appWith(client));
+  it('with no store kind registered, no store is asked: the copies run as before stores', async () => {
+    const { caller, asked } = platform();
+    await everyCopy(appWith(caller));
     expect(asked).toEqual([]);
   });
 
-  // The producer of the status the copies tolerate: a deployment that does not serve the
-  // route answers 404, and the client hands that on as the status, not as an empty list.
-  it('the client relays a 404 from the export route as a 404', async () => {
-    const client = new VerticalClient({
-      fetch: (async () => new Response('Not Found', { status: 404 })) as unknown as typeof fetch,
-      platformSecret: 'secret',
-    });
-    const refusal = await client.scopeStoreExport(t, scopeId.parse(ulid())).then(() => undefined, (e: unknown) => e);
-    expect(refusal).toBeInstanceOf(ControlPlaneError);
-    expect((refusal as ControlPlaneError).status).toBe(404);
+  it('with a kind registered, a version that declares no store is not asked: every copy proceeds', async () => {
+    const { caller, asked } = platform();
+    await everyCopy(appWith(caller, [graph]), {});
+    expect(asked).toEqual([]);
+  });
+
+  it('a version that cannot be named refuses the copy rather than dropping a store it may hold', async () => {
+    const { caller, asked } = platform();
+    const api = appWith(caller, [graph]);
+    const s = await docsScope();
+    const backup = await api.request(`/tenants/${t}/scopes/${s}/backups`, { method: 'POST', headers: auth });
+    expect(backup.status).toBe(503);
+    const pull = await api.request(`/tenants/${t}/scopes/${s}/export?full=true`, { headers: auth });
+    expect(pull.status).toBe(503);
+    expect(asked).toEqual([]);
+  });
+
+  it('a version that declares a store, with no route to the store script, refuses the copy (503)', async () => {
+    const { caller, asked } = platform();
+    const api = appWith(caller, [graph]);
+    const s = await docsScope({ scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] });
+    const backup = await api.request(`/tenants/${t}/scopes/${s}/backups`, { method: 'POST', headers: auth });
+    expect(backup.status).toBe(503);
+    expect(asked).toEqual(['export']);
   });
 });

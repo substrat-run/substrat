@@ -15,14 +15,23 @@ import {
   type SubjectShredReceipt,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
-import { createControlPlaneApi, DEV_ACTOR_HEADER, UNSAFE_devPlatformActorAuth, type VerticalClient } from '../src/index.js';
+import {
+  createControlPlaneApi,
+  DEV_ACTOR_HEADER,
+  unreachablePlatformScopeStores,
+  UNSAFE_devPlatformActorAuth,
+  type PlatformScopeStores,
+  type VerticalClient,
+} from '../src/index.js';
 
 /**
  * Subject erasure and scope stores, failing closed (#2242).
  *
- * The control plane destroys the subject key once the serving deployment's stores answer.
- * An empty answer is therefore a claim that nothing is held, and the control plane must not
- * make it when it cannot tell. Every case below reads the key back after the request: kept
+ * The control plane destroys the subject key once the scope's stores answer. It calls them
+ * itself, signed, through the store script (#2207); the vertical is never asked. An empty
+ * answer is therefore a claim that nothing is held, and the control plane must not make it
+ * when it cannot tell: a version it cannot name refuses (503), since it cannot say which
+ * bindings to erase. Every case below reads the key back after the request: kept
  * means a retry can still converge, destroyed means the erasure is final.
  *
  * Gated on the store-kind registry: with no kind registered no deployment can hold a store,
@@ -86,33 +95,43 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
     return { ...scope, ref };
   };
 
+  /** The platform's store caller: records each erase, and fails while `fail()` says so. */
+  const platformStores = (fail: () => boolean = () => false, erased = 1) => {
+    const asked: string[] = [];
+    const caller: PlatformScopeStores = {
+      ...unreachablePlatformScopeStores(),
+      eraseSubject: async ({ scopeId: scope, subjectId: who, stores }) => {
+        asked.push(`${scope}/${who}`);
+        if (fail()) throw new ControlPlaneError(503, 'store unavailable');
+        return stores.map((store) => ({ binding: store.binding, erased }));
+      },
+    };
+    return { caller, asked };
+  };
+
   const shred = (api: ReturnType<typeof createControlPlaneApi>, s: ScopeId, subject: string) =>
     api.request(`/tenants/${t}/scopes/${s}/subjects/${subject}/shred`, { method: 'POST', headers: auth });
 
-  const bySlug = (docs: object, storeKinds?: readonly StoreKindRegistration[]) =>
+  const bySlug = (platformScopeStores: PlatformScopeStores, storeKinds?: readonly StoreKindRegistration[]) =>
     createControlPlaneApi({
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
-      verticals: { docs: { ...redactOnly, ...docs } as unknown as VerticalClient },
-      // Without a ref resolver the route shreds on this host alone, never reaching a deployment.
+      verticals: { docs: redactOnly as unknown as VerticalClient },
       resolveVerticalRef: async () => undefined,
+      platformScopeStores,
       ...(storeKinds ? { storeKinds } : {}),
     });
 
   describe('no store kind registered: nothing can hold a store, erasure proceeds', () => {
-    it('a slug-rung deployment is not asked, and the key is destroyed', async () => {
+    it('no store is asked, and the key is destroyed', async () => {
       const { s, subject, keyKept } = await sealedScope();
-      let asked = false;
-      const api = bySlug({
-        scopeStoreErase: async () => {
-          asked = true;
-          throw new Error('should not be asked');
-        },
+      const { caller, asked } = platformStores(() => {
+        throw new Error('should not be asked');
       });
-      const res = await shred(api, s, subject);
+      const res = await shred(bySlug(caller), s, subject);
       expect(res.status).toBe(200);
       expect(((await res.json()) as SubjectShredReceipt).storeErasures).toEqual([]);
-      expect(asked).toBe(false);
+      expect(asked).toEqual([]);
       expect(await keyKept()).toBe(false);
     });
 
@@ -122,6 +141,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         host,
         authenticate: UNSAFE_devPlatformActorAuth(),
         resolveVerticalRef: async (r) => (r === ref ? (redactOnly as unknown as VerticalClient) : undefined),
+        platformScopeStores: unreachablePlatformScopeStores(),
       });
       expect((await shred(api, s, subject)).status).toBe(200);
       expect(await keyKept()).toBe(false);
@@ -174,52 +194,14 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
   });
 
   describe('a store kind registered: a deployment that may hold a store is asked, or the key is kept', () => {
-    it('a slug-rung deployment (no bound version) is asked, and its list reaches the receipt', async () => {
+    // Stricter than asking the vertical (#2207): with no version to read, the control plane
+    // cannot say which bindings to erase, so it refuses rather than guess an empty list.
+    it('a scope with no bound version and no pin is a version unknown: 503, and the key is kept', async () => {
       const { s, subject, keyKept } = await sealedScope();
-      const asked: string[] = [];
-      const api = bySlug(
-        {
-          scopeStoreErase: async (_t: string, scope: string, who: string) => {
-            asked.push(`${scope}/${who}`);
-            return [{ binding: 'GRAPH', erased: 2 }];
-          },
-        },
-        [graph],
-      );
-      const res = await shred(api, s, subject);
-      expect(res.status).toBe(200);
-      expect(((await res.json()) as SubjectShredReceipt).storeErasures).toEqual([{ binding: 'GRAPH', erased: 2 }]);
-      expect(asked).toEqual([`${s}/${subject}`]);
-      expect(await keyKept()).toBe(false);
-    });
-
-    it('a store erase that fails stops the erasure before the key, and a retry then destroys it', async () => {
-      const { s, subject, keyKept } = await sealedScope();
-      let fail = true;
-      const api = bySlug(
-        {
-          scopeStoreErase: async () => {
-            if (fail) throw new ControlPlaneError(503, 'store unavailable');
-            return [{ binding: 'GRAPH', erased: 0 }];
-          },
-        },
-        [graph],
-      );
-      const refused = await shred(api, s, subject);
-      expect(refused.status).toBeGreaterThanOrEqual(500);
-      expect(await keyKept()).toBe(true);
-      // The retry: the store already erased what it held, and says so with a zero.
-      fail = false;
-      const retried = await shred(api, s, subject);
-      expect(retried.status).toBe(200);
-      expect(((await retried.json()) as SubjectShredReceipt).storeErasures).toEqual([{ binding: 'GRAPH', erased: 0 }]);
-      expect(await keyKept()).toBe(false);
-    });
-
-    it('a deployment that cannot be asked (no erase method) stops the erasure, and the key is kept', async () => {
-      const { s, subject, keyKept } = await sealedScope();
-      const res = await shred(bySlug({}, [graph]), s, subject);
+      const { caller, asked } = platformStores();
+      const res = await shred(bySlug(caller, [graph]), s, subject);
       expect(res.status).toBe(503);
+      expect(asked).toEqual([]);
       expect(await keyKept()).toBe(true);
     });
 
@@ -230,10 +212,10 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         authenticate: UNSAFE_devPlatformActorAuth(),
         storeKinds: [graph],
         resolveVerticalRef: async (r) => (r === ref ? (redactOnly as unknown as VerticalClient) : undefined),
+        platformScopeStores: unreachablePlatformScopeStores(),
       });
       const res = await shred(api, s, subject);
       expect(res.status).toBe(503);
-      expect(((await res.json()) as { error: string }).error).toMatch(/may hold a scope store/);
       expect(await keyKept()).toBe(true);
     });
 
@@ -261,32 +243,25 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         await host.admin.admitVersion(staff, id);
         return { id, ref };
       };
-      const bound = async (scopeStores?: unknown[]) => {
+      const bound = async (scopeStores?: unknown[], platform = platformStores()) => {
         const scope = await sealedScope();
         const version = await publish(scopeStores);
         await host.admin.bindScopeVersion(staff, t, scope.s, version.id);
-        let asked = false;
-        const deployment = {
-          ...redactOnly,
-          scopeStoreErase: async () => {
-            asked = true;
-            return [{ binding: 'GRAPH', erased: 1 }];
-          },
-        } as unknown as VerticalClient;
         const api = createControlPlaneApi({
           host,
           authenticate: UNSAFE_devPlatformActorAuth(),
           storeKinds: [graph],
-          resolveVerticalRef: async (r) => (r === version.ref ? deployment : undefined),
+          resolveVerticalRef: async (r) => (r === version.ref ? (redactOnly as unknown as VerticalClient) : undefined),
+          platformScopeStores: platform.caller,
         });
-        return { ...scope, api, wasAsked: () => asked };
+        return { ...scope, api, asked: platform.asked };
       };
 
       it('a version that declares no store is not asked, and the key is destroyed', async () => {
-        const { s, subject, keyKept, api, wasAsked } = await bound();
+        const { s, subject, keyKept, api, asked } = await bound();
         const res = await shred(api, s, subject);
         expect(res.status).toBe(200);
-        expect(wasAsked()).toBe(false);
+        expect(asked).toEqual([]);
         expect(await keyKept()).toBe(false);
       });
 
@@ -308,40 +283,58 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
           migrationTag: 'v1',
         });
         await host.admin.setScopeServingRef(staff, t, scope.s, servingRef);
-        let asked = false;
-        const deployment = {
-          ...redactOnly,
-          scopeStoreErase: async () => {
-            asked = true;
-            return [{ binding: 'GRAPH', erased: 1 }];
-          },
-        } as unknown as VerticalClient;
+        const platform = platformStores();
         const api = createControlPlaneApi({
           host,
           authenticate: UNSAFE_devPlatformActorAuth(),
           storeKinds: [graph],
-          resolveVerticalRef: async (r) => (r === servingRef ? deployment : undefined),
+          resolveVerticalRef: async (r) => (r === servingRef ? (redactOnly as unknown as VerticalClient) : undefined),
+          platformScopeStores: platform.caller,
         });
-        expect((await shred(api, scope.s, scope.subject)).status).toBe(200);
-        expect(await scope.keyKept()).toBe(false);
-        return asked;
+        const status = (await shred(api, scope.s, scope.subject)).status;
+        return { status, asked: platform.asked, expected: [`${scope.s}/${scope.subject}`], keyKept: await scope.keyKept() };
       };
       const stores = [{ binding: 'GRAPH', kind: 'graph' }];
 
       it('on the serving script, the served version decides, not the bound one', async () => {
-        expect(await onServingScript({ servedStores: stores })).toBe(true);
-        expect(await onServingScript({ boundStores: stores })).toBe(false);
+        const served = await onServingScript({ servedStores: stores });
+        expect(served).toEqual({ status: 200, asked: served.expected, expected: served.expected, keyKept: false });
+        const boundOnly = await onServingScript({ boundStores: stores });
+        expect(boundOnly).toEqual({ status: 200, asked: [], expected: boundOnly.expected, keyKept: false });
       });
 
-      it('on the serving script, a pointer naming another script is a version unknown, and is asked', async () => {
-        expect(await onServingScript({ pointerRef: 'docs-elsewhere' })).toBe(true);
+      // Stricter than asking (#2207): a version unknown names no binding to erase, so it refuses.
+      it('on the serving script, a pointer naming another script is a version unknown: 503, and the key is kept', async () => {
+        const other = await onServingScript({ pointerRef: 'docs-elsewhere' });
+        expect(other).toEqual({ status: 503, asked: [], expected: other.expected, keyKept: true });
+      });
+
+      it('a store erase that fails stops the erasure before the key, and a retry then destroys it', async () => {
+        let fail = true;
+        const { s, subject, keyKept, api, asked } = await bound(stores, platformStores(() => fail, 0));
+        const refused = await shred(api, s, subject);
+        expect(refused.status).toBeGreaterThanOrEqual(500);
+        expect(await keyKept()).toBe(true);
+        // The retry: the store already erased what it held, and says so with a zero.
+        fail = false;
+        const retried = await shred(api, s, subject);
+        expect(retried.status).toBe(200);
+        expect(((await retried.json()) as SubjectShredReceipt).storeErasures).toEqual([{ binding: 'GRAPH', erased: 0 }]);
+        expect(asked).toEqual([`${s}/${subject}`, `${s}/${subject}`]);
+        expect(await keyKept()).toBe(false);
+      });
+
+      it('a version that declares a store, with no route to the store script, stops the erasure (503), and the key is kept', async () => {
+        const { s, subject, keyKept, api } = await bound(stores, { caller: unreachablePlatformScopeStores(), asked: [] });
+        expect((await shred(api, s, subject)).status).toBe(503);
+        expect(await keyKept()).toBe(true);
       });
 
       it('a version that declares a store is asked', async () => {
-        const { s, subject, keyKept, api, wasAsked } = await bound([{ binding: 'GRAPH', kind: 'graph' }]);
+        const { s, subject, keyKept, api, asked } = await bound([{ binding: 'GRAPH', kind: 'graph' }]);
         const res = await shred(api, s, subject);
         expect(res.status).toBe(200);
-        expect(wasAsked()).toBe(true);
+        expect(asked).toEqual([`${s}/${subject}`]);
         expect(((await res.json()) as SubjectShredReceipt).storeErasures).toEqual([{ binding: 'GRAPH', erased: 1 }]);
         expect(await keyKept()).toBe(false);
       });

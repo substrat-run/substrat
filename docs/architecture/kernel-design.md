@@ -1656,11 +1656,13 @@ twelfth once a module's own tables were, #2068):
     inspection: a self-host operator opening a scope file with an older `sqlite3` (Debian 12
     ships 3.40.1) reads everything but that index. Chosen over a full index merge, which leaves
     no format change but rewrites the whole index inside the erasure (0.5 s at 100 000 rows).
-13. **A scope store's copy in a backup is not sealed per subject.** The spine payloads in a
-    backup are sealed, and destroying the subject's key makes them unreadable. A scope store's
-    tables are opaque to the platform — the store decides what a dump holds — so they cannot
-    be sealed the same way. `substrat.erase` reaches the live store. It does not reach the
-    store's tables already written into a backup. A restore of that backup brings them back.
+13. **A restored scope store is erased again for every tombstoned subject.** A backup's
+    store tables are opaque, so they are not sealed per subject. Restoring one, or copying
+    one into a snapshot, runs `substrat.erase` for every subject whose key row has
+    `shredded_at` set, whatever the time on the backup. The directory keeps those rows, and
+    a copy that does not carry them uses the source scope's. Erase is idempotent, so a
+    failed call leaves the restore incomplete and the next attempt finishes it. What a
+    restore cannot reach is the backup file itself, sitting unread in the bucket.
 
 
 ## 14. Design log

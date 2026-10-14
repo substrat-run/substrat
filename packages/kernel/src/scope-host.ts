@@ -1,4 +1,4 @@
-import type { ScopeStoreStubOptions, StoreStub } from './scope-store.js';
+import type { ScopeStoreStubOptions, StoreErasureReplay, StoreStub } from './scope-store.js';
 import type { ModuleLog } from './module-log.js';
 import type { BoundOperations } from './module-operations.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
@@ -2803,9 +2803,8 @@ export interface HostAdmin {
   scopeDatabaseSize(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<number>;
   /**
    * The size of each scope store bound for this scope (#2207). Access-logged like
-   * `scopeDatabaseSize`. An undeclared scope has none, so the list is empty. A
-   * dispatch vertical is asked through `/internal/scope-store-sizes`; this is the
-   * co-located reading.
+   * `scopeDatabaseSize`. An undeclared scope has none, so the list is empty. This is
+   * the co-located reading. A hosted control plane asks the store script directly.
    */
   scopeStoreSizes(
     actor: PlatformActorId,
@@ -3674,6 +3673,16 @@ export interface HostAdmin {
     scopeId: ScopeId,
     subjectId: string,
   ): Promise<SubjectShredReceipt>;
+  /**
+   * Subjects whose key row is tombstoned (`shredded_at` set), in subject-id order.
+   * A page is at most 100. `cursor` is the last id the caller already has.
+   */
+  listShreddedSubjects(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    cursor?: string,
+  ): Promise<{ subjects: string[]; nextCursor: string | null }>;
   /** Monotone directory fence against a carry from before subject erasure. */
   scopeErasureEpoch(actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId): Promise<number>;
   /** Finish an orchestrated erasure only after every script holding a copy has redacted it.
@@ -5322,6 +5331,13 @@ export interface ScopeHost {
    * `opts.sourceScopeId` (#1869) is a separate hint for the grant re-point ONLY: the scope the
    * uploaded file says it came from, when the dump's own `scopeId` was set to something else.
    * The dump's `tenantId`/`scopeId` are left exactly as they are for everything else.
+   *
+   * A host with scope stores then re-erases every tombstoned subject (#2207,
+   * `replayStoreErasures`): the target's marks, and the source's (`sourceScopeId`, else the
+   * dump's `scopeId`) when the source is a scope of this tenant on this host. An unknown
+   * source never refuses the restore; the result says `storeErasureSourceUnknown`. With nothing
+   * re-erased and nothing missing (no store here, or no tombstone that applies) it returns
+   * nothing, as a restore always did.
    */
   restoreScope(
     actor: PlatformActorId,
@@ -5329,7 +5345,7 @@ export interface ScopeHost {
     scopeId: ScopeId,
     dump: ScopeDumpInput,
     opts?: { sourceScopeId?: ScopeId },
-  ): Promise<void>;
+  ): Promise<StoreErasureReplay | void>;
 
   /**
    * Snapshot a scope — fork its current data into a new scope and return that scope's

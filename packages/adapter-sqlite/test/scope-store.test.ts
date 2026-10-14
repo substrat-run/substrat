@@ -451,4 +451,97 @@ describe('scope store door (pure adapter, #2209)', () => {
       await host.close();
     }
   });
+
+  it('a restore re-erases a subject shredded after the backup, and a retry finishes', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
+    const held = new Set<string>();
+    let fail = false;
+    const runner: ScopeStoreRunner = {
+      kind: 'counter',
+      async start() {},
+      async stop() {},
+      async invoke(_address, request) {
+        if (request.operation === 'plant') {
+          const subjectId = Reflect.get(request.input ?? {}, 'subjectId');
+          if (typeof subjectId === 'string') held.add(subjectId);
+          return { result: {} };
+        }
+        if (request.operation === 'held') return { result: [...held] };
+        if (request.operation === 'substrat.size') return { result: { bytes: held.size } };
+        if (request.operation === 'substrat.wipe') {
+          held.clear();
+          return { result: {} };
+        }
+        if (request.operation === 'substrat.export') {
+          return {
+            result: {
+              tables: [
+                {
+                  name: 'held',
+                  ddl: 'CREATE TABLE held (subject_id TEXT NOT NULL)',
+                  columns: ['subject_id'],
+                  rows: [...held].map((id) => [id]),
+                },
+              ],
+            },
+          };
+        }
+        if (request.operation === 'substrat.import') {
+          held.clear();
+          const tables = Reflect.get(request.input ?? {}, 'tables');
+          const first = Array.isArray(tables) ? tables[0] : undefined;
+          const rows = typeof first === 'object' && first !== null ? Reflect.get(first, 'rows') : undefined;
+          if (Array.isArray(rows)) {
+            for (const row of rows) {
+              const cell = Array.isArray(row) ? row[0] : undefined;
+              if (typeof cell === 'string') held.add(cell);
+            }
+          }
+          return { result: { tables: 1 } };
+        }
+        if (request.operation === 'substrat.erase') {
+          if (fail) return { error: { code: 'unavailable', status: 503 } };
+          const subjectId = Reflect.get(request.input ?? {}, 'subjectId');
+          const had = typeof subjectId === 'string' && held.delete(subjectId);
+          return { result: { erased: had ? 1 : 0 } };
+        }
+        return { result: {} };
+      },
+    };
+    const host = new SqliteScopeHost({
+      dir,
+      checker: UNSAFE_allowAllChecker,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      scopeStores: { runners: [{ binding: 'GRAPH', runner }] },
+    });
+    const staff = platformActorId.parse(ulid());
+    const principal = principalId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const subject = ulid();
+    try {
+      await host.admin.createTenant(staff, { id: t, slug: `t-${t.toLowerCase()}`, name: 'T' });
+      await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'docs' });
+      await host.admin.activateScope(staff, t, s);
+      await host.admin.sealSubjectPayloads(staff, t, s, [{ subjectId: subject, plaintext: 'pii' }]);
+      const store = await host.getScopeStore(principal, t, s, 'GRAPH');
+      await store.invoke('plant', { subjectId: subject });
+      const dump = await host.admin.exportScope(staff, t, s);
+      await host.admin.shredSubject(staff, t, s, subject);
+      const storeAfter = await host.getScopeStore(principal, t, s, 'GRAPH');
+      expect(await storeAfter.invoke('held', {})).toEqual([]);
+
+      fail = true;
+      const incomplete = await host.restoreScope(staff, t, s, dump);
+      expect(incomplete).toEqual({ storeErasuresReplayed: 0, storeErasureIncomplete: true });
+      expect(await storeAfter.invoke('held', {})).toEqual([subject]);
+
+      fail = false;
+      const done = await host.restoreScope(staff, t, s, dump);
+      expect(done).toEqual({ storeErasuresReplayed: 1, storeErasureIncomplete: false });
+      expect(await storeAfter.invoke('held', {})).toEqual([]);
+    } finally {
+      await host.close();
+    }
+  });
 });

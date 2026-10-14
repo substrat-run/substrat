@@ -84,6 +84,7 @@ export {
   callReservedStoreOperation,
   callScopeStore,
   observeStoreCall,
+  replayStoreErasures,
   scopeStoreLifecycleOf,
   scopeStoreRunnersOf,
   type ReservedStoreResult,
@@ -93,6 +94,7 @@ export {
   type ScopeStoreRunner,
   type ScopeStoreStubOptions,
   type StoreCallReport,
+  type StoreErasureReplay,
   type StoreStub,
 } from './scope-store.js';
 export type { GrantedEntitiesPage, GrantedEntityIdsMayRepeatPage } from './grant-scoped-read.js';
