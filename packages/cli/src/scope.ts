@@ -13,7 +13,7 @@ import { assertReplayableDump, assertSqlIdentifier, problemDetail, scopeId, scop
  * run the identical vertical against it. Written with `node:sqlite` (node 22.13+);
  * on an older node the dump lands as JSON next to where the db would have been.
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fetchWhoami } from './whoami.js';
 import type { DumpTable, ExportBreakAck, PulledDump } from '@substrat-run/control-plane-client';
@@ -126,7 +126,16 @@ export async function pullScope(opts: {
   const wroteSqlite = stores === 0 && (await writeSqlite(`${base}.sqlite`, dump));
   const file = wroteSqlite ? `${base}.sqlite` : `${base}.dump.json`;
   if (!wroteSqlite) {
-    writeFileSync(file, JSON.stringify(dump, null, 2));
+    // Written beside the target and renamed into place, so a crash or a failed write
+    // leaves the previous complete `.dump.json` instead of a truncated one.
+    const staged = `${file}.${process.pid}.tmp`;
+    try {
+      writeFileSync(staged, JSON.stringify(dump, null, 2));
+      renameSync(staged, file);
+    } catch (e) {
+      rmSync(staged, { force: true });
+      throw e;
+    }
     if (stores > 0) rmSync(`${base}.sqlite`, { force: true });
   }
 
