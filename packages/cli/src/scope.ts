@@ -13,7 +13,7 @@ import { assertReplayableDump, assertSqlIdentifier, problemDetail, scopeId, scop
  * run the identical vertical against it. Written with `node:sqlite` (node 22.13+);
  * on an older node the dump lands as JSON next to where the db would have been.
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fetchWhoami } from './whoami.js';
 import type { DumpTable, ExportBreakAck, PulledDump } from '@substrat-run/control-plane-client';
@@ -118,15 +118,32 @@ export async function pullScope(opts: {
   const base = join(opts.outDir, `${dump.tenantId}__${dump.scopeId}`);
   const rows = dump.tables.reduce((n, t) => n + t.rows.length, 0);
 
-  const wroteSqlite = await writeSqlite(`${base}.sqlite`, dump);
+  // A `.sqlite` file holds the scope's tables only, and `readDump` reads no stores back
+  // from one, so a pull that carries scope stores is written as the JSON dump: restoring
+  // it then restores the stores too, instead of leaving them as they were. An earlier
+  // pull's `.sqlite` is removed, so the stale copy is not the file left to restore.
+  const stores = dump.stores?.length ?? 0;
+  const wroteSqlite = stores === 0 && (await writeSqlite(`${base}.sqlite`, dump));
   const file = wroteSqlite ? `${base}.sqlite` : `${base}.dump.json`;
   if (!wroteSqlite) {
-    writeFileSync(file, JSON.stringify(dump, null, 2));
+    // Written beside the target and renamed into place, so a crash or a failed write
+    // leaves the previous complete `.dump.json` instead of a truncated one.
+    const staged = `${file}.${process.pid}.tmp`;
+    try {
+      writeFileSync(staged, JSON.stringify(dump, null, 2));
+      renameSync(staged, file);
+    } catch (e) {
+      rmSync(staged, { force: true });
+      throw e;
+    }
+    if (stores > 0) rmSync(`${base}.sqlite`, { force: true });
   }
 
   console.log(`✓ pulled ${dump.tables.length} tables (${rows} rows), captured ${dump.capturedAt}`);
   console.log(`  → ${file}`);
-  if (!wroteSqlite) {
+  if (stores > 0) {
+    console.log(`  (JSON — the pull carries ${stores} scope store${stores === 1 ? '' : 's'}, which a .sqlite file cannot hold)`);
+  } else if (!wroteSqlite) {
     console.log('  (JSON fallback — node 22.13+ writes a ready-to-run .sqlite instead)');
   }
   if (dump.masked) {

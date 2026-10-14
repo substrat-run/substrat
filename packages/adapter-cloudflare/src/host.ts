@@ -4890,10 +4890,11 @@ export class CloudflareScopeHost implements ScopeHost {
    * A dump's stores this host cannot load are refused before any write (#2211, L8): a
    * binding that is not bound, a kind other than the bound one, or any store at all for
    * a destination with no vertical (no store object can be named for it, so loading would
-   * drop them). `vertical` undefined is a caller that cannot read the destination here;
+   * drop them), or a destination on a vertical other than the one this host is pinned to.
+   * `vertical` undefined is a caller that cannot read the destination here;
    * `importScopeStores` then refuses a scope with no vertical itself, still before a store
-   * write. A store with no `kind` is one an older control plane sent; only its binding is
-   * checked.
+   * write. A store with no `kind` is refused: the dump contract requires one, and an
+   * unparsed dump would otherwise skip the kind comparison.
    */
   private refuseUnusableScopeStores(
     stores: readonly { binding: string; kind?: string }[] | undefined,
@@ -4904,13 +4905,22 @@ export class CloudflareScopeHost implements ScopeHost {
     if (vertical === null) {
       throw substratError('conflict', 'dump carries scope stores, and the destination scope has no vertical to hold them');
     }
+    if (vertical !== undefined && this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) {
+      throw substratError(
+        'forbidden',
+        `this host serves vertical '${this.scopeStoreVertical}', and the destination scope runs '${vertical}'`,
+      );
+    }
     const bound = new Set(this.scopeStoreBindingNames());
     for (const store of listed) {
       if (!bound.has(store.binding)) {
         throw substratError('not_found', `dump names scope store '${store.binding}', which is not bound`);
       }
+      if (!store.kind) {
+        throw substratError('validation_failed', `dump's scope store '${store.binding}' names no kind`);
+      }
       const kind = this.scopeStoreRunners.get(store.binding)?.kind ?? this.scopeStoreKinds[store.binding];
-      if (store.kind !== undefined && store.kind !== kind) {
+      if (store.kind !== kind) {
         throw substratError(
           'conflict',
           `dump's scope store '${store.binding}' is kind '${store.kind}', and this host binds kind '${kind ?? 'undeclared'}'`,
@@ -4927,15 +4937,8 @@ export class CloudflareScopeHost implements ScopeHost {
     // plane cannot make that read, and a deployment with no store must not fail an export.
     const bindings = this.scopeStoreBindingNames();
     if (bindings.length === 0) return [];
-    const scope = await this.scopeRecordForRead(tenantId, scopeId);
-    if (!scope.vertical) return [];
-    const vertical = scope.vertical;
-    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) {
-      throw substratError(
-        'forbidden',
-        `this host serves vertical '${this.scopeStoreVertical}', and scope ${scopeId} runs '${vertical}'`,
-      );
-    }
+    const vertical = await this.lifecycleStoreVertical(tenantId, scopeId);
+    if (!vertical) return [];
     const stores: { binding: string; kind: string; tables: ScopeDumpTable[] }[] = [];
     for (const binding of bindings) {
       const exported = await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.export');
@@ -4955,19 +4958,13 @@ export class CloudflareScopeHost implements ScopeHost {
   ): Promise<void> {
     const listed = stores ?? [];
     if (listed.length === 0) return;
-    const scope = await this.scopeRecordForRead(tenantId, scopeId);
-    if (!scope.vertical) {
+    const vertical = await this.lifecycleStoreVertical(tenantId, scopeId);
+    if (!vertical) {
       throw substratError('conflict', `dump carries scope stores, and scope ${scopeId} has no vertical to hold them`);
-    }
-    if (this.scopeStoreVertical !== undefined && scope.vertical !== this.scopeStoreVertical) {
-      throw substratError(
-        'forbidden',
-        `this host serves vertical '${this.scopeStoreVertical}', and scope ${scopeId} runs '${scope.vertical}'`,
-      );
     }
     for (const store of listed) {
       await this.invokeReservedStore(
-        { tenantId, vertical: scope.vertical, scopeId, binding: store.binding },
+        { tenantId, vertical, scopeId, binding: store.binding },
         'substrat.import',
         { tables: store.tables },
       );
@@ -4978,20 +4975,38 @@ export class CloudflareScopeHost implements ScopeHost {
   private async wipeScopeStores(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
     const bindings = this.scopeStoreBindingNames();
     if (bindings.length === 0) return;
+    const vertical = await this.lifecycleStoreVertical(tenantId, scopeId);
+    if (!vertical) return;
+    for (const binding of bindings) {
+      await this.invokeReservedStore(
+        { tenantId, vertical, scopeId, binding },
+        'substrat.wipe',
+      );
+    }
+  }
+
+  /**
+   * The vertical a store export, import or wipe names. With a control plane, the scope row
+   * (`scopeRecordForRead`: unknown and reaped scopes refused, `null` for a scope with no
+   * vertical, a vertical this host is not pinned to refused). Without one, there is no
+   * directory to read: the host's configured vertical (`scopeStoreVerticalOf`).
+   *
+   * Never gated on the scope being active, on either host. These calls are the platform's own
+   * lifecycle work on scopes that often are not: a reap backs up and wipes an archived scope, a
+   * snapshot or a full pull may copy a suspended one, and a fork's stores land before it is
+   * activated. The scope's tables are exported and imported on the same terms.
+   */
+  private async lifecycleStoreVertical(tenantId: TenantId, scopeId: ScopeId): Promise<string | null> {
+    if (this.cpLess) return this.scopeStoreVerticalOf(tenantId, scopeId);
     const scope = await this.scopeRecordForRead(tenantId, scopeId);
-    if (!scope.vertical) return;
+    if (!scope.vertical) return null;
     if (this.scopeStoreVertical !== undefined && scope.vertical !== this.scopeStoreVertical) {
       throw substratError(
         'forbidden',
         `this host serves vertical '${this.scopeStoreVertical}', and scope ${scopeId} runs '${scope.vertical}'`,
       );
     }
-    for (const binding of bindings) {
-      await this.invokeReservedStore(
-        { tenantId, vertical: scope.vertical, scopeId, binding },
-        'substrat.wipe',
-      );
-    }
+    return scope.vertical;
   }
 
   /**

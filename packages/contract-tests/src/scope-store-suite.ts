@@ -321,6 +321,26 @@ export function scopeStoreContractSuite(
       expect(await tableNames(scopeB)).not.toContain(PROBE_TABLE.name);
     });
 
+    // CodeRabbit on #2244: the host does not parse the dump it is handed, so a store with no
+    // kind skipped the kind comparison above and was imported.
+    it('a restore whose store names no kind writes nothing', async () => {
+      const store = await host.getScopeStore(principal, tenant, scopeB, 'GRAPH');
+      const before = Number(await store.invoke('read'));
+      const dump = await host.admin.exportScope(staff, tenant, scopeB);
+      await store.invoke('increment', { by: 2 });
+      const refusal = await host.restoreScope(staff, tenant, scopeB, {
+        ...dump,
+        tables: [...dump.tables, PROBE_TABLE],
+        stores: dump.stores.map(({ binding, tables }) => ({ binding, tables })) as unknown as typeof dump.stores,
+      }).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      expect(errorCodeOf(refusal)).toBe('validation_failed');
+      expect(await store.invoke('read')).toBe(before + 2);
+      expect(await tableNames(scopeB)).not.toContain(PROBE_TABLE.name);
+    });
+
     it('a dump carrying stores is refused, not dropped, by a scope with no vertical', async () => {
       const bare = scopeId.parse(ulid());
       await host.provisionScope(staff, { tenantId: tenant, scopeId: bare });

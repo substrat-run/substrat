@@ -4305,9 +4305,10 @@ export class SqliteScopeHost implements ScopeHost {
 
   /**
    * A dump's stores this host cannot load are refused before any write (#2211, L8): a
-   * binding that is not bound, a kind other than the bound runner's, or any store at all
-   * for a destination with no vertical (no store object can be named for it, so loading
-   * would drop them).
+   * binding that is not bound, a store with no kind or a kind other than the bound runner's,
+   * any store at all for a destination with no vertical (no store object can be named for
+   * it, so loading would drop them), or a destination on a vertical other than the one this
+   * host is pinned to.
    */
   private refuseUnusableScopeStores(
     stores: readonly { binding: string; kind?: string }[] | undefined,
@@ -4318,12 +4319,21 @@ export class SqliteScopeHost implements ScopeHost {
     if (vertical === null) {
       throw substratError('conflict', 'dump carries scope stores, and the destination scope has no vertical to hold them');
     }
+    if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) {
+      throw substratError(
+        'forbidden',
+        `this host serves vertical '${this.scopeStoreVertical}', and the destination scope runs '${vertical}'`,
+      );
+    }
     for (const store of listed) {
       const runner = this.scopeStoreRunners.get(store.binding);
       if (!runner) {
         throw substratError('not_found', `dump names scope store '${store.binding}', which is not bound`);
       }
-      if (store.kind !== undefined && store.kind !== runner.kind) {
+      if (!store.kind) {
+        throw substratError('validation_failed', `dump's scope store '${store.binding}' names no kind`);
+      }
+      if (store.kind !== runner.kind) {
         throw substratError(
           'conflict',
           `dump's scope store '${store.binding}' is kind '${store.kind}', and this host binds kind '${runner.kind}'`,
