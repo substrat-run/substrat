@@ -778,6 +778,8 @@ import { LEGACY_SCOPE_ROWS_BACKFILL, assertSpineTablesBuilt, capabilitiesForLoad
 import { ScopeActor } from './actor.js';
 import { createTupleChecker, directoryTenantReader } from './checker.js';
 
+export { scopeStoreRunnersFor } from './scope-store-runners.js';
+
 /**
  * A fault in the database itself (full, corrupt, I/O), as opposed to one statement failing.
  * The #1764 backfill logs and opens past a failed batch, but never past one of these.
