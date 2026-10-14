@@ -1,109 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { errorCodeOf, platformActorId, principalId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
-import { ulid, type ScopeHost, type ScopeStoreAddress, type ScopeStoreRunner, type StoreCallReport } from '@substrat-run/kernel';
+import { ulid, type ScopeHost, type ScopeStoreRunner, type StoreCallReport } from '@substrat-run/kernel';
 import { STORE_CALL_SINK_KEY, tallyStoreCall, type StoreCallTally } from '@substrat-run/kernel/invocation-line';
+import { counterScopeStoreRunner } from './counter-runner.js';
 import type { ScopeHostFixture } from './scope-host-suite.js';
-
-/**
- * A counter in the process. One number per address, so two scopes and two
- * verticals stay apart when the host passes the address it built.
- */
-function counterRunner(): ScopeStoreRunner {
-  const objects = new Map<string, number>();
-  const erased = new Map<string, Set<string>>();
-  const wiped = new Set<string>();
-  // `fail-wipe` makes every later `substrat.wipe` fail, until it is turned off again.
-  let failWipe = false;
-  const key = (address: ScopeStoreAddress) =>
-    `${address.tenantId}/${address.vertical}/${address.scopeId}/${address.binding}`;
-  return {
-    kind: 'counter',
-    async start() {},
-    async stop() {},
-    async invoke(address, request) {
-      const current = objects.get(key(address)) ?? 0;
-      if (request.operation === 'read') return { result: current };
-      if (request.operation === 'address') {
-        return {
-          result: {
-            tenantId: address.tenantId,
-            vertical: address.vertical,
-            scopeId: address.scopeId,
-            binding: address.binding,
-          },
-        };
-      }
-      if (request.operation === 'increment') {
-        const by =
-          typeof request.input === 'object' &&
-          request.input !== null &&
-          typeof Reflect.get(request.input, 'by') === 'number'
-            ? Number(Reflect.get(request.input, 'by'))
-            : 1;
-        const next = current + by;
-        objects.set(key(address), next);
-        return { result: next };
-      }
-      if (request.operation === 'substrat.size') return { result: { bytes: current } };
-      if (request.operation === 'fail-wipe') {
-        failWipe = request.input === true;
-        return { result: failWipe };
-      }
-      if (request.operation === 'substrat.wipe') {
-        if (failWipe) return { error: { code: 'unavailable', status: 503 } };
-        objects.set(key(address), 0);
-        wiped.add(key(address));
-        return { result: {} };
-      }
-      if (request.operation === 'wiped') return { result: [...wiped] };
-      if (request.operation === 'substrat.erase') {
-        const subjectId =
-          typeof request.input === 'object' && request.input !== null
-            ? Reflect.get(request.input, 'subjectId')
-            : undefined;
-        if (typeof subjectId !== 'string' || subjectId.length === 0) {
-          return { error: { code: 'validation_failed', status: 400 } };
-        }
-        const subjects = erased.get(key(address)) ?? new Set<string>();
-        const already = subjects.has(subjectId);
-        subjects.add(subjectId);
-        erased.set(key(address), subjects);
-        return { result: { erased: already ? 0 : 1 } };
-      }
-      if (request.operation === 'erased') {
-        return { result: [...(erased.get(key(address)) ?? [])] };
-      }
-      if (request.operation === 'substrat.export') {
-        return {
-          result: {
-            tables: [
-              {
-                name: 'counter',
-                ddl: 'CREATE TABLE counter (n INTEGER NOT NULL)',
-                columns: ['n'],
-                rows: [[current]],
-              },
-            ],
-          },
-        };
-      }
-      if (request.operation === 'substrat.import') {
-        const tables =
-          typeof request.input === 'object' && request.input !== null
-            ? Reflect.get(request.input, 'tables')
-            : undefined;
-        const count = Array.isArray(tables) ? tables.length : 0;
-        const first = Array.isArray(tables) ? tables[0] : undefined;
-        const rows = typeof first === 'object' && first !== null ? Reflect.get(first, 'rows') : undefined;
-        const row = Array.isArray(rows) ? rows[0] : undefined;
-        const cell = Array.isArray(row) ? row[0] : undefined;
-        objects.set(key(address), typeof cell === 'number' ? cell : 0);
-        return { result: { tables: count } };
-      }
-      return { error: { code: 'unknown_operation', status: 400 } };
-    },
-  };
-}
 
 /**
  * Scope stores on every adapter (#2213). The fixture is handed the runner, so
@@ -126,7 +26,7 @@ export function scopeStoreContractSuite(
     const otherVertical = scopeId.parse(ulid());
 
     beforeAll(async () => {
-      fixture = await makeFixture({ runners: [{ binding: 'GRAPH', runner: counterRunner() }] });
+      fixture = await makeFixture({ runners: [{ binding: 'GRAPH', runner: counterScopeStoreRunner() }] });
       host = fixture.host;
       await host.admin.createTenant(staff, { id: tenant, slug: `t-${tenant.toLowerCase()}`, name: 'T' });
       await host.provisionScope(staff, { tenantId: tenant, scopeId: scopeA, vertical: 'docs' });
