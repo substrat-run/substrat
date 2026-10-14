@@ -10,6 +10,7 @@ description: A platform-run object per scope, declared as a kind and reached thr
 · **Evidence:** [spikes/scope-store-binding/FINDINGS.md](../../spikes/scope-store-binding/FINDINGS.md)
 · **Decisions:** [K-49](../decisions/K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md),
 [D-63](../decisions/D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md),
+[D-64](../decisions/D-064-a-store-kind-s-registration-is-reviewed-once-its-releases-are-published.md),
 [K-50](../decisions/K-050-a-hosted-scope-store-s-lifecycle-is-driven-by-the-platform-from-its-own-record.md)
 (the hosted lifecycle, §10)
 
@@ -56,8 +57,9 @@ A direct `durable_object_namespace` binding remains for local development and fo
 It is not an isolation boundary: code in that worker can address any name the binding
 reaches. Hosted isolation is the hop above, not that binding.
 
-The signature is HMAC-SHA256 over the object name. The spike's check compared the MAC to
+The spike signed with HMAC-SHA256 over the object name. Its check compared the MAC to
 the header and never to the object being addressed, so one signature opened every object.
+The design's signature is Ed25519 over the whole envelope (§10.3), not that MAC.
 The design closes that by having the store script remember the first name it accepts and
 refuse a later call that names a different object, including one that carries a valid MAC
 for that other name. The object cannot read its own `idFromName`, which is why the
@@ -167,10 +169,13 @@ name, DDL, columns, rows. Nothing in the four lifecycle operations is specific t
 
 ## 5. Registering a kind
 
-A kind is registered, not owned. The registration lives in this repo, pinned to an exact
-release of the kind's code, the way `CONNECTORS` is. It names the kind, the release, the
-script, the class and the operation catalog. A review of the registration is the review
-of what the platform will run.
+A kind is registered, not owned. The registration lives in this repo and is reviewed once
+([D-64](../decisions/D-064-a-store-kind-s-registration-is-reviewed-once-its-releases-are-published.md),
+amending the release pin in D-63). It names the kind, the runtime, the class, the
+operation catalog, and who may publish. It does not name a release. A release is published
+to the control plane from the kind's own workspace, with a checksum, an audit row, a
+canary, and a rollback to the previous release. A review of the registration is the review
+of what the platform is willing to run. A review of a release is the publish itself.
 
 The registration has to show three things. The envelope. The reserved operations,
 including `substrat.erase`. No per-object state at module level: an object that wakes
@@ -381,16 +386,21 @@ on that object, forever. The design replaces it with one envelope that both sign
 | `iat` | Issue time, in seconds |
 | `nonce` | 128 random bits |
 
-The MAC covers a canonical encoding of every field, and every field travels inside the
-signed bytes. Nothing the store acts on rides beside the MAC. The store checks, in order,
-before any of the kind's code runs:
+Ed25519 covers a canonical encoding of every field, and every field travels inside the
+signed bytes. The encoding is seven lines and no trailing newline: `v`, `aud`, `name`,
+`op`, `digest`, `iat` as decimal unix seconds, and `nonce` as base64url. The store receives
+the encoding as `x-substrat-store-envelope` (base64url of those UTF-8 bytes) and the
+signature as `x-substrat-store-signature`. Nothing the store acts on rides beside the
+signature. The store checks, in order, before any of the kind's code runs:
 
-1. The MAC verifies, and `digest` matches the body received.
+1. The signature verifies, and `digest` matches the body received.
 2. `aud` matches `op`: a `substrat.*` operation needs `platform`, and any other operation
    needs `caller`.
-3. `iat` is inside the freshness window.
+3. `iat` is inside a 60-second window, measured as the absolute difference from now.
 4. `name` equals the first name this object accepted. On an object's first accepted call
-   the name is recorded in the object's own storage, before the operation runs.
+   the name is recorded under `__substrat_store_name` in the object's own storage, before
+   the operation runs. The name's vertical must be the vertical the script was uploaded
+   for.
 
 Replay inside the window is bounded by the window. The reserved operations are idempotent,
 and a kind operation's retry safety is the vertical's (§9). Per-object nonce memory is
@@ -406,9 +416,12 @@ The entry module verifies the envelope and the remembered name before it hands t
 to the kind's object. How the entry module reaches the object's storage for the remembered
 name, without the kind's class being able to rewrite it, is open question Q3.
 
-**Keys (L16).** Store-envelope signing keys are scoped per store script and per audience.
-A store script never holds a key that can mint an envelope for another script, and no signer
-holds a key for an audience it does not sign.
+**Keys (L16).** The signature is Ed25519 ([D-64](../decisions/D-064-a-store-kind-s-registration-is-reviewed-once-its-releases-are-published.md)).
+The router holds the `caller` private key and the control plane holds the `platform`
+private key. A store script is given only the two public keys. HMAC would have required
+the control plane, which uploads the script, to hold the router's key in order to place
+it in the script, and a store script must not hold a key that can mint an envelope. No
+signer holds a key for an audience it does not sign.
 
 ### 10.4 What moves and what stays
 
@@ -689,17 +702,22 @@ block it.
    erase arm on #2254's shred with `unavailable` as 503 (k), and unroute-then-wipe plus the
    bind fence (L6, L19, item (m)).
 4. The orphaned-binding rule (L17, item (n)), in whichever form Q5 settles on.
-5. The signed envelope (§10.3), signed by the router and by the control plane with keys
-   scoped as L16 says. It replaces `signScopeStoreName`.
+5. The signed envelope (§10.3), Ed25519. The router signs `caller` and the control plane
+   signs `platform`. A store script receives the public keys only. It replaces
+   `signScopeStoreName` on the production signers.
 6. Make the hosted transport the platform hop. A host with no control plane, no direct
    binding and no runner sends a vertical's call to `store.substrat.internal`. The ambient
    path is taken only where a binding or runner was given explicitly (L2).
 7. A platform-supplied store entry module that runs L4 and L5 in front of the kind's
-   class (o). The trivial test kind runs behind it, and the contract suite
-   asserts L4 and L5 on workerd. The spike's "Not yet evidenced" items move to FINDINGS
-   Shown only when they pass.
-8. #2210 itself: the store script upload. It is the first registration, reviewed against
-   D-63, uploaded behind the step-7 entry module.
+   class (o). A JavaScript kind gets the JavaScript entry. A Python kind gets the
+   Python entry, which checks the same envelope and then constructs the kind's class.
+   The trivial test kind runs behind the JavaScript entry, and the contract suite
+   asserts L4 and L5 on workerd. The Python entry is probed with `pywrangler` against
+   the same vectors.
+8. #2210 itself: the store script upload, behind the step-7 entry module. The
+   registration is reviewed once and does not pin a release (D-64). Publishing a release
+   from the kind's workspace, with the canary and the rollback, is
+   [#2297](https://github.com/substrat-run/substrat/issues/2297).
 9. Later: the null-manifest test (f), the Cloudflare host's wipe without a tenant id,
    per-object nonce memory if Q2 says so, and a door for schedules (§9).
 
