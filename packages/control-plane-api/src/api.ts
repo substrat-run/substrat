@@ -7180,16 +7180,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       } catch {
         return refuse(c, 'validation_failed', 'manifestJson is not valid JSON');
       }
-      const refuse = (issue: { path: PropertyKey[]; message: string }, under: string[] = []) =>
-        refuse(c, 'validation_failed', `manifestJson is not a deploy manifest: ${[...under, ...issue.path].join('.') || '(root)'}: ${issue.message}`);
+      const refuseManifest = (issue: { path: PropertyKey[]; message: string }, under: string[] = []) =>
+        refuse(
+          c,
+          'validation_failed',
+          `manifestJson is not a deploy manifest: ${[...under, ...issue.path].join('.') || '(root)'}: ${issue.message}`,
+        );
       const checked = storedDeployManifest.safeParse(raw);
-      if (!checked.success) return refuse(checked.error.issues[0]!);
+      if (!checked.success) return refuseManifest(checked.error.issues[0]!);
       // #1869: a registry handed to this route now is NEW, so it answers to the push-time rule on
       // entity-grant shapes (no kernel namespace as an entity type), as `deployManifest` does.
       // An absent registry stays accepted, as above.
       if (checked.data.registry) {
         const registry = pushedPermissionRegistry.safeParse(checked.data.registry);
-        if (!registry.success) return refuse(registry.error.issues[0]!, ['registry']);
+        if (!registry.success) return refuseManifest(registry.error.issues[0]!, ['registry']);
       }
     }
     await c.var.admin.publishVersion(c.get('actor'), input);
@@ -8182,7 +8186,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // because "no namespaces in that script" and "I cannot look" are different answers.
   app.get('/platform/do-namespaces', async (c) => {
     if (!options.doNamespaces) {
-      return c.json({ error: 'durable-object namespace lookup is not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'durable-object namespace lookup is not configured on this control plane');
     }
     const { script } = z.object({ script: z.string().min(1).max(200) }).parse({ script: c.req.query('script') });
     return c.json(namespacesForScript(await options.doNamespaces.list(), script));
@@ -8203,7 +8207,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // on the route where a mistake is least visible.
   app.get('/observability/metrics', async (c) => {
     if (!options.observability) {
-      return c.json({ error: 'observability is not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'observability is not configured on this control plane');
     }
     const { hours } = z
       .object({ hours: z.coerce.number().int().min(1).max(72).default(24) })
@@ -8221,7 +8225,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // 501 when the reader cannot bucket — an empty series would render as "quiet".
   app.get('/observability/metrics-series', async (c) => {
     if (!options.observability?.serviceMetricsSeries) {
-      return c.json({ error: 'bucketed observability is not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'bucketed observability is not configured on this control plane');
     }
     const { hours } = z
       .object({ hours: z.coerce.number().int().min(1).max(72).default(24) })
@@ -8244,7 +8248,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.get('/observability/logs', async (c) => {
     if (!options.observability) {
-      return c.json({ error: 'observability is not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'observability is not configured on this control plane');
     }
     // `service` repeats: one deployed unit per param, so a caller can ask for a
     // vertical's whole set (the dashboard's "all versions") in one query and get one
@@ -8291,7 +8295,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.get('/observability/tenant-metrics', async (c) => {
     if (!options.observability?.tenantMetrics) {
-      return c.json({ error: 'tenant-grain observability is not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'tenant-grain observability is not configured on this control plane');
     }
     const p = c.get('principal');
     const tenantId = confinedTenant(p) ?? c.req.query('tenantId');
@@ -8331,7 +8335,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // buckets, and at least one is required because an unnarrowed ask is not on offer.
   app.get('/observability/tenant-metrics-series', async (c) => {
     if (!options.observability?.tenantMetricsSeries) {
-      return c.json({ error: 'bucketed tenant-grain observability is not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'bucketed tenant-grain observability is not configured on this control plane');
     }
     const p = c.get('principal');
     const tenantId = confinedTenant(p) ?? c.req.query('tenantId');
@@ -8357,7 +8361,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.get('/observability/tenant-logs', async (c) => {
     if (!options.observability?.tenantLogs) {
-      return c.json({ error: 'tenant-grain observability is not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'tenant-grain observability is not configured on this control plane');
     }
     const p = c.get('principal');
     const tenantId = confinedTenant(p) ?? c.req.query('tenantId');
@@ -8415,7 +8419,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // #1331: one app's sampled field reports, joined to the router's own request lines.
   app.get('/observability/tenant-field-coverage', async (c) => {
     if (!options.observability?.fieldCoverage) {
-      return c.json({ error: 'field coverage is not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'field coverage is not configured on this control plane');
     }
     const tenantId = confinedTenant(c.get('principal')) ?? c.req.query('tenantId');
     if (!tenantId) throw new ControlPlaneError(400, 'tenantId is required');
@@ -8431,10 +8435,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     try { resolveObservabilityWindow(input); } catch (e) { throw new ControlPlaneError(400, (e as Error).message); }
     const scopes = await host.admin.listScopes(c.get('actor'), { tenantId: input.tenantId });
     const installed = scopes.find((s) => s.id === input.scopeId);
-    if (!installed?.vertical) return c.json({ error: 'app not found' }, 404);
+    if (!installed?.vertical) return refuse(c, 'not_found', 'app not found');
     const services = scriptFamiliesOfScopes(scopes, { scopeId: input.scopeId });
     const json = await c.var.admin.versionManifest(c.get('actor'), installed.vertical, input.versionId);
-    if (!json) return c.json({ error: 'version not found' }, 404);
+    if (!json) return refuse(c, 'not_found', 'version not found');
     const outputSurface = storedDeployManifest.parse(JSON.parse(json)).outputSurface ?? [];
     const declared = Object.fromEntries(outputSurface.map((op) => [op.operationId, op.fields]));
     return c.json(await options.observability.fieldCoverage({
@@ -8478,7 +8482,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.get('/observability/tenant-request-volume', async (c) => {
     if (!options.observability?.tenantRequestVolume) {
-      return c.json({ error: 'request aggregation is not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'request aggregation is not configured on this control plane');
     }
     const scope = parseTenantRequestQuery(requestTenantOf(c), requestQueryOf(c));
     // A bucket COUNT: zooming in keeps it and narrows the window, so the bucket shrinks.
@@ -8490,7 +8494,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.get('/observability/tenant-request-facets', async (c) => {
     if (!options.observability?.tenantRequestFacets) {
-      return c.json({ error: 'request aggregation is not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'request aggregation is not configured on this control plane');
     }
     const scope = parseTenantRequestQuery(requestTenantOf(c), requestQueryOf(c));
     // `facet` repeats; absent means every facet. Each one is a backend query, so a panel
@@ -8504,7 +8508,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // #1747: the tenant's `ctx.log` lines grouped by the template they were written from.
   app.get('/observability/tenant-log-patterns', async (c) => {
     if (!options.observability?.tenantLogPatterns) {
-      return c.json({ error: 'log patterns are not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'log patterns are not configured on this control plane');
     }
     const scope = parseTenantWindowQuery(requestTenantOf(c), requestQueryOf(c));
     const narrow = z
@@ -8535,7 +8539,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.get('/observability/tenant-requests', async (c) => {
     if (!options.observability?.tenantRequests) {
-      return c.json({ error: 'request aggregation is not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'request aggregation is not configured on this control plane');
     }
     const scope = parseTenantRequestQuery(requestTenantOf(c), requestQueryOf(c));
     const limit = z.coerce.number().int().min(1).max(200).default(50).parse(c.req.query('limit'));
@@ -8571,7 +8575,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   app.get('/verticals/:slug/egress', async (c) => {
     if (!options.observability?.observedEgress) {
-      return c.json({ error: 'observed egress is not available on this control plane' }, 501);
+      return refuseStatus(c, 501, 'observed egress is not available on this control plane');
     }
     const slug = await resolveVerticalId(c, c.req.param('slug'));
     const { hours, limit } = z
@@ -8650,11 +8654,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // can NOT do (prod promote, admit, other tenants' slugs) holds for it identically.
   app.post('/push-tokens', async (c) => {
     if (!options.pushTokenSecret) {
-      return c.json({ error: 'push tokens are not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'push tokens are not configured on this control plane');
     }
     const { tenantId } = z.object({ tenantId: tenantIdSchema }).parse(await c.req.json());
     const tenant = await c.var.admin.getTenant(c.get('actor'), tenantId);
-    if (!tenant) return c.json({ error: `unknown tenant: ${tenantId}` }, 404);
+    if (!tenant) return refuse(c, 'not_found', `unknown tenant: ${tenantId}`);
     const token = await mintPushToken(options.pushTokenSecret, {
       actor: await pushActorFor(tenantId),
       tenantId,
@@ -8672,7 +8676,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // ONLY fleet-wide thing it does. Everything else it does is spent per tenant.
   app.post('/tenant-tokens', async (c) => {
     if (!options.tenantTokenSecret) {
-      return c.json({ error: 'tenant tokens are not configured on this control plane' }, 501);
+      return refuseStatus(c, 501, 'tenant tokens are not configured on this control plane');
     }
     const { tenantId, principal, impersonation } = z
       .object({
@@ -8808,7 +8812,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (bindPin) {
       // The body names the tenant the binding lands under; a confined principal may
       // only name its own (the adapter then verifies the scope belongs to it, K-3).
-      if (input.tenantId !== bindPin) return c.json({ error: 'forbidden' }, 403);
+      if (input.tenantId !== bindPin) return refuse(c, 'forbidden', 'forbidden');
     }
     if (p.kind === 'builder') {
       // The region column is an EU-residency claim (K-30) — never builder-suppliable.
@@ -8817,7 +8821,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // the binding sits, so widening this to #977's credential would be a behaviour
       // change wearing a security fix's clothes.
       if (input.region !== null) {
-        return c.json({ error: 'region is derived from the scope, not chosen on a binding' }, 403);
+        return refuse(c, 'forbidden', 'region is derived from the scope, not chosen on a binding');
       }
     }
     // Registrable-suffix guard (#305, D-35): a custom domain must be a real registrable
@@ -8825,7 +8829,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // skip it — they are the platform's own registrable domain by construction.
     if (custom(input.hostname)) {
       const bad = validateBindableHostname(input.hostname);
-      if (bad) return c.json({ error: bad }, 422);
+      if (bad) return refuseStatus(c, 422, bad);
     }
     await c.var.admin.bindHostname(c.get('actor'), input);
     const bound = (await c.var.admin.listHostnames(c.get('actor'), { scopeId: input.scopeId })).find(
@@ -8846,10 +8850,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.post('/hostnames/:hostname/verify', async (c) => {
     const name = c.req.param('hostname');
     if (confinedTenant(c.get('principal')) !== null && !(await tenantHostname(c, name))) {
-      return c.json({ error: `unknown hostname: ${name.toLowerCase()}` }, 404);
+      return refuse(c, 'not_found', `unknown hostname: ${name.toLowerCase()}`);
     }
     const row = await hostnameRow(c, name);
-    if (!row) return c.json({ error: `unknown hostname: ${name.toLowerCase()}` }, 404);
+    if (!row) return refuse(c, 'not_found', `unknown hostname: ${name.toLowerCase()}`);
     await runIssuance(c.var.admin, c.get('actor'), row);
     return c.json(await hostnameRow(c, name));
   });
@@ -8860,7 +8864,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // `setHostnameStatus` normalizes and 404s an unknown one below the seam.
     const name = c.req.param('hostname');
     if (confinedTenant(c.get('principal')) !== null && !(await tenantHostname(c, name))) {
-      return c.json({ error: `unknown hostname: ${name.toLowerCase()}` }, 404);
+      return refuse(c, 'not_found', `unknown hostname: ${name.toLowerCase()}`);
     }
     await c.var.admin.setHostnameStatus(c.get('actor'), name, status, note);
     const row = (await c.var.admin.listHostnames(c.get('actor'), {})).find(
@@ -8877,7 +8881,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.delete('/hostnames/:hostname', async (c) => {
     const name = c.req.param('hostname');
     if (confinedTenant(c.get('principal')) !== null && !(await tenantHostname(c, name))) {
-      return c.json({ error: `unknown hostname: ${name.toLowerCase()}` }, 404);
+      return refuse(c, 'not_found', `unknown hostname: ${name.toLowerCase()}`);
     }
     // Release the Cloudflare custom hostname before dropping the row, or the CF object
     // leaks (billable, and it would block a future rebind of the same name). Best-effort:
@@ -9455,12 +9459,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.post('/verticals/:slug/previews', async (c) => {
     const gate = await previewVertical(c);
-    if ('error' in gate) return c.json({ error: gate.error }, gate.status);
+    if ('error' in gate) return refuseStatus(c, gate.status, gate.error);
     const { tenantId, slug } = gate;
     const body = createPreviewBody.parse(await c.req.json());
     const actor = c.get('actor');
     if (body.empty && body.sourceScopeId) {
-      return c.json({ error: `pass either --empty (clean-room) or a sourceScopeId, not both` }, 400);
+      return refuse(c, 'validation_failed', `pass either --empty (clean-room) or a sourceScopeId, not both`);
     }
     // Clean-room (#509 (b)): a null source provisions an EMPTY scope — no prod scope needed.
     // Everything else forks the tenant's own active, non-fork scope for this vertical.
@@ -9476,32 +9480,26 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           : null;
       if (!source) {
         if (body.sourceScopeId) {
-          return c.json({ error: `no active prod scope ${body.sourceScopeId} for '${slug}'` }, 404);
+          return refuse(c, 'not_found', `no active prod scope ${body.sourceScopeId} for '${slug}'`);
         }
         if (owned.length === 0) {
-          return c.json(
-            { error: `no prod scope to fork for '${slug}' — provision one first, or pass empty:true for a clean-room preview` },
-            409,
-          );
+          return refuse(c, 'conflict', `no prod scope to fork for '${slug}' — provision one first, or pass empty:true for a clean-room preview`);
         }
-        return c.json(
-          { error: `'${slug}' has several prod scopes — pass sourceScopeId`, scopes: owned.map((s) => s.id) },
-          409,
-        );
+        return refuse(c, 'conflict', `'${slug}' has several prod scopes — pass sourceScopeId`, { scopes: owned.map((s) => s.id) });
       }
     }
     try {
       const out = await orchestratedPreview(c, tenantId, slug, source, body);
       return c.json(out, out.reused ? 200 : 201);
     } catch (e) {
-      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, failedWith(c, e));
+      if (e instanceof ControlPlaneError) return refuseStatus(c, failedWith(c, e), e.message);
       throw e;
     }
   });
 
   app.get('/verticals/:slug/previews', async (c) => {
     const gate = await previewVertical(c);
-    if ('error' in gate) return c.json({ error: gate.error }, gate.status);
+    if ('error' in gate) return refuseStatus(c, gate.status, gate.error);
     const { tenantId, slug } = gate;
     const actor = c.get('actor');
     const previews = (await c.var.admin.listScopes(actor, { tenantId, vertical: slug }))
@@ -9527,7 +9525,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   app.delete('/verticals/:slug/previews/:tag', async (c) => {
     const gate = await previewVertical(c);
-    if ('error' in gate) return c.json({ error: gate.error }, gate.status);
+    if ('error' in gate) return refuseStatus(c, gate.status, gate.error);
     const { tenantId, slug } = gate;
     const tag = c.req.param('tag');
     const actor = c.get('actor');
@@ -9544,7 +9542,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const { storageStranded } = await reapPreview(c, preview);
       return c.json({ deleted: preview.id, ...(storageStranded ? { storageStranded: true } : {}) });
     } catch (e) {
-      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, failedWith(c, e));
+      if (e instanceof ControlPlaneError) return refuseStatus(c, failedWith(c, e), e.message);
       throw e;
     }
   });
@@ -9636,7 +9634,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // not be able to switch itself back on, and the dashboard has no flow that pulls it.
   const switchScheduleRoute = (to: 'on' | 'off') => async (c: Context<{ Variables: Vars }>) => {
     if (confinedTenant(c.get('principal')) !== null) {
-      return c.json({ error: 'forbidden: the schedule switch is staff-only' }, 403);
+      return refuse(c, 'forbidden', 'forbidden: the schedule switch is staff-only');
     }
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
@@ -9644,7 +9642,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = c.get('actor');
     // K-3 first, so a scope of another tenant reads as absent before anything is reached.
     if (!(await c.var.admin.getScopeRecord(actor, tenantId, scopeId))) {
-      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+      return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     }
     const input = { moduleId: body.moduleId, node: { tenantId, scopeId }, reason: body.reason };
     return c.json(to === 'off' ? await c.var.admin.revokeFromSystem(actor, input) : await c.var.admin.restoreToSystem(actor, input));
@@ -9659,14 +9657,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // `confinedTenant` check, not a kind test.
   app.get('/tenants/:tenantId/scopes/:scopeId/system-grants', async (c) => {
     if (confinedTenant(c.get('principal')) !== null) {
-      return c.json({ error: 'forbidden: the schedule switch is staff-only' }, 403);
+      return refuse(c, 'forbidden', 'forbidden: the schedule switch is staff-only');
     }
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const actor = c.get('actor');
     // K-3 first, so a scope of another tenant reads as absent before anything is reached.
     if (!(await c.var.admin.getScopeRecord(actor, tenantId, scopeId))) {
-      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+      return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     }
     return c.json(await c.var.admin.systemGrantsStatus(actor, { tenantId, scopeId }));
   });
@@ -9682,7 +9680,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // it must not start answering if this path is ever allowlisted for a narrowed read.
   app.get('/system-switches', async (c) => {
     if (confinedTenant(c.get('principal')) !== null) {
-      return c.json({ error: 'forbidden: the schedule switch is staff-only' }, 403);
+      return refuse(c, 'forbidden', 'forbidden: the schedule switch is staff-only');
     }
     const q = systemSwitchesQuery.parse({
       position: c.req.query('position'),
@@ -9720,12 +9718,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const pin = confinedTenant(c.get('principal'));
-    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    if (pin !== null && pin !== tenantId) return refuse(c, 'forbidden', 'forbidden');
     const body = peerSwitchBody.parse(await c.req.json());
     const actor = c.get('actor');
     // K-3 first, so a scope of another tenant reads as absent before anything is reached.
     if (!(await c.var.admin.getScopeRecord(actor, tenantId, scopeId))) {
-      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+      return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     }
     const input = { vertical: body.vertical, node: { tenantId, scopeId }, reason: body.reason };
     return c.json(to === 'off' ? await c.var.admin.revokeFromPeer(actor, input) : await c.var.admin.restoreToPeer(actor, input));
@@ -9740,10 +9738,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const pin = confinedTenant(c.get('principal'));
-    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    if (pin !== null && pin !== tenantId) return refuse(c, 'forbidden', 'forbidden');
     const actor = c.get('actor');
     if (!(await c.var.admin.getScopeRecord(actor, tenantId, scopeId))) {
-      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+      return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     }
     return c.json(await c.var.admin.peerGrantsStatus(actor, { tenantId, scopeId }));
   });
@@ -9756,9 +9754,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const vertical = c.req.query('vertical');
     const pin = confinedTenant(c.get('principal'));
-    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    if (pin !== null && pin !== tenantId) return refuse(c, 'forbidden', 'forbidden');
     const actor = c.get('actor');
-    if (!(await c.var.admin.getScopeRecord(actor, tenantId, scopeId))) return c.json({ error: 'app not found' }, 404);
+    if (!(await c.var.admin.getScopeRecord(actor, tenantId, scopeId))) return refuse(c, 'not_found', 'app not found');
     return c.json(vertical === undefined
       ? await c.var.admin.peerBindings(actor, tenantId, scopeId)
       : await c.var.admin.peerBinding(actor, tenantId, scopeId, verticalSlug.parse(vertical)) ?? null);
@@ -9769,10 +9767,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const pin = confinedTenant(c.get('principal'));
     // The target choice is the tenant's alone. Staff may inspect it through GET, but cannot
     // choose a tenant's site on its behalf.
-    if (pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    if (pin !== tenantId) return refuse(c, 'forbidden', 'forbidden');
     const body = peerBindingBody.parse(await c.req.json());
     const actor = c.get('actor');
-    if (!(await c.var.admin.getScopeRecord(actor, tenantId, scopeId))) return c.json({ error: 'app not found' }, 404);
+    if (!(await c.var.admin.getScopeRecord(actor, tenantId, scopeId))) return refuse(c, 'not_found', 'app not found');
     const operationId = ulid();
     const base = { tenantId, scopeId, operationId, vertical: body.vertical, targetScopeId: body.targetScopeId };
     const done = await auditedChange({
@@ -9898,15 +9896,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const pin = confinedTenant(c.get('principal'));
-    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    if (pin !== null && pin !== tenantId) return refuse(c, 'forbidden', 'forbidden');
     const raw: unknown = await c.req.json().catch(() => ({}));
     const refused = importCursorAcknowledgementMissing(raw);
-    if (refused) return c.json({ error: refused }, 400);
+    if (refused) return refuse(c, 'validation_failed', refused);
     const move = importCursorMove.parse(raw);
     const actor = c.get('actor');
     // K-3 first, so a scope of another tenant reads as absent before anything is reached.
     if (!(await c.var.admin.getScopeRecord(actor, tenantId, scopeId))) {
-      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+      return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     }
     return c.json(await c.var.admin.moveImportCursor(actor, tenantId, scopeId, move));
   });
@@ -9919,7 +9917,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.get('/tenants/:tenantId/cross-vertical/edges', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const pin = confinedTenant(c.get('principal'));
-    if (pin !== null && pin !== tenantId) return c.json({ error: 'forbidden' }, 403);
+    if (pin !== null && pin !== tenantId) return refuse(c, 'forbidden', 'forbidden');
     const focus = c.req.query('scopeId');
     return c.json(
       await crossVerticalHealth(c.var.host, {
@@ -9954,7 +9952,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.put('/issues/status', async (c) => {
     const input = issueStatusUpdate.parse(await c.req.json());
     const updated = await c.var.admin.setIssueStatus(c.get('actor'), input.fingerprint, input.status);
-    if (!updated) return c.json({ error: 'unknown issue fingerprint' }, 404);
+    if (!updated) return refuse(c, 'not_found', 'unknown issue fingerprint');
     return c.json(updated);
   });
 
@@ -9978,16 +9976,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // so another tenant's finding is a 404, never a write.
   app.put('/tenants/:tenantId/findings/:id/status', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
-    if (outsideTenant(c.get('principal'), tenantId)) return c.json({ error: 'forbidden' }, 403);
+    if (outsideTenant(c.get('principal'), tenantId)) return refuse(c, 'forbidden', 'forbidden');
     const { status } = findingStatusUpdate.parse(await c.req.json());
     const updated = await c.var.admin.setFindingStatus(c.get('actor'), tenantId, c.req.param('id'), status);
-    if (!updated) return c.json({ error: 'unknown finding' }, 404);
+    if (!updated) return refuse(c, 'not_found', 'unknown finding');
     return c.json(updated);
   });
 
   app.get('/tenants/:tenantId/finding-rules', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
-    if (outsideTenant(c.get('principal'), tenantId)) return c.json({ error: 'forbidden' }, 403);
+    if (outsideTenant(c.get('principal'), tenantId)) return refuse(c, 'forbidden', 'forbidden');
     const filter = findingRulesQuery.parse({ active: c.req.query('active'), limit: c.req.query('limit') });
     const entries = await c.var.admin.listFindingRules(c.get('actor'), tenantId, filter);
     return c.json({ entries });
@@ -9997,16 +9995,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // findings it suppressed at once.
   app.post('/tenants/:tenantId/finding-rules', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
-    if (outsideTenant(c.get('principal'), tenantId)) return c.json({ error: 'forbidden' }, 403);
+    if (outsideTenant(c.get('principal'), tenantId)) return refuse(c, 'forbidden', 'forbidden');
     const input = findingRuleInput.parse(await c.req.json());
     return c.json(await c.var.admin.createFindingRule(c.get('actor'), tenantId, input), 201);
   });
 
   app.delete('/tenants/:tenantId/finding-rules/:ruleId', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
-    if (outsideTenant(c.get('principal'), tenantId)) return c.json({ error: 'forbidden' }, 403);
+    if (outsideTenant(c.get('principal'), tenantId)) return refuse(c, 'forbidden', 'forbidden');
     const revoked = await c.var.admin.revokeFindingRule(c.get('actor'), tenantId, c.req.param('ruleId'));
-    if (!revoked) return c.json({ error: 'unknown finding rule' }, 404);
+    if (!revoked) return refuse(c, 'not_found', 'unknown finding rule');
     return c.json(revoked);
   });
 
