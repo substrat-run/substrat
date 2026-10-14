@@ -120,6 +120,7 @@ import type {
   ChannelName,
   Connection,
   ConnectionActivity,
+  ErrorCode,
   ExportBreak,
   ConnectionActivitySource,
   ConnectionCredential,
@@ -176,7 +177,7 @@ import { ConnectionRelayError, relayConnectionUpsert, type ConnectionCandidatePr
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { provisionSiblingScope } from './platform-drain.js';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { mapError, type ApiError } from './errors.js';
+import { NON_PROBLEM_REFUSAL, coded, mapError, relayed, type ApiError } from './errors.js';
 import { maskDump, maskRecords } from './mask.js';
 import { createPseudonymizer } from './pseudonymize.js';
 import { openDump, sealDump, type SubjectSealer } from './seal.js';
@@ -206,11 +207,36 @@ import type { PatchScriptBindingsFn } from './wfp.js';
  * labelled `application/json` is not an RFC 9457 problem however well-shaped its body is,
  * and `/openapi.json` has documented `application/problem+json` on every error response
  * since phase 1 — this is the half that makes the document true.
+ *
+ * `carried` is what a route answered beside `error` before it answered a problem document
+ * (a connector's `probe`, a preview's `operationId`, …), kept verbatim so no client loses a
+ * member. RFC 9457 §3.2 permits extension members; these are not declared per code in
+ * `PROBLEM_EXTENSIONS` yet, which is why they are spelled out at each route rather than
+ * passed through by a mapper. Spread last on purpose: where a route's own `detail` meant the
+ * downstream's reason, it still does.
  */
-function problem(c: Context, answer: ApiError): Response {
-  return c.body(JSON.stringify(answer.body), answer.status, {
+function problem(c: Context, answer: ApiError, carried?: Readonly<Record<string, unknown>>): Response {
+  return c.body(JSON.stringify(carried ? { ...answer.body, ...carried } : answer.body), answer.status, {
     'content-type': PROBLEM_CONTENT_TYPE,
   });
+}
+
+/** A refusal this route decided, by its code (#113): the status follows from the catalog. */
+function refuse(c: Context, code: ErrorCode, detail: string, carried?: Readonly<Record<string, unknown>>): Response {
+  return problem(c, coded(code, detail), carried);
+}
+
+/**
+ * A refusal answered by status alone, as `about:blank`: one relayed from downstream (a
+ * `ControlPlaneError`'s status), or one the closed taxonomy has no code for (501, 422, 502).
+ */
+function refuseStatus(
+  c: Context,
+  status: number,
+  detail: string,
+  carried?: Readonly<Record<string, unknown>>,
+): Response {
+  return problem(c, relayed(status, detail), carried);
 }
 import {
   backfillDeclaredStores,
@@ -663,9 +689,9 @@ class CarrySourceChanged extends ControlPlaneError {
   }
 }
 
-/** The body a route answers an `ExportBreakRefused` with: the sentence and the listing. */
-function exportBreakBody(e: ControlPlaneError): { error: string; exportBreaks?: { affected: ExportBreak[] } } {
-  return { error: e.message, ...(e instanceof ExportBreakRefused ? { exportBreaks: { affected: e.breaks } } : {}) };
+/** What a route answers beside the sentence of an `ExportBreakRefused`: the listing. */
+function exportBreaksOf(e: ControlPlaneError): { exportBreaks?: { affected: ExportBreak[] } } {
+  return e instanceof ExportBreakRefused ? { exportBreaks: { affected: e.breaks } } : {};
 }
 
 /**
@@ -1578,6 +1604,27 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   const app = new Hono<{ Variables: Vars }>();
 
+  // Every refusal is a problem document (#113): the tripwire. A route answers a failure
+  // through `refuse`/`refuseStatus`/`problem`, and anything else — a hand-rolled
+  // `c.json({ error }, 4xx)`, a sub-app's text 404 — is logged here as
+  // `control-plane.non-problem-refusal` with the method, the route PATTERN (never the raw
+  // path, which carries tenant and scope ids) and the status. It reads one header and never
+  // the body, so it costs nothing on the success path and discloses nothing on the failure
+  // one. This package's test setup fails any test in which it fires, so the whole route suite
+  // is the witness that the rule holds; in production it is the line an operator searches the
+  // worker's logs for, should a client report a refusal it could not parse.
+  //
+  // Registered first, so it sees the answer every other layer settled on, `onError`'s included.
+  app.use('*', async (c, next) => {
+    await next();
+    if (c.res.status >= 400 && !(c.res.headers.get('content-type') ?? '').startsWith(PROBLEM_CONTENT_TYPE)) {
+      console.warn(NON_PROBLEM_REFUSAL, { method: c.req.method, route: c.req.routePath, status: c.res.status });
+    }
+  });
+
+  // A request no route matches is a refusal too, and Hono's default answers it as text.
+  app.notFound((c) => refuse(c, 'not_found', 'no such route'));
+
   // The 5xx backstop: every 5xx this API answers lands an ops-failure row, however it was
   // answered. A 5xx is the PLATFORM failing (an unmapped throw, or a downstream vertical's own
   // 5xx passing through, #559), so the console must be able to list it and a `reference = <id>`
@@ -1678,7 +1725,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         };
       }
     }
-    if (!principal) return c.json({ error: 'unauthenticated' }, 401);
+    if (!principal) return refuse(c, 'unauthenticated', 'unauthenticated');
     c.set('principal', principal);
     c.set('actor', principal.actor);
     // #977: a tenant credential minted for a person writes through a view that names
@@ -1792,7 +1839,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.use('*', async (c, next) => {
     if (c.get('principal').kind === 'builder') {
       const allowed = BUILDER_ROUTES.some((r) => r.method === c.req.method && r.re.test(c.req.path));
-      if (!allowed) return c.json({ error: 'forbidden' }, 403);
+      if (!allowed) return refuse(c, 'forbidden', 'forbidden');
     }
     await next();
   });
@@ -1801,27 +1848,27 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const p = c.get('principal');
     if (p.kind !== 'tenant') return next();
     const pin = tenantCredentialPin(c.req.method, c.req.path);
-    if (!pin) return c.json({ error: 'forbidden' }, 403);
+    if (!pin) return refuse(c, 'forbidden', 'forbidden');
 
     // The sweep: anything naming a tenant must name THIS one. `x-substrat-tenant` is
     // included, which is what stops the pre-#977 shape — a fleet credential plus a
     // caller-asserted tenant header — from surviving as a way to ask for another.
     if (namedTenants(c).some((t) => t !== p.tenantId)) {
-      return c.json({ error: 'forbidden: outside this credential’s tenant' }, 403);
+      return refuse(c, 'forbidden', 'forbidden: outside this credential’s tenant');
     }
 
     // The route's own pin must be PRESENT, not merely consistent. A missing filter is
     // what makes these routes answer fleet-wide, so absence is the refusal.
     if (pin === 'path' && pathTenant(c.req.path) !== p.tenantId) {
-      return c.json({ error: 'forbidden: outside this credential’s tenant' }, 403);
+      return refuse(c, 'forbidden', 'forbidden: outside this credential’s tenant');
     }
     if (pin === 'query' && c.req.query('tenantId') !== p.tenantId) {
-      return c.json({ error: 'forbidden: this credential must name its own tenant' }, 403);
+      return refuse(c, 'forbidden', 'forbidden: this credential must name its own tenant');
     }
     if (pin === 'catalog') {
       const named = c.req.query('ownerTenant') ?? c.req.query('visibleTo');
       if (named !== p.tenantId) {
-        return c.json({ error: 'forbidden: this credential must name its own tenant' }, 403);
+        return refuse(c, 'forbidden', 'forbidden: this credential must name its own tenant');
       }
     }
     if (pin === 'body') {
@@ -1831,7 +1878,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
       const named = body && typeof body === 'object' ? (body['tenantId'] ?? body['id']) : undefined;
       if (named !== p.tenantId) {
-        return c.json({ error: 'forbidden: this credential must name its own tenant' }, 403);
+        return refuse(c, 'forbidden', 'forbidden: this credential must name its own tenant');
       }
     }
     await next();
@@ -1940,9 +1987,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (err instanceof z.ZodError) {
       return problem(c, { status: 400, body: toProblem(err, c.req.path) });
     }
-    if (err instanceof ExportBreakRefused) return c.json(exportBreakBody(err), 409);
+    if (err instanceof ExportBreakRefused) return refuse(c, 'conflict', err.message, exportBreaksOf(err));
     if (err instanceof CarrySourceChanged) {
-      return c.json({ error: err.message, carrySourceChanged: { scopeId: err.scopeId, from: err.from, to: err.to, attempts: err.attempts } }, 409);
+      return refuse(c, 'conflict', err.message, { carrySourceChanged: { scopeId: err.scopeId, from: err.from, to: err.to, attempts: err.attempts } });
     }
     const { status, body } = mapError(err);
     // The 5xx backstop (registered first, above) records it, with this throw as the cause.
