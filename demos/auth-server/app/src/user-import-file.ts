@@ -1,4 +1,4 @@
-import { IMPORT_BATCH_LIMIT, type ImportEntry } from '../../src/user-import-wire.js';
+import { IMPORT_BATCH_LIMIT, type ImportEntry, type ImportResult } from '../../src/user-import-wire.js';
 
 export type { ImportEntry };
 
@@ -162,6 +162,35 @@ function isoOf(value: string, line: number): string {
           : new Date(value);
   if (Number.isNaN(date.getTime())) throw new Error(`line ${line}: created_at '${value}' is not a date`);
   return date.toISOString();
+}
+
+/**
+ * What the run says about new people whose address arrives unverified (#1359) — empty when
+ * there are none. The import still stores them unverified; this only makes an export that
+ * dropped the `email_verified` column visible before it locks them out of whatever identifies
+ * them by address.
+ */
+export function unverifiedNotice(result: Pick<ImportResult, 'dryRun' | 'counts' | 'unverified'>): string[] {
+  const { created } = result.counts;
+  const { unasserted, unverified } = result.unverified;
+  const of = (n: number): string => `${n} of the ${created} new ${created === 1 ? 'person' : 'people'}`;
+  const lines: string[] = [];
+  if (unasserted > 0) {
+    lines.push(
+      `${of(unasserted)} ${unasserted === 1 ? 'has' : 'have'} no email_verified in the file, so ` +
+        `they ${result.dryRun ? 'will be' : 'were'} imported as unverified. ` +
+        'A relying party that identifies someone by address (a staff roster, an invite) refuses an unverified one ' +
+        'until they verify it. If the old issuer had verified them, add an email_verified column to the export and ' +
+        'drop the file again.',
+    );
+  }
+  if (unverified > 0) {
+    lines.push(
+      `${of(unverified)} ${unverified === 1 ? 'is' : 'are'} marked not verified in the file and ` +
+        `${result.dryRun ? 'will be' : 'were'} imported that way.`,
+    );
+  }
+  return lines;
 }
 
 /** Split into the server's write batch size (`IMPORT_BATCH_LIMIT`). */

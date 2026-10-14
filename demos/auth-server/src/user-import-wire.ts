@@ -34,7 +34,15 @@ export interface SkippedAccount {
 }
 
 export type ImportOutcome =
-  | { id: string; outcome: 'created'; password: boolean; accounts: string[]; skippedAccounts: SkippedAccount[] }
+  | {
+      id: string;
+      outcome: 'created';
+      password: boolean;
+      accounts: string[];
+      skippedAccounts: SkippedAccount[];
+      /** The entry's own flag — `null` when it carried none, which is stored as unverified. */
+      emailVerified: boolean | null;
+    }
   | { id: string; outcome: 'merged'; password: boolean; accounts: string[]; skippedAccounts: SkippedAccount[] }
   | { id: string; outcome: 'unchanged'; skippedAccounts: SkippedAccount[] }
   | { id: string; outcome: 'conflict'; reason: 'email-taken'; existingId: string }
@@ -42,10 +50,26 @@ export type ImportOutcome =
 
 export type ImportCounts = Record<ImportOutcome['outcome'], number>;
 
+/**
+ * The CREATED people whose address arrives unverified (#1359), named the way
+ * `identifyEmail` in `@substrat-run/oidc-rp` names its refusals: `unasserted` carried no
+ * flag at all, `unverified` carried `false`. A relying party that identifies someone by
+ * address refuses both, so an export that dropped the column locks every one of them out
+ * of a staff roster or an invite. Merged and unchanged people keep the flag already stored
+ * here, so they are never counted.
+ */
+export interface UnverifiedCounts {
+  unasserted: number;
+  unverified: number;
+}
+
 export interface ImportResult {
   dryRun: boolean;
   results: ImportOutcome[];
   counts: ImportCounts;
+  unverified: UnverifiedCounts;
 }
 
 export const emptyCounts = (): ImportCounts => ({ created: 0, merged: 0, unchanged: 0, conflict: 0 });
+
+export const emptyUnverified = (): UnverifiedCounts => ({ unasserted: 0, unverified: 0 });

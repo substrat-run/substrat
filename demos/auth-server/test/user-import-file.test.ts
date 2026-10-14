@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { batchesOf, csvRows, inFileRows, parseImportFile } from '../app/src/user-import-file.js';
+import { batchesOf, csvRows, inFileRows, parseImportFile, unverifiedNotice } from '../app/src/user-import-file.js';
 
 /**
  * The browser half of "Import users": a dropped file → the import body. The server holds
@@ -81,6 +81,44 @@ describe('JSON', () => {
 
   it('says so when it is not JSON at all', () => {
     expect(() => parseImportFile('a.json', '{nope')).toThrow(/not valid JSON/);
+  });
+});
+
+describe('the unverified-address notice (#1359)', () => {
+  const run = (created: number, unasserted: number, unverified: number, dryRun = true) => ({
+    dryRun,
+    counts: { created, merged: 0, unchanged: 0, conflict: 0 },
+    unverified: { unasserted, unverified },
+  });
+
+  it('says nothing when every new person is verified', () => {
+    expect(unverifiedNotice(run(3, 0, 0))).toEqual([]);
+  });
+
+  it('warns about people with no flag, and says how to fix the export', () => {
+    expect(unverifiedNotice(run(3, 2, 0))).toEqual([
+      '2 of the 3 new people have no email_verified in the file, so they will be imported as unverified. ' +
+        'A relying party that identifies someone by address (a staff roster, an invite) refuses an unverified one ' +
+        'until they verify it. If the old issuer had verified them, add an email_verified column to the export and ' +
+        'drop the file again.',
+    ]);
+  });
+
+  it('names people the file marks false on a line of their own', () => {
+    expect(unverifiedNotice(run(3, 0, 1))).toEqual(['1 of the 3 new people is marked not verified in the file and will be imported that way.']);
+  });
+
+  it('agrees in number', () => {
+    const [unasserted, unverified] = unverifiedNotice(run(1, 1, 1));
+    expect(unasserted).toMatch(/^1 of the 1 new person has no email_verified/);
+    expect(unverified).toMatch(/^1 of the 1 new person is marked not verified/);
+    expect(unverifiedNotice(run(4, 0, 2))[0]).toMatch(/^2 of the 4 new people are marked/);
+  });
+
+  it('speaks in the past once the import has run', () => {
+    const [unasserted, unverified] = unverifiedNotice(run(5, 2, 1, false));
+    expect(unasserted).toContain('so they were imported as unverified');
+    expect(unverified).toContain('were imported that way');
   });
 });
 
