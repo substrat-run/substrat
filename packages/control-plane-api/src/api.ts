@@ -5459,8 +5459,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = c.get('actor');
     const live = await c.var.admin.listTenants(actor, { limit: 1 });
     if (live.length > 0 && !body.overwrite) {
-      return refuse(c, 'conflict', 'the directory is not empty — a restore REPLACES it, so anything created ' +
-            'since this copy was taken would be lost; pass overwrite=true to confirm');
+      return refuse(
+        c,
+        'conflict',
+        'the directory is not empty — a restore REPLACES it, so anything created ' +
+          'since this copy was taken would be lost; pass overwrite=true to confirm',
+      );
     }
     await c.var.admin.restoreDirectory(actor, dump);
     return c.json({ capturedAt: dump.capturedAt, tables: dump.tables.length });
@@ -5733,8 +5737,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // reopens rows the drain shipped AFTER the rebuild, which is exactly the double-write
     // the required instant exists to prevent. Host code, so it may read the real clock.
     if (Date.parse(parsed.data.drainedBefore) > Date.now()) {
-      return refuse(c, 'validation_failed', `drainedBefore ${parsed.data.drainedBefore} is in the future — it would reopen rows ` +
-            'already shipped to the rebuilt table. Pass the instant the old table stopped receiving.');
+      return refuse(
+        c,
+        'validation_failed',
+        `drainedBefore ${parsed.data.drainedBefore} is in the future — it would reopen rows ` +
+          'already shipped to the rebuilt table. Pass the instant the old table stopped receiving.',
+      );
     }
     // The input schema also carries `countOnly` (#1545), and this route does not honour it:
     // its answer (`redrained`, `more`) is a statement that rows moved. Ignoring the field
@@ -5784,8 +5792,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // is not dangerous, it is meaningless — and a dry run whose instant this door accepts
     // and the real run rejects would be the worst kind of rehearsal.
     if (Date.parse(parsed.data.drainedBefore) > Date.now()) {
-      return refuse(c, 'validation_failed', `drainedBefore ${parsed.data.drainedBefore} is in the future — it would count rows ` +
-            'already shipped to the rebuilt table. Pass the instant the old table stopped receiving.');
+      return refuse(
+        c,
+        'validation_failed',
+        `drainedBefore ${parsed.data.drainedBefore} is in the future — it would count rows ` +
+          'already shipped to the rebuilt table. Pass the instant the old table stopped receiving.',
+      );
     }
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
@@ -5862,8 +5874,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // the same guard because releasing every name is the point there.)
     const boundNames = await c.var.admin.listHostnames(actor, { scopeId, limit: 1 });
     if (boundNames.length > 0) {
-      return refuse(c, 'conflict', `scope ${scopeId} still resolves hostname '${boundNames[0]!.hostname}' — ` +
-            `unbind it before reaping (reap wipes storage and cannot be undone)`);
+      return refuse(
+        c,
+        'conflict',
+        `scope ${scopeId} still resolves hostname '${boundNames[0]!.hostname}' — ` +
+          `unbind it before reaping (reap wipes storage and cannot be undone)`,
+      );
     }
     // The recoverable copy, BEFORE any byte is wiped (#493). Ordering is the whole
     // guarantee: `backupScope` has to have resolved — durably stored — before
@@ -5883,8 +5899,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         if (e instanceof ControlPlaneError) {
           return refuseStatus(c, failedWith(c, e), e.message);
         }
-        return refuseStatus(c, 502, 'backup failed — the scope was NOT reaped and its data is intact; ' +
-              'retry, or reap with backup=false to accept an unrecoverable wipe', { detail: e instanceof Error ? e.message : String(e) });
+        return refuseStatus(
+          c,
+          502,
+          'backup failed — the scope was NOT reaped and its data is intact; ' +
+            'retry, or reap with backup=false to accept an unrecoverable wipe',
+          { detail: e instanceof Error ? e.message : String(e) },
+        );
       }
     }
     try {
@@ -5920,8 +5941,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // lands the data on a machine outside the platform's control, so anything
     // pinned tighter than `global` is refused until a compliant path exists.
     if (scope.jurisdiction !== 'global') {
-      return refuse(c, 'forbidden', `scope ${scopeId} is pinned to '${scope.jurisdiction}' — a local pull would ` +
-            `move its data outside that jurisdiction; refused (K-32, preview-and-snapshots.md §6)`);
+      return refuse(
+        c,
+        'forbidden',
+        `scope ${scopeId} is pinned to '${scope.jurisdiction}' — a local pull would ` +
+          `move its data outside that jurisdiction; refused (K-32, preview-and-snapshots.md §6)`,
+      );
     }
     const full = c.req.query('full') === 'true';
     try {
@@ -5989,10 +6014,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // partial is the failure mode worth avoiding.
     const pinned = scopes.filter((s) => s.jurisdiction !== 'global');
     if (pinned.length > 0) {
-      return refuse(c, 'forbidden', `tenant ${tenantId} has ${pinned.length} scope(s) pinned to a jurisdiction ` +
-            `(${[...new Set(pinned.map((s) => s.jurisdiction))].join(', ')}) — an export would ` +
-            `move that data out of the region it was promised; refused (K-32). Export the ` +
-            `global scopes individually, or wait for a per-jurisdiction path.`);
+      return refuse(
+        c,
+        'forbidden',
+        `tenant ${tenantId} has ${pinned.length} scope(s) pinned to a jurisdiction ` +
+          `(${[...new Set(pinned.map((s) => s.jurisdiction))].join(', ')}) — an export would ` +
+          `move that data out of the region it was promised; refused (K-32). Export the ` +
+          `global scopes individually, or wait for a per-jurisdiction path.`,
+      );
     }
 
     const full = c.req.query('full') === 'true';
@@ -6451,8 +6480,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return refuse(c, 'not_found', `unknown scope for tenant: (${tenantId}, ${scopeId})`);
     if (scope.jurisdiction !== 'global') {
-      return refuse(c, 'forbidden', `scope ${scopeId} is pinned to '${scope.jurisdiction}' — a local pull would ` +
-            `move its data outside that jurisdiction; refused (K-32, preview-and-snapshots.md §6)`);
+      return refuse(
+        c,
+        'forbidden',
+        `scope ${scopeId} is pinned to '${scope.jurisdiction}' — a local pull would ` +
+          `move its data outside that jurisdiction; refused (K-32, preview-and-snapshots.md §6)`,
+      );
     }
     const holder = await keptHolder(script);
     const kept = await holder.keptCopy(scopeId);
@@ -6478,9 +6511,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // `release` is for a kept copy the scope routes to (a rollback bound it after a carry kept
     // it); the other two act on a kept copy the scope has left, against the store it runs on.
     if (body.action === 'release' ? route !== body.script : !route || route === body.script) {
-      return refuse(c, 'conflict', body.action === 'release'
-            ? `scope ${scopeId} routes to '${route ?? '(nothing)'}', not to the kept copy in '${body.script}'; release is for a kept copy that is live`
-            : `scope ${scopeId} routes to '${route ?? '(nothing)'}', so there is no live copy to resolve against`);
+      return refuse(
+        c,
+        'conflict',
+        body.action === 'release'
+          ? `scope ${scopeId} routes to '${route ?? '(nothing)'}', not to the kept copy in '${body.script}'; release is for a kept copy that is live`
+          : `scope ${scopeId} routes to '${route ?? '(nothing)'}', so there is no live copy to resolve against`,
+      );
     }
     const at = new Date().toISOString();
     const revisionOf = async (client: VerticalClient): Promise<string | null> => {
@@ -6531,8 +6568,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
     // restore-forward: the acknowledgement names what is replaced, as the marker says it.
     if (body.acknowledge.replacesLiveWritesSince !== kept.keptAt) {
-      return refuse(c, 'conflict', `a restore forward replaces what the live store took since ${kept.keptAt}; acknowledge exactly that ` +
-          `(acknowledge.replacesLiveWritesSince: '${kept.keptAt}')`);
+      return refuse(
+        c,
+        'conflict',
+        `a restore forward replaces what the live store took since ${kept.keptAt}; acknowledge exactly that ` +
+          `(acknowledge.replacesLiveWritesSince: '${kept.keptAt}')`,
+      );
     }
     // Fenced on the binding through the whole resolution (Codex #2008 r8): the kept copy goes only
     // once its data is in the store the scope still routes to. Every refusal below leaves it kept.
@@ -6547,8 +6588,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       );
     };
     const moved = () =>
-      refuse(c, 'conflict', `scope ${scopeId} was re-pointed while the kept copy was being restored forward, so nothing was resolved ` +
-          `and the kept copy in '${body.script}' stays kept; read it again and resolve it again`);
+      refuse(
+        c,
+        'conflict',
+        `scope ${scopeId} was re-pointed while the kept copy was being restored forward, so nothing was resolved ` +
+          `and the kept copy in '${body.script}' stays kept; read it again and resolve it again`,
+      );
     // The live store as read now, and nothing else, is what gets replaced. The binding read again
     // after the marker ties the marker to the live store: a move that landed before this read
     // (its wipe minting a tombstone here) changed the binding, and is refused.
@@ -6595,8 +6640,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       ...stampFence,
     });
     if ('refused' in wiped) {
-      return refuse(c, 'conflict', `restored forward into '${route}', but the kept copy in '${body.script}' changed since it was read, so it ` +
-          `stays kept: read it again and resolve it again`);
+      return refuse(
+        c,
+        'conflict',
+        `restored forward into '${route}', but the kept copy in '${body.script}' changed since it was read, so it ` +
+          `stays kept: read it again and resolve it again`,
+      );
     }
     return c.json({ scopeId, script: body.script, action: 'restore-forward', liveScript, revisionBefore, revisionAfter });
   });
@@ -7689,8 +7738,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // with the honest alternative — a non-prod environment is a scope with data, a preview.
     const rawChannel = c.req.param('channel');
     if (rawChannel !== 'prod') {
-      return refuse(c, 'validation_failed', `channel '${rawChannel}' is retired — 'prod' is the only channel. To run a version ` +
-            `against non-prod data, create a preview: 'substrat preview create --tag <tag>'.`);
+      return refuse(
+        c,
+        'validation_failed',
+        `channel '${rawChannel}' is retired — 'prod' is the only channel. To run a version ` +
+          `against non-prod data, create a preview: 'substrat preview create --tag <tag>'.`,
+      );
     }
     const channel = channelName.parse(rawChannel);
     const promotePin = confinedTenant(p);
@@ -7965,11 +8018,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
               ? 'owned by this same workspace'
               : `owned by tenant ${v.ownerTenant}`;
         const named = siblings.map((v) => `'${v.slug}' (${owner(v)}${v.listed ? ', listed' : ''})`).join(', ');
-        return refuse(c, 'conflict', `this push would CREATE a new vertical '${slug}' — a separate lineage beside ${named}. ` +
-              `Installs of the existing lineage never update from pushes to '${slug}'. If you meant to ` +
-              `update it, fix the project's identity first: package.json \`substrat.slug\` and ` +
-              `\`substrat.tenant\` (or --tenant) decide where a push lands. To deliberately run a ` +
-              `separate same-named lineage, re-run with --allow-fork.`);
+        return refuse(
+          c,
+          'conflict',
+          `this push would CREATE a new vertical '${slug}' — a separate lineage beside ${named}. ` +
+            `Installs of the existing lineage never update from pushes to '${slug}'. If you meant to ` +
+            `update it, fix the project's identity first: package.json \`substrat.slug\` and ` +
+            `\`substrat.tenant\` (or --tenant) decide where a push lands. To deliberately run a ` +
+            `separate same-named lineage, re-run with --allow-fork.`,
+        );
       }
     }
 
@@ -8015,9 +8072,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       const actual = await assetHash(content, file.path);
       if (actual !== file.hash) {
-        return refuse(c, 'validation_failed', `asset '${file.path}' does not match its declared content hash ` +
-              `(declared ${file.hash}, computed ${actual}) — the hash is the runtime's shared dedup key, ` +
-              `so a mismatch is refused rather than stored`);
+        return refuse(
+          c,
+          'validation_failed',
+          `asset '${file.path}' does not match its declared content hash ` +
+            `(declared ${file.hash}, computed ${actual}) — the hash is the runtime's shared dedup key, ` +
+            `so a mismatch is refused rather than stored`,
+        );
       }
       assets.push({
         path: file.path,
