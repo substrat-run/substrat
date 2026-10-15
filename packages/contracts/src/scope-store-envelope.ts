@@ -113,6 +113,16 @@ function copyBytes(bytes: Uint8Array): ArrayBuffer {
   return copy;
 }
 
+/**
+ * Whether `text` is the canonical base64url of exactly `length` bytes: it decodes to that many
+ * bytes and re-encodes to the same text, so its unused trailing bits are zero and no second
+ * spelling names the same value.
+ */
+function isCanonicalBase64Url(text: string, length: number): boolean {
+  const bytes = base64UrlToBytes(text);
+  return bytes?.length === length && bytesToBase64Url(bytes) === text;
+}
+
 const NONCE = /^[A-Za-z0-9_-]{22}$/;
 const KID = /^[A-Za-z0-9_-]{11}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
@@ -152,6 +162,9 @@ export function parseScopeStoreEnvelope(canonical: string): ScopeStoreEnvelope |
   if (version !== '1' || (aud !== 'caller' && aud !== 'platform')) return undefined;
   if (!script || !name || !op) return undefined;
   if (!KID.test(kid) || !DIGEST.test(digest) || !IAT.test(iatText) || !NONCE.test(nonce)) return undefined;
+  // The kid is 8 bytes and the nonce 16, each in canonical base64url. IAT's grammar already
+  // admits only the decimal text `String(n)` gives for a safe integer n: no sign, no leading zero.
+  if (!isCanonicalBase64Url(kid, 8) || !isCanonicalBase64Url(nonce, 16)) return undefined;
   return { v: 1, aud, kid, script, name, op, digest, iat: Number(iatText), nonce };
 }
 
