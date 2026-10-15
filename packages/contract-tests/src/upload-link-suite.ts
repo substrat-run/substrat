@@ -227,6 +227,23 @@ export function uploadLinkContractSuite(
         expect(await filesOf(target)).toHaveLength(1);
       });
 
+      it('is single-use under a race: two concurrent redemptions store one file, and the other is gone', async () => {
+        const target = udoc();
+        const minted = await mint(alice, { entity: target });
+        const settled = await Promise.allSettled([
+          redeem(minted, target, { body: bytes('first') }),
+          redeem(minted, target, { body: bytes('second') }),
+        ]);
+        const won = settled.filter((r): r is PromiseFulfilledResult<AttachmentRecord> => r.status === 'fulfilled');
+        const lost = settled.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+        expect(won).toHaveLength(1);
+        expect(lost).toHaveLength(1);
+        expect(errorCodeOf(lost[0]!.reason)).toBe('conflict');
+        expect(reasonOf(lost[0]!.reason)).toBe(UPLOAD_LINK_GONE);
+        expect((await filesOf(target)).map((r) => r.id)).toEqual([won[0]!.value.id]);
+        expect((await linkOf(minted.id)).attachmentId).toBe(won[0]!.value.id);
+      });
+
       it('a link past its time is gone, and a link minted with a longer one beside it still works', async () => {
         const target = udoc();
         const short = await mint(alice, { entity: target, ttlSeconds: 1 });
