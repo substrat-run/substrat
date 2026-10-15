@@ -196,6 +196,7 @@ export function guideSidebar() {
         engineSidebar('metering', 'Metering'),
         // One page until it is published: the five-page set documents an installable package.
         { text: 'Notifications', link: '/engines/notifications/' },
+        { text: 'Assistant', link: '/engines/assistant/' },
       ],
     },
     {

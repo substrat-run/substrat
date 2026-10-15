@@ -220,9 +220,9 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
     });
 
     describe('a bound version decides by its manifest', () => {
-      const publish = async (scopeStores?: unknown[], slug = 'docs') => {
+      const publish = async (scopeStores?: unknown[], slug = 'docs', deployed = true) => {
         const id = ulid();
-        const ref = `${slug}-${id.toLowerCase()}`;
+        const ref = deployed ? `${slug}-${id.toLowerCase()}` : null;
         await host.admin.publishVersion(staff, {
           id,
           verticalSlug: slug,
@@ -243,9 +243,16 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         await host.admin.admitVersion(staff, id);
         return { id, ref };
       };
+      /** Its own vertical (#2286): erasure reaches every binding any version of it declared. */
+      const ownVertical = async () => {
+        const slug = `own-${ulid().toLowerCase().slice(-10)}`;
+        await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+        return slug;
+      };
       const bound = async (scopeStores?: unknown[], platform = platformStores()) => {
-        const scope = await sealedScope();
-        const version = await publish(scopeStores);
+        const slug = await ownVertical();
+        const scope = await sealedScope(slug);
+        const version = await publish(scopeStores, slug);
         await host.admin.bindScopeVersion(staff, t, scope.s, version.id);
         const api = createControlPlaneApi({
           host,
@@ -297,11 +304,16 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       };
       const stores = [{ binding: 'GRAPH', kind: 'graph' }];
 
-      it('on the serving script, a binding declared only on the bound version is still erased (#2286)', async () => {
+      it('on the serving script, every binding any version of the vertical declared is erased (#2286)', async () => {
         const served = await onServingScript({ servedStores: stores });
         expect(served).toEqual({ status: 200, asked: served.expected, expected: served.expected, keyKept: false });
+        // The served version declares none and the bound one GRAPH: a version of the vertical
+        // declared GRAPH, so its object may hold the subject, and it is erased too.
         const boundOnly = await onServingScript({ boundStores: stores });
         expect(boundOnly).toEqual({ status: 200, asked: boundOnly.expected, expected: boundOnly.expected, keyKept: false });
+        // Neither declares one: nothing is asked.
+        const none = await onServingScript({});
+        expect(none).toEqual({ status: 200, asked: [], expected: none.expected, keyKept: false });
       });
 
       // Stricter than asking (#2207): a version unknown names no binding to erase, so it refuses.
@@ -332,8 +344,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       });
 
       it('a binding added while the stores are erased keeps the key (#2285)', async () => {
-        const slug = `added-${ulid().toLowerCase().slice(-10)}`;
-        await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+        const slug = await ownVertical();
         const scope = await sealedScope(slug);
         const version = await publish(stores, slug);
         await host.admin.bindScopeVersion(staff, t, scope.s, version.id);
@@ -355,6 +366,47 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         const res = await shred(api, scope.s, scope.subject);
         expect(res.status).toBe(412);
         expect(await scope.keyKept()).toBe(true);
+      });
+
+      /**
+       * The direct arm (#2285): no script to redact through, so the host's own shred runs, and it
+       * takes the same claim the orchestrated finalize takes. `move` runs while the stores are erased.
+       */
+      const direct = async (move: (s: ScopeId, slug: string) => Promise<void>) => {
+        const slug = await ownVertical();
+        const scope = await sealedScope(slug);
+        const version = await publish([{ binding: 'GRAPH', kind: 'graph' }], slug, false);
+        await host.admin.bindScopeVersion(staff, t, scope.s, version.id);
+        const caller: PlatformScopeStores = {
+          ...unreachablePlatformScopeStores(),
+          eraseSubject: async ({ stores }) => {
+            await move(scope.s, slug);
+            return stores.map((store) => ({ binding: store.binding, erased: 1 }));
+          },
+        };
+        const api = createControlPlaneApi({
+          host,
+          authenticate: UNSAFE_devPlatformActorAuth(),
+          storeKinds: [graph],
+          platformScopeStores: caller,
+        });
+        return { ...scope, res: await shred(api, scope.s, scope.subject) };
+      };
+
+      it('on the direct arm, a bind that adds a binding while the stores are erased keeps the key (#2285)', async () => {
+        const { res, keyKept } = await direct(async (s, slug) => {
+          const added = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }], slug, false);
+          await host.admin.bindScopeVersion(staff, t, s, added.id);
+        });
+        expect(res.status).toBe(412);
+        expect(await keyKept()).toBe(true);
+      });
+
+      it('on the direct arm, an erasure nothing moved under destroys the key, and moves the epoch a bind compares', async () => {
+        const { s, res, keyKept } = await direct(async () => undefined);
+        expect(res.status).toBe(200);
+        expect(await keyKept()).toBe(false);
+        expect(await host.admin.scopeErasureEpoch(staff, t, s)).toBe(1);
       });
 
       it('a promote onto the same serving script that adds a binding keeps the key (#2285)', async () => {

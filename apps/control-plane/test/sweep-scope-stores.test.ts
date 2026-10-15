@@ -23,9 +23,8 @@ describe('the sweep reaches a serving-pinned store, and never skips one silently
   const admin = {
     verticalServing: async () => ({ ref: 'graphy-stable', versionId: 'served', doClasses: [], migrationTag: 't' }),
     versionManifest: async () => manifest,
-    listVersions: async () => [{ id: 'served' }],
-    // The sweep reads a version's id and then its manifest. The rest of a version row is not used.
-  } as unknown as Parameters<typeof wipeDeclaredScopeStores>[1];
+    verticalScopeStores: async () => [{ binding: 'GRAPH', kind: 'graph' }],
+  };
   const status = (e: unknown) => (e as { status?: number } | undefined)?.status;
   const refusal = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e);
 

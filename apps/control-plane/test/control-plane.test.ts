@@ -71,7 +71,9 @@ describe('shared control-plane worker', () => {
   it('fails closed without a platform actor', async () => {
     const res = await SELF.fetch('https://cp.test/api/tenants');
     expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: 'unauthenticated' });
+    // A problem document (#113), still carrying the `error` a client read before it.
+    expect(res.headers.get('content-type')).toBe('application/problem+json');
+    expect(await res.json()).toMatchObject({ error: 'unauthenticated', code: 'unauthenticated', status: 401 });
   });
 });
 

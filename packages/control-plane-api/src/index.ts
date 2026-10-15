@@ -47,7 +47,7 @@ export type {
 export * from './browser.js';
 export { VerticalClient, AUDITED_CALL_DEADLINE_MS } from './vertical-client.js';
 export {
-  assertNoUnreachableScopeCopies, retryScopeScriptCopy, retryScopeScriptCopies, reapScopeScriptCopies,
+  assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, retryScopeScriptCopy, retryScopeScriptCopies, reapScopeScriptCopies,
   settleExpiredScopeScriptCopies, sweepScopeScriptCopies,
 } from './scope-copy-cleanup.js';
 export {
@@ -115,10 +115,8 @@ export type {
 } from './vertical-client.js';
 export {
   callPlatformScopeStore,
-  pinnedServingVersionId,
   platformScopeStoresFor,
   runningVersionStoresOf,
-  sameDeclaredStores,
   scopeStoresOf,
   unrouteScope,
   unreachablePlatformScopeStores,
