@@ -109,6 +109,7 @@ beforeAll(async () => {
         name: SCRIPT,
         modules: store.modules.map((path) => ({ type: 'ESModule' as const, path: basename(path), contents: readFileSync(path) })),
         compatibilityDate,
+        compatibilityFlags: store.compatibilityFlags,
         bindings: store.text,
         durableObjects: { [store.binding]: store.className },
       },

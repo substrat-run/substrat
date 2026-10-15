@@ -32,6 +32,12 @@ describe('withStoreEntry', async () => {
     expect(source).not.toContain(STORE_KIND_PLACEHOLDER);
     expect(source).not.toContain(STORE_CLASS_PLACEHOLDER);
     expect(uploaded.doClasses).toEqual([STORE_OBJECT_CLASS]);
+    expect(uploaded.compatibilityFlags).toEqual(['disallow_importable_env']);
+    // A kind's own flags are kept beside it, once.
+    expect(withStoreEntry(kindBundle({ compatibilityFlags: ['nodejs_compat', 'disallow_importable_env'] }), options).compatibilityFlags).toEqual([
+      'nodejs_compat',
+      'disallow_importable_env',
+    ]);
     expect(uploaded.bindings).toEqual([
       { type: 'durable_object_namespace', name: STORE_OBJECT_BINDING, class_name: STORE_OBJECT_CLASS },
       { type: 'plain_text', name: 'SUBSTRAT_STORE_SCRIPT', text: options.script },
@@ -44,6 +50,8 @@ describe('withStoreEntry', async () => {
     ['a module named like the entry', kindBundle({ modules: [module('kind.js'), module(STORE_ENTRY_MODULE)] }), {}, /may not ship a module/],
     ['the entry itself as the kind entry', kindBundle({ entry: STORE_ENTRY_MODULE }), {}, /not a module name/],
     ['a kind entry outside the bundle', kindBundle({ entry: '../kind.js' }), {}, /not a module name/],
+    ['a kind entry that climbs out midway', kindBundle({ entry: 'a/../kind.js' }), {}, /not a module name/],
+    ['a flag that gives the kind the script env back', kindBundle({ compatibilityFlags: ['allow_importable_env'] }), {}, /allow_importable_env/],
     ['a kind entry that is not JavaScript', kindBundle({ entry: 'kind.wasm' }), {}, /not a module name/],
     ["the entry's object class", kindBundle({ doClasses: [STORE_OBJECT_CLASS] }), {}, /may not declare the class/],
     ["the entry's class as the kind class", kindBundle(), { className: STORE_OBJECT_CLASS }, /entry's own object class/],

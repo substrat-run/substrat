@@ -148,8 +148,6 @@ export async function storeScriptAsUploaded(dir, options) {
   const uploaded = withStoreEntry(
     {
       entry: 'kind.js',
-      compatibilityDate: '2026-03-01',
-      compatibilityFlags: [],
       modules: [{ name: 'kind.js', content: await bundledEntry(kindMain), contentType: 'application/javascript+module' }],
       doClasses: [],
       bindings: [],
@@ -165,6 +163,7 @@ export async function storeScriptAsUploaded(dir, options) {
     modules: uploaded.modules.map((module) => join(cacheDir, module.name)),
     className: 'SubstratStoreObject',
     binding: 'SUBSTRAT_STORE',
+    compatibilityFlags: uploaded.compatibilityFlags,
     text,
   };
 }

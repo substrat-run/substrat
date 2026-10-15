@@ -39,6 +39,13 @@ export interface StoreEntryOptions {
 /** A module name the uploader can write and the entry can import: relative, no `..`, JavaScript. */
 const MODULE_NAME = /^(?!.*\.\.)[A-Za-z0-9_][A-Za-z0-9_./-]*\.m?js$/;
 
+/**
+ * The compatibility flag that empties `import { env } from 'cloudflare:workers'`. Without it a
+ * kind module reads every binding of the script that way, the entry's own included, whatever
+ * env its class is constructed with. The entry itself reads only the env its handlers are given.
+ */
+export const STORE_DISALLOW_IMPORTABLE_ENV = 'disallow_importable_env';
+
 /** An inline config value. The shared binding schema does not carry `text`, so it is cast once here. */
 const plainText = (name: string, text: string) => ({ type: 'plain_text', name, text }) as DeclaredBinding;
 
@@ -52,10 +59,15 @@ const plainText = (name: string, text: string) => ({ type: 'plain_text', name, t
  * own object class; a bundle entry that is not a plain module name; a bundle that ships a
  * module under the entry's name, declares the entry's class, or declares a binding in the
  * entry's reserved `SUBSTRAT_STORE*` space (D-63); keys `scopeStorePublicKeysFrom` refuses,
- * one key for both audiences included; an empty script name.
+ * one key for both audiences included; an empty script name; a compatibility flag that
+ * would give the kind's module the script's env again (`allow_importable_env`).
+ *
+ * The upload carries `disallow_importable_env`, so the kind cannot read the entry's bindings
+ * through `cloudflare:workers` either.
  */
 export function withStoreEntry<
-  B extends Pick<VerticalBundle, 'entry' | 'modules'> & Partial<Pick<VerticalBundle, 'doClasses' | 'bindings'>>,
+  B extends Pick<VerticalBundle, 'entry' | 'modules'> &
+    Partial<Pick<VerticalBundle, 'doClasses' | 'bindings' | 'compatibilityFlags'>>,
 >(bundle: B, options: StoreEntryOptions): B {
   if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(options.className)) {
     throw new Error(`store kind class '${options.className}' is not an identifier`);
@@ -75,6 +87,9 @@ export function withStoreEntry<
   const reserved = (bundle.bindings ?? []).find((binding) => binding.name.startsWith(STORE_RESERVED_BINDING_PREFIX));
   if (reserved) {
     throw new Error(`a store kind release may not declare the binding '${reserved.name}'`);
+  }
+  if ((bundle.compatibilityFlags ?? []).includes('allow_importable_env')) {
+    throw new Error("a store kind release may not set 'allow_importable_env'");
   }
   if (options.script.length === 0 || options.script.includes('\n')) {
     throw new Error('a store script name is empty or contains a newline');
@@ -101,6 +116,7 @@ export function withStoreEntry<
     entry: STORE_ENTRY_MODULE,
     modules: [{ name: STORE_ENTRY_MODULE, content: encode(source), contentType: kind }, ...bundle.modules],
     doClasses: [...(bundle.doClasses ?? []), STORE_OBJECT_CLASS],
+    compatibilityFlags: [...new Set([...(bundle.compatibilityFlags ?? []), STORE_DISALLOW_IMPORTABLE_ENV])],
     bindings,
   };
 }

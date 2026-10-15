@@ -58,6 +58,7 @@ beforeAll(async () => {
         name: 'store',
         modules,
         compatibilityDate,
+        compatibilityFlags: uploaded.compatibilityFlags,
         bindings: uploaded.text,
         durableObjects: { [uploaded.binding]: uploaded.className },
       },
@@ -66,7 +67,17 @@ beforeAll(async () => {
         name: 'misconfigured',
         modules,
         compatibilityDate,
+        compatibilityFlags: uploaded.compatibilityFlags,
         bindings: { ...uploaded.text, SUBSTRAT_STORE_PLATFORM_KEYS: caller.publicKey },
+        durableObjects: { [uploaded.binding]: uploaded.className },
+      },
+      {
+        // The same upload without its script name: the entry cannot compare the script line.
+        name: 'unnamed',
+        modules,
+        compatibilityDate,
+        compatibilityFlags: uploaded.compatibilityFlags,
+        bindings: Object.fromEntries(Object.entries(uploaded.text).filter(([name]) => name !== 'SUBSTRAT_STORE_SCRIPT')),
         durableObjects: { [uploaded.binding]: uploaded.className },
       },
       {
@@ -100,7 +111,7 @@ interface Call {
   sent?: string;
   body?: string;
   headers?: (issued: { header: string; signature: string }) => Record<string, string>;
-  worker?: 'store' | 'misconfigured';
+  worker?: 'store' | 'misconfigured' | 'unnamed';
 }
 
 async function call(c: Call = {}): Promise<{ status: number; text: string }> {
@@ -158,6 +169,10 @@ describe('the counter behind the store entry (#2289)', () => {
     expect((JSON.parse(echoed.text) as { result: string }).result).toBe(odd);
     const env = await call({ op: 'env' });
     expect(JSON.parse(env.text)).toEqual({ result: [] });
+    // Nor through `import { env } from 'cloudflare:workers'`: the upload sets disallow_importable_env.
+    const ambient = await call({ op: 'ambient' });
+    expect(ambient.status).toBe(200);
+    expect(JSON.parse(ambient.text)).toEqual({ result: [] });
   });
 
   it('admits the platform audience for a reserved operation, and nothing else for it', async () => {
@@ -204,6 +219,7 @@ describe('the counter behind the store entry (#2289)', () => {
         },
       ],
       ['this store script is not configured', { worker: 'misconfigured' }],
+      ['this store script is not configured', { worker: 'unnamed' }],
     ];
     for (const [expected, c] of refusals) {
       const res = await call(c);
@@ -236,6 +252,27 @@ describe('the counter behind the store entry (#2289)', () => {
       body,
     });
     expect(own.status).toBe(200);
+  });
+
+  it('the object checks the call itself: unsigned, forged or stale, addressed by its own id, is refused', async () => {
+    const before = (await counter()).result;
+    const probe = await mf.getWorker('probe');
+    const body = JSON.stringify({ operation: 'increment', input: { by: 1 }, objectName: NAME });
+    const fresh = await issueScopeStoreEnvelope({ privateKey: callerKey, aud: 'caller', script: SCRIPT, name: NAME, op: 'increment', body });
+    const stale = await issueScopeStoreEnvelope({
+      privateKey: callerKey, aud: 'caller', script: SCRIPT, name: NAME, op: 'increment', body, iat: Math.floor(Date.now() / 1000) - 120,
+    });
+    const other = await issueScopeStoreEnvelope({ privateKey: callerKey, aud: 'caller', script: SCRIPT, name: NAME, op: 'read', body: '{}' });
+    const cases: [string, Record<string, string>][] = [
+      ['unauthorized: missing', {}],
+      ['unauthorized: signature', { 'x-substrat-store-envelope': fresh.header, 'x-substrat-store-signature': other.signature }],
+      ['unauthorized: stale', { 'x-substrat-store-envelope': stale.header, 'x-substrat-store-signature': stale.signature }],
+    ];
+    for (const [expected, headers] of cases) {
+      const res = await probe.fetch(`https://probe/invoke?name=${encodeURIComponent(NAME)}`, { method: 'POST', headers, body });
+      expect(`${res.status} ${await res.text()}`, expected).toBe(`401 ${expected}`);
+    }
+    expect((await counter()).result).toBe(before);
   });
 
   it('accepts the same envelope again inside the window: no nonce memory (RFC Q2)', async () => {

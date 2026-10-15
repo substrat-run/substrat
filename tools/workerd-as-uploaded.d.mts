@@ -29,6 +29,8 @@ export function storeScriptAsUploaded(
   modules: string[];
   className: string;
   binding: string;
+  /** The compatibility flags the upload carries; a suite runs the script with them. */
+  compatibilityFlags: string[];
   /** The plain-text bindings the upload carries, by name. */
   text: Record<string, string>;
 }>;
