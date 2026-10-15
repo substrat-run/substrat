@@ -143,7 +143,8 @@ export async function unrouteScope(
     if (page.length === 0) return;
     for (const { hostname } of page) {
       if (unbound.has(hostname)) throw new Error(`hostname '${hostname}' is still bound after its unbind`);
-      await admin.unbindHostname(actor, hostname);
+      // Only while the row still names this scope: a name rebound elsewhere since the list stays bound.
+      await admin.unbindHostname(actor, hostname, { tenantId: scope.tenantId, scopeId: scope.id });
       unbound.add(hostname);
     }
   }

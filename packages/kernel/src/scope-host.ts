@@ -2872,8 +2872,16 @@ export interface HostAdmin {
    * the append-only admin log (K-21 protects tuples, not the route table).
    * Idempotent: unbinding an unknown hostname is a silent no-op, not an error —
    * so a cleanup pass can re-run over a partial failure.
+   *
+   * `owner` (#2285): remove the binding only while it still names this tenant and scope,
+   * decided by the delete itself. A name rebound to another scope since the caller listed it
+   * is left bound to that scope, and the call is a silent no-op, as for an unknown name.
    */
-  unbindHostname(actor: PlatformActorId, hostname: string): Promise<void>;
+  unbindHostname(
+    actor: PlatformActorId,
+    hostname: string,
+    owner?: { tenantId: TenantId; scopeId: ScopeId },
+  ): Promise<void>;
   /**
    * Ordered by hostname; the cursor is a hostname.
    *

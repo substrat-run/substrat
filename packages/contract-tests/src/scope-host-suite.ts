@@ -8090,6 +8090,18 @@ export function scopeHostContractSuite(
       expect(reclaimed?.scopeId).toBe(s2);
     });
 
+    it('an unbind for one scope leaves a name rebound to another scope bound (#2285)', async () => {
+      // `eu.example.com` is s2's now (the test above). An unroute of s1 that listed the name while
+      // it was s1's must not take it from s2: the owner is judged by the delete itself.
+      const s2Names = async () => (await host.admin.listHostnames(staff, { scopeId: s2 })).map((h) => h.hostname);
+      await host.admin.unbindHostname(staff, 'eu.example.com', { tenantId: t1, scopeId: s1 });
+      expect(await s2Names()).toContain('eu.example.com');
+      // The twin: the owner it names unbinds it, and the unbind is audited on that scope.
+      await host.admin.unbindHostname(staff, 'EU.example.com', { tenantId: t2, scopeId: s2 });
+      expect(await s2Names()).not.toContain('eu.example.com');
+      expect((await host.admin.auditLog(staff, { scopeId: s2 })).map((e) => e.action)).toContain('unbindHostname');
+    });
+
     it('rejects duplicate module registration', () => {
       expect(() => host.registerModule({ manifest: testModManifest })).toThrow(/already registered/);
     });

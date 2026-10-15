@@ -8785,15 +8785,17 @@ export class SqliteScopeHost implements ScopeHost {
           { status: fields.status, note: fields.note ?? null },
         );
       },
-      unbindHostname: async (actor, raw: string) => {
+      unbindHostname: async (actor, raw: string, owner) => {
         const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
+        // One statement: the row it removes is the row it audits, and an owner is judged by the
+        // delete itself, so a name rebound to another scope in between is left alone (#2285).
         const row = this.directory
-          .prepare('SELECT tenant_id, scope_id, status FROM hostnames WHERE hostname = ?')
-          .get(hostname) as
+          .prepare(`DELETE FROM hostnames WHERE hostname = ?${owner ? ' AND tenant_id = ? AND scope_id = ?' : ''}
+            RETURNING tenant_id, scope_id, status`)
+          .get(hostname, ...(owner ? [owner.tenantId, owner.scopeId] : [])) as
           | { tenant_id: string; scope_id: string; status: string }
           | undefined;
         if (!row) return; // idempotent, and a no-op is not audited
-        this.directory.prepare('DELETE FROM hostnames WHERE hostname = ?').run(hostname);
         this.recordAdmin(
           actor,
           'unbindHostname',

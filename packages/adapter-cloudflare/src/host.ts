@@ -783,7 +783,7 @@ interface ControlPlaneStub {
       validationRecords: string | null;
     },
   ): Promise<void>;
-  deleteHostname(hostname: string): Promise<void>;
+  deleteHostname(hostname: string, owner?: { tenantId: string; scopeId: string }): Promise<{ tenant_id: string; scope_id: string; status: string } | null>;
   listHostnames(
     filter: { tenantId?: string; scopeId?: string; status?: string; verticalSlug?: string } & ListPage,
   ): Promise<HostnameRow[]>;
@@ -7455,11 +7455,11 @@ export class CloudflareScopeHost implements ScopeHost {
           { status: fields.status, note: fields.note ?? null },
         );
       },
-      unbindHostname: async (actor, raw: string) => {
+      unbindHostname: async (actor, raw: string, owner) => {
         const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
-        const row = await this.cp.readHostname(hostname);
+        // The row the delete removed, so an owner is judged by the delete itself (#2285).
+        const row = await this.cp.deleteHostname(hostname, owner);
         if (!row) return; // idempotent, and a no-op is not audited
-        await this.cp.deleteHostname(hostname);
         await this.recordAdmin(
           actor,
           'unbindHostname',

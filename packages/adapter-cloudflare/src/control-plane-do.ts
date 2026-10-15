@@ -3055,8 +3055,20 @@ export class ControlPlaneDO extends DurableObject {
     }
   }
 
-  deleteHostname(hostname: string): void {
-    this.sql.exec('DELETE FROM hostnames WHERE hostname = ?', hostname);
+  /**
+   * Delete a binding and answer the row it removed, or null. With `owner`, only while the row
+   * still names that tenant and scope (#2285): the delete decides it, not an earlier read.
+   */
+  deleteHostname(
+    hostname: string,
+    owner?: { tenantId: string; scopeId: string },
+  ): { tenant_id: string; scope_id: string; status: string } | null {
+    const rows = this.sql.exec(
+      `DELETE FROM hostnames WHERE hostname = ?${owner ? ' AND tenant_id = ? AND scope_id = ?' : ''}
+       RETURNING tenant_id, scope_id, status`,
+      hostname, ...(owner ? [owner.tenantId, owner.scopeId] : []),
+    ).toArray() as { tenant_id: string; scope_id: string; status: string }[];
+    return rows[0] ?? null;
   }
 
   listHostnames(

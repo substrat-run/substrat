@@ -174,6 +174,35 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
     });
   });
 
+  it('a name rebound to another scope between the list and the unbind stays with that scope', async () => {
+    // The sweep and a preview re-push can reap one stale preview at once: the re-push binds the
+    // same `--tag` name to its new fork while the sweep's unroute still holds the old list.
+    const old = await snapshot();
+    const keep = `keep-${old.id.slice(-8).toLowerCase()}.example`;
+    await host.admin.bindHostname(staff, { hostname: keep, tenantId: t, scopeId: old.id, surface: 'app', region: null, canonical: false });
+    const fresh = await snapshot();
+    let moved = false;
+    const interleaved: Pick<HostAdmin, 'listHostnames' | 'unbindHostname'> = {
+      listHostnames: (actor, filter) => host.admin.listHostnames(actor, filter),
+      unbindHostname: async (actor, hostname, owner) => {
+        if (!moved && hostname === old.hostname) {
+          moved = true;
+          await host.admin.unbindHostname(staff, old.hostname);
+          await host.admin.bindHostname(staff, {
+            hostname: old.hostname, tenantId: t, scopeId: fresh.id, surface: 'app', region: null, canonical: false,
+          });
+        }
+        return host.admin.unbindHostname(actor, hostname, owner);
+      },
+    };
+    await unrouteScope(interleaved, staff, { tenantId: t, id: old.id });
+    expect(moved).toBe(true);
+    const names = async (s: ScopeId) => (await host.admin.listHostnames(staff, { scopeId: s })).map((h) => h.hostname);
+    expect(await names(fresh.id)).toContain(old.hostname);
+    // The twin: every name still on the scope being unrouted goes.
+    expect(await names(old.id)).toEqual([]);
+  });
+
   describe('the preview DELETE', () => {
     it('the wipe sees no route, and the hostname resolved until the reap', async () => {
       const pr = await preview('pr-1');
