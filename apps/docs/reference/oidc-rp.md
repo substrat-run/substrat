@@ -128,17 +128,31 @@ a real sign-out from a link somebody was tricked into following, so the spec say
 interrupt with a *Confirm logout* page — whether it does is the issuer's choice, and Better
 Auth's provider does, which is the bug #1361 fixed. Two conditions live at the issuer and
 are the same for a vertical: RP-initiated logout enabled for the client, and the **exact**
-`post_logout_redirect_uri` the app will send on its allow-list. That value is the app's
-origin plus the post-logout path — `/` by default, or the same-origin `returnTo` the logout
-link carried — matched against a list that is separate from the sign-in callbacks, so an
-origin alone or a callback URL registered for sign-in buys nothing at sign-out; the mismatch
-does not fail loudly, the person is signed out and simply left at the issuer. See [signing
+`post_logout_redirect_uri` the app will send on its allow-list. There are exactly two such
+values, both the app's origin plus a fixed path: `/` (or the `onSuccess` path) when the logout
+link carried no `returnTo`, and `/api/auth/logged-out` when it did. Register **both**. A
+`returnTo` is never sent to the issuer, because it differs per request (an invite link's
+`/invite/<token>`) and an exact-match list cannot hold it. Instead the logout route parks the
+path in a short-lived `sb_oidc_return` cookie — `HttpOnly`, `SameSite=Lax` (it is read on the
+issuer's cross-site redirect back), scoped to `/api/auth/logged-out` — and that route reads
+it once, clears it, and redirects there; a missing or unsafe value lands on `/`. The list is
+separate from the sign-in callbacks, so an origin alone or a callback URL registered for
+sign-in buys nothing at sign-out; the mismatch does not fail loudly, the person is signed out
+and simply left at the issuer. See [signing
 out in vertical-auth](/reference/vertical-auth#signing-out-and-the-issuer-s-own-session).
 
 Lower-level pieces are exported for callers that don't want the mounted routes — `beginLogin` /
 `completeLogin` (the two halves of the round-trip), `mintSession` / `verifySession`,
-`sessionFromHeaders`, `federatedLogoutUrl`, and `safePath` (the open-redirect guard that
-permits only a same-origin absolute path for a `returnTo`). `completeLogin` returns
+`sessionFromHeaders`, `federatedLogoutUrl`, `federatedLogout`, and `safePath` (the
+open-redirect guard that permits only a same-origin absolute path for a `returnTo`: no
+scheme, no `//host`, no backslash and no ASCII control character, since a URL parser strips a
+tab or newline before resolving). `federatedLogout(env, origin, local, idTokenHint?,
+defaultPath?)` is `federatedLogoutUrl` for a caller that has a `returnTo`: it resolves to
+`{ location, returnTo? }`, sending the issuer `local` when that is the default path and
+`LOGGED_OUT_PATH` otherwise, in which case the caller must park `returnTo` in a
+`LOGOUT_RETURN_COOKIE` cookie and serve `LOGGED_OUT_PATH` to read it back. `LOGGED_OUT_PATH`
+(`/api/auth/logged-out`) and `LOGOUT_RETURN_COOKIE` (`sb_oidc_return`) are exported so a
+composing caller and the mounted routes agree on them. `completeLogin` returns
 `{ user, session, returnTo?, idToken }`, and the `idToken` is there for one reason: a caller
 composing its own logout must **retain it** and pass it to `federatedLogoutUrl` as the hint,
 or its federated sign-outs land on whatever the issuer shows without one — the confirmation
