@@ -28,8 +28,9 @@ import { instant, principalId } from './ids.js';
 //      schema. That reader hands back an event type it does not know, and a known type
 //      carrying an enum value it does not know, as `{ known: false }` rather than throwing,
 //      so a new event type, a new enum value or a new optional field is not a break. A
-//      removal, a rename or a retype is `ASSISTANT_STREAM_VERSION` plus one, and a stream
-//      says which version it speaks on `turn-start`.
+//      removal, a rename or a retype is `ASSISTANT_STREAM_VERSION` plus one, and so is changing
+//      a size bound: a reader at this version throws on a value over its bound (`too_big`),
+//      so raising one is not additive. A stream says which version it speaks on `turn-start`.
 
 /** The version of this vocabulary. A change that is not additive bumps it. */
 export const ASSISTANT_STREAM_VERSION = 1;
@@ -231,7 +232,8 @@ export type ReadAssistantStreamEvent =
  *   so the client still advances its resume cursor and skips it, rather than throwing on the
  *   first additive event.
  * - Anything else that does not parse throws: a known event missing a field, or a value of
- *   the wrong type, is a broken producer, not a newer one.
+ *   the wrong type (an enum field that is absent, a number or `null` included), is a broken
+ *   producer, not a newer one.
  * - No `t`, or no valid `id`, throws too: without them the event cannot even be skipped.
  */
 export function readAssistantStreamEvent(raw: unknown): ReadAssistantStreamEvent {
@@ -240,10 +242,21 @@ export function readAssistantStreamEvent(raw: unknown): ReadAssistantStreamEvent
   if (!KNOWN_TYPES.has(envelope.t)) return { known: false, t: envelope.t, id: envelope.id, raw: record };
   const parsed = assistantStreamEvent.safeParse(raw);
   if (parsed.success) return { known: true, event: parsed.data };
-  if (parsed.error.issues.every((issue) => issue.code === 'invalid_value')) {
+  // Zod says `invalid_value` for an enum whatever it was handed, so only a present string
+  // counts as a value from a newer version; a missing one, a number or a null is broken.
+  if (parsed.error.issues.every((issue) => issue.code === 'invalid_value' && typeof valueAt(raw, issue.path) === 'string')) {
     return { known: false, t: envelope.t, id: envelope.id, raw: record };
   }
   throw parsed.error;
+}
+
+function valueAt(root: unknown, path: readonly PropertyKey[]): unknown {
+  let at = root;
+  for (const key of path) {
+    if (at === null || typeof at !== 'object' || !Object.hasOwn(at, key)) return undefined;
+    at = (at as Record<PropertyKey, unknown>)[key];
+  }
+  return at;
 }
 
 /** The events a turn can come to rest on. A stream that ends on one needs no resume. */
@@ -273,11 +286,12 @@ export const approvalBinding = z.object({
   step: stepName,
   call: callId,
   operation: operationName,
-  // A canonical instant only — `toISOString()`'s own form — so one moment has one digest.
+  // The event's own `instant` rule, and only in `toISOString()`'s form, so one moment has one
+  // digest and an expiry the event would refuse cannot be digested.
   expiresAt: z.string().refine((s) => {
-    const ms = Date.parse(s);
-    return !Number.isNaN(ms) && new Date(ms).toISOString() === s;
-  }, 'must be an ISO instant as toISOString() writes it'),
+    const parsed = instant.safeParse(s);
+    return parsed.success && parsed.data === s;
+  }, 'must be an instant as toISOString() writes it'),
   nonce: approvalNonce,
   input: z.unknown(),
 });
@@ -296,7 +310,8 @@ export type ApprovalBinding = z.input<typeof approvalBinding>;
  * - numbers as `Number#toString` writes them (`0.1`, `1e+21`), finite only, `-0` as `0`;
  * - arrays in order.
  *
- * It THROWS on anything else — `undefined` outside an object member (an array hole included), `NaN`, `±Infinity`, a
+ * It THROWS on anything else — `undefined` outside an object member (an array hole included), a symbol key, a
+ * non-enumerable property, a named property on an array, `NaN`, `±Infinity`, a
  * bigint, a function, a symbol, a `Date`, `Map`, `Set` or any other non-plain object, and a
  * cycle — rather than collapse two different values into one spelling, as JSON does.
  */
@@ -323,6 +338,14 @@ function encode(value: unknown, path: Set<object>): string {
   if (path.has(object)) throw new TypeError('approvalEncoding: a cycle has no encoding');
   path.add(object);
   try {
+    // What `Object.keys` cannot see (a symbol key, a non-enumerable property, a named
+    // property on an array) is refused, not dropped: dropping it would give two values one
+    // spelling. An array owns its indices and `length`, and nothing else (a hole, one fewer,
+    // is refused below as the `undefined` it reads as).
+    const own = Reflect.ownKeys(object).length;
+    if (Array.isArray(object) ? own > object.length + 1 : own !== Object.keys(object).length) {
+      throw new TypeError('approvalEncoding: a property JSON cannot see has no encoding');
+    }
     if (Array.isArray(object)) {
       // `Array.from` reads a hole as `undefined`, which is refused like any other.
       return `[${Array.from(object, (entry) => encode(entry, path)).join(',')}]`;

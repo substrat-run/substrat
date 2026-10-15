@@ -225,6 +225,14 @@ describe('readAssistantStreamEvent, how a client reads a newer producer', () => 
     expect(() => readAssistantStreamEvent({ t: 'approval-resolved', callId: 'c', approved: 'yes', approver: PRINCIPAL, digest: 'nope', id: 4 })).toThrow();
   });
 
+  it('throws on an enum field that is missing, a number or null: broken, not newer', () => {
+    // Zod reports each of these as `invalid_value`, the same code as an unknown string.
+    for (const reason of [undefined, 5, null, ['done']]) {
+      const raw = reason === undefined ? { t: 'turn-finish', id: 2 } : { t: 'turn-finish', reason, id: 2 };
+      expect(() => readAssistantStreamEvent(raw), JSON.stringify(reason)).toThrow();
+    }
+  });
+
   it('throws when the event cannot even be skipped: no type, or no valid id', () => {
     expect(() => readAssistantStreamEvent({ id: 1 })).toThrow();
     expect(() => readAssistantStreamEvent({ t: 'reasoning-delta' })).toThrow();
@@ -268,6 +276,9 @@ describe('approvalEncoding', () => {
     ['a Map', new Map()],
     ['a Set', new Set()],
     ['a class instance', new (class Thing {})()],
+    ['a symbol key', { a: 1, [Symbol('k')]: 2 }],
+    ['a non-enumerable property', Object.defineProperty({ a: 1 }, 'hidden', { value: 2, enumerable: false })],
+    ['a named property on an array', Object.assign([1], { x: 2 })],
   ])('refuses %s rather than collapsing it into another value', (_name, value) => {
     expect(() => approvalEncoding(value)).toThrow(TypeError);
   });
@@ -388,6 +399,14 @@ describe('approvalDigest', () => {
 
   it('takes the expiry only as toISOString writes it, so one moment has one digest', async () => {
     for (const expiresAt of ['2026-10-15T10:15:00Z', '2026-10-15T12:15:00.000+02:00', '2026-10-15', 'soon']) {
+      await expect(approvalDigest({ ...BINDING, expiresAt }), expiresAt).rejects.toThrow();
+    }
+  });
+
+  it('refuses an expiry the approval-request event would refuse, by the same rule', async () => {
+    // Both round-trip through toISOString(); `instant` refuses an expanded year.
+    for (const expiresAt of ['+275760-09-13T00:00:00.000Z', '-000001-01-01T00:00:00.000Z']) {
+      expect(ok({ ...approvalRequest, expiresAt }), expiresAt).toBe(false);
       await expect(approvalDigest({ ...BINDING, expiresAt }), expiresAt).rejects.toThrow();
     }
   });
