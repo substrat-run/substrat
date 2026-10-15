@@ -117,6 +117,7 @@ Before the first kind:
 
 Later:
 
+- **Retiring a binding.** A binding no version still declares stays in the vertical's record, so export, wipe, erasure and the meter keep asking its store, which answers empty once wiped, and its name cannot be declared again as another kind. The explicit retire step is still to come.
 - **Replay budget.** The restore's erasure replay runs inside one request and starts again from the first subject on a retry. It converges only while it fits one request.
 - **Audited receipt.** On the path where the control plane erases a scope its own host holds, the audited receipt lacks the platform's store erasures. The answer carries them.
 - **Versions without a kept manifest.** Replay and wipe skip a destination whose version predates kept manifests. Such a version holds no store, and a test that says so is still to come.

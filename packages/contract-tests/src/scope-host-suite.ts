@@ -6227,6 +6227,9 @@ export function scopeHostContractSuite(
       const before = (await host.admin.listVersions(staff, slug)).length;
       await expectRefusal(publish([{ binding: 'NEW', kind: 'graph' }, { binding: 'OLD', kind: 'counter' }]), 'conflict');
       expect((await host.admin.listVersions(staff, slug)).length).toBe(before);
+      // So is a version that declares one binding twice.
+      await expectRefusal(publish([{ binding: 'NEW', kind: 'graph' }, { binding: 'NEW', kind: 'graph' }]), 'conflict');
+      expect((await host.admin.listVersions(staff, slug)).length).toBe(before);
       // The twin: the same kind again, with a new binding beside it, is published.
       await publish([{ binding: 'OLD', kind: 'graph' }, { binding: 'NEW', kind: 'graph' }]);
       expect((await host.admin.verticalScopeStores(staff, slug)).map((s) => s.binding)).toEqual(['GRAPH', 'NEW', 'OLD']);

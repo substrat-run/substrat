@@ -343,13 +343,14 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       });
 
       it('a binding added while the stores are erased keeps the key (#2285)', async () => {
-        const scope = await sealedScope();
-        const version = await publish(stores);
+        const slug = await ownVertical();
+        const scope = await sealedScope(slug);
+        const version = await publish(stores, slug);
         await host.admin.bindScopeVersion(staff, t, scope.s, version.id);
         const caller: PlatformScopeStores = {
           ...unreachablePlatformScopeStores(),
           eraseSubject: async () => {
-            const added = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }]);
+            const added = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }], slug);
             await host.admin.bindScopeVersion(staff, t, scope.s, added.id);
             return [{ binding: 'GRAPH', erased: 1 }];
           },
@@ -370,14 +371,15 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
        * The direct arm (#2285): no script to redact through, so the host's own shred runs, and it
        * takes the same claim the orchestrated finalize takes. `move` runs while the stores are erased.
        */
-      const direct = async (move: (s: ScopeId) => Promise<void>) => {
-        const scope = await sealedScope();
-        const version = await publish([{ binding: 'GRAPH', kind: 'graph' }], 'docs', false);
+      const direct = async (move: (s: ScopeId, slug: string) => Promise<void>) => {
+        const slug = await ownVertical();
+        const scope = await sealedScope(slug);
+        const version = await publish([{ binding: 'GRAPH', kind: 'graph' }], slug, false);
         await host.admin.bindScopeVersion(staff, t, scope.s, version.id);
         const caller: PlatformScopeStores = {
           ...unreachablePlatformScopeStores(),
           eraseSubject: async ({ stores }) => {
-            await move(scope.s);
+            await move(scope.s, slug);
             return stores.map((store) => ({ binding: store.binding, erased: 1 }));
           },
         };
@@ -391,8 +393,8 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       };
 
       it('on the direct arm, a bind that adds a binding while the stores are erased keeps the key (#2285)', async () => {
-        const { res, keyKept } = await direct(async (s) => {
-          const added = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }], 'docs', false);
+        const { res, keyKept } = await direct(async (s, slug) => {
+          const added = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }], slug, false);
           await host.admin.bindScopeVersion(staff, t, s, added.id);
         });
         expect(res.status).toBe(412);

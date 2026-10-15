@@ -188,7 +188,7 @@ export async function runningVersionStoresOf(
 /**
  * What the lifecycle reaches for a scope (#2286, L17): the running version's stores
  * (`runningVersionStoresOf`, which still fails closed first), and every binding any version of its
- * vertical has declared (`HostAdmin.verticalScopeStores`, one indexed read). Export, wipe, erasure
+ * vertical has declared (`HostAdmin.verticalScopeStores`, read by its keys). Export, wipe, erasure
  * and the meter reach `all`, so an object under a binding a later version dropped is still
  * reached. A restore imports only into `running` (L8).
  *

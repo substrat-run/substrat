@@ -79,6 +79,35 @@ describe('a vertical\'s scope-store bindings, by any version (#2286)', () => {
     expect(verticalScopeStoresOf(sql, 'acme')).toEqual([{ binding: 'OLD', kind: 'graph' }]);
   });
 
+  it('a publish judges a re-kind against a version stored before the record, and the vertical stays readable', () => {
+    // v1 predates the record and nothing has read the vertical yet. A publish that re-kinds its
+    // binding must be refused, not let through to wedge every later read. (The publish's own row
+    // is rolled back with its transaction, so it is not in `vertical_versions` here.)
+    const sql = fresh();
+    stored(sql, 'v1', manifest([{ binding: 'GRAPH', kind: 'graph' }]), '2026-01-01T00:00:00.000Z');
+    expect(refusal(() => indexVersionScopeStores(sql, 'acme', 'v2', manifest([{ binding: 'GRAPH', kind: 'counter' }]))))
+      .toBe('conflict');
+    expect(verticalScopeStoresOf(sql, 'acme')).toEqual([{ binding: 'GRAPH', kind: 'graph' }]);
+  });
+
+  it('refuses a version that declares one binding twice', () => {
+    const sql = fresh();
+    expect(refusal(() => indexVersionScopeStores(sql, 'acme', 'v1', manifest([
+      { binding: 'GRAPH', kind: 'graph' },
+      { binding: 'GRAPH', kind: 'graph' },
+    ])))).toBe('conflict');
+    expect(verticalScopeStoresOf(sql, 'acme')).toEqual([]);
+  });
+
+  it('a marked vertical is read by its keys alone: no version is looked at again', () => {
+    const sql = fresh();
+    indexVersionScopeStores(sql, 'acme', 'v1', manifest([{ binding: 'GRAPH', kind: 'graph' }]));
+    expect(sql.all('SELECT vertical_slug FROM vertical_scope_store_indexed')).toEqual([{ vertical_slug: 'acme' }]);
+    // Every version is added by a publish, which indexes it. A row that bypassed publish is not read.
+    stored(sql, 'bypass', manifest([{ binding: 'OTHER', kind: 'graph' }]), '2026-01-03T00:00:00.000Z');
+    expect(verticalScopeStoresOf(sql, 'acme')).toEqual([{ binding: 'GRAPH', kind: 'graph' }]);
+  });
+
   it('refuses to name the bindings while a version\'s manifest cannot be read', () => {
     const sql = fresh();
     stored(sql, 'bad', '{nope', '2026-01-01T00:00:00.000Z');

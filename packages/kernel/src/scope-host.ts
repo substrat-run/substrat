@@ -2655,10 +2655,11 @@ export interface HostAdmin {
   /**
    * Every scope-store binding any version of the vertical has declared, with its kind (#2286,
    * RFC scope-stores L17): what export, wipe, erasure and the meter reach, so an object under a
-   * binding a later version dropped is still reached. One indexed read. A binding keeps its kind
-   * for the life of the vertical: `publishVersion` refuses a version that re-kinds one
-   * (`conflict`). Refuses (`unavailable`) when a version's manifest cannot be read, since that
-   * version may declare a store nobody can name. Empty for an unknown vertical.
+   * binding a later version dropped is still reached. Read by its keys, with no per-version work
+   * once the vertical is indexed. A binding keeps its kind for the life of the vertical:
+   * `publishVersion` refuses a version that re-kinds one, or declares one twice (`conflict`).
+   * Refuses (`unavailable`) when a version's manifest cannot be read, since that version may
+   * declare a store nobody can name. Empty for an unknown vertical.
    */
   verticalScopeStores(actor: PlatformActorId, verticalSlug: string): Promise<VerticalScopeStore[]>;
   /**

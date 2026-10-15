@@ -613,11 +613,14 @@ version of the vertical has declared, computed from `vertical_versions`. An obje
 never written answers empty. The alternative is a refusal at every one of those doors.
 
 PR #2292 implements that answer, the accepted Q5 answer. The union is a directory record,
-`vertical_scope_stores`, kept by `publishVersion` in the transaction that inserts the version, so
-it is one indexed read (`HostAdmin.verticalScopeStores`). A version stored before the record, or
-loaded by a directory restore from an older dump, is indexed on the first read of its vertical.
-A re-kind is refused at that same door (`conflict`): a binding keeps its kind for the life of its
-vertical, so the union holds one kind per binding and a dump never names one binding twice. A
+`vertical_scope_stores`, kept by `publishVersion` in the transaction that inserts the version, and
+read by its keys (`HostAdmin.verticalScopeStores`), with no per-version work once the vertical is
+marked indexed. A version stored before the record, or loaded by a directory restore from an older
+dump, leaves its vertical unmarked, and the first read or publish indexes every version of it,
+oldest first. A re-kind is refused at publish (`conflict`), judged against every older version: a
+binding keeps its kind for the life of its vertical, so the union holds one kind per binding and a
+dump never names one binding twice. A manifest that declares one binding twice is refused there
+too. Nothing retires a binding yet (item (v)). A
 restore still imports only the running version's bindings (L8), so an export leaves out a binding
 only an earlier version declared when its export is empty, and refuses one that holds data, naming
 the binding and the way out.
@@ -688,6 +691,7 @@ Still open:
 | (s) | The direct-path shred's audited receipt lacks the platform's store erasures, because the host's `shredSubject` takes no store list. The answer carries them | L12 | No, later |
 | (t) | Peer dispatch carries no store list, so a vertical serving a peer call has its store calls refused | L3 | No, later |
 | (u) | A store call works only during a request. A call from a Durable Object, a schedule included, does not pass egress and is refused (§9). The platform's own jobs are not affected | §9 | No, later |
+| (v) | Nothing retires a binding from a vertical's record (`vertical_scope_stores`, #2292). The step Q5's decision names, export then wipe then delete the record row, does not exist yet. Until it does, each binding no version still declares costs one store call per scope on every export, wipe, erasure and meter run, and its name cannot be declared again as another kind. It is also the way out for a vertical whose record cannot be read | L17 | No, later |
 
 Also open but not on #2254. The stack's `deleteScopeLocal` skips the store wipe when it is
 not given a tenant id (#2243). That is in the Cloudflare host (`adapter-cloudflare/src/host.ts`),
