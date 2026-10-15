@@ -6,21 +6,6 @@
 /** The entry's module name in the upload. Reserved: a kind release may not ship a module by it (D-63). */
 export const STORE_ENTRY_MODULE = 'substrat-store-entry.js';
 
-/**
- * The Python entry's module name in the upload (#2290), the script's main module when the kind
- * is Python. Reserved.
- */
-export const STORE_ENTRY_PYTHON_MODULE = 'substrat_store_entry.py';
-
-/**
- * The verifier the Python entry imports: `store-entry/verify.ts`, bundled as an ES module beside
- * it, so both entries run one verifier. Reserved.
- */
-export const STORE_VERIFIER_MODULE = 'substrat-store-verify.js';
-
-/** Every module name the platform's entries own. A kind release may ship none of them (D-63). */
-export const STORE_RESERVED_MODULES = [STORE_ENTRY_MODULE, STORE_ENTRY_PYTHON_MODULE, STORE_VERIFIER_MODULE];
-
 /** The import specifier the uploader replaces with `./<the kind module>`. */
 export const STORE_KIND_PLACEHOLDER = '__SUBSTRAT_STORE_KIND__';
 

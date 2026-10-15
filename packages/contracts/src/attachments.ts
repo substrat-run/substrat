@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { entityRef } from './events.js';
-import { instant } from './ids.js';
+import { instant, principalId } from './ids.js';
 
 // Visibility classification for attachment items — documents, comments,
 // custom-field values (K-13). Mandatory wherever data can reach the customer
@@ -49,3 +49,158 @@ export type AttachmentRecord = z.infer<typeof attachmentRecord>;
  */
 export const ATTACHMENT_ADDED = 'attachment.added';
 export const ATTACHMENT_REMOVED = 'attachment.removed';
+
+// ---------------------------------------------------------------------------
+// Upload links — an operation mints a short-lived, single-use URL for ONE attachment on
+// ONE entity, so a caller with no cookie and no bearer (an MCP client) can hand bytes to
+// the platform without sending them through a tool call.
+//
+// The link is a directory row in the scope's own spine, like a capability: only the
+// secret's SHA-256 is stored, the secret leaves the kernel once (in the mint's return
+// value), and redemption goes through the SAME attachment write as any upload — the
+// target's `writePermission` is re-checked as the MINTING principal at redemption, who is
+// the attachment's author. A link is not a capability: it never acts as anyone, it never
+// makes a session, and it can only ever produce the one attachment it was minted for.
+// ---------------------------------------------------------------------------
+
+/** What every upload-link secret starts with — so a secret scanner can recognise a leaked one. */
+export const UPLOAD_LINK_SECRET_PREFIX = 'sbup_';
+/** A link lives ten minutes unless the mint says otherwise. */
+export const UPLOAD_LINK_DEFAULT_TTL_SECONDS = 600;
+/** ... and never more than an hour, whatever the mint says. */
+export const UPLOAD_LINK_MAX_TTL_SECONDS = 3600;
+/**
+ * The most bytes any upload link may admit. A manifest's `uploadLinks.maxBytes` is held under
+ * it: a Worker buffers the body once to hash it, and a ceiling the platform cannot buffer is
+ * not a limit.
+ */
+export const UPLOAD_LINK_MAX_BYTES_CEILING = 25 * 1024 * 1024;
+/** Where a vertical mounts the redemption (`mountUploadLinkRedeem` in `@substrat-run/vertical-host`). */
+export const UPLOAD_LINK_PATH_PREFIX = '/api/attachment-uploads';
+
+/** A media type (`application/pdf`) or a family (`image/*`), lowercase, no parameters. */
+export const uploadLinkContentType = z
+  .string()
+  .max(127)
+  .regex(/^[a-z0-9][a-z0-9!#$&^_.+-]*\/(?:\*|[a-z0-9][a-z0-9!#$&^_.+-]*)$/, 'a media type such as application/pdf, or a family such as image/*');
+
+/**
+ * What a target declares to take upload links (`attachmentTargets[].uploadLinks`). Presence
+ * IS the opt-in — an entity type without it refuses a mint — and the policy is the target's,
+ * so a mint can only narrow it: `maxBytes` here is the ceiling, `contentTypes` the allowlist
+ * (absent: any type). The declaration is what a reviewer reads in the surface diff.
+ */
+export const uploadLinkPolicy = z.object({
+  maxBytes: z.number().int().positive().max(UPLOAD_LINK_MAX_BYTES_CEILING),
+  contentTypes: z.array(uploadLinkContentType).min(1).max(32).optional(),
+});
+export type UploadLinkPolicy = z.infer<typeof uploadLinkPolicy>;
+
+/** The filename an upload may carry: a leaf name, never a path. */
+export const uploadLinkFilename = z
+  .string()
+  .min(1)
+  .max(255)
+  // eslint-disable-next-line no-control-regex
+  .regex(/^[^/\\\u0000-\u001f\u007f]+$/, 'a file name, not a path');
+
+/** `ctx.attachments.mintUploadUrl`'s input. */
+export const uploadLinkMintInput = z
+  .object({
+    entity: entityRef,
+    /** Fixes the stored name. Absent: the uploader names the file (`?filename=` or `Content-Disposition`). */
+    filename: uploadLinkFilename.optional(),
+    /** Narrows the target's `maxBytes`; a larger value is refused, not clamped. */
+    maxBytes: z.number().int().positive().optional(),
+    ttlSeconds: z.number().int().positive().max(UPLOAD_LINK_MAX_TTL_SECONDS).optional(),
+    visibility: visibility.optional(),
+  })
+  .strict();
+export type UploadLinkMintInput = z.input<typeof uploadLinkMintInput>;
+
+/** The path a link's bytes are PUT to — the secret last, the target in the path so a mismatch is a 404 that spends nothing. */
+export function uploadLinkPath(entity: { entityType: string; entityId: string }, secret: string): string {
+  return `${UPLOAD_LINK_PATH_PREFIX}/${encodeURIComponent(entity.entityType)}/${encodeURIComponent(entity.entityId)}/${secret}`;
+}
+
+/** What a mint returns. The `secret` (and the `path` that carries it) exists only here. */
+export interface MintedUploadLink {
+  id: string;
+  secret: string;
+  /** Join to the vertical's own public origin: `PUT ${origin}${path}`. */
+  path: string;
+  expiresAt: string;
+  /** The ceiling the link will enforce — the mint's, under the target's. */
+  maxBytes: number;
+  filename: string | null;
+}
+
+export const uploadLinkState = z.enum(['pending', 'redeemed', 'revoked', 'expired']);
+export type UploadLinkState = z.infer<typeof uploadLinkState>;
+
+/** A link as a listing shows it. Never the secret, never its hash. */
+export const uploadLinkRecord = z.object({
+  id: z.string().min(1),
+  entity: entityRef,
+  filename: z.string().nullable(),
+  maxBytes: z.number().int().positive(),
+  contentTypes: z.array(uploadLinkContentType).nullable(),
+  visibility,
+  mintedBy: principalId,
+  mintedAt: instant,
+  expiresAt: instant,
+  state: uploadLinkState,
+  redeemedAt: instant.nullable(),
+  /** The attachment a redeemed link produced — what a follow-up operation is handed. */
+  attachmentId: z.string().nullable(),
+});
+export type UploadLinkRecord = z.infer<typeof uploadLinkRecord>;
+
+/** What `ScopeHost.inspectUploadLink` tells the route before it reads a byte. */
+export interface UploadLinkView {
+  entity: { entityType: string; entityId: string };
+  filename: string | null;
+  maxBytes: number;
+  contentTypes: string[] | null;
+  visibility: Visibility;
+}
+
+/** A link was minted. Entity: the target; actor: the minter. */
+export const ATTACHMENT_UPLOAD_LINK_MINTED = 'attachment.upload-link-minted';
+/**
+ * A link was redeemed — written in the SAME transaction as the `attachment.added` it caused.
+ * A vertical consumes this to learn which link produced which attachment, and so which
+ * follow-up to run.
+ */
+export const ATTACHMENT_UPLOAD_LINK_REDEEMED = 'attachment.upload-link-redeemed';
+/** A link was revoked before it was used. */
+export const ATTACHMENT_UPLOAD_LINK_REVOKED = 'attachment.upload-link-revoked';
+
+export const attachmentUploadLinkMintedPayload = z.object({
+  linkId: z.string().min(1),
+  entity: entityRef,
+  filename: z.string().nullable(),
+  maxBytes: z.number().int().positive(),
+  contentTypes: z.array(uploadLinkContentType).nullable(),
+  visibility,
+  expiresAt: instant,
+  mintedBy: principalId,
+});
+export type AttachmentUploadLinkMintedPayload = z.infer<typeof attachmentUploadLinkMintedPayload>;
+
+export const attachmentUploadLinkRedeemedPayload = z.object({
+  linkId: z.string().min(1),
+  entity: entityRef,
+  attachmentId: z.string().min(1),
+  size: z.number().int().nonnegative(),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  mintedBy: principalId,
+});
+export type AttachmentUploadLinkRedeemedPayload = z.infer<typeof attachmentUploadLinkRedeemedPayload>;
+
+export const attachmentUploadLinkRevokedPayload = z.object({
+  linkId: z.string().min(1),
+  entity: entityRef,
+  revokedBy: principalId,
+});
+export type AttachmentUploadLinkRevokedPayload = z.infer<typeof attachmentUploadLinkRevokedPayload>;

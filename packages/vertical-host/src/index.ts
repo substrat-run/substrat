@@ -2457,6 +2457,7 @@ export { externalInput, externalJson, externalResult } from './wire.js';
 export * from './public-surface.js';
 // #1672: the link-share exchange — a capability's secret traded for an HttpOnly session.
 export * from './capability-exchange.js';
+export * from './upload-link.js';
 // #1706: calling another vertical of the same tenant, from harness code.
 export * from './peer-client.js';
 // #1859: the live-read route — the Origin gate and the pure host's 501, once.

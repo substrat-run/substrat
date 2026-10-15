@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-115 decisions · 63 plan · 52 kernel
+114 decisions · 63 plan · 51 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -123,7 +123,6 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-62](decisions/D-062-a-login-s-places-are-an-index-at-its-identity-pool-shown-only-t.md) | 2026-10-11 | plan | A login's places are an index at its identity pool, shown only to that login on the issuer's own origin; verticals report into it and never read it | #1670, #1694, #2201 |
 | [K-48](decisions/K-048-a-shape-protected-key-reaches-its-record-only-through-the-record.md) | 2026-10-11 | kernel | A key a declared shape protects reaches a record of the shape's type only through the record <br>*amends K-12* | #2177 |
 | [D-63](decisions/D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md) | 2026-10-12 | plan | A store kind is platform code, registered and pinned like a connector | #2207, #2210, #2297 |
-| [K-49](decisions/K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md) | 2026-10-12 | kernel | A scope store is a platform-run object per scope, reached by its own door <br>*amended by K-50* <br>*amended by K-52* | #2207 |
-| [K-50](decisions/K-050-a-hosted-scope-store-s-lifecycle-is-driven-by-the-platform-from-its-own-record.md) | 2026-10-13 | kernel | A hosted scope store's lifecycle is driven by the platform, from its own record <br>*amends K-49* <br>*amended by K-52* | #2207, #2210, #2211 |
+| [K-49](decisions/K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md) | 2026-10-12 | kernel | A scope store is a platform-run object per scope, reached by its own door <br>*amended by K-50* | #2207 |
+| [K-50](decisions/K-050-a-hosted-scope-store-s-lifecycle-is-driven-by-the-platform-from-its-own-record.md) | 2026-10-13 | kernel | A hosted scope store's lifecycle is driven by the platform, from its own record <br>*amends K-49* | #2207, #2210, #2211 |
 | [K-51](decisions/K-051-the-assistant-s-record-is-an-engine-composed-by-call-the-run-is-host-code.md) | 2026-10-15 | kernel | The assistant's record is an engine composed by call; the run is host code, written by a key no person holds <br>*awaiting ratification* | #2283 |
-| [K-52](decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md) | 2026-10-15 | kernel | The scope-store envelope is Ed25519 per audience, a store script holds public keys only, and an object is bound to its name by its id <br>*awaiting ratification* <br>*amends K-49, K-50* | #2287, #2289, #2290 |

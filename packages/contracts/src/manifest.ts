@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { moduleId, permissionKey, verticalSlug } from './ids.js';
 import { eventType } from './events.js';
+import { uploadLinkPolicy } from './attachments.js';
 import { peerSpec } from './peer.js';
 import { isKernelNamespace } from './object-ref.js';
 import { entityStateDeclaration } from './entity-state.js';
@@ -335,6 +336,10 @@ export const moduleManifest = z.object({
       // check `readPermission` — the pre-#473 declarations keep parsing and get the
       // conservative-enough default; an engine tightens it by declaring one.
       writePermission: permissionKey.optional(),
+      // Opt-in to `ctx.attachments.mintUploadUrl` for this target, and the policy a link
+      // redeemed against it is held to. Optional + additive (D-28): absent, a mint on this
+      // entity type is refused and every existing declaration parses unchanged.
+      uploadLinks: uploadLinkPolicy.optional(),
     }),
   ),
   // Entity types whose CHANGES this module is willing to announce on a live read

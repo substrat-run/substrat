@@ -20,6 +20,8 @@ import {
   ATTACHMENT_REMOVED,
   attachmentRecord,
   type AttachmentRecord,
+  type UploadLinkPolicy,
+  type UploadLinkView,
   type BlobStoreHandle,
   createTenantInput,
   domainEvent,
@@ -242,6 +244,10 @@ import {
   assertNoSecret,
   assertPermissionKey,
   CAPABILITY_DDL,
+  UPLOAD_LINK_DDL,
+  createAttachmentVerbs,
+  inspectUploadLink,
+  redeemUploadLinkInTransaction,
   COPY_ORIGIN_DDL,
   ENTITY_STATE_MOVES_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
@@ -771,7 +777,7 @@ import {
   type AuditedOperationSqlRow,
   type SettleIntentRow,
 } from '@substrat-run/kernel';
-import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
+import { INERT_SCOPE_REASON, isPrimaryScopeRow, UPLOAD_LINK_WRONG_TARGET, type UploadLinkRedeemInput, type UploadTarget } from '@substrat-run/kernel';
 import {
   COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
@@ -1169,6 +1175,9 @@ const KERNEL_DDL = `
   -- an exchange trades that secret for. Spine (kernel-written), shared with the DO adapter
   -- from @substrat-run/kernel so the two cannot part company; the column comments are there.
   ${CAPABILITY_DDL}
+  -- Upload links: a short-lived, single-use URL that lets a caller with no session upload ONE
+  -- file to ONE entity. Spine (kernel-written), shared with the DO adapter from the kernel.
+  ${UPLOAD_LINK_DDL}
   -- #1686: where a copied scope's data came from, and the event id its own events start above.
   -- Shared with the other adapter from @substrat-run/kernel; the column comments are there.
   ${COPY_ORIGIN_DDL}
@@ -1935,6 +1944,8 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly erasurePlans: ModuleErasurePlan[] = [];
   /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
   private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
+  /** entityType → the `uploadLinks` policy its `attachmentTargets` entry declares; absent = no links. */
+  private readonly uploadLinkPolicies = new Map<string, UploadLinkPolicy>();
   /** operation name → who binds it: the owning module, its entitlementKey and its declared
    *  schedules — the §4.3 gate's input, resolved per invoke by `requiredEntitlementFor` (#1654). */
   private readonly operationEntitlement = new Map<string, OperationEntitlement>();
@@ -3053,6 +3064,13 @@ export class SqliteScopeHost implements ScopeHost {
         );
       }
       this.attachmentTargets.set(target.entityType, gate);
+      if (target.uploadLinks) {
+        const known = this.uploadLinkPolicies.get(target.entityType);
+        if (known && JSON.stringify(known) !== JSON.stringify(target.uploadLinks)) {
+          throw new Error(`conflicting uploadLinks policies for attachment target '${target.entityType}'`);
+        }
+        this.uploadLinkPolicies.set(target.entityType, target.uploadLinks);
+      }
     }
     // WITHDRAWAL (K-17): suppress another module's default binding. Order
     // independent — a manifest may withdraw an operation whose module has not
@@ -3556,6 +3574,56 @@ export class SqliteScopeHost implements ScopeHost {
     return this.buildAttachments(rt, asPrincipal(principal), store);
   }
 
+  /** The declared write key and link policy of an attachment target — what `ctx.attachments` mints against. */
+  private uploadTargetOf(entityType: string): UploadTarget | undefined {
+    const gate = this.attachmentTargets.get(entityType);
+    if (!gate) return undefined;
+    const uploadLinks = this.uploadLinkPolicies.get(entityType);
+    return uploadLinks ? { write: gate.write, uploadLinks } : { write: gate.write };
+  }
+
+  async inspectUploadLink(tenantId: TenantId, scopeId: ScopeId, secret: string): Promise<UploadLinkView> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    return rt.actor.enqueue(
+      async () => (await inspectUploadLink({ sql: spineSql(rt.db), now: this.clock() }, secret)).view,
+    );
+  }
+
+  async redeemUploadLink(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    input: UploadLinkRedeemInput,
+  ): Promise<AttachmentRecord> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const { view, mintedBy } = await rt.actor.enqueue(() =>
+      inspectUploadLink({ sql: spineSql(rt.db), now: this.clock() }, secret),
+    );
+    if (view.entity.entityType !== input.entity.entityType || view.entity.entityId !== input.entity.entityId) {
+      throw substratError('not_found', 'This upload link is not valid for that target.', {
+        reason: UPLOAD_LINK_WRONG_TARGET,
+      });
+    }
+    // The write is made AS the minter: the same gates `attachments()` puts in front of a person.
+    await this.getScope(mintedBy, tenantId, scopeId);
+    const scopeRow = this.directory
+      .prepare('SELECT vertical FROM scopes WHERE scope_id = ?')
+      .get(scopeId) as { vertical: string | null } | undefined;
+    const files = this.buildAttachments(
+      rt,
+      asPrincipal(mintedBy),
+      this.attachmentStore(tenantId, scopeRow?.vertical ?? null),
+      { uploadLinkSecret: secret },
+    );
+    return files.upload({
+      entity: view.entity,
+      filename: view.filename ?? input.filename,
+      contentType: input.contentType,
+      visibility: view.visibility,
+      body: input.body,
+    });
+  }
+
   async getSystemAttachments(
     moduleId: ModuleId,
     tenantId: TenantId,
@@ -3587,7 +3655,7 @@ export class SqliteScopeHost implements ScopeHost {
     rt: ScopeRuntime,
     authority: CheckSubject | CapabilitySessionAuthority,
     store: TenantBlobStore,
-    opts: { reentrant?: boolean; admitByEvent?: string } = {},
+    opts: { reentrant?: boolean; admitByEvent?: string; uploadLinkSecret?: string } = {},
   ): ScopeAttachments {
     // #1686: a capability session is resolved per CALL, inside the call's own actor task —
     // the invoke door's discipline, so a revoke or an expiry refuses the next read on a
@@ -3748,6 +3816,15 @@ export class SqliteScopeHost implements ScopeHost {
             // #1575: queue its text extraction in the same transaction — a `pending` row
             // and a job run. Nothing is extracted here, so nothing here can fail the upload.
             enqueueAttachmentText(spineSql(rt.db), record.id, ulid(), this.clock());
+            // An upload-link redemption spends its link HERE, in the same transaction as the
+            // row it produced: a refusal anywhere above or below rolls the spend back.
+            if (opts.uploadLinkSecret !== undefined) {
+              await redeemUploadLinkInTransaction(
+                { sql: spineSql(rt.db), now: this.clock(), emit: (event) => kernelEmit(ctx, event) },
+                opts.uploadLinkSecret,
+                record,
+              );
+            }
             return record;
           });
         } catch (err) {
@@ -13251,6 +13328,18 @@ export class SqliteScopeHost implements ScopeHost {
         isOperation: (name) => this.operations.has(name),
         assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
         minted,
+      }),
+      // Upload links: mint / revoke / list, written once in the kernel — the same four things
+      // `capabilities` is handed, and the same consumer-is-system-actor rule.
+      attachments: createAttachmentVerbs({
+        sql: spineSql(rt.db),
+        subject: overrideActor ? { kind: 'system', id: overrideActor.system as ModuleId } : subject,
+        now: at,
+        check: runCheck,
+        emit: (event) => writeEvent(event, 'kernel'),
+        assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
+        minted,
+        targetOf: (entityType) => this.uploadTargetOf(entityType),
       }),
       // K-16 / #1864: link and relink, written once in the kernel over the raw spine seam.
       ...createEntityEdgeVerbs({

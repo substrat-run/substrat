@@ -294,6 +294,19 @@ function versionIdOf(env: unknown): string | null {
 }
 
 /**
+ * An upload link's secret is the last segment of its redemption path
+ * (`/api/attachment-uploads/<entityType>/<entityId>/<secret>`), so unlike a query string it
+ * survives `pathOf` and would be written to the tenant's log for the retention window. The
+ * prefix is spelled here rather than imported: this module is bundled into every vertical's
+ * upload and takes only the zero-import contract subpaths (a test holds it equal to
+ * `UPLOAD_LINK_PATH_PREFIX`).
+ */
+export const UPLOAD_LINK_LOG_PREFIX = '/api/attachment-uploads';
+const UPLOAD_LINK_SECRET_SEGMENT = /^(\/api\/attachment-uploads\/[^/]+\/[^/]+\/)[^/]+/;
+export const redactUploadLinkSecret = (pathname: string): string =>
+  pathname.replace(UPLOAD_LINK_SECRET_SEGMENT, '$1[redacted]');
+
+/**
  * The path, with the query string DISCARDED.
  *
  * Not a tidiness choice. A vertical that speaks OIDC carries `code`, `state` and
@@ -306,7 +319,7 @@ function versionIdOf(env: unknown): string | null {
  */
 function pathOf(url: string): string {
   try {
-    return new URL(url).pathname;
+    return redactUploadLinkSecret(new URL(url).pathname);
   } catch {
     // A URL the runtime accepted but `URL` will not parse is not worth failing over.
     return '/';

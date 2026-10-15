@@ -4,7 +4,13 @@
  * added without joining the set fails the first contract test that drives it.
  */
 import { describe, expect, it } from 'vitest';
-import { ATTACHMENT_ADDED, ATTACHMENT_REMOVED } from '../src/attachments.js';
+import {
+  ATTACHMENT_ADDED,
+  ATTACHMENT_REMOVED,
+  ATTACHMENT_UPLOAD_LINK_MINTED,
+  ATTACHMENT_UPLOAD_LINK_REDEEMED,
+  ATTACHMENT_UPLOAD_LINK_REVOKED,
+} from '../src/attachments.js';
 import { CAPABILITY_BECOME_MINTED, CAPABILITY_EXERCISED, CAPABILITY_MINTED, CAPABILITY_REVOKED } from '../src/capability.js';
 import { EMAIL_DEAD_LETTERED, EMAIL_REFUSED, EMAIL_SENT } from '../src/email-intent.js';
 import { errorCodeOf } from '../src/errors.js';
@@ -34,11 +40,15 @@ const codeOf = (fn: () => void): string | undefined => {
 };
 
 describe('kernel-authored event types (#1864)', () => {
-  it('is exactly the nineteen types the kernel writes', () => {
+  it('is exactly the twenty-two types the kernel writes', () => {
     expect([...KERNEL_AUTHORED_EVENT_TYPES].sort()).toEqual(
       [
         ATTACHMENT_ADDED,
         ATTACHMENT_REMOVED,
+        // Upload links: minted, redeemed with the attachment they caused, revoked.
+        ATTACHMENT_UPLOAD_LINK_MINTED,
+        ATTACHMENT_UPLOAD_LINK_REDEEMED,
+        ATTACHMENT_UPLOAD_LINK_REVOKED,
         CAPABILITY_EXERCISED,
         CAPABILITY_MINTED,
         CAPABILITY_REVOKED,
@@ -99,7 +109,7 @@ describe('kernel-authored event types (#1864)', () => {
         // a frozen array throws in strict mode; either way, nothing may have changed
       }
     }
-    expect(KERNEL_AUTHORED_EVENT_TYPES).toHaveLength(19);
+    expect(KERNEL_AUTHORED_EVENT_TYPES).toHaveLength(22);
     for (const type of [ENTITY_RELINKED, ENTITY_LINKED, CAPABILITY_MINTED, ATTACHMENT_ADDED]) {
       expect(codeOf(() => assertModuleEmittableType(type))).toBe('validation_failed');
       expect(isKernelAuthoredEventType(type)).toBe(true);

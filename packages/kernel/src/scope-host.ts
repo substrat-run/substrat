@@ -145,6 +145,7 @@ import type {
   TenantRole,
   TenantStoreHandle,
   AttachmentRecord,
+  UploadLinkView,
   BlobStoreHandle,
   Visibility,
   Vertical,
@@ -186,6 +187,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { CapabilityVerbs } from './capability.js';
+import type { AttachmentVerbs } from './upload-link.js';
 import type { AuditedOperationRef, AuditedOperationRow } from './audit-outcome.js';
 import { permissionKey, substratError, type EntityStateName } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
@@ -772,6 +774,14 @@ export interface OperationContext {
    * like `ctx.grant`.
    */
   readonly capabilities: CapabilityVerbs;
+  /**
+   * Attachment verbs an operation may use — today, minting a single-use URL through which a
+   * caller with no session uploads ONE file to an entity (`mintUploadUrl`). The bytes
+   * themselves never ride an operation: they go to the redemption route, which writes them
+   * through `ScopeHost.attachments`' own upload as the principal who minted the link.
+   * See {@link AttachmentVerbs}.
+   */
+  readonly attachments: AttachmentVerbs;
   /**
    * Run `fn` as a SUB-TRANSACTION of this operation (#770,
    * docs/architecture/sub-transactions.md) — the boundary that makes catching an
@@ -4698,6 +4708,17 @@ export interface AttachmentUploadInput {
   body: Uint8Array;
 }
 
+/**
+ * Input to `ScopeHost.redeemUploadLink`. No `visibility`: the link carries it, as it carries
+ * the author. `entity` is what the URL named, and must be the link's own.
+ */
+export interface UploadLinkRedeemInput {
+  entity: EntityRef;
+  filename: string;
+  contentType: string;
+  body: Uint8Array;
+}
+
 /** An opened attachment: the metadata fact plus the bytes it witnesses. */
 export interface OpenedAttachment {
   record: AttachmentRecord;
@@ -5323,6 +5344,33 @@ export interface ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<Pick<ScopeAttachments, 'open'>>;
+
+  /**
+   * Look an upload link up WITHOUT spending it, so the route can refuse an oversize body or a
+   * wrong type before it reads a byte. `not_found` for a secret that names nothing (and for
+   * one that cannot be ours); `conflict` with reason `upload_link_gone` for one that is used,
+   * expired or revoked. The mint is `ctx.attachments.mintUploadUrl`.
+   *
+   * Optional, like `getCapabilityAttachments`: a host that has not wired the link table says so
+   * by leaving it out, and `mountUploadLinkRedeem` refuses to mount over one.
+   */
+  inspectUploadLink?(tenantId: TenantId, scopeId: ScopeId, secret: string): Promise<UploadLinkView>;
+  /**
+   * Redeem an upload link: write the bytes as ONE attachment, AS the principal who minted the
+   * link — the target's `writePermission` is checked as them now, they are the author, and
+   * `attachment.added` is emitted exactly as for any upload. The link is spent in the same
+   * transaction as the attachment row, so a redemption that fails anywhere leaves it unspent;
+   * the size and the type are the LINK's to refuse (`validation_failed`, reasons
+   * `upload_link_too_large` / `upload_link_type_refused`) and a link used by another request
+   * first is `conflict` / `upload_link_gone`. The bytes are written to the blob store before
+   * the row, as an upload's are, and removed again if the row is refused.
+   */
+  redeemUploadLink?(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    input: UploadLinkRedeemInput,
+  ): Promise<AttachmentRecord>;
 
   /**
    * Provision a NEW scope and load a `ScopeDump` into it — the write side of

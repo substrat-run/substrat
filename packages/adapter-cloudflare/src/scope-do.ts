@@ -7,6 +7,8 @@ import {
   ATTACHMENT_REMOVED,
   attachmentRecord,
   type AttachmentRecord,
+  type UploadLinkPolicy,
+  type UploadLinkView,
   domainEvent,
   domainEventInput,
   eventId,
@@ -311,6 +313,10 @@ import {
   type PeerDeclarations,
   assertNoSecret,
   CAPABILITY_DDL,
+  UPLOAD_LINK_DDL,
+  createAttachmentVerbs,
+  inspectUploadLink,
+  redeemUploadLinkInTransaction,
   COPY_ORIGIN_DDL,
   ENTITY_STATE_MOVES_DDL,
   SWITCH_FENCES_DDL,
@@ -872,6 +878,9 @@ const KERNEL_DDL = `
   -- an exchange trades that secret for. Shared with the pure adapter from
   -- @substrat-run/kernel so the two cannot part company; the column comments are there.
   ${CAPABILITY_DDL}
+  -- Upload links: a short-lived, single-use URL that lets a caller with no session upload ONE
+  -- file to ONE entity. Shared with the pure adapter from @substrat-run/kernel.
+  ${UPLOAD_LINK_DDL}
   -- #1686: where a copied scope's data came from, and the event id its own events start above.
   -- Shared with the other adapter from @substrat-run/kernel; the column comments are there.
   ${COPY_ORIGIN_DDL}
@@ -1288,6 +1297,8 @@ export function defineScopeDO(
     private readonly erasurePlans: ModuleErasurePlan[] = [];
     /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
     private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
+    /** entityType → the `uploadLinks` policy its `attachmentTargets` entry declares; absent = no links. */
+    private readonly uploadLinkPolicies = new Map<string, UploadLinkPolicy>();
     /**
      * entityType → the declared live-read gate (#938): the key a subscriber must hold
      * ON THAT ENTITY before a change to it is announced. Absent = announced to nobody;
@@ -1481,6 +1492,13 @@ export function defineScopeDO(
           );
         }
         this.attachmentTargets.set(target.entityType, gate);
+        if (target.uploadLinks) {
+          const known = this.uploadLinkPolicies.get(target.entityType);
+          if (known && JSON.stringify(known) !== JSON.stringify(target.uploadLinks)) {
+            throw new Error(`conflicting uploadLinks policies for attachment target '${target.entityType}'`);
+          }
+          this.uploadLinkPolicies.set(target.entityType, target.uploadLinks);
+        }
       }
       // Live-read targets (#938): entityType → the read key a subscriber must pass ON
       // THAT ENTITY before a change to it is announced. Validated exactly like the
@@ -3821,6 +3839,38 @@ export function defineScopeDO(
       return thrownForRpc(() => this.listAttachments(...args));
     }
 
+    /**
+     * Redeem an upload link: the attachment write of `attachmentAdd`, with the link spent in the
+     * same transaction. Its OWN verb, never a trailing argument on `attachmentAdd`: a DO that
+     * predates it fails the call (no such RPC method) instead of ignoring the secret and
+     * writing an attachment a link never paid for. The write is checked as `record.createdBy`,
+     * which the kernel holds to the link's minter inside the transaction.
+     */
+    attachmentRedeemUploadLinkReply(
+      record: AttachmentRecord,
+      secret: string,
+      tenantId: TenantId,
+      scopeId: ScopeId,
+    ): Promise<DoReply<AttachmentRecord>> {
+      return replyOf(() =>
+        this.addAttachment(record, record.createdBy as PrincipalId, tenantId, scopeId, undefined, secret),
+      );
+    }
+
+    /** Look an upload link up without spending it — what the route judges a body against. */
+    uploadLinkInspectReply(
+      secret: string,
+      _tenantId: TenantId,
+      _scopeId: ScopeId,
+    ): Promise<DoReply<{ view: UploadLinkView; mintedBy: PrincipalId }>> {
+      return replyOf(async () => {
+        await this.ensureMigrations();
+        return await this.queue.enqueue(() =>
+          inspectUploadLink({ sql: doSpineSql(this.sql), now: instant.parse(new Date().toISOString()) }, secret),
+        );
+      });
+    }
+
     attachmentListReply(...args: Parameters<ScopeDO['listAttachments']>): Promise<DoReply<AttachmentRecord[]>> {
       return replyOf(() => this.listAttachments(...args));
     }
@@ -3864,6 +3914,8 @@ export function defineScopeDO(
       // #476: when set, the gate is checked as this CONNECTION (not `principal`, which is
       // then only the ctx.principal placeholder the connector door passes).
       connectionId?: string,
+      // An upload-link redemption: the link is spent in this same transaction.
+      uploadLinkSecret?: string,
     ): Promise<AttachmentRecord> {
       await this.ensureMigrations();
       const parsed = attachmentRecord.parse(record);
@@ -3906,6 +3958,17 @@ export function defineScopeDO(
             // #1575: queue its text extraction in the same transaction — a `pending` row
             // and a job run. Nothing is extracted here, so nothing here can fail the upload.
             enqueueAttachmentText(doSpineSql(this.sql), parsed.id, ulid(), new Date().toISOString());
+            if (uploadLinkSecret !== undefined) {
+              await redeemUploadLinkInTransaction(
+                {
+                  sql: doSpineSql(this.sql),
+                  now: instant.parse(new Date().toISOString()),
+                  emit: (event) => kernelEmit(ctx, event),
+                },
+                uploadLinkSecret,
+                parsed,
+              );
+            }
           });
         } catch (err) {
           if (err instanceof PermissionDenied) {
@@ -7950,6 +8013,23 @@ export function defineScopeDO(
           isOperation: (name) => this.operations.has(name),
           assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
           minted,
+        }),
+        // Upload links: mint / revoke / list, written once in the kernel — the same four things
+        // `capabilities` is handed, and the same consumer-is-system-actor rule.
+        attachments: createAttachmentVerbs({
+          sql: doSpineSql(sql),
+          subject: systemActor ? { kind: 'system', id: systemActor.system as ModuleId } : subject,
+          now: at,
+          check: runCheck,
+          emit: (event) => writeEvent(event, 'kernel'),
+          assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
+          minted,
+          targetOf: (entityType) => {
+            const gate = this.attachmentTargets.get(entityType);
+            if (!gate) return undefined;
+            const uploadLinks = this.uploadLinkPolicies.get(entityType);
+            return uploadLinks ? { write: gate.write, uploadLinks } : { write: gate.write };
+          },
         }),
         // K-16 / #1864: link and relink, written once in the kernel over the raw spine seam.
         ...createEntityEdgeVerbs({
