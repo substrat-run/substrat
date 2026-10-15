@@ -840,6 +840,11 @@ block it.
    rollback, again continues it. One request walks at most 300 verticals, counting every vertical
    any version declared the kind in. Past that a rollout **and a rollback** are both refused (409),
    and an operator has no recourse until the rollout row carries a cursor (#2312).
+   A `failed` attempt never decides where a rollback goes. An unfinished rollback (`paused`, or
+   `diverged`) is continued by posting the rollback again, and while it goes to an earlier release
+   every rollout is refused (409). A rollback onto the current release does not block a rollout,
+   since a script's schema can keep it from ever finishing. A target that lost its pin holds the kind
+   until a control plane that pins it again is deployed (`control-plane.md` §4.4).
 9. Later: the null-manifest test (f), the Cloudflare host's wipe without a tenant id,
    per-object nonce memory if Q2 says so, and a door for schedules (§9).
 

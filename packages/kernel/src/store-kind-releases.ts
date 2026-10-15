@@ -103,7 +103,7 @@ export interface StoreKindState {
   readonly rollouts: StoreKindRolloutRecord[];
   /** Where a rollback goes now (see `storeKindStateIn`); null when nowhere. */
   readonly rollbackTarget: string | null;
-  /** The target of a rollback that paused or diverged part way, until it ends good. A paused one blocks rollouts. */
+  /** The target of a rollback that paused or diverged part way, until it ends good. Unless it is the current release, it blocks rollouts. */
   readonly unfinishedRollback: string | null;
 }
 
@@ -194,9 +194,11 @@ export function recordStoreKindReleaseIn(
  *   aside, and ended `paused` or `diverged` (`unfinishedRollback`): posting the rollback again
  *   continues it, and never turns it around onto the release it is leaving. A failed attempt moved
  *   nothing, or returned what it moved, so it changes nothing here. No rollout may begin while a
- *   rollback is `paused` (`beginStoreKindRolloutIn`): pagination is not a fault, so the rollback is
- *   finished first. A rollback that ended `diverged` (an upload failed, or a script refused to move
- *   to a lower schema) does not block a rollout: going forward is then the way out;
+ *   rollback to an earlier release is unfinished, `paused` or `diverged` (`beginStoreKindRolloutIn`):
+ *   it is finished first, by posting it again. A rollback onto the current release (undoing a
+ *   diverged rollout) does not block a rollout. A rollback to an earlier release cannot meet the
+ *   schema rule (the route refuses one below the current schema), but one onto the current release
+ *   can, and then it never finishes, so going forward must stay open;
  * - the current release itself, when a rollout since it ended `diverged` or `paused`: the fleet may
  *   be mixed, and undoing that rollout means converging every script back on the release it was
  *   healthy on, never going past it;
@@ -294,11 +296,11 @@ export function beginStoreKindRolloutIn(
      WHERE kind = ? AND state = 'rolling'`,
     input.at, input.kind,
   );
-  const { current, rollbackTarget, unfinishedRollback, rollouts } = storeKindStateIn(db, input.kind, input.nowMs);
-  const pausedRollback = unfinishedRollback && current
-    ? rollouts.filter((r) => r.seq > current.seq && r.state !== 'failed').at(-1)?.state === 'paused'
-    : false;
-  if (input.action === 'rollout' && pausedRollback) {
+  const { current, rollbackTarget, unfinishedRollback } = storeKindStateIn(db, input.kind, input.nowMs);
+  // A rollback under way to an earlier release blocks every rollout until it ends good. One onto
+  // the current release (undoing a diverged rollout) does not: if a script refuses to go below its
+  // schema, that rollback can never finish, and going forward is the way out.
+  if (input.action === 'rollout' && unfinishedRollback && unfinishedRollback !== current?.sha256) {
     throw substratError(
       'conflict',
       `a rollback of '${input.kind}' to ${unfinishedRollback} is part way through; post the rollback again to finish it before any rollout`,

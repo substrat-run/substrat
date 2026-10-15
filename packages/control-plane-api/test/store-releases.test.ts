@@ -456,6 +456,38 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     expect(new Set(f.runs.values())).toEqual(new Set([sha('1')]));
   });
 
+  it('refuses a rollout after a rollback continuation lost its hold, and the rollback still finishes on its target', async () => {
+    for (const slug of ['vd', 've']) await declare(slug);
+    const f = fleet();
+    await run(f, sha('1'));
+    await run(f, sha('2'));
+    const rollback = async () =>
+      runStoreKindRollout({
+        admin: host.admin, actor: staff, registration, sha256: (await host.admin.storeKindState(staff, 'graph')).rollbackTarget!,
+        action: 'rollback', ensure: f.ensure, ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call, perRequest: 2,
+      });
+    expect((await rollback()).rollout.state).toBe('paused');
+    // The next post loses its lease while moving vc: another holder takes the kind and lets it go.
+    f.before.set('vc:1', async () => {
+      clock.advance(ROLLOUT_HOLD_TTL_MS + 1);
+      const other = ulid();
+      expect(await host.admin.holdStoreKind(staff, { kind: 'graph', holder: other, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS })).toBe(true);
+      await host.admin.releaseStoreKindHold(staff, { kind: 'graph', holder: other });
+    });
+    expect(await refusal(rollback())).toMatchObject({ status: 409 });
+    f.before.clear();
+    expect((await host.admin.storeKindState(staff, 'graph')).rollouts.at(-1)?.state).toBe('diverged');
+    // The reviewer's sequence: a rollout of 3 now is refused, before its canary.
+    const before = f.events.length;
+    expect(await refusal(run(f, sha('3')))).toMatchObject({ message: expect.stringMatching(/is part way through; post the rollback again/) });
+    expect(f.events.slice(before)).toEqual([]);
+    expect((await host.admin.storeKindState(staff, 'graph')).rollbackTarget).toBe(sha('1'));
+    let last;
+    for (let i = 0; i < 4 && !(last = await rollback()).complete; i++);
+    expect(last).toMatchObject({ complete: true, rollout: { sha256: sha('1'), state: 'good' } });
+    expect(new Set(f.runs.values())).toEqual(new Set([sha('1')]));
+  });
+
   it('rolls a paused rollout back onto the current release', async () => {
     const f = fleet();
     await run(f, sha('1'));
@@ -754,6 +786,33 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     expect(decoded.status).toBe(413);
     expect(await decoded.text()).toMatch(/at most 10485760 module bytes/);
     expect(bytes.size).toBe(0);
+  });
+
+  it('holds a paused rollback whose target lost its pin until a control plane with the pin is deployed', async () => {
+    const app = appWith(asPerson);
+    for (const n of [1, 2, 3]) await call(app, 'PUT', '/store-kinds/graph/releases', person, wire(bundle(n)));
+    for (const n of [2, 3]) expect((await call(app, 'POST', '/store-kinds/graph/rollouts', person, { sha256: shas[n - 1] })).status).toBe(200);
+    // A rollback to 2 that paused part way (written directly: one batch here is 100 verticals).
+    const holder = ulid();
+    expect(await host.admin.holdStoreKind(person, { kind: 'graph', holder, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
+    const row = await host.admin.beginStoreKindRollout(person, { kind: 'graph', sha256: shas[1]!, action: 'rollback', holder });
+    await host.admin.finishStoreKindRollout(person, { kind: 'graph', seq: row.seq, holder, state: 'paused', detail: null });
+    await host.admin.releaseStoreKindHold(person, { kind: 'graph', holder });
+    // A control plane whose registration no longer pins 2 (a pin is never removed, but say one was).
+    const pinned = registration;
+    registration = { ...pinned, releases: pinned.releases.filter((p) => p.sha256 !== shas[1]) };
+    const unpinned = appWith(asPerson);
+    const back = await call(unpinned, 'POST', '/store-kinds/graph/rollback', person);
+    expect(back.status).toBe(422);
+    expect(await back.text()).toMatch(/not pinned/);
+    const forward = await call(unpinned, 'POST', '/store-kinds/graph/rollouts', person, { sha256: shas[2] });
+    expect(forward.status).toBe(409);
+    expect(await forward.text()).toMatch(/is part way through; post the rollback again/);
+    // The way out: deploy a control plane that pins it again. Then the rollback finishes.
+    registration = pinned;
+    const repinned = await call(appWith(asPerson), 'POST', '/store-kinds/graph/rollback', person);
+    expect(repinned.status, await repinned.clone().text()).toBe(200);
+    expect(await repinned.json()).toMatchObject({ rollout: { action: 'rollback', sha256: shas[1], state: 'good' } });
   });
 
   it('answers 501 when this control plane keeps no releases', async () => {
