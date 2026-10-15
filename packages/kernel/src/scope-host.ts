@@ -3,7 +3,7 @@ import type { ModuleLog } from './module-log.js';
 import type { BoundOperations } from './module-operations.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
-import type { ScopeCopyBackfillResult } from './scope-copy-ledger.js';
+import type { ScopeCopyBackfillResult, SubjectErasureFence } from './scope-copy-ledger.js';
 import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
   OnBehalfOf,
@@ -3666,12 +3666,18 @@ export interface HostAdmin {
    * A scope store is reached, by `substrat.erase`, after the scope-side redaction and
    * before the key is destroyed. A store that answers with an error throws, and the key
    * stays, so a retry converges. The receipt's `storeErasures` names each binding.
+   *
+   * `fence` (#2285): the scope state the caller read before it erased the platform's stores. Given,
+   * the shred takes the same claim `finalizeSubjectShred` takes, just before the key goes, and
+   * refuses (`precondition_failed`) with the key kept when the scope moved. Omitted, nothing is
+   * claimed: the caller reached no store outside this host.
    */
   shredSubject(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
     subjectId: string,
+    fence?: SubjectErasureFence,
   ): Promise<SubjectShredReceipt>;
   /**
    * Subjects whose key row is tombstoned (`shredded_at` set), in subject-id order.
@@ -3691,18 +3697,7 @@ export interface HostAdmin {
   finalizeSubjectShred(
     actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
     subjectId: string, redactions: readonly SubjectRedactionCounts[],
-    expected: {
-      versionId: string | null;
-      servingRef: string | null;
-      epoch: number;
-      copyCount: number;
-      /**
-       * The serving pointer's version when the erasure read a scope pinned to it (#2285).
-       * The claim requires that version to still be the one the pointer serves. Omitted,
-       * the claim does not fence the pointer — a caller that resolved no pin.
-       */
-      servingVersionId?: string | null;
-    },
+    expected: SubjectErasureFence,
     /**
      * What the serving script's stores erased (#2068). The coordinator calls
      * `substrat.erase` once — store objects are per vertical, not per script copy —

@@ -220,9 +220,9 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
     });
 
     describe('a bound version decides by its manifest', () => {
-      const publish = async (scopeStores?: unknown[], slug = 'docs') => {
+      const publish = async (scopeStores?: unknown[], slug = 'docs', deployed = true) => {
         const id = ulid();
-        const ref = `${slug}-${id.toLowerCase()}`;
+        const ref = deployed ? `${slug}-${id.toLowerCase()}` : null;
         await host.admin.publishVersion(staff, {
           id,
           verticalSlug: slug,
@@ -352,6 +352,46 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         const res = await shred(api, scope.s, scope.subject);
         expect(res.status).toBe(412);
         expect(await scope.keyKept()).toBe(true);
+      });
+
+      /**
+       * The direct arm (#2285): no script to redact through, so the host's own shred runs, and it
+       * takes the same claim the orchestrated finalize takes. `move` runs while the stores are erased.
+       */
+      const direct = async (move: (s: ScopeId) => Promise<void>) => {
+        const scope = await sealedScope();
+        const version = await publish([{ binding: 'GRAPH', kind: 'graph' }], 'docs', false);
+        await host.admin.bindScopeVersion(staff, t, scope.s, version.id);
+        const caller: PlatformScopeStores = {
+          ...unreachablePlatformScopeStores(),
+          eraseSubject: async ({ stores }) => {
+            await move(scope.s);
+            return stores.map((store) => ({ binding: store.binding, erased: 1 }));
+          },
+        };
+        const api = createControlPlaneApi({
+          host,
+          authenticate: UNSAFE_devPlatformActorAuth(),
+          storeKinds: [graph],
+          platformScopeStores: caller,
+        });
+        return { ...scope, res: await shred(api, scope.s, scope.subject) };
+      };
+
+      it('on the direct arm, a bind that adds a binding while the stores are erased keeps the key (#2285)', async () => {
+        const { res, keyKept } = await direct(async (s) => {
+          const added = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }], 'docs', false);
+          await host.admin.bindScopeVersion(staff, t, s, added.id);
+        });
+        expect(res.status).toBe(412);
+        expect(await keyKept()).toBe(true);
+      });
+
+      it('on the direct arm, an erasure nothing moved under destroys the key, and moves the epoch a bind compares', async () => {
+        const { s, res, keyKept } = await direct(async () => undefined);
+        expect(res.status).toBe(200);
+        expect(await keyKept()).toBe(false);
+        expect(await host.admin.scopeErasureEpoch(staff, t, s)).toBe(1);
       });
 
       it('a promote onto the same serving script that adds a binding keeps the key (#2285)', async () => {

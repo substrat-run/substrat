@@ -126,6 +126,52 @@ export const COPY_BACKFILL_SCOPE_SQL =
  */
 export interface ErasureEpochStamp { erasureEpoch: number; path: 'orchestrated' | 'direct' }
 
+/**
+ * What a subject erasure read before it erased anything, and requires to still hold when it
+ * destroys the key (#1722, #2285). A bind, a promote, a rollback or a serving re-upload that
+ * landed in between would run a version whose stores the erasure may not have reached (L19).
+ */
+export interface SubjectErasureFence {
+  versionId: string | null;
+  servingRef: string | null;
+  epoch: number;
+  copyCount: number;
+  /**
+   * The vertical's serving pointer as the erasure read it, for a scope with a serving pin: the
+   * claim requires the vertical to hold exactly this pair, whether or not the scope was on it,
+   * so a pointer that moves onto (or off) the scope's script is seen. `null` is no pointer.
+   * Omitted, the pointer is not fenced: a scope with no pin does not run the pointer's version.
+   */
+  servingPointer?: { ref: string; versionId: string } | null;
+}
+
+/**
+ * The erasure claim (#1722, #2285): moves the erasure epoch, which every bind compares, only while
+ * the scope still holds what the erasure read. Taken on both arms, the orchestrated finalize and the
+ * direct shred, before the key goes. Params: `subjectErasureClaimParams`.
+ */
+export const SUBJECT_ERASURE_CLAIM_SQL = `
+  UPDATE scopes SET erasure_epoch = COALESCE(erasure_epoch, 0) + 1
+  WHERE tenant_id = ? AND scope_id = ? AND vertical_version_id IS ?
+    AND serving_ref IS ? AND COALESCE(erasure_epoch, 0) = ?
+    AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS copy
+      WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id
+        AND copy.state = 'pending')
+    AND (SELECT COUNT(*) FROM scope_script_copies AS copy
+      WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id) = ?
+    AND (? = 0 OR EXISTS (SELECT 1 FROM verticals
+      WHERE verticals.slug = scopes.vertical
+        AND verticals.serving_ref IS ? AND verticals.serving_version_id IS ?))`;
+
+/** `SUBJECT_ERASURE_CLAIM_SQL`'s parameters, in order. */
+export const subjectErasureClaimParams = (
+  tenantId: string, scopeId: string, fence: SubjectErasureFence,
+): (string | number | null)[] => [
+  tenantId, scopeId, fence.versionId, fence.servingRef, fence.epoch, fence.copyCount,
+  fence.servingPointer === undefined ? 0 : 1,
+  fence.servingPointer?.ref ?? null, fence.servingPointer?.versionId ?? null,
+];
+
 /** `COPY_BACKFILL_SCOPE_SQL`'s row. */
 export interface CopyBackfillScopeRow { reap_claimed_at: string | null; erasure_epoch: number }
 
