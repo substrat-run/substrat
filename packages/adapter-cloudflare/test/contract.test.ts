@@ -33,6 +33,7 @@ import { ATTACHMENT_TEXT_JOB, capabilityTokenHash, ATTACHMENT_TEXT_MODULE, Permi
 import {
   atomicContractSuite,
   capabilityAttachmentContractSuite,
+  uploadLinkContractSuite,
   attachmentRefusalContractSuite,
   attachmentTextContractSuite,
   type AttachmentTextHostOptions,
@@ -508,6 +509,9 @@ const attachmentHostFixture = async (options: AttachmentTextHostOptions = {}) =>
   return { host, forgetAttachmentText, cleanup: async () => host.close() };
 };
 capabilityAttachmentContractSuite('adapter-cloudflare', attachmentHostFixture);
+
+// Upload links, on the DO path: the link row and the spend live in the ScopeDO, the bytes in the bucket.
+uploadLinkContractSuite('adapter-cloudflare', attachmentHostFixture);
 
 // #113: an attachment refusal crosses the ScopeDO hop as data, so it reaches the caller typed.
 attachmentRefusalContractSuite('adapter-cloudflare', attachmentHostFixture);

@@ -767,6 +767,7 @@ type EntityRefs<T extends Record<string, EntityDef>, M> = {
       string;
     readonly readPermission: string;
     readonly writePermission?: string;
+    readonly uploadLinks?: { readonly maxBytes: number; readonly contentTypes?: readonly string[] };
   }[];
   /**
    * A live read announces a change to ONE entity id, so the target must be

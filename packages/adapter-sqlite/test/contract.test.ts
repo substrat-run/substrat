@@ -18,6 +18,7 @@ import {
   scopeStoreContractSuite,
   findingsAtomicContractSuite,
   capabilityAttachmentContractSuite,
+  uploadLinkContractSuite,
   attachmentRefusalContractSuite,
   attachmentTextContractSuite,
   capabilityContractSuite,
@@ -448,6 +449,9 @@ const attachmentHostFixture = async () => {
 // #1686: attachments through a capability — the same checker branch, reached through the
 // attachment surface.
 capabilityAttachmentContractSuite('adapter-sqlite', attachmentHostFixture);
+
+// Upload links: a single-use URL minted in an operation, redeemed through the attachment write.
+uploadLinkContractSuite('adapter-sqlite', attachmentHostFixture);
 
 // #113: an attachment refusal reaches the caller typed — the pure adapter's half of the parity.
 attachmentRefusalContractSuite('adapter-sqlite', attachmentHostFixture);

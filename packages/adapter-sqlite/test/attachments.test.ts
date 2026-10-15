@@ -236,6 +236,25 @@ describe('attachment surface (pure adapter)', () => {
     expect(files).toEqual([]);
   });
 
+  it('keeps a committed row and its bytes when the drain after the commit fails (#2311)', async () => {
+    const { host, t, s, editor } = await world();
+    const att = await host.attachments(editor, t, s);
+    // The post-commit tail throws: the refusal-compensation must not reach the bytes of a
+    // row that is already committed. Its twin above: a refused write still deletes them.
+    (host as unknown as { dispatch: () => Promise<void> }).dispatch = async () => {
+      throw new Error('drain failed after commit');
+    };
+    const rec = await att.upload({
+      entity: { entityType: 'doc', entityId: 'd1' },
+      filename: 'kept.txt',
+      contentType: 'text/plain',
+      visibility: 'internal',
+      body: bytes('kept bytes'),
+    });
+    expect((await att.list({ entityType: 'doc', entityId: 'd1' })).map((r) => r.id)).toEqual([rec.id]);
+    expect(new TextDecoder().decode((await att.open(rec.id))!.body)).toBe('kept bytes');
+  });
+
   it('removes an attachment: row gone, bytes gone, list empty', async () => {
     const { host, t, s, editor } = await world();
     const att = await host.attachments(editor, t, s);

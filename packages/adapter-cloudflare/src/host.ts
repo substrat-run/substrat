@@ -49,6 +49,7 @@ import {
   modelUsageEntry,
   attachmentRecord,
   type AttachmentRecord,
+  type UploadLinkView,
   type BlobStoreHandle,
   createTenantInput,
   identityLink,
@@ -279,6 +280,8 @@ import {
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
   attachmentBlobKey,
+  UPLOAD_LINK_WRONG_TARGET,
+  type UploadLinkRedeemInput,
   attachmentSha256,
   entitlementDenial,
   requiredEntitlementFor,
@@ -1588,6 +1591,20 @@ interface ScopeStubRpc {
     scopeId: ScopeId,
     connectionId?: string,
   ): Promise<DoReply<AttachmentRecord>>;
+  /** An upload-link redemption's metadata half: the add above, with the link spent in the same
+   *  transaction. Its own verb so a DO that predates links refuses rather than ignores the secret. */
+  attachmentRedeemUploadLinkReply(
+    record: AttachmentRecord,
+    secret: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<DoReply<AttachmentRecord>>;
+  /** Look an upload link up without spending it. */
+  uploadLinkInspectReply(
+    secret: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<DoReply<{ view: UploadLinkView; mintedBy: PrincipalId }>>;
   attachmentListReply(
     entity: EntityRef,
     principal: PrincipalId,
@@ -2482,6 +2499,25 @@ const unfencedMessage = (scopeId: ScopeId): string =>
   `the deployment serving scope ${scopeId} predates the switch fence (#2045): it cannot refuse an older ` +
   `switch call's OFF landing after this ON, so no switch is turned on there. Switching off still works. ` +
   `Redeploy the vertical, then retry.`;
+
+/**
+ * The attachment write's compensation, after its bytes are in the store (#2311). The object
+ * is deleted only when the ScopeDO ANSWERED a refusal: `replyOf` turns every DO-side throw
+ * into a `failure` value, and the DO does not let a post-commit drain fault become one, so an
+ * answered failure means the row did not commit. A rejected call is a transport failure with
+ * the commit unknown. A delete there could leave a committed row without its bytes, so the
+ * bytes are kept and the error rethrown. If nothing committed, the object is an orphan that
+ * no row points at, which the sweep of #2314 is for.
+ */
+async function compensatingRefusal<T>(
+  store: TenantBlobStore,
+  key: string,
+  call: () => Promise<DoReply<T>>,
+): Promise<DoReply<T>> {
+  const reply = await call();
+  if (reply.failure) await store.delete(key).catch(() => {});
+  return reply;
+}
 
 /** A tenant-held module's OFF answered without `deniesTenantGrants` (#1823). */
 const undeniedMessage = (scopeId: ScopeId, moduleId: string): string =>
@@ -4305,6 +4341,51 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.buildAttachmentSurface({ principal }, tenantId, scopeId, store);
   }
 
+  async inspectUploadLink(tenantId: TenantId, scopeId: ScopeId, secret: string): Promise<UploadLinkView> {
+    await this.assertLive(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    return unwrapReply(await this.scopeStub(scopeId).uploadLinkInspectReply(secret, tenantId, scopeId)).view;
+  }
+
+  async redeemUploadLink(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    input: UploadLinkRedeemInput,
+  ): Promise<AttachmentRecord> {
+    await this.assertLive(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    const stub = this.scopeStub(scopeId);
+    const { view, mintedBy } = unwrapReply(await stub.uploadLinkInspectReply(secret, tenantId, scopeId));
+    if (view.entity.entityType !== input.entity.entityType || view.entity.entityId !== input.entity.entityId) {
+      throw substratError('not_found', 'This upload link is not valid for that target.', {
+        reason: UPLOAD_LINK_WRONG_TARGET,
+      });
+    }
+    const store = await this.resolveAttachmentStore(tenantId);
+    const id = ulid();
+    const key = attachmentBlobKey(scopeId, id);
+    const filename = view.filename ?? input.filename;
+    const record = attachmentRecord.parse({
+      id,
+      entity: view.entity,
+      filename,
+      contentType: input.contentType,
+      size: input.body.byteLength,
+      sha256: await attachmentSha256(input.body),
+      visibility: view.visibility,
+      createdBy: mintedBy,
+      createdAt: new Date().toISOString(),
+    });
+    // Bytes first, row second, exactly as an upload: a refusal (size, type, a lost key, a link
+    // someone else spent first) compensates the object away, and the link is unspent with it.
+    // A lost reply keeps the bytes (`compensatingRefusal`); retrying the link is #2315.
+    await store.put(key, input.body, { contentType: input.contentType });
+    return unwrapReply(await compensatingRefusal(store, key, () =>
+      stub.attachmentRedeemUploadLinkReply(record, secret, tenantId, scopeId),
+    ));
+  }
+
   async getSystemAttachments(
     moduleId: ModuleId,
     tenantId: TenantId,
@@ -4486,15 +4567,12 @@ export class CloudflareScopeHost implements ScopeHost {
           createdBy,
           createdAt: new Date().toISOString(),
         });
-        // Bytes first, row second — a crash between the two leaves an orphaned object
-        // (harmless, GC-able), never a row without bytes; a refused gate compensates.
+        // Bytes first, row second — a crash between the two leaves an orphaned object (#2314);
+        // a refused gate compensates, and only an answered refusal does (`compensatingRefusal`).
         await store.put(key, input.body, { contentType: input.contentType });
-        try {
-          return unwrapReply(await stub.attachmentAddReply(record, asPrincipalId, tenantId, scopeId, connectionId));
-        } catch (err) {
-          await store.delete(key).catch(() => {});
-          throw err;
-        }
+        return unwrapReply(await compensatingRefusal(store, key, () =>
+          stub.attachmentAddReply(record, asPrincipalId, tenantId, scopeId, connectionId),
+        ));
       },
       list: async (entity) =>
         unwrapReply(await stub.attachmentListReply(entity, asPrincipalId, tenantId, scopeId, connectionId)),
