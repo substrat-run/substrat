@@ -182,3 +182,16 @@ needed nothing in memory to continue.
 6. Whether the supplied-object route (as for `SweeperDO`) or a scope-store kind is the way a
    vertical gets the thread object.
 7. The element in a real browser with a screen reader.
+
+## Run record after the fix
+
+15 October 2026, `node run.mjs`, with other workerd processes on the machine:
+
+- **First batch of ten (sequence assertion fixed):** 9 passed 41 of 41. Run 8, at a load average
+  of about 61, failed a different assertion, `A: run completed with no client attached`, and then
+  threw. The cause was the test client, not the run: after `abort()`, `sseClient`
+  (`src/client.mjs`) kept recording the frames already buffered in the same chunk, and under load
+  one chunk held the rest of the phase, so the "last id seen" was the end of the phase and there
+  was nothing to resume. The client now stops at the disconnect.
+- **Second batch of ten (both fixes):** 10 of 10 passed 41 of 41, at load averages from about 55
+  falling to about 9.
