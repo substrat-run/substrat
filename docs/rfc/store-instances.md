@@ -1,15 +1,24 @@
 ---
 status: proposed
 layer: kernel
-description: A tenant-level store instance that several verticals of one tenant connect to, weighed against the per-scope store of K-49/K-50. Four options, three authorization shapes, the lifecycle a shared object needs, and what it does to the open scope-store stack. Recommends a named instance per tenant on a script per (kind, tenant), with partitions the platform addresses (separation inside a tenant held by review unless each partition gets its own script); decides nothing.
+description: A tenant-level store instance that several verticals of one tenant connect to, weighed against the per-scope store of K-49/K-50. Four options, three authorization shapes, the lifecycle a shared object needs, and what it does to the open scope-store stack. Records the maintainer's direction of 2026-10-15: named tenant-level instances with explicit connections and platform-addressed partitions (B), a script per partition as the upgrade for stronger separation (B′), and per-scope stores kept for scope-grain kinds. Still proposed; its 22 open questions are unanswered.
 ---
 
 # RFC: store instances
 
-**Status: proposed. Nothing here is agreed.** It weighs an alternative to the per-scope store
-of [scope-stores.md](scope-stores.md) (K-49, K-50, D-63) for one requirement that the
-per-scope store cannot meet. It recommends; the maintainer decides. The decisions it asks for
-are §12, and every one of them is open.
+**Status: proposed.** It weighs an alternative to the per-scope store of
+[scope-stores.md](scope-stores.md) (K-49, K-50, D-63) for one requirement that the per-scope
+store cannot meet. The maintainer has set a direction (below). The decisions it asks for are
+§12, and every one of them is still open.
+
+> **Maintainer direction (2026-10-15).** The first kind's requirement is accepted: a
+> tenant-wide store shared by the verticals of one tenant. Option B is the direction: named
+> tenant-level instances, explicit connections, and platform-addressed partitions (§4, §5,
+> §6 (ii)). B′, a script per partition, is the upgrade when stronger separation is wanted.
+> A stays for scope-grain kinds, and the kind declares its grain (§9). This document stays
+> `proposed` until it is merged and until the 22 open questions of §12 have been answered
+> one by one. The structural isolation requirements the maintainer wants pursued before any
+> third-party kind is allowed are §11.1.
 
 Written against `origin/main` at `02a72f0e8`. References are to sections and symbols, not
 lines. Issues and PRs are cited by number only.
@@ -234,8 +243,8 @@ signs, rather than configuration the relying party verifies.
 - **Cost (§10).**
   - Store scripts number (kinds × tenants that hold an instance). That is a different curve:
     it grows with the customer base, where A grows with the catalogue.
-  - A kind release fans out to every tenant script. D-64's canary and rollback (open PRs
-    #2298, #2300) carry over, but the set they walk is tenants.
+  - A kind release fans out to every tenant script. The release model (D-63's pin, §8.2)
+    carries over, with its canary and rollback, but the set they walk is tenants.
   - Each new script has its own first-deploy window. K-28 records one of about 15 seconds
     during which a new script can answer `Worker not found.` in colos it has not reached.
     That window opens at instance creation as well as on every release.
@@ -698,7 +707,7 @@ is never recorded as `0`.
 
 - **Schema.** Each object migrates when it wakes (D-63). That is unchanged.
 - **Releases.** With a script per tenant, a release reaches tenants one script at a time
-  (D-64's canary, open PR #2300), so two tenants may run different kind releases during a
+  (D-63's canary, §8.2), so two tenants may run different kind releases during a
   rollout. Within one tenant, every connected vertical meets the same release, whatever
   version each vertical runs.
 - **The operation catalogue** therefore evolves additively, the engine rule from CLAUDE.md:
@@ -729,7 +738,8 @@ is never recorded as `0`.
 - The platform transport as the default (#2294).
 - The platform-supplied entry module, JS and Python (#2295, #2296). The own-vertical check
   becomes an own-tenant check on a tenant-grain script, and a partition check under (ii).
-- Registration once, releases published with a canary and a rollback (D-64, #2298, #2300).
+- Registration and a pinned release with a canary and a rollback (D-63, as it is being
+  ratified, §8.2).
 - Key scoping per script and audience (L16), with `reader` as a third audience.
 - The reserved script name space and injectivity (L20), with the tenant-grain form added.
 - The local runner and its contract suite (#2213). The runner's `address` gains the instance
@@ -757,7 +767,7 @@ change on them. The table says only what each would mean if B were chosen.
 | #2294 the platform hop as the default | #2288 | Unchanged | Unchanged |
 | #2295 platform entry module | #2289 | Kept. The own-vertical check becomes own-tenant, plus the partition check | Unchanged |
 | #2296 Python entry | #2290 | As #2295 | Unchanged |
-| #2298 D-64: published releases | #2297 | Kept. The rollout set is tenants, not verticals | Unchanged |
+| #2298 D-64: published releases | #2297 | D-64 is not accepted as written (§8.2). The rollout set of whatever release model is ratified is tenants | Unchanged |
 | #2299 upload the store script before the vertical | #2210 | Retargeted: upload at instance creation, per (kind, tenant), and not on a vertical's push | Unchanged |
 | #2300 publish, canary, rollback | #2297 | Kept. The canary is one tenant | Unchanged |
 | #2301 register the first kind | #2210 | Gains a grain field. The first kind registers as `tenant` | `scope` |
@@ -793,8 +803,18 @@ is open.
   isolate should restart that vertical's objects only"). Under B, for a tenant-grain kind,
   this becomes one script per (kind, tenant), and an exhausted isolate restarts one tenant's
   objects only.
-- **D-64, as proposed on #2298.** The release fan-out walks tenants for a tenant-grain kind.
-  Registration gains the grain.
+- **D-63's release pin, as it is being ratified.** D-63 is being ratified with a
+  hash-and-commit pin, in a separate docs PR that is open and not merged. The parts:
+  - the registration pins the exact sha256 of the release bundle and the source commit it
+    was built from, and the bytes may live outside the repo;
+  - only a human staff credential publishes a release, never the automation's service token;
+  - the canary asserts every reserved operation, `substrat.erase` included;
+  - rollback returns to the previous good release.
+
+  Under B the pin is unchanged. A tenant-grain kind adds its grain to the registration, and
+  the canary and the rollout walk tenants (B) or partitions (B′) instead of verticals.
+- **D-64 (#2298, unpinned releases) is not accepted as written.** The statements this RFC
+  makes about releases therefore rest on D-63 with the pin above, not on D-64.
 - **Under D**, K-49's door is not used for a tenant-grain kind's writes. K-50's
   platform-driven lifecycle extends to the ingestion job.
 
@@ -887,6 +907,29 @@ between verticals.** Keep A for any kind registered at scope grain.
   and a first-deploy window on every first connect, a per-partition release fan-out, more
   cold isolates, and cross-script reads.
 - **Not C** in any case (§4).
+
+### 11.1 Isolation requirements before third-party kinds
+
+The maintainer wants these pursued under B and B′ before any kind written outside this repo
+is registered. They are requirements, not designs. Each is marked where the repo cannot show
+that Workers for Platforms supports it.
+
+1. **A script per tenant.** A kind's code never runs in a script that holds another tenant's
+   objects: one script per (kind, tenant) under B, and one per (kind, tenant, partition)
+   under B′ (§4). The script-count limits are unverified (§13).
+2. **No outbound access from a kind script.** A store script reaches nothing outside itself:
+   no network, and no binding beyond what its own operations need. *Unverified.* A store
+   object is a Durable Object. D-58 and D-61 record that the dispatch namespace's outbound
+   worker (`apps/vertical-egress`) does not see Durable-Object-originated egress, so the
+   mechanism verticals rely on cannot be shown to hold here. Whether a store script can be
+   uploaded with outbound access denied at the platform level is not established in the repo.
+3. **Verification outside the kind's reach.** The envelope and the remembered name are
+   checked where the kind's code cannot alter them. Today the entry module runs in the kind's
+   own interpreter (§3; #2302's Q3 answer holds it by review). The requirement is a check the
+   kind cannot reach, for example in a separate script in front of the store's. *Unverified*,
+   including what each extra hop costs.
+4. **No platform bindings handed to the kind.** The environment the kind receives leaves out
+   the store namespace and the verification keys (§3). *Unverified* for both runtimes.
 
 ## 12. Open questions
 
@@ -1009,7 +1052,9 @@ Not in this repository, or not shown by anything in it:
 - **Read-only storage access for one call.** Whether a store object can run a `reader`
   operation under storage that refuses writes is not established. §6 (ii) therefore holds
   "read-only" by operation name and review, not by the storage layer.
-- **D-64.** It exists only on open PR #2298. It is not on `main`.
+- **D-64 and the D-63 amendment.** D-64 exists only on open PR #2298 and is not accepted as
+  written. D-63's hash-and-commit pin is in a separate docs PR that is not merged. Neither is
+  on `main`.
 - **The ratification of K-49 and K-50, and the Q3 and Q5 answers.** These are open PR #2302,
   at head `68d47b39f`. They are not on `main`.
 - **Cold-start cost per tenant script for the first kind's runtime**, and the bundle size it
