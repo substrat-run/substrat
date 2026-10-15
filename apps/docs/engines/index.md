@@ -118,7 +118,7 @@ of two ways, and which one it is decides whether in-scope functions exist at all
 
 | | **By call** | **By event** |
 |---|---|---|
-| Engines | work orders, bookings, protocols, absence, invites, metering, [notifications](/engines/notifications/) | [invoicing](/engines/invoicing/) |
+| Engines | work orders, bookings, protocols, absence, invites, metering, [notifications](/engines/notifications/), [assistant](/engines/assistant/) | [invoicing](/engines/invoicing/) |
 | Operations are | thin — a permission check plus one exported function | the surface itself; the logic lives in them |
 | A vertical | wraps the exported functions in its own transaction | *emits* a fact its consumers pick up |
 | Reads results | from the function's return value | back through the engine's own operations. Its events announce that something changed and carry the change, not the whole entity, so a vertical projects them into a side table keyed by the engine's id and reads the operation when it needs the entity |
@@ -141,6 +141,7 @@ are missing.
 | [Absence](/engines/absence/) | `@substrat-run/engine-absence` | the append-only absence ledger over an opaque subject — balance as a fold, approval as the only mint for bookings, per-type floors |
 | [Metering](/engines/metering/) | `@substrat-run/engine-metering` | the billable-usage ledger — idempotent ingest, counters vs gauges, period close as frozen billing evidence; quantities, never prices |
 | [Notifications](/engines/notifications/) | `@substrat-run/engine-notifications` (not yet published) | turning an occasion a vertical names into email: per-person preferences, escaped templates, one tracked delivery per occasion, topic and person |
+| [Assistant](/engines/assistant/) | `@substrat-run/engine-assistant` (not yet published) | the record of a chat with an assistant: an append-only event log, a single-writer run lease, and tool calls whose gated writes need an approval bound to the exact input |
 
 The first seven are **product seeds** — small deliberately, hardened as real verticals
 consume them. Six were extracted from the demo verticals; metering is the one exception,

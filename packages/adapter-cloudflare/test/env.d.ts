@@ -22,8 +22,6 @@ declare namespace Cloudflare {
     SUBSTRAT_VERSION_ID: string;
     /** #2209: the scope-store door's counter, bound the way a push would name it. */
     SUBSTRAT_STORE_GRAPH: DurableObjectNamespace;
-    /** #2210: the store's own script. This script calls it and does not hold its key. */
-    SIGNED_STORE: Fetcher;
     /** The CP-less scope-local sweep trigger (#461) — scope-sweeper.test.ts… */
     SCOPE_SWEEPER: DurableObjectNamespace;
     /** …and its own scope namespace (same ScopeDO class, no directory). */

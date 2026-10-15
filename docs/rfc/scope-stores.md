@@ -6,13 +6,14 @@ description: A platform-run object per scope, declared as a kind and reached thr
 
 # RFC: scope stores
 
-**Status:** proposed · **Tracking:** [#2207](https://github.com/substrat-run/substrat/issues/2207)
+**Status:** accepted (K-49 and K-50 ratified 2026-10-15; D-63 ratified, with a hash-and-commit pin, once [#2306](https://github.com/substrat-run/substrat/pull/2306) merges; D-64 as proposed on [#2298](https://github.com/substrat-run/substrat/pull/2298) not accepted as written; the open items of §10.8 remain open) · **Tracking:** [#2207](https://github.com/substrat-run/substrat/issues/2207)
 · **Evidence:** [spikes/scope-store-binding/FINDINGS.md](../../spikes/scope-store-binding/FINDINGS.md)
 · **Decisions:** [K-49](../decisions/K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md),
 [D-63](../decisions/D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md),
-[D-64](../decisions/D-064-a-store-kind-s-registration-is-reviewed-once-its-releases-are-published.md),
 [K-50](../decisions/K-050-a-hosted-scope-store-s-lifecycle-is-driven-by-the-platform-from-its-own-record.md)
 (the hosted lifecycle, §10)
+· **Proposed alternative:** [store-instances.md](store-instances.md), a tenant-level instance
+that several verticals of one tenant connect to (not decided)
 
 A vertical can hold state in four shapes, and none of them is a service with its own runtime.
 `runtimeNeeds.stores` is the vertical's own Durable Object classes. A static `d1` binding is
@@ -57,9 +58,8 @@ A direct `durable_object_namespace` binding remains for local development and fo
 It is not an isolation boundary: code in that worker can address any name the binding
 reaches. Hosted isolation is the hop above, not that binding.
 
-The spike signed with HMAC-SHA256 over the object name. Its check compared the MAC to
+The signature is HMAC-SHA256 over the object name. The spike's check compared the MAC to
 the header and never to the object being addressed, so one signature opened every object.
-The design's signature is Ed25519 over the whole envelope (§10.3), not that MAC.
 The design closes that by having the store script remember the first name it accepts and
 refuse a later call that names a different object, including one that carries a valid MAC
 for that other name. The object cannot read its own `idFromName`, which is why the
@@ -169,13 +169,32 @@ name, DDL, columns, rows. Nothing in the four lifecycle operations is specific t
 
 ## 5. Registering a kind
 
-A kind is registered, not owned. The registration lives in this repo and is reviewed once
-([D-64](../decisions/D-064-a-store-kind-s-registration-is-reviewed-once-its-releases-are-published.md),
-amending the release pin in D-63). It names the kind, the runtime, the class, the
-operation catalog, and who may publish. It does not name a release. A release is published
-to the control plane from the kind's own workspace, with a checksum, an audit row, a
-canary, and a rollback to the previous release. A review of the registration is the review
-of what the platform is willing to run. A review of a release is the publish itself.
+A kind is registered, not owned. The registration lives in this repo, the way `CONNECTORS`
+does. It names the kind, the script, the class and the operation catalog. A release of the
+kind's code is pinned by two values: the sha256 of the release bundle and the source commit
+it was built from, recorded in the registration or in an allowlist file the registration
+names (D-63, ratified 2026-10-15). The bytes may live outside this repo and may be published
+to the platform first, but a release runs only once both values are pinned here by a
+reviewed change. A review of that change is the review of what the platform will run.
+
+A release is published by a person with a staff credential, never by the CI or automation
+service token. That rule keys on the actor: the service token resolves to the staff
+principal kind too, so publishing refuses a service actor rather than admitting "staff".
+The rollout's canary runs on a platform-owned canary object that holds no tenant data and
+is never a tenant's scope. It calls every reserved operation (`substrat.export`,
+`substrat.import`, `substrat.size`, `substrat.wipe`, `substrat.erase`) and asserts each
+answer before the rollout continues. A rollback goes to the immediately previous good
+release. The module names in a release are validated, and the names the platform's entry
+module imports are reserved. No kind written outside this repo is registered until a kind
+cannot affect data outside the object it serves by construction: a script per tenant, no
+outbound access, envelope verification outside the kind.
+
+The platform enforces the sha256; the source commit is what a reviewer checks, and the
+link between them holds only as far as the build is reproducible. Every upload of the
+script, restore and rollback included, re-hashes the bytes it sends and compares them with
+the pin. D-63's "Limits and follow-ups" lists what the pin does not yet settle: withdrawing
+a pinned release, a rollback across a schema migration, the canary id, and the allowlist
+taking effect at control-plane deploy.
 
 The registration has to show three things. The envelope. The reserved operations,
 including `substrat.erase`. No per-object state at module level: an object that wakes
@@ -328,7 +347,7 @@ the store.
 ## 10. The hosted lifecycle is the platform's
 
 *Amendment of 2026-10-13, recorded as [K-50](../decisions/K-050-a-hosted-scope-store-s-lifecycle-is-driven-by-the-platform-from-its-own-record.md).
-The owner has chosen this direction. It goes for ratification together with K-49.*
+The owner chose this direction and ratified it together with K-49 on 2026-10-15.*
 
 **Decision.** In a hosted deployment, everything the platform does to a scope's stores is
 driven by the platform. That covers export, snapshot, fork, carry, restore, import, reap,
@@ -374,33 +393,38 @@ the platform, and the binding is not claimed to be an isolation boundary.
 
 A MAC over the object name alone, which is what #2247 and #2254 sign, binds no audience,
 no operation and no time. A captured signature therefore stays valid for every operation
-on that object, forever. The design replaces it with one envelope that both signers use:
+on that object, forever. The design replaces it with one envelope that both signers use,
+an Ed25519 signature over every field (#2287, `@substrat-run/contracts/scope-store-envelope`):
 
 | Field | Meaning |
 |---|---|
 | `v` | Envelope version, starting at `1`. The store refuses a version it does not know |
 | `aud` | `caller` (the router, for a vertical's call) or `platform` (the control plane) |
+| `kid` | The signing key's id: base64url of the first 8 bytes of SHA-256 over its raw public key. A store refuses an id none of its listed keys has |
+| `script` | The store script the call is addressed to, as the signer named it. The store compares it with its own name as an opaque string, so an envelope for one kind's script does not open another's |
 | `name` | `<tenantId>/<vertical>/<scopeId>/<binding>`, built by the signer from its own records |
 | `op` | The operation name |
-| `digest` | SHA-256 of the request body (`{ operation, input }`), so a signed envelope carries one input |
+| `digest` | SHA-256 of the exact request body, which also carries `objectName`, `scopeId` and `binding`, so a signed envelope carries one input |
 | `iat` | Issue time, in seconds |
 | `nonce` | 128 random bits |
 
-Ed25519 covers a canonical encoding of every field, and every field travels inside the
-signed bytes. The encoding is seven lines and no trailing newline: `v`, `aud`, `name`,
-`op`, `digest`, `iat` as decimal unix seconds, and `nonce` as base64url. The store receives
-the encoding as `x-substrat-store-envelope` (base64url of those UTF-8 bytes) and the
-signature as `x-substrat-store-signature`. Nothing the store acts on rides beside the
-signature. The store checks, in order, before any of the kind's code runs:
+The signature covers a canonical encoding of every field (nine lines, in that order), and
+every field travels inside the signed bytes. Nothing the store acts on rides beside the
+signature. The store checks, before any of the kind's code runs:
 
-1. The signature verifies, and `digest` matches the body received.
-2. `aud` matches `op`: a `substrat.*` operation needs `platform`, and any other operation
-   needs `caller`.
-3. `iat` is inside a 60-second window, measured as the absolute difference from now.
-4. `name` equals the first name this object accepted. On an object's first accepted call
-   the name is recorded under `__substrat_store_name` in the object's own storage, before
-   the operation runs. The name's vertical must be the vertical the script was uploaded
-   for.
+1. The version is known, and (`v`, `aud`, `op`) is in a closed table: `platform` sends
+   exactly the reserved `substrat.*` operations, and `caller` sends anything else.
+2. `kid` names a listed key for `aud`, the signature verifies under it, and `digest`
+   matches the body received.
+3. `iat` is inside the freshness window (60 seconds either side).
+4. `script` is this store script's own name, and the body names the signed `op` and `name`.
+5. The object's own id is `idFromName(name)`. An object is bound to one name by
+   construction: a validly signed envelope for another name does not open it, whether it
+   has served calls or is fresh, and nothing is stored that the kind could rewrite.
+
+Checks 1–4 are one function, `verifyScopeStoreCall`, which the store entry calls; check 5
+needs the object's id and is the entry's own (#2295). The entry reads the body once,
+verifies that string, and hands the kind that same string.
 
 Replay inside the window is bounded by the window. The reserved operations are idempotent,
 and a kind operation's retry safety is the vertical's (§9). Per-object nonce memory is
@@ -412,16 +436,60 @@ the kind's own class can leave it out, and a review that "checks one import" pro
 **The requirement is that the checks run in platform code the kind cannot replace.** The
 platform supplies the store script's entry module, and the kind supplies only the class
 behind it. That is the role `lint:platform-entry` already plays for a vertical's bundle.
-The entry module verifies the envelope and the remembered name before it hands the request
-to the kind's object. How the entry module reaches the object's storage for the remembered
-name, without the kind's class being able to rewrite it, is open question Q3.
+The entry module verifies the envelope and the object's id before it hands the request to
+the kind's object (#2295, `packages/control-plane-api/store-entry/entry.ts`, re-emitted under
+`lint:store-entry --check`). It constructs the kind once per object instance, with an env that
+holds none of the entry's `SUBSTRAT_STORE*` bindings. Two other routes reach the same things,
+and the upload closes both with compatibility flags, refusing a kind release that reopens them:
+`import { env } from 'cloudflare:workers'` would hand the kind's module every binding of the
+script (`disallow_importable_env`), and from compatibility date 2025-11-17 `ctx.exports`, on
+the `ctx` the kind is constructed with, would be a loopback to the entry's own object class
+and default export (`disable_ctx_exports`). The loopback would still meet every check, but
+the kind has no use for it. What the kind keeps is its object's `ctx` (storage included) and
+its own bindings. It forwards the object's alarm to it. A kind is otherwise `fetch`-only: an RPC method or a WebSocket handler on its class is not reached.
 
-**Keys (L16).** The signature is Ed25519 ([D-64](../decisions/D-064-a-store-kind-s-registration-is-reviewed-once-its-releases-are-published.md)).
-The router holds the `caller` private key and the control plane holds the `platform`
-private key. A store script is given only the two public keys. HMAC would have required
-the control plane, which uploads the script, to hold the router's key in order to place
-it in the script, and a store script must not hold a key that can mint an envelope. No
-signer holds a key for an audience it does not sign.
+**What the entry is not.** It is not a boundary against a hostile kind. The kind's module is
+evaluated in the same isolate, before the entry's own body, and its class runs with the
+object's `ctx`. A kind can therefore replace the globals the checks use, or reach the object's
+storage, before or around a check. The entry guarantees that a kind which leaves the checks
+out cannot skip them; it does not stop a kind written to interfere with the isolate.
+Snapshotting the primitives the checks use in a module evaluated before the kind would
+narrow that window without closing it, so it is not done. That boundary is the D-63
+review of every pinned release, until a platform mechanism isolates the kind.
+
+**A Python kind.** A Python kind gets the Python twin of the entry (#2296,
+`packages/store-entry-python/src/substrat_store_entry.py`), and it runs the same checks
+because it runs the same code. Checks 1–4 are not ported to Python. The upload ships
+`store-entry/verify.ts`, the function the JavaScript entry calls, bundled as an ES module
+(`substrat-store-verify.js`) beside the Python entry, and the Python entry calls it through
+the runtime's JavaScript bridge. So the two entries cannot disagree about an envelope. The
+Python entry makes check 5 itself (`ctx.id.equals(idFromName(name))`, before the kind is
+constructed). It reads the body once and hands that string to the kind, constructs the kind
+once per object instance with an env stripped of `SUBSTRAT_STORE*`, and forwards the alarm.
+Both flags apply to a Python script unchanged: `from workers import env` reads the same
+`cloudflare:workers` env, which `disallow_importable_env` empties, and `ctx.exports` is
+absent under `disable_ctx_exports`. The probe shows all of this under `pywrangler dev`. It
+builds the script from the bytes the upload ships, and checks every call of a corpus
+against the shipped verifier, refusal for refusal.
+
+Against a hostile kind this entry is weaker than the JavaScript one. Python has no private
+fields. The kind's module is imported by the entry before the entry's body has finished,
+and it runs in the same interpreter. From there it can reach the entry module through
+`sys.modules` and replace its functions. It can also reach the entry's object through the
+garbage collector, and with it the entry's full env, the store namespace included. So in
+Python the stripped env and the cached kind keep a careless kind away from the entry's
+bindings, not a hostile one. The control is the same D-63 release review. Not yet shown: a
+script that mixes a Python main module with an ES module, uploaded through the
+dispatch-namespace API in production. That upload is #2299's, and until it runs there, this
+paragraph rests on local workerd.
+
+**Keys (L16).** One Ed25519 signing key per audience. The router holds the `caller` private
+key and the control plane the `platform` one. A store script holds only public keys, a list
+per audience, so no store script can mint an envelope for itself or for any other script.
+The list is what makes a rotation safe: add the new public key to every store script, switch
+the signer, then drop the old key. A key listed for both audiences is refused, by the store's configuration
+(`scopeStorePublicKeysFrom`) and again by the verifier, which compares decoded bytes, not
+spellings: its holder could otherwise sign `platform` envelopes from the `caller` key.
 
 ### 10.4 What moves and what stays
 
@@ -497,6 +565,13 @@ delete would repopulate the object, which then outlives its scope with nothing l
 reach it. Tenant reap is already fenced by the tenant's status. Scope, preview and snapshot
 deletion need the scope unrouted before the wipe.
 
+PR #2285 does this for snapshot deletion, preview reap and the sweeper's snapshot reap. Each takes
+every refusal it can decide up front first: the reap claim (a copy move in flight), a copy the
+platform cannot reach, and the store resolution. A refused delete therefore leaves the scope
+routed and its stores untouched. Only then does it unbind every hostname of the scope, wipe and
+delete. Unbinding by hostname is the fast path, not a drain. The durable fence is a scope state
+that the store door itself checks, and that is a follow-up.
+
 A wipe that fails stops the delete. The scope's own storage is not deleted around the
 store, and the delete is retried. #2254's `wipePlatformStores` does this by throwing when
 a store call fails. A path that cannot tell which stores a scope has must fail the same way
@@ -540,6 +615,13 @@ A bind that races an erase either sees the erase or fails (L19). The erase reads
 declared bindings and then destroys the key. A bind landing in between could add a binding
 the erase never reached. So the erase runs under the same fence a bind takes on the scope,
 or it re-reads the resolution after its store calls and starts over if the resolution moved.
+
+PR #2285 takes the first form. Both arms, the orchestrated finalize and the direct shred, take one
+atomic claim just before the key goes (`SUBJECT_ERASURE_CLAIM_SQL`). It requires the bound
+version, the serving pin, the copy inventory and the serving pointer's exact (ref, version) pair
+to still be what the erasure read, and it moves the erasure epoch every bind compares. A bind
+that lands first fails the claim (412, key kept). One that lands after is refused. A version's
+manifest does not change after publish, so the version identity fences its store set.
 
 **Size and the meter.** The daily sweep calls `substrat.size` per declared binding. A store
 that cannot answer leaves that day's store rows unsampled. It is never written as `0`.
@@ -611,6 +693,19 @@ reaches (export, wipe, erase, size) is the vertical-wide union of every (binding
 version of the vertical has declared, computed from `vertical_versions`. An object that was
 never written answers empty. The alternative is a refusal at every one of those doors.
 
+PR #2292 implements that answer, the accepted Q5 answer. The union is a directory record,
+`vertical_scope_stores`, kept by `publishVersion` in the transaction that inserts the version, and
+read by its keys (`HostAdmin.verticalScopeStores`), with no per-version work once the vertical is
+marked indexed. A version stored before the record, or loaded by a directory restore from an older
+dump, leaves its vertical unmarked, and the first read or publish indexes every version of it,
+oldest first. A re-kind is refused at publish (`conflict`), judged against every older version: a
+binding keeps its kind for the life of its vertical, so the union holds one kind per binding and a
+dump never names one binding twice. A manifest that declares one binding twice is refused there
+too. Nothing retires a binding yet (item (v)). A
+restore still imports only the running version's bindings (L8), so an export leaves out a binding
+only an earlier version declared when its export is empty, and refuses one that holds data, naming
+the binding and the way out.
+
 Nothing here is per-vertical configuration that a worker carries. A deployed vertical with
 no control plane is covered by the records the platform already keeps.
 
@@ -623,8 +718,8 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | L1 | A hosted serving upload carries no binding named `SUBSTRAT_STORE_*`, whatever `STORE_KINDS` holds. With L18, that holds for every name in the upload, the vertical's own included |
 | L2 | A hosted `getScopeStore` call leaves the worker only as `fetch` of `store.substrat.internal`. With no direct binding and no runner configured, the host never falls back to an ambient binding |
 | L3 | The router refuses a `substrat.*` operation, a scope other than the routed one, and a binding the serving version does not declare, before it signs |
-| L4 | The store refuses an envelope whose MAC fails, whose `digest` does not match the body, whose `aud` does not match `op`, whose `iat` is outside the window, or whose `name` differs from the first name it accepted. Each is checked before kind code runs |
-| L5 | A signature for one object, operation or audience does not open another. A validly signed envelope for name Y is refused by an object that remembers X |
+| L4 | The store refuses an envelope whose signature fails, whose `kid` names no listed key, whose `script` is not its own, whose `digest` does not match the body, whose `aud` does not match `op`, whose `iat` is outside the window, or whose `name` is not the name of the object's own id. Each is checked before kind code runs |
+| L5 | A signature for one object, operation or audience does not open another. A validly signed envelope for name Y is refused by the object whose id is `idFromName(X)`, used or fresh |
 | L6 | Every scope-deletion path stops routing the scope, then calls `substrat.wipe` on each binding, then deletes the scope's storage, in that order |
 | L7 | A failed or undecidable wipe stops the delete, and the scope's own storage is left for the retry. The delete never proceeds around the store |
 | L8 | A restore imports only bindings the destination version declares with the same kind. Any other dump binding refuses the restore before any write, ahead of `host.restoreScope`. This is the recommended answer to Q4, pending its decision |
@@ -635,7 +730,7 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | L13 | A store that cannot report its size is not recorded as size `0` |
 | L14 | The kind, the bindings and the vertical for any store call, from the router or the control plane, come from one shared resolution: the scope record's vertical, and the manifest of the version the scope's deployment runs. That is the pointer's version only when the pointer's ref is the scope's `serving_ref`; the bound version when the scope has no `serving_ref`; unknown otherwise, which fails closed. Never from the vertical's environment |
 | L15 | A masked export or pull carries no stores, and a failed store export fails the export |
-| L16 | Store-envelope signing keys are scoped per store script and per audience. A store script never holds a key that can mint an envelope for another script, and no signer holds a key for an audience it does not sign |
+| L16 | One store-envelope signing key per audience, held only by that audience's signer. A store script holds only public keys, a list per audience, and never a key that can mint an envelope. No signer holds a key for an audience it does not sign |
 | L17 | No operation (push, bind, promote, rollback of the serving pointer, serving re-upload) changes a scope's resolved set of (binding, kind) while objects of the old set may exist, unless the old binding stays reachable. Recommended (Q5): the lifecycle reaches the vertical-wide union of every (binding, kind) any version has declared |
 | L18 | A vertical-declared name (store binding, static binding, Durable Object binding) starting with `SUBSTRAT_STORE_` is refused at push and again at upload |
 | L19 | A bind that races a subject erasure either sees the erase or fails. The erase never destroys the key after a bind added a binding it did not reach |
@@ -661,22 +756,22 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | (l) A vertical cannot declare a binding in the `SUBSTRAT_` namespace, so no declared binding reads as a store binding | `control-plane-api/src/deploy.ts` (declared-binding check) |
 | (p) Store script names are injective over (kind, vertical), and the `substrat-store-` name space is reserved against vertical scripts | `scopeStoreScriptName`, `platformScriptCollision` (#2247) |
 | (q) The router's route read applies the same rule as (i), so a scope pinned to another script gets no store | `READ_ROUTE_SQL` |
+| (n) Export, wipe, erasure and the meter reach every binding any version of the vertical declared, a re-kind is refused at publish, and an export leaves out an empty binding only an earlier version declared and refuses one that holds data (#2292, the accepted Q5 answer) | `vertical_scope_stores`, `HostAdmin.verticalScopeStores`, `scopeStoreReachOf` |
+| (b), (o) The platform's store entry runs checks 1–5 in front of the kind, evidenced on workerd with the counter test kind uploaded as the platform uploads it. No store script is uploaded behind it until #2210 (#2295) | `withStoreEntry`, `apps/vertical-egress/test/store-entry.workerd.test.ts` |
+| (c) The platform hop is the Cloudflare host's default, control plane or not. Only a runner or `transport: 'binding'` takes another path, `'platform'` beside runners is refused, and on the hop the host's local size, export and erase refuse (`unavailable`) instead of answering "no stores" (#2294) | `scopeStoreTransportOf`, `refuseLocalStoresOnPlatform` |
+| (a) The name-only MAC is gone. Both signers sign the Ed25519 envelope of §10.3, over the audience, key id, script, name, operation, body digest, time and nonce, and `verifyScopeStoreCall` holds checks 1–4 (#2293) | `issueScopeStoreEnvelope`, `verifyScopeStoreCall` |
+| (m) Snapshot deletion, preview reap and the sweeper's snapshot reap decide their refusals, then unbind every hostname, then wipe, then delete. Erasure's two arms take one claim that fences the version, the pin and the serving pointer's pair before the key goes (#2285) | `unrouteScope`, `claimScopeScriptReap`, `SUBJECT_ERASURE_CLAIM_SQL` |
 
 Still open:
 
 | | Open item | Rule | Before #2210? |
 |---|---|---|---|
-| (a) | The MAC covers the name only. The audience header is unsigned, and nothing binds the operation, the time or a nonce | L4, L5 | **Yes** |
-| (b) | First-name memory and the audience check exist as helpers and in a test fixture, not in a store script. No kind is registered to carry them | L4, L5 | **Yes**, in the test kind and in the registration requirements (D-63) |
-| (c) | `transport: 'platform'` exists, but the host defaults to `'binding'` and nothing in production sets `'platform'` | L2 | **Yes** |
 | (f) | Replay and wipe skip when the destination's manifest is null. That is correct for a version that predates kept manifests, and needs a test that says so | L9, L7 | No, later |
-| (m) | No path unroutes a scope before wiping it, and erase is not fenced against a bind that lands between its manifest read and the key's destruction | L6, L19 | **Yes** |
-| (n) | Every lifecycle path reads only the current version's bindings, so objects under a dropped or re-kinded binding are unreachable. Push, bind, promote, rollback and re-upload can each cause it | L17 | **Yes** (Q5) |
-| (o) | The envelope checks are planned in the kind's script, which the kind controls. The platform has to supply the store script's entry module | L4, L5 | **Yes**, with #2210 |
 | (r) | The erasure replay runs inside one request and starts again from the first subject on a retry, so it converges only while it fits one request's budget. Resuming needs a cursor of its own | L9 | No, later |
 | (s) | The direct-path shred's audited receipt lacks the platform's store erasures, because the host's `shredSubject` takes no store list. The answer carries them | L12 | No, later |
 | (t) | Peer dispatch carries no store list, so a vertical serving a peer call has its store calls refused | L3 | No, later |
 | (u) | A store call works only during a request. A call from a Durable Object, a schedule included, does not pass egress and is refused (§9). The platform's own jobs are not affected | §9 | No, later |
+| (v) | Nothing retires a binding from a vertical's record (`vertical_scope_stores`, #2292). The step Q5's decision names, export then wipe then delete the record row, does not exist yet. Until it does, each binding no version still declares costs one store call per scope on every export, wipe, erasure and meter run, and its name cannot be declared again as another kind. It is also the way out for a vertical whose record cannot be read | L17 | No, later |
 
 Also open but not on #2254. The stack's `deleteScopeLocal` skips the store wipe when it is
 not given a tenant id (#2243). That is in the Cloudflare host (`adapter-cloudflare/src/host.ts`),
@@ -697,27 +792,26 @@ block it.
    prefix at push and at upload (L18, item (l)), and the store-script name space with
    injective names (L20, item (p)). The positive twin is that the same upload
    still carries the vertical's own declared bindings, none of which can now use the prefix.
-3. Done on #2254, except unroute-then-wipe and the bind fence (m), which stay open. One version resolver (L14, items (i) and (q)), called by the router and by every
+3. Done on #2254, and unroute-then-wipe with the bind fence (m) on #2285. One version resolver (L14, items (i) and (q)), called by the router and by every
    control-plane store path, the sweeper included. With it: wipe fails closed on an unresolvable scope (j), the fail-closed
    erase arm on #2254's shred with `unavailable` as 503 (k), and unroute-then-wipe plus the
    bind fence (L6, L19, item (m)).
-4. The orphaned-binding rule (L17, item (n)), in whichever form Q5 settles on.
-5. The signed envelope (§10.3), Ed25519. The router signs `caller` and the control plane
-   signs `platform`. A store script receives the public keys only. It replaces
-   `signScopeStoreName` on the production signers.
-6. Make the hosted transport the platform hop. A host with no control plane, no direct
-   binding and no runner sends a vertical's call to `store.substrat.internal`. The ambient
-   path is taken only where a binding or runner was given explicitly (L2).
-7. A platform-supplied store entry module that runs L4 and L5 in front of the kind's
-   class (o). A JavaScript kind gets the JavaScript entry. A Python kind gets the
-   Python entry, which checks the same envelope and then constructs the kind's class.
-   The trivial test kind runs behind the JavaScript entry, and the contract suite
-   asserts L4 and L5 on workerd. The Python entry is probed with `pywrangler` against
-   the same vectors.
-8. #2210 itself: the store script upload, behind the step-7 entry module. The
-   registration is reviewed once and does not pin a release (D-64). Publishing a release
-   from the kind's workspace, with the canary and the rollback, is
-   [#2297](https://github.com/substrat-run/substrat/issues/2297).
+4. The orphaned-binding rule (L17, item (n)): the union, the accepted Q5 answer, on PR #2292.
+5. Done on #2293. The signed envelope (§10.3), signed by the router and by the control plane
+   with keys as L16 says. It replaces `signScopeStoreName`, which is deleted.
+6. Done on #2294. Make the hosted transport the platform hop. A host with no direct
+   binding and no runner, control plane or not, sends a vertical's call to
+   `store.substrat.internal`. The ambient path is taken only where a binding or runner was
+   given explicitly (L2).
+7. Done on #2295. A platform-supplied store entry module that runs L4 and L5 in front of the kind's
+   class (o). Its Python twin, for a Python kind, is #2296 and runs the same verifier. The trivial test kind runs behind it, and the contract suite
+   asserts L4 and L5 on workerd. The spike's "Not yet evidenced" items move to FINDINGS
+   Shown only when they pass.
+8. #2210 itself: the store script upload. It is the first registration, reviewed against
+   D-63, uploaded behind the step-7 entry module. The upload runs only a release the
+   registration pins (sha256 and source commit): it hashes the bytes it is about to send,
+   on every upload including restore and rollback, and refuses a sha256 that is not pinned.
+   The commit is checked in review, not at upload.
 9. Later: the null-manifest test (f), the Cloudflare host's wipe without a tenant id,
    per-object nonce memory if Q2 says so, and a door for schedules (§9).
 
@@ -793,9 +887,9 @@ What each open PR keeps:
 |---|---|---|
 | Q1 | How long is the freshness window? | 60 seconds. The router and the control plane sign immediately before dispatch, and a long window only widens replay |
 | Q2 | Does an object remember nonces inside the window? | Not in v1. The reserved operations are idempotent, a kind call is a vertical retry the window bounds, and nonce memory is a write on every call. Revisit if a kind registers a non-idempotent operation the platform itself calls |
-| Q3 | The platform supplies the store script's entry module (§10.3). How does it hold the remembered name so the kind's class cannot rewrite it? | A platform-emitted entry module with its own re-emit check, as `lint:platform-entry` has. The entry module checks the remembered name before it constructs the kind's object. The kind's class shares the object's storage, so whether it can rewrite that name is held by the registration review until a platform mechanism can isolate it. A wrapper class the kind imports is not enough |
+| Q3 | The platform supplies the store script's entry module (§10.3). How does it hold the remembered name so the kind's class cannot rewrite it? | A platform-emitted entry module with its own re-emit check (`lint:store-entry`), as `lint:platform-entry` has. It holds no remembered name: before it constructs the kind's object it refuses unless the object's own id is `idFromName` of the verified name, which is deterministic and stored nowhere, so there is nothing for the kind's class to rewrite (shown on workerd in #2295). A wrapper class the kind imports is not enough. **Decided 2026-10-15:** the registration review is a standing condition for everything else a kind in the same isolate could do (§10.3), to be revisited before any kind written outside this repo is registered |
 | Q4 | Does a dump binding the destination does not declare refuse the restore (L8), or get skipped and reported? | Refuse. A skipped binding is store data silently dropped, and the operator can restore into a version that declares it. L8 is written to this answer and changes if Q4 is decided otherwise |
-| Q5 | A bind, promote, rollback, re-upload or push would drop or re-kind a binding while objects exist (L17). Drive the lifecycle over a union, or refuse at every door? | The vertical-wide union of every (binding, kind) any version has declared, computed from `vertical_versions`, as the set export, wipe, erase and size reach. It holds whatever moved the pointer. Refusals at every door are the alternative, and would need one at each of the five |
+| Q5 | A bind, promote, rollback, re-upload or push would drop or re-kind a binding while objects exist (L17). Drive the lifecycle over a union, or refuse at every door? | The vertical-wide union of every (binding, kind) any version has declared, computed from `vertical_versions`, as the set export, wipe, erase and size reach. It holds whatever moved the pointer. Refusals at every door are the alternative, and would need one at each of the five. **Decided 2026-10-15:** the union. Retiring a binding from it is an explicit step after export and wipe, and the union never shrinks as a side effect of a push. Implemented on PR #2292: a directory record kept at publish, which refuses a re-kind there |
 | Q6 | Should a schedule or a connector reach a store? | Not in this amendment. When one needs it, it gets its own door, signed by the platform with audience `caller` for the scope it runs in (§9) |
 | Q7 | Does the control plane sign `platform` envelopes for every tenant from one place? | Yes. It already operates every scope's lifecycle, and the envelope's `name` is built from its own record, which is the authority this amendment relies on |
 
@@ -804,12 +898,11 @@ What each open PR keeps:
 The spike (`spikes/scope-store-binding`) shows what its FINDINGS list under Shown. It does
 not show these, and the isolation argument in §1 rests on the first two:
 
-- **First-name memory.** `store.mjs` verifies the MAC against the `x-store-name` header
-  only. It stores no first name and compares nothing to it. A caller with a valid MAC for
-  X who sets header X but addresses `idFromName(Y)` is admitted.
-- **MAC audience (`platform` vs `caller`).** The MAC covers the name alone. Reserved
-  operations are refused by a flag on the spike's caller worker, which the RFC itself says
-  is not a control. No store-side refusal of `substrat.*` for a non-platform MAC exists.
+- **First-name memory, and the audience.** Not in the spike. Both are now evidenced outside
+  it, on workerd with the counter test kind behind the platform's store entry (#2295,
+  `apps/vertical-egress/test/store-entry.workerd.test.ts`): an object refuses an envelope for
+  any name but the one whose id it has, and `substrat.*` is refused for any audience but
+  `platform`. No real kind is uploaded behind the entry until #2210.
 - **The router hop.** `store.substrat.internal`, egress forwarding, the `ScopeStoreCalls`
   entrypoint and the declared-binding check are not in the spike; callers there address
   the namespace directly.
@@ -821,13 +914,11 @@ not show these, and the isolation argument in §1 rests on the first two:
 - **Hosted behaviour.** A dispatch-namespace upload, isolate sharing, jurisdiction,
   metering, snapshot and reap (§1, FINDINGS).
 
-- **The §10 envelope.** No code signs or verifies `aud`, `op`, `digest`, `iat` or `nonce` inside the
-  MAC. #2247 and #2254 sign the object name only.
+- **The §10 envelope.** Not in the spike. Signed by the router and the control plane and
+  verified by the store entry since #2293–#2295.
 
-Follow-up: extend the spike with first-name pinning (including a validly signed other
-name) and `platform` vs `caller` audience for `substrat.*`, each with an assertion in
-`run.mjs`, and move them into FINDINGS Shown only when they pass. Until then the RFC
-claims them as design.
+The spike itself is not extended: the name binding and the audience are evidenced by the
+store entry's own workerd suite instead (above). What it does not show stays design.
 
 ## Alternatives rejected
 
@@ -843,4 +934,6 @@ claims them as design.
   name its own identity, and the routes it needs are deleted by the router hop anyway. §10.1.
 - **Folding the store into `tenantStores`.** Wrong level. A scope store is per scope.
   The per-tenant lists being split into `tenantStores` and `blobStores` is a separate
-  defect, [#2221](https://github.com/substrat-run/substrat/issues/2221).
+  defect, [#2221](https://github.com/substrat-run/substrat/issues/2221). A store shared by
+  the verticals of one tenant is a different level again, argued (not decided) in
+  [store-instances.md](store-instances.md).
