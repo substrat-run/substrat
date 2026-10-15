@@ -2177,9 +2177,14 @@ export interface CloudflareScopeHostOptions {
   checker?: PermissionChecker;
   /**
    * Scope stores answered in this isolate (#2213). When a binding has a runner
-   * here, `getScopeStore` uses it. Otherwise it reads `SUBSTRAT_STORE_<BINDING>`
-   * from the worker env. `vertical`, when set, is the only vertical this host serves.
-   * A deployed vertical has no control plane, so that field is where the slug comes from.
+   * here, `getScopeStore` uses it. A direct binding reads `SUBSTRAT_STORE_<BINDING>`
+   * from the worker env, and only when `transport` is `'binding'`: an ambient
+   * namespace is not a store this host was given. With no runner and no transport,
+   * the call takes the platform hop (#2288), whether or not a control plane is given.
+   * `runners: []` is no runner, so it takes the hop too; a test that wants the ambient
+   * namespace says `transport: 'binding'`. `vertical`, when set,
+   * is the only vertical this host serves. A deployed vertical has no control plane,
+   * so that field is where the slug comes from.
    */
   scopeStores?: ScopeStoreHostOptions;
   /**
@@ -2536,6 +2541,23 @@ function isScopeStoreNamespace(value: unknown): value is ScopeStoreNamespace {
 
 const SCOPE_STORE_BINDING_PREFIX = `${PLATFORM_BINDING_PREFIX}STORE_`;
 
+/**
+ * `platform` unless this host was handed another way to reach a store (#2288): a
+ * non-empty `runners` list (in-process), or `transport: 'binding'`, which is the only
+ * thing that reads an ambient `SUBSTRAT_STORE_*` namespace. A control plane does not
+ * change the answer: whoever wants the direct namespace says so. An explicit
+ * `'platform'` beside runners is refused, since the runners would never be used.
+ */
+function scopeStoreTransportOf(options: CloudflareScopeHostOptions): 'platform' | 'binding' {
+  const runners = options.scopeStores?.runners?.length ?? 0;
+  const transport = options.scopeStores?.transport;
+  if (transport === 'platform' && runners > 0) {
+    throw substratError('validation_failed', "scopeStores: transport 'platform' takes no runners; they would never be used");
+  }
+  if (transport) return transport;
+  return runners > 0 ? 'binding' : 'platform';
+}
+
 /** Bindings this script declares by having a `SUBSTRAT_STORE_*` namespace. */
 function ambientScopeStoreBindings(): string[] {
   const names: string[] = [];
@@ -2761,7 +2783,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.scopeNs = options.scope;
     this.scopeStoreVertical = options.scopeStores?.vertical;
     this.scopeStoreKinds = options.scopeStores?.kinds ?? {};
-    this.scopeStoreTransport = options.scopeStores?.transport ?? 'binding';
+    this.scopeStoreTransport = scopeStoreTransportOf(options);
     this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
     this.scopeStoreLifecycle = scopeStoreLifecycleOf(this.scopeStoreRunners);
     this.cpLess = !options.controlPlane;
@@ -3814,6 +3836,7 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<{ binding: string; bytes: number }[]> {
+    this.refuseLocalStoresOnPlatform('size');
     return this.readScopeStoreSizes(tenantId, scopeId);
   }
 
@@ -3825,6 +3848,7 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
+    this.refuseLocalStoresOnPlatform('export');
     return this.exportScopeStores(tenantId, scopeId);
   }
 
@@ -3842,7 +3866,22 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     subjectId: string,
   ): Promise<{ binding: string; erased: number }[]> {
+    this.refuseLocalStoresOnPlatform('erase');
     return this.eraseScopeStores(tenantId, scopeId, subjectId);
+  }
+
+  /**
+   * On the platform hop this host holds no store object, so it cannot say what its stores
+   * hold: an empty answer would read as "no stores" (#2242). It refuses instead, and the
+   * control plane, which reaches the store script, is the one to ask.
+   */
+  private refuseLocalStoresOnPlatform(what: 'size' | 'export' | 'erase'): void {
+    if (this.scopeStoreTransport === 'platform') {
+      throw substratError(
+        'unavailable',
+        `this host reaches its scope stores through the platform and cannot ${what} them here; ask the control plane`,
+      );
+    }
   }
 
   /**
@@ -4841,8 +4880,14 @@ export class CloudflareScopeHost implements ScopeHost {
     return vertical;
   }
 
-  /** Configured runners, or the ambient namespaces when none were handed in. */
+  /**
+   * Configured runners, or the ambient namespaces when this host was told to use a
+   * direct binding. The platform hop holds no object in this isolate, so an ambient
+   * namespace is not one of its stores, and the admin's store paths answer for none: the
+   * control plane reaches the platform's stores itself (see `eraseScopeStores`).
+   */
   private scopeStoreBindingNames(): string[] {
+    if (this.scopeStoreTransport === 'platform') return [];
     if (this.scopeStoreRunners.size > 0) return [...this.scopeStoreRunners.keys()];
     return ambientScopeStoreBindings();
   }
@@ -4900,8 +4945,13 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /**
    * `substrat.erase` on each declared binding (#2068). A store error throws so the
-   * caller can leave the subject key untouched. Fail closed: an empty answer means
-   * this host KNOWS it holds nothing for the scope, never that it could not tell.
+   * caller can leave the subject key untouched. An empty answer means this host holds no
+   * store object for the scope, never that it could not tell. On the platform hop that is
+   * true by construction (`scopeStoreBindingNames` is empty): the stores live behind the
+   * store script, and control-plane-api erases, exports, sizes and wipes them itself around
+   * its calls to this host's admin (`shredSubject`, `exportScope`, `scopeStoreSizes`, the
+   * wipe and the replay); an erasure reaches them before the host's shred destroys the key. Only the vertical-host `*Local` reads, which no control plane fronts,
+   * refuse on the hop instead (`refuseLocalStoresOnPlatform`).
    */
   private async eraseScopeStores(
     tenantId: TenantId,
