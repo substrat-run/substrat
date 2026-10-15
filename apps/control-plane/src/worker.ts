@@ -1479,8 +1479,8 @@ async function declaredScopeStoresWipe(
  * The sweep's reap of an expired snapshot fork (preview-and-snapshots.md §3/§9): the ORCHESTRATED
  * delete. Every refusal that can be decided up front comes first (#2285): the reap claim, or no
  * copy the platform cannot reach, and stores that can be named. A refusal throws, the pass records
- * it, and the fork stays routed and whole for the next pass. Then the fork's own sign-in clients
- * (#1704, while something still names them), the unroute, the stores' wipe, the delete through
+ * it, and the fork stays routed and whole for the next pass. Then the unroute, the fork's own
+ * sign-in clients (#1704, while something still names them), the stores' wipe, the delete through
  * every script that holds it, and the in-process delete for the directory row and audit.
  */
 export async function reapExpiredSnapshot(
@@ -1501,12 +1501,11 @@ export async function reapExpiredSnapshot(
   if (resolveRef) await claimScopeScriptReap({ admin: host.admin, actor }, tenantId, scopeId);
   else await assertNoUnreachableScopeCopies(host.admin, actor, tenantId, scopeId);
   const wipeStores = rec ? await declaredScopeStoresWipe(deps.stores, host.admin, rec, deps.kinds ?? STORE_KINDS) : undefined;
+  // An expired fork can still be routed: stop routing before the wipe (#2285, L6).
+  if (rec) await unrouteScope(host.admin, actor, rec);
+  // Its own sign-in clients go once nothing routes to it, and before the row (#1704).
   await retireClientsOfReapedScope({ admin: host.admin, actor, issuerClient: deps.issuerClient }, rec);
-  if (rec && wipeStores) {
-    // An expired fork can still be routed: stop routing before the wipe (#2285, L6).
-    await unrouteScope(host.admin, actor, rec);
-    await wipeStores();
-  }
+  if (wipeStores) await wipeStores();
   if (resolveRef) {
     // #1722: a script that predates the delete verb strands its bytes; the reap records it
     // as an ops failure and goes on, so an expired fork is never pinned forever.

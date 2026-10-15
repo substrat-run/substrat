@@ -9038,12 +9038,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (dispatch) await claimScopeScriptReap({ admin: c.var.admin, actor }, preview.tenantId, preview.id);
     else await assertNoUnreachableScopeCopies(c.var.admin, actor, preview.tenantId, preview.id);
     const wipeStores = await platformStoresWipe(c, preview);
-    // A fork's own sign-in clients go next (#1704): a failure here leaves the preview in place, so
-    // the retry a PR-close job makes still finds it — after the row is gone, nothing would name
-    // those clients again. A clean room never had one.
-    await retireClientsOfReapedScope(previewAuthDeps(c), preview);
     // A preview is still routed until its row goes: unroute before the wipe.
     await unrouteScope(c.var.admin, actor, preview);
+    // A fork's own sign-in clients go once nothing routes to it, and before the row (#1704): an
+    // unroute that fails leaves the preview signing in, and a failure here leaves the preview in
+    // place, so the retry a PR-close job makes still finds it — after the row is gone, nothing
+    // would name those clients again. A clean room never had one.
+    await retireClientsOfReapedScope(previewAuthDeps(c), preview);
     await wipeStores();
     let storageStranded = false;
     if (dispatch) {

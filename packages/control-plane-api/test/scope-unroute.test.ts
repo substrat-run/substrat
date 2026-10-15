@@ -20,6 +20,7 @@ import {
   unrouteScope,
   UNSAFE_devPlatformActorAuth,
   type PlatformScopeStores,
+  type VerticalClient,
 } from '../src/index.js';
 
 /**
@@ -181,6 +182,61 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
       expect(res.status).toBe(200);
       expect(seen).toEqual(['unrouted']);
       expect(await host.admin.resolveHostname(pr.hostname)).toBeUndefined();
+    });
+
+    it('an unroute that fails keeps the preview signing in: its clients are retired only after (#1704)', async () => {
+      // Its own tenant and vertical, with an auth server the preview's clients live at.
+      const t2 = tenantId.parse(ulid());
+      const slug = `desk-${t2.slice(-6).toLowerCase()}`;
+      await host.admin.createTenant(staff, { id: t2, slug, name: 'Desk Co' });
+      await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli', ownerTenant: t2 });
+      if (!(await host.admin.listVerticals(staff)).some((v) => v.slug === 'auth-server')) {
+        await host.admin.registerVertical(staff, { slug: 'auth-server', name: 'Auth', source: 'builtin', ownerTenant: null, provides: ['oidc-issuer'] });
+      }
+      const issuer = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t2, scopeId: issuer, vertical: 'auth-server' });
+      await host.admin.activateScope(staff, t2, issuer);
+      const prod = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t2, scopeId: prod, vertical: slug });
+      await host.admin.activateScope(staff, t2, prod);
+      const pr = scopeId.parse(ulid());
+      await host.provisionScope(staff, {
+        tenantId: t2, scopeId: pr, vertical: slug, kind: 'preview', slug: `${slug}--pr-9`,
+        forkedFrom: prod, forkedAt: new Date().toISOString(),
+      });
+      await host.admin.activateScope(staff, t2, pr);
+      const hostname = `h-${pr.slice(-8).toLowerCase()}.example`;
+      await host.admin.bindHostname(staff, { hostname, tenantId: t2, scopeId: pr, surface: 'app', region: null, canonical: true });
+      await host.admin.setHostnameStatus(staff, hostname, 'active');
+      const retired: string[] = [];
+      const issuerClient = {
+        retirePreviewClients: async ({ previewScopeId }: { previewScopeId: string }) => {
+          retired.push(previewScopeId);
+          return { deleted: [] };
+        },
+      } as unknown as VerticalClient;
+      const api = createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        verticals: { 'auth-server': issuerClient },
+      });
+      const unbind = host.admin.unbindHostname;
+      host.admin.unbindHostname = async () => {
+        throw new Error('unbind failed');
+      };
+      try {
+        const res = await api.request(`/verticals/${slug}/previews/pr-9`, { method: 'DELETE', headers: auth });
+        expect(res.status).toBe(500);
+      } finally {
+        host.admin.unbindHostname = unbind;
+      }
+      expect(retired).toEqual([]);
+      expect((await host.admin.resolveHostname(hostname))?.scopeId).toBe(pr);
+      // The twin: once the unroute succeeds, the clients go, and so does the preview.
+      const res = await api.request(`/verticals/${slug}/previews/pr-9`, { method: 'DELETE', headers: auth });
+      expect(res.status).toBe(200);
+      expect(retired).toEqual([pr]);
+      expect(await host.admin.resolveHostname(hostname)).toBeUndefined();
     });
 
     it('a reap refused by a copy move in flight keeps the preview routed, and wipes nothing', async () => {

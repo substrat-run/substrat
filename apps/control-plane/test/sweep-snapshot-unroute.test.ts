@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { unreachablePlatformScopeStores, type PlatformScopeStores } from '@substrat-run/control-plane-api';
+import { unreachablePlatformScopeStores, type PlatformScopeStores, type VerticalClient } from '@substrat-run/control-plane-api';
 import { RESERVED_STORE_OPERATIONS, platformActorId, scopeId, tenantId, type StoreKindRegistration } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { reapExpiredSnapshot } from '../src/worker.js';
@@ -78,6 +78,51 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     expect(seen).toEqual(['unrouted']);
     expect(await host.admin.resolveHostname(hostname)).toBeUndefined();
     expect(await host.admin.getScopeRecord(staff, t, fork)).toBeUndefined();
+  });
+
+  it('an unroute that fails keeps an expired preview signing in: its clients are retired only after (#1704)', async () => {
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const { t, fork: source } = await routedFork(host);
+    const record = (await host.admin.getScopeRecord(staff, t, source))!;
+    if (!(await host.admin.listVerticals(staff)).some((v) => v.slug === 'auth-server')) {
+      await host.admin.registerVertical(staff, { slug: 'auth-server', name: 'Auth', source: 'builtin', ownerTenant: null, provides: ['oidc-issuer'] });
+    }
+    const issuer = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: issuer, vertical: 'auth-server' });
+    await host.admin.activateScope(staff, t, issuer);
+    const pr = scopeId.parse(ulid());
+    await host.provisionScope(staff, {
+      tenantId: t, scopeId: pr, vertical: record.vertical!, kind: 'preview', slug: `${record.vertical}--pr-3`,
+      forkedFrom: source, forkedAt: new Date().toISOString(),
+    });
+    await host.admin.activateScope(staff, t, pr);
+    const hostname = `pr-${pr.slice(-8).toLowerCase()}.example`;
+    await host.admin.bindHostname(staff, { hostname, tenantId: t, scopeId: pr, surface: 'app', region: null, canonical: true });
+    await host.admin.setHostnameStatus(staff, hostname, 'active');
+    const retired: string[] = [];
+    const issuerClient = async () => ({
+      retirePreviewClients: async ({ previewScopeId }: { previewScopeId: string }) => {
+        retired.push(previewScopeId);
+        return { deleted: [] };
+      },
+    }) as unknown as VerticalClient;
+    const failingUnbind = new Proxy(host.admin, {
+      get: (target, key, receiver) => key === 'unbindHostname'
+        ? async () => { throw new Error('unbind failed'); }
+        : Reflect.get(target, key, receiver),
+    });
+    const { stores } = witness(host, () => hostname);
+    const failed = await reapExpiredSnapshot({
+      host: { admin: failingUnbind, deleteSnapshot: (a, tt, s) => host.deleteSnapshot(a, tt, s) },
+      stores, issuerClient, kinds: [],
+    }, t, pr).then(() => undefined, (e: unknown) => e);
+    expect(failed).toBeInstanceOf(Error);
+    expect(retired).toEqual([]);
+    expect((await host.admin.resolveHostname(hostname))?.scopeId).toBe(pr);
+    // The twin: once the unroute succeeds, the clients go, and so does the preview.
+    await reapExpiredSnapshot({ host, stores, issuerClient, kinds: [] }, t, pr);
+    expect(retired).toEqual([pr]);
+    expect(await host.admin.resolveHostname(hostname)).toBeUndefined();
   });
 
   it('a reap refused by a copy move in flight keeps the fork routed, and wipes nothing', async () => {

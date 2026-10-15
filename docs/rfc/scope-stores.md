@@ -484,7 +484,7 @@ delete would repopulate the object, which then outlives its scope with nothing l
 reach it. Tenant reap is already fenced by the tenant's status. Scope, preview and snapshot
 deletion need the scope unrouted before the wipe.
 
-#2285 does this for snapshot deletion, preview reap and the sweeper's snapshot reap. Each takes
+PR #2285 does this for snapshot deletion, preview reap and the sweeper's snapshot reap. Each takes
 every refusal it can decide up front first: the reap claim (a copy move in flight), a copy the
 platform cannot reach, and the store resolution. A refused delete therefore leaves the scope
 routed and its stores untouched. Only then does it unbind every hostname of the scope, wipe and
@@ -535,7 +535,7 @@ declared bindings and then destroys the key. A bind landing in between could add
 the erase never reached. So the erase runs under the same fence a bind takes on the scope,
 or it re-reads the resolution after its store calls and starts over if the resolution moved.
 
-#2285 takes the first form. Both arms, the orchestrated finalize and the direct shred, take one
+PR #2285 takes the first form. Both arms, the orchestrated finalize and the direct shred, take one
 atomic claim just before the key goes (`SUBJECT_ERASURE_CLAIM_SQL`). It requires the bound
 version, the serving pin, the copy inventory and the serving pointer's exact (ref, version) pair
 to still be what the erasure read, and it moves the erasure epoch every bind compares. A bind
