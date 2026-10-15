@@ -13,3 +13,22 @@ export function declaredSweeper(
   schedules: readonly unknown[] | undefined;
   sweeperClasses: string[] | undefined;
 }>;
+
+/** A store script as the platform uploads it (#2289): the entry in front of the kind. */
+export function storeScriptAsUploaded(
+  dir: string,
+  options: {
+    kindMain: string;
+    className: string;
+    script: string;
+    callerPublicKeys: string[];
+    platformPublicKeys: string[];
+  },
+): Promise<{
+  main: string;
+  modules: string[];
+  className: string;
+  binding: string;
+  /** The plain-text bindings the upload carries, by name. */
+  text: Record<string, string>;
+}>;

@@ -134,11 +134,12 @@ export async function asUploaded(dir, derived) {
 
 /**
  * A store script as the platform uploads it (#2289): the entry in front of the kind,
- * the object class migrated, and the public keys bound. The kind's source is bundled
- * the way a push bundles an entry. The caller starts workerd from `main` and `modules`.
+ * the object class migrated, and the script name and public keys bound. The kind's source
+ * is bundled the way a push bundles an entry. The caller starts workerd from `main` and
+ * `modules`.
  *
  * @param {string} dir
- * @param {{ kindMain: string, className: string, vertical: string, callerPublicKey: string, platformPublicKey: string }} options
+ * @param {{ kindMain: string, className: string, script: string, callerPublicKeys: string[], platformPublicKeys: string[] }} options
  */
 export async function storeScriptAsUploaded(dir, options) {
   const cacheDir = join(dir, '.workerd-uploaded', 'store');
@@ -153,7 +154,7 @@ export async function storeScriptAsUploaded(dir, options) {
       doClasses: [],
       bindings: [],
     },
-    options,
+    { className: options.className, script: options.script, callerPublicKeys: options.callerPublicKeys, platformPublicKeys: options.platformPublicKeys },
   );
   for (const module of uploaded.modules) writeFileSync(join(cacheDir, module.name), module.content);
   const text = Object.fromEntries(
