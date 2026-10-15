@@ -18,10 +18,11 @@ describe('publishing a store kind records the release (#2297)', () => {
     authenticate: UNSAFE_devPlatformActorAuth(),
     storeKinds: [{
       kind: 'graph',
-      release: '1.0.0',
+      runtime: 'python',
       className: 'Store',
       operations: ['read'],
       platformOperations: [...RESERVED_STORE_OPERATIONS],
+      publishers: 'staff',
     }],
     storeReleases: {
       put: async (key, bytes) => {

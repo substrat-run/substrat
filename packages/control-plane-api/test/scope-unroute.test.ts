@@ -32,10 +32,11 @@ describe('a snapshot is unrouted before its stores are wiped (#2285)', () => {
   const auth = { [DEV_ACTOR_HEADER]: staff };
   const graph: StoreKindRegistration = {
     kind: 'graph',
-    release: '0.0.0-test',
+    runtime: 'python',
     className: 'GraphStore',
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],
+    publishers: 'staff',
   };
 
   beforeAll(async () => {

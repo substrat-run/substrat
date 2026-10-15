@@ -667,7 +667,7 @@ Still open:
 | | Open item | Rule | Before #2210? |
 |---|---|---|---|
 | (a) | The MAC covers the name only. The audience header is unsigned, and nothing binds the operation, the time or a nonce | L4, L5 | **Yes** |
-| (b) | First-name memory and the audience check exist as helpers and in a test fixture, not in a store script. No kind is registered to carry them | L4, L5 | **Yes**, in the test kind and in the registration requirements (D-63) |
+| (b) | The graph kind is registered. Its entry checks the envelope and the remembered name before the class runs. A release is published, not pinned (D-64) | L4, L5 | The registration is reviewed here; a real dispatch upload is still #2210 |
 | (c) | `transport: 'platform'` exists, but the host defaults to `'binding'` and nothing in production sets `'platform'` | L2 | **Yes** |
 | (f) | Replay and wipe skip when the destination's manifest is null. That is correct for a version that predates kept manifests, and needs a test that says so | L9, L7 | No, later |
 | (m) | No path unroutes a scope before wiping it, and erase is not fenced against a bind that lands between its manifest read and the key's destruction | L6, L19 | **Yes** |

@@ -354,14 +354,14 @@ const storeCatalogOperation = storeOperationName.refine((name) => !name.startsWi
 export const storeKindId = z.string().regex(STORE_KIND_ID, { message: 'a store kind id is [a-z0-9]+' });
 
 /**
- * A store kind, pinned the way a connector is: an exact release, the class
- * the platform runs, the catalog a vertical may call, and every reserved operation.
- * The list itself is {@link STORE_KINDS}. Empty until a kind is reviewed in.
+ * A store kind, reviewed once (D-64): the runtime, the class the platform runs,
+ * the catalog a vertical may call, who may publish, and every reserved operation.
+ * A release is not named here. The list itself is {@link STORE_KINDS}.
  */
 export const storeKindRegistration = z.object({
   // Held to the kind-id grammar first (L20), so a second kind cannot be added outside it.
   kind: storeKindId.pipe(z.literal('graph')),
-  release: z.string().min(1),
+  runtime: z.enum(['javascript', 'python']),
   // No script name: the platform names the upload `scopeStoreScriptName(vertical, kind)`.
   className: z.string().min(1),
   operations: z.array(storeCatalogOperation),
@@ -369,11 +369,59 @@ export const storeKindRegistration = z.object({
     (ops) => RESERVED_STORE_OPERATIONS.every((op) => ops.includes(op)),
     { message: 'a store kind answers every reserved operation, including substrat.erase' },
   ),
+  /** Who may publish a release. `staff` is the control plane's staff gate. */
+  publishers: z.literal('staff'),
 });
 export type StoreKindRegistration = z.infer<typeof storeKindRegistration>;
 
-/** Registered store kinds. None, until a reviewed registration lands (#2210). */
-export const STORE_KINDS: readonly StoreKindRegistration[] = [];
+/**
+ * The vertical catalog of the graph kind. Administration operations are not in it.
+ * Releases of the class are published from the ontomate workspace, not pinned here (D-64).
+ */
+const GRAPH_STORE_OPERATIONS = [
+  'getSession',
+  'getScope',
+  'putScope',
+  'getContract',
+  'getSchemaOperations',
+  'getSchemaResourceByName',
+  'getSchemaResource',
+  'getSchemaNeighbourhood',
+  'getSchemaDeclarations',
+  'getSchemaSearch',
+  'getSchemaStatistics',
+  'postSchemaBatch',
+  'getSchemaChanges',
+  'postSchemaRevert',
+  'postSchemaCommit',
+  'getDataOperations',
+  'postDataBatch',
+  'getDataInstance',
+  'listDataInstances',
+  'searchDataInstances',
+  'getHistoryRevisions',
+  'getHistoryChanges',
+  'getHistoryTags',
+  'createHistoryTag',
+  'getResourceHistory',
+  'postFactHistory',
+  'resolveHistoryRevision',
+] as const;
+
+/**
+ * Registered store kinds. `graph` is the first: Python, class `Store`, published
+ * with `substrat store-kind publish --kind graph`. The kind id names the shape (RFC §9).
+ */
+export const STORE_KINDS: readonly StoreKindRegistration[] = [
+  {
+    kind: 'graph',
+    runtime: 'python',
+    className: 'Store',
+    operations: [...GRAPH_STORE_OPERATIONS],
+    platformOperations: [...RESERVED_STORE_OPERATIONS],
+    publishers: 'staff',
+  },
+];
 
 /**
  * Whether a version's stored manifest (`HostAdmin.versionManifest`) declares a scope

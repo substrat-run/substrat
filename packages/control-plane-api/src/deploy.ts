@@ -191,7 +191,6 @@ export { scopeStoreScriptName };
 export interface ScopeStoreUploadPlan {
   readonly scripts: readonly {
     readonly kind: string;
-    readonly release: string;
     readonly vertical: string;
     readonly scriptName: string;
     readonly className: string;
@@ -204,7 +203,7 @@ export interface ScopeStoreUploadPlan {
  * Which store scripts a vertical's stores need (#2210). One script per (kind, vertical), shared
  * by every binding of that kind, named by {@link scopeStoreScriptName}, which carries no release:
  * a new release of the kind is uploaded into the same name. A kind that is not in `kinds` is
- * refused. The default registry is empty. The upload itself is `createScopeStoreEnsurer`.
+ * refused. The default registry is {@link STORE_KINDS}. The upload itself is `createScopeStoreEnsurer`.
  */
 export function scopeStoreUploadPlan(input: {
   readonly vertical: string;
@@ -227,7 +226,6 @@ export function scopeStoreUploadPlan(input: {
     seen.add(kind.kind);
     scripts.push({
       kind: kind.kind,
-      release: kind.release,
       vertical: input.vertical,
       scriptName: scopeStoreScriptName(input.vertical, kind.kind),
       className: kind.className,

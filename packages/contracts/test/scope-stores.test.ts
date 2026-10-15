@@ -131,10 +131,10 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     );
   });
 
-  it('refuses graph while no kind is registered', () => {
+  it('accepts graph, which is registered', () => {
     const stores = [{ binding: 'GRAPH', kind: 'graph' as const }];
-    expect(() => assertScopeStoresRegistered(stores)).toThrow(/not registered/);
-    expect(() => assertDeclaredScopeStores({ scopeStores: stores })).toThrow(/not registered/);
+    expect(() => assertScopeStoresRegistered(stores)).not.toThrow();
+    expect(() => assertDeclaredScopeStores({ scopeStores: stores })).not.toThrow();
   });
 
   it('refuses a registration that does not answer substrat.erase', () => {
@@ -142,10 +142,11 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     expect(() =>
       storeKindRegistration.parse({
         kind: 'graph',
-        release: '1.0.0',
+        runtime: 'python',
         className: 'Store',
         operations: ['read'],
         platformOperations: reserved,
+        publishers: 'staff',
       }),
     ).toThrow(/substrat.erase/);
   });
@@ -153,10 +154,11 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
   it('holds a kind id to [a-z0-9]+ (L20), at the registration and in every registered kind', () => {
     const registration = (kind: string) => ({
       kind,
-      release: '1.0.0',
+      runtime: 'python' as const,
       className: 'Store',
       operations: ['read'],
       platformOperations: [...RESERVED_STORE_OPERATIONS],
+      publishers: 'staff' as const,
     });
     for (const kind of ['graph-x', 'graph_x', 'Graph', 'gr aph', '']) {
       expect(storeKindId.safeParse(kind).success, kind).toBe(false);
@@ -174,10 +176,11 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     expect(() =>
       storeKindRegistration.parse({
         kind: 'graph',
-        release: '1.0.0',
+        runtime: 'python',
         className: 'Store',
         operations: ['substrat.wipe'],
         platformOperations: [...RESERVED_STORE_OPERATIONS],
+        publishers: 'staff',
       }),
     ).toThrow(/substrat/);
   });
@@ -201,10 +204,11 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
   it('holds a kind registration\'s catalog to the same rule', () => {
     const registration = (operations: string[]) => ({
       kind: 'graph',
-      release: '1.0.0',
+      runtime: 'python' as const,
       className: 'GraphStore',
       operations,
       platformOperations: [...RESERVED_STORE_OPERATIONS],
+      publishers: 'staff' as const,
     });
     expect(storeKindRegistration.safeParse(registration(['increment'])).success).toBe(true);
     expect(storeKindRegistration.safeParse(registration(['look:up'])).success).toBe(false);
@@ -216,10 +220,11 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
 describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
   const graph: StoreKindRegistration = {
     kind: 'graph',
-    release: '0.0.0-test',
+    runtime: 'python',
     className: 'GraphStore',
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],
+    publishers: 'staff',
   };
   const manifest = (scopeStores?: unknown[]) =>
     JSON.stringify({
@@ -240,11 +245,18 @@ describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
     expect(scopeStoresDeclaredIn(JSON.stringify({ version: 1 }))).toBeUndefined();
   });
 
-  it('with no kind registered nothing may hold a store, whatever the manifest says', () => {
-    expect(STORE_KINDS).toEqual([]);
+  it('with no kind passed, nothing may hold a store, whatever the manifest says', () => {
     for (const json of [declaring, manifest(), null, undefined, '{not json']) {
-      expect(mayHoldScopeStores(json)).toBe(false);
+      expect(mayHoldScopeStores(json, [])).toBe(false);
     }
+  });
+
+  it('the registered graph kind may hold a store, and a known manifest with none does not', () => {
+    expect(STORE_KINDS.map((kind) => kind.kind)).toEqual(['graph']);
+    expect(mayHoldScopeStores(declaring)).toBe(true);
+    expect(mayHoldScopeStores(manifest())).toBe(false);
+    expect(mayHoldScopeStores(undefined)).toBe(true);
+    expect(mayHoldScopeStores(null)).toBe(false);
   });
 
   it('with a kind registered, unknown and unreadable count as may, and only a known "none" does not', () => {

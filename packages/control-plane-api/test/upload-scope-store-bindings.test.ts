@@ -4,13 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
-import {
-  platformActorId,
-  RESERVED_STORE_OPERATIONS,
-  STORE_KINDS,
-  tenantId,
-  type StoreKindRegistration,
-} from '@substrat-run/contracts';
+import { platformActorId, STORE_KINDS, tenantId, type StoreKindRegistration } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   createWfpUploader,
@@ -38,17 +32,9 @@ describe('a vertical upload carries no scope-store binding, with a kind register
   const puts: { url: string; meta: Record<string, any> }[] = [];
 
   /**
-   * The registry is a constant until a reviewed kind lands, and the push check in contracts reads
-   * that same array. A test kind is added to it for this file only, and removed after, rather than
-   * giving the control plane an option that could register a kind outside review.
+   * The push check reads {@link STORE_KINDS}. `graph` is registered. The refusal test
+   * empties that array for one call and puts the entry back, so a later file still sees it.
    */
-  const testKind: StoreKindRegistration = {
-    kind: 'graph',
-    release: '1.0.0',
-    className: 'Store',
-    operations: ['read'],
-    platformOperations: [...RESERVED_STORE_OPERATIONS],
-  };
   const registry = STORE_KINDS as StoreKindRegistration[];
 
   beforeAll(() => {
@@ -76,7 +62,6 @@ describe('a vertical upload carries no scope-store binding, with a kind register
     });
   });
   afterAll(async () => {
-    registry.length = 0;
     await host.close();
     rmSync(dir, { recursive: true, force: true });
   });
@@ -126,7 +111,6 @@ describe('a vertical upload carries no scope-store binding, with a kind register
 
   it('the per-version push and the serving upload send the vertical’s bindings and no store binding', async () => {
     stubCloudflare();
-    registry.push(testKind);
     await host.admin.createTenant(staff, { id: tenantId.parse(ulid()), slug: 'store-upload', name: 'store-upload' });
     const res = await push('store-upload');
     expect(res.status, await res.clone().text()).toBe(201);
@@ -147,13 +131,18 @@ describe('a vertical upload carries no scope-store binding, with a kind register
     }
   });
 
-  it('with no kind registered, the same push is refused before anything is uploaded', async () => {
+  it('with the kind taken out of the registry, the same push is refused before anything is uploaded', async () => {
     stubCloudflare();
     const before = puts.length;
-    await host.admin.createTenant(staff, { id: tenantId.parse(ulid()), slug: 'store-refused', name: 'store-refused' });
-    const res = await push('store-refused');
-    expect(res.status).toBe(403);
-    expect(await res.text()).toMatch(/not registered/);
-    expect(puts.length).toBe(before);
+    const saved = registry.splice(0, registry.length);
+    try {
+      await host.admin.createTenant(staff, { id: tenantId.parse(ulid()), slug: 'store-refused', name: 'store-refused' });
+      const res = await push('store-refused');
+      expect(res.status).toBe(403);
+      expect(await res.text()).toMatch(/not registered/);
+      expect(puts.length).toBe(before);
+    } finally {
+      registry.push(...saved);
+    }
   });
 });

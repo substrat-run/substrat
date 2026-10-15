@@ -45,10 +45,11 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
   const auth = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
   const graph: StoreKindRegistration = {
     kind: 'graph',
-    release: '0.0.0-test',
+    runtime: 'python',
     className: 'GraphStore',
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],
+    publishers: 'staff',
   };
   const redactOnly = {
     redactSubject: async () => ({
@@ -128,7 +129,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       const { caller, asked } = platformStores(() => {
         throw new Error('should not be asked');
       });
-      const res = await shred(bySlug(caller), s, subject);
+      const res = await shred(bySlug(caller, []), s, subject);
       expect(res.status).toBe(200);
       expect(((await res.json()) as SubjectShredReceipt).storeErasures).toEqual([]);
       expect(asked).toEqual([]);
@@ -142,6 +143,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         authenticate: UNSAFE_devPlatformActorAuth(),
         resolveVerticalRef: async (r) => (r === ref ? (redactOnly as unknown as VerticalClient) : undefined),
         platformScopeStores: unreachablePlatformScopeStores(),
+        storeKinds: [],
       });
       expect((await shred(api, s, subject)).status).toBe(200);
       expect(await keyKept()).toBe(false);

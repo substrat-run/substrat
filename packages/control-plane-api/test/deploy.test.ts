@@ -161,17 +161,10 @@ describe('assertSandboxContract', () => {
     expectRefusal([{ type: 'ai', name: 'LLM' }], /binding 'LLM' \(type 'ai'\)/);
   });
 
-  it('refuses a scope store whose kind is not registered', () => {
-    let thrown: unknown;
-    try {
-      assertSandboxContract({ ...manifest([]), scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] });
-    } catch (err) {
-      thrown = err;
-    }
-    expect(thrown, 'an unregistered scope store was admitted').toBeInstanceOf(Error);
-    expect(errorCodeOf(thrown)).toBe('forbidden');
-    expect((thrown as Error).message).toMatch(/not registered/);
-    expect((thrown as Error).message).toMatch(/^deploy refused: /);
+  it('admits a scope store of the registered graph kind', () => {
+    expect(() =>
+      assertSandboxContract({ ...manifest([]), scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] }),
+    ).not.toThrow();
   });
 
   // #2224: the control plane holds an own DO binding to the same one-name-one-store rule push
@@ -216,12 +209,13 @@ describe('assertSandboxContract', () => {
 });
 
 describe('scope store upload plan (#2210)', () => {
-  const kind = (release: string): StoreKindRegistration => ({
+  const kind = (): StoreKindRegistration => ({
     kind: 'graph',
-    release,
+    runtime: 'python',
     className: 'Store',
     operations: ['read'],
     platformOperations: [...RESERVED_STORE_OPERATIONS],
+    publishers: 'staff',
   });
   const stores = [
     { binding: 'GRAPH' as const, kind: 'graph' as const },
@@ -239,42 +233,44 @@ describe('scope store upload plan (#2210)', () => {
         vertical: 'acme/crm',
         manifest: { bindings: own, scopeStores: stores },
         platformBindings,
-        kinds: [kind('1.0.0')],
+        kinds: [kind()],
       });
       expect(bindings.map((b) => b.name).filter((name) => name.startsWith('SUBSTRAT_STORE_'))).toEqual([]);
       // The twin: the vertical's own bindings and the platform's ledger bindings are still there.
       expect(bindings).toEqual([...own, ...platformBindings]);
     }
-    expect(scopeStoreUploadPlan({ vertical: 'acme/crm', stores, kinds: [kind('1.0.0')] }).bindings).toEqual([]);
+    expect(scopeStoreUploadPlan({ vertical: 'acme/crm', stores, kinds: [kind()] }).bindings).toEqual([]);
   });
 
-  it('an upload refuses a declared kind that is not registered, which is every kind today', () => {
+  it('an upload refuses a declared kind that is not in the registry it is given', () => {
     expect(() =>
-      verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: stores }, platformBindings: [] }),
+      verticalUploadBindings({
+        vertical: 'acme/crm',
+        manifest: { bindings: [], scopeStores: stores },
+        platformBindings: [],
+        kinds: [],
+      }),
     ).toThrow(/not registered/);
     expect(verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: [] }, platformBindings: [] })).toEqual([]);
   });
 
-  it('plans one script per kind and vertical, and a new release keeps the name', () => {
-    const first = scopeStoreUploadPlan({ vertical: 'acme/crm', stores, kinds: [kind('1.0.0')] });
-    const next = scopeStoreUploadPlan({ vertical: 'acme/crm', stores, kinds: [kind('2.0.0')] });
-    expect(first.scripts).toEqual([
+  it('plans one script per kind and vertical, and the script name carries no release', () => {
+    const plan = scopeStoreUploadPlan({ vertical: 'acme/crm', stores, kinds: [kind()] });
+    expect(plan.scripts).toEqual([
       {
         kind: 'graph',
-        release: '1.0.0',
         vertical: 'acme/crm',
         className: 'Store',
         scriptName: scopeStoreScriptName('acme/crm', 'graph'),
       },
     ]);
-    expect(next.scripts[0]?.scriptName).toBe(first.scripts[0]?.scriptName);
-    expect(first.scripts[0]?.scriptName).not.toMatch(/[12]\.0\.0/);
+    expect(plan.scripts[0]?.scriptName).not.toMatch(/1\.0\.0/);
     expect(scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH')).toBe('01TENANT/acme/crm/01SCOPE/GRAPH');
   });
 
   it('refuses a kind that is not registered', () => {
     expect(() =>
-      scopeStoreUploadPlan({ vertical: 'acme/crm', stores: [{ binding: 'GRAPH', kind: 'graph' }] }),
+      scopeStoreUploadPlan({ vertical: 'acme/crm', stores: [{ binding: 'GRAPH', kind: 'graph' }], kinds: [] }),
     ).toThrow(/not registered/);
   });
 });

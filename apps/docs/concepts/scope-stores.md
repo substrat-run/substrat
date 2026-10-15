@@ -1,5 +1,5 @@
 ---
-description: "A platform-run object per scope. The vertical declares a binding and a kind and calls it through getScopeStore. No kind is registered yet, so nothing is live for a vertical today."
+description: "A platform-run object per scope. The vertical declares a binding and a kind and calls it through getScopeStore. The graph kind is registered; a hosted push also needs a published release."
 ---
 
 # Scope stores
@@ -10,21 +10,19 @@ This sits below the [per-tenant stores](./tenancy.md). A tenant store is one dat
 
 ## What you can use today
 
-Nothing here is live for a vertical yet. No store kind is registered, and a push that declares a scope store is refused. Everything below is what the platform does once a kind is registered and its store script is deployed.
+The graph kind is registered. A vertical declares `{ binding, kind: 'graph' }`. A hosted push of that declaration uploads the kind's current release before the vertical. Until a release has been published, the push is refused rather than serving a vertical with no store script.
 
 Today a vertical author can:
 
 - read the declaration and the call shape below, and write code against `getScopeStore` and `StoreStub`;
-- run a store locally, on the pure adapter, with a `ScopeStoreRunner` a kind supplies (see the end of this page).
+- run a store locally, on the pure adapter, with a `ScopeStoreRunner` a kind supplies (see the end of this page);
+- push a vertical that declares `scopeStores`, once a release of the kind is published.
 
-A vertical author cannot yet:
-
-- push a vertical that declares `scopeStores`;
-- reach a store from a hosted deploy.
+A release is published from the kind's own workspace with `substrat store-kind publish --kind graph --entry <file.py>`, and rolled back with `substrat store-kind rollback --kind graph`. The registration names the runtime (`python`), the class (`Store`) and the operation catalog. It does not name a release.
 
 ## Declaring it
 
-`runtimeNeeds.scopeStores` is a list of `{ binding, kind }`. `binding` is a screaming-snake name. `kind` has no default. The only kind named so far is `graph`.
+`runtimeNeeds.scopeStores` is a list of `{ binding, kind }`. `binding` is a screaming-snake name. `kind` has no default. The registered kind is `graph`.
 
 ```ts
 scopeStores: [{ binding: 'GRAPH', kind: 'graph' }]
@@ -32,7 +30,7 @@ scopeStores: [{ binding: 'GRAPH', kind: 'graph' }]
 
 A hosted vertical's upload carries no store binding. The vertical is given neither the store's namespace nor anything that opens it. A binding already used by another store is refused, and so is the name `ATTACHMENTS`. The vertical's own Durable Object bindings count as stores for that check. A name in the `SUBSTRAT_` namespace is the platform's and is refused. The push and the control plane apply the same checks, so a manifest that did not come through `substrat push` is refused the same way.
 
-A kind is registered before a push that names it can succeed. There is one store script per kind and vertical, and a later release replaces that script in place. The objects stay where they are. Uploading that script is [#2210](https://github.com/substrat-run/substrat/issues/2210).
+A kind is registered before a push that names it can succeed. There is one store script per kind and vertical, and a later release replaces that script in place. The objects stay where they are. The graph kind's class is `Store`, and its releases are published to the control plane rather than pinned in this repo.
 
 ## Calling it
 
@@ -49,7 +47,7 @@ On the platform path the call leaves the vertical as a fetch of `store.substrat.
 
 The call on the wire is `{ operation, input }`. The answer is `{ result }`, or `{ error: { code, status, body } }`, where `status` is an HTTP error status from 400 to 599. An answer with any other status is not the envelope, and it arrives as `bad_envelope`. A store error arrives as `StoreError`. The platform code comes from the HTTP status. The store's own `code` travels in `storeCode`. Its `body` travels in `storeBody` only for a 4xx whose JSON is at most 1 KiB (`STORE_BODY_MAX_BYTES`). A client can read that body, so a 5xx body, a larger one, or one that is not JSON stays in the store. The vertical's own code gets the same filtered `storeBody`.
 
-A direct binding exists for local development and for tests, and only when the host is created with `transport: 'binding'`. An ambient `SUBSTRAT_STORE_*` namespace is not used otherwise. The binding is not an isolation boundary. The checks the store script runs on each call are not built yet (see [Known limits](#known-limits)).
+A direct binding exists for local development and for tests, and only when the host is created with `transport: 'binding'`. An ambient `SUBSTRAT_STORE_*` namespace is not used otherwise. The binding is not an isolation boundary. On the platform path the store script's entry checks the envelope and the remembered name before the kind runs.
 
 ## The invocation line
 
@@ -99,14 +97,11 @@ The storage gauge samples each scope's stores in the same pass as the scope data
 
 ## Known limits
 
-These are open, and are tracked in the [scope-stores RFC](https://github.com/substrat-run/substrat/blob/main/docs/rfc/scope-stores.md) (§10.8). The first group is to be closed before the first kind is registered. The second can follow.
+These are open, and are tracked in the [scope-stores RFC](https://github.com/substrat-run/substrat/blob/main/docs/rfc/scope-stores.md) (§10.8).
 
-Before the first kind:
+The entry in front of the kind checks the signed envelope and the remembered object name. A wipe unroutes the scope first, and erasure is fenced against a deploy that lands while it runs. Lifecycle reaches every binding any version of the vertical has declared.
 
-- **The store script does not check the envelope yet.** The hop is the default for a host with no control plane and no runner. The signature and the remembered name are still to be checked inside the store.
-- **The store's checks on each call.** What the platform sends a store script does not yet bind the operation, the audience or the time, and no store script checks it yet. The checks are planned in an entry module the platform supplies in front of the kind.
-- **Unroute before wipe.** No path stops routing a scope before it wipes the scope's stores, and an erasure is not fenced against a deploy that lands while it runs.
-- **Orphaned bindings.** Every lifecycle path reads only the current version's bindings. Objects under a binding a later version dropped, or declared as another kind, are out of reach of wipe, erase and the meter.
+A real upload into a dispatch namespace, and the first publish of the graph kind in a test environment, still need a Cloudflare account.
 
 Later:
 

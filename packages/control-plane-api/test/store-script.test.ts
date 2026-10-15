@@ -25,10 +25,11 @@ function ensurer(loadRelease: () => Promise<typeof release | undefined> = async 
     platformPublicKey: vector.publicKey,
     kinds: [{
       kind: 'graph',
-      release: 'ignored',
+      runtime: 'python',
       className: 'Store',
       operations: ['read'],
       platformOperations: [...RESERVED_STORE_OPERATIONS],
+      publishers: 'staff',
     }],
     loadRelease,
   });

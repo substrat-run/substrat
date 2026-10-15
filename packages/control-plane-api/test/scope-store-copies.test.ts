@@ -40,10 +40,11 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
   const auth = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
   const graph: StoreKindRegistration = {
     kind: 'graph',
-    release: '0.0.0-test',
+    runtime: 'python',
     className: 'GraphStore',
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],
+    publishers: 'staff',
   };
 
   const held = new Map<string, ScopeDump>();
@@ -157,7 +158,7 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
 
   it('with no store kind registered, no store is asked: the copies run as before stores', async () => {
     const { caller, asked } = platform();
-    await everyCopy(appWith(caller));
+    await everyCopy(appWith(caller, []));
     expect(asked).toEqual([]);
   });
 
