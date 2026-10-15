@@ -155,6 +155,40 @@ export function storeKindReleaseContractSuite(adapterName: string, makeFixture: 
       expect((await host.admin.storeKindState(staff, kind)).rollbackTarget).toBe(sha('1'));
     });
 
+    it('lets no rollout begin while a rollback is unfinished, and a failed attempt does not turn the rollback around', async () => {
+      const kind = freshKind();
+      const holder = ulid();
+      await rollOut(kind, holder, sha('1'), sha('2'));
+      await host.admin.recordStoreKindRelease(staff, { kind, sha256: sha('3'), sourceCommit: commit('c') });
+      const paused = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('1'), action: 'rollback', holder });
+      await host.admin.finishStoreKindRollout(staff, { kind, seq: paused.seq, holder, state: 'paused', detail: null });
+      expect(await host.admin.storeKindState(staff, kind)).toMatchObject({ rollbackTarget: sha('1'), unfinishedRollback: sha('1') });
+      // No rollout, of a new release or of the current one, until the rollback is done.
+      for (const s of ['3', '2', '1']) {
+        await expectRefusal(host.admin.beginStoreKindRollout(staff, { kind, sha256: sha(s), action: 'rollout', holder }), 'conflict');
+      }
+      // A rollback post that fails (its moves returned) changes nothing about where the rollback goes.
+      const failed = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('1'), action: 'rollback', holder });
+      await host.admin.finishStoreKindRollout(staff, { kind, seq: failed.seq, holder, state: 'failed', detail: 'vc failed' });
+      expect(await host.admin.storeKindState(staff, kind)).toMatchObject({ rollbackTarget: sha('1'), unfinishedRollback: sha('1') });
+      await expectRefusal(host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('3'), action: 'rollout', holder }), 'conflict');
+      // Diverged part way (an upload failed, or a script would not go below its schema): still
+      // unfinished, and a rollback continues it, but going forward is no longer refused.
+      const diverged = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('1'), action: 'rollback', holder });
+      await host.admin.finishStoreKindRollout(staff, { kind, seq: diverged.seq, holder, state: 'diverged', detail: null });
+      expect((await host.admin.storeKindState(staff, kind)).rollbackTarget).toBe(sha('1'));
+      const forward = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('3'), action: 'rollout', holder });
+      await host.admin.finishStoreKindRollout(staff, { kind, seq: forward.seq, holder, state: 'failed', detail: 'canary' });
+      // That rollout failed and moved nothing: the rollback is still where it goes.
+      expect((await host.admin.storeKindState(staff, kind)).rollbackTarget).toBe(sha('1'));
+      const done = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('1'), action: 'rollback', holder });
+      await host.admin.finishStoreKindRollout(staff, { kind, seq: done.seq, holder, state: 'good', detail: null });
+      expect(await host.admin.storeKindState(staff, kind)).toMatchObject({ current: { sha256: sha('1') }, unfinishedRollback: null });
+      // Finished: a rollout may begin again.
+      const next = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('3'), action: 'rollout', holder });
+      expect(next.state).toBe('rolling');
+    });
+
     it('renews only a hold still held, and only for a rollout still rolling', async () => {
       const kind = freshKind();
       const [a, b] = [ulid(), ulid()];

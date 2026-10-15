@@ -243,6 +243,8 @@ export interface StoreKindView {
   rollouts: StoreKindRolloutView[];
   /** Where a rollback goes now: the server decides, a client never derives it. */
   rollbackTarget: string | null;
+  /** A rollback that stopped part way, until it ends good. While it is paused no rollout begins. */
+  unfinishedRollback: string | null;
 }
 
 export interface StoreKindRolloutResultView {

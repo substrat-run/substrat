@@ -112,6 +112,14 @@ describe('the files a release packs, and the commit they are (#2300)', () => {
 });
 
 describe('store-kind rollout and status, before and after a request (#2300)', () => {
+  it('says when a rollback stopped part way', () => {
+    const lines = storeKindStatusLines('graph', {
+      kind: 'graph', pins: [], current: { sha256: 'b'.repeat(64), seq: 2, previousGoodSha256: 'a'.repeat(64) },
+      rollouts: [], rollbackTarget: 'a'.repeat(64), unfinishedRollback: 'a'.repeat(64),
+    });
+    expect(lines[1]).toBe(`  a rollback to ${'a'.repeat(64)} stopped part way: run \`substrat store-kind rollback\` again to finish it`);
+  });
+
   it('names a release by its sha256 only', () => {
     expect(isReleaseSha('a'.repeat(64))).toBe(true);
     for (const bad of [undefined, '', 'A'.repeat(64), 'a'.repeat(63), `${'a'.repeat(63)}g`]) expect(isReleaseSha(bad), String(bad)).toBe(false);
@@ -125,8 +133,9 @@ describe('store-kind rollout and status, before and after a request (#2300)', ()
       rollouts: [],
       // After a diverged rollout the server rolls back onto the current release.
       rollbackTarget: 'b'.repeat(64),
+      unfinishedRollback: null,
     });
     expect(lines[0]).toBe(`graph: current ${'b'.repeat(64)}, rolls back to ${'b'.repeat(64)}`);
-    expect(storeKindStatusLines('graph', { kind: 'graph', pins: [], current: null, rollouts: [], rollbackTarget: null })[0]).toBe('graph: current none, rolls back to nothing');
+    expect(storeKindStatusLines('graph', { kind: 'graph', pins: [], current: null, rollouts: [], rollbackTarget: null, unfinishedRollback: null })[0]).toBe('graph: current none, rolls back to nothing');
   });
 });

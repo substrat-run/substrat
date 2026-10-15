@@ -128,6 +128,9 @@ export const storeKindStatus = (input: Plane & { kind: string }) =>
 export function storeKindStatusLines(kind: string, view: StoreKindView): string[] {
   return [
     `${kind}: current ${view.current?.sha256 ?? 'none'}, rolls back to ${view.rollbackTarget ?? 'nothing'}`,
+    ...(view.unfinishedRollback
+      ? [`  a rollback to ${view.unfinishedRollback} stopped part way: run \`substrat store-kind rollback\` again to finish it`]
+      : []),
     ...view.rollouts.slice(-10).map((r) => `  #${r.seq} ${r.action} ${r.sha256} ${r.state}${r.detail ? ` — ${r.detail}` : ''}`),
   ];
 }

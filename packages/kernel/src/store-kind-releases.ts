@@ -103,6 +103,8 @@ export interface StoreKindState {
   readonly rollouts: StoreKindRolloutRecord[];
   /** Where a rollback goes now (see `storeKindStateIn`); null when nowhere. */
   readonly rollbackTarget: string | null;
+  /** The target of a rollback that paused or diverged part way, until it ends good. A paused one blocks rollouts. */
+  readonly unfinishedRollback: string | null;
 }
 
 export type StoreKindHoldMode = 'shared' | 'exclusive';
@@ -188,9 +190,13 @@ export function recordStoreKindReleaseIn(
  * either release. The next rollout's begin writes that state.
  *
  * `rollbackTarget` is, in order:
- * - the target of a rollback that is the newest attempt since the current release and has not
- *   ended `good` (`paused`, `diverged` or `failed`): posting the rollback again continues it, and
- *   never turns it around onto the release it is leaving;
+ * - the target of a rollback that is the newest attempt since the current release, a `failed` one
+ *   aside, and ended `paused` or `diverged` (`unfinishedRollback`): posting the rollback again
+ *   continues it, and never turns it around onto the release it is leaving. A failed attempt moved
+ *   nothing, or returned what it moved, so it changes nothing here. No rollout may begin while a
+ *   rollback is `paused` (`beginStoreKindRolloutIn`): pagination is not a fault, so the rollback is
+ *   finished first. A rollback that ended `diverged` (an upload failed, or a script refused to move
+ *   to a lower schema) does not block a rollout: going forward is then the way out;
  * - the current release itself, when a rollout since it ended `diverged` or `paused`: the fleet may
  *   be mixed, and undoing that rollout means converging every script back on the release it was
  *   healthy on, never going past it;
@@ -208,18 +214,20 @@ export function storeKindStateIn(db: SwitchSql, kind: string, nowMs?: number): S
       : rolloutOf(r),
   );
   const [current] = db.all('SELECT sha256, seq FROM store_kind_current WHERE kind = ?', kind) as { sha256: string; seq: number }[];
-  if (!current) return { current: null, rollouts, rollbackTarget: null };
+  if (!current) return { current: null, rollouts, rollbackTarget: null, unfinishedRollback: null };
   const seq = Number(current.seq);
   const row = rollouts.find((r) => r.seq === seq);
   const previousGoodSha256 = row?.previousGoodSha256 ?? null;
   const since = rollouts.filter((r) => r.seq > seq);
-  const newest = since.at(-1);
-  const unfinishedRollback = newest?.action === 'rollback' && newest.state !== 'good' && newest.state !== 'rolling' ? newest.sha256 : null;
+  // A failed attempt moved nothing, or returned what it moved, so it never decides what comes next.
+  const newest = since.filter((r) => r.state !== 'failed').at(-1);
+  const unfinishedRollback = newest?.action === 'rollback' && (newest.state === 'paused' || newest.state === 'diverged') ? newest.sha256 : null;
   const mixed = since.some((r) => r.state === 'diverged' || r.state === 'paused');
   return {
     current: { sha256: current.sha256, seq, previousGoodSha256 },
     rollouts,
     rollbackTarget: unfinishedRollback ?? (mixed ? current.sha256 : previousGoodSha256),
+    unfinishedRollback,
   };
 }
 
@@ -286,7 +294,16 @@ export function beginStoreKindRolloutIn(
      WHERE kind = ? AND state = 'rolling'`,
     input.at, input.kind,
   );
-  const { current, rollbackTarget } = storeKindStateIn(db, input.kind, input.nowMs);
+  const { current, rollbackTarget, unfinishedRollback, rollouts } = storeKindStateIn(db, input.kind, input.nowMs);
+  const pausedRollback = unfinishedRollback && current
+    ? rollouts.filter((r) => r.seq > current.seq && r.state !== 'failed').at(-1)?.state === 'paused'
+    : false;
+  if (input.action === 'rollout' && pausedRollback) {
+    throw substratError(
+      'conflict',
+      `a rollback of '${input.kind}' to ${unfinishedRollback} is part way through; post the rollback again to finish it before any rollout`,
+    );
+  }
   let previousGood: string | null;
   if (input.action === 'rollback') {
     if (!current || !rollbackTarget) throw substratError('conflict', `'${input.kind}' has no previous good release to roll back to`);

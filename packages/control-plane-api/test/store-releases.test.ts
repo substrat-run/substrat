@@ -430,6 +430,32 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     expect(f.events).toEqual(['va:1', 'vb:1', 'vc:1', 'vd:1', 've:1']);
   });
 
+  it('refuses a rollout while a rollback is unfinished, and a failed rollback post does not turn it around', async () => {
+    for (const slug of ['vd', 've']) await declare(slug);
+    const f = fleet();
+    await run(f, sha('1'));
+    await run(f, sha('2'));
+    f.events.length = 0;
+    const rollback = async () =>
+      runStoreKindRollout({
+        admin: host.admin, actor: staff, registration, sha256: (await host.admin.storeKindState(staff, 'graph')).rollbackTarget!,
+        action: 'rollback', ensure: f.ensure, ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call, perRequest: 2,
+      });
+    expect((await rollback()).rollout.state).toBe('paused');
+    // The reviewer's sequence: a rollout of 3 now. It is refused before its canary, and moves nothing.
+    expect(await refusal(run(f, sha('3')))).toMatchObject({ message: expect.stringMatching(/rollback .* is part way through; post the rollback again/) });
+    expect(f.events).toEqual(['va:1', 'vb:1']);
+    // A rollback post that fails part way returns what it moved, and the rollback still goes to 1.
+    f.fail.add('vd:1');
+    expect(await refusal(rollback())).toMatchObject({ message: expect.stringMatching(/stopped at vd/) });
+    expect((await host.admin.storeKindState(staff, 'graph')).rollbackTarget).toBe(sha('1'));
+    f.fail.clear();
+    let last;
+    for (let i = 0; i < 4 && !(last = await rollback()).complete; i++);
+    expect(last).toMatchObject({ complete: true, rollout: { sha256: sha('1'), state: 'good' } });
+    expect(new Set(f.runs.values())).toEqual(new Set([sha('1')]));
+  });
+
   it('rolls a paused rollout back onto the current release', async () => {
     const f = fleet();
     await run(f, sha('1'));
@@ -453,7 +479,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     const big = { ...host.admin, storeKindDeclarations: async () => ({ verticals: Array.from({ length: ROLLOUT_FLEET_MAX + 1 }, (_, i) => ({ vertical: `v${i}`, stores: [] })), unreadable: [] }) };
     const f = fleet();
     expect(await refusal(runStoreKindRollout({ admin: big, actor: staff, registration, sha256: sha('1'), action: 'rollout', ensure: f.ensure, ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call })))
-      .toMatchObject({ status: 409, message: expect.stringMatching(/at most 300 per request/) });
+      .toMatchObject({ status: 409, message: expect.stringMatching(/a rollout walks at most 300, so neither a rollout nor a rollback can run .*#2312/) });
     expect(f.events).toEqual([]);
   });
 

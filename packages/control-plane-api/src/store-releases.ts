@@ -273,7 +273,7 @@ export async function runStoreKindRollout(deps: StoreKindRolloutDeps): Promise<S
     if (declared.verticals.length > ROLLOUT_FLEET_MAX) {
       throw new ControlPlaneError(
         409,
-        `kind '${kind}' is declared by ${declared.verticals.length} verticals; a rollout walks at most ${ROLLOUT_FLEET_MAX} per request`,
+        `kind '${kind}' is declared by ${declared.verticals.length} verticals; a ${deps.action} walks at most ${ROLLOUT_FLEET_MAX}, so neither a rollout nor a rollback can run until rollouts page with a cursor (#2312)`,
       );
     }
     const row = await admin.beginStoreKindRollout(actor, { kind, sha256, action: deps.action, holder });
