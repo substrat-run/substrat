@@ -439,11 +439,14 @@ behind it. That is the role `lint:platform-entry` already plays for a vertical's
 The entry module verifies the envelope and the object's id before it hands the request to
 the kind's object (#2295, `packages/control-plane-api/store-entry/entry.ts`, re-emitted under
 `lint:store-entry --check`). It constructs the kind once per object instance, with an env that
-holds none of the entry's `SUBSTRAT_STORE*` bindings, and the upload sets the
-`disallow_importable_env` compatibility flag, so the kind's module cannot read them through
-`import { env } from 'cloudflare:workers'` either (it would otherwise see all of them). It
-forwards the object's alarm to it. A
-kind is otherwise `fetch`-only: an RPC method or a WebSocket handler on its class is not reached.
+holds none of the entry's `SUBSTRAT_STORE*` bindings. Two other routes reach the same things,
+and the upload closes both with compatibility flags, refusing a kind release that reopens them:
+`import { env } from 'cloudflare:workers'` would hand the kind's module every binding of the
+script (`disallow_importable_env`), and from compatibility date 2025-11-17 `ctx.exports`, on
+the `ctx` the kind is constructed with, would be a loopback to the entry's own object class
+and default export (`disable_ctx_exports`). The loopback would still meet every check, but
+the kind has no use for it. What the kind keeps is its object's `ctx` (storage included) and
+its own bindings. It forwards the object's alarm to it. A kind is otherwise `fetch`-only: an RPC method or a WebSocket handler on its class is not reached.
 
 **What the entry is not.** It is not a boundary against a hostile kind. The kind's module is
 evaluated in the same isolate, before the entry's own body, and its class runs with the
