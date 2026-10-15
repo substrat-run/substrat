@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { errorCodeOf, STORE_BODY_MAX_BYTES, StoreError, storeResponse, toProblem } from '../src/index.js';
+import { errorCodeOf, scopeStoreObjectName, STORE_BODY_MAX_BYTES, StoreError, storeResponse, toProblem } from '../src/index.js';
 
 describe('StoreError (#2209)', () => {
   it('derives the taxonomy code from the status and keeps the store’s own code', () => {
