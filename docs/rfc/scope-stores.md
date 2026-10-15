@@ -457,6 +457,32 @@ Snapshotting the primitives the checks use in a module evaluated before the kind
 narrow that window without closing it, so it is not done. That boundary is the D-63
 review of every pinned release, until a platform mechanism isolates the kind.
 
+**A Python kind.** A Python kind gets the Python twin of the entry (#2296,
+`packages/store-entry-python/src/substrat_store_entry.py`), and it runs the same checks
+because it runs the same code. Checks 1–4 are not ported to Python. The upload ships
+`store-entry/verify.ts`, the function the JavaScript entry calls, bundled as an ES module
+(`substrat-store-verify.js`) beside the Python entry, and the Python entry calls it through
+the runtime's JavaScript bridge. So the two entries cannot disagree about an envelope. The
+Python entry makes check 5 itself (`ctx.id.equals(idFromName(name))`, before the kind is
+constructed). It reads the body once and hands that string to the kind, constructs the kind
+once per object instance with an env stripped of `SUBSTRAT_STORE*`, and forwards the alarm.
+Both flags apply to a Python script unchanged: `from workers import env` reads the same
+`cloudflare:workers` env, which `disallow_importable_env` empties, and `ctx.exports` is
+absent under `disable_ctx_exports`. The probe shows all of this under `pywrangler dev`. It
+builds the script from the bytes the upload ships, and checks every call of a corpus
+against the shipped verifier, refusal for refusal.
+
+Against a hostile kind this entry is weaker than the JavaScript one. Python has no private
+fields. The kind's module is imported by the entry before the entry's body has finished,
+and it runs in the same interpreter. From there it can reach the entry module through
+`sys.modules` and replace its functions. It can also reach the entry's object through the
+garbage collector, and with it the entry's full env, the store namespace included. So in
+Python the stripped env and the cached kind keep a careless kind away from the entry's
+bindings, not a hostile one. The control is the same D-63 release review. Not yet shown: a
+script that mixes a Python main module with an ES module, uploaded through the
+dispatch-namespace API in production. That upload is #2299's, and until it runs there, this
+paragraph rests on local workerd.
+
 **Keys (L16).** One Ed25519 signing key per audience. The router holds the `caller` private
 key and the control plane the `platform` one. A store script holds only public keys, a list
 per audience, so no store script can mint an envelope for itself or for any other script.
@@ -778,7 +804,7 @@ block it.
    `store.substrat.internal`. The ambient path is taken only where a binding or runner was
    given explicitly (L2).
 7. Done on #2295. A platform-supplied store entry module that runs L4 and L5 in front of the kind's
-   class (o). The trivial test kind runs behind it, and the contract suite
+   class (o). Its Python twin, for a Python kind, is #2296 and runs the same verifier. The trivial test kind runs behind it, and the contract suite
    asserts L4 and L5 on workerd. The spike's "Not yet evidenced" items move to FINDINGS
    Shown only when they pass.
 8. #2210 itself: the store script upload. It is the first registration, reviewed against

@@ -3,9 +3,9 @@
  * class is imported through placeholders the uploader replaces, and the kind is reached only
  * through this module, after the call is verified.
  *
- * Every call is checked by contracts' `verifyScopeStoreCall` (RFC scope-stores §10.3 checks
- * 1–4) against the public keys and the script name this upload was given. The default export
- * addresses `SubstratStoreObject` by `idFromName` of the signed name. The object checks the
+ * Every call is checked by `verify.ts`, which runs contracts' `verifyScopeStoreCall` (RFC
+ * scope-stores §10.3 checks 1–4) against the public keys and the script name this upload was
+ * given. The Python entry imports the same function. The default export addresses `SubstratStoreObject` by `idFromName` of the signed name. The object checks the
  * call again, and refuses unless its own id is the id of that name (check 5): an object is
  * bound to one name by construction, with nothing stored that the kind could rewrite.
  *
@@ -19,20 +19,9 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import * as kindModule from '__SUBSTRAT_STORE_KIND__';
-import {
-  SCOPE_STORE_ENVELOPE_HEADER,
-  SCOPE_STORE_SIGNATURE_HEADER,
-  scopeStorePublicKeysFrom,
-  verifyScopeStoreCall,
-  type ScopeStoreEnvelope,
-} from '@substrat-run/contracts/scope-store-envelope';
-import {
-  STORE_CALLER_KEYS_VAR,
-  STORE_OBJECT_BINDING,
-  STORE_PLATFORM_KEYS_VAR,
-  STORE_RESERVED_BINDING_PREFIX,
-  STORE_SCRIPT_VAR,
-} from './names.js';
+import type { ScopeStoreEnvelope } from '@substrat-run/contracts/scope-store-envelope';
+import { STORE_OBJECT_BINDING, STORE_RESERVED_BINDING_PREFIX } from './names.js';
+import { storeCallVerdict } from './verify.js';
 
 type StoreEntryEnv = Record<string, unknown> & {
   [STORE_OBJECT_BINDING]: DurableObjectNamespace;
@@ -54,27 +43,8 @@ function kindEnvOf(env: StoreEntryEnv): Record<string, unknown> {
 
 /** The verified envelope, or the response that refuses the call. */
 async function verified(request: Request, body: string, env: StoreEntryEnv): Promise<ScopeStoreEnvelope | Response> {
-  const script = env[STORE_SCRIPT_VAR];
-  let keys;
-  try {
-    if (typeof script !== 'string' || script.length === 0) throw new Error('no script name');
-    keys = scopeStorePublicKeysFrom({
-      caller: String(env[STORE_CALLER_KEYS_VAR] ?? ''),
-      platform: String(env[STORE_PLATFORM_KEYS_VAR] ?? ''),
-    });
-  } catch {
-    // A store this upload did not configure refuses everything, and says it is not the caller.
-    return text(503, 'this store script is not configured');
-  }
-  const verdict = await verifyScopeStoreCall({
-    envelope: request.headers.get(SCOPE_STORE_ENVELOPE_HEADER),
-    signature: request.headers.get(SCOPE_STORE_SIGNATURE_HEADER),
-    body,
-    keys,
-    script,
-    nowSeconds: Math.floor(Date.now() / 1000),
-  });
-  return verdict.ok ? verdict.envelope : text(401, `unauthorized: ${verdict.refusal}`);
+  const verdict = await storeCallVerdict(request.headers, body, env);
+  return verdict.ok ? verdict.envelope : text(verdict.status, verdict.message);
 }
 
 export class SubstratStoreObject extends DurableObject<StoreEntryEnv> {

@@ -10,17 +10,22 @@ import {
   STORE_OBJECT_CLASS,
   STORE_PLATFORM_KEYS_VAR,
   STORE_RESERVED_BINDING_PREFIX,
+  STORE_RESERVED_MODULES,
   STORE_SCRIPT_VAR,
 } from './store-entry.generated.js';
 
 export {
   STORE_CLASS_PLACEHOLDER,
   STORE_ENTRY_MODULE,
+  STORE_ENTRY_PYTHON_MODULE,
   STORE_ENTRY_PYTHON_SOURCE,
+  STORE_ENTRY_PYTHON_VERIFIER_SOURCE,
   STORE_ENTRY_SOURCE,
   STORE_KIND_PLACEHOLDER,
   STORE_OBJECT_BINDING,
   STORE_OBJECT_CLASS,
+  STORE_RESERVED_MODULES,
+  STORE_VERIFIER_MODULE,
 } from './store-entry.generated.js';
 
 export interface StoreEntryOptions {
@@ -70,7 +75,7 @@ const plainText = (name: string, text: string) => ({ type: 'plain_text', name, t
  *
  * Refused, before anything is built: a class name that is not an identifier or is the entry's
  * own object class; a bundle entry that is not a plain module name; a bundle that ships a
- * module under the entry's name, declares the entry's class, or declares a binding in the
+ * module under one of the platform entries' names (`STORE_RESERVED_MODULES`), declares the entry's class, or declares a binding in the
  * entry's reserved `SUBSTRAT_STORE*` space (D-63); keys `scopeStorePublicKeysFrom` refuses,
  * one key for both audiences included; an empty script name; a compatibility flag that
  * would undo one of the upload's own (`allow_importable_env`, `enable_ctx_exports`).
@@ -88,11 +93,12 @@ export function withStoreEntry<
   if (options.className === STORE_OBJECT_CLASS) {
     throw new Error(`store kind class '${options.className}' is the entry's own object class`);
   }
-  if (!MODULE_NAME.test(bundle.entry) || bundle.entry === STORE_ENTRY_MODULE) {
+  if (!MODULE_NAME.test(bundle.entry) || STORE_RESERVED_MODULES.includes(bundle.entry)) {
     throw new Error(`store kind entry '${bundle.entry}' is not a module name the store entry can import`);
   }
-  if (bundle.modules.some((module) => module.name === STORE_ENTRY_MODULE)) {
-    throw new Error(`a store kind release may not ship a module named '${STORE_ENTRY_MODULE}'`);
+  const reservedModule = bundle.modules.find((module) => STORE_RESERVED_MODULES.includes(module.name));
+  if (reservedModule) {
+    throw new Error(`a store kind release may not ship a module named '${reservedModule.name}'`);
   }
   if ((bundle.doClasses ?? []).includes(STORE_OBJECT_CLASS)) {
     throw new Error(`a store kind release may not declare the class '${STORE_OBJECT_CLASS}'`);
