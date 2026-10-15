@@ -3707,8 +3707,16 @@ export class SqliteScopeHost implements ScopeHost {
         }
         // #1525: null, for the reason the denial two lines up records null — this task
         // is the attachment RPC's own and no invoke set an id on the runtime.
-        await this.dispatch(rt, null);
-        await this.dispatchExecutors(rt, null);
+        // The write has COMMITTED, so a failed drain must not reach the caller as a refusal:
+        // `upload` deletes the bytes on a refusal, which would leave this row without them
+        // (and a redeemed link spent) (#2311). An undelivered event has no delivery row, so
+        // the next drain in this scope delivers it.
+        try {
+          await this.dispatch(rt, null);
+          await this.dispatchExecutors(rt, null);
+        } catch (err) {
+          console.error('substrat: consumer drain failed after an attachment committed', err);
+        }
         return result;
       });
 
@@ -3780,9 +3788,9 @@ export class SqliteScopeHost implements ScopeHost {
           createdBy: creator.id,
           createdAt: new Date().toISOString(),
         });
-        // Bytes first, row second: a crash between the two leaves an orphaned object
-        // (harmless, GC-able via list), never a row without bytes. A refused check
-        // compensates the object away below.
+        // Bytes first, row second: a crash between the two leaves an orphaned object that no
+        // row points at (#2314). A refused check compensates the object away below; a drain
+        // fault after the commit is not a refusal (`serialized` keeps it from becoming one).
         await store.put(key, input.body, { contentType: input.contentType });
         try {
           return await guarded('attachments.upload', async (ctx) => {

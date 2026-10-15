@@ -2500,6 +2500,25 @@ const unfencedMessage = (scopeId: ScopeId): string =>
   `switch call's OFF landing after this ON, so no switch is turned on there. Switching off still works. ` +
   `Redeploy the vertical, then retry.`;
 
+/**
+ * The attachment write's compensation, after its bytes are in the store (#2311). The object
+ * is deleted only when the ScopeDO ANSWERED a refusal: `replyOf` turns every DO-side throw
+ * into a `failure` value, and the DO does not let a post-commit drain fault become one, so an
+ * answered failure means the row did not commit. A rejected call is a transport failure with
+ * the commit unknown. A delete there could leave a committed row without its bytes, so the
+ * bytes are kept and the error rethrown. If nothing committed, the object is an orphan that
+ * no row points at, which the sweep of #2314 is for.
+ */
+async function compensatingRefusal<T>(
+  store: TenantBlobStore,
+  key: string,
+  call: () => Promise<DoReply<T>>,
+): Promise<DoReply<T>> {
+  const reply = await call();
+  if (reply.failure) await store.delete(key).catch(() => {});
+  return reply;
+}
+
 /** A tenant-held module's OFF answered without `deniesTenantGrants` (#1823). */
 const undeniedMessage = (scopeId: ScopeId, moduleId: string): string =>
   `the deployment serving scope ${scopeId} predates the kill switch's tenant-grant denial (#1823): ` +
@@ -4360,6 +4379,7 @@ export class CloudflareScopeHost implements ScopeHost {
     });
     // Bytes first, row second, exactly as an upload: a refusal (size, type, a lost key, a link
     // someone else spent first) compensates the object away, and the link is unspent with it.
+    // A lost reply keeps the bytes (`compensatingRefusal`); retrying the link is #2315.
     await store.put(key, input.body, { contentType: input.contentType });
     return unwrapReply(await compensatingRefusal(store, key, () =>
       stub.attachmentRedeemUploadLinkReply(record, secret, tenantId, scopeId),
@@ -4547,8 +4567,8 @@ export class CloudflareScopeHost implements ScopeHost {
           createdBy,
           createdAt: new Date().toISOString(),
         });
-        // Bytes first, row second — a crash between the two leaves an orphaned object
-        // (harmless, GC-able), never a row without bytes; a refused gate compensates.
+        // Bytes first, row second — a crash between the two leaves an orphaned object (#2314);
+        // a refused gate compensates, and only an answered refusal does (`compensatingRefusal`).
         await store.put(key, input.body, { contentType: input.contentType });
         return unwrapReply(await compensatingRefusal(store, key, () =>
           stub.attachmentAddReply(record, asPrincipalId, tenantId, scopeId, connectionId),
