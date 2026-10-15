@@ -5,6 +5,7 @@ import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
 import type { ScopeCopyBackfillResult, SubjectErasureFence } from './scope-copy-ledger.js';
 import type { VerticalScopeStore } from './vertical-scope-stores.js';
+import type { StoreKindHoldMode, StoreKindReleaseRecord, StoreKindRolloutAction, StoreKindRolloutRecord, StoreKindRolloutState, StoreKindState } from './store-kind-releases.js';
 import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
   OnBehalfOf,
@@ -1907,16 +1908,6 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
  * store, so the contract is async everywhere. (`registerModule`/`defineOperation`
  * stay sync — they are code-time bookkeeping, not control-plane state.)
  */
-/** One published release of a store kind (#2297). The bytes are in R2, keyed by kind and release. */
-export interface StoreKindReleaseRecord {
-  kind: string;
-  releaseId: string;
-  sha256: string;
-  publishedBy: string;
-  publishedAt: string;
-  status: 'current' | 'previous' | 'failed';
-}
-
 export interface HostAdmin {
   /**
    * This same admin, with every row written through it also naming `onBehalfOf` (#977, #2069),
@@ -3067,22 +3058,46 @@ export interface HostAdmin {
     filter?: { tenantId?: TenantId; vertical?: string },
   ): Promise<BlobStoreRecord[]>;
   /**
-   * One store kind's published releases (#2297). `current` is the release a push uploads.
-   * Publishing a new current demotes the previous one.
+   * Record that a store kind's release bytes are stored, keyed by their sha256 (D-63, #2300).
+   * Insert-only: the same sha256 again answers the row as it stands, and from another source
+   * commit is refused (`conflict`). Audited `store-kinds.upload` when it writes.
    */
-  listStoreKindReleases(actor: PlatformActorId, kind: string): Promise<StoreKindReleaseRecord[]>;
-  putStoreKindRelease(
+  recordStoreKindRelease(
     actor: PlatformActorId,
-    input: {
-      kind: string;
-      releaseId: string;
-      sha256: string;
-      status: 'current' | 'previous' | 'failed';
-      action: 'store-kinds.publish' | 'store-kinds.rollback';
-    },
+    input: { kind: string; sha256: string; sourceCommit: string },
   ): Promise<StoreKindReleaseRecord>;
-  /** Every vertical's serving manifest, so a publish can find who declares a kind. */
-  servingManifests(actor: PlatformActorId): Promise<{ slug: string; manifestJson: string }[]>;
+  /** One stored release, or undefined. */
+  getStoreKindRelease(actor: PlatformActorId, kind: string, sha256: string): Promise<StoreKindReleaseRecord | undefined>;
+  /** A kind's current good release and every rollout of it, oldest first. */
+  storeKindState(actor: PlatformActorId, kind: string): Promise<StoreKindState>;
+  /**
+   * Every vertical any version of which declared a store of `kind`, with those bindings: the
+   * scripts a rollout reaches. Refuses (`unavailable`) while any version's manifest is unreadable.
+   */
+  storeKindDeclarations(actor: PlatformActorId, kind: string): Promise<{ vertical: string; stores: VerticalScopeStore[] }[]>;
+  /**
+   * Take or renew a lease on a kind (#2300): `exclusive` for a rollout or rollback, `shared` for
+   * a push or serve rebuilding a script. False when a live hold of another holder excludes it.
+   */
+  holdStoreKind(
+    actor: PlatformActorId,
+    input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number },
+  ): Promise<boolean>;
+  releaseStoreKindHold(actor: PlatformActorId, input: { kind: string; holder: string }): Promise<void>;
+  /**
+   * Begin a rollout (or a rollback) of a stored release, as the kind's exclusive holder; refused
+   * (`conflict`) otherwise. A rollback must name the current release's previous good one. Audited
+   * under `store-kinds.rollout` / `store-kinds.rollback`.
+   */
+  beginStoreKindRollout(
+    actor: PlatformActorId,
+    input: { kind: string; sha256: string; action: StoreKindRolloutAction; holder: string },
+  ): Promise<StoreKindRolloutRecord>;
+  /** End a rollout as its exclusive holder; a `good` end makes its release current. Audited as its begin. */
+  finishStoreKindRollout(
+    actor: PlatformActorId,
+    input: { kind: string; seq: number; holder: string; state: Exclude<StoreKindRolloutState, 'rolling'>; detail: string | null },
+  ): Promise<StoreKindRolloutRecord>;
   /**
    * One scope's directory record. Cross-checks the (tenantId, scopeId) pair and
    * returns undefined on a mismatch rather than another tenant's scope (K-3) —

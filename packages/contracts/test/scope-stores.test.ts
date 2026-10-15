@@ -143,7 +143,7 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     expect(() =>
       storeKindRegistration.parse({
         kind: 'graph',
-        releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40) }],
+        releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
         className: 'Store',
         operations: ['read'],
         platformOperations: reserved,
@@ -154,7 +154,7 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
   it('holds a kind id to [a-z0-9]+ (L20), at the registration and in every registered kind', () => {
     const registration = (kind: string) => ({
       kind,
-      releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40) }],
+      releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
       className: 'Store',
       operations: ['read'],
       platformOperations: [...RESERVED_STORE_OPERATIONS],
@@ -175,7 +175,7 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     expect(() =>
       storeKindRegistration.parse({
         kind: 'graph',
-        releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40) }],
+        releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
         className: 'Store',
         operations: ['substrat.wipe'],
         platformOperations: [...RESERVED_STORE_OPERATIONS],
@@ -192,10 +192,10 @@ describe('a store kind release is pinned by sha256 and source commit (D-63)', ()
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],
   });
-  const pin = { sha256: 'c'.repeat(64), sourceCommit: 'd'.repeat(40) };
+  const pin = { sha256: 'c'.repeat(64), sourceCommit: 'd'.repeat(40), schema: 0 };
 
   it('admits a list of pins, and refuses an empty list, a repeated pin, and a malformed one', () => {
-    expect(storeKindRegistration.safeParse(registration([pin, { ...pin, sha256: 'e'.repeat(64) }])).success).toBe(true);
+    expect(storeKindRegistration.safeParse(registration([pin, { ...pin, sha256: 'e'.repeat(64), schema: 3 }])).success).toBe(true);
     for (const releases of [
       [],
       [pin, { ...pin }],
@@ -203,6 +203,11 @@ describe('a store kind release is pinned by sha256 and source commit (D-63)', ()
       [{ ...pin, sha256: 'c'.repeat(63) }],
       [{ ...pin, sourceCommit: 'd'.repeat(39) }],
       [{ sha256: pin.sha256 }],
+      // The schema a release migrates to is part of its pin (#2300): required, an integer, not negative.
+      [{ sha256: pin.sha256, sourceCommit: pin.sourceCommit }],
+      [{ ...pin, schema: 1.5 }],
+      [{ ...pin, schema: -1 }],
+      [{ ...pin, schema: '1' }],
       [{ ...pin, release: '1.0.0' }],
       '1.0.0',
     ]) {
@@ -292,7 +297,7 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
   it('holds a kind registration\'s catalog to the same rule', () => {
     const registration = (operations: string[]) => ({
       kind: 'graph',
-      releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40) }],
+      releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
       className: 'GraphStore',
       operations,
       platformOperations: [...RESERVED_STORE_OPERATIONS],
@@ -307,7 +312,7 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
 describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
   const graph: StoreKindRegistration = {
     kind: 'graph',
-    releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40) }],
+    releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],

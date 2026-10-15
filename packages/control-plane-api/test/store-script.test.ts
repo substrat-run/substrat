@@ -35,8 +35,8 @@ let caller: string;
 let platform: string;
 beforeAll(async () => {
   pins = [
-    { sha256: await storeKindReleaseDigest(v1), sourceCommit: v1.sourceCommit },
-    { sha256: await storeKindReleaseDigest(v2), sourceCommit: v2.sourceCommit },
+    { sha256: await storeKindReleaseDigest(v1), sourceCommit: v1.sourceCommit, schema: 0 },
+    { sha256: await storeKindReleaseDigest(v2), sourceCommit: v2.sourceCommit, schema: 0 },
   ];
   caller = (await generateScopeStoreKeyPair()).publicKey;
   platform = (await generateScopeStoreKeyPair()).publicKey;
@@ -251,7 +251,7 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
   it('refuses (422) a release whose modules break the module rule', async () => {
     const cf = cloudflare();
     const bad = { ...v1, modules: [...v1.modules, { name: 'workers.py', content: bytes('') }] };
-    const releases = [{ sha256: await storeKindReleaseDigest(bad), sourceCommit: v1.sourceCommit }];
+    const releases = [{ sha256: await storeKindReleaseDigest(bad), sourceCommit: v1.sourceCommit, schema: 0 }];
     await expect(ensurer({ rolledOut: bad, releases })(need)).rejects.toMatchObject({ status: 422, message: /workers\.py/ });
     expect(cf.puts).toEqual([]);
   });

@@ -624,9 +624,26 @@ export {
   VERTICAL_SCOPE_STORES_DDL,
   forgetVerticalScopeStores,
   indexVersionScopeStores,
+  kindDeclarationsOf,
   verticalScopeStoresOf,
   type VerticalScopeStore,
 } from './vertical-scope-stores.js';
+export {
+  STORE_KIND_RELEASES_DDL,
+  beginStoreKindRolloutIn,
+  finishStoreKindRolloutIn,
+  holdStoreKindIn,
+  recordStoreKindReleaseIn,
+  releaseStoreKindHoldIn,
+  storeKindReleaseIn,
+  storeKindStateIn,
+  type StoreKindHoldMode,
+  type StoreKindReleaseRecord,
+  type StoreKindRolloutAction,
+  type StoreKindRolloutRecord,
+  type StoreKindRolloutState,
+  type StoreKindState,
+} from './store-kind-releases.js';
 export type { SplitManifest } from './version-migrations.js';
 export {
   admitPeer,

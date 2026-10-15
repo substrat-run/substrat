@@ -65,7 +65,7 @@ describe('a vertical upload carries no scope-store binding, and its store script
   beforeAll(async () => {
     testKind = {
       kind: 'graph',
-      releases: [{ sha256: await storeKindReleaseDigest(release), sourceCommit: release.sourceCommit }],
+      releases: [{ sha256: await storeKindReleaseDigest(release), sourceCommit: release.sourceCommit, schema: 0 }],
       className: 'Store',
       operations: ['read'],
       platformOperations: [...RESERVED_STORE_OPERATIONS],

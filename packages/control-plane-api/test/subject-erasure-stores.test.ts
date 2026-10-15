@@ -45,7 +45,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
   const auth = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
   const graph: StoreKindRegistration = {
     kind: 'graph',
-    releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40) }],
+    releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],

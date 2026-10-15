@@ -14,7 +14,7 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
   const staff = platformActorId.parse(ulid());
   const graph: StoreKindRegistration = {
     kind: 'graph',
-    releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40) }],
+    releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],
