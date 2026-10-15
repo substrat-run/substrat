@@ -4,12 +4,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
-import { platformActorId, STORE_KINDS, tenantId, type StoreKindRegistration } from '@substrat-run/contracts';
+import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
+import {
+  platformActorId,
+  RESERVED_STORE_OPERATIONS,
+  scopeStoreScriptName,
+  STORE_KINDS,
+  storeKindReleaseDigest,
+  tenantId,
+  type StoreKindRegistration,
+} from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
   createWfpUploader,
   createScopeStoreEnsurer,
   deploymentRefFor,
+  STORE_RELEASE_VAR,
   DEV_ACTOR_HEADER,
   stableDeploymentRefFor,
   UNSAFE_devPlatformActorAuth,
@@ -23,59 +33,97 @@ import {
  * ones in the multipart metadata Cloudflare would be sent. A binding added beside either call
  * fails here, not only one added inside `verticalUploadBindings`.
  */
-describe('a vertical upload carries no scope-store binding, with a kind registered (#2210)', () => {
+describe('a vertical upload carries no scope-store binding, and its store script goes first (#2210)', () => {
   let dir: string;
   let host: SqliteScopeHost;
   let app: ReturnType<typeof createControlPlaneApi>;
+  let bare: ReturnType<typeof createControlPlaneApi>;
   const staff = platformActorId.parse(ulid());
   const auth = { [DEV_ACTOR_HEADER]: staff };
-  const puts: { url: string; meta: Record<string, any> }[] = [];
+
+  /** Cloudflare, as far as these uploads reach it: scripts PUT and their settings read back. */
+  const scripts = new Map<string, { name: string; text?: string }[]>();
+  const puts: { url: string; script: string; meta: Record<string, any> }[] = [];
+  let failStorePut = false;
+
+  const release = {
+    entry: 'kind_counter/store.py',
+    sourceCommit: 'f'.repeat(40),
+    modules: [{ name: 'kind_counter/store.py', content: new TextEncoder().encode('class Store:\n    pass\n') }],
+  };
+  let rolledOut: typeof release | undefined = release;
 
   /**
-   * The push check reads {@link STORE_KINDS}. `graph` is registered. The refusal test
-   * empties that array for one call and puts the entry back, so a later file still sees it.
+   * The registry is a constant until a reviewed kind lands, and the push check in contracts reads
+   * that same array. A test kind is added to it for this file only, and removed after, rather than
+   * giving the control plane an option that could register a kind outside review. Its pin is the
+   * digest of the release above.
    */
+  let testKind: StoreKindRegistration;
   const registry = STORE_KINDS as StoreKindRegistration[];
 
-  beforeAll(() => {
+  beforeAll(async () => {
+    testKind = {
+      kind: 'graph',
+      releases: [{ sha256: await storeKindReleaseDigest(release), sourceCommit: release.sourceCommit, schema: 0 }],
+      className: 'Store',
+      operations: ['read'],
+      platformOperations: [...RESERVED_STORE_OPERATIONS],
+    };
+    const caller = await generateScopeStoreKeyPair();
+    const platform = await generateScopeStoreKeyPair();
     dir = mkdtempSync(join(tmpdir(), 'cp-upload-scope-store-'));
     host = new SqliteScopeHost({ dir });
-    app = createControlPlaneApi({
+    const common = {
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       deployVertical: createWfpUploader({ accountId: 'acct', namespace: 'ns', apiToken: 'tok' }),
+      fetchVerticalModules: async () => [
+        { name: 'worker.js', content: new TextEncoder().encode('export default {}'), contentType: 'application/javascript+module' },
+      ],
+    };
+    app = createControlPlaneApi({
+      ...common,
       ensureScopeStores: createScopeStoreEnsurer({
         accountId: 'acct',
         namespace: 'ns',
         apiToken: 'tok',
-        callerPublicKey: 'caller-pub',
-        platformPublicKey: 'platform-pub',
-        loadRelease: async () => ({
-          release: '1.0.0',
-          entry: 'kind_counter.py',
-          modules: [{ name: 'kind_counter.py', content: new TextEncoder().encode('class Store:\n    pass\n') }],
-        }),
+        callerPublicKeys: [caller.publicKey],
+        platformPublicKeys: [platform.publicKey],
+        loadRelease: async ({ sha256 }) => (sha256 === undefined || sha256 === testKind.releases[0]!.sha256 ? rolledOut : undefined),
       }),
-      fetchVerticalModules: async () => [
-        { name: 'worker.js', content: new TextEncoder().encode('export default {}'), contentType: 'application/javascript+module' },
-      ],
     });
+    // A control plane with no store uploader configured.
+    bare = createControlPlaneApi(common);
   });
   afterAll(async () => {
+    registry.length = 0;
     await host.close();
     rmSync(dir, { recursive: true, force: true });
   });
   afterEach(() => {
     registry.length = 0;
+    scripts.clear();
+    failStorePut = false;
+    rolledOut = release;
     vi.unstubAllGlobals();
   });
 
+  const scriptOf = (url: string) => decodeURIComponent(url.split('/scripts/')[1]!.split('/')[0]!);
   function stubCloudflare() {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string, init?: { method?: string; body?: FormData }) => {
+        const script = url.includes('/scripts/') ? scriptOf(url) : '';
+        if (url.endsWith('/settings') && (init?.method ?? 'GET') === 'GET') {
+          const bindings = scripts.get(script);
+          return bindings ? Response.json({ result: { bindings } }) : new Response('{}', { status: 404 });
+        }
         if (init?.method === 'PUT' && init.body instanceof FormData) {
-          puts.push({ url, meta: JSON.parse(await (init.body.get('metadata') as File).text()) });
+          const meta = JSON.parse(await (init.body.get('metadata') as File).text());
+          puts.push({ url, script, meta });
+          if (failStorePut && script.startsWith('substrat-store-')) return new Response('{}', { status: 500 });
+          scripts.set(script, meta.bindings ?? []);
         }
         return new Response('{}', { status: 200 });
       }),
@@ -86,7 +134,7 @@ describe('a vertical upload carries no scope-store binding, with a kind register
     { type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' },
     { type: 'kv_namespace', name: 'CACHE', id: 'kv-1' },
   ];
-  const push = (tenant: string) => {
+  const push = (tenant: string, to = app) => {
     const fd = new FormData();
     fd.set(
       'manifest',
@@ -103,16 +151,28 @@ describe('a vertical upload carries no scope-store binding, with a kind register
     );
     fd.set('tenant', tenant);
     fd.set('worker.js', new Blob(['export default {}'], { type: 'application/javascript+module' }), 'worker.js');
-    return app.request('/verticals/crm/deploy', { method: 'POST', headers: auth, body: fd });
+    return to.request('/verticals/crm/deploy', { method: 'POST', headers: auth, body: fd });
   };
-  const putTo = (script: string) => [...puts].reverse().find((p) => p.url.endsWith(`/scripts/${encodeURIComponent(script)}`));
+  const putTo = (script: string) => [...puts].reverse().find((p) => p.script === script);
   const names = (meta: Record<string, any> | undefined): string[] =>
     ((meta?.['bindings'] ?? []) as { name: string }[]).map((b) => b.name);
+  const tenantIds = new Map<string, string>();
+  const tenant = async (slug: string) => {
+    const id = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id, slug, name: slug });
+    tenantIds.set(slug, id);
+    return slug;
+  };
+  const failuresOf = async (vertical: string) => {
+    // The recorder is fire-and-forget: let its write settle before reading.
+    await new Promise((r) => setTimeout(r, 20));
+    return host.admin.listOpsFailures(staff, { vertical });
+  };
 
   it('the per-version push and the serving upload send the vertical’s bindings and no store binding', async () => {
     stubCloudflare();
-    await host.admin.createTenant(staff, { id: tenantId.parse(ulid()), slug: 'store-upload', name: 'store-upload' });
-    const res = await push('store-upload');
+    registry.push(testKind);
+    const res = await push(await tenant('store-upload'));
     expect(res.status, await res.clone().text()).toBe(201);
     const { id, verticalSlug } = (await res.json()) as { id: string; verticalSlug: string };
 
@@ -131,18 +191,143 @@ describe('a vertical upload carries no scope-store binding, with a kind register
     }
   });
 
-  it('with the kind taken out of the registry, the same push is refused before anything is uploaded', async () => {
+  it('uploads the store script before the vertical, once, at the release rolled out', async () => {
+    stubCloudflare();
+    registry.push(testKind);
+    const before = puts.length;
+    const res = await push(await tenant('store-order'));
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { id, verticalSlug } = (await res.json()) as { id: string; verticalSlug: string };
+    const store = scopeStoreScriptName(verticalSlug, 'graph');
+    expect(puts.slice(before).map((p) => p.script)).toEqual([store, deploymentRefFor(verticalSlug, id)]);
+    expect(putTo(store)!.meta.bindings).toEqual(
+      expect.arrayContaining([{ type: 'plain_text', name: STORE_RELEASE_VAR, text: testKind.releases[0]!.sha256 }]),
+    );
+
+    // A serve puts the store script in place first too: with it gone, the promote re-creates it
+    // before the serving upload. (A script already built from the same inputs is left alone;
+    // store-script.test.ts holds that.)
+    scripts.delete(store);
+    const served = puts.length;
+    const promoted = await app.request(`/verticals/${encodeURIComponent(verticalSlug)}/channels/prod/promote`, {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({ versionId: id }),
+    });
+    expect(promoted.status, await promoted.clone().text()).toBe(200);
+    expect(puts.slice(served).map((p) => p.script)).toEqual([store, stableDeploymentRefFor(verticalSlug)]);
+  });
+
+  it('a failed store upload stops the push before the vertical is uploaded, and is recorded', async () => {
+    stubCloudflare();
+    registry.push(testKind);
+    failStorePut = true;
+    const before = puts.length;
+    const res = await push(await tenant('store-fails'));
+    expect(res.status).toBe(502);
+    const sent = puts.slice(before).map((p) => p.script);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatch(/^substrat-store-graph-/);
+    expect(await failuresOf('store-fails/crm')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: 'deploy.store-upload',
+          stage: 'store-upload',
+          status: 502,
+          tenantId: tenantIds.get('store-fails'),
+        }),
+      ]),
+    );
+  });
+
+  it('a failed store upload stops a promote before the serving upload, and is recorded for the owner', async () => {
+    stubCloudflare();
+    registry.push(testKind);
+    const res = await push(await tenant('store-serve-fails'));
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { id, verticalSlug } = (await res.json()) as { id: string; verticalSlug: string };
+    // The script is gone and its upload now fails: the promote must not serve without it.
+    scripts.delete(scopeStoreScriptName(verticalSlug, 'graph'));
+    failStorePut = true;
+    const before = puts.length;
+    const promoted = await app.request(`/verticals/${encodeURIComponent(verticalSlug)}/channels/prod/promote`, {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({ versionId: id }),
+    });
+    expect(promoted.ok, await promoted.clone().text()).toBe(false);
+    const sent = puts.slice(before).map((p) => p.script);
+    expect(sent).toEqual([scopeStoreScriptName(verticalSlug, 'graph')]);
+    expect(sent).not.toContain(stableDeploymentRefFor(verticalSlug));
+    expect(await failuresOf(verticalSlug)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: 'serve.store-upload',
+          stage: 'store-upload',
+          status: 502,
+          tenantId: tenantIds.get('store-serve-fails'),
+        }),
+      ]),
+    );
+  });
+
+  it('a kind with no release rolled out is refused (409) before any upload, and is recorded', async () => {
+    stubCloudflare();
+    registry.push(testKind);
+    rolledOut = undefined;
+    const before = puts.length;
+    const res = await push(await tenant('store-unreleased'));
+    expect(res.status).toBe(409);
+    expect(await res.text()).toMatch(/no release rolled out/);
+    expect(puts.length).toBe(before);
+    expect(await failuresOf('store-unreleased/crm')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ stage: 'store-upload', status: 409 })]),
+    );
+  });
+
+  it('a push waits out a rollout of its kind (409), naming no other vertical, and holds nothing after (#2300)', async () => {
+    stubCloudflare();
+    registry.push(testKind);
+    const rollout = ulid();
+    expect(await host.admin.holdStoreKind(staff, { kind: 'graph', holder: rollout, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
+    const before = puts.length;
+    const res = await push(await tenant('store-held'));
+    expect(res.status).toBe(409);
+    const body = await res.text();
+    expect(body).toMatch(/kind 'graph' is being rolled out; try again/);
+    // The vertical asking is the only one a push answer names.
+    expect(body).not.toMatch(/store-order|store-fails|store-upload\/|acme/);
+    expect(puts.length).toBe(before);
+    expect(await failuresOf('store-held/crm')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ stage: 'store-upload', status: 409 })]),
+    );
+    await host.admin.releaseStoreKindHold(staff, { kind: 'graph', holder: rollout });
+    const retried = await push('store-held');
+    expect(retried.status, await retried.clone().text()).toBe(201);
+    // The push let its shared hold go: a rollout can hold the kind now.
+    expect(await host.admin.holdStoreKind(staff, { kind: 'graph', holder: rollout, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
+    await host.admin.releaseStoreKindHold(staff, { kind: 'graph', holder: rollout });
+  });
+
+  it('a control plane with no store uploader refuses the push (501) and uploads nothing', async () => {
+    stubCloudflare();
+    registry.push(testKind);
+    const before = puts.length;
+    const res = await push(await tenant('store-bare'), bare);
+    expect(res.status).toBe(501);
+    expect(await res.text()).toMatch(/uploads no store script/);
+    expect(puts.length).toBe(before);
+    expect(await failuresOf('store-bare/crm')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ stage: 'store-upload', status: 501 })]),
+    );
+  });
+
+  it('with no kind registered, the same push is refused before anything is uploaded', async () => {
     stubCloudflare();
     const before = puts.length;
-    const saved = registry.splice(0, registry.length);
-    try {
-      await host.admin.createTenant(staff, { id: tenantId.parse(ulid()), slug: 'store-refused', name: 'store-refused' });
-      const res = await push('store-refused');
-      expect(res.status).toBe(403);
-      expect(await res.text()).toMatch(/not registered/);
-      expect(puts.length).toBe(before);
-    } finally {
-      registry.push(...saved);
-    }
+    const res = await push(await tenant('store-refused'));
+    expect(res.status).toBe(403);
+    expect(await res.text()).toMatch(/not registered/);
+    expect(puts.length).toBe(before);
   });
 });

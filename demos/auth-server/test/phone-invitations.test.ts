@@ -160,6 +160,45 @@ describe('password plus SMS', () => {
     expect(result.status).toBe(200);
     expect(await result.json()).toMatchObject({ redirect: true, url: expect.stringContaining('code=') });
   });
+  it('refuses an expired sign-in at the send, before any SMS is requested', async () => {
+    const cookie = await passwordSession();
+    const query = new URL((await authorize(cookie)).headers.get('location')!, ORIGIN).search.slice(1);
+    const start = Date.now();
+    // Keep the password session fresh (FRESH_MS is ten minutes), so the query's age is the
+    // only thing left to judge.
+    const at = (minutes: number) => {
+      vi.setSystemTime(start + minutes * 60_000);
+      db.prepare('UPDATE session SET created_at = ? WHERE user_id = ?').run(Date.now(), userRow().id);
+    };
+    vi.useFakeTimers({ toFake: ['Date'], now: start });
+    try {
+      // Inside the 30-minute `codeExpiresIn` window the query was stamped with: sent.
+      at(29);
+      expect((await post('/phone/send', { phoneNumber: PHONE, oauth_query: query }, cookie)).status).toBe(200);
+      expect(send).toHaveBeenCalledOnce();
+      send.mockClear();
+      // Past it: refused, and Twilio is never asked.
+      at(31);
+      const refused = await post('/phone/send', { phoneNumber: PHONE, oauth_query: query }, cookie);
+      expect(refused.status).toBe(400);
+      // The exact message the phone screen turns into "Start again" (`isExpiredSignIn`).
+      expect(await refused.json()).toMatchObject({ error: 'invalid_signature' });
+      expect(send).not.toHaveBeenCalled();
+      // Without `oauth_query` the same session at the same moment sends as before.
+      expect((await post('/phone/send', { phoneNumber: PHONE }, cookie)).status).toBe(200);
+      expect(send).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+  it('sends with a live signed query, and refuses one that was tampered with', async () => {
+    const cookie = await passwordSession();
+    const query = new URL((await authorize(cookie)).headers.get('location')!, ORIGIN).search.slice(1);
+    const tampered = query.replace(/state=state/, 'state=other');
+    expect(tampered).not.toBe(query);
+    expect((await post('/phone/send', { phoneNumber: PHONE, oauth_query: tampered }, cookie)).status).toBe(400);
+    expect(send).not.toHaveBeenCalled();
+    expect((await post('/phone/send', { phoneNumber: PHONE, oauth_query: query }, cookie)).status).toBe(200);
+    expect(send).toHaveBeenCalledWith(PHONE);
+  });
   it('keeps the registered factor after resetting the password', async () => {
     const cookie = await passwordSession();
     await post('/phone/send', { phoneNumber: PHONE }, cookie);

@@ -237,10 +237,12 @@ export const adminAction = z.enum([
   'manageScopeMember',
   // #1720 — a tenant admin chooses or clears the instance one calling app reaches.
   'setPeerBinding',
-  // #2297 — a store kind's bytes, published from the kind's workspace. The row names the
-  // release and its sha256. Rollback is the same write pointed at the previous release.
-  'store-kinds.publish',
-  'store-kinds.rollback',
+  // #2297/#2300 — a store kind's release: its bytes stored (by sha256, before or after the pin
+  // lands), rolled out across the verticals that declare the kind, or rolled back to the
+  // immediately previous good release. Each row names the kind, the sha256 and the rollout.
+  'uploadStoreKindRelease',
+  'rollOutStoreKind',
+  'rollBackStoreKind',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
 

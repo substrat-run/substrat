@@ -177,6 +177,7 @@ export function guideSidebar() {
         { text: 'The model', link: '/concepts/model' },
         { text: 'Lifecycles', link: '/concepts/lifecycle' },
         { text: 'Archive & trash', link: '/concepts/archive-and-trash' },
+        { text: 'Attachments & upload links', link: '/concepts/attachments' },
         { text: 'Modules & the manifest', link: '/concepts/modules' },
         { text: 'What a good API looks like', link: '/concepts/api-design' },
         { text: 'The MCP surface', link: '/concepts/mcp' },
@@ -196,6 +197,7 @@ export function guideSidebar() {
         engineSidebar('metering', 'Metering'),
         // One page until it is published: the five-page set documents an installable package.
         { text: 'Notifications', link: '/engines/notifications/' },
+        { text: 'Assistant', link: '/engines/assistant/' },
       ],
     },
     {

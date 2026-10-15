@@ -35,6 +35,7 @@ import { derivedMod } from './derived-module.js';
 import { stampsMod } from './stamps-module.js';
 import { erasureMod, erasureOtherMod } from './erasure-module.js';
 import { bindMod } from './bind-module.js';
+import { uploadLinkMod } from './upload-link-module.js';
 import { commentedDdlMod } from './migration-comments.js';
 import {
   assertAllowed,
@@ -3014,6 +3015,9 @@ export const contractTestModules: ModuleRegistration[] = [
   // #1184: the invite events the membership executor consumes. Inert for every other suite —
   // only `membershipExecutorContractSuite` grants its entitlement or mounts the executor.
   membershipFixtureMod,
+  // Upload links: the fixture's attachment targets. Inert for every other suite — only
+  // `uploadLinkContractSuite` grants its entitlement or invokes a `upl/*` operation.
+  uploadLinkMod,
   scheduleMod,
   // #1525: the failed-schedule fixture. A Durable Object bakes its operations in at
   // define time (this array), so registering it on a coordinator mid-test is not

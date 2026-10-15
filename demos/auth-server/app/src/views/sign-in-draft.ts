@@ -53,6 +53,25 @@ export function draftFromStored(stored: unknown): PolicyDraft {
   };
 }
 
+/**
+ * What the form shows for a draft. With no policy that is every method the issuer offers and
+ * every other setting at its default — built from nothing in `draft` but `restrict`, because
+ * saving that view stores no policy at all, so a leftover SMS box or domain rule on screen
+ * would describe a setting that is not in force.
+ */
+export function shownDraft(draft: PolicyDraft, offered: readonly PublicProvider[]): PolicyDraft {
+  if (draft.restrict) return draft;
+  return { ...draftFromStored(undefined), methods: new Set([PASSWORD_METHOD, ...offered.map((p) => p.id)]) };
+}
+
+/** Any change on the form: applied to what is shown, and from then on an explicit list. */
+export function editDraft(draft: PolicyDraft, offered: readonly PublicProvider[], patch: Partial<PolicyDraft>): PolicyDraft {
+  return { ...shownDraft(draft, offered), ...patch, restrict: true };
+}
+
+/** "Back to every method": no stored policy, and every field back at its default. */
+export const everyMethod = (): PolicyDraft => draftFromStored(undefined);
+
 /** Replace the `ANY_PROVIDER` placeholder with every provider the issuer offers. */
 export function resolveAny(draft: PolicyDraft, offered: readonly PublicProvider[]): PolicyDraft {
   if (!draft.methods.has(ANY_PROVIDER)) return draft;

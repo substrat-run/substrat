@@ -82,6 +82,26 @@ import {
   switchesTableOf,
   tenantHeldOf,
   VERSION_MIGRATIONS_DDL,
+  VERTICAL_SCOPE_STORES_DDL,
+  STORE_KIND_RELEASES_DDL,
+  beginStoreKindRolloutIn,
+  finishStoreKindRolloutIn,
+  holdStoreKindIn,
+  kindDeclarationsOf,
+  recordStoreKindReleaseIn,
+  releaseStoreKindHoldIn,
+  storeKindReleaseIn,
+  storeKindStateIn,
+  type StoreKindHoldMode,
+  type StoreKindReleaseRecord,
+  type StoreKindRolloutAction,
+  type StoreKindRolloutRecord,
+  type StoreKindRolloutState,
+  type StoreKindState,
+  forgetVerticalScopeStores,
+  indexVersionScopeStores,
+  verticalScopeStoresOf,
+  type VerticalScopeStore,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
   versionsAwaitSplit,
@@ -134,7 +154,7 @@ import {
   type ServingPointer,
 } from '@substrat-run/kernel';
 import {
-  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
   type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -903,17 +923,8 @@ const DIRECTORY_DDL = `
     created_at TEXT NOT NULL,
     PRIMARY KEY (tenant_id, vertical, binding)
   );
-  -- A published store-kind release (#2297). The bytes live in R2; this row is the
-  -- checksum, the publisher and which release is current. One current per kind.
-  CREATE TABLE IF NOT EXISTS store_kind_releases (
-    kind         TEXT NOT NULL,
-    release_id   TEXT NOT NULL,
-    sha256       TEXT NOT NULL,
-    published_by TEXT NOT NULL,
-    published_at TEXT NOT NULL,
-    status       TEXT NOT NULL,
-    PRIMARY KEY (kind, release_id)
-  );
+  -- A store kind's stored releases, rollouts and holds (D-63, #2300).
+  ${STORE_KIND_RELEASES_DDL}
   CREATE TABLE IF NOT EXISTS verticals (
     slug         TEXT PRIMARY KEY,
     name         TEXT NOT NULL,
@@ -976,6 +987,7 @@ const DIRECTORY_DDL = `
     UNIQUE (vertical_slug, version)
   );
   ${VERSION_MIGRATIONS_DDL}
+  ${VERTICAL_SCOPE_STORES_DDL}
   CREATE TABLE IF NOT EXISTS vertical_channels (
     vertical_slug TEXT NOT NULL,
     channel       TEXT NOT NULL,
@@ -1454,6 +1466,16 @@ export const REPLIED_METHODS = [
   'linkIdentity',
   // #1748: refuses an expiry outside its bounds with validation_failed.
   'createFindingRule',
+  // #2286: refuses a re-kinded scope-store binding with conflict, and an unreadable manifest with unavailable.
+  'insertVersion',
+  'verticalScopeStores',
+  // #2300: a store kind's release, rollout and hold writes refuse with conflict, not_found,
+  // validation_failed or unavailable.
+  'recordStoreKindRelease',
+  'storeKindDeclarations',
+  'holdStoreKind',
+  'beginStoreKindRollout',
+  'finishStoreKindRollout',
 ] as const;
 export type RepliedMethod = (typeof REPLIED_METHODS)[number];
 
@@ -2290,71 +2312,57 @@ export class ControlPlaneDO extends DurableObject {
     }[];
   }
 
-  listStoreKindReleases(kind: string): {
-    kind: string;
-    release_id: string;
-    sha256: string;
-    published_by: string;
-    published_at: string;
-    status: string;
-  }[] {
-    return this.sql
-      .exec(
-        `SELECT kind, release_id, sha256, published_by, published_at, status
-         FROM store_kind_releases WHERE kind = ? ORDER BY published_at`,
-        kind,
-      )
-      .toArray() as unknown as {
-      kind: string;
-      release_id: string;
-      sha256: string;
-      published_by: string;
-      published_at: string;
-      status: string;
-    }[];
+  // -- store-kind releases, rollouts and holds (D-63, #2300) ---------------------
+  // Kernel code over the directory (store-kind-releases.ts), shared with the SQLite host. Each
+  // call is one transaction, and the object runs one at a time, so a hold is taken atomically.
+
+  recordStoreKindRelease(input: { kind: string; sha256: string; sourceCommit: string; actor: string; at: string }): {
+    record: StoreKindReleaseRecord;
+    created: boolean;
+  } {
+    return this.ctx.storage.transactionSync(() => recordStoreKindReleaseIn(this.kernelSql, input));
   }
 
-  putStoreKindRelease(row: {
-    kind: string;
-    releaseId: string;
-    sha256: string;
-    publishedBy: string;
-    publishedAt: string;
-    status: string;
-  }): void {
-    if (row.status === 'current') {
-      this.sql.exec(
-        `UPDATE store_kind_releases SET status = 'previous' WHERE kind = ? AND status = 'current' AND release_id != ?`,
-        row.kind,
-        row.releaseId,
-      );
-    }
-    this.sql.exec(
-      `INSERT INTO store_kind_releases (kind, release_id, sha256, published_by, published_at, status)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(kind, release_id) DO UPDATE SET
-         sha256 = excluded.sha256,
-         published_by = excluded.published_by,
-         published_at = excluded.published_at,
-         status = excluded.status`,
-      row.kind,
-      row.releaseId,
-      row.sha256,
-      row.publishedBy,
-      row.publishedAt,
-      row.status,
-    );
+  getStoreKindRelease(kind: string, sha256: string): StoreKindReleaseRecord | undefined {
+    return storeKindReleaseIn(this.kernelSql, kind, sha256);
   }
 
-  servingManifests(): { slug: string; manifest_json: string }[] {
-    return this.sql
-      .exec(
-        `SELECT v.slug AS slug, m.manifest_json AS manifest_json
-         FROM verticals v
-         JOIN vertical_versions m ON m.id = v.serving_version_id
-         WHERE v.serving_version_id IS NOT NULL AND m.manifest_json IS NOT NULL`,
-      )
-      .toArray() as unknown as { slug: string; manifest_json: string }[];
+  storeKindState(kind: string): StoreKindState {
+    return this.ctx.storage.transactionSync(() => storeKindStateIn(this.kernelSql, kind, Date.now()));
+  }
+
+  storeKindDeclarations(kind: string): { verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] } {
+    return this.ctx.storage.transactionSync(() => kindDeclarationsOf(this.kernelSql, kind));
+  }
+
+  holdStoreKind(input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): boolean {
+    return this.ctx.storage.transactionSync(() => holdStoreKindIn(this.kernelSql, { ...input, nowMs: Date.now() }));
+  }
+
+  releaseStoreKindHold(input: { kind: string; holder: string }): void {
+    releaseStoreKindHoldIn(this.kernelSql, input);
+  }
+
+  beginStoreKindRollout(input: {
+    kind: string;
+    sha256: string;
+    action: StoreKindRolloutAction;
+    holder: string;
+    actor: string;
+    at: string;
+  }): StoreKindRolloutRecord {
+    return this.ctx.storage.transactionSync(() => beginStoreKindRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() }));
+  }
+
+  finishStoreKindRollout(input: {
+    kind: string;
+    seq: number;
+    holder: string;
+    state: Exclude<StoreKindRolloutState, 'rolling'>;
+    detail: string | null;
+    at: string;
+  }): StoreKindRolloutRecord {
+    return this.ctx.storage.transactionSync(() => finishStoreKindRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() }));
   }
 
   // -- scope lifecycle (control-plane.md §4.1/§4.2) ---------------------------
@@ -3133,8 +3141,20 @@ export class ControlPlaneDO extends DurableObject {
     }
   }
 
-  deleteHostname(hostname: string): void {
-    this.sql.exec('DELETE FROM hostnames WHERE hostname = ?', hostname);
+  /**
+   * Delete a binding and answer the row it removed, or null. With `owner`, only while the row
+   * still names that tenant and scope (#2285): the delete decides it, not an earlier read.
+   */
+  deleteHostname(
+    hostname: string,
+    owner?: { tenantId: string; scopeId: string },
+  ): { tenant_id: string; scope_id: string; status: string } | null {
+    const rows = this.sql.exec(
+      `DELETE FROM hostnames WHERE hostname = ?${owner ? ' AND tenant_id = ? AND scope_id = ?' : ''}
+       RETURNING tenant_id, scope_id, status`,
+      hostname, ...(owner ? [owner.tenantId, owner.scopeId] : []),
+    ).toArray() as { tenant_id: string; scope_id: string; status: string }[];
+    return rows[0] ?? null;
   }
 
   listHostnames(
@@ -3235,6 +3255,7 @@ export class ControlPlaneDO extends DurableObject {
         WHERE version_id IN (SELECT id FROM vertical_versions WHERE vertical_slug = ?)`,
       slug,
     );
+    forgetVerticalScopeStores(this.kernelSql, slug);
     this.sql.exec('DELETE FROM vertical_versions WHERE vertical_slug = ?', slug);
     this.sql.exec('DELETE FROM verticals WHERE slug = ?', slug);
   }
@@ -3279,7 +3300,14 @@ export class ControlPlaneDO extends DurableObject {
         v.originJson, v.migrations?.length ?? null, v.createdAt,
       );
       writeVersionMigrations(this.kernelSql, v.id, v.migrations);
+      // #2286: the version's scope-store bindings, refusing one re-kinded, in the insert's transaction.
+      indexVersionScopeStores(this.kernelSql, v.verticalSlug, v.id, v.manifestJson);
     });
+  }
+
+  /** Every scope-store binding any version of the vertical declared (#2286); indexes versions not indexed yet. */
+  verticalScopeStores(slug: string): VerticalScopeStore[] {
+    return this.ctx.storage.transactionSync(() => verticalScopeStoresOf(this.kernelSql, slug));
   }
 
   /** One version's SQL migrations (#1764), or `undefined` for no such version. */
@@ -3386,28 +3414,9 @@ export class ControlPlaneDO extends DurableObject {
     return row.erasure_epoch;
   }
 
-  claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null,
-    expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number,
-    expectedServingVersionId: string | null = null): boolean {
-    // #2285: a promote can move the pointer's version while the scope's own serving_ref stays.
-    // A null expected version means the erasure did not resolve through the pointer.
-    return this.sql.exec(
-      `UPDATE scopes SET erasure_epoch = COALESCE(erasure_epoch, 0) + 1
-       WHERE tenant_id = ? AND scope_id = ? AND vertical_version_id IS ?
-         AND serving_ref IS ? AND COALESCE(erasure_epoch, 0) = ?
-         AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS copy
-           WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id
-             AND copy.state = 'pending')
-         AND (SELECT COUNT(*) FROM scope_script_copies AS copy
-           WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id) = ?
-         AND (? IS NULL OR EXISTS (
-           SELECT 1 FROM verticals
-           WHERE verticals.slug = scopes.vertical
-             AND verticals.serving_ref IS scopes.serving_ref
-             AND verticals.serving_version_id IS ?))`,
-      tenantId, scopeId, expectedVersionId, expectedServingRef, expectedEpoch, expectedCopyCount,
-      expectedServingVersionId, expectedServingVersionId,
-    ).rowsWritten > 0;
+  /** The erasure claim (`SUBJECT_ERASURE_CLAIM_SQL`): false when the scope moved since the fence was read. */
+  claimSubjectErasure(tenantId: string, scopeId: string, fence: SubjectErasureFence): boolean {
+    return this.sql.exec(SUBJECT_ERASURE_CLAIM_SQL, ...subjectErasureClaimParams(tenantId, scopeId, fence)).rowsWritten > 0;
   }
 
   recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string,

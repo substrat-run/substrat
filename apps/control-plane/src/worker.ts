@@ -36,6 +36,9 @@ import {
   SEND_EMAIL_KIND,
   connectorDispatchKind,
   STORE_KINDS,
+  scopeStorePublicKeysFrom,
+  type ReservedStoreOperation,
+  type ScopeStoreNeed,
   type StoreKindRegistration,
 } from '@substrat-run/contracts';
 import type { ManifestImports, PlatformActorId, Scope, Tenant, TenantId, ScopeId } from '@substrat-run/contracts';
@@ -80,9 +83,13 @@ import {
   sweepScopeScriptCopies,
   reapScopeScriptCopies,
   assertNoUnreachableScopeCopies,
+  claimScopeScriptReap,
+  drainScopeScriptCopies,
   createWfpUploader,
   createScopeStoreEnsurer,
-  ed25519PublicKey,
+  createStoreCanaryEnsurer,
+  callPlatformScopeStoreAt,
+  type ScopeStoreEnsurerOptions,
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
   createCfObservabilityReader,
@@ -141,6 +148,7 @@ import {
   unrouteScope,
   unreachablePlatformScopeStores,
   type PlatformScopeStores,
+  type PreviewAuthDeps,
 } from '@substrat-run/control-plane-api';
 import {
   ControlPlaneError,
@@ -257,6 +265,11 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * proceeding without one; a reap that does not ask still works.
    */
   SCOPE_BACKUPS?: R2Bucket;
+  /**
+   * A store kind's release bytes (#2300), content-addressed by kind and sha256. Bound in
+   * wrangler.jsonc. Absent ⇒ the release routes answer 501 and a push finds no release to upload.
+   */
+  STORE_RELEASES?: R2Bucket;
   /**
    * The platform's DIRECTORY-backup bucket (#40) — where the daily copy of the control
    * plane's own database lands. Bound in wrangler.jsonc. Absent (the workerd test, a
@@ -536,13 +549,12 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   STORE_PLATFORM_KEY?: string;
   /**
-   * Raw Ed25519 public key, base64url, for audience `caller`. The control plane
-   * cannot derive it: that private key stays on the router. A store script verifies
-   * with it and cannot mint an envelope.
+   * The public halves a store script verifies with (#2287): raw Ed25519 keys, base64url,
+   * comma-separated, one list per audience, read through `scopeStorePublicKeysFrom`. Not secret. The
+   * store upload writes them into each store script; a list so a key can rotate.
    */
-  STORE_CALLER_PUBLIC_KEY?: string;
-  /** Published store-kind bytes (#2297). The directory row is the checksum. */
-  STORE_RELEASES?: R2Bucket;
+  STORE_CALLER_PUBLIC_KEYS?: string;
+  STORE_PLATFORM_PUBLIC_KEYS?: string;
   /**
    * Seals connection credentials at rest (#101/#574) — base64(url) of 32 bytes
    * (`openssl rand -base64 32`), same convention as the dashboard's box. The
@@ -605,62 +617,67 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
 }
 
 /**
- * Uploads a declared scope store's script before the vertical (#2210). A push loads
- * the kind's current release from `STORE_RELEASES` (#2297). No current release fails
- * closed, rather than serving a vertical whose store script was never uploaded.
+ * Puts a declared scope store's script in place before the vertical (#2210), or moves it to the
+ * release a rollout names (#2300). The loader is the API's, over the stored release bytes.
  */
-function ensureScopeStoresFor(
-  env: Env,
-  admin: {
-    listStoreKindReleases(
-      actor: typeof SERVICE_ACTOR,
-      kind: string,
-    ): Promise<{ status: string; releaseId: string }[]>;
-  },
-) {
+function ensureScopeStoresFor(env: Env) {
+  const options = storeEnsurerOptionsOf(env);
+  if (!options) return undefined;
+  return async (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to?: string; loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }) =>
+    createScopeStoreEnsurer({ ...(await options()), loadRelease: input.loadRelease })(input);
+}
+
+/** What every store script upload is built with, the key lists read when an upload runs. */
+function storeEnsurerOptionsOf(env: Env) {
   const accountId = env.CF_ACCOUNT_ID;
   const apiToken = env.CF_API_TOKEN;
   if (!apiToken || !accountId) return undefined;
-  return async (input: {
-    vertical: string;
-    stores: readonly { binding: string; kind: string }[];
-    release?: { release: string; entry: string; modules: readonly { name: string; content: Uint8Array }[] };
-  }) => {
-    const callerPublicKey = env.STORE_CALLER_PUBLIC_KEY;
-    const platformKey = env.STORE_PLATFORM_KEY;
-    if (!callerPublicKey || !platformKey) {
-      throw new ControlPlaneError(503, 'a scope store is declared and the store public keys are not configured');
+  return async () => {
+    let keys;
+    try {
+      keys = scopeStorePublicKeysFrom({
+        caller: env.STORE_CALLER_PUBLIC_KEYS ?? '',
+        platform: env.STORE_PLATFORM_PUBLIC_KEYS ?? '',
+      });
+    } catch (e) {
+      throw new ControlPlaneError(503, `a scope store is declared and the store public keys are not usable: ${(e as Error).message}`);
     }
-    const ensure = createScopeStoreEnsurer({
-      accountId,
-      namespace: dispatchNamespaceOf(env),
-      apiToken,
-      callerPublicKey,
-      platformPublicKey: await ed25519PublicKey(platformKey),
-      loadRelease: async (kind) => {
-        const current = (await admin.listStoreKindReleases(SERVICE_ACTOR, kind)).find((r) => r.status === 'current');
-        if (!current || !env.STORE_RELEASES) return undefined;
-        const object = await env.STORE_RELEASES.get(`${kind}/${current.releaseId}`);
-        if (!object) return undefined;
-        const parsed = JSON.parse(await object.text()) as {
-          releaseId: string;
-          entry: string;
-          modules: { name: string; contentBase64: string }[];
-        };
-        return {
-          release: parsed.releaseId,
-          entry: parsed.entry,
-          modules: parsed.modules.map((m) => ({
-            name: m.name,
-            content: Uint8Array.from(atob(m.contentBase64), (ch) => ch.charCodeAt(0)),
-          })),
-        };
-      },
-    });
-    await ensure(input);
+    return { accountId, namespace: dispatchNamespaceOf(env), apiToken, callerPublicKeys: keys.caller, platformPublicKeys: keys.platform };
   };
 }
 
+/**
+ * A store kind's release flow (#2300): the bytes in `STORE_RELEASES`, the kind's canary script
+ * uploaded like a vertical's, and the canary's reserved calls signed as every platform call is.
+ * Absent until the bucket, the upload credentials and the platform key are all configured.
+ */
+function storeReleasesFor(env: Env) {
+  const bucket = env.STORE_RELEASES;
+  const options = storeEnsurerOptionsOf(env);
+  const dispatch = env.DISPATCH;
+  const platformKey = env.STORE_PLATFORM_KEY;
+  if (!bucket || !options || !dispatch || !platformKey) return undefined;
+  return {
+    bytes: {
+      get: async (key: string) => {
+        const object = await bucket.get(key);
+        return object ? new Uint8Array(await object.arrayBuffer()) : undefined;
+      },
+      put: async (key: string, bytes: Uint8Array) => {
+        await bucket.put(key, bytes);
+      },
+    },
+    ensureCanary: async (input: { kind: string; to: string; loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }) =>
+      createStoreCanaryEnsurer({ ...(await options()), loadRelease: input.loadRelease })(input),
+    callCanary: (target: { scriptName: string; objectName: string }, operation: ReservedStoreOperation, input?: unknown) =>
+      callPlatformScopeStoreAt(
+        { platformKey, fetch: (scriptName, request) => dispatch.get(scriptName).fetch(request) },
+        target,
+        operation,
+        input,
+      ),
+  };
+}
 /** The list of base domains a PLATFORM hostname is minted under (#305), read once (#973). */
 function platformBaseDomains(env: Env): string[] {
   return parsePlatformBaseDomains(env.PLATFORM_BASE_DOMAINS);
@@ -1508,7 +1525,7 @@ function platformStoresFor(env: Pick<Env, 'DISPATCH' | 'STORE_PLATFORM_KEY'>): P
     : unreachablePlatformScopeStores();
 }
 
-type StoreReadAdmin = Pick<HostAdmin, 'verticalServing' | 'versionManifest' | 'listVersions'>;
+type StoreReadAdmin = Pick<HostAdmin, 'verticalServing' | 'versionManifest' | 'verticalScopeStores'>;
 
 /**
  * `substrat.wipe` on each store the scope's running version declares, before its own bytes go
@@ -1521,10 +1538,66 @@ export async function wipeDeclaredScopeStores(
   scope: Scope,
   kinds: readonly StoreKindRegistration[] = STORE_KINDS,
 ): Promise<void> {
-  if (!scope.vertical) return;
-  const stores = await scopeStoresOf(admin, SWEEP_ACTOR, scope, kinds);
-  if (stores.length === 0) return;
-  await platformStoresFor(env).wipeStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical: scope.vertical, stores });
+  await (await declaredScopeStoresWipe(platformStoresFor(env), admin, scope, kinds))();
+}
+
+/** `wipeDeclaredScopeStores` in two halves: the stores resolved now (which may refuse), the wipe when called. */
+async function declaredScopeStoresWipe(
+  caller: PlatformScopeStores,
+  admin: StoreReadAdmin,
+  scope: Scope,
+  kinds: readonly StoreKindRegistration[],
+): Promise<() => Promise<void>> {
+  const vertical = scope.vertical;
+  const stores = vertical ? await scopeStoresOf(admin, SWEEP_ACTOR, scope, kinds) : [];
+  return async () => {
+    if (vertical && stores.length > 0) {
+      await caller.wipeStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical, stores });
+    }
+  };
+}
+
+/**
+ * The sweep's reap of an expired snapshot fork (preview-and-snapshots.md §3/§9): the ORCHESTRATED
+ * delete. Every refusal that can be decided up front comes first (#2285): the reap claim, or no
+ * copy the platform cannot reach, and stores that can be named. A refusal throws, the pass records
+ * it, and the fork stays routed and whole for the next pass. Then the unroute, the fork's own
+ * sign-in clients (#1704, while something still names them), the stores' wipe, the delete through
+ * every script that holds it, and the in-process delete for the directory row and audit.
+ */
+export async function reapExpiredSnapshot(
+  deps: {
+    host: Pick<ScopeHost, 'admin' | 'deleteSnapshot'>;
+    stores: PlatformScopeStores;
+    issuerClient: PreviewAuthDeps['issuerClient'];
+    resolveRef?: (deploymentRef: string) => Promise<VerticalClient | undefined>;
+    resolveVersion?: (slug: string, versionId: string, actor: PlatformActorId) => Promise<VerticalClient | undefined>;
+    kinds?: readonly StoreKindRegistration[];
+  },
+  tenantId: TenantId,
+  scopeId: ScopeId,
+): Promise<void> {
+  const { host, resolveRef, resolveVersion } = deps;
+  const actor = SWEEP_ACTOR;
+  const rec = await host.admin.getScopeRecord(actor, tenantId, scopeId);
+  if (resolveRef) await claimScopeScriptReap({ admin: host.admin, actor }, tenantId, scopeId);
+  else await assertNoUnreachableScopeCopies(host.admin, actor, tenantId, scopeId);
+  const wipeStores = rec ? await declaredScopeStoresWipe(deps.stores, host.admin, rec, deps.kinds ?? STORE_KINDS) : undefined;
+  // An expired fork can still be routed: stop routing before the wipe (#2285, L6).
+  if (rec) await unrouteScope(host.admin, actor, rec);
+  // Its own sign-in clients go once nothing routes to it, and before the row (#1704).
+  await retireClientsOfReapedScope({ admin: host.admin, actor, issuerClient: deps.issuerClient }, rec);
+  if (wipeStores) await wipeStores();
+  if (resolveRef) {
+    // #1722: a script that predates the delete verb strands its bytes; the reap records it
+    // as an ops failure and goes on, so an expired fork is never pinned forever.
+    const { storageStranded } = await drainScopeScriptCopies({ admin: host.admin, actor, resolveRef }, tenantId, scopeId);
+    if (storageStranded) console.warn(`snapshot reap: storage of ${scopeId} stranded in a script without delete-scope (recorded)`);
+  } else if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
+    const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, actor);
+    if (vertical) await vertical.deleteScope({ tenantId, scopeId });
+  }
+  await host.deleteSnapshot(actor, tenantId, scopeId);
 }
 
 /** Each declared store's size, for the storage gauge (#2207). Refuses as the wipe does. */
@@ -1926,19 +1999,34 @@ function memberEmail(v: unknown): string | null {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) ? e : null;
 }
 
+/**
+ * The readers of a PERSON's staff sign-in: an OIDC session (AuthHero), gated by the D1 roster.
+ * The roster is DATA, not config (#42): one actor per human, revocable by a timestamp rather than
+ * by editing a secret (migrations/0002_staff_roster.sql). A browser presents the session as the
+ * `sb_session` cookie; the CLI presents the SAME signed session as a bearer token (obtained via
+ * the login broker, cli-auth.ts). Both reduce to the same roster gate — the CLI is a staff human,
+ * not a shared actor.
+ */
+function humanStaffReaders(env: Env): PlatformActorAuth[] {
+  if (!env.AUTH_DB) return [];
+  const roster = d1StaffRoster(env.AUTH_DB);
+  return [sessionPlatformAuth(oidcStaffSessionReader(env), roster), sessionPlatformAuth(oidcStaffBearerReader(env), roster)];
+}
+
+/**
+ * Who a request's credential names when it is a person's staff sign-in, and null for anything
+ * else (D-63, #2300): never the service token, never the dev actor. A store kind release is
+ * published by a person.
+ */
+function humanStaffActorFor(env: Env): ((request: Request) => Promise<PlatformActorId | null>) | undefined {
+  const readers = humanStaffReaders(env);
+  if (readers.length === 0) return undefined;
+  const auth = firstPlatformActorAuth(...readers);
+  return async (request) => (await auth(request)) ?? null;
+}
+
 function authFor(env: Env): PlatformActorAuth {
-  const readers: PlatformActorAuth[] = [];
-  // Staff sign in: an OIDC session (AuthHero), gated by the D1 roster.
-  if (env.AUTH_DB) {
-    // The roster is DATA, not config (#42): one actor per human, revocable by a
-    // timestamp rather than by editing a secret. migrations/0002_staff_roster.sql.
-    const roster = d1StaffRoster(env.AUTH_DB);
-    // A browser presents the session as the `sb_session` cookie; the CLI presents the
-    // SAME signed session as a bearer token (obtained via the login broker, cli-auth.ts).
-    // Both reduce to the same roster gate — the CLI is a staff human, not a shared actor.
-    readers.push(sessionPlatformAuth(oidcStaffSessionReader(env), roster));
-    readers.push(sessionPlatformAuth(oidcStaffBearerReader(env), roster));
-  }
+  const readers: PlatformActorAuth[] = [...humanStaffReaders(env)];
   // A connected vertical registers as a service (shared token), not staff.
   if (env.SERVICE_TOKEN) readers.push(serviceTokenAuth(env.SERVICE_TOKEN, SERVICE_ACTOR));
   // Local dev / test only.
@@ -1995,34 +2083,13 @@ export default {
       // never sink the pass it is recording (the ops-failure recorder's shape).
       recordSweepRun: (e) => void host.admin.recordSweepRun(e).catch(() => undefined),
       drainRetries: false,
-      deleteSnapshotFn: async (tenantId, scopeId) => {
-        const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
-        // An expired PREVIEW's own sign-in clients go first (#1704), exactly as the
-        // interactive reap does: a failure here throws, the pass records it, and the next
-        // pass finds the preview again — after the row is gone nothing would name them.
-        await retireClientsOfReapedScope(
-          { admin: host.admin, actor: SWEEP_ACTOR, issuerClient: resolveVerticalForScopeFor(env) },
-          rec,
-        );
-        if (rec) {
-          // #2285: an expired fork can still be routed. Unbind before the wipe.
-          await unrouteScope(host.admin, SWEEP_ACTOR, rec);
-          await wipeDeclaredScopeStores(env, host.admin, rec);
-        }
-        if (resolveRef) {
-          // #1722: a script that predates the delete verb strands its bytes; the reap records it
-          // as an ops failure and goes on, so an expired fork is never pinned forever.
-          const { storageStranded } = await reapScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef }, tenantId, scopeId);
-          if (storageStranded) console.warn(`snapshot reap: storage of ${scopeId} stranded in a script without delete-scope (recorded)`);
-        } else {
-          await assertNoUnreachableScopeCopies(host.admin, SWEEP_ACTOR, tenantId, scopeId);
-          if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
-            const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
-            if (vertical) await vertical.deleteScope({ tenantId, scopeId });
-          }
-        }
-        await host.deleteSnapshot(SWEEP_ACTOR, tenantId, scopeId);
-      },
+      deleteSnapshotFn: (tenantId, scopeId) => reapExpiredSnapshot({
+        host,
+        stores: platformStoresFor(env),
+        issuerClient: resolveVerticalForScopeFor(env),
+        ...(resolveRef ? { resolveRef } : {}),
+        ...(resolveVersion ? { resolveVersion } : {}),
+      }, tenantId, scopeId),
       // §4.4 storage reap — opt-in via SCOPE_RETENTION_DAYS. Same orchestrated shape as
       // the snapshot delete: wipe the scope's DO in the vertical deployment that holds it
       // (its storage is CP-less), then the in-process reapScope for the directory
@@ -2780,20 +2847,9 @@ export default {
         resolveVerticalRef: resolveVerticalRefFor(env),
         platformScopeStores: platformStoresFor(env),
         deployVertical: deployVerticalFor(env),
-        ensureScopeStores: ensureScopeStoresFor(env, hostFor(env).admin),
-        ...(env.STORE_RELEASES
-          ? {
-              storeReleases: {
-                put: async (key: string, bytes: Uint8Array) => {
-                  await env.STORE_RELEASES!.put(key, bytes);
-                },
-                get: async (key: string) => {
-                  const object = await env.STORE_RELEASES!.get(key);
-                  return object ? new Uint8Array(await object.arrayBuffer()) : undefined;
-                },
-              },
-            }
-          : {}),
+        ensureScopeStores: ensureScopeStoresFor(env),
+        storeReleases: storeReleasesFor(env),
+        humanStaffActor: humanStaffActorFor(env),
         fetchVerticalModules: fetchVerticalModulesFor(env),
         fetchVerticalAsset: fetchVerticalAssetFor(env),
         patchScriptBindings: patchScriptBindingsFor(env),

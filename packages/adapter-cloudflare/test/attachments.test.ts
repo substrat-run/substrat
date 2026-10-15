@@ -303,6 +303,51 @@ describe('attachment surface (cloudflare host)', () => {
     expect([...bucket.objs.keys()]).toEqual([]); // compensating delete ran
   });
 
+  it('keeps a committed row and its bytes when the drain after the commit fails (#2311)', async () => {
+    const { host, t, s, editor, bucket } = await world();
+    const att = await host.attachments(editor, t, s);
+    // The ScopeDO's post-commit tail throws. Its twin: a refused write still deletes the bytes
+    // ('rolls the upload back on a refused write').
+    await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (instance) => {
+      (instance as unknown as { dispatch: () => Promise<void> }).dispatch = async () => {
+        throw new Error('drain failed after commit');
+      };
+    });
+    const rec = await att.upload({
+      entity: { entityType: 'item', entityId: 'i1' },
+      filename: 'kept.txt',
+      contentType: 'text/plain',
+      visibility: 'internal',
+      body: bytes('kept bytes'),
+    });
+    expect((await att.list({ entityType: 'item', entityId: 'i1' })).map((r) => r.id)).toEqual([rec.id]);
+    expect([...bucket.objs.keys()]).toEqual([`scope/${s}/att/${rec.id}`]);
+  });
+
+  it('keeps the bytes when the ScopeDO resets after the commit and never answers (#2311)', async () => {
+    const { host, t, s, editor, bucket } = await world();
+    const att = await host.attachments(editor, t, s);
+    // The DO is reset in its post-commit tail: the RPC rejects with no reply, which is all the
+    // host sees of a lost answer. The row did commit, so a delete here would strand it.
+    await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (instance, state) => {
+      (instance as unknown as { dispatch: () => Promise<void> }).dispatch = async () => {
+        state.abort('reset after commit');
+      };
+    });
+    await expect(
+      att.upload({
+        entity: { entityType: 'item', entityId: 'i1' },
+        filename: 'x.txt',
+        contentType: 'text/plain',
+        visibility: 'internal',
+        body: bytes('x'),
+      }),
+    ).rejects.toThrow();
+    const [row] = await (await host.attachments(editor, t, s)).list({ entityType: 'item', entityId: 'i1' });
+    expect(row).toBeDefined(); // committed before the reset
+    expect([...bucket.objs.keys()]).toEqual([`scope/${s}/att/${row!.id}`]); // and its bytes are kept
+  });
+
   it('removes: row gone, bytes gone, list empty', async () => {
     const { host, t, s, editor, bucket } = await world();
     const att = await host.attachments(editor, t, s);

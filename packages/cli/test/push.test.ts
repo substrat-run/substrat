@@ -177,7 +177,7 @@ describe('readRuntimeNeeds', () => {
     ).not.toThrow();
   });
 
-  it('reads a scope store of the registered graph kind', () => {
+  it('reads a scope store, and refuses it while the kind has no registration', () => {
     const dir = scratch({
       substrat: {
         runtimeNeeds: { entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] },
@@ -185,7 +185,7 @@ describe('readRuntimeNeeds', () => {
     });
     const needs = readRuntimeNeeds(dir);
     expect(needs?.scopeStores).toEqual([{ binding: 'GRAPH', kind: 'graph' }]);
-    expect(() => assertDeclaredScopeStores({ scopeStores: needs?.scopeStores })).not.toThrow();
+    expect(() => assertDeclaredScopeStores({ scopeStores: needs?.scopeStores })).toThrow(/not registered/);
   });
 
   it('refuses a scope-store kind the declaration does not have', () => {

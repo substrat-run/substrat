@@ -1,5 +1,8 @@
 import {
   issueScopeStoreEnvelope,
+  SCOPE_STORE_ENVELOPE_HEADER,
+  SCOPE_STORE_SIGNATURE_HEADER,
+  ScopeStoreKeyError,
   scopeStoreObjectName,
   scopeStoreScriptName,
   storeCallRequest,
@@ -56,33 +59,39 @@ export async function handleStoreCall(
     return { ok: false, status: 404, message: `store call refused: '${request.binding}' is not a store this version declares` };
   }
   if (!env.STORE_CALLER_KEY) {
+    console.warn('scope store call refused: STORE_CALLER_KEY is not set');
     return { ok: false, status: 503, message: 'this router is not configured for scope stores' };
   }
   if (!env.DISPATCH) {
     return { ok: false, status: 503, message: 'this router cannot dispatch scope stores' };
   }
   const objectName = scopeStoreObjectName(caller.tenantId, caller.vertical, request.scopeId, request.binding);
+  const scriptName = scopeStoreScriptName(caller.vertical, declared.kind);
   const body = JSON.stringify({ ...request, objectName });
   let issued;
   try {
     issued = await issueScopeStoreEnvelope({
       privateKey: env.STORE_CALLER_KEY,
       aud: 'caller',
+      script: scriptName,
       name: objectName,
       op: request.operation,
       body,
     });
-  } catch {
+  } catch (error) {
+    if (!(error instanceof ScopeStoreKeyError)) throw error;
+    // Set but unusable, e.g. a raw key where PKCS8 belongs. The message never carries the key.
+    console.warn(`scope store call refused: STORE_CALLER_KEY is set but unusable (${error.message})`);
     return { ok: false, status: 503, message: 'this router is not configured for scope stores' };
   }
-  const script = env.DISPATCH.get(scopeStoreScriptName(caller.vertical, declared.kind));
+  const script = env.DISPATCH.get(scriptName);
   const response = await script.fetch(
     new Request('https://scope-store/invoke', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-substrat-store-envelope': issued.header,
-        'x-substrat-store-signature': issued.signature,
+        [SCOPE_STORE_ENVELOPE_HEADER]: issued.header,
+        [SCOPE_STORE_SIGNATURE_HEADER]: issued.signature,
       },
       body,
     }),

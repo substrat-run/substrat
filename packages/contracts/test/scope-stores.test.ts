@@ -13,6 +13,7 @@ import {
   scopeStoreBindingName,
   storeKindId,
   storeKindRegistration,
+  storeKindReleaseDigest,
   storeOperationName,
   storeRequest,
   STORE_OPERATION_NAME_MAX,
@@ -131,10 +132,10 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     );
   });
 
-  it('accepts graph, which is registered', () => {
+  it('refuses graph while no kind is registered', () => {
     const stores = [{ binding: 'GRAPH', kind: 'graph' as const }];
-    expect(() => assertScopeStoresRegistered(stores)).not.toThrow();
-    expect(() => assertDeclaredScopeStores({ scopeStores: stores })).not.toThrow();
+    expect(() => assertScopeStoresRegistered(stores)).toThrow(/not registered/);
+    expect(() => assertDeclaredScopeStores({ scopeStores: stores })).toThrow(/not registered/);
   });
 
   it('refuses a registration that does not answer substrat.erase', () => {
@@ -142,11 +143,10 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     expect(() =>
       storeKindRegistration.parse({
         kind: 'graph',
-        runtime: 'python',
+        releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
         className: 'Store',
         operations: ['read'],
         platformOperations: reserved,
-        publishers: 'staff',
       }),
     ).toThrow(/substrat.erase/);
   });
@@ -154,11 +154,10 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
   it('holds a kind id to [a-z0-9]+ (L20), at the registration and in every registered kind', () => {
     const registration = (kind: string) => ({
       kind,
-      runtime: 'python' as const,
+      releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
       className: 'Store',
       operations: ['read'],
       platformOperations: [...RESERVED_STORE_OPERATIONS],
-      publishers: 'staff' as const,
     });
     for (const kind of ['graph-x', 'graph_x', 'Graph', 'gr aph', '']) {
       expect(storeKindId.safeParse(kind).success, kind).toBe(false);
@@ -176,13 +175,107 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     expect(() =>
       storeKindRegistration.parse({
         kind: 'graph',
-        runtime: 'python',
+        releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
         className: 'Store',
         operations: ['substrat.wipe'],
         platformOperations: [...RESERVED_STORE_OPERATIONS],
-        publishers: 'staff',
       }),
     ).toThrow(/substrat/);
+  });
+});
+
+describe('a store kind release is pinned by sha256 and source commit (D-63)', () => {
+  const registration = (releases: unknown) => ({
+    kind: 'graph',
+    releases,
+    className: 'GraphStore',
+    operations: [],
+    platformOperations: [...RESERVED_STORE_OPERATIONS],
+  });
+  const pin = { sha256: 'c'.repeat(64), sourceCommit: 'd'.repeat(40), schema: 0 };
+
+  it('admits a list of pins, and refuses an empty list, a repeated pin, and a malformed one', () => {
+    expect(storeKindRegistration.safeParse(registration([pin, { ...pin, sha256: 'e'.repeat(64), schema: 3 }])).success).toBe(true);
+    for (const releases of [
+      [],
+      [pin, { ...pin }],
+      [{ ...pin, sha256: 'C'.repeat(64) }],
+      [{ ...pin, sha256: 'c'.repeat(63) }],
+      [{ ...pin, sourceCommit: 'd'.repeat(39) }],
+      [{ sha256: pin.sha256 }],
+      // The schema a release migrates to is part of its pin (#2300): required, an integer, not negative.
+      [{ sha256: pin.sha256, sourceCommit: pin.sourceCommit }],
+      [{ ...pin, schema: 1.5 }],
+      [{ ...pin, schema: -1 }],
+      [{ ...pin, schema: '1' }],
+      [{ ...pin, release: '1.0.0' }],
+      '1.0.0',
+    ]) {
+      expect(storeKindRegistration.safeParse(registration(releases)).success, JSON.stringify(releases)).toBe(false);
+    }
+    // The registration that named a release by label is no longer one.
+    expect(storeKindRegistration.safeParse({ ...registration([pin]), releases: undefined, release: '1.0.0' }).success).toBe(false);
+  });
+
+  const text = (value: string) => new TextEncoder().encode(value);
+  const modules = [
+    { name: 'kind_graph/store.py', content: text('class GraphStore:\n    pass\n') },
+    { name: 'kind_graph/__init__.py', content: new Uint8Array() },
+  ];
+  const bundle = { entry: 'kind_graph/store.py', modules };
+
+  it('digests a release to a fixed vector, computed outside this code', async () => {
+    // printf 'substrat.store-release/v1\000' 'kind_graph/store.py\000', then the modules in name
+    // order: 'kind_graph/__init__.py\000' + 8 zero bytes, 'kind_graph/store.py\000' + 7 zero
+    // bytes + '\033' + the 27 bytes of the module, piped to `shasum -a 256`.
+    expect(await storeKindReleaseDigest(bundle)).toBe('99b9a70c48f2304ed01034abc9b70e9661231a4e89a26e2bad49074afb6f933f');
+  });
+
+  it('is the same digest in any order, and another for any other bytes, name, split or entry', async () => {
+    const digest = await storeKindReleaseDigest(bundle);
+    expect(await storeKindReleaseDigest({ ...bundle, modules: [...modules].reverse() })).toBe(digest);
+    const others = [
+      { ...bundle, modules: [modules[0]!, { ...modules[1]!, content: text(' ') }] },
+      { entry: 'kind_graph/graph.py', modules: [{ ...modules[0]!, name: 'kind_graph/graph.py' }, modules[1]!] },
+      { ...bundle, modules: [modules[0]!] },
+      // The same modules, with the entry importing another one: another release (D-63).
+      { ...bundle, entry: 'kind_graph/__init__.py' },
+      // The same bytes split differently between two names.
+      { entry: 'a', modules: [{ name: 'a', content: text('bc') }, { name: 'b', content: text('') }] },
+    ];
+    const seen = new Set([
+      digest,
+      await storeKindReleaseDigest({ entry: 'a', modules: [{ name: 'a', content: text('b') }, { name: 'b', content: text('c') }] }),
+    ]);
+    for (const release of others) {
+      const other = await storeKindReleaseDigest(release);
+      expect(seen.has(other), JSON.stringify([release.entry, release.modules.map((m) => m.name)])).toBe(false);
+      seen.add(other);
+    }
+  });
+
+  it('refuses a release that names a module twice, or whose entry is not one of its modules', async () => {
+    await expect(storeKindReleaseDigest({ ...bundle, modules: [modules[0]!, modules[0]!] })).rejects.toThrow(/twice/);
+    await expect(storeKindReleaseDigest({ ...bundle, entry: 'kind_graph/legacy.py' })).rejects.toThrow(/not one of its modules/);
+  });
+
+  it('refuses every name the framing cannot tell apart: NUL, a lone surrogate, non-ASCII, space, control, empty', async () => {
+    // The two collisions the framing had with any name admitted. A NUL let one name absorb the
+    // next module's frame: [x: '', y: 'code'] framed exactly as ['x' + 9 NUL + 'y': 'code'].
+    await expect(
+      storeKindReleaseDigest({ entry: 'x\0\0\0\0\0\0\0\0\0y', modules: [{ name: 'x\0\0\0\0\0\0\0\0\0y', content: text('code') }] }),
+    ).rejects.toThrow(/printable ASCII/);
+    // And a lone surrogate encodes to U+FFFD's bytes, so these two names were one.
+    for (const name of ['kind_a/\uD800.py', 'kind_a/�.py']) {
+      await expect(storeKindReleaseDigest({ entry: name, modules: [{ name, content: text('') }] })).rejects.toThrow(/printable ASCII/);
+    }
+    for (const name of ['kind_a/é.py', 'kind_a/a b.py', 'kind_a/a\tb.py', 'kind_a/\x7f.py', '']) {
+      await expect(storeKindReleaseDigest({ entry: name, modules: [{ name, content: text('') }] }), JSON.stringify(name)).rejects.toThrow(
+        /printable ASCII/,
+      );
+    }
+    // The entry is held to the rule as well as the modules.
+    await expect(storeKindReleaseDigest({ ...bundle, entry: 'kind_graph/store.py\0' })).rejects.toThrow(/printable ASCII/);
   });
 });
 
@@ -204,11 +297,10 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
   it('holds a kind registration\'s catalog to the same rule', () => {
     const registration = (operations: string[]) => ({
       kind: 'graph',
-      runtime: 'python' as const,
+      releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
       className: 'GraphStore',
       operations,
       platformOperations: [...RESERVED_STORE_OPERATIONS],
-      publishers: 'staff' as const,
     });
     expect(storeKindRegistration.safeParse(registration(['increment'])).success).toBe(true);
     expect(storeKindRegistration.safeParse(registration(['look:up'])).success).toBe(false);
@@ -220,11 +312,10 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
 describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
   const graph: StoreKindRegistration = {
     kind: 'graph',
-    runtime: 'python',
+    releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],
-    publishers: 'staff',
   };
   const manifest = (scopeStores?: unknown[]) =>
     JSON.stringify({
@@ -245,18 +336,11 @@ describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
     expect(scopeStoresDeclaredIn(JSON.stringify({ version: 1 }))).toBeUndefined();
   });
 
-  it('with no kind passed, nothing may hold a store, whatever the manifest says', () => {
+  it('with no kind registered nothing may hold a store, whatever the manifest says', () => {
+    expect(STORE_KINDS).toEqual([]);
     for (const json of [declaring, manifest(), null, undefined, '{not json']) {
-      expect(mayHoldScopeStores(json, [])).toBe(false);
+      expect(mayHoldScopeStores(json)).toBe(false);
     }
-  });
-
-  it('the registered graph kind may hold a store, and a known manifest with none does not', () => {
-    expect(STORE_KINDS.map((kind) => kind.kind)).toEqual(['graph']);
-    expect(mayHoldScopeStores(declaring)).toBe(true);
-    expect(mayHoldScopeStores(manifest())).toBe(false);
-    expect(mayHoldScopeStores(undefined)).toBe(true);
-    expect(mayHoldScopeStores(null)).toBe(false);
   });
 
   it('with a kind registered, unknown and unreadable count as may, and only a known "none" does not', () => {

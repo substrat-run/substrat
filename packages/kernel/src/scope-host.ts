@@ -3,7 +3,9 @@ import type { ModuleLog } from './module-log.js';
 import type { BoundOperations } from './module-operations.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
-import type { ScopeCopyBackfillResult } from './scope-copy-ledger.js';
+import type { ScopeCopyBackfillResult, SubjectErasureFence } from './scope-copy-ledger.js';
+import type { VerticalScopeStore } from './vertical-scope-stores.js';
+import type { StoreKindHoldMode, StoreKindReleaseRecord, StoreKindRolloutAction, StoreKindRolloutRecord, StoreKindRolloutState, StoreKindState } from './store-kind-releases.js';
 import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
   OnBehalfOf,
@@ -144,6 +146,7 @@ import type {
   TenantRole,
   TenantStoreHandle,
   AttachmentRecord,
+  UploadLinkView,
   BlobStoreHandle,
   Visibility,
   Vertical,
@@ -185,6 +188,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { CapabilityVerbs } from './capability.js';
+import type { AttachmentVerbs } from './upload-link.js';
 import type { AuditedOperationRef, AuditedOperationRow } from './audit-outcome.js';
 import { permissionKey, substratError, type EntityStateName } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
@@ -771,6 +775,14 @@ export interface OperationContext {
    * like `ctx.grant`.
    */
   readonly capabilities: CapabilityVerbs;
+  /**
+   * Attachment verbs an operation may use — today, minting a single-use URL through which a
+   * caller with no session uploads ONE file to an entity (`mintUploadUrl`). The bytes
+   * themselves never ride an operation: they go to the redemption route, which writes them
+   * through `ScopeHost.attachments`' own upload as the principal who minted the link.
+   * See {@link AttachmentVerbs}.
+   */
+  readonly attachments: AttachmentVerbs;
   /**
    * Run `fn` as a SUB-TRANSACTION of this operation (#770,
    * docs/architecture/sub-transactions.md) — the boundary that makes catching an
@@ -1906,16 +1918,6 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
  * store, so the contract is async everywhere. (`registerModule`/`defineOperation`
  * stay sync — they are code-time bookkeeping, not control-plane state.)
  */
-/** One published release of a store kind (#2297). The bytes are in R2, keyed by kind and release. */
-export interface StoreKindReleaseRecord {
-  kind: string;
-  releaseId: string;
-  sha256: string;
-  publishedBy: string;
-  publishedAt: string;
-  status: 'current' | 'previous' | 'failed';
-}
-
 export interface HostAdmin {
   /**
    * This same admin, with every row written through it also naming `onBehalfOf` (#977, #2069),
@@ -2380,6 +2382,9 @@ export interface HostAdmin {
    * permission diffs are the admission gates, and binding a scope is a separate step
    * (`bindScopeVersion`), so the two human checkpoints fire where the blast radius is
    * rather than where the typing was.
+   *
+   * Refuses (`conflict`) a version that declares a scope-store binding the vertical already
+   * declared as another kind (#2286): see `verticalScopeStores`.
    */
   publishVersion(actor: PlatformActorId, input: PublishVersionInput): Promise<void>;
   /** Ordered by id (ULID = publish order), `asc` unless `page.order` says otherwise. */
@@ -2659,6 +2664,16 @@ export interface HostAdmin {
    */
   versionManifest(actor: PlatformActorId, verticalSlug: string, versionId: string): Promise<string | null>;
   /**
+   * Every scope-store binding any version of the vertical has declared, with its kind (#2286,
+   * RFC scope-stores L17): what export, wipe, erasure and the meter reach, so an object under a
+   * binding a later version dropped is still reached. Read by its keys, with no per-version work
+   * once the vertical is indexed. A binding keeps its kind for the life of the vertical:
+   * `publishVersion` refuses a version that re-kinds one, or declares one twice (`conflict`).
+   * Refuses (`unavailable`) when a version's manifest cannot be read, since that version may
+   * declare a store nobody can name. Empty for an unknown vertical.
+   */
+  verticalScopeStores(actor: PlatformActorId, verticalSlug: string): Promise<VerticalScopeStore[]>;
+  /**
    * One version's SQL migrations (#1764), in the order the host runs them. They are stored
    * apart from the manifest, which `versionManifest` returns without them. Null for a version
    * that carries none that can be shown (pushed before #1677, or over the push's caps), which
@@ -2882,8 +2897,16 @@ export interface HostAdmin {
    * the append-only admin log (K-21 protects tuples, not the route table).
    * Idempotent: unbinding an unknown hostname is a silent no-op, not an error —
    * so a cleanup pass can re-run over a partial failure.
+   *
+   * `owner` (#2285): remove the binding only while it still names this tenant and scope,
+   * decided by the delete itself. A name rebound to another scope since the caller listed it
+   * is left bound to that scope, and the call is a silent no-op, as for an unknown name.
    */
-  unbindHostname(actor: PlatformActorId, hostname: string): Promise<void>;
+  unbindHostname(
+    actor: PlatformActorId,
+    hostname: string,
+    owner?: { tenantId: TenantId; scopeId: ScopeId },
+  ): Promise<void>;
   /**
    * Ordered by hostname; the cursor is a hostname.
    *
@@ -3045,22 +3068,53 @@ export interface HostAdmin {
     filter?: { tenantId?: TenantId; vertical?: string },
   ): Promise<BlobStoreRecord[]>;
   /**
-   * One store kind's published releases (#2297). `current` is the release a push uploads.
-   * Publishing a new current demotes the previous one.
+   * Record that a store kind's release bytes are stored, keyed by their sha256 (D-63, #2300).
+   * Insert-only: the same sha256 again answers the row as it stands, and from another source
+   * commit is refused (`conflict`). Audited `uploadStoreKindRelease` when it writes.
    */
-  listStoreKindReleases(actor: PlatformActorId, kind: string): Promise<StoreKindReleaseRecord[]>;
-  putStoreKindRelease(
+  recordStoreKindRelease(
     actor: PlatformActorId,
-    input: {
-      kind: string;
-      releaseId: string;
-      sha256: string;
-      status: 'current' | 'previous' | 'failed';
-      action: 'store-kinds.publish' | 'store-kinds.rollback';
-    },
+    input: { kind: string; sha256: string; sourceCommit: string },
   ): Promise<StoreKindReleaseRecord>;
-  /** Every vertical's serving manifest, so a publish can find who declares a kind. */
-  servingManifests(actor: PlatformActorId): Promise<{ slug: string; manifestJson: string }[]>;
+  /** One stored release, or undefined. */
+  getStoreKindRelease(actor: PlatformActorId, kind: string, sha256: string): Promise<StoreKindReleaseRecord | undefined>;
+  /**
+   * A kind's current good release, every rollout of it, oldest first, and where a rollback goes.
+   * A `rolling` row whose holder holds the kind no longer reads as `diverged`.
+   */
+  storeKindState(actor: PlatformActorId, kind: string): Promise<StoreKindState>;
+  /**
+   * Every vertical any version of which declared a store of `kind`, with those bindings: the
+   * scripts a rollout reaches, and in `unreadable` every vertical that cannot say (a manifest that
+   * does not parse, or versions from before the record that re-kinded a binding): the caller that
+   * must reach every script refuses while it is not empty.
+   */
+  storeKindDeclarations(actor: PlatformActorId, kind: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
+  /**
+   * Take or renew a lease on a kind (#2300): `exclusive` for a rollout or rollback, `shared` for
+   * a push or serve rebuilding a script. False when a live hold of another holder excludes it.
+   * `renew` extends only a hold the holder still holds (a lapsed one answers false, never a fresh
+   * hold), and `rolloutSeq` also needs that rollout to be `rolling` still.
+   */
+  holdStoreKind(
+    actor: PlatformActorId,
+    input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number },
+  ): Promise<boolean>;
+  releaseStoreKindHold(actor: PlatformActorId, input: { kind: string; holder: string }): Promise<void>;
+  /**
+   * Begin a rollout (or a rollback) of a stored release, as the kind's exclusive holder; refused
+   * (`conflict`) otherwise. A rollback must name `storeKindState`'s `rollbackTarget`. Audited
+   * under `rollOutStoreKind` / `rollBackStoreKind`.
+   */
+  beginStoreKindRollout(
+    actor: PlatformActorId,
+    input: { kind: string; sha256: string; action: StoreKindRolloutAction; holder: string },
+  ): Promise<StoreKindRolloutRecord>;
+  /** End a rollout as its exclusive holder; a `good` end makes its release current. Audited as its begin. */
+  finishStoreKindRollout(
+    actor: PlatformActorId,
+    input: { kind: string; seq: number; holder: string; state: Exclude<StoreKindRolloutState, 'rolling'>; detail: string | null },
+  ): Promise<StoreKindRolloutRecord>;
   /**
    * One scope's directory record. Cross-checks the (tenantId, scopeId) pair and
    * returns undefined on a mismatch rather than another tenant's scope (K-3) —
@@ -3693,12 +3747,18 @@ export interface HostAdmin {
    * A scope store is reached, by `substrat.erase`, after the scope-side redaction and
    * before the key is destroyed. A store that answers with an error throws, and the key
    * stays, so a retry converges. The receipt's `storeErasures` names each binding.
+   *
+   * `fence` (#2285): the scope state the caller read before it erased the platform's stores. Given,
+   * the shred takes the same claim `finalizeSubjectShred` takes, just before the key goes, and
+   * refuses (`precondition_failed`) with the key kept when the scope moved. Omitted, nothing is
+   * claimed: the caller reached no store outside this host.
    */
   shredSubject(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
     subjectId: string,
+    fence?: SubjectErasureFence,
   ): Promise<SubjectShredReceipt>;
   /**
    * Subjects whose key row is tombstoned (`shredded_at` set), in subject-id order.
@@ -3718,18 +3778,7 @@ export interface HostAdmin {
   finalizeSubjectShred(
     actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
     subjectId: string, redactions: readonly SubjectRedactionCounts[],
-    expected: {
-      versionId: string | null;
-      servingRef: string | null;
-      epoch: number;
-      copyCount: number;
-      /**
-       * The serving pointer's version when the erasure read a scope pinned to it (#2285).
-       * The claim requires that version to still be the one the pointer serves. Omitted,
-       * the claim does not fence the pointer — a caller that resolved no pin.
-       */
-      servingVersionId?: string | null;
-    },
+    expected: SubjectErasureFence,
     /**
      * What the serving script's stores erased (#2068). The coordinator calls
      * `substrat.erase` once — store objects are per vertical, not per script copy —
@@ -4708,6 +4757,17 @@ export interface AttachmentUploadInput {
   body: Uint8Array;
 }
 
+/**
+ * Input to `ScopeHost.redeemUploadLink`. No `visibility`: the link carries it, as it carries
+ * the author. `entity` is what the URL named, and must be the link's own.
+ */
+export interface UploadLinkRedeemInput {
+  entity: EntityRef;
+  filename: string;
+  contentType: string;
+  body: Uint8Array;
+}
+
 /** An opened attachment: the metadata fact plus the bytes it witnesses. */
 export interface OpenedAttachment {
   record: AttachmentRecord;
@@ -5333,6 +5393,33 @@ export interface ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<Pick<ScopeAttachments, 'open'>>;
+
+  /**
+   * Look an upload link up WITHOUT spending it, so the route can refuse an oversize body or a
+   * wrong type before it reads a byte. `not_found` for a secret that names nothing (and for
+   * one that cannot be ours); `conflict` with reason `upload_link_gone` for one that is used,
+   * expired or revoked. The mint is `ctx.attachments.mintUploadUrl`.
+   *
+   * Optional, like `getCapabilityAttachments`: a host that has not wired the link table says so
+   * by leaving it out, and `mountUploadLinkRedeem` refuses to mount over one.
+   */
+  inspectUploadLink?(tenantId: TenantId, scopeId: ScopeId, secret: string): Promise<UploadLinkView>;
+  /**
+   * Redeem an upload link: write the bytes as ONE attachment, AS the principal who minted the
+   * link — the target's `writePermission` is checked as them now, they are the author, and
+   * `attachment.added` is emitted exactly as for any upload. The link is spent in the same
+   * transaction as the attachment row, so a redemption that fails anywhere leaves it unspent;
+   * the size and the type are the LINK's to refuse (`validation_failed`, reasons
+   * `upload_link_too_large` / `upload_link_type_refused`) and a link used by another request
+   * first is `conflict` / `upload_link_gone`. The bytes are written to the blob store before
+   * the row, as an upload's are, and removed again if the row is refused.
+   */
+  redeemUploadLink?(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    input: UploadLinkRedeemInput,
+  ): Promise<AttachmentRecord>;
 
   /**
    * Provision a NEW scope and load a `ScopeDump` into it — the write side of

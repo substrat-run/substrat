@@ -20,6 +20,8 @@ import {
   ATTACHMENT_REMOVED,
   attachmentRecord,
   type AttachmentRecord,
+  type UploadLinkPolicy,
+  type UploadLinkView,
   type BlobStoreHandle,
   createTenantInput,
   domainEvent,
@@ -242,6 +244,10 @@ import {
   assertNoSecret,
   assertPermissionKey,
   CAPABILITY_DDL,
+  UPLOAD_LINK_DDL,
+  createAttachmentVerbs,
+  inspectUploadLink,
+  redeemUploadLinkInTransaction,
   COPY_ORIGIN_DDL,
   ENTITY_STATE_MOVES_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
@@ -491,6 +497,19 @@ import {
   staleCarryReverts,
   withRecorded,
   VERSION_MIGRATIONS_DDL,
+  VERTICAL_SCOPE_STORES_DDL,
+  forgetVerticalScopeStores,
+  indexVersionScopeStores,
+  kindDeclarationsOf,
+  verticalScopeStoresOf,
+  STORE_KIND_RELEASES_DDL,
+  beginStoreKindRolloutIn,
+  finishStoreKindRolloutIn,
+  holdStoreKindIn,
+  recordStoreKindReleaseIn,
+  releaseStoreKindHoldIn,
+  storeKindReleaseIn,
+  storeKindStateIn,
   splitManifestMigrations,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
@@ -767,9 +786,9 @@ import {
   type AuditedOperationSqlRow,
   type SettleIntentRow,
 } from '@substrat-run/kernel';
-import { INERT_SCOPE_REASON, isPrimaryScopeRow } from '@substrat-run/kernel';
+import { INERT_SCOPE_REASON, isPrimaryScopeRow, UPLOAD_LINK_WRONG_TARGET, type UploadLinkRedeemInput, type UploadTarget } from '@substrat-run/kernel';
 import {
-  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
   type ScopeCopyMoveConfirmation, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -1165,6 +1184,9 @@ const KERNEL_DDL = `
   -- an exchange trades that secret for. Spine (kernel-written), shared with the DO adapter
   -- from @substrat-run/kernel so the two cannot part company; the column comments are there.
   ${CAPABILITY_DDL}
+  -- Upload links: a short-lived, single-use URL that lets a caller with no session upload ONE
+  -- file to ONE entity. Spine (kernel-written), shared with the DO adapter from the kernel.
+  ${UPLOAD_LINK_DDL}
   -- #1686: where a copied scope's data came from, and the event id its own events start above.
   -- Shared with the other adapter from @substrat-run/kernel; the column comments are there.
   ${COPY_ORIGIN_DDL}
@@ -1931,6 +1953,8 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly erasurePlans: ModuleErasurePlan[] = [];
   /** entityType → the declared attachment gate (#473): read key + write key (default: read). */
   private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
+  /** entityType → the `uploadLinks` policy its `attachmentTargets` entry declares; absent = no links. */
+  private readonly uploadLinkPolicies = new Map<string, UploadLinkPolicy>();
   /** operation name → who binds it: the owning module, its entitlementKey and its declared
    *  schedules — the §4.3 gate's input, resolved per invoke by `requiredEntitlementFor` (#1654). */
   private readonly operationEntitlement = new Map<string, OperationEntitlement>();
@@ -2231,17 +2255,8 @@ export class SqliteScopeHost implements ScopeHost {
         created_at TEXT NOT NULL,
         PRIMARY KEY (tenant_id, vertical, binding)
       );
-      -- A published store-kind release (#2297). The bytes live in R2; this row is the
-      -- checksum, the publisher and which release is current. One current per kind.
-      CREATE TABLE IF NOT EXISTS store_kind_releases (
-        kind         TEXT NOT NULL,
-        release_id   TEXT NOT NULL,
-        sha256       TEXT NOT NULL,
-        published_by TEXT NOT NULL,
-        published_at TEXT NOT NULL,
-        status       TEXT NOT NULL,
-        PRIMARY KEY (kind, release_id)
-      );
+      -- A store kind's stored releases, rollouts and holds (D-63, #2300).
+      ${STORE_KIND_RELEASES_DDL}
       -- The vertical + version registry (#31). A scope binds to a VERSION, so
       -- dev/staging/prod are the same vertical pinned differently, and a preview
       -- deployment is a version nothing has been promoted to yet.
@@ -2312,6 +2327,7 @@ export class SqliteScopeHost implements ScopeHost {
         UNIQUE (vertical_slug, version)
       );
       ${VERSION_MIGRATIONS_DDL}
+      ${VERTICAL_SCOPE_STORES_DDL}
       -- Channels (#31 step 2): a named pointer per vertical. Promotion moves it,
       -- and promotion is where the migration and permission diffs fire — the
       -- moment a change reaches anyone, rather than the moment it was typed.
@@ -3059,6 +3075,13 @@ export class SqliteScopeHost implements ScopeHost {
         );
       }
       this.attachmentTargets.set(target.entityType, gate);
+      if (target.uploadLinks) {
+        const known = this.uploadLinkPolicies.get(target.entityType);
+        if (known && JSON.stringify(known) !== JSON.stringify(target.uploadLinks)) {
+          throw new Error(`conflicting uploadLinks policies for attachment target '${target.entityType}'`);
+        }
+        this.uploadLinkPolicies.set(target.entityType, target.uploadLinks);
+      }
     }
     // WITHDRAWAL (K-17): suppress another module's default binding. Order
     // independent — a manifest may withdraw an operation whose module has not
@@ -3562,6 +3585,56 @@ export class SqliteScopeHost implements ScopeHost {
     return this.buildAttachments(rt, asPrincipal(principal), store);
   }
 
+  /** The declared write key and link policy of an attachment target — what `ctx.attachments` mints against. */
+  private uploadTargetOf(entityType: string): UploadTarget | undefined {
+    const gate = this.attachmentTargets.get(entityType);
+    if (!gate) return undefined;
+    const uploadLinks = this.uploadLinkPolicies.get(entityType);
+    return uploadLinks ? { write: gate.write, uploadLinks } : { write: gate.write };
+  }
+
+  async inspectUploadLink(tenantId: TenantId, scopeId: ScopeId, secret: string): Promise<UploadLinkView> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    return rt.actor.enqueue(
+      async () => (await inspectUploadLink({ sql: spineSql(rt.db), now: this.clock() }, secret)).view,
+    );
+  }
+
+  async redeemUploadLink(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    input: UploadLinkRedeemInput,
+  ): Promise<AttachmentRecord> {
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const { view, mintedBy } = await rt.actor.enqueue(() =>
+      inspectUploadLink({ sql: spineSql(rt.db), now: this.clock() }, secret),
+    );
+    if (view.entity.entityType !== input.entity.entityType || view.entity.entityId !== input.entity.entityId) {
+      throw substratError('not_found', 'This upload link is not valid for that target.', {
+        reason: UPLOAD_LINK_WRONG_TARGET,
+      });
+    }
+    // The write is made AS the minter: the same gates `attachments()` puts in front of a person.
+    await this.getScope(mintedBy, tenantId, scopeId);
+    const scopeRow = this.directory
+      .prepare('SELECT vertical FROM scopes WHERE scope_id = ?')
+      .get(scopeId) as { vertical: string | null } | undefined;
+    const files = this.buildAttachments(
+      rt,
+      asPrincipal(mintedBy),
+      this.attachmentStore(tenantId, scopeRow?.vertical ?? null),
+      { uploadLinkSecret: secret },
+    );
+    return files.upload({
+      entity: view.entity,
+      filename: view.filename ?? input.filename,
+      contentType: input.contentType,
+      visibility: view.visibility,
+      body: input.body,
+    });
+  }
+
   async getSystemAttachments(
     moduleId: ModuleId,
     tenantId: TenantId,
@@ -3593,7 +3666,7 @@ export class SqliteScopeHost implements ScopeHost {
     rt: ScopeRuntime,
     authority: CheckSubject | CapabilitySessionAuthority,
     store: TenantBlobStore,
-    opts: { reentrant?: boolean; admitByEvent?: string } = {},
+    opts: { reentrant?: boolean; admitByEvent?: string; uploadLinkSecret?: string } = {},
   ): ScopeAttachments {
     // #1686: a capability session is resolved per CALL, inside the call's own actor task —
     // the invoke door's discipline, so a revoke or an expiry refuses the next read on a
@@ -3645,8 +3718,16 @@ export class SqliteScopeHost implements ScopeHost {
         }
         // #1525: null, for the reason the denial two lines up records null — this task
         // is the attachment RPC's own and no invoke set an id on the runtime.
-        await this.dispatch(rt, null);
-        await this.dispatchExecutors(rt, null);
+        // The write has COMMITTED, so a failed drain must not reach the caller as a refusal:
+        // `upload` deletes the bytes on a refusal, which would leave this row without them
+        // (and a redeemed link spent) (#2311). An undelivered event has no delivery row, so
+        // the next drain in this scope delivers it.
+        try {
+          await this.dispatch(rt, null);
+          await this.dispatchExecutors(rt, null);
+        } catch (err) {
+          console.error('substrat: consumer drain failed after an attachment committed', err);
+        }
         return result;
       });
 
@@ -3718,9 +3799,9 @@ export class SqliteScopeHost implements ScopeHost {
           createdBy: creator.id,
           createdAt: new Date().toISOString(),
         });
-        // Bytes first, row second: a crash between the two leaves an orphaned object
-        // (harmless, GC-able via list), never a row without bytes. A refused check
-        // compensates the object away below.
+        // Bytes first, row second: a crash between the two leaves an orphaned object that no
+        // row points at (#2314). A refused check compensates the object away below; a drain
+        // fault after the commit is not a refusal (`serialized` keeps it from becoming one).
         await store.put(key, input.body, { contentType: input.contentType });
         try {
           return await guarded('attachments.upload', async (ctx) => {
@@ -3754,6 +3835,15 @@ export class SqliteScopeHost implements ScopeHost {
             // #1575: queue its text extraction in the same transaction — a `pending` row
             // and a job run. Nothing is extracted here, so nothing here can fail the upload.
             enqueueAttachmentText(spineSql(rt.db), record.id, ulid(), this.clock());
+            // An upload-link redemption spends its link HERE, in the same transaction as the
+            // row it produced: a refusal anywhere above or below rolls the spend back.
+            if (opts.uploadLinkSecret !== undefined) {
+              await redeemUploadLinkInTransaction(
+                { sql: spineSql(rt.db), now: this.clock(), emit: (event) => kernelEmit(ctx, event) },
+                opts.uploadLinkSecret,
+                record,
+              );
+            }
             return record;
           });
         } catch (err) {
@@ -4306,6 +4396,14 @@ export class SqliteScopeHost implements ScopeHost {
     if (!vertical) return undefined;
     if (this.scopeStoreVertical !== undefined && vertical !== this.scopeStoreVertical) return undefined;
     return vertical;
+  }
+
+  /** The erasure claim (`SUBJECT_ERASURE_CLAIM_SQL`); a scope that moved refuses with the key kept. */
+  private claimSubjectErasure(tenantId: TenantId, scopeId: ScopeId, fence: SubjectErasureFence): void {
+    const claimed = this.directory.prepare(SUBJECT_ERASURE_CLAIM_SQL).run(...subjectErasureClaimParams(tenantId, scopeId, fence));
+    if (claimed.changes === 0) {
+      throw substratError('precondition_failed', 'scope route or copy inventory changed during subject erasure; retry after it settles');
+    }
   }
 
   /**
@@ -8788,15 +8886,17 @@ export class SqliteScopeHost implements ScopeHost {
           { status: fields.status, note: fields.note ?? null },
         );
       },
-      unbindHostname: async (actor, raw: string) => {
+      unbindHostname: async (actor, raw: string, owner) => {
         const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
+        // One statement: the row it removes is the row it audits, and an owner is judged by the
+        // delete itself, so a name rebound to another scope in between is left alone (#2285).
         const row = this.directory
-          .prepare('SELECT tenant_id, scope_id, status FROM hostnames WHERE hostname = ?')
-          .get(hostname) as
+          .prepare(`DELETE FROM hostnames WHERE hostname = ?${owner ? ' AND tenant_id = ? AND scope_id = ?' : ''}
+            RETURNING tenant_id, scope_id, status`)
+          .get(hostname, ...(owner ? [owner.tenantId, owner.scopeId] : [])) as
           | { tenant_id: string; scope_id: string; status: string }
           | undefined;
         if (!row) return; // idempotent, and a no-op is not audited
-        this.directory.prepare('DELETE FROM hostnames WHERE hostname = ?').run(hostname);
         this.recordAdmin(
           actor,
           'unbindHostname',
@@ -9080,12 +9180,20 @@ export class SqliteScopeHost implements ScopeHost {
               new Date().toISOString(),
             );
           writeVersionMigrations(switchSqlOf(this.directory), audited.id, split.migrations);
+          // #2286: the version's scope-store bindings, refusing one re-kinded, in the insert's transaction.
+          indexVersionScopeStores(switchSqlOf(this.directory), audited.verticalSlug, audited.id, split.manifestJson);
         })();
         this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
           ...audited,
           ...(origin ? { origin } : {}),
           admission: selfAdmits ? 'admitted' : 'pending',
         });
+      },
+      verticalScopeStores: async (actor, verticalSlug: string) => {
+        // One transaction: versions not indexed yet are indexed by the read (#2286).
+        const stores = this.directory.transaction(() => verticalScopeStoresOf(switchSqlOf(this.directory), verticalSlug))();
+        this.recordAccess(actor, 'verticalScopeStores', {}, { verticalSlug }, stores.length);
+        return stores;
       },
       listVersions: async (actor, verticalSlug: string, page) => {
         const where: string[] = ['vertical_slug = ?'];
@@ -9197,6 +9305,7 @@ export class SqliteScopeHost implements ScopeHost {
               WHERE version_id IN (SELECT id FROM vertical_versions WHERE vertical_slug = ?)`,
           )
           .run(slug);
+        forgetVerticalScopeStores(switchSqlOf(this.directory), slug);
         this.directory.prepare('DELETE FROM vertical_versions WHERE vertical_slug = ?').run(slug);
         this.directory.prepare('DELETE FROM verticals WHERE slug = ?').run(slug);
         this.recordAdmin(
@@ -10410,74 +10519,55 @@ export class SqliteScopeHost implements ScopeHost {
           createdAt: r.created_at,
         }));
       },
-      listStoreKindReleases: async (actor, kind) => {
-        const rows = this.directory
-          .prepare(
-            `SELECT kind, release_id, sha256, published_by, published_at, status
-             FROM store_kind_releases WHERE kind = ? ORDER BY published_at`,
-          )
-          .all(kind) as {
-          kind: string;
-          release_id: string;
-          sha256: string;
-          published_by: string;
-          published_at: string;
-          status: 'current' | 'previous' | 'failed';
-        }[];
-        this.recordAccess(actor, 'listStoreKindReleases', { tenantId: null }, { kind }, rows.length);
-        return rows.map((r) => ({
-          kind: r.kind,
-          releaseId: r.release_id,
-          sha256: r.sha256,
-          publishedBy: r.published_by,
-          publishedAt: r.published_at,
-          status: r.status,
-        }));
+      // -- store-kind releases, rollouts and holds (D-63, #2300) -------------------
+      // The state is kernel code over the directory (store-kind-releases.ts), shared with the
+      // Cloudflare control plane; each call is one transaction. A hold's expiry is judged against
+      // this host's clock, so a test can let a lease lapse without waiting.
+      recordStoreKindRelease: async (actor, input) => {
+        const at: string = this.clock();
+        const { record, created } = this.directory.transaction(() =>
+          recordStoreKindReleaseIn(switchSqlOf(this.directory), { ...input, actor, at }),
+        )();
+        if (created) this.recordAdmin(actor, 'uploadStoreKindRelease', { tenantId: null }, null, record, at);
+        return record;
       },
-      putStoreKindRelease: async (actor, input) => {
-        const at = new Date().toISOString();
-        this.directory.transaction(() => {
-          if (input.status === 'current') {
-            this.directory
-              .prepare(
-                `UPDATE store_kind_releases SET status = 'previous' WHERE kind = ? AND status = 'current' AND release_id != ?`,
-              )
-              .run(input.kind, input.releaseId);
-          }
-          this.directory
-            .prepare(
-              `INSERT INTO store_kind_releases (kind, release_id, sha256, published_by, published_at, status)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(kind, release_id) DO UPDATE SET
-                 sha256 = excluded.sha256,
-                 published_by = excluded.published_by,
-                 published_at = excluded.published_at,
-                 status = excluded.status`,
-            )
-            .run(input.kind, input.releaseId, input.sha256, actor, at, input.status);
-        })();
-        const row = {
-          kind: input.kind,
-          releaseId: input.releaseId,
-          sha256: input.sha256,
-          publishedBy: actor,
-          publishedAt: at,
-          status: input.status,
-        };
-        this.recordAdmin(actor, input.action, { tenantId: null, vertical: input.kind }, null, row);
+      getStoreKindRelease: async (actor, kind, sha256) => {
+        const record = storeKindReleaseIn(switchSqlOf(this.directory), kind, sha256);
+        this.recordAccess(actor, 'getStoreKindRelease', { tenantId: null }, { kind, sha256 }, record ? 1 : 0);
+        return record;
+      },
+      storeKindState: async (actor, kind) => {
+        const state = storeKindStateIn(switchSqlOf(this.directory), kind, Date.parse(this.clock()));
+        this.recordAccess(actor, 'storeKindState', { tenantId: null }, { kind }, state.rollouts.length);
+        return state;
+      },
+      storeKindDeclarations: async (actor, kind) => {
+        const declared = this.directory.transaction(() => kindDeclarationsOf(switchSqlOf(this.directory), kind))();
+        this.recordAccess(actor, 'storeKindDeclarations', { tenantId: null }, { kind }, declared.verticals.length);
+        return declared;
+      },
+      holdStoreKind: async (_actor, input) =>
+        this.directory.transaction(() =>
+          holdStoreKindIn(switchSqlOf(this.directory), { ...input, nowMs: Date.parse(this.clock()) }),
+        )(),
+      releaseStoreKindHold: async (_actor, input) => {
+        releaseStoreKindHoldIn(switchSqlOf(this.directory), input);
+      },
+      beginStoreKindRollout: async (actor, input) => {
+        const at: string = this.clock();
+        const row = this.directory.transaction(() =>
+          beginStoreKindRolloutIn(switchSqlOf(this.directory), { ...input, actor, at, nowMs: Date.parse(at) }),
+        )();
+        this.recordAdmin(actor, input.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row, at);
         return row;
       },
-      servingManifests: async (actor) => {
-        const rows = this.directory
-          .prepare(
-            `SELECT v.slug AS slug, m.manifest_json AS manifest_json
-             FROM verticals v
-             JOIN vertical_versions m ON m.id = v.serving_version_id
-             WHERE v.serving_version_id IS NOT NULL AND m.manifest_json IS NOT NULL`,
-          )
-          .all() as { slug: string; manifest_json: string }[];
-        this.recordAccess(actor, 'servingManifests', { tenantId: null }, null, rows.length);
-        return rows.map((r) => ({ slug: r.slug, manifestJson: r.manifest_json }));
+      finishStoreKindRollout: async (actor, input) => {
+        const at: string = this.clock();
+        const row = this.directory.transaction(() =>
+          finishStoreKindRolloutIn(switchSqlOf(this.directory), { ...input, at, nowMs: Date.parse(at) }),
+        )();
+        this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row, at);
+        return row;
       },
       getScopeRecord: async (actor, tenantId: TenantId, scopeId: ScopeId): Promise<Scope | undefined> => {
         const r = this.directory.prepare('SELECT * FROM scopes WHERE scope_id = ?').get(scopeId) as
@@ -10876,6 +10966,7 @@ export class SqliteScopeHost implements ScopeHost {
         tenantId,
         scopeId,
         subjectId,
+        fence?: SubjectErasureFence,
         stamp?: ErasureEpochStamp,
         storeErasures?: readonly { binding: string; erased: number }[],
       ): Promise<SubjectShredReceipt> => {
@@ -10885,6 +10976,9 @@ export class SqliteScopeHost implements ScopeHost {
             ?.erasure_epoch ?? 0,
           path: 'direct',
         };
+        // #2285: a direct shred with a fence claims what it read, as the finalize does; the epoch
+        // it records is the one its claim compared.
+        if (fence) before.erasureEpoch = fence.epoch;
         // Redact the live spine FIRST. Both halves are idempotent and a crash between them
         // converges on retry, so the order is decided by which half-done state harms the
         // person: dying after this leaves ciphertext in a backup that no key opens; dying
@@ -10961,6 +11055,7 @@ export class SqliteScopeHost implements ScopeHost {
         // An orchestrated caller passes the serving script's result and this host does
         // not erase again.
         const erasures = storeErasures ?? (await this.eraseScopeStores(tenantId, scopeId, subjectId));
+        if (fence) this.claimSubjectErasure(tenantId, scopeId, fence);
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
           subjectId,
@@ -10996,31 +11091,15 @@ export class SqliteScopeHost implements ScopeHost {
       },
       finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions, expected, storeErasures) => {
         if (redactions.length === 0) throw substratError('conflict', 'subject erasure has no confirmed scope redaction');
-        const servingVersionId = expected.servingVersionId ?? null;
-        const claimed = this.directory.prepare(
-          `UPDATE scopes SET erasure_epoch = COALESCE(erasure_epoch, 0) + 1
-           WHERE tenant_id = ? AND scope_id = ? AND vertical_version_id IS ?
-             AND serving_ref IS ? AND COALESCE(erasure_epoch, 0) = ?
-             AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS copy
-               WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id
-                 AND copy.state = 'pending')
-             AND (SELECT COUNT(*) FROM scope_script_copies AS copy
-               WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id) = ?
-             AND (? IS NULL OR EXISTS (
-               SELECT 1 FROM verticals
-               WHERE verticals.slug = scopes.vertical
-                 AND verticals.serving_ref IS scopes.serving_ref
-                 AND verticals.serving_version_id IS ?))`,
-        ).run(tenantId, scopeId, expected.versionId, expected.servingRef, expected.epoch, expected.copyCount,
-          servingVersionId, servingVersionId);
-        if (claimed.changes === 0) throw substratError('precondition_failed', 'scope route or copy inventory changed during subject erasure; retry after it settles');
+        this.claimSubjectErasure(tenantId, scopeId, expected);
         // The pure adapter has one co-located scope store. Its existing atomic shred is
         // the final local redaction and key destruction, after remote copies confirmed.
         const shred = this.admin.shredSubject as (
           ...args: [
-            ...Parameters<HostAdmin['shredSubject']>,
-            ErasureEpochStamp,
-            readonly { binding: string; erased: number }[] | undefined,
+            actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, subjectId: string,
+            fence: SubjectErasureFence | undefined,
+            stamp: ErasureEpochStamp,
+            storeErasures: readonly { binding: string; erased: number }[] | undefined,
           ]
         ) => Promise<SubjectShredReceipt>;
         return shred(
@@ -11028,6 +11107,7 @@ export class SqliteScopeHost implements ScopeHost {
           tenantId,
           scopeId,
           subjectId,
+          undefined,
           { erasureEpoch: expected.epoch, path: 'orchestrated' },
           storeErasures,
         );
@@ -13317,6 +13397,18 @@ export class SqliteScopeHost implements ScopeHost {
         isOperation: (name) => this.operations.has(name),
         assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
         minted,
+      }),
+      // Upload links: mint / revoke / list, written once in the kernel — the same four things
+      // `capabilities` is handed, and the same consumer-is-system-actor rule.
+      attachments: createAttachmentVerbs({
+        sql: spineSql(rt.db),
+        subject: overrideActor ? { kind: 'system', id: overrideActor.system as ModuleId } : subject,
+        now: at,
+        check: runCheck,
+        emit: (event) => writeEvent(event, 'kernel'),
+        assertWrites: (verb) => assertImpersonationWrites(impersonation, verb),
+        minted,
+        targetOf: (entityType) => this.uploadTargetOf(entityType),
       }),
       // K-16 / #1864: link and relink, written once in the kernel over the raw spine seam.
       ...createEntityEdgeVerbs({

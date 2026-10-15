@@ -34,6 +34,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from '
 import { join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { repoRoot, toPosix } from './repo-path.mjs';
+import { reservedKeyMessage, reservedKeyOffences } from './reserved-keys.mts';
 
 // Structural shapes — deliberately not imported from the kernel. The tool needs
 // four fields, and depending on the packages it inspects would be a cycle.
@@ -67,6 +68,13 @@ interface ModuleLike {
     entityStates?: { entityType: string; purgeAfterDays?: number }[];
     peers?: PeerLike[];
     events?: EventsLike;
+    /** Upload links: which attachment targets admit a single-use upload URL, and under what policy. */
+    attachmentTargets?: {
+      entityType: string;
+      readPermission: string;
+      writePermission?: string;
+      uploadLinks?: { maxBytes: number; contentTypes?: string[] };
+    }[];
   };
   /** A registration's operations — present on a ModuleRegistration, absent on a bare manifest (#1835). */
   operations?: { handlers: Record<string, unknown> };
@@ -318,6 +326,11 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
     );
   }
 
+  // A key reserved to a system principal sits on the schedules/peers side above, never in a
+  // role or a per-entity shape a person can be handed.
+  const reserved = reservedKeyOffences({ roles, grants });
+  if (reserved.length) cannot(reservedKeyMessage(rel, entry, reserved));
+
   const holders = new Map<string, string[]>();
   for (const r of roles) for (const p of r.permissions) holders.set(p, [...(holders.get(p) ?? []), r.key]);
 
@@ -484,6 +497,40 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
       `| From | Event type | Version | Handled by |`,
       `| --- | --- | --- | --- |`,
       ...imported.map((i) => `| ${code(i.from)} | ${code(i.type)} | ${i.schemaVersion} | ${code(i.module)} |`),
+      ``,
+    );
+    section += 1;
+  }
+
+  // §_. Upload links: an attachment target that declares `uploadLinks` lets an operation hand
+  // out a URL that admits ONE file with no session at all. The key is the minter's (checked
+  // again at redemption); what the bearer of the URL can add is bounded by the size and the
+  // types shown. Absent when nothing declares one, so a vertical without it is unchanged.
+  const uploadTargets = modules
+    .flatMap((m) =>
+      (m.manifest.attachmentTargets ?? [])
+        .filter((t) => t.uploadLinks !== undefined)
+        .map((t) => ({ module: m.manifest.id, ...t })),
+    )
+    .sort((a, b) => a.entityType.localeCompare(b.entityType) || a.module.localeCompare(b.module));
+  if (uploadTargets.length) {
+    out.push(
+      `## ${section}. Upload links — what a bearer URL may add`,
+      ``,
+      `An operation may mint a single-use, short-lived URL (ten minutes by default, an hour at`,
+      `most) that lets whoever holds it upload ONE file to ONE entity of these types, with no`,
+      `session. The file is written as the principal who minted the link, who must hold the key`,
+      `shown on that entity when it is minted and again when it is redeemed. The size and the`,
+      `types are the most a link can be minted for.`,
+      ``,
+      `| Entity type | Minter must hold | Max size (bytes) | Media types | Declared by |`,
+      `| --- | --- | --- | --- | --- |`,
+      ...uploadTargets.map(
+        (t) =>
+          `| ${code(t.entityType)} | ${code(t.writePermission ?? t.readPermission)} | ${t.uploadLinks!.maxBytes} | ${
+            t.uploadLinks!.contentTypes ? sorted(t.uploadLinks!.contentTypes).map(code).join(', ') : 'any'
+          } | ${code(t.module)} |`,
+      ),
       ``,
     );
     section += 1;

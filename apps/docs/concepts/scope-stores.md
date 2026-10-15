@@ -1,5 +1,5 @@
 ---
-description: "A platform-run object per scope. The vertical declares a binding and a kind and calls it through getScopeStore. The graph kind is registered; a hosted push also needs a published release."
+description: "A platform-run object per scope. The vertical declares a binding and a kind and calls it through getScopeStore. No kind is registered yet, so nothing is live for a vertical today."
 ---
 
 # Scope stores
@@ -10,19 +10,21 @@ This sits below the [per-tenant stores](./tenancy.md). A tenant store is one dat
 
 ## What you can use today
 
-The graph kind is registered. A vertical declares `{ binding, kind: 'graph' }`. A hosted push of that declaration uploads the kind's current release before the vertical. Until a release has been published, the push is refused rather than serving a vertical with no store script.
+Nothing here is live for a vertical yet. No store kind is registered, and a push that declares a scope store is refused. Everything below is what the platform does once a kind is registered and its store script is deployed.
 
 Today a vertical author can:
 
 - read the declaration and the call shape below, and write code against `getScopeStore` and `StoreStub`;
-- run a store locally, on the pure adapter, with a `ScopeStoreRunner` a kind supplies (see the end of this page);
-- push a vertical that declares `scopeStores`, once a release of the kind is published.
+- run a store locally, on the pure adapter, with a `ScopeStoreRunner` a kind supplies (see the end of this page).
 
-A release is published from the kind's own workspace with `substrat store-kind publish --kind graph --entry <file.py>`, and rolled back with `substrat store-kind rollback --kind graph`. The registration names the runtime (`python`), the class (`Store`) and the operation catalog. It does not name a release.
+A vertical author cannot yet:
+
+- push a vertical that declares `scopeStores`;
+- reach a store from a hosted deploy.
 
 ## Declaring it
 
-`runtimeNeeds.scopeStores` is a list of `{ binding, kind }`. `binding` is a screaming-snake name. `kind` has no default. The registered kind is `graph`.
+`runtimeNeeds.scopeStores` is a list of `{ binding, kind }`. `binding` is a screaming-snake name. `kind` has no default. The only kind named so far is `graph`.
 
 ```ts
 scopeStores: [{ binding: 'GRAPH', kind: 'graph' }]
@@ -30,7 +32,7 @@ scopeStores: [{ binding: 'GRAPH', kind: 'graph' }]
 
 A hosted vertical's upload carries no store binding. The vertical is given neither the store's namespace nor anything that opens it. A binding already used by another store is refused, and so is the name `ATTACHMENTS`. The vertical's own Durable Object bindings count as stores for that check. A name in the `SUBSTRAT_` namespace is the platform's and is refused. The push and the control plane apply the same checks, so a manifest that did not come through `substrat push` is refused the same way.
 
-A kind is registered before a push that names it can succeed. There is one store script per kind and vertical, and a later release replaces that script in place. The objects stay where they are. The graph kind's class is `Store`, and its releases are published to the control plane rather than pinned in this repo.
+A kind is registered before a push that names it can succeed. There is one store script per kind and vertical, and a later release replaces that script in place. The objects stay where they are. Uploading that script is [#2210](https://github.com/substrat-run/substrat/issues/2210).
 
 ## Calling it
 
@@ -41,13 +43,15 @@ const store = await host.getScopeStore(principal, tenantId, scopeId, 'GRAPH');
 const count = await store.invoke('increment', { by: 1 });
 ```
 
-On the platform path the call leaves the vertical as a fetch of `store.substrat.internal`. The egress worker hands it to the router, together with who the caller is. The vertical cannot change that part: it comes from the dispatch, not from the request. The router refuses a `substrat.*` operation, a scope other than the one the request was routed to, and a binding the running version does not declare. Then it addresses the store script. A Cloudflare host takes this path unless it was given a control plane, a runner, or `scopeStores: { transport: 'binding' }`.
+On the platform path the call leaves the vertical as a fetch of `store.substrat.internal`. The egress worker hands it to the router, together with who the caller is. The vertical cannot change that part: it comes from the dispatch, not from the request. The router refuses a `substrat.*` operation, a scope other than the one the request was routed to, and a binding the running version does not declare. Then it signs the call and addresses the store script. The signature is Ed25519, over the audience, the key, the store script, the object, the operation, the exact body and the time, and the store script holds only the public keys. A Cloudflare host takes this path unless it was given a runner or `scopeStores: { transport: 'binding' }`. A control plane does not change that. On this path the host does not hold the store objects. The control plane sizes, exports, erases and wipes them through the store script itself, alongside the host's part for the scope (an erasure reaches the stores before the key is destroyed), so the host's admin answers for no store. A local size, export or erase asked of the host directly, with no control plane in front, refuses (`unavailable`) rather than answer that there are none.
 
 `invoke` takes an operation and its input, and nothing else. Idempotency belongs to a scope operation, and a store call has none. An operation name is a fixed label: no `@`, no whitespace and no `:`, at most 64 characters. Any other name is refused before the call leaves the vertical. So is a name that starts with `substrat.`. `substrat.export`, `substrat.import`, `substrat.size`, `substrat.wipe` and `substrat.erase` are the platform's operations. The control plane calls the store script for those itself. The vertical is not on that path.
 
 The call on the wire is `{ operation, input }`. The answer is `{ result }`, or `{ error: { code, status, body } }`, where `status` is an HTTP error status from 400 to 599. An answer with any other status is not the envelope, and it arrives as `bad_envelope`. A store error arrives as `StoreError`. The platform code comes from the HTTP status. The store's own `code` travels in `storeCode`. Its `body` travels in `storeBody` only for a 4xx whose JSON is at most 1 KiB (`STORE_BODY_MAX_BYTES`). A client can read that body, so a 5xx body, a larger one, or one that is not JSON stays in the store. The vertical's own code gets the same filtered `storeBody`.
 
-A direct binding exists for local development and for tests, and only when the host is created with `transport: 'binding'`. An ambient `SUBSTRAT_STORE_*` namespace is not used otherwise. The binding is not an isolation boundary. On the platform path the store script's entry checks the envelope and the remembered name before the kind runs.
+A direct binding exists for local development and for tests, and only when the host is created with `transport: 'binding'`. An ambient `SUBSTRAT_STORE_*` namespace is not used otherwise. The binding is not an isolation boundary.
+
+On the platform path the store script's main module is the platform's store entry, not the kind. It checks every call before the kind's class is constructed: the signature, the key, the audience against the operation, the time, the store script, and that the object being asked is the one the signed name addresses. It hands the kind the exact body it checked, and its own bindings only. The entry's `SUBSTRAT_STORE*` bindings are not in the environment the kind is constructed with, not in an `env` it imports from `cloudflare:workers`, and not reachable through `ctx.exports` (the upload sets `disallow_importable_env` and `disable_ctx_exports`). The kind does keep its object's `ctx`, storage included. The entry is not a boundary against the kind itself: the kind's code runs in the same isolate, so a kind that set out to interfere with the checks could. What stands between a kind and every tenant it serves is the review of each release the platform pins.
 
 ## The invocation line
 
@@ -59,9 +63,11 @@ The line names the first 16 calls in `storeCalls` and counts the rest in `storeC
 
 ## Erasure
 
-Subject erasure calls `substrat.erase` on every store the scope's version declares, before the subject's key is destroyed. The erasure's answer lists each binding and how many rows that store said it erased. When the control plane erases a scope its own host holds, the host's audited receipt does not list those store erasures yet; only the answer does. A store that answers with an error stops the erasure before the key is touched, and the next run finishes it.
+Subject erasure calls `substrat.erase` on every store any version of the scope's vertical has declared, before the subject's key is destroyed. A binding a later version dropped still names an object that may hold the subject, so it is erased too. The erasure's answer lists each binding and how many rows that store said it erased. When the control plane erases a scope its own host holds, the host's audited receipt does not list those store erasures yet; only the answer does. A store that answers with an error stops the erasure before the key is touched, and the next run finishes it.
 
 Erasure fails closed. When the platform cannot tell which stores a scope's version declares, or cannot reach them, the erasure is refused with 503 and the key stays until a retry reaches the store.
+
+A deploy that lands while an erasure runs does not slip past it. Before the key goes, the erasure checks that the scope still runs the version it read, on the same pin, with the vertical's serving pointer where it was. A bind, a promote, a rollback or a serving re-upload in between makes the erasure answer 412, and the key stays for the retry, which reads the new version's stores. A bind that comes after that check is refused instead.
 
 Erasure reaches the live store. It does not reach a copy already in a backup. See below.
 
@@ -70,6 +76,10 @@ Erasure reaches the live store. It does not reach a copy already in a backup. Se
 A scope dump carries `stores`: one entry per binding, with the kind and the tables `substrat.export` returned. An old dump has no list, and loads as a scope that had none. On the hosted plane the control plane reads those tables from the store script. A store it cannot name or reach fails the backup, the pull or the export, instead of leaving the store out.
 
 **A store's tables in a backup are not sealed per subject.** The platform cannot see inside them, so it cannot seal a subject's data in them the way it seals the scope's own classified fields. Erasing a subject reaches the live store and never the backup file at rest. The restore replay below is what removes that subject again when the backup comes back.
+
+**A binding a later version dropped.** Export, wipe, erasure and the meter reach every binding any version of the vertical has declared, so an object under a dropped binding is still wiped, erased and measured, whatever moved the scope off the version that declared it: a bind, a promote, a rollback or a serving re-upload. A restore imports only the bindings the scope's version declares, so a dump leaves a dropped binding out when its export is empty. One that still holds data refuses the backup, the pull or the export (409), naming the binding: declare it again, with its kind, in a version the scope runs, or reap the scope without a backup, which wipes it. A reap without a backup, erasure and wipe never export, so they reach the store either way.
+
+A binding keeps its kind for the life of its vertical. A push that declares an existing binding as another kind is refused (409); give the new store a new binding name.
 
 A masked export carries no stores. The masker cannot see inside them, so they are left out rather than shipped unmasked. The full tenant export carries them.
 
@@ -85,6 +95,8 @@ The host's own `restoreScope` result carries the same facts as `storeErasuresRep
 
 Reap, deleting a snapshot, reaping a preview and deleting the scope call `substrat.wipe` on each store before the scope's own storage goes. A wipe that cannot run stops the delete, and the scope's storage is left for the retry.
 
+Deleting a snapshot, reaping a preview and the sweep's snapshot reap stop routing the scope before they wipe it. They take every refusal they can decide up front (a copy move in flight, a copy the platform cannot reach, stores it cannot name), then unbind every hostname of the scope, then wipe its stores, then delete it. A refused delete leaves the scope routed and its stores untouched. Unbinding the hostnames is the fast path, not a drain. The durable fence is a scope state that the store door itself checks, and it is a follow-up (see [Known limits](#known-limits)).
+
 ## The storage meter
 
 The storage gauge samples each scope's stores in the same pass as the scope database, at most once a day. The hosted reading asks the store script for `substrat.size`. It keeps one row per binding per day in `_substrat_scope_store_storage`. Retention drops those rows on the same horizon as the database samples.
@@ -97,14 +109,16 @@ The storage gauge samples each scope's stores in the same pass as the scope data
 
 ## Known limits
 
-These are open, and are tracked in the [scope-stores RFC](https://github.com/substrat-run/substrat/blob/main/docs/rfc/scope-stores.md) (§10.8).
+These are open, and are tracked in the [scope-stores RFC](https://github.com/substrat-run/substrat/blob/main/docs/rfc/scope-stores.md) (§10.8). The first group is to be closed before the first kind is registered. The second can follow.
 
-The entry in front of the kind checks the signed envelope and the remembered object name. A wipe unroutes the scope first, and erasure is fenced against a deploy that lands while it runs. Lifecycle reaches every binding any version of the vertical has declared.
+Before the first kind:
 
-A real upload into a dispatch namespace, and the first publish of the graph kind in a test environment, still need a Cloudflare account.
+- **No store script is uploaded yet.** The entry that checks each call exists and is tested in front of a test kind. Uploading a registered kind behind it is the next step.
+- **Unroute is not a drain.** Deleting a scope unbinds its hostnames before the wipe. That is the fast path. The durable fence, a scope state the store door itself checks, is still to come.
 
 Later:
 
+- **Retiring a binding.** A binding no version still declares stays in the vertical's record, so export, wipe, erasure and the meter keep asking its store, which answers empty once wiped, and its name cannot be declared again as another kind. The explicit retire step is still to come.
 - **Replay budget.** The restore's erasure replay runs inside one request and starts again from the first subject on a retry. It converges only while it fits one request.
 - **Audited receipt.** On the path where the control plane erases a scope its own host holds, the audited receipt lacks the platform's store erasures. The answer carries them.
 - **Versions without a kept manifest.** Replay and wipe skip a destination whose version predates kept manifests. Such a version holds no store, and a test that says so is still to come.

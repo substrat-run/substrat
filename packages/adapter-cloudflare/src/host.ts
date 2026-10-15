@@ -49,6 +49,7 @@ import {
   modelUsageEntry,
   attachmentRecord,
   type AttachmentRecord,
+  type UploadLinkView,
   type BlobStoreHandle,
   createTenantInput,
   identityLink,
@@ -279,6 +280,8 @@ import {
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
   attachmentBlobKey,
+  UPLOAD_LINK_WRONG_TARGET,
+  type UploadLinkRedeemInput,
   attachmentSha256,
   entitlementDenial,
   requiredEntitlementFor,
@@ -499,10 +502,18 @@ import {
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
-import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
+import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
+import type {
+  StoreKindHoldMode,
+  StoreKindReleaseRecord,
+  StoreKindRolloutAction,
+  StoreKindRolloutRecord,
+  StoreKindRolloutState,
+  StoreKindState,
+} from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
   isUpgradeRequest,
@@ -670,25 +681,31 @@ interface ControlPlaneStub {
       created_at: string;
     }[]
   >;
-  listStoreKindReleases(kind: string): Promise<
-    {
-      kind: string;
-      release_id: string;
-      sha256: string;
-      published_by: string;
-      published_at: string;
-      status: string;
-    }[]
-  >;
-  putStoreKindRelease(row: {
+  recordStoreKindRelease(input: { kind: string; sha256: string; sourceCommit: string; actor: string; at: string }): Promise<{
+    record: StoreKindReleaseRecord;
+    created: boolean;
+  }>;
+  getStoreKindRelease(kind: string, sha256: string): Promise<StoreKindReleaseRecord | undefined>;
+  storeKindState(kind: string): Promise<StoreKindState>;
+  storeKindDeclarations(kind: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
+  holdStoreKind(input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): Promise<boolean>;
+  releaseStoreKindHold(input: { kind: string; holder: string }): Promise<void>;
+  beginStoreKindRollout(input: {
     kind: string;
-    releaseId: string;
     sha256: string;
-    publishedBy: string;
-    publishedAt: string;
-    status: string;
-  }): Promise<void>;
-  servingManifests(): Promise<{ slug: string; manifest_json: string }[]>;
+    action: StoreKindRolloutAction;
+    holder: string;
+    actor: string;
+    at: string;
+  }): Promise<StoreKindRolloutRecord>;
+  finishStoreKindRollout(input: {
+    kind: string;
+    seq: number;
+    holder: string;
+    state: Exclude<StoreKindRolloutState, 'rolling'>;
+    detail: string | null;
+    at: string;
+  }): Promise<StoreKindRolloutRecord>;
   getBlobStore(
     tenantId: string,
     vertical: string,
@@ -802,7 +819,7 @@ interface ControlPlaneStub {
       validationRecords: string | null;
     },
   ): Promise<void>;
-  deleteHostname(hostname: string): Promise<void>;
+  deleteHostname(hostname: string, owner?: { tenantId: string; scopeId: string }): Promise<{ tenant_id: string; scope_id: string; status: string } | null>;
   listHostnames(
     filter: { tenantId?: string; scopeId?: string; status?: string; verticalSlug?: string } & ListPage,
   ): Promise<HostnameRow[]>;
@@ -826,6 +843,7 @@ interface ControlPlaneStub {
     migrations: DeclaredMigration[] | null;
     createdAt: string;
   }): Promise<void>;
+  verticalScopeStores(slug: string): Promise<VerticalScopeStore[]>;
   readVersionMigrations(
     id: string,
   ): Promise<{ verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined>;
@@ -833,7 +851,7 @@ interface ControlPlaneStub {
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation): Promise<boolean>;
   scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
-  claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null, expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number, expectedServingVersionId?: string | null): Promise<boolean>;
+  claimSubjectErasure(tenantId: string, scopeId: string, fence: SubjectErasureFence): Promise<boolean>;
   recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, role?: ScopeCopyRole | null, loadStamp?: string | null, leaseMs?: number): Promise<'recorded' | 'reaping' | 'missing' | 'invalid'>;
   backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, audit: AdminEntry): Promise<ScopeCopyBackfillResult>;
   claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): Promise<ScopeScriptCopyRow[]>;
@@ -1606,6 +1624,20 @@ interface ScopeStubRpc {
     scopeId: ScopeId,
     connectionId?: string,
   ): Promise<DoReply<AttachmentRecord>>;
+  /** An upload-link redemption's metadata half: the add above, with the link spent in the same
+   *  transaction. Its own verb so a DO that predates links refuses rather than ignores the secret. */
+  attachmentRedeemUploadLinkReply(
+    record: AttachmentRecord,
+    secret: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<DoReply<AttachmentRecord>>;
+  /** Look an upload link up without spending it. */
+  uploadLinkInspectReply(
+    secret: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<DoReply<{ view: UploadLinkView; mintedBy: PrincipalId }>>;
   attachmentListReply(
     entity: EntityRef,
     principal: PrincipalId,
@@ -2197,8 +2229,10 @@ export interface CloudflareScopeHostOptions {
    * Scope stores answered in this isolate (#2213). When a binding has a runner
    * here, `getScopeStore` uses it. A direct binding reads `SUBSTRAT_STORE_<BINDING>`
    * from the worker env, and only when `transport` is `'binding'`: an ambient
-   * namespace is not a store this host was given. With no control plane, no runner
-   * and no transport, the call takes the platform hop (#2288). `vertical`, when set,
+   * namespace is not a store this host was given. With no runner and no transport,
+   * the call takes the platform hop (#2288), whether or not a control plane is given.
+   * `runners: []` is no runner, so it takes the hop too; a test that wants the ambient
+   * namespace says `transport: 'binding'`. `vertical`, when set,
    * is the only vertical this host serves. A deployed vertical has no control plane,
    * so that field is where the slug comes from.
    */
@@ -2499,6 +2533,25 @@ const unfencedMessage = (scopeId: ScopeId): string =>
   `switch call's OFF landing after this ON, so no switch is turned on there. Switching off still works. ` +
   `Redeploy the vertical, then retry.`;
 
+/**
+ * The attachment write's compensation, after its bytes are in the store (#2311). The object
+ * is deleted only when the ScopeDO ANSWERED a refusal: `replyOf` turns every DO-side throw
+ * into a `failure` value, and the DO does not let a post-commit drain fault become one, so an
+ * answered failure means the row did not commit. A rejected call is a transport failure with
+ * the commit unknown. A delete there could leave a committed row without its bytes, so the
+ * bytes are kept and the error rethrown. If nothing committed, the object is an orphan that
+ * no row points at, which the sweep of #2314 is for.
+ */
+async function compensatingRefusal<T>(
+  store: TenantBlobStore,
+  key: string,
+  call: () => Promise<DoReply<T>>,
+): Promise<DoReply<T>> {
+  const reply = await call();
+  if (reply.failure) await store.delete(key).catch(() => {});
+  return reply;
+}
+
 /** A tenant-held module's OFF answered without `deniesTenantGrants` (#1823). */
 const undeniedMessage = (scopeId: ScopeId, moduleId: string): string =>
   `the deployment serving scope ${scopeId} predates the kill switch's tenant-grant denial (#1823): ` +
@@ -2558,17 +2611,20 @@ function isScopeStoreNamespace(value: unknown): value is ScopeStoreNamespace {
 const SCOPE_STORE_BINDING_PREFIX = `${PLATFORM_BINDING_PREFIX}STORE_`;
 
 /**
- * `platform` unless this host was given another way to reach a store (#2288).
- * A control plane keeps the direct binding, which is how the directory's own host
- * and the binding tests address an object. A runner is in-process. `transport`
- * set by the caller wins, including `'binding'`, which is the only thing that
- * reads an ambient `SUBSTRAT_STORE_*` namespace.
+ * `platform` unless this host was handed another way to reach a store (#2288): a
+ * non-empty `runners` list (in-process), or `transport: 'binding'`, which is the only
+ * thing that reads an ambient `SUBSTRAT_STORE_*` namespace. A control plane does not
+ * change the answer: whoever wants the direct namespace says so. An explicit
+ * `'platform'` beside runners is refused, since the runners would never be used.
  */
 function scopeStoreTransportOf(options: CloudflareScopeHostOptions): 'platform' | 'binding' {
-  if (options.scopeStores?.transport) return options.scopeStores.transport;
-  if ((options.scopeStores?.runners?.length ?? 0) > 0) return 'binding';
-  if (options.controlPlane) return 'binding';
-  return 'platform';
+  const runners = options.scopeStores?.runners?.length ?? 0;
+  const transport = options.scopeStores?.transport;
+  if (transport === 'platform' && runners > 0) {
+    throw substratError('validation_failed', "scopeStores: transport 'platform' takes no runners; they would never be used");
+  }
+  if (transport) return transport;
+  return runners > 0 ? 'binding' : 'platform';
 }
 
 /** Bindings this script declares by having a `SUBSTRAT_STORE_*` namespace. */
@@ -3849,6 +3905,7 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<{ binding: string; bytes: number }[]> {
+    this.refuseLocalStoresOnPlatform('size');
     return this.readScopeStoreSizes(tenantId, scopeId);
   }
 
@@ -3860,6 +3917,7 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
+    this.refuseLocalStoresOnPlatform('export');
     return this.exportScopeStores(tenantId, scopeId);
   }
 
@@ -3877,7 +3935,22 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     subjectId: string,
   ): Promise<{ binding: string; erased: number }[]> {
+    this.refuseLocalStoresOnPlatform('erase');
     return this.eraseScopeStores(tenantId, scopeId, subjectId);
+  }
+
+  /**
+   * On the platform hop this host holds no store object, so it cannot say what its stores
+   * hold: an empty answer would read as "no stores" (#2242). It refuses instead, and the
+   * control plane, which reaches the store script, is the one to ask.
+   */
+  private refuseLocalStoresOnPlatform(what: 'size' | 'export' | 'erase'): void {
+    if (this.scopeStoreTransport === 'platform') {
+      throw substratError(
+        'unavailable',
+        `this host reaches its scope stores through the platform and cannot ${what} them here; ask the control plane`,
+      );
+    }
   }
 
   /**
@@ -4301,6 +4374,51 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.buildAttachmentSurface({ principal }, tenantId, scopeId, store);
   }
 
+  async inspectUploadLink(tenantId: TenantId, scopeId: ScopeId, secret: string): Promise<UploadLinkView> {
+    await this.assertLive(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    return unwrapReply(await this.scopeStub(scopeId).uploadLinkInspectReply(secret, tenantId, scopeId)).view;
+  }
+
+  async redeemUploadLink(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    input: UploadLinkRedeemInput,
+  ): Promise<AttachmentRecord> {
+    await this.assertLive(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    const stub = this.scopeStub(scopeId);
+    const { view, mintedBy } = unwrapReply(await stub.uploadLinkInspectReply(secret, tenantId, scopeId));
+    if (view.entity.entityType !== input.entity.entityType || view.entity.entityId !== input.entity.entityId) {
+      throw substratError('not_found', 'This upload link is not valid for that target.', {
+        reason: UPLOAD_LINK_WRONG_TARGET,
+      });
+    }
+    const store = await this.resolveAttachmentStore(tenantId);
+    const id = ulid();
+    const key = attachmentBlobKey(scopeId, id);
+    const filename = view.filename ?? input.filename;
+    const record = attachmentRecord.parse({
+      id,
+      entity: view.entity,
+      filename,
+      contentType: input.contentType,
+      size: input.body.byteLength,
+      sha256: await attachmentSha256(input.body),
+      visibility: view.visibility,
+      createdBy: mintedBy,
+      createdAt: new Date().toISOString(),
+    });
+    // Bytes first, row second, exactly as an upload: a refusal (size, type, a lost key, a link
+    // someone else spent first) compensates the object away, and the link is unspent with it.
+    // A lost reply keeps the bytes (`compensatingRefusal`); retrying the link is #2315.
+    await store.put(key, input.body, { contentType: input.contentType });
+    return unwrapReply(await compensatingRefusal(store, key, () =>
+      stub.attachmentRedeemUploadLinkReply(record, secret, tenantId, scopeId),
+    ));
+  }
+
   async getSystemAttachments(
     moduleId: ModuleId,
     tenantId: TenantId,
@@ -4482,15 +4600,12 @@ export class CloudflareScopeHost implements ScopeHost {
           createdBy,
           createdAt: new Date().toISOString(),
         });
-        // Bytes first, row second — a crash between the two leaves an orphaned object
-        // (harmless, GC-able), never a row without bytes; a refused gate compensates.
+        // Bytes first, row second — a crash between the two leaves an orphaned object (#2314);
+        // a refused gate compensates, and only an answered refusal does (`compensatingRefusal`).
         await store.put(key, input.body, { contentType: input.contentType });
-        try {
-          return unwrapReply(await stub.attachmentAddReply(record, asPrincipalId, tenantId, scopeId, connectionId));
-        } catch (err) {
-          await store.delete(key).catch(() => {});
-          throw err;
-        }
+        return unwrapReply(await compensatingRefusal(store, key, () =>
+          stub.attachmentAddReply(record, asPrincipalId, tenantId, scopeId, connectionId),
+        ));
       },
       list: async (entity) =>
         unwrapReply(await stub.attachmentListReply(entity, asPrincipalId, tenantId, scopeId, connectionId)),
@@ -4879,7 +4994,8 @@ export class CloudflareScopeHost implements ScopeHost {
   /**
    * Configured runners, or the ambient namespaces when this host was told to use a
    * direct binding. The platform hop holds no object in this isolate, so an ambient
-   * namespace is not one of its stores.
+   * namespace is not one of its stores, and the admin's store paths answer for none: the
+   * control plane reaches the platform's stores itself (see `eraseScopeStores`).
    */
   private scopeStoreBindingNames(): string[] {
     if (this.scopeStoreTransport === 'platform') return [];
@@ -4940,8 +5056,13 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /**
    * `substrat.erase` on each declared binding (#2068). A store error throws so the
-   * caller can leave the subject key untouched. Fail closed: an empty answer means
-   * this host KNOWS it holds nothing for the scope, never that it could not tell.
+   * caller can leave the subject key untouched. An empty answer means this host holds no
+   * store object for the scope, never that it could not tell. On the platform hop that is
+   * true by construction (`scopeStoreBindingNames` is empty): the stores live behind the
+   * store script, and control-plane-api erases, exports, sizes and wipes them itself around
+   * its calls to this host's admin (`shredSubject`, `exportScope`, `scopeStoreSizes`, the
+   * wipe and the replay); an erasure reaches them before the host's shred destroys the key. Only the vertical-host `*Local` reads, which no control plane fronts,
+   * refuse on the hop instead (`refuseLocalStoresOnPlatform`).
    */
   private async eraseScopeStores(
     tenantId: TenantId,
@@ -7496,11 +7617,11 @@ export class CloudflareScopeHost implements ScopeHost {
           { status: fields.status, note: fields.note ?? null },
         );
       },
-      unbindHostname: async (actor, raw: string) => {
+      unbindHostname: async (actor, raw: string, owner) => {
         const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
-        const row = await this.cp.readHostname(hostname);
+        // The row the delete removed, so an owner is judged by the delete itself (#2285).
+        const row = await this.cp.deleteHostname(hostname, owner);
         if (!row) return; // idempotent, and a no-op is not audited
-        await this.cp.deleteHostname(hostname);
         await this.recordAdmin(
           actor,
           'unbindHostname',
@@ -7627,7 +7748,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // The SQL migrations are stored apart from the manifest (#1764), so no read of the
         // version but the promote review's carries them.
         const split = splitManifestMigrations(manifestJson ?? null, 'push');
-        await this.cp.insertVersion({
+        await this.directory('insertVersion', {
           ...audited,
           manifestJson: split.manifestJson,
           migrations: split.migrations,
@@ -7641,6 +7762,11 @@ export class CloudflareScopeHost implements ScopeHost {
           ...(origin ? { origin } : {}),
           admission: selfAdmits ? 'admitted' : 'pending',
         });
+      },
+      verticalScopeStores: async (actor, verticalSlug: string) => {
+        const stores = await this.directory('verticalScopeStores', verticalSlug);
+        await this.recordAccess(actor, 'verticalScopeStores', {}, { verticalSlug }, stores.length);
+        return stores;
       },
       listVersions: async (actor, verticalSlug: string, page) => {
         const rows = await this.cp.listVersions(verticalSlug, page);
@@ -8367,43 +8493,41 @@ export class CloudflareScopeHost implements ScopeHost {
           createdAt: r.created_at,
         }));
       },
-      listStoreKindReleases: async (actor, kind) => {
-        const rows = await this.cp.listStoreKindReleases(kind);
-        await this.recordAccess(actor, 'listStoreKindReleases', { tenantId: null }, { kind }, rows.length);
-        return rows.map((r) => ({
-          kind: r.kind,
-          releaseId: r.release_id,
-          sha256: r.sha256,
-          publishedBy: r.published_by,
-          publishedAt: r.published_at,
-          status: r.status as 'current' | 'previous' | 'failed',
-        }));
+      // -- store-kind releases, rollouts and holds (D-63, #2300) -------------------
+      recordStoreKindRelease: async (actor, input) => {
+        const at = new Date().toISOString();
+        const { record, created } = await this.directory('recordStoreKindRelease', { ...input, actor, at });
+        if (created) await this.recordAdmin(actor, 'uploadStoreKindRelease', { tenantId: null }, null, record);
+        return record;
       },
-      putStoreKindRelease: async (actor, input) => {
-        const publishedAt = new Date().toISOString();
-        await this.cp.putStoreKindRelease({
-          kind: input.kind,
-          releaseId: input.releaseId,
-          sha256: input.sha256,
-          publishedBy: actor,
-          publishedAt,
-          status: input.status,
-        });
-        const row = {
-          kind: input.kind,
-          releaseId: input.releaseId,
-          sha256: input.sha256,
-          publishedBy: actor,
-          publishedAt,
-          status: input.status,
-        };
-        await this.recordAdmin(actor, input.action, { tenantId: null, vertical: input.kind }, null, row);
+      getStoreKindRelease: async (actor, kind, sha256) => {
+        const record = await this.cp.getStoreKindRelease(kind, sha256);
+        await this.recordAccess(actor, 'getStoreKindRelease', { tenantId: null }, { kind, sha256 }, record ? 1 : 0);
+        return record;
+      },
+      storeKindState: async (actor, kind) => {
+        const state = await this.cp.storeKindState(kind);
+        await this.recordAccess(actor, 'storeKindState', { tenantId: null }, { kind }, state.rollouts.length);
+        return state;
+      },
+      storeKindDeclarations: async (actor, kind) => {
+        const declared = await this.directory('storeKindDeclarations', kind);
+        await this.recordAccess(actor, 'storeKindDeclarations', { tenantId: null }, { kind }, declared.verticals.length);
+        return declared;
+      },
+      holdStoreKind: async (_actor, input) => this.directory('holdStoreKind', input),
+      releaseStoreKindHold: async (_actor, input) => {
+        await this.cp.releaseStoreKindHold(input);
+      },
+      beginStoreKindRollout: async (actor, input) => {
+        const row = await this.directory('beginStoreKindRollout', { ...input, actor, at: new Date().toISOString() });
+        await this.recordAdmin(actor, input.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row);
         return row;
       },
-      servingManifests: async (actor) => {
-        const rows = await this.cp.servingManifests();
-        await this.recordAccess(actor, 'servingManifests', { tenantId: null }, null, rows.length);
-        return rows.map((r) => ({ slug: r.slug, manifestJson: r.manifest_json }));
+      finishStoreKindRollout: async (actor, input) => {
+        const row = await this.directory('finishStoreKindRollout', { ...input, at: new Date().toISOString() });
+        await this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row);
+        return row;
       },
       listScopeTables: async (actor, tenantId, scopeId): Promise<ScopeTable[]> => {
         // K-3 cross-check on the shared directory BEFORE reaching the scope DO: a pair
@@ -8916,11 +9040,12 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'listShreddedSubjects', { tenantId, scopeId }, null, subjects.length);
         return { subjects, nextCursor };
       },
-      shredSubject: async (actor, tenantId, scopeId, subjectId): Promise<SubjectShredReceipt> => {
+      shredSubject: async (actor, tenantId, scopeId, subjectId, fence): Promise<SubjectShredReceipt> => {
         await this.assertScope(tenantId, scopeId);
-        // #1722: a direct shred claims nothing; it records the epoch it ran under, as an orchestrated
-        // one records the epoch its claim compared, so the backfill can order every erasure.
-        const stamp: ErasureEpochStamp = { erasureEpoch: await this.cp.scopeErasureEpoch(tenantId, scopeId), path: 'direct' };
+        // #1722: a direct shred records the epoch it ran under, as an orchestrated one records the
+        // epoch its claim compared, so the backfill can order every erasure. With a fence (#2285) it
+        // claims what it read just before the key goes, and records the epoch that claim compared.
+        const stamp: ErasureEpochStamp = { erasureEpoch: fence?.epoch ?? await this.cp.scopeErasureEpoch(tenantId, scopeId), path: 'direct' };
         // Redact the live spine FIRST, destroy the key LAST. Both halves are idempotent and
         // a crash between them converges on retry, so the order is decided by which
         // half-done state harms the person: dying after the redaction leaves ciphertext in
@@ -9003,6 +9128,7 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.cp.redactSubjectText({ tenantId, scopeId, subjectId, intentIds });
         // Scope stores after the scope-side redaction and before the key (#2068).
         const storeErasures = await this.eraseScopeStores(tenantId, scopeId, subjectId);
+        if (fence) await this.claimSubjectErasure(tenantId, scopeId, fence);
         const at = new Date().toISOString();
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
@@ -9034,10 +9160,7 @@ export class CloudflareScopeHost implements ScopeHost {
       finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions, expected, storeErasures = []): Promise<SubjectShredReceipt> => {
         await this.assertScope(tenantId, scopeId);
         if (redactions.length === 0) throw substratError('conflict', 'subject erasure has no confirmed scope redaction');
-        if (!await this.cp.claimSubjectErasure(tenantId, scopeId, expected.versionId, expected.servingRef,
-          expected.epoch, expected.copyCount, expected.servingVersionId ?? null)) {
-          throw substratError('precondition_failed', 'scope route or copy inventory changed during subject erasure; retry after it settles');
-        }
+        await this.claimSubjectErasure(tenantId, scopeId, expected);
         const intentIds = [...new Set(redactions.flatMap((r) => r.intentIds))];
         await this.cp.redactSubjectText({ tenantId, scopeId, subjectId, intentIds });
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, new Date().toISOString());
@@ -10198,6 +10321,13 @@ export class CloudflareScopeHost implements ScopeHost {
    * subject-key operation touches anything. Without it a caller could reach another
    * tenant's keys by naming their scope id.
    */
+  /** The erasure claim (`SUBJECT_ERASURE_CLAIM_SQL`); a scope that moved refuses with the key kept. */
+  private async claimSubjectErasure(tenantId: TenantId, scopeId: ScopeId, fence: SubjectErasureFence): Promise<void> {
+    if (!await this.cp.claimSubjectErasure(tenantId, scopeId, fence)) {
+      throw substratError('precondition_failed', 'scope route or copy inventory changed during subject erasure; retry after it settles');
+    }
+  }
+
   private async assertScope(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
     const rec = await this.cp.getScopeRecord(tenantId, scopeId);
     if (!rec) throw unknownScopeForTenant(tenantId, scopeId);

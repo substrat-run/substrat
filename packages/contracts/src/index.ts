@@ -21,8 +21,31 @@ export { z } from 'zod';
 export * from './ids.js';
 export * from './registry.js';
 export * from './script-names.js';
-export * from './scope-store-mac.js';
-export * from './scope-store-envelope.js';
+// The base64url helpers stay on the ./scope-store-envelope subpath, not the root.
+export {
+  SCOPE_STORE_ENVELOPE_VERSION,
+  SCOPE_STORE_ENVELOPE_WINDOW_SECONDS,
+  SCOPE_STORE_ENVELOPE_HEADER,
+  SCOPE_STORE_SIGNATURE_HEADER,
+  ScopeStoreKeyError,
+  canonicalScopeStoreEnvelope,
+  issueScopeStoreEnvelope,
+  parseScopeStoreEnvelope,
+  parseScopeStorePublicKeys,
+  scopeStorePublicKeysFrom,
+  scopeStoreBodyDigest,
+  scopeStoreEnvelopeAdmits,
+  scopeStoreEnvelopeFresh,
+  scopeStoreKeyId,
+  verifyScopeStoreCall,
+  verifyScopeStoreEnvelope,
+  type IssuedScopeStoreEnvelope,
+  type ScopeStoreAudience,
+  type ScopeStoreCallVerdict,
+  type ScopeStoreEnvelope,
+  type ScopeStorePublicKeys,
+  type ScopeStoreRefusal,
+} from './scope-store-envelope.js';
 export * from './scope-store-transport.js';
 export * from './routing.js';
 export * from './invocation-record.js';

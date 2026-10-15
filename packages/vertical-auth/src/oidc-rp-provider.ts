@@ -1,7 +1,7 @@
 import {
   beginLogin,
   completeLogin,
-  federatedLogoutUrl,
+  federatedLogout,
   verifySessionEnvelope,
   readCookie,
   safePath,
@@ -9,6 +9,9 @@ import {
   FLOW_COOKIE,
   LOGOUT_HINT_COOKIE,
   LOGOUT_PATH,
+  LOGGED_OUT_PATH,
+  LOGOUT_RETURN_COOKIE,
+  LOGOUT_RETURN_MAXAGE,
   SESSION_MAXAGE,
   FLOW_MAXAGE,
   type OidcEnv,
@@ -110,7 +113,7 @@ function sessionCookies(value: string, origin: string, maxAge: number, domain: s
 
 /**
  * The login's ID token, kept ONLY to be handed back to the issuer as `id_token_hint`
- * when this session is signed out federated — see `federatedLogoutUrl`, and the same
+ * when this session is signed out federated — see `federatedLogout`, and the same
  * cookie `mountOidcRoutes` sets.
  *
  * Two attributes differ from the session cookie, both deliberately:
@@ -234,10 +237,23 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
        */
       if (url.searchParams.has('federated')) {
         const hint = readCookie(request.headers.get('cookie'), LOGOUT_HINT_COOKIE);
-        const away = await federatedLogoutUrl(env, origin, local, hint);
-        if (away) return redirectWith(away, cleared);
+        const out = await federatedLogout(env, origin, local, hint);
+        if (out) {
+          // The issuer matches the redirect URI exactly, so a per-request `returnTo` waits
+          // in a cookie while the issuer is given the fixed `LOGGED_OUT_PATH`. Lax: it is
+          // read on the issuer's cross-site redirect back.
+          const park = out.returnTo
+            ? [cookie(LOGOUT_RETURN_COOKIE, out.returnTo, origin, LOGOUT_RETURN_MAXAGE, null, LOGGED_OUT_PATH)]
+            : [];
+          return redirectWith(out.location, [...cleared, ...park]);
+        }
       }
       return redirectWith(local, cleared);
+    }
+
+    if (url.pathname === LOGGED_OUT_PATH) {
+      const back = safePath(readCookie(request.headers.get('cookie'), LOGOUT_RETURN_COOKIE)) ?? '/';
+      return redirectWith(back, [cookie(LOGOUT_RETURN_COOKIE, '', origin, 0, null, LOGGED_OUT_PATH)]);
     }
 
     // Anything else under /api/auth/* (sign-up, password endpoints, …) has no server

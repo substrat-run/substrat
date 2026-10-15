@@ -36,8 +36,6 @@ The package has no runtime dependencies and ships web-standard + `node:*` only. 
 | `substrat scope bind <scopeId> --version <id>` | Pin **one** scope to a version of the same vertical — the per-scope rollout primitive (canary, test env). |
 | `substrat scope domain <scopeId> --domain <d>` | Bind a custom domain to **any** owned scope (a prod app, a preview, a test env). |
 | `substrat publish <slug>` | Request a listing on the public marketplace (a staff operator reviews). |
-| `substrat store-kind publish --kind <kind> --entry <file.py>` | Publish a store kind from a `pywrangler deploy --dry-run` outdir (staff). `--dir` uses an outdir already in hand. `--cp` selects the control plane. |
-| `substrat store-kind rollback --kind <kind>` | Roll a store kind back to its previous release (staff). |
 | `substrat unpublish <slug>` | Remove a vertical from the public marketplace (staff). |
 | `substrat scope pull <scopeId>` | Pull a scope's data to a local SQLite file — pseudonymized by default (recognised PII columns get plausible fake values, stable across the whole pull; free text stays `[masked]`), `--full` is break-glass. |
 

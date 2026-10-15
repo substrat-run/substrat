@@ -1,0 +1,319 @@
+{
+  "version": "0.0.1",
+  "entities": {
+    "assistant-event": {
+      "table": "assistant_events",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "thread_id": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "number"
+          },
+          "type": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "subject_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "seq",
+          "type",
+          "body",
+          "subject_id",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "thread_id",
+        "seq"
+      ],
+      "erasable": [
+        "body"
+      ],
+      "erasure": {
+        "mode": "delete",
+        "subjects": [
+          "subject_id"
+        ]
+      }
+    },
+    "assistant-run": {
+      "table": "assistant_runs",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "thread_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "subject_id": {
+            "type": "string"
+          },
+          "beat_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "run_id",
+          "subject_id",
+          "beat_at"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "thread_id"
+      ],
+      "erasable": [
+        "subject_id"
+      ],
+      "erasure": {
+        "mode": "delete",
+        "subjects": [
+          "subject_id"
+        ]
+      }
+    },
+    "assistant-thread": {
+      "table": "assistant_threads",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "subject_id": {
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "closed"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "last_event_at": {
+            "type": "string"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "subject_id",
+          "title",
+          "status",
+          "created_at",
+          "last_event_at",
+          "closed_at"
+        ],
+        "additionalProperties": false
+      },
+      "erasable": [
+        "title"
+      ],
+      "erasure": {
+        "mode": "delete",
+        "subjects": [
+          "subject_id"
+        ]
+      }
+    },
+    "assistant-tool-call": {
+      "table": "assistant_tool_calls",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "thread_id": {
+            "type": "string"
+          },
+          "call_id": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "awaiting-approval",
+              "approved",
+              "denied",
+              "executing",
+              "done",
+              "failed"
+            ]
+          },
+          "digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nonce": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "request_seq": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subject_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "call_id",
+          "tool",
+          "state",
+          "digest",
+          "step",
+          "operation",
+          "version",
+          "expires_at",
+          "nonce",
+          "request_seq",
+          "decided_by",
+          "decided_at",
+          "subject_id",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "thread_id",
+        "call_id"
+      ],
+      "erasable": [
+        "decided_by",
+        "subject_id"
+      ],
+      "erasure": {
+        "mode": "delete",
+        "subjects": [
+          "subject_id"
+        ]
+      }
+    }
+  }
+}

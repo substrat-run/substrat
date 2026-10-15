@@ -67,7 +67,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 | `packages/engine-test-kit` | What an engine's own suite is written against | AGPL, private |
 | `packages/builder-generator` · `packages/builder-workspace` | The builder studio's agent loop and its workspace/snapshot half | AGPL, private |
 | `packages/ui` | Shared UI primitives (dashboard + console) | AGPL, private |
-| `engines/*` | The eight domain engines — `workorder`, `invoicing`, `booking`, `protocol`, `invites`, `metering`, `absence`, `notifications`. `notifications` is private until its first release is set up | AGPL + commercial |
+| `engines/*` | The nine domain engines — `workorder`, `invoicing`, `booking`, `protocol`, `invites`, `metering`, `absence`, `notifications`, `assistant`. `notifications` and `assistant` are private until their first release is set up | AGPL + commercial |
 | `connectors/*` | Third-party capability connectors (D-18 bucket 3) — host code, never module code. `scrive`, `fortnox` and `planima` are published; `microsoft365` is private until its first release is set up | AGPL + commercial |
 | `demos/*` | Eight directories: the seven demo verticals — `todo`, `ticket0`, `meridian`, `manyfold`, `shop`, `handlebar`, `tock` — plus `auth-server` (a Better Auth issuer, not a vertical) | Apache-2.0, private |
 | `apps/router` | The environment-wide router — hostname → (tenant, scope, surface), then dispatch | private |
@@ -163,6 +163,11 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   resolve to exactly one version — the guarantee the overrides used to give.
 - `pnpm lint:permissions` — emit each vertical's `PERMISSIONS.md` (the permission-diff
   checkpoint below); CI runs it with `--check` and fails on drift
+  It also refuses (exit 2) a role or entity grant shape that holds a key reserved to a
+  system principal — `assistant:run` today (`tools/reserved-keys.mts`, tests via
+  `pnpm test:reserved-keys`). The system side is a schedule's or a peer's `permissions`,
+  which it does not read, so no marker is needed; a table is the right size for one key,
+  and a `holder: 'system'` on the permission declaration is the step when a second appears.
 - `pnpm lint:changelog` — the published weekly changelog (`apps/docs/changelog/`).
   With no flag it prints a week's raw material — every first-parent merge grouped by
   area, the commits that landed without a PR, and each package's version span

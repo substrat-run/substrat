@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { PLATFORM_SWEEP_HOST_KEY, assetHash, deployManifest, connectionId, denialFilter, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeId, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
+import { PROBLEM_CONTENT_TYPE, problemForStatus } from '@substrat-run/contracts';
 import { denialLogQuery } from '../src/api.js';
+import { takeNonProblemRefusals } from './setup/problem-tripwire.js';
 import {
   createControlPlaneApi,
   ControlPlaneError,
@@ -2901,6 +2903,9 @@ describe('control-plane API', () => {
     dapp.get('/__literal-5xx', (c) => c.json({ error: 'reconcile failed', detail: 'reference = l1t3ra1l1t3ra1' }, 500));
     const res = await dapp.request('/__literal-5xx', { headers: auth });
     expect(res.status).toBe(500);
+    // Hand-rolled on purpose — the backstop must read whatever body it is handed — so the
+    // #113 tripwire fires, and saying so here is what keeps the setup from failing the test.
+    expect(takeNonProblemRefusals()).toEqual([{ method: 'GET', route: '/__literal-5xx', status: 500 }]);
     await new Promise((r) => setTimeout(r, 20));
     const rows = await host.admin.listOpsFailures(staff, { reference: 'l1t3ra1l1t3ra1' });
     expect(rows).toHaveLength(1);
@@ -2918,10 +2923,28 @@ describe('control-plane API', () => {
     dapp.get('/__pct/:slug', (c) => c.json({ error: 'reference = pctpctpctpct01' }, 502));
     const res = await dapp.request('/__pct/a%25b', { headers: auth });
     expect(res.status).toBe(502);
+    expect(takeNonProblemRefusals()).toHaveLength(1);
     await new Promise((r) => setTimeout(r, 20));
     const rows = await host.admin.listOpsFailures(staff, { reference: 'pctpctpctpct01' });
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ operation: 'GET /__pct/:slug', vertical: 'a%b', status: 502 });
+  });
+
+  it('a 5xx answered as a problem document lands a row naming its sentence once (#113)', async () => {
+    // `detail` and the deprecated `error` duplicate carry the same sentence; the row is not
+    // to read "x: x". A distinct `detail` beside `error` still joins, as above.
+    const dapp = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
+    dapp.get('/__problem-5xx', (c) =>
+      c.body(JSON.stringify(problemForStatus(502, 'reference = pr0b1empr0b1em')), 502, {
+        'content-type': PROBLEM_CONTENT_TYPE,
+      }),
+    );
+    const res = await dapp.request('/__problem-5xx', { headers: auth });
+    expect(res.status).toBe(502);
+    await new Promise((r) => setTimeout(r, 20));
+    const rows = await host.admin.listOpsFailures(staff, { reference: 'pr0b1empr0b1em' });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 502, message: 'reference = pr0b1empr0b1em' });
   });
 
   it('lets a LISTED vertical owner preview a PENDING version into their own scope (#509 (d))', async () => {

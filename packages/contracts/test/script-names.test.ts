@@ -13,6 +13,10 @@ import {
   platformScriptCollision,
   registerVerticalInput,
   ROUTER_SCRIPT_NAMES,
+  SCOPE_STORE_CANARY,
+  scopeStoreCanaryObjectName,
+  scopeStoreCanaryScriptName,
+  scopeStoreObjectName,
   scopeStoreScriptName,
   slug as tenantSlug,
   verticalScriptStem,
@@ -156,6 +160,33 @@ describe('scope-store script names (RFC scope-stores §10.7, L20)', () => {
     for (const value of ['acme_x', 'a_b']) expect(tenantSlug.safeParse(value).success, value).toBe(false);
     // The twin: the shapes the encoding is built for parse.
     for (const value of ['acme/crm', 'acme-crm', 'crm']) expect(verticalSlug.safeParse(value).success, value).toBe(true);
+  });
+
+  it("names the platform's canary script and object outside every vertical's (D-63, #2300)", () => {
+    expect(scopeStoreCanaryScriptName('graph')).toBe('substrat-store-graph--canary');
+    // A vertical's store script is `substrat-store-<kind>-<encoded slug>`. The canary's encoded slug
+    // would be `-canary`: no slug decodes to it, and the builder refuses it outright.
+    expect(verticalSlug.safeParse(SCOPE_STORE_CANARY).success).toBe(false);
+    expect(() => scopeStoreScriptName(SCOPE_STORE_CANARY, 'graph')).toThrow(/vertical slug/);
+    for (const kind of KINDS) {
+      for (const vertical of VERTICALS) expect(scopeStoreScriptName(vertical, kind)).not.toBe(scopeStoreCanaryScriptName(kind));
+    }
+
+    // The router builds an object name from a directory tenant id, the vertical's slug, the scope
+    // id and a declared binding: `<tenant>/<slug>/<scope>/<binding>`, where only the slug may hold a
+    // `/`. Every way to read the canary's name back as such a tuple needs a slug no grammar admits.
+    const tenant = '01JZ0000000000000000000000';
+    const scope = '01JZ0000000000000000000001';
+    const name = scopeStoreCanaryObjectName(tenant, scope, 'GRAPH');
+    expect(name).toBe(`${tenant}/-canary/${scope}/GRAPH`);
+    const parts = name.split('/');
+    // The slug is everything between the first and the last two segments.
+    const asSlug = parts.slice(1, -2).join('/');
+    expect(asSlug).toBe(SCOPE_STORE_CANARY);
+    expect(verticalSlug.safeParse(asSlug).success).toBe(false);
+    // The twin: a router name reads back to the slug it was built from.
+    const routed = scopeStoreObjectName(tenant, 'acme/crm', scope, 'GRAPH').split('/');
+    expect(verticalSlug.safeParse(routed.slice(1, -2).join('/')).success).toBe(true);
   });
 
   it('refuses a kind id or a vertical outside its grammar instead of flattening it', () => {
