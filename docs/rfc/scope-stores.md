@@ -6,7 +6,7 @@ description: A platform-run object per scope, declared as a kind and reached thr
 
 # RFC: scope stores
 
-**Status:** accepted (K-49 and K-50 ratified 2026-10-15; D-63 ratified, with a hash-and-commit pin, once [#2306](https://github.com/substrat-run/substrat/pull/2306) merges; D-64 as proposed on [#2298](https://github.com/substrat-run/substrat/pull/2298) not accepted as written; the open items of §10.8 remain open) · **Tracking:** [#2207](https://github.com/substrat-run/substrat/issues/2207)
+**Status:** accepted (K-49 and K-50 ratified 2026-10-15; D-63 ratified, with a hash-and-commit pin, once [#2306](https://github.com/substrat-run/substrat/pull/2306) merges; D-64 as proposed on [#2298](https://github.com/substrat-run/substrat/pull/2298) not accepted as written; the envelope's own record, K-52, proposed on the same pull request; the open items of §10.8 remain open) · **Tracking:** [#2207](https://github.com/substrat-run/substrat/issues/2207)
 · **Evidence:** [spikes/scope-store-binding/FINDINGS.md](../../spikes/scope-store-binding/FINDINGS.md)
 · **Decisions:** [K-49](../decisions/K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md),
 [D-63](../decisions/D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md),
@@ -64,7 +64,9 @@ The design closes that by having the store script remember the first name it acc
 refuse a later call that names a different object, including one that carries a valid MAC
 for that other name. The object cannot read its own `idFromName`, which is why the
 remembered string is the signed name. **This is design intent. The spike does not
-implement or exercise it** (see Not yet evidenced).
+implement or exercise it** (see Not yet evidenced). Superseded: the entry module binds an
+object to its name by its id instead, and the Ed25519 envelope of §10.3 replaces the MAC
+([K-52](../decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md)).
 
 One script per (kind, vertical), upgraded in place. A new release replaces the script.
 The objects keep their storage, and the kind migrates its schema when an object wakes.
@@ -156,7 +158,7 @@ vertical's stub also refuses `substrat.*` before it fetches, so a vertical canno
 The refusal that matters is the store's. The spike's flag on the caller is not a control:
 the caller that holds the binding can leave the flag unset. A MAC over the name alone, with
 the audience beside it unsigned, does not carry this either. §10.3 replaces it with a
-signed envelope whose audience is inside the MAC.
+signed envelope whose audience is inside the signature (Ed25519, K-52).
 
 `substrat.erase` is required of a kind before a hosted deploy stores tenant data. What
 it deletes is specified with #2068. This RFC only reserves the name and requires the
@@ -490,6 +492,9 @@ The list is what makes a rotation safe: add the new public key to every store sc
 the signer, then drop the old key. A key listed for both audiences is refused, by the store's configuration
 (`scopeStorePublicKeysFrom`) and again by the verifier, which compares decoded bytes, not
 spellings: its holder could otherwise sign `platform` envelopes from the `caller` key.
+The envelope, the keys and the id binding are recorded as
+[K-52](../decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md),
+which amends the MAC, per-script-key and first-name wording of K-49 and K-50.
 
 ### 10.4 What moves and what stays
 
@@ -730,7 +735,7 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | L13 | A store that cannot report its size is not recorded as size `0` |
 | L14 | The kind, the bindings and the vertical for any store call, from the router or the control plane, come from one shared resolution: the scope record's vertical, and the manifest of the version the scope's deployment runs. That is the pointer's version only when the pointer's ref is the scope's `serving_ref`; the bound version when the scope has no `serving_ref`; unknown otherwise, which fails closed. Never from the vertical's environment |
 | L15 | A masked export or pull carries no stores, and a failed store export fails the export |
-| L16 | One store-envelope signing key per audience, held only by that audience's signer. A store script holds only public keys, a list per audience, and never a key that can mint an envelope. No signer holds a key for an audience it does not sign |
+| L16 | One store-envelope signing key per audience, held only by that audience's signer. A store script holds only public keys, a list per audience, and never a key that can mint an envelope. No signer holds a key for an audience it does not sign (K-52) |
 | L17 | No operation (push, bind, promote, rollback of the serving pointer, serving re-upload) changes a scope's resolved set of (binding, kind) while objects of the old set may exist, unless the old binding stays reachable. Recommended (Q5): the lifecycle reaches the vertical-wide union of every (binding, kind) any version has declared |
 | L18 | A vertical-declared name (store binding, static binding, Durable Object binding) starting with `SUBSTRAT_STORE_` is refused at push and again at upload |
 | L19 | A bind that races a subject erasure either sees the erase or fails. The erase never destroys the key after a bind added a binding it did not reach |
