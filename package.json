@@ -64,6 +64,7 @@
     "lint:launch": "tsx tools/launch-emit.mts",
     "lint:pins": "tsx tools/pins-emit.mts",
     "lint:platform-entry": "tsx tools/platform-entry-emit.mts",
+    "lint:store-entry": "tsx tools/store-entry-emit.mts",
     "lint:worker-node-imports": "node tools/worker-node-imports.mjs",
     "lint:decisions": "node tools/decisions.mjs",
     "lint:plugin": "tsx tools/plugin-emit.mts",
