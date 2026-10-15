@@ -72,6 +72,24 @@ beforeAll(async () => {
         durableObjects: { [uploaded.binding]: uploaded.className },
       },
       {
+        // The same upload at a compatibility date where ctx.exports is on by default (2025-11-17).
+        name: 'current',
+        modules,
+        compatibilityDate: '2026-03-01',
+        compatibilityFlags: uploaded.compatibilityFlags,
+        bindings: uploaded.text,
+        durableObjects: { [uploaded.binding]: uploaded.className },
+      },
+      {
+        // The twin: the same, without the upload's disable_ctx_exports, to show the probe sees it.
+        name: 'exported',
+        modules,
+        compatibilityDate: '2026-03-01',
+        compatibilityFlags: uploaded.compatibilityFlags.filter((flag) => flag !== 'disable_ctx_exports'),
+        bindings: uploaded.text,
+        durableObjects: { [uploaded.binding]: uploaded.className },
+      },
+      {
         // The same upload without its script name: the entry cannot compare the script line.
         name: 'unnamed',
         modules,
@@ -111,7 +129,7 @@ interface Call {
   sent?: string;
   body?: string;
   headers?: (issued: { header: string; signature: string }) => Record<string, string>;
-  worker?: 'store' | 'misconfigured' | 'unnamed';
+  worker?: 'store' | 'misconfigured' | 'unnamed' | 'current' | 'exported';
 }
 
 async function call(c: Call = {}): Promise<{ status: number; text: string }> {
@@ -173,6 +191,14 @@ describe('the counter behind the store entry (#2289)', () => {
     const ambient = await call({ op: 'ambient' });
     expect(ambient.status).toBe(200);
     expect(JSON.parse(ambient.text)).toEqual({ result: [] });
+  });
+
+  it('at a current compatibility date the kind reaches nothing through ctx.exports, and the entry still admits', async () => {
+    expect(await call({ worker: 'current', op: 'exports' })).toEqual({ status: 200, text: JSON.stringify({ result: [] }) });
+    expect(await call({ worker: 'current', op: 'ambient' })).toEqual({ status: 200, text: JSON.stringify({ result: [] }) });
+    expect(await call({ worker: 'current' })).toEqual({ status: 200, text: JSON.stringify({ result: 1 }) });
+    // Without the flag, the same kind would hold a loopback to the entry's class and default export.
+    expect(JSON.parse((await call({ worker: 'exported', op: 'exports' })).text)).toEqual({ result: ['SubstratStoreObject', 'default'] });
   });
 
   it('admits the platform audience for a reserved operation, and nothing else for it', async () => {

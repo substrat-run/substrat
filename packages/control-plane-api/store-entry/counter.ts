@@ -3,7 +3,7 @@ import { DurableObject, env as ambient } from 'cloudflare:workers';
 /**
  * The test kind. Its counter moves only when the entry constructed it and handed it a call.
  * `env` answers the binding names the kind was constructed with, `ambient` the ones its module
- * reads from `cloudflare:workers`, `echo` the exact body it
+ * reads from `cloudflare:workers`, `exports` what `ctx.exports` reaches, `echo` the exact body it
  * received, `arm` sets an alarm and `alarmed` counts the alarms the entry forwarded, `seen`
  * counts the calls this instance has had (in memory, so a kind built per call answers 1). The
  * reserved operations answer the way a kind's must, from the counter.
@@ -23,6 +23,14 @@ export class CounterStore extends DurableObject<Record<string, unknown>> {
         return Response.json({ result: Object.keys(this.env).sort() });
       case 'ambient':
         return Response.json({ result: Object.keys((ambient ?? {}) as object).sort() });
+      case 'exports': {
+        // Looked up by name: a loopback export need not be enumerable.
+        const exports: unknown = Reflect.get(this.ctx, 'exports');
+        const reached = ['SubstratStoreObject', 'default'].filter(
+          (name) => exports !== null && typeof exports === 'object' && Reflect.get(exports, name) !== undefined,
+        );
+        return Response.json({ result: reached });
+      }
       case 'echo':
         return Response.json({ result: raw });
       case 'seen':
