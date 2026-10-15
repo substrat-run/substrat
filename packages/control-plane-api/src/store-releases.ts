@@ -42,8 +42,12 @@ export const storeReleaseKey = (kind: string, sha256: string): string => `${kind
 
 /** How long a rollout's exclusive hold lives between renewals. */
 export const ROLLOUT_HOLD_TTL_MS = 10 * 60_000;
-/** How long a push's or a serve's shared hold lives: one store ensure. */
-export const PUSH_HOLD_TTL_MS = 2 * 60_000;
+/**
+ * How long a push's or a serve's shared hold lives. It is renewed before each kind's upload; one
+ * kind's upload (a settings read and at most one upload per script) must fit inside it, or a
+ * rollout could take the kind before that upload lands. The same lease as a rollout's.
+ */
+export const PUSH_HOLD_TTL_MS = 10 * 60_000;
 /**
  * The verticals one rollout request moves. Each costs a settings read and at most one upload,
  * plus a hold renewal, so a request stays well inside a Worker invocation's subrequest budget.

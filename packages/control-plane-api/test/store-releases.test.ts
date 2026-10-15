@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { ulid } from '@substrat-run/kernel';
+import { manualClock, ulid, type ManualClock } from '@substrat-run/kernel';
 import {
   platformActorId,
   RESERVED_STORE_OPERATIONS,
@@ -17,6 +17,8 @@ import {
   canaryStoreRelease,
   createControlPlaneApi,
   DEV_ACTOR_HEADER,
+  ROLLOUT_FLEET_MAX,
+  ROLLOUT_HOLD_TTL_MS,
   runStoreKindRollout,
   UNSAFE_devPlatformActorAuth,
   type CanaryCall,
@@ -120,6 +122,10 @@ describe('the canary runs every reserved operation on a fresh platform object (D
     let exports = 0;
     const forgetful = canaryStore({ 'substrat.export': (a) => (++exports === 2 ? { tables: [] } : a) });
     await expect(canaryStoreRelease({ call: forgetful.call, scriptName: 's' })).rejects.toMatchObject({ message: /did not export what it imported/ });
+    // A wipe that leaves rows behind: the export after it says so.
+    let seen = 0;
+    const sticky = canaryStore({ 'substrat.export': (x) => (++seen === 3 ? { tables: [{ name: 'nodes', rows: [{ id: 1 }] }] } : x) });
+    await expect(canaryStoreRelease({ call: sticky.call, scriptName: 's' })).rejects.toMatchObject({ message: /still holds rows after its wipe/ });
   });
 });
 
@@ -128,14 +134,29 @@ function fleet() {
   const runs = new Map<string, string>();
   const events: string[] = [];
   const fail = new Set<string>();
+  /** Uploads that land, then answer an error. */
+  const landed = new Set<string>();
+  /** Runs before an upload, by key: a test lets time pass or another holder in there. */
+  const before = new Map<string, () => Promise<void>>();
   return {
     runs,
     events,
     fail,
+    landed,
+    before,
+    /** Uploads unless the script already runs `to`, as the real ensurer does, and says which. */
     ensure: async ({ vertical, to }: { vertical: string; to: string }) => {
-      events.push(`${vertical}:${to.slice(0, 1)}`);
+      if (runs.get(vertical) === to) return false;
+      const key = `${vertical}:${to.slice(0, 1)}`;
+      await before.get(key)?.();
+      events.push(key);
+      if (landed.has(key)) {
+        runs.set(vertical, to);
+        throw new Error(`upload of ${vertical} answered 502 after it landed`);
+      }
       if (fail.has(`${vertical}:${to.slice(0, 1)}`)) throw new Error(`upload of ${vertical} failed`);
       runs.set(vertical, to);
+      return true;
     },
   };
 }
@@ -158,23 +179,25 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'cp-store-rollout-'));
-    host = new SqliteScopeHost({ dir });
+    clock = manualClock();
+    host = new SqliteScopeHost({ dir, clock: clock.read });
     for (const s of ['1', '2', '3']) await host.admin.recordStoreKindRelease(staff, { kind: 'graph', sha256: sha(s), sourceCommit: COMMIT });
-    for (const slug of ['va', 'vb', 'vc']) {
-      await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
-      const id = ulid();
-      await host.admin.publishVersion(staff, {
-        id,
-        verticalSlug: slug,
-        version: '1.0.0',
-        manifestDigest: `m-${id}`,
-        permissionDigest: 'p',
-        migrationDigest: 'g',
-        deploymentRef: null,
-        manifestJson: JSON.stringify({ scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] }),
-      });
-    }
+    for (const slug of ['va', 'vb', 'vc']) await declare(slug);
   });
+  const declare = async (slug: string) => {
+    await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+    const id = ulid();
+    await host.admin.publishVersion(staff, {
+      id,
+      verticalSlug: slug,
+      version: '1.0.0',
+      manifestDigest: `m-${id}`,
+      permissionDigest: 'p',
+      migrationDigest: 'g',
+      deploymentRef: null,
+      manifestJson: JSON.stringify({ scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] }),
+    });
+  };
   afterEach(async () => {
     await host.close();
     rmSync(dir, { recursive: true, force: true });
@@ -196,6 +219,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
       callCanary: canaryStore().call,
       ...(extra.perRequest ? { perRequest: extra.perRequest } : {}),
     });
+  let clock: ManualClock;
   const current = async () => (await host.admin.storeKindState(staff, 'graph')).current?.sha256;
   const lastState = async () => (await host.admin.storeKindState(staff, 'graph')).rollouts.at(-1)?.state;
 
@@ -241,8 +265,9 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     f.events.length = 0;
     f.fail.add('vb:2');
     await expect(run(f, sha('2'))).rejects.toMatchObject({ message: /stopped at vb.*va, vb returned to 1{64}/ });
-    // va moved and returned; vb failed and is returned too, in case the upload landed; vc never moved.
-    expect(f.events).toEqual(['canary:2', 'va:2', 'vb:2', 'va:1', 'vb:1']);
+    // va moved and returned. vb failed, and its return is asked too, in case the upload landed; the
+    // fleet finds it still on 1 and uploads nothing. vc never moved.
+    expect(f.events).toEqual(['canary:2', 'va:2', 'vb:2', 'va:1']);
     expect([...f.runs]).toEqual([['va', sha('1')], ['vb', sha('1')], ['vc', sha('1')]]);
     expect(await current()).toBe(sha('1'));
     expect(await lastState()).toBe('failed');
@@ -280,6 +305,48 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     expect(await lastState()).toBe('diverged');
   });
 
+  it('returns a vertical whose failed upload landed anyway', async () => {
+    const f = fleet();
+    await run(f, sha('1'));
+    f.landed.add('vb:2');
+    await expect(run(f, sha('2'))).rejects.toMatchObject({ message: /va, vb returned to 1{64}/ });
+    expect([...f.runs]).toEqual([['va', sha('1')], ['vb', sha('1')], ['vc', sha('1')]]);
+  });
+
+  it('stops at once, returning nothing, when its hold lapsed and another holder took the kind', async () => {
+    const f = fleet();
+    await run(f, sha('1'));
+    f.events.length = 0;
+    const other = ulid();
+    // During vb's upload the lease runs out and another rollout takes the kind.
+    f.before.set('vb:2', async () => {
+      clock.advance(ROLLOUT_HOLD_TTL_MS + 1);
+      expect(await host.admin.holdStoreKind(staff, { kind: 'graph', holder: other, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS })).toBe(true);
+    });
+    await expect(run(f, sha('2'))).rejects.toMatchObject({ status: 409, message: /lapsed or its rollout was ended by another.*Nothing was returned/ });
+    // vc was never moved, and va and vb were not moved back under the other holder.
+    expect(f.events).toEqual(['canary:2', 'va:2', 'vb:2']);
+    // The stopped rollout reads as diverged, though nothing could write that.
+    expect(await lastState()).toBe('diverged');
+    await host.admin.releaseStoreKindHold(staff, { kind: 'graph', holder: other });
+  });
+
+  it('stops returning when the hold is lost during the return', async () => {
+    const f = fleet();
+    await run(f, sha('1'));
+    f.events.length = 0;
+    f.fail.add('vc:2');
+    const other = ulid();
+    f.before.set('va:1', async () => {
+      clock.advance(ROLLOUT_HOLD_TTL_MS + 1);
+      await host.admin.holdStoreKind(staff, { kind: 'graph', holder: other, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS });
+    });
+    await expect(run(f, sha('2'))).rejects.toMatchObject({ message: /hold was lost while returning; vb, vc may run/ });
+    // va went back; vb was not touched once the hold was gone.
+    expect(f.events).toEqual(['canary:2', 'va:2', 'vb:2', 'vc:2', 'va:1']);
+    await host.admin.releaseStoreKindHold(staff, { kind: 'graph', holder: other });
+  });
+
   it('refuses while another holder holds the kind, and begins nothing', async () => {
     const f = fleet();
     const push = ulid();
@@ -289,17 +356,38 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     expect((await host.admin.storeKindState(staff, 'graph')).rollouts).toEqual([]);
   });
 
-  it('moves a fleet bigger than one request over several, and running it again converges it', async () => {
+  it('moves a fleet bigger than one request over several posts, each continuing where the last stopped', async () => {
+    for (const slug of ['vd', 've']) await declare(slug);
     const f = fleet();
-    const partial = await run(f, sha('1'), { perRequest: 2 });
-    expect(partial).toMatchObject({ complete: false, moved: ['va', 'vb'], rollout: { state: 'diverged' } });
+    const first = await run(f, sha('1'), { perRequest: 2 });
+    expect(first).toMatchObject({ complete: false, moved: ['va', 'vb'], rollout: { state: 'diverged' } });
     expect(await current()).toBeUndefined();
-    const rest = await run(f, sha('1'), { perRequest: 2 });
-    // The fake moves whatever it is asked to; the real ensurer leaves a script already there alone.
-    expect(rest.complete).toBe(false);
-    expect(await run(f, sha('1'))).toMatchObject({ complete: true, rollout: { state: 'good' } });
+    const second = await run(f, sha('1'), { perRequest: 2 });
+    expect(second).toMatchObject({ complete: false, moved: ['vc', 'vd'] });
+    const third = await run(f, sha('1'), { perRequest: 2 });
+    expect(third).toMatchObject({ complete: true, moved: ['ve'], rollout: { state: 'good' } });
     expect(await current()).toBe(sha('1'));
-    expect([...f.runs.keys()].sort()).toEqual(['va', 'vb', 'vc']);
+    // Each script was uploaded once, after one canary per post.
+    expect(f.events).toEqual(['canary:1', 'va:1', 'vb:1', 'canary:1', 'vc:1', 'vd:1', 'canary:1', 've:1']);
+  });
+
+  it('returns the verticals earlier posts moved too, when a later post fails', async () => {
+    const f = fleet();
+    await run(f, sha('1'));
+    f.events.length = 0;
+    expect((await run(f, sha('2'), { perRequest: 2 })).complete).toBe(false);
+    f.fail.add('vc:2');
+    await expect(run(f, sha('2'), { perRequest: 2 })).rejects.toMatchObject({ message: /va, vb, vc returned to 1{64}/ });
+    expect([...f.runs]).toEqual([['va', sha('1')], ['vb', sha('1')], ['vc', sha('1')]]);
+    expect(await lastState()).toBe('failed');
+  });
+
+  it('refuses a fleet bigger than one request can walk', async () => {
+    const big = { ...host.admin, storeKindDeclarations: async () => ({ verticals: Array.from({ length: ROLLOUT_FLEET_MAX + 1 }, (_, i) => ({ vertical: `v${i}`, stores: [] })), unreadable: [] }) };
+    const f = fleet();
+    await expect(runStoreKindRollout({ admin: big, actor: staff, registration, sha256: sha('1'), action: 'rollout', ensure: f.ensure, ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call }))
+      .rejects.toMatchObject({ status: 409, message: /at most 300 per request/ });
+    expect(f.events).toEqual([]);
   });
 
   it('refuses a rollout while a version cannot say which stores it declares', async () => {
@@ -341,6 +429,8 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
   let registration: StoreKindRegistration;
   const bytes = new Map<string, Uint8Array>();
   const moves: string[] = [];
+  /** Moves that fail, as `<vertical>:<release n>`. */
+  const failMoves = new Set<string>();
 
   const appWith = (humanStaffActor?: (r: Request) => Promise<PlatformActorId | null>) =>
     createControlPlaneApi({
@@ -353,7 +443,9 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
       ensureScopeStores: async ({ vertical, to, loadRelease }) => {
         const release = await loadRelease({ kind: 'graph', vertical, ...(to ? { sha256: to } : {}) });
         if (!release || (await storeKindReleaseDigest(release)) !== release.sha256) throw new Error('bytes are not the release');
-        moves.push(`${vertical}:${shas.indexOf(release.sha256!) + 1}`);
+        const move = `${vertical}:${shas.indexOf(release.sha256!) + 1}`;
+        if (failMoves.has(move)) throw new Error(`upload of ${vertical} failed`);
+        moves.push(move);
       },
       storeReleases: {
         bytes: { get: async (k) => bytes.get(k), put: async (k, b) => void bytes.set(k, b) },
@@ -374,6 +466,7 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     host = new SqliteScopeHost({ dir });
     bytes.clear();
     moves.length = 0;
+    failMoves.clear();
     shas = [await storeKindReleaseDigest(bundle(1)), await storeKindReleaseDigest(bundle(2)), await storeKindReleaseDigest(bundle(3))];
     registration = {
       kind: 'graph',
@@ -488,6 +581,86 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
       'rollout:good',
       'rollback:good',
     ]);
+  });
+
+  it('rolls back after a diverged rollout onto the current release, never past it', async () => {
+    const app = appWith(asPerson);
+    // A second vertical, so a rollout can reach one and fail at the other.
+    await host.admin.registerVertical(person, { slug: 'vb', name: 'vb', source: 'cli' });
+    const id = ulid();
+    await host.admin.publishVersion(person, {
+      id, verticalSlug: 'vb', version: '1.0.0', manifestDigest: `m-${id}`, permissionDigest: 'p', migrationDigest: 'g',
+      deploymentRef: null, manifestJson: JSON.stringify({ scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] }),
+    });
+    for (const n of [1, 2, 3]) await call(app, 'PUT', '/store-kinds/graph/releases', person, wire(bundle(n)));
+    expect((await call(app, 'POST', '/store-kinds/graph/rollouts', person, { sha256: shas[1] })).status).toBe(200);
+    // 2 and 3 are both schema 1, so this is not the schema rule: vb's upload of 3 fails, and so
+    // does va's return to 2. The rollout ends diverged, va on 3 and vb on 2.
+    failMoves.add('vb:3');
+    failMoves.add('va:2');
+    expect((await call(app, 'POST', '/store-kinds/graph/rollouts', person, { sha256: shas[2] })).status).toBe(502);
+    const view = async () => (await call(app, 'GET', '/store-kinds/graph', service)).json();
+    expect((await view()).rollouts.at(-1).state).toBe('diverged');
+    // Undoing it goes back onto 2, the release the fleet was healthy on, not to 2's previous one.
+    expect((await view()).rollbackTarget).toBe(shas[1]);
+    failMoves.clear();
+    moves.length = 0;
+    const back = await call(app, 'POST', '/store-kinds/graph/rollback', person);
+    expect(back.status, await back.clone().text()).toBe(200);
+    expect(await back.json()).toMatchObject({ rollout: { action: 'rollback', sha256: shas[1], state: 'good' } });
+    expect(moves).toEqual(['va:2', 'vb:2']);
+    // The diverged attempt changed nothing about where a rollback from 2 goes: 2 was the first.
+    expect((await view())).toMatchObject({ current: { sha256: shas[1], previousGoodSha256: null }, rollbackTarget: null });
+  });
+
+  it('takes a write as JSON only, and never from another origin', async () => {
+    const app = appWith(asPerson);
+    const write = (headers: Record<string, string>) =>
+      app.request('/store-kinds/graph/rollback', { method: 'POST', headers: { [DEV_ACTOR_HEADER]: person, ...headers } });
+    // A form or a beacon cannot set application/json without a preflight.
+    for (const type of ['text/plain', 'application/x-www-form-urlencoded', 'multipart/form-data; boundary=x']) {
+      expect((await write({ 'content-type': type })).status, type).toBe(415);
+    }
+    expect((await write({})).status).toBe(415);
+    const json = { 'content-type': 'application/json' };
+    expect((await write({ ...json, origin: 'https://evil.example' })).status).toBe(403);
+    expect((await write({ ...json, 'sec-fetch-site': 'same-site' })).status).toBe(403);
+    expect((await write({ ...json, 'sec-fetch-site': 'cross-site' })).status).toBe(403);
+    // The twins: the CLI sends neither header; the console is the same origin. Both reach the
+    // route, which answers that there is nothing to roll back to.
+    expect((await write(json)).status).toBe(409);
+    expect((await write({ ...json, origin: 'http://localhost', 'sec-fetch-site': 'same-origin' })).status).toBe(409);
+    // The upload is held to the same rule.
+    const put = await app.request('/store-kinds/graph/releases', { method: 'PUT', headers: { [DEV_ACTOR_HEADER]: person, 'content-type': 'text/plain' }, body: JSON.stringify(wire(bundle(1))) });
+    expect(put.status).toBe(415);
+    expect(bytes.size).toBe(0);
+  });
+
+  it('refuses a body that streams past the cap, and a bundle whose modules decode past 10 MiB', async () => {
+    const app = appWith(asPerson);
+    const chunk = new Uint8Array(1024 * 1024).fill(0x20);
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent++ < 20) controller.enqueue(chunk);
+        else controller.close();
+      },
+    });
+    const streamed = await app.request(
+      new Request('http://localhost/store-kinds/graph/releases', {
+        method: 'PUT',
+        headers: { [DEV_ACTOR_HEADER]: person, 'content-type': 'application/json' },
+        body: stream,
+        duplex: 'half',
+      } as RequestInit),
+    );
+    expect(streamed.status).toBe(413);
+    // Under the request cap as base64, over the module cap once decoded.
+    const big = { ...wire(bundle(1)), modules: [{ name: 'kind_graph/store.py', contentBase64: btoa(' '.repeat(STORE_RELEASE_MAX_BYTES + 3)) }] };
+    const decoded = await call(app, 'PUT', '/store-kinds/graph/releases', person, big);
+    expect(decoded.status).toBe(413);
+    expect(await decoded.text()).toMatch(/at most 10485760 module bytes/);
+    expect(bytes.size).toBe(0);
   });
 
   it('answers 501 when this control plane keeps no releases', async () => {

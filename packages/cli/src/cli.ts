@@ -19,7 +19,6 @@
  * SUBSTRAT_SERVICE_TOKEN. A push is not a deploy — the version lands PENDING; admission
  * (in the console) still gates serving.
  */
-import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { loadConfig, saveConfig, resolveAuth } from './config.js';
@@ -42,7 +41,7 @@ import { printVersions } from './versions.js';
 import { checkOutboundDeclared } from './outbound-scan.js';
 import { exportBreakLines, promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
-import { packStoreKindDir, rollBackStoreKind, rollOutStoreKind, storeKindStatus, uploadStoreKindRelease } from './store-kind.js';
+import { packedFilesOf, packStoreKindDir, rollBackStoreKind, sourceCommitOf, rollOutStoreKind, storeKindStatus, uploadStoreKindRelease } from './store-kind.js';
 import { fetchWhoami } from './whoami.js';
 import { planeFor } from './plane.js';
 import { cliVersion, warnIfDistStale } from './version.js';
@@ -624,17 +623,6 @@ const STORE_KIND_USAGE = [
   '       substrat store-kind status   --kind <kind>',
 ];
 
-/** The commit `dir` is checked out at, refusing uncommitted changes: they are not that commit. */
-function sourceCommitOf(dir: string): string {
-  const head = spawnSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
-  if (head.status !== 0) throw new Error(`'${dir}' is not in a git checkout; pass --commit <sha>`);
-  const dirty = spawnSync('git', ['-C', dir, 'status', '--porcelain', '--', '.'], { encoding: 'utf8' });
-  if (dirty.status !== 0 || dirty.stdout.trim() !== '') {
-    throw new Error(`'${dir}' has uncommitted changes, so the bundle is not commit ${head.stdout.trim()}; commit them, or pass --commit`);
-  }
-  return head.stdout.trim();
-}
-
 async function cmdStoreKind(): Promise<void> {
   const sub = argv[1];
   const kind = flag('kind');
@@ -659,7 +647,7 @@ async function cmdStoreKind(): Promise<void> {
       for (const line of STORE_KIND_USAGE) console.error(line);
       process.exit(1);
     }
-    const body = packStoreKindDir(dir, entry, flag('commit') ?? sourceCommitOf(dir));
+    const body = packStoreKindDir(dir, entry, flag('commit') ?? sourceCommitOf(dir, packedFilesOf(dir)));
     const { release, pinned } = await uploadStoreKindRelease({ ...plane, body });
     console.log(`✓ stored ${kind} ${release.sha256} (commit ${release.sourceCommit})`);
     console.log(pinned ? '  pinned: roll it out with `substrat store-kind rollout`' : '  not pinned yet: it runs once a reviewed change pins this sha256 and commit');

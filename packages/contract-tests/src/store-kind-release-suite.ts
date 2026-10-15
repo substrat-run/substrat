@@ -102,6 +102,56 @@ export function storeKindReleaseContractSuite(adapterName: string, makeFixture: 
       ]);
     });
 
+    it('rolls back after a diverged rollout onto the current release, never past it', async () => {
+      const kind = freshKind();
+      const holder = ulid();
+      await rollOut(kind, holder, sha('1'), sha('2'));
+      await host.admin.recordStoreKindRelease(staff, { kind, sha256: sha('3'), sourceCommit: commit('c') });
+      const bad = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('3'), action: 'rollout', holder });
+      await host.admin.finishStoreKindRollout(staff, { kind, seq: bad.seq, holder, state: 'diverged', detail: 'vb on 2, va on 3' });
+      // The fleet may be mixed: undoing the bad rollout is converging back on 2.
+      expect(await host.admin.storeKindState(staff, kind)).toMatchObject({
+        current: { sha256: sha('2'), previousGoodSha256: sha('1') },
+        rollbackTarget: sha('2'),
+      });
+      await expectRefusal(host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('1'), action: 'rollback', holder }), 'conflict');
+      const back = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('2'), action: 'rollback', holder });
+      // The diverged attempt did not change what 2's previous good release is.
+      expect(back).toMatchObject({ fromSha256: sha('2'), previousGoodSha256: sha('1') });
+      await host.admin.finishStoreKindRollout(staff, { kind, seq: back.seq, holder, state: 'good', detail: null });
+      expect(await host.admin.storeKindState(staff, kind)).toMatchObject({ current: { sha256: sha('2') }, rollbackTarget: sha('1') });
+      // A failed rollout returned every script, so a rollback after it goes back as usual.
+      const failed = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('3'), action: 'rollout', holder });
+      await host.admin.finishStoreKindRollout(staff, { kind, seq: failed.seq, holder, state: 'failed', detail: null });
+      expect((await host.admin.storeKindState(staff, kind)).rollbackTarget).toBe(sha('1'));
+    });
+
+    it('renews only a hold still held, and only for a rollout still rolling', async () => {
+      const kind = freshKind();
+      const [a, b] = [ulid(), ulid()];
+      await host.admin.recordStoreKindRelease(staff, { kind, sha256: sha('1'), sourceCommit: commit('c') });
+      // Nothing held: a renewal is not an acquisition.
+      expect(await host.admin.holdStoreKind(staff, { kind, holder: a, mode: 'exclusive', ttlMs: 60_000, renew: true })).toBe(false);
+      expect(await host.admin.holdStoreKind(staff, { kind, holder: a, mode: 'shared', ttlMs: 60_000, renew: true })).toBe(false);
+      expect(await host.admin.holdStoreKind(staff, { kind, holder: a, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
+      const row = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('1'), action: 'rollout', holder: a });
+      expect(await host.admin.holdStoreKind(staff, { kind, holder: a, mode: 'exclusive', ttlMs: 60_000, renew: true, rolloutSeq: row.seq })).toBe(true);
+      // A gives the kind up; B takes it and ends A's rollout by beginning its own.
+      await host.admin.releaseStoreKindHold(staff, { kind, holder: a });
+      expect((await host.admin.storeKindState(staff, kind)).rollouts.at(-1)?.state).toBe('diverged');
+      expect(await host.admin.holdStoreKind(staff, { kind, holder: b, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
+      const next = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('1'), action: 'rollout', holder: b });
+      await host.admin.finishStoreKindRollout(staff, { kind, seq: next.seq, holder: b, state: 'good', detail: null });
+      await host.admin.releaseStoreKindHold(staff, { kind, holder: b });
+      // A asks again: its row ended, and it holds nothing, so it gets nothing back.
+      expect(await host.admin.holdStoreKind(staff, { kind, holder: a, mode: 'exclusive', ttlMs: 60_000, renew: true, rolloutSeq: row.seq })).toBe(false);
+      expect(await host.admin.holdStoreKind(staff, { kind, holder: a, mode: 'exclusive', ttlMs: 60_000, renew: true })).toBe(false);
+      // Even holding the kind again, a renewal names a rollout that is over.
+      expect(await host.admin.holdStoreKind(staff, { kind, holder: a, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
+      expect(await host.admin.holdStoreKind(staff, { kind, holder: a, mode: 'exclusive', ttlMs: 60_000, renew: true, rolloutSeq: row.seq })).toBe(false);
+      await host.admin.releaseStoreKindHold(staff, { kind, holder: a });
+    });
+
     it('leaves the current release where it was when a rollout fails, and a resume keeps the rollback target', async () => {
       const kind = freshKind();
       const holder = ulid();
@@ -246,7 +296,11 @@ export function storeKindHoldExpiryContractSuite(adapterName: string, makeFixtur
       clock.advance(59_999);
       expect(await host.admin.holdStoreKind(staff, { kind, holder: push, mode: 'shared', ttlMs: 1_000 })).toBe(false);
       clock.advance(1);
-      // At its end it lapses: the crashed holder can write nothing, a push holds again.
+      // At its end it lapses. Read now, the rollout reads as stopped, though nothing wrote that.
+      expect((await host.admin.storeKindState(staff, kind)).rollouts.at(-1)).toMatchObject({ seq: stopped.seq, state: 'diverged' });
+      // Its holder cannot renew it back, even with nobody else holding the kind.
+      expect(await host.admin.holdStoreKind(staff, { kind, holder: crashed, mode: 'exclusive', ttlMs: 60_000, renew: true, rolloutSeq: stopped.seq })).toBe(false);
+      // The crashed holder can write nothing, and a push holds again.
       await expectRefusal(host.admin.finishStoreKindRollout(staff, { kind, seq: stopped.seq, holder: crashed, state: 'good', detail: null }), 'conflict');
       expect(await host.admin.holdStoreKind(staff, { kind, holder: push, mode: 'shared', ttlMs: 1_000 })).toBe(true);
       expect(await host.admin.holdStoreKind(staff, { kind, holder: next, mode: 'exclusive', ttlMs: 60_000 })).toBe(false);

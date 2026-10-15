@@ -410,6 +410,13 @@ vertical lands, this log *becomes* that scope's outbox rather than a second mech
 addMember) move behind this actor-taking, audited surface. Their current signature — no
 caller, no record — is a v0 stopgap the code comment already admits.
 
+**The staff roster holds people only.** A staff sign-in (the session cookie or the CLI's bearer
+session, both gated by the D1 roster) is how the control plane tells a person from the
+automation token, which also acts as staff. D-63 relies on that: a store kind release is stored,
+rolled out and rolled back only by an actor whose credential is a rostered sign-in (#2300). So
+no roster entry may be an automation identity, a shared mailbox, or anything else that can
+finish the login without a person. Such an entry would publish releases as if it were one.
+
 One invariant this log carries alone, worth naming: grant tuples persist no `grantedBy` —
 the tuple table stores `(subject, relation, object, expires_at, revoked_at)` and nothing
 else — so the admin log is the **only witness** of who granted what, and effective grant

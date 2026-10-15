@@ -343,3 +343,54 @@ describe('a rollout moves a store script with `to`, and canaries in the platform
     await expect(canary({ kind: 'nokind', to: pins[1]!.sha256 })).rejects.toMatchObject({ status: 403 });
   });
 });
+
+describe('a script never moves to a release with a lower schema than the one it runs (#2300)', () => {
+  it('refuses (409) to move a script down, and moves it up or across', async () => {
+    const cf = cloudflare();
+    const ranked = [
+      { ...pins[0]!, schema: 1 },
+      { ...pins[1]!, schema: 0 },
+    ];
+    await ensurer({ releases: ranked })(need);
+    expect(text(cf.puts[0]!, STORE_RELEASE_VAR)).toBe(pins[0]!.sha256);
+    await expect(ensurer({ releases: ranked })({ ...need, to: pins[1]!.sha256 })).rejects.toMatchObject({
+      status: 409,
+      message: /runs schema 1; release .* has schema 0/,
+    });
+    expect(cf.puts).toHaveLength(1);
+    // The same move is allowed when the schemas agree, or rise.
+    await ensurer({ releases: [{ ...pins[0]!, schema: 1 }, { ...pins[1]!, schema: 1 }] })({ ...need, to: pins[1]!.sha256 });
+    expect(text(cf.puts[1]!, STORE_RELEASE_VAR)).toBe(pins[1]!.sha256);
+    await ensurer({ releases: [{ ...pins[0]!, schema: 2 }, { ...pins[1]!, schema: 1 }] })({ ...need, to: pins[0]!.sha256 });
+    expect(text(cf.puts[2]!, STORE_RELEASE_VAR)).toBe(pins[0]!.sha256);
+    // A script on a release its registration no longer pins cannot be judged, so it is not moved.
+    await expect(ensurer({ releases: [pins[1]!] })({ ...need, to: pins[1]!.sha256 })).rejects.toMatchObject({ status: 409, message: /not pinned, so its schema/ });
+    expect(cf.puts).toHaveLength(3);
+  });
+
+  it('lets the canary script move down: its objects are fresh and wiped', async () => {
+    const cf = cloudflare();
+    const ranked = [
+      { ...pins[0]!, schema: 1 },
+      { ...pins[1]!, schema: 0 },
+    ];
+    const canary = createStoreCanaryEnsurer({
+      accountId: 'acct',
+      namespace: 'ns',
+      apiToken: 'tok',
+      callerPublicKeys: [caller],
+      platformPublicKeys: [platform],
+      kinds: [{ kind: 'graph', releases: ranked, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      loadRelease: async ({ sha256 }) => (sha256 === pins[0]!.sha256 ? v1 : v2),
+    });
+    await canary({ kind: 'graph', to: pins[0]!.sha256 });
+    await canary({ kind: 'graph', to: pins[1]!.sha256 });
+    expect(cf.puts.map((p) => text(p, STORE_RELEASE_VAR))).toEqual([pins[0]!.sha256, pins[1]!.sha256]);
+  });
+
+  it('answers how many scripts it uploaded', async () => {
+    cloudflare();
+    expect(await ensurer({})(need)).toEqual({ uploaded: 1 });
+    expect(await ensurer({})(need)).toEqual({ uploaded: 0 });
+  });
+});

@@ -439,7 +439,8 @@ export interface ControlPlaneApiOptions {
    * The actor a request's credential names when that credential is a person's staff session,
    * else null (D-63: a release is published by a person). The host passes only the readers of a
    * human sign-in, never a service token's, so the automation token, which resolves to a staff
-   * actor too, is refused here. Absent ⇒ no request publishes a release.
+   * actor too, is refused here. That holds only while the staff roster lists people alone
+   * (docs/architecture/control-plane.md §4.4). Absent ⇒ no request publishes a release.
    */
   humanStaffActor?: (request: Request) => Promise<PlatformActorId | null>;
   /**
