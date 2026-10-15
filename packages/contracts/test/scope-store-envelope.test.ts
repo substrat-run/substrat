@@ -182,6 +182,15 @@ describe('scope store envelope (#2287)', () => {
       [7, '-5'],
       [7, '017'],
       [7, '9999999999999999'],
+      [7, '+17'],
+      [7, '-0'],
+      [7, '1e3'],
+      [7, ' 17'],
+      // 22 base64url characters carry 4 unused bits, 11 carry 2: an alias spelling of the same
+      // 16 nonce bytes or 8 kid bytes is not what the encoder emits.
+      [8, 'AAAAAAAAAAAAAAAAAAAAAB'],
+      [8, 'AAAAAAAAAAAAAAAAAAAAAP'],
+      [2, vector.kid.slice(0, -1) + ALPHABET[ALPHABET.indexOf(vector.kid.at(-1)!) ^ 1]],
       [8, 'n'],
       [8, 'A'.repeat(23)],
       [3, ''],
