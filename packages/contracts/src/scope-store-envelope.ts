@@ -394,9 +394,10 @@ export type ScopeStoreCallVerdict =
   | { readonly ok: false; readonly refusal: ScopeStoreRefusal };
 
 /**
- * Every check a store makes on a call before any kind code runs (RFC §10.3 items 1–3, L4,
- * L5), in one place, so a store entry carries no copy. The object-name memory (item 4) is
- * the entry's: it needs the object's storage.
+ * Every envelope check a store makes on a call before the kind's class runs (RFC §10.3
+ * checks 1–4, L4, L5), in one place, so a store entry carries no copy. The object binding
+ * (check 5: the object's id is `idFromName` of the signed name) is the entry's, because it
+ * needs the object's id; so is reading the configured keys and script name.
  *
  * `script` is the store script's own name, compared with the signed line for equality.
  * The body must be JSON naming the signed operation as `operation` and the signed object

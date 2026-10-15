@@ -1,0 +1,53 @@
+name: Store entry Python
+
+# The Python store entry (#2290), run as uploaded: the probe builds the script with
+# withPythonStoreEntry, the builder the store upload uses (#2210). It runs when the entry, the verifier it shares with
+# the JavaScript entry, the envelope, the shared vectors or the emitter change, and stays
+# quiet on every other pull request.
+on:
+  pull_request:
+    paths:
+      - 'packages/store-entry-python/**'
+      - 'packages/control-plane-api/store-entry/**'
+      - 'packages/control-plane-api/src/store-entry.generated.ts'
+      - 'packages/control-plane-api/src/store-entry.ts'
+      - 'packages/contracts/src/scope-store-envelope.ts'
+      - 'packages/contracts/test/vectors/scope-store-envelope.json'
+      - 'tools/store-entry-emit.mts'
+      - '.github/workflows/store-entry-python.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/store-entry-python/**'
+      - 'packages/control-plane-api/store-entry/**'
+      - 'packages/control-plane-api/src/store-entry.generated.ts'
+      - 'packages/control-plane-api/src/store-entry.ts'
+      - 'packages/contracts/src/scope-store-envelope.ts'
+      - 'packages/contracts/test/vectors/scope-store-envelope.json'
+      - 'tools/store-entry-emit.mts'
+      - '.github/workflows/store-entry-python.yml'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          # pywrangler refuses a uv older than 0.12.3.
+          version: '0.13.1'
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @substrat-run/contracts build
+      # The probe reads the generated entry, so a stale one is refused before it is run.
+      - run: pnpm run lint:store-entry --check
+      # The probe builds the script with the upload's own builder, so it runs under tsx.
+      - run: pnpm exec tsx packages/store-entry-python/probe.mjs

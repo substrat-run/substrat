@@ -36,6 +36,8 @@ import {
   SEND_EMAIL_KIND,
   connectorDispatchKind,
   STORE_KINDS,
+  scopeStorePublicKeysFrom,
+  type ScopeStoreNeed,
   type StoreKindRegistration,
 } from '@substrat-run/contracts';
 import type { ManifestImports, PlatformActorId, Scope, Tenant, TenantId, ScopeId } from '@substrat-run/contracts';
@@ -83,6 +85,7 @@ import {
   claimScopeScriptReap,
   drainScopeScriptCopies,
   createWfpUploader,
+  createScopeStoreEnsurer,
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
   createCfObservabilityReader,
@@ -602,6 +605,36 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
     bindAi: true,
     traceSampling: traceSamplingFor(env),
   });
+}
+
+/**
+ * Puts a declared scope store's script in place before the vertical (#2210). The release
+ * loader stays empty until a release can be published (#2297): a declared store then fails
+ * closed (409) instead of serving a vertical with no store script.
+ */
+function ensureScopeStoresFor(env: Env) {
+  const accountId = env.CF_ACCOUNT_ID;
+  const apiToken = env.CF_API_TOKEN;
+  if (!apiToken || !accountId) return undefined;
+  return async (input: { vertical: string; stores: readonly ScopeStoreNeed[] }) => {
+    let keys;
+    try {
+      keys = scopeStorePublicKeysFrom({
+        caller: env.STORE_CALLER_PUBLIC_KEYS ?? '',
+        platform: env.STORE_PLATFORM_PUBLIC_KEYS ?? '',
+      });
+    } catch (e) {
+      throw new ControlPlaneError(503, `a scope store is declared and the store public keys are not usable: ${(e as Error).message}`);
+    }
+    await createScopeStoreEnsurer({
+      accountId,
+      namespace: dispatchNamespaceOf(env),
+      apiToken,
+      callerPublicKeys: keys.caller,
+      platformPublicKeys: keys.platform,
+      loadRelease: async () => undefined,
+    })(input);
+  };
 }
 
 /** The list of base domains a PLATFORM hostname is minted under (#305), read once (#973). */
@@ -2758,6 +2791,7 @@ export default {
         resolveVerticalRef: resolveVerticalRefFor(env),
         platformScopeStores: platformStoresFor(env),
         deployVertical: deployVerticalFor(env),
+        ensureScopeStores: ensureScopeStoresFor(env),
         fetchVerticalModules: fetchVerticalModulesFor(env),
         fetchVerticalAsset: fetchVerticalAssetFor(env),
         patchScriptBindings: patchScriptBindingsFor(env),
