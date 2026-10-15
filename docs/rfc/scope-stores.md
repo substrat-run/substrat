@@ -167,10 +167,19 @@ name, DDL, columns, rows. Nothing in the four lifecycle operations is specific t
 
 ## 5. Registering a kind
 
-A kind is registered, not owned. The registration lives in this repo, pinned to an exact
-release of the kind's code, the way `CONNECTORS` is. It names the kind, the release, the
-script, the class and the operation catalog. A review of the registration is the review
-of what the platform will run.
+A kind is registered, not owned. The registration lives in this repo, the way `CONNECTORS`
+does. It names the kind, the script, the class and the operation catalog. A release of the
+kind's code is pinned by two values: the sha256 of the release bundle and the source commit
+it was built from, recorded in the registration or in an allowlist file the registration
+names (D-63, ratified 2026-10-15). The bytes may live outside this repo and may be published
+to the platform first, but a release runs only once both values are pinned here by a
+reviewed change. A review of that change is the review of what the platform will run.
+
+A release is published by a person with a staff credential, never by the CI or automation
+service token. The rollout's canary calls every reserved operation, `substrat.erase`
+included, and asserts each answer before the rollout continues. A rollback goes to the
+immediately previous good release. The module names in a release are validated, and the
+names the platform's entry module imports are reserved.
 
 The registration has to show three things. The envelope. The reserved operations,
 including `substrat.erase`. No per-object state at module level: an object that wakes
@@ -713,7 +722,8 @@ block it.
    asserts L4 and L5 on workerd. The spike's "Not yet evidenced" items move to FINDINGS
    Shown only when they pass.
 8. #2210 itself: the store script upload. It is the first registration, reviewed against
-   D-63, uploaded behind the step-7 entry module.
+   D-63, uploaded behind the step-7 entry module. The upload runs only a release whose
+   sha256 and source commit the registration pins.
 9. Later: the null-manifest test (f), the Cloudflare host's wipe without a tenant id,
    per-object nonce memory if Q2 says so, and a door for schedules (§9).
 
