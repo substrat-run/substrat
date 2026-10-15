@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest';
 import { RESERVED_STORE_OPERATIONS, storeKindReleaseDigest, type StoreKindRegistration } from '@substrat-run/contracts';
 import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
-import { createScopeStoreEnsurer, STORE_BUILD_VAR, STORE_RELEASE_VAR } from '../src/store-script.js';
+import { createScopeStoreEnsurer, createStoreCanaryEnsurer, STORE_BUILD_VAR, STORE_RELEASE_VAR } from '../src/store-script.js';
 import {
   STORE_ENTRY_PYTHON_MODULE,
   STORE_ENTRY_PYTHON_VERIFIER_SOURCE,
@@ -271,5 +271,75 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
     await expect(ensurer({})(need)).rejects.toMatchObject({ status: 502, message: /settings failed/ });
     cloudflare({ putStatus: 500 });
     await expect(ensurer({})(need)).rejects.toMatchObject({ status: 502, message: /upload failed/ });
+  });
+});
+
+describe('a rollout moves a store script with `to`, and canaries in the platform script (#2300)', () => {
+  it('moves the script to `to`, re-hashing it, and a second run with the same `to` uploads nothing', async () => {
+    const cf = cloudflare();
+    const ensure = ensurer({});
+    await ensure(need);
+    expect(text(cf.puts[0]!, STORE_RELEASE_VAR)).toBe(pins[0]!.sha256);
+    const asked: { sha256?: string }[] = [];
+    await ensurer({ asked })({ ...need, to: pins[1]!.sha256 });
+    expect(asked).toEqual([{ sha256: pins[1]!.sha256 }]);
+    expect(cf.puts).toHaveLength(2);
+    expect(text(cf.puts[1]!, STORE_RELEASE_VAR)).toBe(pins[1]!.sha256);
+    // Not a first upload: no class migration a second time.
+    expect(cf.puts[1]!.meta.migrations).toBeUndefined();
+    await ensurer({})({ ...need, to: pins[1]!.sha256 });
+    expect(cf.puts).toHaveLength(2);
+    // A push afterwards rebuilds at the release the script now records, not the current one.
+    const pushAsked: { sha256?: string }[] = [];
+    await ensurer({ asked: pushAsked })(need);
+    expect(pushAsked).toEqual([{ sha256: pins[1]!.sha256 }]);
+    expect(cf.puts).toHaveLength(2);
+  });
+
+  it('refuses (422) a `to` the loader answers with other bytes, and a stored release the pins do not hold', async () => {
+    const cf = cloudflare();
+    // The store holds v2's bytes under v1's key.
+    const swapped = createScopeStoreEnsurer({
+      accountId: 'acct',
+      namespace: 'ns',
+      apiToken: 'tok',
+      callerPublicKeys: [caller],
+      platformPublicKeys: [platform],
+      kinds: [{ kind: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      loadRelease: async () => v2,
+    });
+    await expect(swapped({ ...need, to: pins[0]!.sha256 })).rejects.toMatchObject({ status: 422, message: /loaded as other bytes/ });
+    // A loader's own claim is held too, for a script that does not exist yet.
+    const claimed = createScopeStoreEnsurer({
+      accountId: 'acct',
+      namespace: 'ns',
+      apiToken: 'tok',
+      callerPublicKeys: [caller],
+      platformPublicKeys: [platform],
+      kinds: [{ kind: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      loadRelease: async () => ({ ...v2, sha256: pins[0]!.sha256 }),
+    });
+    await expect(claimed(need)).rejects.toMatchObject({ status: 422, message: /loaded as other bytes/ });
+    await expect(ensurer({ releases: [pins[0]!] })({ ...need, to: pins[1]!.sha256 })).rejects.toMatchObject({ status: 422, message: /not pinned/ });
+    expect(cf.puts).toEqual([]);
+  });
+
+  it("uploads the canary to the platform's own script, pinned and built like a vertical's", async () => {
+    const cf = cloudflare();
+    const canary = createStoreCanaryEnsurer({
+      accountId: 'acct',
+      namespace: 'ns',
+      apiToken: 'tok',
+      callerPublicKeys: [caller],
+      platformPublicKeys: [platform],
+      kinds: [{ kind: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      loadRelease: async ({ sha256 }) => (sha256 === pins[1]!.sha256 ? v2 : undefined),
+    });
+    expect(await canary({ kind: 'graph', to: pins[1]!.sha256 })).toEqual({ scriptName: 'substrat-store-graph--canary' });
+    expect(cf.puts.map((p) => p.script)).toEqual(['substrat-store-graph--canary']);
+    expect(text(cf.puts[0]!, 'SUBSTRAT_STORE_SCRIPT')).toBe('substrat-store-graph--canary');
+    expect(text(cf.puts[0]!, STORE_RELEASE_VAR)).toBe(pins[1]!.sha256);
+    await expect(canary({ kind: 'graph', to: 'a'.repeat(64) })).rejects.toMatchObject({ status: 409 });
+    await expect(canary({ kind: 'nokind', to: pins[1]!.sha256 })).rejects.toMatchObject({ status: 403 });
   });
 });
