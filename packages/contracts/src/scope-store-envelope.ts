@@ -222,9 +222,9 @@ async function signingKey(pkcs8: string): Promise<SigningKey> {
   let jwk: JsonWebKey;
   let key: CryptoKey;
   try {
-    const extractable = await crypto.subtle.importKey('pkcs8', copyBytes(bytes), { name: 'Ed25519' }, true, ['sign']);
-    jwk = (await crypto.subtle.exportKey('jwk', extractable)) as JsonWebKey;
-    key = await crypto.subtle.importKey('pkcs8', copyBytes(bytes), { name: 'Ed25519' }, false, ['sign']);
+    // Extractable only so its public half (`x`) can be read for the key id; it never leaves here.
+    key = await crypto.subtle.importKey('pkcs8', copyBytes(bytes), { name: 'Ed25519' }, true, ['sign']);
+    jwk = (await crypto.subtle.exportKey('jwk', key)) as JsonWebKey;
   } catch {
     throw new ScopeStoreKeyError('the store signing key is not an Ed25519 PKCS8 key');
   }
