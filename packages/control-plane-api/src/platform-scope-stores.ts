@@ -1,4 +1,5 @@
 import {
+  LIST_PAGE_MAX,
   mayHoldScopeStores,
   scopeStoresDeclaredIn,
   STORE_KINDS,
@@ -95,9 +96,65 @@ export function declaredStoresOf(manifestJson: string | null): DeclaredScopeStor
 }
 
 /**
+ * The version a scope's deployment runs, read once (#2207, L14). A scope with a serving pin runs
+ * the serving pointer's version when the pointer's ref is its pin, and an unknown one otherwise;
+ * a scope with no pin runs its bound version. `servingPointer` is the pointer as read, for a scope
+ * with a pin: the pair a subject-erasure claim requires to still hold (#2285). A pointer that
+ * cannot be read refuses (503): neither the version nor the fence can be named.
+ */
+export interface RunningVersion {
+  readonly versionId: string | null;
+  readonly servingPointer?: { ref: string; versionId: string } | null;
+}
+
+export async function runningVersionOf(
+  admin: Pick<HostAdmin, 'verticalServing'>,
+  actor: PlatformActorId,
+  scope: Pick<Scope, 'vertical' | 'verticalVersionId' | 'servingRef'>,
+): Promise<RunningVersion> {
+  if (!scope.vertical || !scope.servingRef) return { versionId: scope.verticalVersionId };
+  let pointer: Awaited<ReturnType<HostAdmin['verticalServing']>>;
+  try {
+    pointer = await admin.verticalServing(actor, scope.vertical);
+  } catch {
+    throw new ControlPlaneError(503, `the serving pointer of '${scope.vertical}' could not be read`);
+  }
+  const servingPointer = pointer ? { ref: pointer.ref, versionId: pointer.versionId } : null;
+  return { versionId: servingPointer?.ref === scope.servingRef ? servingPointer.versionId : null, servingPointer };
+}
+
+/**
+ * Stop the router serving a scope, before its stores are wiped (#2285, L6). The router admits a
+ * scope only while one of its hostnames is `active`, and it reads that row on every request, so
+ * unbinding is immediate. Unbind is idempotent: a retry after a failed wipe finds nothing left
+ * to remove. A hostname set merely non-active would not hold — the issuance reconcile heals a
+ * platform hostname back to `active`.
+ */
+export async function unrouteScope(
+  admin: Pick<HostAdmin, 'listHostnames' | 'unbindHostname'>,
+  actor: PlatformActorId,
+  scope: Pick<Scope, 'tenantId' | 'id'>,
+): Promise<void> {
+  // Every page: an unbind deletes the row, so each read starts again from the first hostname left.
+  // A row still listed after its unbind would loop forever, so it refuses instead.
+  const unbound = new Set<string>();
+  for (;;) {
+    const page = await admin.listHostnames(actor, { tenantId: scope.tenantId, scopeId: scope.id, limit: LIST_PAGE_MAX });
+    if (page.length === 0) return;
+    for (const { hostname } of page) {
+      if (unbound.has(hostname)) throw new Error(`hostname '${hostname}' is still bound after its unbind`);
+      // Only while the row still names this scope: a name rebound elsewhere since the list stays bound.
+      await admin.unbindHostname(actor, hostname, { tenantId: scope.tenantId, scopeId: scope.id });
+      unbound.add(hostname);
+    }
+  }
+}
+
+/**
  * The scope stores of the version a scope's deployment runs (#2207). A scope on its vertical's
  * serving pin runs the serving pointer's version, and any other scope its bound version; this
- * is the version the router reads a scope's stores from (`READ_ROUTE_SQL`). Provisioning sets the
+ * is the version the router reads a scope's stores from (`READ_ROUTE_SQL`), and the one a restore
+ * may import into (L8). The lifecycle reaches more: `scopeStoresOf`. Provisioning sets the
  * serving pin and no bound version, so reading the bound version alone answers "no store" for an
  * ordinary install whose store the router serves. A pin that names another script than the
  * pointer's is unknown, as #2242's erasure gate has it.
@@ -106,19 +163,19 @@ export function declaredStoresOf(manifestJson: string | null): DeclaredScopeStor
  * answer is none. Otherwise a version that cannot be named, a manifest that cannot be read, or one
  * the gate says may hold a store without naming it refuses (503), rather than let a backup, a
  * wipe, a replay or an erasure skip a store that may hold data.
+ *
+ * `running` is a resolution the caller already holds (`runningVersionOf`), so a caller that fences
+ * on the version reads it once and judges the stores against the same read.
  */
-export async function scopeStoresOf(
+export async function runningVersionStoresOf(
   admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest'>,
   actor: PlatformActorId,
   scope: Pick<Scope, 'id' | 'vertical' | 'verticalVersionId' | 'servingRef'>,
   kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+  running?: RunningVersion,
 ): Promise<DeclaredScopeStore[]> {
   if (!scope.vertical || !mayHoldScopeStores(undefined, kinds)) return [];
-  let versionId: string | null = scope.verticalVersionId;
-  if (scope.servingRef) {
-    const pointer = await admin.verticalServing(actor, scope.vertical).catch(() => null);
-    versionId = pointer?.ref === scope.servingRef ? pointer.versionId : null;
-  }
+  const { versionId } = running ?? await runningVersionOf(admin, actor, scope);
   const manifestJson = versionId
     ? await admin.versionManifest(actor, scope.vertical, versionId).catch(() => undefined)
     : undefined;
@@ -126,6 +183,54 @@ export async function scopeStoresOf(
   const declared = typeof manifestJson === 'string' && scopeStoresDeclaredIn(manifestJson) ? declaredStoresOf(manifestJson) : [];
   if (declared.length > 0) return declared;
   throw new ControlPlaneError(503, `scope ${scope.id} may hold scope stores, and the version it runs cannot say which`);
+}
+
+/**
+ * What the lifecycle reaches for a scope (#2286, L17): the running version's stores
+ * (`runningVersionStoresOf`, which still fails closed first), and every binding any version of its
+ * vertical has declared (`HostAdmin.verticalScopeStores`, read by its keys). Export, wipe, erasure
+ * and the meter reach `all`, so an object under a binding a later version dropped is still
+ * reached. A restore imports only into `running` (L8).
+ *
+ * A binding keeps its kind for the life of the vertical, since publish refuses a re-kind; a
+ * running version whose kind disagrees with the record, or a record that cannot be read,
+ * refuses (503).
+ */
+export async function scopeStoreReachOf(
+  admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest' | 'verticalScopeStores'>,
+  actor: PlatformActorId,
+  scope: Pick<Scope, 'id' | 'vertical' | 'verticalVersionId' | 'servingRef'>,
+  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+  running?: RunningVersion,
+): Promise<{ running: DeclaredScopeStore[]; all: DeclaredScopeStore[] }> {
+  const current = await runningVersionStoresOf(admin, actor, scope, kinds, running);
+  if (!scope.vertical || !mayHoldScopeStores(undefined, kinds)) return { running: current, all: current };
+  let declared: readonly DeclaredScopeStore[];
+  try {
+    declared = await admin.verticalScopeStores(actor, scope.vertical);
+  } catch {
+    throw new ControlPlaneError(503, `the scope stores '${scope.vertical}' has declared could not be read`);
+  }
+  const all = new Map(declared.map((store) => [store.binding, store.kind]));
+  for (const store of current) {
+    const kind = all.get(store.binding);
+    if (kind !== undefined && kind !== store.kind) {
+      throw new ControlPlaneError(503, `scope store '${store.binding}' is declared as both '${kind}' and '${store.kind}'`);
+    }
+    all.set(store.binding, store.kind);
+  }
+  return { running: current, all: [...all].map(([binding, kind]) => ({ binding, kind })) };
+}
+
+/** `scopeStoreReachOf`'s `all`: every store the lifecycle reaches for a scope (#2286). */
+export async function scopeStoresOf(
+  admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest' | 'verticalScopeStores'>,
+  actor: PlatformActorId,
+  scope: Pick<Scope, 'id' | 'vertical' | 'verticalVersionId' | 'servingRef'>,
+  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+  running?: RunningVersion,
+): Promise<DeclaredScopeStore[]> {
+  return (await scopeStoreReachOf(admin, actor, scope, kinds, running)).all;
 }
 
 function asControlPlane(error: unknown): never {

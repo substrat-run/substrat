@@ -161,14 +161,15 @@ import {
   migrationProgress,
   ulid,
   auditWarningOf,
+  type SubjectErasureFence,
 } from '@substrat-run/kernel';
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
-import { scopeStoresOf } from './platform-scope-stores.js';
-import { assertNoUnreachableScopeCopies, listAllScopeScriptCopies, reapScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
+import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
+import { assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, listAllScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
 import { scopeDeployment, versionReachedAt, type ScopeDeployment } from './scope-deployment.js';
@@ -1500,8 +1501,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const copyLeaseMs = options.copyLeaseMs ?? SCOPE_COPY_LEASE_MS;
 
   /** The stores of the version the scope's deployment runs (`scopeStoresOf`, #2207). */
-  const manifestStores = (c: ReqCtx, scope: Scope): Promise<DeclaredScopeStore[]> =>
-    scopeStoresOf(c.var.admin, c.get('actor'), scope, options.storeKinds);
+  const manifestStores = (c: ReqCtx, scope: Scope, running?: RunningVersion): Promise<DeclaredScopeStore[]> =>
+    scopeStoresOf(c.var.admin, c.get('actor'), scope, options.storeKinds, running);
 
   /**
    * The platform's path to a scope's stores, or nothing: no caller is a co-located host whose
@@ -1512,25 +1513,58 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const platformStoresOf = async (
     c: ReqCtx,
     scope: Scope,
+    running?: RunningVersion,
   ): Promise<{ caller: PlatformScopeStores; vertical: string; stores: DeclaredScopeStore[] } | undefined> => {
     const caller = options.platformScopeStores;
     if (!caller || !scope.vertical) return undefined;
-    const stores = await manifestStores(c, scope);
+    const stores = await manifestStores(c, scope, running);
     return stores.length > 0 ? { caller, vertical: scope.vertical, stores } : undefined;
   };
 
-  /** `substrat.wipe` on each declared store, before the scope's own bytes go. */
-  const wipePlatformStores = async (c: ReqCtx, scope: Scope): Promise<void> => {
+  /**
+   * `substrat.wipe` on each declared store, resolved now and called later: a reap resolves its
+   * stores, which can refuse (503), before it unroutes the scope, and wipes after (#2285).
+   */
+  const platformStoresWipe = async (c: ReqCtx, scope: Scope): Promise<() => Promise<void>> => {
     const reach = await platformStoresOf(c, scope);
-    if (!reach) return;
-    await reach.caller.wipeStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical: reach.vertical, stores: reach.stores });
+    return async () => {
+      if (!reach) return;
+      await reach.caller.wipeStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical: reach.vertical, stores: reach.stores });
+    };
   };
 
-  /** `substrat.export` on each declared store, for a backup, a full pull or a fork. */
+  /** `substrat.wipe` on each declared store, before the scope's own bytes go. */
+  const wipePlatformStores = async (c: ReqCtx, scope: Scope): Promise<void> => (await platformStoresWipe(c, scope))();
+
+  /**
+   * `substrat.export` on each store the lifecycle reaches, for a backup, a full pull or a fork.
+   *
+   * A dump is only worth taking if it restores, and a restore imports only what the destination's
+   * version declares (L8). So a binding only an earlier version declared (#2286) is left out of the
+   * dump when its export is empty, which is what an object that was never written, or one already
+   * wiped, answers. One that still holds rows refuses the export (409), naming the binding and the
+   * way out, rather than produce a dump its own scope could not restore. Wipe, reap and erasure
+   * never export, so they reach such a store regardless.
+   */
   const exportPlatformStores = async (c: ReqCtx, scope: Scope): Promise<ScopeDump['stores'] | undefined> => {
-    const reach = await platformStoresOf(c, scope);
-    if (!reach) return undefined;
-    return reach.caller.exportStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical: reach.vertical, stores: reach.stores });
+    const caller = options.platformScopeStores;
+    if (!caller || !scope.vertical) return undefined;
+    const { running, all } = await scopeStoreReachOf(c.var.admin, c.get('actor'), scope, options.storeKinds);
+    if (all.length === 0) return undefined;
+    const exported = await caller.exportStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical: scope.vertical, stores: all });
+    const current = new Set(running.map((store) => store.binding));
+    const dropped = exported.filter((store) => !current.has(store.binding));
+    const held = dropped.find((store) => store.tables.some((table) => table.rows.length > 0));
+    if (held) {
+      throw new ControlPlaneError(
+        409,
+        `scope ${scope.id}'s store '${held.binding}' was declared by an earlier version of '${scope.vertical}' and ` +
+          `still holds data, and the version the scope runs does not declare it, so a dump of it could not be ` +
+          `restored. Declare '${held.binding}' as a '${held.kind}' again in a version the scope runs, then export; ` +
+          `or reap the scope without a backup, which wipes it`,
+      );
+    }
+    return exported.filter((store) => current.has(store.binding));
   };
 
   /**
@@ -1594,7 +1628,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   ): Promise<void> => {
     if (stores.length === 0) return;
     if (!scope.vertical) throw new ControlPlaneError(422, 'restore refused: the dump names stores and the scope names no vertical');
-    const declared = new Map((await manifestStores(c, scope)).map((d) => [d.binding, d.kind]));
+    // The destination's running version only (L8): a binding only an earlier version declared
+    // would be imported into an object nothing in the code the scope runs reads.
+    const declared = new Map((await runningVersionStoresOf(c.var.admin, c.get('actor'), scope, options.storeKinds))
+      .map((d) => [d.binding, d.kind]));
     for (const store of stores) {
       const kind = declared.get(store.binding);
       if (kind === undefined) {
@@ -5191,9 +5228,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   const reapScopeStorage = async (c: ReqCtx, scope: Scope): Promise<boolean> => {
     const actor = c.get('actor');
+    const dispatch = options.resolveVerticalRef;
+    // #2285: every refusal that can be decided up front comes before anything is destroyed, the
+    // unroute included: a refused reap leaves the scope routed and whole. Then unroute, wipe, delete.
+    if (dispatch) await claimScopeScriptReap({ admin: c.var.admin, actor }, scope.tenantId, scope.id);
+    else await assertNoUnreachableScopeCopies(c.var.admin, actor, scope.tenantId, scope.id);
+    const wipeStores = await platformStoresWipe(c, scope);
+    // Stop routing before the wipe: a call that lands between the wipe and the delete would
+    // recreate the store object, and nothing left could reach it.
+    await unrouteScope(c.var.admin, actor, scope);
     // #2207: the stores first, on every path below: a routed scope's copies are reaped through
     // their scripts, and a store is per scope, not per script.
-    await wipePlatformStores(c, scope);
+    await wipeStores();
     // The deployment the scope's vertical resolves to, deleted through; a 501 there is recorded
     // as stranded storage, as `reapScopeScriptCopies` records its own.
     const viaDeployment = async (): Promise<boolean> => {
@@ -5203,14 +5249,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       return stranded;
     };
-    if (!options.resolveVerticalRef) {
-      await assertNoUnreachableScopeCopies(c.var.admin, actor, scope.tenantId, scope.id);
-      return viaDeployment();
-    }
-    const unrouted = (await routeOf(c, scope)) === null;
-    const { storageStranded } = await reapScopeScriptCopies(
-      { admin: c.var.admin, actor, resolveRef: options.resolveVerticalRef }, scope.tenantId, scope.id);
-    const bySlug = unrouted ? await viaDeployment() : false;
+    if (!dispatch) return viaDeployment();
+    const noScript = (await routeOf(c, scope)) === null;
+    const { storageStranded } = await drainScopeScriptCopies(
+      { admin: c.var.admin, actor, resolveRef: dispatch }, scope.tenantId, scope.id);
+    const bySlug = noScript ? await viaDeployment() : false;
     return storageStranded || bySlug;
   };
 
@@ -5371,10 +5414,26 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     const erasureEpoch = await c.var.admin.scopeErasureEpoch(c.get('actor'), tenantId, scopeId);
     const currentRef = await routeOf(c, scope);
+    // The version the deployment runs, read once (#2285): the stores below are judged against it,
+    // and the claim before the key goes requires it, and the serving pointer as read, to still hold.
+    const running = await runningVersionOf(c.var.admin, c.get('actor'), scope);
     // #2207: the stores of the version the deployment runs, resolved before anything is erased. A
     // version that declares none is not asked. One that cannot be resolved while a kind is
     // registered refuses (503): the key must not be destroyed while a store may hold the subject.
-    const reach = await platformStoresOf(c, scope);
+    const reach = await platformStoresOf(c, scope, running);
+    /**
+     * L19: a bind, promote, rollback or serving re-upload that lands while the stores are erased
+     * would run a version whose stores this erasure did not reach. Both arms take one atomic claim
+     * on this fence before the key goes, and the claim moves the erasure epoch every bind compares,
+     * so the bind either lands first and the claim refuses (412, the key kept), or it is refused.
+     */
+    const fence: SubjectErasureFence = {
+      versionId: scope.verticalVersionId,
+      servingRef: scope.servingRef ?? null,
+      epoch: erasureEpoch,
+      copyCount: copies.length,
+      ...(running.servingPointer !== undefined ? { servingPointer: running.servingPointer } : {}),
+    };
     // Not asked is `undefined`, not `[]` (#2242): with no platform path the host's own stores
     // (the pure adapter's co-located runners) are erased in its shred or its finalize.
     const eraseStores = async (): Promise<StoreErasure[] | undefined> =>
@@ -5382,7 +5441,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     /** The host's own shred, with the platform's store erasure first: a store that errors keeps the key. */
     const shredHere = async () => {
       const storeErasures = await eraseStores();
-      const receipt = await c.var.admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId);
+      const receipt = await c.var.admin.shredSubject(c.get('actor'), tenantId, scopeId, subjectId, fence).catch(relayHostRefusal);
       return { ...receipt, storeErasures: [...receipt.storeErasures, ...(storeErasures ?? [])] };
     };
     if (!options.resolveVerticalRef) {
@@ -5408,10 +5467,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     if (bySlug) redactions.push(await bySlug.redactSubject(scopeId, subjectId));
     const storeErasures = await eraseStores();
-    return c.json(await c.var.admin.finalizeSubjectShred(c.get('actor'), tenantId, scopeId, subjectId, redactions, {
-      versionId: scope.verticalVersionId, servingRef: scope.servingRef ?? null, epoch: erasureEpoch,
-      copyCount: copies.length,
-    }, storeErasures).catch(relayHostRefusal));
+    return c.json(await c.var.admin.finalizeSubjectShred(c.get('actor'), tenantId, scopeId, subjectId, redactions, fence,
+      storeErasures).catch(relayHostRefusal));
   });
 
   // -- directory backups (#40) -----------------------------------------------
@@ -9014,25 +9071,31 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     c: ReqCtx,
     preview: Scope,
   ): Promise<{ storageStranded: boolean }> => {
-    // A fork's own sign-in clients go FIRST (#1704): a failure here leaves the preview in
+    const actor = c.get('actor');
+    const dispatch = options.resolveVerticalRef;
+    // #2285: every refusal that can be decided up front comes before anything is destroyed, so a
+    // refused reap (a copy move in flight, a copy nothing can reach, stores that cannot be named)
+    // leaves the preview routed, signing in, and whole.
+    if (dispatch) await claimScopeScriptReap({ admin: c.var.admin, actor }, preview.tenantId, preview.id);
+    else await assertNoUnreachableScopeCopies(c.var.admin, actor, preview.tenantId, preview.id);
+    const wipeStores = await platformStoresWipe(c, preview);
+    // A preview is still routed until its row goes: unroute before the wipe.
+    await unrouteScope(c.var.admin, actor, preview);
+    // A fork's own sign-in clients go once nothing routes to it, and before the row (#1704): an
+    // unroute that fails leaves the preview signing in, and a failure here leaves the preview in
     // place, so the retry a PR-close job makes still finds it — after the row is gone, nothing
     // would name those clients again. A clean room never had one.
     await retireClientsOfReapedScope(previewAuthDeps(c), preview);
-    await wipePlatformStores(c, preview);
+    await wipeStores();
     let storageStranded = false;
-    if (options.resolveVerticalRef) {
-      ({ storageStranded } = await reapScopeScriptCopies({
-        admin: c.var.admin,
-        actor: c.get('actor'),
-        resolveRef: options.resolveVerticalRef,
-      }, preview.tenantId, preview.id));
+    if (dispatch) {
+      ({ storageStranded } = await drainScopeScriptCopies({ admin: c.var.admin, actor, resolveRef: dispatch }, preview.tenantId, preview.id));
     } else {
-      await assertNoUnreachableScopeCopies(c.var.admin, c.get('actor'), preview.tenantId, preview.id);
       const vertical = await verticalForScope(c, preview);
       if (vertical) await vertical.deleteScope({ tenantId: preview.tenantId, scopeId: preview.id });
     }
     // Co-located hosts have no script ref; their storage is wiped by deleteSnapshot.
-    await c.var.host.deleteSnapshot(c.get('actor'), preview.tenantId, preview.id);
+    await c.var.host.deleteSnapshot(actor, preview.tenantId, preview.id);
     return { storageStranded };
   };
 

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import { Hono } from 'hono';
 import { SignJWT, exportJWK, generateKeyPair } from 'jose';
 import { DISCOVERY_FAILURE_TTL_MS } from '../src/discovery.js';
-import { mountOidcRoutes, LOGOUT_HINT_COOKIE, SESSION_COOKIE, type OidcEnv } from '../src/index.js';
+import { mountOidcRoutes, LOGOUT_HINT_COOKIE, LOGOUT_RETURN_COOKIE, SESSION_COOKIE, type OidcEnv } from '../src/index.js';
 
 /**
  * RP-initiated logout, driven through the mounted routes rather than a helper — the
@@ -238,6 +238,80 @@ describe('federated logout', () => {
     const to = new URL(res.headers.get('location')!);
     expect(to.origin + to.pathname).toBe(`${ISSUER}/api/auth/oauth2/end-session`);
     expect(to.searchParams.has('id_token_hint')).toBe(false);
+  });
+
+  it('gives the issuer one fixed URL for a per-request returnTo, and resumes there after', async () => {
+    // The issuer matches post_logout_redirect_uri EXACTLY against the client's allowed
+    // logout URLs, so `/invite/<token>` can never be one of them.
+    const a = app();
+    const jar = await signIn(a);
+    const path = '/invite/abc.def';
+
+    const res = await a.request(
+      `${APP}/api/auth/logout?federated&returnTo=${encodeURIComponent(path)}`,
+      { headers: { cookie: `${LOGOUT_HINT_COOKIE}=${jar.get(LOGOUT_HINT_COOKIE)}` } },
+      env,
+    );
+    const to = new URL(res.headers.get('location')!);
+    expect(to.searchParams.get('post_logout_redirect_uri')).toBe(`${APP}/api/auth/logged-out`);
+    expect(decodeURIComponent(cookiesOf(res).get(LOGOUT_RETURN_COOKIE)!)).toBe(path);
+    // Scoped to the one route that reads it, not sent with every request.
+    const parked = setCookieFor(res, LOGOUT_RETURN_COOKIE)!;
+    expect(parked).toContain('Path=/api/auth/logged-out');
+    expect(parked).toContain('HttpOnly');
+    expect(parked).toContain('SameSite=Lax');
+
+    const back = await a.request(
+      `${APP}/api/auth/logged-out`,
+      { headers: { cookie: `${LOGOUT_RETURN_COOKIE}=${encodeURIComponent(path)}` } },
+      env,
+    );
+    expect(back.headers.get('location')).toBe(path);
+    expect(setCookieFor(back, LOGOUT_RETURN_COOKIE)).toContain('Max-Age=0');
+  });
+
+  it('never resumes at another origin from the return cookie', async () => {
+    const a = app();
+    const back = await a.request(
+      `${APP}/api/auth/logged-out`,
+      { headers: { cookie: `${LOGOUT_RETURN_COOKIE}=${encodeURIComponent('//evil.test/x')}` } },
+      env,
+    );
+    expect(back.headers.get('location')).toBe('/');
+  });
+
+  // The URL parser strips tab and newline before resolving, so `/<TAB>/evil.test` reads as
+  // `//evil.test`; a newline in a Location header throws. None may survive either side.
+  const CONTROL = ['/\t/evil.test', '/\n/evil.test', '/\r/evil.test', '/\x7f/evil.test', '/ok\nx', '/ok\tx'];
+
+  it.each(CONTROL)('falls back to / for a control character in the return cookie: %j', async (value) => {
+    const a = app();
+    const back = await a.request(
+      `${APP}/api/auth/logged-out`,
+      { headers: { cookie: `${LOGOUT_RETURN_COOKIE}=${encodeURIComponent(value)}` } },
+      env,
+    );
+    expect(back.status).toBe(302);
+    expect(back.headers.get('location')).toBe('/');
+  });
+
+  it.each(CONTROL)('parks no cookie for a control character in returnTo: %j', async (value) => {
+    const a = app();
+    const jar = await signIn(a);
+    const res = await a.request(
+      `${APP}/api/auth/logout?federated&returnTo=${encodeURIComponent(value)}`,
+      { headers: { cookie: `${LOGOUT_HINT_COOKIE}=${jar.get(LOGOUT_HINT_COOKIE)}` } },
+      env,
+    );
+    const to = new URL(res.headers.get('location')!);
+    expect(to.searchParams.get('post_logout_redirect_uri')).toBe(`${APP}/`);
+    expect(setCookieFor(res, LOGOUT_RETURN_COOKIE)).toBeUndefined();
+  });
+
+  it.each(CONTROL)('falls back on the plain logout and login sinks too: %j', async (value) => {
+    const a = app();
+    const out = await a.request(`${APP}/api/auth/logout?returnTo=${encodeURIComponent(value)}`, {}, env);
+    expect(out.headers.get('location')).toBe('/');
   });
 
   it('stays local when the issuer advertises no end-session endpoint', async () => {

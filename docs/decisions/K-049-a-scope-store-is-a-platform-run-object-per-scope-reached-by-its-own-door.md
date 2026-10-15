@@ -3,7 +3,7 @@ id: K-49
 date: 2026-10-12
 layer: kernel
 title: "A scope store is a platform-run object per scope, reached by its own door"
-status: proposed
+status: accepted
 aliases: []
 amends: []
 tracking: ["#2207"]
@@ -11,7 +11,7 @@ tracking: ["#2207"]
 
 # K-49 — A scope store is a platform-run object per scope, reached by its own door
 
-**A scope store is a platform-run object, one per (tenant, vertical, scope, binding), and the vertical reaches it through `getScopeStore`.** The vertical declares `runtimeNeeds.scopeStores: [{ binding, kind }]`. `binding` is the SCREAMING_SNAKE name `tenantStoreNeed` already uses. `kind` is a literal union starting at `graph`, with no default. The platform runs the kind's script. The vertical does not.
+**A scope store is a platform-run object, one per (tenant, vertical, scope, binding), and the vertical reaches it through `getScopeStore`.** The vertical declares `runtimeNeeds.scopeStores: [{ binding, kind }]`. `binding` is the SCREAMING_SNAKE name `tenantStoreNeed` already uses. `kind` is a literal union starting at `graph`, with no default. The platform runs the kind's script. The vertical does not. This record covers scope-grain stores: a kind declares its grain, and tenant-level store instances are a proposed alternative in `docs/rfc/store-instances.md` ([#2303](https://github.com/substrat-run/substrat/pull/2303)).
 
 `getScopeStore(principal, tenantId, scopeId, binding)` returns a `StoreStub<Catalog>` with `tenantId`, `scopeId`, `subjectKind` and `invoke(operation, input)`. It does not take `InvokeOptions`; passing them is an error. `ScopeStubOptions` stays observers and carries no authority, which is why this is a door and not a field on `getScope`. The door checks the (tenant, scope) pair against the directory as `getScope` checks it (K-3), and that the binding is declared. It does not check a permission. The operation that calls does. An undeclared binding is refused. The platform builds the object name `<tenantId>/<vertical slug>/<scopeId>/<binding>` and is the only code that does. The vertical names a binding, not an object. The vertical's worker holds neither the store namespace nor the signing key. A call leaves as `fetch` of `store.substrat.internal`. The router, identified by the `OUTBOUND_POLICY` it set, signs the name and addresses the store script. A direct binding remains for local development and tests and is not an isolation boundary.
 
