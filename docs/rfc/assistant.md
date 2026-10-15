@@ -270,11 +270,14 @@ What reading `mountMcp` end to end (P0) showed, and what it changes here:
 ### 5.1 The stream protocol (`contracts`)
 
 A Zod schema `assistantStreamEvent`, owned here, **shaped like** the AI SDK's `UIMessage`
-parts so a mapping to and from it is mechanical: text, reasoning (collapsed by default),
-tool-input, tool-output, tool-approval-request, source/citation, file, and `data-substrat-*`
-for what is ours: **approval**, **provenance** (the "AI" marker, when, from how many sources,
-the query it ran: what #1749 asks for), **participant-joined**, **handoff-state**,
-**budget-notice**, **memory-proposed**.
+parts so a mapping to and from it is mechanical. It lives at the experimental subpath
+`@substrat-run/contracts/assistant-stream` (#2304), kept out of the package root until a
+consumer settles it. The contract's names are the ones this RFC uses: text
+(`text-start`/`text-delta`/`text-end`), `tool-input`, `tool-output`, `approval-request` and
+`approval-resolved`, `source`, and for what is ours, `data-provenance` (the "AI" marker, when,
+from how many sources, the query it ran: what #1749 asks for) and `budget-notice`. Still to
+come, as new event types when a phase needs them: reasoning (collapsed by default), file,
+participant-joined, handoff-state and memory-proposed.
 
 Why own it: the published element and the clients must not break when `ai` ships a major.
 Why align the shape: Cloudflare's chat stack, `useChat`-style hooks and AG-UI adapters then
@@ -496,10 +499,14 @@ The rule, in seven points:
    comes before it. An approval over a WebSocket is authenticated as the user on that message,
    not inherited from the socket's opening. A digest of the input alone is not enough: the
    same `{ id }` then gives one digest for an archive and a delete, and for one call in two
-   threads (the gap found in the contracts draft, #2304). So the digest hashes a tagged tuple
-   (`['substrat.approval/v1', operation, thread, call, input]`) in an encoding of its own,
-   pinned by fixed test vectors and refusing values JSON cannot carry, rather than sharing the
-   idempotency fingerprint's encoding; and the `approval-resolved` stream event and the
+   threads (the gap found in the contracts draft, #2304). So the digest hashes a tagged tuple,
+   as the contract implements it:
+   `['substrat.approval/v1', version, approver, thread, step, call, operation, expiresAt, nonce, input]`,
+   where `version` is the deployed version the request was made under, `expiresAt` an ISO
+   instant as `toISOString()` writes it, and `nonce` 16 to 64 characters of `[0-9A-Za-z_-]`.
+   The encoding is its own (`approvalEncoding` in `@substrat-run/contracts/assistant-stream`),
+   not the idempotency fingerprint's, refuses values JSON cannot carry, and its vectors are
+   pinned in the contracts test (`packages/contracts/test/assistant-stream.test.ts`); and the `approval-resolved` stream event and the
    record's row name the approver and echo the digest. The kernel event about the approval
    does not carry the digest, since the input can hold personal data (§5.2). Digests are stored and compared across deploys, so this is settled
    before the schema is published, not after. An approval can also wait across a deploy that
