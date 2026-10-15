@@ -10443,7 +10443,7 @@ export class SqliteScopeHost implements ScopeHost {
         const { record, created } = this.directory.transaction(() =>
           recordStoreKindReleaseIn(switchSqlOf(this.directory), { ...input, actor, at }),
         )();
-        if (created) this.recordAdmin(actor, 'store-kinds.upload', { tenantId: null }, null, record, at);
+        if (created) this.recordAdmin(actor, 'uploadStoreKindRelease', { tenantId: null }, null, record, at);
         return record;
       },
       getStoreKindRelease: async (actor, kind, sha256) => {
@@ -10473,7 +10473,7 @@ export class SqliteScopeHost implements ScopeHost {
         const row = this.directory.transaction(() =>
           beginStoreKindRolloutIn(switchSqlOf(this.directory), { ...input, actor, at, nowMs: Date.parse(this.clock()) }),
         )();
-        this.recordAdmin(actor, input.action === 'rollback' ? 'store-kinds.rollback' : 'store-kinds.rollout', { tenantId: null }, null, row, at);
+        this.recordAdmin(actor, input.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row, at);
         return row;
       },
       finishStoreKindRollout: async (actor, input) => {
@@ -10481,7 +10481,7 @@ export class SqliteScopeHost implements ScopeHost {
         const row = this.directory.transaction(() =>
           finishStoreKindRolloutIn(switchSqlOf(this.directory), { ...input, at, nowMs: Date.parse(this.clock()) }),
         )();
-        this.recordAdmin(actor, row.action === 'rollback' ? 'store-kinds.rollback' : 'store-kinds.rollout', { tenantId: null }, null, row, at);
+        this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row, at);
         return row;
       },
       getScopeRecord: async (actor, tenantId: TenantId, scopeId: ScopeId): Promise<Scope | undefined> => {

@@ -66,7 +66,7 @@ export function storeKindReleaseContractSuite(adapterName: string, makeFixture: 
       expect(await host.admin.getStoreKindRelease(staff, kind, sha('a'))).toEqual(first);
       expect(await host.admin.getStoreKindRelease(staff, kind, sha('b'))).toBeUndefined();
       // The audit names the kind and the sha256 in the row, not in the vertical column.
-      const rows = (await host.admin.auditLog(staff, { action: 'store-kinds.upload' })).filter(
+      const rows = (await host.admin.auditLog(staff, { action: 'uploadStoreKindRelease' })).filter(
         (r) => (r.after as { kind?: string } | null)?.kind === kind,
       );
       // Once: the second, identical upload wrote nothing.

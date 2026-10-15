@@ -3060,7 +3060,7 @@ export interface HostAdmin {
   /**
    * Record that a store kind's release bytes are stored, keyed by their sha256 (D-63, #2300).
    * Insert-only: the same sha256 again answers the row as it stands, and from another source
-   * commit is refused (`conflict`). Audited `store-kinds.upload` when it writes.
+   * commit is refused (`conflict`). Audited `uploadStoreKindRelease` when it writes.
    */
   recordStoreKindRelease(
     actor: PlatformActorId,
@@ -3087,7 +3087,7 @@ export interface HostAdmin {
   /**
    * Begin a rollout (or a rollback) of a stored release, as the kind's exclusive holder; refused
    * (`conflict`) otherwise. A rollback must name the current release's previous good one. Audited
-   * under `store-kinds.rollout` / `store-kinds.rollback`.
+   * under `rollOutStoreKind` / `rollBackStoreKind`.
    */
   beginStoreKindRollout(
     actor: PlatformActorId,

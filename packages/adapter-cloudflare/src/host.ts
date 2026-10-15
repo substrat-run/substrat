@@ -8419,7 +8419,7 @@ export class CloudflareScopeHost implements ScopeHost {
       recordStoreKindRelease: async (actor, input) => {
         const at = new Date().toISOString();
         const { record, created } = await this.directory('recordStoreKindRelease', { ...input, actor, at });
-        if (created) await this.recordAdmin(actor, 'store-kinds.upload', { tenantId: null }, null, record);
+        if (created) await this.recordAdmin(actor, 'uploadStoreKindRelease', { tenantId: null }, null, record);
         return record;
       },
       getStoreKindRelease: async (actor, kind, sha256) => {
@@ -8443,12 +8443,12 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       beginStoreKindRollout: async (actor, input) => {
         const row = await this.directory('beginStoreKindRollout', { ...input, actor, at: new Date().toISOString() });
-        await this.recordAdmin(actor, input.action === 'rollback' ? 'store-kinds.rollback' : 'store-kinds.rollout', { tenantId: null }, null, row);
+        await this.recordAdmin(actor, input.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row);
         return row;
       },
       finishStoreKindRollout: async (actor, input) => {
         const row = await this.directory('finishStoreKindRollout', { ...input, at: new Date().toISOString() });
-        await this.recordAdmin(actor, row.action === 'rollback' ? 'store-kinds.rollback' : 'store-kinds.rollout', { tenantId: null }, null, row);
+        await this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row);
         return row;
       },
       listScopeTables: async (actor, tenantId, scopeId): Promise<ScopeTable[]> => {
