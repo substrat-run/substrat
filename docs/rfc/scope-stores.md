@@ -437,7 +437,10 @@ behind it. That is the role `lint:platform-entry` already plays for a vertical's
 The entry module verifies the envelope and the object's id before it hands the request to
 the kind's object (#2295, `packages/control-plane-api/store-entry/entry.ts`, re-emitted under
 `lint:store-entry --check`). It constructs the kind once per object instance, with an env that
-holds none of the entry's `SUBSTRAT_STORE*` bindings, and forwards the object's alarm to it. A
+holds none of the entry's `SUBSTRAT_STORE*` bindings, and the upload sets the
+`disallow_importable_env` compatibility flag, so the kind's module cannot read them through
+`import { env } from 'cloudflare:workers'` either (it would otherwise see all of them). It
+forwards the object's alarm to it. A
 kind is otherwise `fetch`-only: an RPC method or a WebSocket handler on its class is not reached.
 
 **What the entry is not.** It is not a boundary against a hostile kind. The kind's module is
@@ -853,7 +856,7 @@ What each open PR keeps:
 |---|---|---|
 | Q1 | How long is the freshness window? | 60 seconds. The router and the control plane sign immediately before dispatch, and a long window only widens replay |
 | Q2 | Does an object remember nonces inside the window? | Not in v1. The reserved operations are idempotent, a kind call is a vertical retry the window bounds, and nonce memory is a write on every call. Revisit if a kind registers a non-idempotent operation the platform itself calls |
-| Q3 | The platform supplies the store script's entry module (§10.3). How does it hold the remembered name so the kind's class cannot rewrite it? | A platform-emitted entry module with its own re-emit check, as `lint:platform-entry` has. The entry module checks the remembered name before it constructs the kind's object. The kind's class shares the object's storage, so whether it can rewrite that name is held by the registration review until a platform mechanism can isolate it. A wrapper class the kind imports is not enough. **Decided 2026-10-15:** this answer stands. The registration review is a standing condition, to be revisited before any kind written outside this repo is registered. **Shown on #2295:** the entry refuses unless the object's own id is `idFromName` of the verified name, so the remembered name is gone and there is nothing for the kind to rewrite. The registration review still holds the rest of what a same-isolate kind could do (§10.3) |
+| Q3 | The platform supplies the store script's entry module (§10.3). How does it hold the remembered name so the kind's class cannot rewrite it? | A platform-emitted entry module with its own re-emit check (`lint:store-entry`), as `lint:platform-entry` has. It holds no remembered name: before it constructs the kind's object it refuses unless the object's own id is `idFromName` of the verified name, which is deterministic and stored nowhere, so there is nothing for the kind's class to rewrite (shown on workerd in #2295). A wrapper class the kind imports is not enough. **Decided 2026-10-15:** the registration review is a standing condition for everything else a kind in the same isolate could do (§10.3), to be revisited before any kind written outside this repo is registered |
 | Q4 | Does a dump binding the destination does not declare refuse the restore (L8), or get skipped and reported? | Refuse. A skipped binding is store data silently dropped, and the operator can restore into a version that declares it. L8 is written to this answer and changes if Q4 is decided otherwise |
 | Q5 | A bind, promote, rollback, re-upload or push would drop or re-kind a binding while objects exist (L17). Drive the lifecycle over a union, or refuse at every door? | The vertical-wide union of every (binding, kind) any version has declared, computed from `vertical_versions`, as the set export, wipe, erase and size reach. It holds whatever moved the pointer. Refusals at every door are the alternative, and would need one at each of the five. **Decided 2026-10-15:** the union. Retiring a binding from it is an explicit step after export and wipe, and the union never shrinks as a side effect of a push. Implemented on PR #2292: a directory record kept at publish, which refuses a re-kind there |
 | Q6 | Should a schedule or a connector reach a store? | Not in this amendment. When one needs it, it gets its own door, signed by the platform with audience `caller` for the scope it runs in (§9) |
@@ -883,10 +886,8 @@ not show these, and the isolation argument in §1 rests on the first two:
 - **The §10 envelope.** Not in the spike. Signed by the router and the control plane and
   verified by the store entry since #2293–#2295.
 
-Follow-up: extend the spike with first-name pinning (including a validly signed other
-name) and `platform` vs `caller` audience for `substrat.*`, each with an assertion in
-`run.mjs`, and move them into FINDINGS Shown only when they pass. Until then the RFC
-claims them as design.
+The spike itself is not extended: the name binding and the audience are evidenced by the
+store entry's own workerd suite instead (above). What it does not show stays design.
 
 ## Alternatives rejected
 
