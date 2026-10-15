@@ -216,15 +216,32 @@ export async function recordStrandedStorage(
 export async function reapScopeScriptCopies(
   input: ScopeCopyCleanup, tenantId: TenantId, scopeId: ScopeId,
 ): Promise<{ storageStranded: boolean }> {
-  // The directory claim and new move records serialize on one store. A carry that
-  // already began keeps this reap retryable; one starting later cannot restore bytes
-  // after the scripts have been drained and the row removed.
+  await claimScopeScriptReap(input, tenantId, scopeId);
+  return drainScopeScriptCopies(input, tenantId, scopeId);
+}
+
+/**
+ * The reap claim. The directory claim and new move records serialize on one store. A carry that
+ * already began refuses the reap (412) and keeps it retryable; one starting later cannot restore
+ * bytes after the scripts have been drained and the row removed. A reap that unroutes the scope
+ * takes this before it destroys anything (#2285), so a refusal leaves the scope routed and whole.
+ * Taking a claim already held resumes it.
+ */
+export async function claimScopeScriptReap(
+  input: Pick<ScopeCopyCleanup, 'admin' | 'actor'>, tenantId: TenantId, scopeId: ScopeId,
+): Promise<void> {
   await input.admin.beginScopeScriptReap(input.actor, tenantId, scopeId).catch((error: unknown) => {
     if (errorCodeOf(error) === 'precondition_failed') {
       throw new ControlPlaneError(412, error instanceof Error ? error.message : String(error));
     }
     throw error;
   });
+}
+
+/** `reapScopeScriptCopies` past its claim: delete through every named script, then settle the ledger. */
+export async function drainScopeScriptCopies(
+  input: ScopeCopyCleanup, tenantId: TenantId, scopeId: ScopeId,
+): Promise<{ storageStranded: boolean }> {
   const copies = await listAllScopeScriptCopies(input.admin, input.actor, tenantId, scopeId);
   const current = await routeOf(input, tenantId, scopeId);
   const refs = new Set(copies.filter((c) => c.state !== 'done').map((c) => c.scriptRef));

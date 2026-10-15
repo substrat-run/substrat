@@ -499,7 +499,7 @@ import {
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
-import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
+import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
@@ -783,7 +783,7 @@ interface ControlPlaneStub {
       validationRecords: string | null;
     },
   ): Promise<void>;
-  deleteHostname(hostname: string): Promise<void>;
+  deleteHostname(hostname: string, owner?: { tenantId: string; scopeId: string }): Promise<{ tenant_id: string; scope_id: string; status: string } | null>;
   listHostnames(
     filter: { tenantId?: string; scopeId?: string; status?: string; verticalSlug?: string } & ListPage,
   ): Promise<HostnameRow[]>;
@@ -807,6 +807,7 @@ interface ControlPlaneStub {
     migrations: DeclaredMigration[] | null;
     createdAt: string;
   }): Promise<void>;
+  verticalScopeStores(slug: string): Promise<VerticalScopeStore[]>;
   readVersionMigrations(
     id: string,
   ): Promise<{ verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined>;
@@ -814,7 +815,7 @@ interface ControlPlaneStub {
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation): Promise<boolean>;
   scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
-  claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null, expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number, expectedServingVersionId?: string | null): Promise<boolean>;
+  claimSubjectErasure(tenantId: string, scopeId: string, fence: SubjectErasureFence): Promise<boolean>;
   recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, role?: ScopeCopyRole | null, loadStamp?: string | null, leaseMs?: number): Promise<'recorded' | 'reaping' | 'missing' | 'invalid'>;
   backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, audit: AdminEntry): Promise<ScopeCopyBackfillResult>;
   claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): Promise<ScopeScriptCopyRow[]>;
@@ -7477,11 +7478,11 @@ export class CloudflareScopeHost implements ScopeHost {
           { status: fields.status, note: fields.note ?? null },
         );
       },
-      unbindHostname: async (actor, raw: string) => {
+      unbindHostname: async (actor, raw: string, owner) => {
         const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
-        const row = await this.cp.readHostname(hostname);
+        // The row the delete removed, so an owner is judged by the delete itself (#2285).
+        const row = await this.cp.deleteHostname(hostname, owner);
         if (!row) return; // idempotent, and a no-op is not audited
-        await this.cp.deleteHostname(hostname);
         await this.recordAdmin(
           actor,
           'unbindHostname',
@@ -7608,7 +7609,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // The SQL migrations are stored apart from the manifest (#1764), so no read of the
         // version but the promote review's carries them.
         const split = splitManifestMigrations(manifestJson ?? null, 'push');
-        await this.cp.insertVersion({
+        await this.directory('insertVersion', {
           ...audited,
           manifestJson: split.manifestJson,
           migrations: split.migrations,
@@ -7622,6 +7623,11 @@ export class CloudflareScopeHost implements ScopeHost {
           ...(origin ? { origin } : {}),
           admission: selfAdmits ? 'admitted' : 'pending',
         });
+      },
+      verticalScopeStores: async (actor, verticalSlug: string) => {
+        const stores = await this.directory('verticalScopeStores', verticalSlug);
+        await this.recordAccess(actor, 'verticalScopeStores', {}, { verticalSlug }, stores.length);
+        return stores;
       },
       listVersions: async (actor, verticalSlug: string, page) => {
         const rows = await this.cp.listVersions(verticalSlug, page);
@@ -8859,11 +8865,12 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'listShreddedSubjects', { tenantId, scopeId }, null, subjects.length);
         return { subjects, nextCursor };
       },
-      shredSubject: async (actor, tenantId, scopeId, subjectId): Promise<SubjectShredReceipt> => {
+      shredSubject: async (actor, tenantId, scopeId, subjectId, fence): Promise<SubjectShredReceipt> => {
         await this.assertScope(tenantId, scopeId);
-        // #1722: a direct shred claims nothing; it records the epoch it ran under, as an orchestrated
-        // one records the epoch its claim compared, so the backfill can order every erasure.
-        const stamp: ErasureEpochStamp = { erasureEpoch: await this.cp.scopeErasureEpoch(tenantId, scopeId), path: 'direct' };
+        // #1722: a direct shred records the epoch it ran under, as an orchestrated one records the
+        // epoch its claim compared, so the backfill can order every erasure. With a fence (#2285) it
+        // claims what it read just before the key goes, and records the epoch that claim compared.
+        const stamp: ErasureEpochStamp = { erasureEpoch: fence?.epoch ?? await this.cp.scopeErasureEpoch(tenantId, scopeId), path: 'direct' };
         // Redact the live spine FIRST, destroy the key LAST. Both halves are idempotent and
         // a crash between them converges on retry, so the order is decided by which
         // half-done state harms the person: dying after the redaction leaves ciphertext in
@@ -8946,6 +8953,7 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.cp.redactSubjectText({ tenantId, scopeId, subjectId, intentIds });
         // Scope stores after the scope-side redaction and before the key (#2068).
         const storeErasures = await this.eraseScopeStores(tenantId, scopeId, subjectId);
+        if (fence) await this.claimSubjectErasure(tenantId, scopeId, fence);
         const at = new Date().toISOString();
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
@@ -8977,10 +8985,7 @@ export class CloudflareScopeHost implements ScopeHost {
       finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions, expected, storeErasures = []): Promise<SubjectShredReceipt> => {
         await this.assertScope(tenantId, scopeId);
         if (redactions.length === 0) throw substratError('conflict', 'subject erasure has no confirmed scope redaction');
-        if (!await this.cp.claimSubjectErasure(tenantId, scopeId, expected.versionId, expected.servingRef,
-          expected.epoch, expected.copyCount, expected.servingVersionId ?? null)) {
-          throw substratError('precondition_failed', 'scope route or copy inventory changed during subject erasure; retry after it settles');
-        }
+        await this.claimSubjectErasure(tenantId, scopeId, expected);
         const intentIds = [...new Set(redactions.flatMap((r) => r.intentIds))];
         await this.cp.redactSubjectText({ tenantId, scopeId, subjectId, intentIds });
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, new Date().toISOString());
@@ -10141,6 +10146,13 @@ export class CloudflareScopeHost implements ScopeHost {
    * subject-key operation touches anything. Without it a caller could reach another
    * tenant's keys by naming their scope id.
    */
+  /** The erasure claim (`SUBJECT_ERASURE_CLAIM_SQL`); a scope that moved refuses with the key kept. */
+  private async claimSubjectErasure(tenantId: TenantId, scopeId: ScopeId, fence: SubjectErasureFence): Promise<void> {
+    if (!await this.cp.claimSubjectErasure(tenantId, scopeId, fence)) {
+      throw substratError('precondition_failed', 'scope route or copy inventory changed during subject erasure; retry after it settles');
+    }
+  }
+
   private async assertScope(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
     const rec = await this.cp.getScopeRecord(tenantId, scopeId);
     if (!rec) throw unknownScopeForTenant(tenantId, scopeId);

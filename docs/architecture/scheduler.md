@@ -337,7 +337,9 @@ every pass in the fleet in exchange for a loop that finds nothing, and would fix
 budget (how many runs, how many passes per tick) before a single real walk has said what that
 budget should be. The first real consumer is what settles both, and there is not one yet — the
 nearest candidate shape, a file-bearing source, is itself still unproven (#1578). Until then
-the driver is called by whoever started the run.
+the driver is called by whoever started the run. A proposal for that consumer, including a
+control-plane phase that drives connector-owned runs against the scope's own run store, is
+[rfc/file-bearing-sources.md](../rfc/file-bearing-sources.md) §5.
 
 Two callers of the driver on one scope at once are safe (#2034). A vertical can drive its own
 runs beside the scope sweeper, and a second driver can join later. Each run is **claimed** before

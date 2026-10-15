@@ -61,9 +61,11 @@ The line names the first 16 calls in `storeCalls` and counts the rest in `storeC
 
 ## Erasure
 
-Subject erasure calls `substrat.erase` on every store the scope's version declares, before the subject's key is destroyed. The erasure's answer lists each binding and how many rows that store said it erased. When the control plane erases a scope its own host holds, the host's audited receipt does not list those store erasures yet; only the answer does. A store that answers with an error stops the erasure before the key is touched, and the next run finishes it.
+Subject erasure calls `substrat.erase` on every store any version of the scope's vertical has declared, before the subject's key is destroyed. A binding a later version dropped still names an object that may hold the subject, so it is erased too. The erasure's answer lists each binding and how many rows that store said it erased. When the control plane erases a scope its own host holds, the host's audited receipt does not list those store erasures yet; only the answer does. A store that answers with an error stops the erasure before the key is touched, and the next run finishes it.
 
 Erasure fails closed. When the platform cannot tell which stores a scope's version declares, or cannot reach them, the erasure is refused with 503 and the key stays until a retry reaches the store.
+
+A deploy that lands while an erasure runs does not slip past it. Before the key goes, the erasure checks that the scope still runs the version it read, on the same pin, with the vertical's serving pointer where it was. A bind, a promote, a rollback or a serving re-upload in between makes the erasure answer 412, and the key stays for the retry, which reads the new version's stores. A bind that comes after that check is refused instead.
 
 Erasure reaches the live store. It does not reach a copy already in a backup. See below.
 
@@ -72,6 +74,10 @@ Erasure reaches the live store. It does not reach a copy already in a backup. Se
 A scope dump carries `stores`: one entry per binding, with the kind and the tables `substrat.export` returned. An old dump has no list, and loads as a scope that had none. On the hosted plane the control plane reads those tables from the store script. A store it cannot name or reach fails the backup, the pull or the export, instead of leaving the store out.
 
 **A store's tables in a backup are not sealed per subject.** The platform cannot see inside them, so it cannot seal a subject's data in them the way it seals the scope's own classified fields. Erasing a subject reaches the live store and never the backup file at rest. The restore replay below is what removes that subject again when the backup comes back.
+
+**A binding a later version dropped.** Export, wipe, erasure and the meter reach every binding any version of the vertical has declared, so an object under a dropped binding is still wiped, erased and measured, whatever moved the scope off the version that declared it: a bind, a promote, a rollback or a serving re-upload. A restore imports only the bindings the scope's version declares, so a dump leaves a dropped binding out when its export is empty. One that still holds data refuses the backup, the pull or the export (409), naming the binding: declare it again, with its kind, in a version the scope runs, or reap the scope without a backup, which wipes it. A reap without a backup, erasure and wipe never export, so they reach the store either way.
+
+A binding keeps its kind for the life of its vertical. A push that declares an existing binding as another kind is refused (409); give the new store a new binding name.
 
 A masked export carries no stores. The masker cannot see inside them, so they are left out rather than shipped unmasked. The full tenant export carries them.
 
@@ -86,6 +92,8 @@ After a restore, and after a snapshot copy, the platform runs `substrat.erase` a
 The host's own `restoreScope` result carries the same facts as `storeErasuresReplayed`, `storeErasureIncomplete` and `storeErasureSourceUnknown`. With none of them present, nothing had to be replayed and nothing is missing.
 
 Reap, deleting a snapshot, reaping a preview and deleting the scope call `substrat.wipe` on each store before the scope's own storage goes. A wipe that cannot run stops the delete, and the scope's storage is left for the retry.
+
+Deleting a snapshot, reaping a preview and the sweep's snapshot reap stop routing the scope before they wipe it. They take every refusal they can decide up front (a copy move in flight, a copy the platform cannot reach, stores it cannot name), then unbind every hostname of the scope, then wipe its stores, then delete it. A refused delete leaves the scope routed and its stores untouched. Unbinding the hostnames is the fast path, not a drain. The durable fence is a scope state that the store door itself checks, and it is a follow-up (see [Known limits](#known-limits)).
 
 ## The storage meter
 
@@ -105,11 +113,11 @@ Before the first kind:
 
 - **The store script does not check the envelope yet.** The hop is the default for a host with no control plane and no runner. The signature and the remembered name are still to be checked inside the store.
 - **The store's checks on each call.** What the platform sends a store script does not yet bind the operation, the audience or the time, and no store script checks it yet. The checks are planned in an entry module the platform supplies in front of the kind.
-- **Unroute before wipe.** No path stops routing a scope before it wipes the scope's stores, and an erasure is not fenced against a deploy that lands while it runs.
-- **Orphaned bindings.** Every lifecycle path reads only the current version's bindings. Objects under a binding a later version dropped, or declared as another kind, are out of reach of wipe, erase and the meter.
+- **Unroute is not a drain.** Deleting a scope unbinds its hostnames before the wipe. That is the fast path. The durable fence, a scope state the store door itself checks, is still to come.
 
 Later:
 
+- **Retiring a binding.** A binding no version still declares stays in the vertical's record, so export, wipe, erasure and the meter keep asking its store, which answers empty once wiped, and its name cannot be declared again as another kind. The explicit retire step is still to come.
 - **Replay budget.** The restore's erasure replay runs inside one request and starts again from the first subject on a retry. It converges only while it fits one request.
 - **Audited receipt.** On the path where the control plane erases a scope its own host holds, the audited receipt lacks the platform's store erasures. The answer carries them.
 - **Versions without a kept manifest.** Replay and wipe skip a destination whose version predates kept manifests. Such a version holds no store, and a test that says so is still to come.

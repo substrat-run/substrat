@@ -3,7 +3,8 @@ import type { ModuleLog } from './module-log.js';
 import type { BoundOperations } from './module-operations.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
-import type { ScopeCopyBackfillResult } from './scope-copy-ledger.js';
+import type { ScopeCopyBackfillResult, SubjectErasureFence } from './scope-copy-ledger.js';
+import type { VerticalScopeStore } from './vertical-scope-stores.js';
 import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
   OnBehalfOf,
@@ -2370,6 +2371,9 @@ export interface HostAdmin {
    * permission diffs are the admission gates, and binding a scope is a separate step
    * (`bindScopeVersion`), so the two human checkpoints fire where the blast radius is
    * rather than where the typing was.
+   *
+   * Refuses (`conflict`) a version that declares a scope-store binding the vertical already
+   * declared as another kind (#2286): see `verticalScopeStores`.
    */
   publishVersion(actor: PlatformActorId, input: PublishVersionInput): Promise<void>;
   /** Ordered by id (ULID = publish order), `asc` unless `page.order` says otherwise. */
@@ -2649,6 +2653,16 @@ export interface HostAdmin {
    */
   versionManifest(actor: PlatformActorId, verticalSlug: string, versionId: string): Promise<string | null>;
   /**
+   * Every scope-store binding any version of the vertical has declared, with its kind (#2286,
+   * RFC scope-stores L17): what export, wipe, erasure and the meter reach, so an object under a
+   * binding a later version dropped is still reached. Read by its keys, with no per-version work
+   * once the vertical is indexed. A binding keeps its kind for the life of the vertical:
+   * `publishVersion` refuses a version that re-kinds one, or declares one twice (`conflict`).
+   * Refuses (`unavailable`) when a version's manifest cannot be read, since that version may
+   * declare a store nobody can name. Empty for an unknown vertical.
+   */
+  verticalScopeStores(actor: PlatformActorId, verticalSlug: string): Promise<VerticalScopeStore[]>;
+  /**
    * One version's SQL migrations (#1764), in the order the host runs them. They are stored
    * apart from the manifest, which `versionManifest` returns without them. Null for a version
    * that carries none that can be shown (pushed before #1677, or over the push's caps), which
@@ -2872,8 +2886,16 @@ export interface HostAdmin {
    * the append-only admin log (K-21 protects tuples, not the route table).
    * Idempotent: unbinding an unknown hostname is a silent no-op, not an error —
    * so a cleanup pass can re-run over a partial failure.
+   *
+   * `owner` (#2285): remove the binding only while it still names this tenant and scope,
+   * decided by the delete itself. A name rebound to another scope since the caller listed it
+   * is left bound to that scope, and the call is a silent no-op, as for an unknown name.
    */
-  unbindHostname(actor: PlatformActorId, hostname: string): Promise<void>;
+  unbindHostname(
+    actor: PlatformActorId,
+    hostname: string,
+    owner?: { tenantId: TenantId; scopeId: ScopeId },
+  ): Promise<void>;
   /**
    * Ordered by hostname; the cursor is a hostname.
    *
@@ -3666,12 +3688,18 @@ export interface HostAdmin {
    * A scope store is reached, by `substrat.erase`, after the scope-side redaction and
    * before the key is destroyed. A store that answers with an error throws, and the key
    * stays, so a retry converges. The receipt's `storeErasures` names each binding.
+   *
+   * `fence` (#2285): the scope state the caller read before it erased the platform's stores. Given,
+   * the shred takes the same claim `finalizeSubjectShred` takes, just before the key goes, and
+   * refuses (`precondition_failed`) with the key kept when the scope moved. Omitted, nothing is
+   * claimed: the caller reached no store outside this host.
    */
   shredSubject(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
     subjectId: string,
+    fence?: SubjectErasureFence,
   ): Promise<SubjectShredReceipt>;
   /**
    * Subjects whose key row is tombstoned (`shredded_at` set), in subject-id order.
@@ -3691,18 +3719,7 @@ export interface HostAdmin {
   finalizeSubjectShred(
     actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId,
     subjectId: string, redactions: readonly SubjectRedactionCounts[],
-    expected: {
-      versionId: string | null;
-      servingRef: string | null;
-      epoch: number;
-      copyCount: number;
-      /**
-       * The serving pointer's version when the erasure read a scope pinned to it (#2285).
-       * The claim requires that version to still be the one the pointer serves. Omitted,
-       * the claim does not fence the pointer — a caller that resolved no pin.
-       */
-      servingVersionId?: string | null;
-    },
+    expected: SubjectErasureFence,
     /**
      * What the serving script's stores erased (#2068). The coordinator calls
      * `substrat.erase` once — store objects are per vertical, not per script copy —

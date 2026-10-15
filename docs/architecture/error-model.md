@@ -9,7 +9,9 @@ description: One error model — RFC 9457 problem+json, a closed code taxonomy, 
 Status: **built** (v0.4 — phases 1–4 shipped: the registry, `SubstratError` and `toProblem`
 live in `@substrat-run/contracts` `errors.ts`, failures cross the ScopeDO hop as a value, and
 every vertical serves `application/problem+json`; phase 5's pattern half is done — the control
-plane matches no message — and the `error` duplicate and `SlotUnavailable` are what remains)
+plane matches no message; phase 6 is under way — `control-plane-api` answers every refusal a
+route makes itself as a problem document, and the other surfaces listed in §5 item 6 follow —
+and the `error` duplicate and `SlotUnavailable` are what remains after it)
 
 > Answers issue [#113](https://github.com/substrat-run/substrat/issues/113), the first item
 > of the [#132](https://github.com/substrat-run/substrat/issues/132) tracking list — and the
@@ -225,7 +227,7 @@ already answer their expected refusal as a value.
   replicator keeps running and the next generated vertical needs migrating on the day it
   is born.
 
-## 5. Rollout — five phases, no flag day
+## 5. Rollout — six phases, no flag day
 
 1. **Contracts.** Registry, schema, `SubstratError`, `toProblem`, OpenAPI wiring. Purely
    additive; nothing throws it yet, nothing breaks.
@@ -297,8 +299,47 @@ already answer their expected refusal as a value.
    scope, `404` for a scope with no tenant record. A vertical answers them exactly as the
    router answers a hostname with no serving scope: `404 not_found` with
    `NO_APPLICATION_DETAIL`, whatever a mapper decided, so a request that raced a suspension
-   reads as one the router refused. An unknown table is `404` on both surfaces. Still open:
-   the `error` duplicate, and `SlotUnavailable`'s dual-emit.
+   reads as one the router refused. An unknown table is `404` on both surfaces.
+6. **Every refusal, not only every throw.** Phases 4 and 5 made `onError` answer a problem
+   document, and `onError` only sees a throw. A route that decides a refusal itself —
+   `unknown scope`, `forbidden`, `… is not configured on this control plane` — answered
+   `c.json({ error }, status)` as `application/json`, so whether a client got the contract
+   depended on HOW the failure was raised. `control-plane-api` had 231 of them.
+   - **`control-plane-api` — built.** A route refuses through `refuse(c, code, detail)` (the
+     status follows from the catalog) or `refuseStatus(c, status, detail)` (`about:blank`: a
+     relayed `ControlPlaneError`, or a status the taxonomy has no code for — 501, 422, 502).
+     Statuses and the `error` sentence are unchanged at every site, and every member a route
+     carried beside `error` (`probe`, `operationId`, `exportBreaks`, `issues`, a downstream
+     `detail`, …) is carried verbatim. The lake query's 400 also gains the declared `errors`.
+     Where the API is the top-level app (the node server, a self-host), a request no route
+     matches is a `not_found` problem rather than Hono's text 404; the hosted worker mounts it
+     under `/api`, and Hono never calls a mounted app's `notFound`, so there the worker's own
+     fallback still answers, as before.
+     **Two witnesses, covering different things.** The API logs
+     `control-plane.non-problem-refusal` (method, route pattern, status — never the raw path,
+     never the body) whenever it answers 400 or more with any other media type, and the
+     package's test setup fails the test in which that happened: that covers every refusal a
+     test *reaches*, whatever produced it, and in production it is the line an operator
+     searches the worker's logs for. It does not cover a branch no test reaches — 109 of the
+     267 refusals in `api.ts` (about 41%) when this landed — so `test/problem-source.test.ts`
+     scans `api.ts` itself, reached or not. It judges the status argument of every `.json(`,
+     `.text(` and `.body(` and the init of every `new Response(` / `Response.json(`, refusing
+     a status of 400 or more outside the problem helpers; and it refuses outright each
+     construct whose status it could not judge — `c.status(`, `c.newResponse(`, `c.html(`, a
+     generic `c.json<T>(`, a `Response` init held in a variable or written as `{ status }`.
+     `api.ts` uses none of them, so a refusal can only be written there in a shape the scan
+     reads. It is a scanner rather than an AST walk (the workspace's `typescript` is the
+     native 7.x compiler, with no JS API), and it skips strings, templates, comments and regex
+     literals; an unterminated one fails the test with its line rather than hanging.
+   - **Still open, surface by surface:** `vertical-host`'s `/internal` 501s and its live
+     reads; the control-plane worker's own routes (`apps/control-plane`), CLI auth, the
+     builder and the dashboard's 401s, `dev-issuer`; a `requestId` on the control plane's
+     problems (#2192). A repo-wide source gate waits until a second surface is converted.
+   - **Then, and only then:** the `error` duplicate can go, since every client reads
+     `problemDetail` (#971) and every surface answers `detail`. The members carried beside
+     `error` are either declared per code in `PROBLEM_EXTENSIONS` or retired by then.
+
+   Still open beyond this phase: `SlotUnavailable`'s dual-emit.
 
 **The constraint phase 4 had to respect, and did:** the contract suite asserted on roughly
 thirty message patterns (`/already taken/`, `/illegal scope transition/`, `/not active/`, …)
