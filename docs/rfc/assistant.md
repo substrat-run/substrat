@@ -7,7 +7,7 @@ description: One chat in every product — a thread with an AI, and sometimes a 
 # RFC: the assistant — one thread, any product, acting as the user
 
 **Status: proposed. Nothing here is agreed.** It recommends; a human decides. The decisions it
-asks for are collected in §16. Written against `origin/main` at `c95e6d73a` and against the
+asks for are collected in §16, where the ones taken as working decisions for P1 are marked. Written against `origin/main` at `c95e6d73a` and against the
 outside world as of 2026-10-14. Claims about the repo carry a file or an issue; claims about
 the outside world carry a source in §17; anything I could not check says so in §15.
 
@@ -454,7 +454,7 @@ by extension, not a new mechanism.
 | Training-plan app | Mostly the user's own input | Edit a plan, log sets | Low risk; approve writes anyway |
 | Internal CRM | Customer-authored notes, imported fields, inbound email | Edit or delete records, send mail | **Highest risk.** Writes approve-always; no tool that sends externally without approval; never let one turn both read an untrusted field and write on its basis without a human step |
 | ticket0 | Anything a visitor types or a KB article contains | Handoff, reply | Replies are drafts or constrained answers; no data tools beyond the asker's own |
-| Dashboard | Log lines, error messages from tenants' code | Roll back, redeploy | Read-only first |
+| Dashboard | Log lines, error messages from tenants' code | Roll back, redeploy (later) | Read-only in the first release (§12.1): no outward links or images, no tools that write |
 
 Design rules, all structural:
 
@@ -691,14 +691,56 @@ evaluate. That is the point of the design; the rest is not their problem.
 
 ## 12. Consumers and order
 
-The order is chosen so each step tests whether the shared part is really shared.
+The order is chosen so each step tests whether the shared part is really shared, and so the
+first steps are ones we control end to end.
 
 | Order | Consumer | Why here | What it proves |
 |---|---|---|---|
-| 1 | Training-plan app | Owned end to end, simple permissions, MCP already works, the clearest "coach" experience | The loop, the protocol, approvals, memory with special-category data |
-| 2 | Internal CRM | Staff users, audit matters, highest injection risk | Approve-always writes, quarantine, the audit trail as a feature |
-| 3 | ticket0 | Retrieval-first rather than operation-first; has a human side | That the loop is not secretly operation-only; the handoff contract |
-| 4 | Dashboard and portal | Privileged platform app, different tool source (control-plane operations), provenance | Read-only first; needs #1073's relay and #1749's provenance |
+| 1 | **Dashboard, read-only** | Ours: no cross-repo release, no customer data, no special-category data. Platform code, so it may hold the model binding itself and does not wait for #1073's relay. The material to explain already exists as code | The loop, the protocol, resume, the element, provenance (#1749), cost control, the §10 acceptance run, and the deployed P0b measurements |
+| 2 | **`demos/todo`** | In-repo, declared operations, sharing and revoke | The path the dashboard cannot test: `assistant.expose`, the assistant-reach section of `PERMISSIONS.md`, the scenario driver, the approval flow with a digest-bound gated write |
+| 3 | Training-plan app | Owned end to end, simple permissions, MCP already works, the clearest "coach" experience. First consumer outside this repo, so the first release cycle | Memory with special-category data; a persona that is not an operator tool |
+| 4 | Internal CRM | Staff users, audit matters, highest injection risk | Approve-always writes, quarantine, the audit trail as a feature |
+| 5 | ticket0 | Retrieval-first rather than operation-first; has a human side | That the loop is not secretly operation-only; the handoff contract |
+
+### 12.1 Why the dashboard first, and what it does not prove
+
+What the dashboard is today, read for this section: it is itself a module on a real `ScopeDO`
+(`dashboardModule`), it already declares its own Durable Object classes (for example
+`GithubRepoLinkDO`), its service binding reaches the control plane, and it has **no AI binding,
+no model code and no MCP mount**. Its operations are `undeclaredOperations`: it "declares no
+operation surface; its handlers parse their own input". The data a first assistant would
+explain already exists as code (`fleet-health.ts`, `failure-groups.ts`, `flow-findings.ts`,
+`app-metrics.ts`, `deployments.ts`).
+
+What that buys:
+
+- **No release cycle across repositories,** and no customer's data or health data in play.
+- **#1073's concern does not apply.** That issue is about a *pushed vertical* holding the model
+  capability. The dashboard is platform code, so it holds the model binding itself, with the
+  platform's own metering and a per-user budget. #1073 stays the path for verticals (P6).
+- **Two open questions get cheap answers.** The element ships inside the dashboard's own web
+  app, so its licence and package home (Q8) can wait. The dashboard declares its own Durable
+  Object classes, so "how is a vertical given the thread object" (Q2, the second half) can wait.
+- **The deployed measurements (P0b) ride on it.** A preview deploy of the thread object, with
+  a real model, is how the 30 s `waitUntil` cap, eviction, first-token time and idle cost get
+  measured, instead of a separate exercise.
+
+What it does **not** prove, which is why `demos/todo` follows immediately and is not optional:
+the dashboard's tools are **hand-written wrappers over the read helpers above**, not derived
+from declarations. So the dashboard cannot exercise `assistant.expose`, the generated tool
+manifest and its `--check`, the assistant-reach section of `PERMISSIONS.md`, or the gates that
+refuse an exposed write with no `preview`. Those are the parts with the most new mechanism and
+the most risk, and a dashboard-only first release would leave them untested.
+
+Scope of the dashboard's first release: **read-only.** ⌘K Ask and "explain this finding" (the
+first two uses #1749 describes), always with the AI marker and the provenance block; the
+"query it ran" block is hidden from tenant admins, as #1749 states. Writes (roll back,
+redeploy) wait for the approval path to be proven on `demos/todo` (P6).
+
+Open, not yet read: **where a dashboard thread's record lives.** The dashboard's tenancy is
+team = tenant with scopes per team (the multi-team model); whether a thread belongs to the
+user's scope, the team's, or a per-user store is a decision for P1, and it decides who can see
+a thread and what erasing a member removes.
 
 ticket0 becomes a **consumer** of the shared loop, with a persona, a KB-search tool and a
 handoff tool, and keeps its own conversation model (customer and agent, statuses,
@@ -740,6 +782,9 @@ is the real critical path.
   events, outbox) against the spike's raw log append, which is the P0b measurement.
 - **ticket0's conversation entities.** I did not read `spec/model.ts` for how a mirrored thread
   maps onto them; the mirror design depends on it.
+- **The dashboard facts in §12.1** were read from `apps/dashboard` (its module, wrangler
+  bindings, and the absence of model and MCP code), not run. Where a thread's record lives for
+  a team-scoped product is not decided.
 - **Scope-store fit.** I read the opening of [scope-stores.md](scope-stores.md) only.
 - **Dashboard tooling.** I did not check whether the dashboard exposes an MCP surface or only
   its internal control-plane API.
@@ -757,14 +802,18 @@ is the real critical path.
 ## 16. Decisions asked of a human
 
 1. **Wire format.** Own a Zod schema shaped like the AI SDK's `UIMessage` parts and adapt at the
-   edge (recommended), or adopt the AI SDK's types directly, or adopt AG-UI.
+   edge (recommended), or adopt the AI SDK's types directly, or adopt AG-UI. **Working decision
+   for P1: own the schema.**
 2. **Where a live thread runs.** P0 (local) recommends a Durable Object per thread as the live
    coordinator over a placement-agnostic loop and record, with request plus `waitUntil` as the
-   fallback shape (§5.3). Deployed confirmation (P0b) is owed, as is how the object is provided
-   to a vertical: a scope-store kind, or a class the uploader supplies.
+   fallback shape (§5.3). **Working decision for P1: take that recommendation.** Deployed
+   confirmation (P0b) happens on the dashboard's preview deploy. How the object is provided to
+   a *vertical* (a scope-store kind, or a class the uploader supplies) is deferred; the
+   dashboard declares its own.
 3. **Engine name and scope.** `engine-assistant` (recommended, to avoid colliding with ticket0's
    own "conversation"), and whether participants and handoff belong in it or in a vertical's
-   side table.
+   side table. **Working decision for P1: `engine-assistant`;** participants and handoff are
+   decided when P5 needs them, and P1 does not build them.
 4. **Memory policy.** Per-app mode (`off`, `opt-in`, `opt-out`), default `opt-in`, with a
    platform floor that a sensitive kind cannot be `opt-out` (§8.2 rule 3).
 5. **Default transcript retention.** 90 days after last activity is a proposal, not a finding.
@@ -773,10 +822,13 @@ is the real critical path.
 7. **Handoff contract.** Summary-only with user consent (recommended) versus a fuller
    transcript option for products whose users agree to it.
 8. **Licence and package home** for the element and client, given `packages/ui` is AGPL and
-   private and the element is embedded in pages we do not control.
+   private and the element is embedded in pages we do not control. **Deferred:** the dashboard
+   bundles it inside its own web app, so this blocks nothing until the first consumer outside
+   this repository (P3).
 9. **A K-15 amendment** stating that first-party, build-time platform components do not open
    the door to runtime third-party UI.
-10. **Order of the consumers** in §12, and whether the dashboard waits for #1073's relay.
+10. **Order of the consumers** in §12. **Working decision:** the dashboard first and read-only,
+    then `demos/todo`. The dashboard does not wait for #1073's relay, which concerns verticals.
 
 ## 17. Risks
 
@@ -795,12 +847,13 @@ is the real critical path.
 
 | Phase | Work | Exit |
 |---|---|---|
-| P0 | **Done locally** (`spikes/assistant-thread`): the loop, stream and resume on both placements, with a scripted model on local workerd. **P0b, deployed and with a real model, is still owed**: the 30 s cap, eviction, first-token time, the real append, idle cost | Q2 answered for correctness; P0b answers the rest |
-| P1 | `contracts` schema; `engine-assistant`; `mountAssistant`; `assistant-client`; the scenario driver and fake model; first evals | A scripted coach conversation passes in the vertical's suite, including permission, approval-digest and injection cases |
-| P2 | `<substrat-assistant>` and the React wrapper; first consumer behind a flag | §10 acceptance run passes on the first consumer |
-| P3 | Second consumer (CRM); memory with the view-and-delete UI | Acceptance run passes; erasure test removes memory and derived summaries |
-| P4 | ticket0 onto the loop; the handoff contract and mirror | A thread escalates, a person replies in the user's chat, the user sees what was sent |
-| P5 | Platform-side inference and streaming relay (#1073); dashboard assistant with provenance (#1749); delegated reads (#1824) | Dashboard assistant read-only, behind the relay |
+| P0 | **Done locally** (`spikes/assistant-thread`): the loop, stream and resume on both placements, with a scripted model on local workerd | Q2 answered for correctness |
+| P1 | **Dashboard, read-only.** `contracts` event schema; `engine-assistant`; the thread object in the dashboard worker; the loop with a fake model first, then a real model through the platform's model host with a per-user budget; hand-written read tools over the existing helpers; the headless client and a first `<substrat-assistant>` inside the dashboard web app; provenance. A preview deploy for **P0b**: the 30 s cap, eviction, first-token time, the real append, idle cost | ⌘K Ask answers "why is this failing" with provenance, behind a flag; the §10 acceptance run passes; the P0b numbers are written into the spike's findings |
+| P2 | **`demos/todo`.** `assistant.expose` and `mountAssistant` for declared operations; the generated tool manifest with `--check`; the assistant-reach section of `PERMISSIONS.md`; `assistantScenario()` with a fake model; the first evals; a digest-bound gated write | A scripted conversation passes in the demo's suite, including permission, approval-digest and injection cases |
+| P3 | Training-plan app (first consumer outside this repo; the first release cycle). Memory, opt-in, with the view-and-delete UI. Settle the licence and package home (Q8) | Acceptance run passes; erasure removes memory and derived summaries |
+| P4 | Internal CRM | Acceptance run passes; approve-always writes hold under the injection fixtures |
+| P5 | ticket0 onto the loop; participants and the handoff contract and mirror | A thread escalates, a person replies in the user's chat, the user sees what was sent |
+| P6 | Dashboard writes (roll back, redeploy) behind approvals; delegated reads (#1824); platform-side inference and streaming relay for verticals (#1073) | A write from the dashboard assistant needs a recorded, digest-bound approval |
 
 ## Sources
 
