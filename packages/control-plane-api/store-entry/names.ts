@@ -18,6 +18,15 @@ export const STORE_ENTRY_PYTHON_MODULE = 'substrat_store_entry.py';
  */
 export const STORE_VERIFIER_MODULE = 'substrat-store-verify.js';
 
+/**
+ * The compatibility date a Python kind's store script is uploaded with. One constant, so the
+ * upload and the package's probe cannot run different runtimes.
+ */
+export const STORE_PYTHON_COMPATIBILITY_DATE = '2026-03-01';
+
+/** The Python runtime's own flag. The upload adds the two that keep the entry's bindings from the kind. */
+export const STORE_PYTHON_COMPATIBILITY_FLAGS = ['python_workers'];
+
 /** Every module name the platform's entries own. A kind release may ship none of them (D-63). */
 export const STORE_RESERVED_MODULES = [STORE_ENTRY_MODULE, STORE_ENTRY_PYTHON_MODULE, STORE_VERIFIER_MODULE];
 

@@ -9,6 +9,7 @@ import {
   verticalScriptStem,
   type ScopeStoreNeed,
   type StoreKindRegistration,
+  type StoreKindRelease,
 } from '@substrat-run/contracts';
 import type { AssetRouting, DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 
@@ -191,7 +192,8 @@ export { scopeStoreScriptName };
 export interface ScopeStoreUploadPlan {
   readonly scripts: readonly {
     readonly kind: string;
-    readonly release: string;
+    /** Every pinned release of the kind (D-63). Which one a script runs is not the plan's. */
+    readonly releases: readonly StoreKindRelease[];
     readonly vertical: string;
     readonly scriptName: string;
     readonly className: string;
@@ -227,7 +229,7 @@ export function scopeStoreUploadPlan(input: {
     seen.add(kind.kind);
     scripts.push({
       kind: kind.kind,
-      release: kind.release,
+      releases: kind.releases,
       vertical: input.vertical,
       scriptName: scopeStoreScriptName(input.vertical, kind.kind),
       className: kind.className,

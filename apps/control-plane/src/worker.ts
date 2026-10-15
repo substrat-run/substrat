@@ -36,6 +36,8 @@ import {
   SEND_EMAIL_KIND,
   connectorDispatchKind,
   STORE_KINDS,
+  scopeStorePublicKeysFrom,
+  type ScopeStoreNeed,
   type StoreKindRegistration,
 } from '@substrat-run/contracts';
 import type { ManifestImports, PlatformActorId, Scope, Tenant, TenantId, ScopeId } from '@substrat-run/contracts';
@@ -84,7 +86,6 @@ import {
   drainScopeScriptCopies,
   createWfpUploader,
   createScopeStoreEnsurer,
-  ed25519PublicKey,
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
   createCfObservabilityReader,
@@ -607,29 +608,32 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
 }
 
 /**
- * Uploads a declared scope store's script before the vertical (#2210). The release
- * loader stays empty until a release can be published (#2297); a declared store then
- * fails closed instead of serving a vertical with no store script.
+ * Puts a declared scope store's script in place before the vertical (#2210). The release
+ * loader stays empty until a release can be published (#2297): a declared store then fails
+ * closed (409) instead of serving a vertical with no store script.
  */
 function ensureScopeStoresFor(env: Env) {
   const accountId = env.CF_ACCOUNT_ID;
   const apiToken = env.CF_API_TOKEN;
   if (!apiToken || !accountId) return undefined;
-  return async (input: { vertical: string; stores: readonly { binding: string; kind: string }[] }) => {
-    const callerPublicKey = env.STORE_CALLER_PUBLIC_KEY;
-    const platformKey = env.STORE_PLATFORM_KEY;
-    if (!callerPublicKey || !platformKey) {
-      throw new ControlPlaneError(503, 'a scope store is declared and the store public keys are not configured');
+  return async (input: { vertical: string; stores: readonly ScopeStoreNeed[] }) => {
+    let keys;
+    try {
+      keys = scopeStorePublicKeysFrom({
+        caller: env.STORE_CALLER_PUBLIC_KEYS ?? '',
+        platform: env.STORE_PLATFORM_PUBLIC_KEYS ?? '',
+      });
+    } catch (e) {
+      throw new ControlPlaneError(503, `a scope store is declared and the store public keys are not usable: ${(e as Error).message}`);
     }
-    const ensure = createScopeStoreEnsurer({
+    await createScopeStoreEnsurer({
       accountId,
       namespace: dispatchNamespaceOf(env),
       apiToken,
-      callerPublicKey,
-      platformPublicKey: await ed25519PublicKey(platformKey),
+      callerPublicKeys: keys.caller,
+      platformPublicKeys: keys.platform,
       loadRelease: async () => undefined,
-    });
-    await ensure(input);
+    })(input);
   };
 }
 

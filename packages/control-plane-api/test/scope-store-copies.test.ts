@@ -40,7 +40,7 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
   const auth = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
   const graph: StoreKindRegistration = {
     kind: 'graph',
-    release: '0.0.0-test',
+    releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40) }],
     className: 'GraphStore',
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],

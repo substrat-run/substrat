@@ -13,6 +13,7 @@ import {
   scopeStoreBindingName,
   storeKindId,
   storeKindRegistration,
+  storeKindReleaseDigest,
   storeOperationName,
   storeRequest,
   STORE_OPERATION_NAME_MAX,
@@ -142,7 +143,7 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     expect(() =>
       storeKindRegistration.parse({
         kind: 'graph',
-        release: '1.0.0',
+        releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40) }],
         className: 'Store',
         operations: ['read'],
         platformOperations: reserved,
@@ -153,7 +154,7 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
   it('holds a kind id to [a-z0-9]+ (L20), at the registration and in every registered kind', () => {
     const registration = (kind: string) => ({
       kind,
-      release: '1.0.0',
+      releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40) }],
       className: 'Store',
       operations: ['read'],
       platformOperations: [...RESERVED_STORE_OPERATIONS],
@@ -174,12 +175,75 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     expect(() =>
       storeKindRegistration.parse({
         kind: 'graph',
-        release: '1.0.0',
+        releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40) }],
         className: 'Store',
         operations: ['substrat.wipe'],
         platformOperations: [...RESERVED_STORE_OPERATIONS],
       }),
     ).toThrow(/substrat/);
+  });
+});
+
+describe('a store kind release is pinned by sha256 and source commit (D-63)', () => {
+  const registration = (releases: unknown) => ({
+    kind: 'graph',
+    releases,
+    className: 'GraphStore',
+    operations: [],
+    platformOperations: [...RESERVED_STORE_OPERATIONS],
+  });
+  const pin = { sha256: 'c'.repeat(64), sourceCommit: 'd'.repeat(40) };
+
+  it('admits a list of pins, and refuses an empty list, a repeated pin, and a malformed one', () => {
+    expect(storeKindRegistration.safeParse(registration([pin, { ...pin, sha256: 'e'.repeat(64) }])).success).toBe(true);
+    for (const releases of [
+      [],
+      [pin, { ...pin }],
+      [{ ...pin, sha256: 'C'.repeat(64) }],
+      [{ ...pin, sha256: 'c'.repeat(63) }],
+      [{ ...pin, sourceCommit: 'd'.repeat(39) }],
+      [{ sha256: pin.sha256 }],
+      [{ ...pin, release: '1.0.0' }],
+      '1.0.0',
+    ]) {
+      expect(storeKindRegistration.safeParse(registration(releases)).success, JSON.stringify(releases)).toBe(false);
+    }
+    // The registration that named a release by label is no longer one.
+    expect(storeKindRegistration.safeParse({ ...registration([pin]), releases: undefined, release: '1.0.0' }).success).toBe(false);
+  });
+
+  const text = (value: string) => new TextEncoder().encode(value);
+  const bundle = [
+    { name: 'kind_graph/store.py', content: text('class GraphStore:\n    pass\n') },
+    { name: 'kind_graph/__init__.py', content: new Uint8Array() },
+  ];
+
+  it('digests a bundle to a fixed vector, computed outside this code', async () => {
+    // printf 'kind_graph/__init__.py\000' + 8 zero bytes + 'kind_graph/store.py\000' + 7 zero bytes
+    // + '\033' + the 27 bytes of the module, piped to `shasum -a 256`.
+    expect(await storeKindReleaseDigest(bundle)).toBe('c82a9898853d629946acf10e529a0f193654fe27ebffeffb6da610f14479d2ee');
+  });
+
+  it('is the same digest in any order, and another for any other bytes, name or split', async () => {
+    const digest = await storeKindReleaseDigest(bundle);
+    expect(await storeKindReleaseDigest([...bundle].reverse())).toBe(digest);
+    const others = [
+      [bundle[0]!, { ...bundle[1]!, content: text(' ') }],
+      [{ ...bundle[0]!, name: 'kind_graph/graph.py' }, bundle[1]!],
+      [bundle[0]!],
+      // The same bytes split differently between two names.
+      [{ name: 'a', content: text('bc') }, { name: 'b', content: text('') }],
+    ];
+    const seen = new Set([digest, await storeKindReleaseDigest([{ name: 'a', content: text('b') }, { name: 'b', content: text('c') }])]);
+    for (const modules of others) {
+      const other = await storeKindReleaseDigest(modules);
+      expect(seen.has(other), JSON.stringify(modules.map((m) => m.name))).toBe(false);
+      seen.add(other);
+    }
+  });
+
+  it('refuses a bundle that names a module twice', async () => {
+    await expect(storeKindReleaseDigest([bundle[0]!, bundle[0]!])).rejects.toThrow(/twice/);
   });
 });
 
@@ -201,7 +265,7 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
   it('holds a kind registration\'s catalog to the same rule', () => {
     const registration = (operations: string[]) => ({
       kind: 'graph',
-      release: '1.0.0',
+      releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40) }],
       className: 'GraphStore',
       operations,
       platformOperations: [...RESERVED_STORE_OPERATIONS],
@@ -216,7 +280,7 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
 describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
   const graph: StoreKindRegistration = {
     kind: 'graph',
-    release: '0.0.0-test',
+    releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40) }],
     className: 'GraphStore',
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],

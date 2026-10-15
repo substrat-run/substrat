@@ -113,6 +113,7 @@ import {
   capabilityId as capabilityIdSchema,
   PLATFORM_FEATURES_HEADER,
   PLATFORM_FEATURE_SCOPE_SWEEPER,
+  type ScopeStoreNeed,
   type StoreErasure,
   type StoreKindRegistration,
 } from '@substrat-run/contracts';
@@ -412,7 +413,7 @@ export interface ControlPlaneApiOptions {
    * upload (#2210). Absent ⇒ a push that declares a store and has a registered kind is
    * refused, rather than serving a vertical whose store script was never uploaded.
    */
-  ensureScopeStores?: (input: { vertical: string; stores: readonly { binding: string; kind: string }[] }) => Promise<void>;
+  ensureScopeStores?: (input: { vertical: string; stores: readonly ScopeStoreNeed[] }) => Promise<void>;
   /**
    * Reads a script's module contents back from the platform runtime (#286) — the
    * archive script is the bundle store the serving upload reads from. Host-injected
@@ -7577,6 +7578,45 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   });
 
   /**
+   * Puts the store scripts a version's declared stores need in place, before its vertical is
+   * uploaded (#2210). A declaration with no uploader configured is refused (501) rather than
+   * served without its store. A failure is recorded as an ops failure at stage `store-upload`
+   * (#559), then rethrown, so the push or serve answers it and the vertical upload never runs.
+   */
+  const ensureScopeStoresOf = async (
+    actor: PlatformActorId,
+    operation: 'deploy' | 'serve',
+    slug: string,
+    stores: readonly ScopeStoreNeed[],
+    tenantId: TenantId | null = null,
+  ): Promise<void> => {
+    if (stores.length === 0) return;
+    try {
+      if (!options.ensureScopeStores) {
+        throw new ControlPlaneError(
+          501,
+          `${operation} refused: '${slug}' declares a scope store and this control plane uploads no store script`,
+        );
+      }
+      await options.ensureScopeStores({ vertical: slug, stores });
+    } catch (e) {
+      recordFailure(
+        {
+          actor,
+          operation: `${operation}.store-upload`,
+          stage: 'store-upload',
+          vertical: slug,
+          tenantId,
+          status: e instanceof ControlPlaneError ? e.status : 502,
+          message: e instanceof Error ? e.message : String(e),
+        },
+        e,
+      );
+      throw e;
+    }
+  };
+
+  /**
    * Serve a version IN PLACE (#286): upload its bundle onto the vertical's ONE stable
    * serving script, where every scope's data DO lives — this is the step that makes a
    * promote carry data forward instead of stranding it in the outgoing version's
@@ -7636,15 +7676,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ? { type: 'd1', name: b.name, id: b.id }
         : { type: 'r2_bucket', name: b.name, bucket_name: b.bucketName },
     );
-    if (manifest.scopeStores.length > 0) {
-      if (!options.ensureScopeStores) {
-        throw new ControlPlaneError(
-          501,
-          `serve refused: '${slug}' declares a scope store and this control plane uploads no store script`,
-        );
-      }
-      await options.ensureScopeStores({ vertical: slug, stores: manifest.scopeStores });
-    }
+    // #2210: the store scripts first, so the vertical is never served before what it reaches.
+    await ensureScopeStoresOf(actor, 'serve', slug, manifest.scopeStores);
     await options.deployVertical(
       ref,
       {
@@ -8194,16 +8227,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // on it, so it is CF-valid and unique per version.
     const id = ulid();
     const deploymentRef = deploymentRefFor(slug, id);
+    // #2210: the store scripts first, outside the vertical upload's try, so a store failure
+    // answers as itself and the vertical is not uploaded at all.
+    await ensureScopeStoresOf(c.get('actor'), 'deploy', slug, manifest.scopeStores, ownerTenant ?? null);
     try {
-      if (manifest.scopeStores.length > 0) {
-        if (!options.ensureScopeStores) {
-          throw new ControlPlaneError(
-            501,
-            `deploy refused: '${slug}' declares a scope store and this control plane uploads no store script`,
-          );
-        }
-        await options.ensureScopeStores({ vertical: slug, stores: manifest.scopeStores });
-      }
       await options.deployVertical(deploymentRef, {
         entry: manifest.entry,
         compatibilityDate: manifest.compatibilityDate,
@@ -8222,7 +8249,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ...(manifest.assets ? { assets: { ...manifest.assets, files: assets } } : {}),
       });
     } catch (e) {
-      if (e instanceof ControlPlaneError) throw e;
       // The upload to the runtime failed. Surface the detail (the builder is
       // authenticated) rather than the anonymous 500 the generic handler would give, so a
       // push failure is diagnosable without reading worker logs. The version label is NOT

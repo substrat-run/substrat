@@ -344,14 +344,33 @@ const storeCatalogOperation = storeOperationName.refine((name) => !name.startsWi
 export const storeKindId = z.string().regex(STORE_KIND_ID, { message: 'a store kind id is [a-z0-9]+' });
 
 /**
- * A store kind, pinned the way a connector is: an exact release, the class
- * the platform runs, the catalog a vertical may call, and every reserved operation.
- * The list itself is {@link STORE_KINDS}. Empty until a kind is reviewed in.
+ * One pinned release of a store kind (D-63): the sha256 of the release bundle, which the
+ * platform checks at every upload, and the source commit the bundle was built from, which a
+ * reviewer reads. The digest is {@link storeKindReleaseDigest} over the bundle's modules.
+ */
+export const storeKindRelease = z
+  .object({
+    sha256: z.string().regex(/^[0-9a-f]{64}$/, { message: 'a release sha256 is 64 lowercase hex' }),
+    sourceCommit: z.string().regex(/^[0-9a-f]{40}$/, { message: 'a release source commit is 40 lowercase hex' }),
+  })
+  .strict();
+export type StoreKindRelease = z.infer<typeof storeKindRelease>;
+
+/**
+ * A store kind, registered in this repo and pinned (D-63): every release the platform may run,
+ * the class it runs, the catalog a vertical may call, and every reserved operation. A release is
+ * pinned by a reviewed change to this list, and a pin is never removed, a superseded release
+ * included. The list itself is {@link STORE_KINDS}. Empty until a kind is reviewed in.
  */
 export const storeKindRegistration = z.object({
   // Held to the kind-id grammar first (L20), so a second kind cannot be added outside it.
   kind: storeKindId.pipe(z.literal('graph')),
-  release: z.string().min(1),
+  releases: z
+    .array(storeKindRelease)
+    .min(1)
+    .refine((releases) => new Set(releases.map((r) => r.sha256)).size === releases.length, {
+      message: 'a release is pinned once',
+    }),
   // No script name: the platform names the upload `scopeStoreScriptName(vertical, kind)`.
   className: z.string().min(1),
   operations: z.array(storeCatalogOperation),
@@ -364,6 +383,35 @@ export type StoreKindRegistration = z.infer<typeof storeKindRegistration>;
 
 /** Registered store kinds. None, until a reviewed registration lands (#2210). */
 export const STORE_KINDS: readonly StoreKindRegistration[] = [];
+
+/**
+ * The sha256 that pins a store kind's release (D-63): lowercase hex over the bundle's modules in
+ * name order (UTF-16 code unit order, as `Array.prototype.sort` compares), each framed as its
+ * UTF-8 name, one zero byte, its length as an unsigned 64-bit big-endian integer, then its exact
+ * bytes. The framing is what makes the digest name one bundle: no two module lists encode alike.
+ * A duplicate module name is refused, since a bundle with one has no single meaning.
+ */
+export async function storeKindReleaseDigest(
+  modules: readonly { readonly name: string; readonly content: Uint8Array }[],
+): Promise<string> {
+  const sorted = [...modules].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  const parts: Uint8Array[] = [];
+  for (const [i, module] of sorted.entries()) {
+    if (i > 0 && sorted[i - 1]!.name === module.name) throw new Error(`a release ships '${module.name}' twice`);
+    const name = new TextEncoder().encode(module.name);
+    const length = new Uint8Array(8);
+    new DataView(length.buffer).setBigUint64(0, BigInt(module.content.byteLength));
+    parts.push(name, new Uint8Array([0]), length, module.content);
+  }
+  const framed = new Uint8Array(parts.reduce((n, part) => n + part.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) {
+    framed.set(part, offset);
+    offset += part.byteLength;
+  }
+  const hash = await crypto.subtle.digest('SHA-256', framed);
+  return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 
 /**
  * Whether a version's stored manifest (`HostAdmin.versionManifest`) declares a scope

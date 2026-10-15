@@ -817,7 +817,10 @@ block it.
    D-63, uploaded behind the step-7 entry module. The upload runs only a release the
    registration pins (sha256 and source commit): it hashes the bytes it is about to send,
    on every upload including restore and rollback, and refuses a sha256 that is not pinned.
-   The commit is checked in review, not at upload.
+   The commit is checked in review, not at upload. On #2299: a push or a serve uploads a
+   missing script at the release the publish flow rolled out, and otherwise never moves it.
+   It rebuilds the script at the release it runs only when what the script was built from
+   changed (the entry, the verifier, a key list).
 9. Later: the null-manifest test (f), the Cloudflare host's wipe without a tenant id,
    per-object nonce memory if Q2 says so, and a door for schedules (§9).
 
