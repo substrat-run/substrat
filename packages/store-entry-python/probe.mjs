@@ -56,18 +56,32 @@ mkdirSync(join(out, 'src'), { recursive: true });
 writeFileSync(join(out, 'src', entry.STORE_ENTRY_PYTHON_MODULE), python);
 writeFileSync(join(out, 'src', entry.STORE_VERIFIER_MODULE), entry.STORE_ENTRY_PYTHON_VERIFIER_SOURCE);
 copyFileSync(join(here, 'src', `${KIND_MODULE}.py`), join(out, 'src', `${KIND_MODULE}.py`));
-// The probe's own main: `?object=` sends the call to that object, past the default entrypoint.
+// The probe's own main. \`?object=\` sends the call, unverified, straight to that object, past
+// the default entrypoint, so the object's own checks are what answer it. \`?unconfigured=1\`
+// runs the entry's check with an env that has no key lists, as an upload that bound none.
 writeFileSync(
   join(out, 'src', 'probe_entry.py'),
   `from urllib.parse import parse_qs, urlparse
+
+from js import Object
+from workers import Response
 
 import ${entry.STORE_ENTRY_PYTHON_MODULE.replace(/\.py$/, '')} as store_entry
 from ${entry.STORE_ENTRY_PYTHON_MODULE.replace(/\.py$/, '')} import ${entry.STORE_OBJECT_CLASS}
 
 
+class _Unconfigured:
+    def __init__(self, env):
+        self._env = Object.fromEntries([e for e in Object.entries(env._env) if not str(e[0]).endswith("_KEYS")])
+
+
 class Default(store_entry.Default):
     async def fetch(self, request):
-        asked = parse_qs(urlparse(request.url).query).get("object")
+        query = parse_qs(urlparse(request.url).query)
+        if query.get("unconfigured"):
+            refused = await store_entry._verified(request, await request.text(), _Unconfigured(self.env))
+            return refused if isinstance(refused, Response) else Response("admitted", status=200)
+        asked = query.get("object")
         if not asked:
             return await super().fetch(request)
         namespace = getattr(self.env, "${entry.STORE_OBJECT_BINDING}")
@@ -271,6 +285,23 @@ try {
   const attacked = await send(await signed(other, 'increment'), `?object=${encodeURIComponent(name)}`);
   check(attacked.status === 401 && attacked.text === 'unauthorized: object', 'an object refuses a valid envelope for another name', attacked);
   check(result(await send(await signed(name, 'read'))) === count, 'and its count did not move');
+
+  // The object checks the call itself, whatever reached it: sent past the default entrypoint.
+  const direct = `?object=${encodeURIComponent(name)}`;
+  const unsigned = await send({ headers: {}, body: bodyOf(name, 'increment') }, direct);
+  check(unsigned.status === 401 && unsigned.text === 'unauthorized: missing', 'the object refuses an unsigned call sent straight to it', unsigned);
+  const forged = await signed(name, 'increment');
+  const forgedAnswer = await send({ ...forged, headers: { ...forged.headers, 'x-substrat-store-signature': 'a'.repeat(86) } }, direct);
+  check(forgedAnswer.status === 401 && forgedAnswer.text === 'unauthorized: signature', 'and a forged one', forgedAnswer);
+  const staleAnswer = await send(await raw({ lines: await linesFor(name, 'increment', bodyOf(name, 'increment'), { iat: String(now() - 120) }), body: bodyOf(name, 'increment') }), direct);
+  check(staleAnswer.status === 401 && staleAnswer.text === 'unauthorized: stale', 'and a stale one', staleAnswer);
+  check(result(await send(await signed(name, 'read'))) === count, 'and its count did not move for any of them');
+  const admittedDirect = await send(await signed(name, 'read'), direct);
+  check(admittedDirect.status === 200, 'while a valid call sent straight to it is admitted', admittedDirect);
+
+  // An upload that bound no keys answers 503, not the caller's 401.
+  const unconfigured = await send(await signed(name, 'read'), '?unconfigured=1');
+  check(unconfigured.status === 503 && unconfigured.text === 'this store script is not configured', 'an unconfigured store answers 503', unconfigured);
   check(result(await send(await signed(name, 'constructed'))).count === 1, 'the kind is constructed once, however many calls it serves');
   const fresh = `tenant/vertical/${randomUUID()}/graph`;
   const refused = await send(await signed(other, 'increment'), `?object=${encodeURIComponent(fresh)}`);
