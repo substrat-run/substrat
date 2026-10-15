@@ -440,7 +440,9 @@ name, without the kind's class being able to rewrite it, is open question Q3.
 key and the control plane the `platform` one. A store script holds only public keys, a list
 per audience, so no store script can mint an envelope for itself or for any other script.
 The list is what makes a rotation safe: add the new public key to every store script, switch
-the signer, then drop the old key.
+the signer, then drop the old key. A key listed for both audiences is refused, by the store's configuration
+(`scopeStorePublicKeysFrom`) and again by the verifier, which compares decoded bytes, not
+spellings: its holder could otherwise sign `platform` envelopes from the `caller` key.
 
 ### 10.4 What moves and what stays
 

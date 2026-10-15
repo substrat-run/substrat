@@ -116,7 +116,8 @@ function copyBytes(bytes: Uint8Array): ArrayBuffer {
 const NONCE = /^[A-Za-z0-9_-]{22}$/;
 const KID = /^[A-Za-z0-9_-]{11}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
-const IAT = /^(0|[1-9]\d{0,15})$/;
+// At most 15 digits, so every value it admits is a safe integer, as the encoder requires.
+const IAT = /^(0|[1-9]\d{0,14})$/;
 
 /** Nine lines, no trailing newline. Throws on a field the parser would refuse. */
 export function canonicalScopeStoreEnvelope(envelope: ScopeStoreEnvelope): string {
@@ -180,19 +181,40 @@ export async function scopeStoreKeyId(publicKey: string): Promise<string> {
 /**
  * A store's public keys for one audience, as configured: raw Ed25519 keys, base64url,
  * separated by commas (whitespace around each is ignored). Throws on an empty list, a key
- * that is not 32 bytes, or a duplicate. Rotation is: add the new key, switch the signer,
- * then drop the old key.
+ * that is not 32 bytes, a key not in canonical base64url (its unused trailing bits set, so
+ * two spellings would name one key), or the same key twice. Rotation is: add the new key,
+ * switch the signer, then drop the old key.
  */
 export function parseScopeStorePublicKeys(text: string): readonly string[] {
   const keys = text.split(',').map((key) => key.trim());
   if (keys.length === 0 || keys.some((key) => key.length === 0)) {
     throw new Error('a store public key list is empty or has an empty entry');
   }
+  const seen = new Set<string>();
   for (const key of keys) {
-    if (base64UrlToBytes(key)?.length !== 32) throw new Error('a store public key is not 32 bytes of base64url');
+    const bytes = base64UrlToBytes(key);
+    if (bytes?.length !== 32) throw new Error('a store public key is not 32 bytes of base64url');
+    // Canonical means the bytes re-encode to the same text, so equal text is equal bytes.
+    if (bytesToBase64Url(bytes) !== key) throw new Error('a store public key is not canonical base64url');
+    if (seen.has(key)) throw new Error('a store public key is listed twice');
+    seen.add(key);
   }
-  if (new Set(keys).size !== keys.length) throw new Error('a store public key is listed twice');
   return keys;
+}
+
+/**
+ * Both audiences' public keys, from their configured lists. Throws on anything
+ * {@link parseScopeStorePublicKeys} refuses, and on a key listed for both audiences: whoever
+ * holds the `caller` private key could then sign `platform` envelopes, `substrat.erase`
+ * included (L16). A store builds its keys only through this.
+ */
+export function scopeStorePublicKeysFrom(config: { readonly caller: string; readonly platform: string }): ScopeStorePublicKeys {
+  const caller = parseScopeStorePublicKeys(config.caller);
+  const platform = parseScopeStorePublicKeys(config.platform);
+  if (caller.some((key) => platform.includes(key))) {
+    throw new Error('a store public key is listed for both audiences');
+  }
+  return { caller, platform };
 }
 
 /**
@@ -321,7 +343,8 @@ export type ScopeStoreRefusal =
   | 'digest'
   | 'stale'
   | 'script'
-  | 'body';
+  | 'body'
+  | 'keys';
 
 export type ScopeStoreCallVerdict =
   | { readonly ok: true; readonly envelope: ScopeStoreEnvelope }
@@ -358,19 +381,23 @@ export async function verifyScopeStoreCall(input: {
   const envelope = parseScopeStoreEnvelope(canonical);
   if (!envelope) return refuse('malformed');
   if (!scopeStoreEnvelopeAdmits(envelope.v, envelope.aud, envelope.op)) return refuse('audience');
-  let publicKey: string | undefined;
-  for (const candidate of input.keys[envelope.aud]) {
-    let kid: string;
-    try {
-      kid = await scopeStoreKeyId(candidate);
-    } catch {
-      continue;
+  // Key ids are over the decoded bytes, so two spellings of one key share an id. A key the
+  // other audience also lists refuses every call: its holder could sign for either (L16).
+  const kidsOf = async (keys: readonly string[]) => {
+    const kids = new Map<string, string>();
+    for (const key of keys) {
+      try {
+        kids.set(await scopeStoreKeyId(key), key);
+      } catch {
+        // A malformed listed key verifies nothing.
+      }
     }
-    if (kid === envelope.kid) {
-      publicKey = candidate;
-      break;
-    }
-  }
+    return kids;
+  };
+  const own = await kidsOf(input.keys[envelope.aud]);
+  const other = await kidsOf(input.keys[envelope.aud === 'caller' ? 'platform' : 'caller']);
+  if ([...own.keys()].some((kid) => other.has(kid))) return refuse('keys');
+  const publicKey = own.get(envelope.kid);
   if (!publicKey) return refuse('kid');
   if (!(await verifyScopeStoreEnvelope(publicKey, canonical, input.signature))) return refuse('signature');
   if (envelope.digest !== (await scopeStoreBodyDigest(input.body))) return refuse('digest');

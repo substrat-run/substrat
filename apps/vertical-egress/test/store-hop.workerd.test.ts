@@ -107,15 +107,15 @@ beforeAll(async () => {
       {
         name: 'router',
         modules: [{ type: 'ESModule', path: 'worker.mjs', contents: routerBundle }],
-        // Ed25519 in WebCrypto needs a workerd this new. 2025-01-01 does not sign.
-        compatibilityDate: '2026-03-01',
+        // The router's deployed compatibility date (apps/router/wrangler.jsonc): it signs there.
+        compatibilityDate: '2025-01-01',
         bindings: { STORE_CALLER_KEY: callerKey },
         serviceBindings: { STORE: SCRIPT },
       },
       {
         name: SCRIPT,
         modules: [{ type: 'ESModule', path: 'worker.mjs', contents: storeBundle }],
-        compatibilityDate: '2026-03-01',
+        compatibilityDate: '2025-01-01',
         bindings: { SCRIPT_NAME: SCRIPT, CALLER_KEYS: caller.publicKey, PLATFORM_KEYS: platform.publicKey },
         durableObjects: { STORE: 'StoreObject' },
       },

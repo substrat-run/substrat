@@ -32,6 +32,7 @@ export {
   issueScopeStoreEnvelope,
   parseScopeStoreEnvelope,
   parseScopeStorePublicKeys,
+  scopeStorePublicKeysFrom,
   scopeStoreBodyDigest,
   scopeStoreEnvelopeAdmits,
   scopeStoreEnvelopeFresh,
