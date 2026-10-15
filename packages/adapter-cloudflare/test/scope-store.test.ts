@@ -11,8 +11,10 @@ describe('scope store door (cloudflare host, #2209)', () => {
   const staff = platformActorId.parse(ulid());
   const principal = principalId.parse(ulid());
 
+  // A control plane no longer implies the direct binding (#2288): these tests address the
+  // ambient namespace, so they say so.
   const world = async () => {
-    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, scopeStores: { transport: 'binding' } });
     const t = tenantId.parse(ulid());
     const a = scopeId.parse(ulid());
     const b = scopeId.parse(ulid());
@@ -120,11 +122,52 @@ describe('scope store door (cloudflare host, #2209)', () => {
     expect((refusal as { storeCode?: string }).storeCode).toBe('bad_envelope');
   });
 
-  it('a host with no control plane does not size or erase an ambient namespace it was not given (#2288)', async () => {
-    const host = new CloudflareScopeHost({ scope: env.SCOPE });
+  // #2288: on the platform hop the stores exist elsewhere. "No stores" would let the control
+  // plane destroy a subject key (#2242), so the local reads refuse instead, and never touch
+  // the ambient namespace this worker happens to bind.
+  it.each([
+    ['no control plane', () => new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { vertical: 'docs' } })],
+    ['a control plane', () => new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE })],
+  ] as const)('a platform-hop host with %s refuses to size, export or erase its stores locally (#2288)', async (_, make) => {
+    const host = make();
     const [t, s] = [tenantId.parse(ulid()), scopeId.parse(ulid())];
-    expect(await host.scopeStoreSizesLocal(t, s)).toEqual([]);
-    expect(await host.scopeStoreEraseLocal(t, s, ulid())).toEqual([]);
+    for (const read of [
+      () => host.scopeStoreSizesLocal(t, s),
+      () => host.scopeStoreExportLocal(t, s),
+      () => host.scopeStoreEraseLocal(t, s, ulid()),
+    ]) {
+      const refusal = await read().then(() => undefined, (err: unknown) => err);
+      expect(errorCodeOf(refusal)).toBe('unavailable');
+      expect((refusal as Error).message).toMatch(/through the platform/);
+    }
+    // Import of nothing is still nothing; a dump with a store is refused as unbound (L8).
+    await expect(host.scopeStoreImportLocal(t, s, [])).resolves.toBeUndefined();
+    await expect(host.scopeStoreImportLocal(t, s, [{ binding: 'GRAPH', kind: 'counter', tables: [] }])).rejects.toThrow(/not bound/);
+  });
+
+  it('a host with a control plane and no transport takes the platform hop too (#2288)', async () => {
+    let asked = '';
+    const host = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: env.CONTROL_PLANE,
+      fetch: async (input) => {
+        asked = String(input);
+        return Response.json({ result: 9 });
+      },
+    });
+    const store = await host.getScopeStore(principal, tenantId.parse(ulid()), scopeId.parse(ulid()), 'GRAPH');
+    expect(await store.invoke('read')).toBe(9);
+    expect(asked).toBe(STORE_CALL_URL);
+  });
+
+  it("refuses transport 'platform' beside runners, which would never be used (#2288)", () => {
+    const runner: ScopeStoreRunner = { kind: 'counter', async start() {}, async stop() {}, async invoke() { return { result: 0 }; } };
+    expect(
+      () => new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { transport: 'platform', runners: [{ binding: 'GRAPH', runner }] } }),
+    ).toThrow(/takes no runners/);
+    // The twin: runners alone are the in-process path, and an empty list is no runner.
+    expect(() => new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { runners: [{ binding: 'GRAPH', runner }] } })).not.toThrow();
+    expect(() => new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { transport: 'platform', runners: [] } })).not.toThrow();
   });
 
   it('a direct binding with no vertical still refuses a size read as unavailable', async () => {
