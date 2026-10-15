@@ -791,7 +791,10 @@ export const inviteAccount = (email: string, name: string) => authApi('/invitati
 export const acceptAccountInvitation = (token: string) => authApi<{ email: string }>('/invitation/accept', { method: 'POST', body: JSON.stringify({ token }) });
 export const invitationPassword = (password: string) => authApi('/invitation/password', { method: 'POST', body: JSON.stringify({ password }) });
 export const phoneStatus = () => authApi<{ available: boolean; enrolled: boolean; emailVerified: boolean; suffix: string | null }>('/phone/status');
-export const sendPhoneCode = (phoneNumber?: string) => authApi('/phone/send', { method: 'POST', body: JSON.stringify({ phoneNumber }) });
+/** Sent with the signed authorize query when there is one, so an expired sign-in is refused at
+ *  the send — before Twilio is asked for a code nobody could use. */
+export const sendPhoneCode = (phoneNumber?: string, oauthQuery?: string | null) =>
+  authApi('/phone/send', { method: 'POST', body: JSON.stringify({ phoneNumber, ...(oauthQuery ? { oauth_query: oauthQuery } : {}) }) });
 export async function verifyPhoneCode(code: string, oauthQuery?: string | null): Promise<void> {
   const result = await authApi<{ redirect?: boolean; url?: string }>('/phone/verify', { method: 'POST', body: JSON.stringify({ code, ...(oauthQuery ? { oauth_query: oauthQuery } : {}) }) });
   if (result.redirect && result.url) window.location.assign(result.url);
