@@ -417,6 +417,12 @@ rolled out and rolled back only by an actor whose credential is a rostered sign-
 no roster entry may be an automation identity, a shared mailbox, or anything else that can
 finish the login without a person. Such an entry would publish releases as if it were one.
 
+**A store kind release reaches at most 300 verticals** (#2300). A rollout or rollback walks every
+vertical any version ever declared the kind in, uploading at most 100 scripts per request; posting
+it again continues. A kind declared by more than 300 verticals cannot be rolled out **or rolled
+back** (409) until the rollout row carries a cursor (#2312). Watch that count before a kind grows
+towards it: past it, the emergency path is closed too.
+
 One invariant this log carries alone, worth naming: grant tuples persist no `grantedBy` —
 the tuple table stores `(subject, relation, object, expires_at, revoked_at)` and nothing
 else — so the admin log is the **only witness** of who granted what, and effective grant

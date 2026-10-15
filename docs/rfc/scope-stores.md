@@ -836,6 +836,10 @@ block it.
    `schema` its release migrates objects to, and no move (a rollout, a rollback, or the return
    after a failure) goes to a lower `schema` than the release it leaves. That is the
    forward-only answer to D-63's "Rollback against a migrated schema"; D-63's text is not changed.
+   One request moves at most 100 scripts and then pauses; posting the same rollout, or the same
+   rollback, again continues it. One request walks at most 300 verticals, counting every vertical
+   any version declared the kind in. Past that a rollout **and a rollback** are both refused (409),
+   and an operator has no recourse until the rollout row carries a cursor (#2312).
 9. Later: the null-manifest test (f), the Cloudflare host's wipe without a tenant id,
    per-object nonce memory if Q2 says so, and a door for schedules (§9).
 

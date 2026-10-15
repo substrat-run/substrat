@@ -15,7 +15,7 @@
  * {@link ROLLOUT_VERTICALS_PER_REQUEST} uploads per request. A bigger fleet ends the request
  * `paused`, and posting the same rollout (or rollback) again continues it, walking past the scripts
  * already there. A request that stops on a failure ends `failed` or `diverged`. One request walks at
- * most {@link ROLLOUT_FLEET_MAX} verticals, a rollback included (issue linked in the PR, #2300).
+ * most {@link ROLLOUT_FLEET_MAX} verticals, a rollback included, until #2312.
  */
 import {
   STORE_RELEASE_MAX_BYTES,
@@ -58,7 +58,8 @@ export const ROLLOUT_VERTICALS_PER_REQUEST = 100;
 /**
  * The most verticals one rollout walks. Every one costs a settings read and a hold renewal even
  * when it is already at the release, so a bigger fleet would outrun one invocation; it is refused
- * (409) rather than left unable to converge. Raising it needs a cursor on the rollout row.
+ * (409) rather than left unable to converge, and that blocks a rollback too. Raising it needs a
+ * cursor on the rollout row: #2312.
  */
 export const ROLLOUT_FLEET_MAX = 300;
 
