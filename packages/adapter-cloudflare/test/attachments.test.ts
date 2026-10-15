@@ -324,13 +324,14 @@ describe('attachment surface (cloudflare host)', () => {
     expect([...bucket.objs.keys()]).toEqual([`scope/${s}/att/${rec.id}`]);
   });
 
-  it('keeps the bytes when the call to the ScopeDO fails without an answer: the commit is unknown (#2311)', async () => {
+  it('keeps the bytes when the ScopeDO resets after the commit and never answers (#2311)', async () => {
     const { host, t, s, editor, bucket } = await world();
     const att = await host.attachments(editor, t, s);
-    // A rejected RPC, not a reply carrying a failure: what a lost reply looks like to the host.
-    await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (instance) => {
-      (instance as unknown as { attachmentAddReply: () => Promise<never> }).attachmentAddReply = async () => {
-        throw new Error('the reply was lost');
+    // The DO is reset in its post-commit tail: the RPC rejects with no reply, which is all the
+    // host sees of a lost answer. The row did commit, so a delete here would strand it.
+    await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (instance, state) => {
+      (instance as unknown as { dispatch: () => Promise<void> }).dispatch = async () => {
+        state.abort('reset after commit');
       };
     });
     await expect(
@@ -341,8 +342,10 @@ describe('attachment surface (cloudflare host)', () => {
         visibility: 'internal',
         body: bytes('x'),
       }),
-    ).rejects.toThrow(/the reply was lost/);
-    expect([...bucket.objs.keys()]).toHaveLength(1); // kept on doubt; the sweep is #2314
+    ).rejects.toThrow();
+    const [row] = await (await host.attachments(editor, t, s)).list({ entityType: 'item', entityId: 'i1' });
+    expect(row).toBeDefined(); // committed before the reset
+    expect([...bucket.objs.keys()]).toEqual([`scope/${s}/att/${row!.id}`]); // and its bytes are kept
   });
 
   it('removes: row gone, bytes gone, list empty', async () => {
