@@ -170,10 +170,39 @@ export function scopeStoreEnvelopeFresh(
   return Math.abs(nowSeconds - iat) <= windowSeconds;
 }
 
-/** The key id of a raw Ed25519 public key (base64url): base64url of SHA-256's first 8 bytes. */
+/**
+ * The encodings of Ed25519's eight small-order points, with the sign bit (the top bit of the
+ * last byte) cleared, including the non-canonical encodings p and p+1 of y: the list libsodium
+ * refuses. Under such a key a forged signature verifies for many messages (with the identity,
+ * R = identity and S = 0 verifies for any message under some verifiers), so no store accepts one.
+ */
+const SMALL_ORDER_KEYS = [
+  '0000000000000000000000000000000000000000000000000000000000000000', // y = 0, order 4
+  '0100000000000000000000000000000000000000000000000000000000000000', // the identity, order 1
+  '26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05', // order 8
+  'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a', // order 8
+  'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f', // y = p - 1, order 2
+  'edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f', // y = p, a non-canonical 0
+  'eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f', // y = p + 1, a non-canonical identity
+];
+
+/** Whether 32 key bytes encode a small-order point, in either sign. */
+function isSmallOrderKey(bytes: Uint8Array): boolean {
+  const unsigned = Uint8Array.from(bytes);
+  unsigned[31] = unsigned[31]! & 0x7f;
+  const hex = [...unsigned].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return SMALL_ORDER_KEYS.includes(hex);
+}
+
+/**
+ * The key id of a raw Ed25519 public key (base64url): base64url of SHA-256's first 8 bytes.
+ * Throws on a key that is not 32 bytes or encodes a small-order point, so a verifier given one
+ * never matches it.
+ */
 export async function scopeStoreKeyId(publicKey: string): Promise<string> {
   const bytes = base64UrlToBytes(publicKey);
   if (!bytes || bytes.length !== 32) throw new Error('a store public key is not 32 bytes of base64url');
+  if (isSmallOrderKey(bytes)) throw new Error('a store public key is a small-order point');
   const hash = await crypto.subtle.digest('SHA-256', copyBytes(bytes));
   return bytesToBase64Url(new Uint8Array(hash).slice(0, 8));
 }
@@ -181,7 +210,7 @@ export async function scopeStoreKeyId(publicKey: string): Promise<string> {
 /**
  * A store's public keys for one audience, as configured: raw Ed25519 keys, base64url,
  * separated by commas (whitespace around each is ignored). Throws on an empty list, a key
- * that is not 32 bytes, a key not in canonical base64url (its unused trailing bits set, so
+ * that is not 32 bytes, a small-order point, a key not in canonical base64url (its unused trailing bits set, so
  * two spellings would name one key), or the same key twice. Rotation is: add the new key,
  * switch the signer, then drop the old key.
  */
@@ -194,6 +223,7 @@ export function parseScopeStorePublicKeys(text: string): readonly string[] {
   for (const key of keys) {
     const bytes = base64UrlToBytes(key);
     if (bytes?.length !== 32) throw new Error('a store public key is not 32 bytes of base64url');
+    if (isSmallOrderKey(bytes)) throw new Error('a store public key is a small-order point');
     // Canonical means the bytes re-encode to the same text, so equal text is equal bytes.
     if (bytesToBase64Url(bytes) !== key) throw new Error('a store public key is not canonical base64url');
     if (seen.has(key)) throw new Error('a store public key is listed twice');

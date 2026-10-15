@@ -538,7 +538,7 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
   STORE_PLATFORM_KEY?: string;
   /**
    * The public halves a store script verifies with (#2287): raw Ed25519 keys, base64url,
-   * comma-separated (`parseScopeStorePublicKeys`), one list per audience. Not secret. The
+   * comma-separated, one list per audience, read through `scopeStorePublicKeysFrom`. Not secret. The
    * store upload writes them into each store script; a list so a key can rotate.
    */
   STORE_CALLER_PUBLIC_KEYS?: string;
