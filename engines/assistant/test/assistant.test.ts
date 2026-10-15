@@ -569,6 +569,36 @@ describe('engine-assistant', () => {
         expect(h.eventsOfType('assistant.approval-resolved')).toHaveLength(0);
       });
 
+      it('is refused under another version even with the digest recomputed for that version', async () => {
+        // Every binding is in the request event, so a client can compute the digest the
+        // request WOULD have had under the version now served. That is not what was shown.
+        const t = await openTurn();
+        const shown = await proposeGated(t.id);
+        const { digest: forV2 } = await request(t.id, { version: 'v-2030.2' });
+        expect(forV2).not.toBe(shown);
+        expect((await refusal(resolve(owner, t.id, forV2, true, { version: 'v-2030.2' })))?.reason).toBe('digest_mismatch');
+        expect(h.eventsOfType('assistant.approval-resolved')).toHaveLength(0);
+        // Still waiting, so nothing can be claimed under either version.
+        await host.stub.invoke('assistant/release-run', { threadId: t.id, runId: 'r1' });
+        await acquire(t.id, 'r2');
+        for (const version of [VERSION, 'v-2030.2']) {
+          expect(
+            (await refusal(
+              host.stub.invoke('assistant/claim-execution', { threadId: t.id, runId: 'r2', callId: 'c2', operation: OP, version, input: LOG }),
+            ))?.reason,
+          ).toBe('approval_required');
+        }
+      });
+
+      it('a denial ends the wait, not the turn: the host runs after it and rests the turn', async () => {
+        const t = await openTurn();
+        const digest = await proposeGated(t.id);
+        await resolve(owner, t.id, digest, false);
+        expect((await refusal(owner.stub.invoke('assistant/send-message', { threadId: t.id, text: 'x' })))?.reason).toBe('turn_in_progress');
+        await append(t.id, 'r1', [{ t: 'turn-finish', reason: 'done' }]);
+        await owner.stub.invoke('assistant/send-message', { threadId: t.id, text: 'x' });
+      });
+
       it('is refused at and after the expiry, and a lapsed request can still be denied', async () => {
         const t = await openTurn();
         const digest = await proposeGated(t.id);

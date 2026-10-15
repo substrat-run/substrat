@@ -40,7 +40,11 @@ and its invariants and never talks to a model.
    about to run, also before the expiry. Each is a conditional write (one row changed, or
    refused), so an approval is given once and spent once whatever the host's scheduling. A
    result for a gated call is refused unless it was claimed. A denial needs only the digest
-   shown, so a lapsed request can always be cleared.
+   shown, so a lapsed request can always be cleared: it ends `approval_pending`, not the
+   turn. Any answer resumes the turn, so the host must run after it and write `turn-finish`
+   or `turn-error`; until a run does, the owner's messages are `turn_in_progress`, and the
+   owner's only way out without a run is to close the thread. A host closes an abandoned turn
+   the same way: take the lease once the holder is stale, and write `turn-error`.
 4. **The two sides of the record are written by different keys.** The user's side (`user-message`,
    `turn-start`, `approval-resolved`) is written under `assistant:use` as the owner. The
    assistant's side is written under `assistant:run`, which a system principal holds and no

@@ -549,16 +549,21 @@ export function sendMessage(ctx: OperationContext, rawInput: SendMessageInput): 
 /**
  * The user approves or denies a gated tool call. As the owner, under `assistant:use`.
  *
- * An APPROVAL is checked against the digest RECOMPUTED from the stored bindings, with the
- * principal who is answering as the approver and `input.version` (the deployed version the
- * host serves the answer under) as the version: an approval of anything else — another
- * input, call, thread or operation, another approver, another deploy — is `digest_mismatch`,
- * never a quiet approval of what is stored. One that arrives at or after the request's
- * expiry is `approval_expired`.
+ * An APPROVAL must carry the stored digest (the one the request showed), and that digest must
+ * equal the one RECOMPUTED from the stored bindings with the principal who is answering as
+ * the approver and `input.version` (the deployed version the host serves the answer under)
+ * as the version: an approval of anything else — another input, call, thread or operation,
+ * another approver, another deploy — is `digest_mismatch`, never a quiet approval of what is
+ * stored. One that arrives at or after the request's expiry is `approval_expired`.
  *
  * A DENIAL needs only the digest the user was shown, with no version or expiry: saying no
  * runs nothing, and it is how the owner clears a request that lapsed or that a deploy made
- * stale, which would otherwise hold the thread (`approval_pending`) for ever.
+ * stale, which would otherwise refuse every message (`approval_pending`) for ever. A denial
+ * does not end the turn: `approval-resolved` resumes it, like an approval, and the turn stays
+ * open (`turn_in_progress` for the owner) until the host writes `turn-finish` or
+ * `turn-error`. The owner has no way to end a turn without a run; a host that does not come
+ * back leaves closing the thread as the owner's only way out, so a host must run after every
+ * answer, a denial included.
  *
  * Single use is the write itself: `UPDATE … WHERE state = 'awaiting-approval' AND digest = ?`,
  * refused unless it changed exactly one row, whatever was read before it.
@@ -586,7 +591,10 @@ export async function resolveApproval(ctx: OperationContext, rawInput: ResolveAp
     const expected = await digestOrRefuse(
       bindingOf(row, call.call_id, gate, { approver: String(ctx.principal), version: input.version, operation: gate.operation, input: request.input }),
     );
-    if (input.digest !== expected) {
+    // Both: the answer is the digest the user was shown (the stored one), AND that digest is
+    // what the bindings recompute to with this approver and this version. Checking only the
+    // second would accept a digest a client recomputed for another version.
+    if (input.digest !== gate.digest || expected !== gate.digest) {
       throw conflict('digest_mismatch', 'the approval does not match the request: another input, call, approver or deployed version');
     }
   } else if (input.digest !== gate.digest) {

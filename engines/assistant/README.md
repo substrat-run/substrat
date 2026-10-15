@@ -40,6 +40,14 @@ await claimExecution(ctx, { threadId, runId, callId, operation, version, input }
 `approvalDigest` and the event vocabulary (`assistantStreamBody`) are in
 `@substrat-run/contracts/assistant-stream`.
 
+**After every answer, the host runs.** An `approval-resolved`, approval or denial, resumes the
+turn rather than ending it, so the owner gets `turn_in_progress` until a run writes
+`turn-finish` or `turn-error`. A host therefore takes the lease after every answer, a denial
+included, and ends the turn (`turn-finish: done` after a denial, or `turn-error` if it cannot
+go on). If a turn is abandoned, because the host never came back, a later run takes the lease
+once the holder is stale and closes it the same way. The owner has no way to end a turn
+without a run; closing the thread is their only way out.
+
 ## Two keys
 
 `assistant:use` is a person's: open and read their own threads, say something, approve or deny.
