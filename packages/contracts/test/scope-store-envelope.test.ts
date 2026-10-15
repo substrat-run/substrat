@@ -14,6 +14,7 @@ import {
   scopeStoreEnvelopeFresh,
   ScopeStoreKeyError,
   scopeStoreKeyId,
+  scopeStorePublicKeysFrom,
   verifyScopeStoreCall,
   verifyScopeStoreEnvelope,
   type ScopeStoreEnvelope,
@@ -38,6 +39,10 @@ const NOW = 1_700_000_000;
 const OTHER_SCRIPT = 'substrat-store-blobs-vertical';
 
 const encode = (text: string) => bytesToBase64Url(new TextEncoder().encode(text));
+
+/** The same 32 bytes spelled differently: a 43-character key has 2 unused trailing bits. */
+const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+const alias = (key: string) => key.slice(0, -1) + ALPHABET[ALPHABET.indexOf(key.at(-1)!) ^ 1];
 const bodyFor = (op: string, name = NAME) => JSON.stringify({ objectName: name, operation: op, input: {} });
 
 /** The vector's own call, verified as the store whose script it names. */
@@ -176,6 +181,7 @@ describe('scope store envelope (#2287)', () => {
       [6, 'A'.repeat(64)],
       [7, '-5'],
       [7, '017'],
+      [7, '9999999999999999'],
       [8, 'n'],
       [8, 'A'.repeat(23)],
       [3, ''],
@@ -204,8 +210,7 @@ describe('scope store envelope (#2287)', () => {
     expect(scopeStoreEnvelopeAdmits(1, 'toString', 'read')).toBe(false);
     expect(scopeStoreEnvelopeAdmits(1, '__proto__', 'read')).toBe(false);
 
-    // Signed validly by the right key, an audience the table refuses for that op is refused.
-    const keys = { caller: [vector.publicKey], platform: [vector.publicKey] };
+    // Signed validly by the key listed for that audience, a pair the table refuses is refused.
     const signedAs = async (aud: 'caller' | 'platform', op: string) => {
       const body = bodyFor(op);
       const envelope = { ...parseScopeStoreEnvelope(vector.canonical)!, aud, op, digest: await scopeStoreBodyDigest(body) };
@@ -214,6 +219,7 @@ describe('scope store envelope (#2287)', () => {
         'pkcs8', base64UrlToBytes(vector.privateKeyPkcs8)! as Uint8Array<ArrayBuffer>, { name: 'Ed25519' }, false, ['sign'],
       );
       const signature = bytesToBase64Url(new Uint8Array(await crypto.subtle.sign('Ed25519', key, new TextEncoder().encode(canonical))));
+      const keys = { caller: aud === 'caller' ? [vector.publicKey] : [], platform: aud === 'platform' ? [vector.publicKey] : [] };
       return verify({ envelope: encode(canonical), signature, body, keys });
     };
     expect(await signedAs('caller', 'substrat.wipe')).toEqual({ ok: false, refusal: 'audience' });
@@ -235,11 +241,53 @@ describe('scope store envelope (#2287)', () => {
     }
   });
 
-  it('parses a public key list, and refuses an empty, short, duplicate or private entry', async () => {
+  it('parses a public key list, and refuses an empty, short, duplicate, aliased or private entry', async () => {
     const other = await generateScopeStoreKeyPair();
     expect(parseScopeStorePublicKeys(` ${vector.publicKey} , ${other.publicKey}`)).toEqual([vector.publicKey, other.publicKey]);
-    for (const text of ['', ',', `${vector.publicKey},`, `${vector.publicKey},${vector.publicKey}`, vector.privateKeyPkcs8, 'abc']) {
+    // The alias is the same key: same bytes, same kid.
+    expect(base64UrlToBytes(alias(vector.publicKey))).toEqual(base64UrlToBytes(vector.publicKey));
+    expect(await scopeStoreKeyId(alias(vector.publicKey))).toBe(vector.kid);
+    for (const text of [
+      '', ',', `${vector.publicKey},`, `${vector.publicKey},${vector.publicKey}`, vector.privateKeyPkcs8, 'abc',
+      alias(vector.publicKey), `${vector.publicKey},${alias(vector.publicKey)}`,
+    ]) {
       expect(() => parseScopeStorePublicKeys(text), text).toThrow();
     }
+  });
+
+  it('refuses one key configured for both audiences, in either spelling (L16)', async () => {
+    const other = await generateScopeStoreKeyPair();
+    expect(scopeStorePublicKeysFrom({ caller: vector.publicKey, platform: other.publicKey })).toEqual({
+      caller: [vector.publicKey],
+      platform: [other.publicKey],
+    });
+    expect(() => scopeStorePublicKeysFrom({ caller: vector.publicKey, platform: `${other.publicKey},${vector.publicKey}` })).toThrow(/both audiences/);
+    expect(() => scopeStorePublicKeysFrom({ caller: vector.publicKey, platform: alias(vector.publicKey) })).toThrow(/canonical/);
+
+    // And the verifier refuses the call itself when handed such lists, whichever audience signed.
+    for (const keys of [
+      { caller: [vector.publicKey], platform: [vector.publicKey] },
+      { caller: [vector.publicKey], platform: [alias(vector.publicKey)] },
+      { caller: [alias(vector.publicKey), other.publicKey], platform: [vector.publicKey] },
+    ]) {
+      expect(await verify({ keys })).toEqual({ ok: false, refusal: 'keys' });
+    }
+    const asPlatform = await issueScopeStoreEnvelope({
+      privateKey: vector.privateKeyPkcs8, aud: 'platform', script: vector.script, name: NAME, op: 'substrat.wipe', body: bodyFor('substrat.wipe'), iat: NOW,
+    });
+    const shared = { caller: [vector.publicKey], platform: [vector.publicKey] };
+    expect(await verify({ envelope: asPlatform.header, signature: asPlatform.signature, body: bodyFor('substrat.wipe'), keys: shared })).toEqual({ ok: false, refusal: 'keys' });
+    // The twin: separate keys, the platform call verifies.
+    expect(
+      await verify({ envelope: asPlatform.header, signature: asPlatform.signature, body: bodyFor('substrat.wipe'), keys: { caller: [other.publicKey], platform: [vector.publicKey] } }),
+    ).toMatchObject({ ok: true });
+  });
+
+  it('the iat grammar admits exactly the safe integers the encoder emits', () => {
+    const lines = vector.canonical.split('\n');
+    lines[7] = '999999999999999';
+    expect(parseScopeStoreEnvelope(lines.join('\n'))?.iat).toBe(999_999_999_999_999);
+    lines[7] = '9999999999999999';
+    expect(parseScopeStoreEnvelope(lines.join('\n'))).toBeUndefined();
   });
 });

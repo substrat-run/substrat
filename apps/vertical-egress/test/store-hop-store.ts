@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
-import { parseScopeStorePublicKeys, verifyScopeStoreCall } from '@substrat-run/contracts/scope-store-envelope';
+import { scopeStorePublicKeysFrom, verifyScopeStoreCall } from '@substrat-run/contracts/scope-store-envelope';
 
 /**
  * The store script of the hop suite (#2207, #2287), bundled and run on workerd. It is not the
@@ -39,7 +39,7 @@ export default {
       envelope: request.headers.get('x-substrat-store-envelope'),
       signature: request.headers.get('x-substrat-store-signature'),
       body,
-      keys: { caller: parseScopeStorePublicKeys(env.CALLER_KEYS), platform: parseScopeStorePublicKeys(env.PLATFORM_KEYS) },
+      keys: scopeStorePublicKeysFrom({ caller: env.CALLER_KEYS, platform: env.PLATFORM_KEYS }),
       script: env.SCRIPT_NAME,
       nowSeconds: Math.floor(Date.now() / 1000),
     });
