@@ -2179,8 +2179,10 @@ export interface CloudflareScopeHostOptions {
    * Scope stores answered in this isolate (#2213). When a binding has a runner
    * here, `getScopeStore` uses it. A direct binding reads `SUBSTRAT_STORE_<BINDING>`
    * from the worker env, and only when `transport` is `'binding'`: an ambient
-   * namespace is not a store this host was given. With no control plane, no runner
-   * and no transport, the call takes the platform hop (#2288). `vertical`, when set,
+   * namespace is not a store this host was given. With no runner and no transport,
+   * the call takes the platform hop (#2288), whether or not a control plane is given.
+   * `runners: []` is no runner, so it takes the hop too; a test that wants the ambient
+   * namespace says `transport: 'binding'`. `vertical`, when set,
    * is the only vertical this host serves. A deployed vertical has no control plane,
    * so that field is where the slug comes from.
    */
@@ -2540,17 +2542,20 @@ function isScopeStoreNamespace(value: unknown): value is ScopeStoreNamespace {
 const SCOPE_STORE_BINDING_PREFIX = `${PLATFORM_BINDING_PREFIX}STORE_`;
 
 /**
- * `platform` unless this host was given another way to reach a store (#2288).
- * A control plane keeps the direct binding, which is how the directory's own host
- * and the binding tests address an object. A runner is in-process. `transport`
- * set by the caller wins, including `'binding'`, which is the only thing that
- * reads an ambient `SUBSTRAT_STORE_*` namespace.
+ * `platform` unless this host was handed another way to reach a store (#2288): a
+ * non-empty `runners` list (in-process), or `transport: 'binding'`, which is the only
+ * thing that reads an ambient `SUBSTRAT_STORE_*` namespace. A control plane does not
+ * change the answer: whoever wants the direct namespace says so. An explicit
+ * `'platform'` beside runners is refused, since the runners would never be used.
  */
 function scopeStoreTransportOf(options: CloudflareScopeHostOptions): 'platform' | 'binding' {
-  if (options.scopeStores?.transport) return options.scopeStores.transport;
-  if ((options.scopeStores?.runners?.length ?? 0) > 0) return 'binding';
-  if (options.controlPlane) return 'binding';
-  return 'platform';
+  const runners = options.scopeStores?.runners?.length ?? 0;
+  const transport = options.scopeStores?.transport;
+  if (transport === 'platform' && runners > 0) {
+    throw substratError('validation_failed', "scopeStores: transport 'platform' takes no runners; they would never be used");
+  }
+  if (transport) return transport;
+  return runners > 0 ? 'binding' : 'platform';
 }
 
 /** Bindings this script declares by having a `SUBSTRAT_STORE_*` namespace. */
@@ -3831,6 +3836,7 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<{ binding: string; bytes: number }[]> {
+    this.refuseLocalStoresOnPlatform('size');
     return this.readScopeStoreSizes(tenantId, scopeId);
   }
 
@@ -3842,6 +3848,7 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
+    this.refuseLocalStoresOnPlatform('export');
     return this.exportScopeStores(tenantId, scopeId);
   }
 
@@ -3859,7 +3866,22 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     subjectId: string,
   ): Promise<{ binding: string; erased: number }[]> {
+    this.refuseLocalStoresOnPlatform('erase');
     return this.eraseScopeStores(tenantId, scopeId, subjectId);
+  }
+
+  /**
+   * On the platform hop this host holds no store object, so it cannot say what its stores
+   * hold: an empty answer would read as "no stores" (#2242). It refuses instead, and the
+   * control plane, which reaches the store script, is the one to ask.
+   */
+  private refuseLocalStoresOnPlatform(what: 'size' | 'export' | 'erase'): void {
+    if (this.scopeStoreTransport === 'platform') {
+      throw substratError(
+        'unavailable',
+        `this host reaches its scope stores through the platform and cannot ${what} them here; ask the control plane`,
+      );
+    }
   }
 
   /**
