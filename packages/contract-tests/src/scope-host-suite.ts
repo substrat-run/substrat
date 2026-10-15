@@ -6194,6 +6194,52 @@ export function scopeHostContractSuite(
       expect(await host.admin.scopeErasureEpoch(staff, t1, s)).toBe(1);
     });
 
+    // #2286, L17: what the lifecycle reaches is every binding any version declared.
+    it('keeps every scope-store binding a version declared, refuses a re-kind at publish, and names none it cannot read', async () => {
+      const slug = `bind-${ulid().toLowerCase().slice(-8)}`;
+      await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+      const publish = (scopeStores?: { binding: string; kind: string }[], raw?: string) => {
+        const id = ulid();
+        return host.admin.publishVersion(staff, {
+          id,
+          verticalSlug: slug,
+          version: `1.0.${id.slice(-6).toLowerCase()}`,
+          manifestDigest: `m-${id}`,
+          permissionDigest: 'p',
+          migrationDigest: 'g',
+          deploymentRef: null,
+          manifestJson: raw ?? JSON.stringify({
+            version: '1.0.0', entry: 'index.js', compatibilityDate: '2026-07-01',
+            registry: { permissions: [], roles: [], entityGrants: [] },
+            digests: { manifest: 'm', permission: 'p', migration: 'g' },
+            ...(scopeStores ? { scopeStores } : {}),
+          }),
+        }).then(() => id);
+      };
+      await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'OLD', kind: 'graph' }]);
+      await publish([{ binding: 'GRAPH', kind: 'graph' }]);
+      // A dropped binding is still there.
+      expect(await host.admin.verticalScopeStores(staff, slug)).toEqual([
+        { binding: 'GRAPH', kind: 'graph' },
+        { binding: 'OLD', kind: 'graph' },
+      ]);
+      // A re-kind is refused, and the version is not stored.
+      const before = (await host.admin.listVersions(staff, slug)).length;
+      await expectRefusal(publish([{ binding: 'NEW', kind: 'graph' }, { binding: 'OLD', kind: 'counter' }]), 'conflict');
+      expect((await host.admin.listVersions(staff, slug)).length).toBe(before);
+      // So is a version that declares one binding twice.
+      await expectRefusal(publish([{ binding: 'NEW', kind: 'graph' }, { binding: 'NEW', kind: 'graph' }]), 'conflict');
+      expect((await host.admin.listVersions(staff, slug)).length).toBe(before);
+      // The twin: the same kind again, with a new binding beside it, is published.
+      await publish([{ binding: 'OLD', kind: 'graph' }, { binding: 'NEW', kind: 'graph' }]);
+      expect((await host.admin.verticalScopeStores(staff, slug)).map((s) => s.binding)).toEqual(['GRAPH', 'NEW', 'OLD']);
+      // A version whose manifest cannot be read may declare a store nobody can name.
+      await publish(undefined, '{nope');
+      await expectRefusal(host.admin.verticalScopeStores(staff, slug), 'unavailable');
+      // An unknown vertical declared none.
+      expect(await host.admin.verticalScopeStores(staff, `none-${slug}`)).toEqual([]);
+    });
+
     // #1722 (Codex #2008 r7): the admin-log record of a staff resolution of a kept copy. The
     // resolution itself runs in the vertical's store; the directory only records it, in full.
     it('records a kept-copy resolution in the admin log, before and after, and refuses an unknown scope', async () => {

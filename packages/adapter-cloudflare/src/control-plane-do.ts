@@ -82,6 +82,11 @@ import {
   switchesTableOf,
   tenantHeldOf,
   VERSION_MIGRATIONS_DDL,
+  VERTICAL_SCOPE_STORES_DDL,
+  forgetVerticalScopeStores,
+  indexVersionScopeStores,
+  verticalScopeStoresOf,
+  type VerticalScopeStore,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
   versionsAwaitSplit,
@@ -965,6 +970,7 @@ const DIRECTORY_DDL = `
     UNIQUE (vertical_slug, version)
   );
   ${VERSION_MIGRATIONS_DDL}
+  ${VERTICAL_SCOPE_STORES_DDL}
   CREATE TABLE IF NOT EXISTS vertical_channels (
     vertical_slug TEXT NOT NULL,
     channel       TEXT NOT NULL,
@@ -1443,6 +1449,9 @@ export const REPLIED_METHODS = [
   'linkIdentity',
   // #1748: refuses an expiry outside its bounds with validation_failed.
   'createFindingRule',
+  // #2286: refuses a re-kinded scope-store binding with conflict, and an unreadable manifest with unavailable.
+  'insertVersion',
+  'verticalScopeStores',
 ] as const;
 export type RepliedMethod = (typeof REPLIED_METHODS)[number];
 
@@ -3169,6 +3178,7 @@ export class ControlPlaneDO extends DurableObject {
         WHERE version_id IN (SELECT id FROM vertical_versions WHERE vertical_slug = ?)`,
       slug,
     );
+    forgetVerticalScopeStores(this.kernelSql, slug);
     this.sql.exec('DELETE FROM vertical_versions WHERE vertical_slug = ?', slug);
     this.sql.exec('DELETE FROM verticals WHERE slug = ?', slug);
   }
@@ -3213,7 +3223,14 @@ export class ControlPlaneDO extends DurableObject {
         v.originJson, v.migrations?.length ?? null, v.createdAt,
       );
       writeVersionMigrations(this.kernelSql, v.id, v.migrations);
+      // #2286: the version's scope-store bindings, refusing one re-kinded, in the insert's transaction.
+      indexVersionScopeStores(this.kernelSql, v.verticalSlug, v.id, v.manifestJson);
     });
+  }
+
+  /** Every scope-store binding any version of the vertical declared (#2286); indexes versions not indexed yet. */
+  verticalScopeStores(slug: string): VerticalScopeStore[] {
+    return this.ctx.storage.transactionSync(() => verticalScopeStoresOf(this.kernelSql, slug));
   }
 
   /** One version's SQL migrations (#1764), or `undefined` for no such version. */

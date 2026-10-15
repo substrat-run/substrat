@@ -4,6 +4,7 @@ import type { BoundOperations } from './module-operations.js';
 import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
 import type { ScopeCopyBackfillResult, SubjectErasureFence } from './scope-copy-ledger.js';
+import type { VerticalScopeStore } from './vertical-scope-stores.js';
 import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
   OnBehalfOf,
@@ -2370,6 +2371,9 @@ export interface HostAdmin {
    * permission diffs are the admission gates, and binding a scope is a separate step
    * (`bindScopeVersion`), so the two human checkpoints fire where the blast radius is
    * rather than where the typing was.
+   *
+   * Refuses (`conflict`) a version that declares a scope-store binding the vertical already
+   * declared as another kind (#2286): see `verticalScopeStores`.
    */
   publishVersion(actor: PlatformActorId, input: PublishVersionInput): Promise<void>;
   /** Ordered by id (ULID = publish order), `asc` unless `page.order` says otherwise. */
@@ -2648,6 +2652,16 @@ export interface HostAdmin {
    * version can be bound per-version but never served in place.
    */
   versionManifest(actor: PlatformActorId, verticalSlug: string, versionId: string): Promise<string | null>;
+  /**
+   * Every scope-store binding any version of the vertical has declared, with its kind (#2286,
+   * RFC scope-stores L17): what export, wipe, erasure and the meter reach, so an object under a
+   * binding a later version dropped is still reached. Read by its keys, with no per-version work
+   * once the vertical is indexed. A binding keeps its kind for the life of the vertical:
+   * `publishVersion` refuses a version that re-kinds one, or declares one twice (`conflict`).
+   * Refuses (`unavailable`) when a version's manifest cannot be read, since that version may
+   * declare a store nobody can name. Empty for an unknown vertical.
+   */
+  verticalScopeStores(actor: PlatformActorId, verticalSlug: string): Promise<VerticalScopeStore[]>;
   /**
    * One version's SQL migrations (#1764), in the order the host runs them. They are stored
    * apart from the manifest, which `versionManifest` returns without them. Null for a version

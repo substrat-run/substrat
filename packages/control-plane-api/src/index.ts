@@ -116,6 +116,7 @@ export type {
 export {
   callPlatformScopeStore,
   platformScopeStoresFor,
+  runningVersionStoresOf,
   scopeStoresOf,
   unrouteScope,
   unreachablePlatformScopeStores,

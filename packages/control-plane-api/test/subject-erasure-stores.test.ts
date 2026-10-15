@@ -243,9 +243,16 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         await host.admin.admitVersion(staff, id);
         return { id, ref };
       };
+      /** Its own vertical (#2286): erasure reaches every binding any version of it declared. */
+      const ownVertical = async () => {
+        const slug = `own-${ulid().toLowerCase().slice(-10)}`;
+        await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+        return slug;
+      };
       const bound = async (scopeStores?: unknown[], platform = platformStores()) => {
-        const scope = await sealedScope();
-        const version = await publish(scopeStores);
+        const slug = await ownVertical();
+        const scope = await sealedScope(slug);
+        const version = await publish(scopeStores, slug);
         await host.admin.bindScopeVersion(staff, t, scope.s, version.id);
         const api = createControlPlaneApi({
           host,
@@ -296,11 +303,16 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       };
       const stores = [{ binding: 'GRAPH', kind: 'graph' }];
 
-      it('on the serving script, the served version decides, not the bound one', async () => {
+      it('on the serving script, every binding any version of the vertical declared is erased (#2286)', async () => {
         const served = await onServingScript({ servedStores: stores });
         expect(served).toEqual({ status: 200, asked: served.expected, expected: served.expected, keyKept: false });
+        // The served version declares none and the bound one GRAPH: a version of the vertical
+        // declared GRAPH, so its object may hold the subject, and it is erased too.
         const boundOnly = await onServingScript({ boundStores: stores });
-        expect(boundOnly).toEqual({ status: 200, asked: [], expected: boundOnly.expected, keyKept: false });
+        expect(boundOnly).toEqual({ status: 200, asked: boundOnly.expected, expected: boundOnly.expected, keyKept: false });
+        // Neither declares one: nothing is asked.
+        const none = await onServingScript({});
+        expect(none).toEqual({ status: 200, asked: [], expected: none.expected, keyKept: false });
       });
 
       // Stricter than asking (#2207): a version unknown names no binding to erase, so it refuses.
@@ -331,13 +343,14 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       });
 
       it('a binding added while the stores are erased keeps the key (#2285)', async () => {
-        const scope = await sealedScope();
-        const version = await publish(stores);
+        const slug = await ownVertical();
+        const scope = await sealedScope(slug);
+        const version = await publish(stores, slug);
         await host.admin.bindScopeVersion(staff, t, scope.s, version.id);
         const caller: PlatformScopeStores = {
           ...unreachablePlatformScopeStores(),
           eraseSubject: async () => {
-            const added = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }]);
+            const added = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }], slug);
             await host.admin.bindScopeVersion(staff, t, scope.s, added.id);
             return [{ binding: 'GRAPH', erased: 1 }];
           },
@@ -358,14 +371,15 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
        * The direct arm (#2285): no script to redact through, so the host's own shred runs, and it
        * takes the same claim the orchestrated finalize takes. `move` runs while the stores are erased.
        */
-      const direct = async (move: (s: ScopeId) => Promise<void>) => {
-        const scope = await sealedScope();
-        const version = await publish([{ binding: 'GRAPH', kind: 'graph' }], 'docs', false);
+      const direct = async (move: (s: ScopeId, slug: string) => Promise<void>) => {
+        const slug = await ownVertical();
+        const scope = await sealedScope(slug);
+        const version = await publish([{ binding: 'GRAPH', kind: 'graph' }], slug, false);
         await host.admin.bindScopeVersion(staff, t, scope.s, version.id);
         const caller: PlatformScopeStores = {
           ...unreachablePlatformScopeStores(),
           eraseSubject: async ({ stores }) => {
-            await move(scope.s);
+            await move(scope.s, slug);
             return stores.map((store) => ({ binding: store.binding, erased: 1 }));
           },
         };
@@ -379,8 +393,8 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       };
 
       it('on the direct arm, a bind that adds a binding while the stores are erased keeps the key (#2285)', async () => {
-        const { res, keyKept } = await direct(async (s) => {
-          const added = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }], 'docs', false);
+        const { res, keyKept } = await direct(async (s, slug) => {
+          const added = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }], slug, false);
           await host.admin.bindScopeVersion(staff, t, s, added.id);
         });
         expect(res.status).toBe(412);

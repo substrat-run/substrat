@@ -620,6 +620,13 @@ export {
   versionsAwaitSplit,
   writeVersionMigrations,
 } from './version-migrations.js';
+export {
+  VERTICAL_SCOPE_STORES_DDL,
+  forgetVerticalScopeStores,
+  indexVersionScopeStores,
+  verticalScopeStoresOf,
+  type VerticalScopeStore,
+} from './vertical-scope-stores.js';
 export type { SplitManifest } from './version-migrations.js';
 export {
   admitPeer,
