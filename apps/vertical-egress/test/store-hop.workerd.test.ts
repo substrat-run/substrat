@@ -2,7 +2,8 @@ import { build } from 'esbuild';
 import { Miniflare } from 'miniflare';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { generateScopeStoreKeyPair, issueScopeStoreEnvelope, scopeStoreObjectName, scopeStoreScriptName } from '@substrat-run/contracts';
+import { scopeStoreObjectName, scopeStoreScriptName } from '@substrat-run/contracts';
+import { generateScopeStoreKeyPair, issueScopeStoreEnvelope } from '@substrat-run/contracts/scope-store-envelope';
 
 /**
  * The scope-store hop on workerd (#2207).
