@@ -49,7 +49,9 @@ On the platform path the call leaves the vertical as a fetch of `store.substrat.
 
 The call on the wire is `{ operation, input }`. The answer is `{ result }`, or `{ error: { code, status, body } }`, where `status` is an HTTP error status from 400 to 599. An answer with any other status is not the envelope, and it arrives as `bad_envelope`. A store error arrives as `StoreError`. The platform code comes from the HTTP status. The store's own `code` travels in `storeCode`. Its `body` travels in `storeBody` only for a 4xx whose JSON is at most 1 KiB (`STORE_BODY_MAX_BYTES`). A client can read that body, so a 5xx body, a larger one, or one that is not JSON stays in the store. The vertical's own code gets the same filtered `storeBody`.
 
-A direct binding exists for local development and for tests, and only when the host is created with `transport: 'binding'`. An ambient `SUBSTRAT_STORE_*` namespace is not used otherwise. The binding is not an isolation boundary. The store script's own check of each call is not in place yet (see [Known limits](#known-limits)).
+A direct binding exists for local development and for tests, and only when the host is created with `transport: 'binding'`. An ambient `SUBSTRAT_STORE_*` namespace is not used otherwise. The binding is not an isolation boundary.
+
+On the platform path the store script's main module is the platform's store entry, not the kind. It checks every call before the kind's class is constructed: the signature, the key, the audience against the operation, the time, the store script, and that the object being asked is the one the signed name addresses. It hands the kind the exact body it checked, and an environment without the entry's own `SUBSTRAT_STORE*` bindings. The entry is not a boundary against the kind itself: the kind's code runs in the same isolate, so a kind that set out to interfere with the checks could. What stands between a kind and every tenant it serves is the review of each release the platform pins.
 
 ## The invocation line
 
@@ -111,7 +113,7 @@ These are open, and are tracked in the [scope-stores RFC](https://github.com/sub
 
 Before the first kind:
 
-- **The store's checks on each call.** The platform signs every call, and the verifier is shipped, but no store script runs it yet. It is planned in an entry module the platform supplies in front of the kind, which also checks the object's remembered name.
+- **No store script is uploaded yet.** The entry that checks each call exists and is tested in front of a test kind. Uploading a registered kind behind it is the next step.
 - **Unroute is not a drain.** Deleting a scope unbinds its hostnames before the wipe. That is the fast path. The durable fence, a scope state the store door itself checks, is still to come.
 
 Later:

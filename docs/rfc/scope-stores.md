@@ -416,11 +416,13 @@ signature. The store checks, before any of the kind's code runs:
    matches the body received.
 3. `iat` is inside the freshness window (60 seconds either side).
 4. `script` is this store script's own name, and the body names the signed `op` and `name`.
-5. `name` equals the first name this object accepted. On an object's first accepted call
-   the name is recorded in the object's own storage, before the operation runs.
+5. The object's own id is `idFromName(name)`. An object is bound to one name by
+   construction: a validly signed envelope for another name does not open it, whether it
+   has served calls or is fresh, and nothing is stored that the kind could rewrite.
 
 Checks 1–4 are one function, `verifyScopeStoreCall`, which the store entry calls; check 5
-needs the object's storage and is the entry's own.
+needs the object's id and is the entry's own (#2295). The entry reads the body once,
+verifies that string, and hands the kind that same string.
 
 Replay inside the window is bounded by the window. The reserved operations are idempotent,
 and a kind operation's retry safety is the vertical's (§9). Per-object nonce memory is
@@ -432,9 +434,20 @@ the kind's own class can leave it out, and a review that "checks one import" pro
 **The requirement is that the checks run in platform code the kind cannot replace.** The
 platform supplies the store script's entry module, and the kind supplies only the class
 behind it. That is the role `lint:platform-entry` already plays for a vertical's bundle.
-The entry module verifies the envelope and the remembered name before it hands the request
-to the kind's object. How the entry module reaches the object's storage for the remembered
-name, without the kind's class being able to rewrite it, is open question Q3.
+The entry module verifies the envelope and the object's id before it hands the request to
+the kind's object (#2295, `packages/control-plane-api/store-entry/entry.ts`, re-emitted under
+`lint:store-entry --check`). It constructs the kind once per object instance, with an env that
+holds none of the entry's `SUBSTRAT_STORE*` bindings, and forwards the object's alarm to it. A
+kind is otherwise `fetch`-only: an RPC method or a WebSocket handler on its class is not reached.
+
+**What the entry is not.** It is not a boundary against a hostile kind. The kind's module is
+evaluated in the same isolate, before the entry's own body, and its class runs with the
+object's `ctx`. A kind can therefore replace the globals the checks use, or reach the object's
+storage, before or around a check. The entry guarantees that a kind which leaves the checks
+out cannot skip them; it does not stop a kind written to interfere with the isolate.
+Snapshotting the primitives the checks use in a module evaluated before the kind would
+narrow that window without closing it, so it is not done. That boundary is the D-63
+review of every pinned release, until a platform mechanism isolates the kind.
 
 **Keys (L16).** One Ed25519 signing key per audience. The router holds the `caller` private
 key and the control plane the `platform` one. A store script holds only public keys, a list
@@ -671,8 +684,8 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | L1 | A hosted serving upload carries no binding named `SUBSTRAT_STORE_*`, whatever `STORE_KINDS` holds. With L18, that holds for every name in the upload, the vertical's own included |
 | L2 | A hosted `getScopeStore` call leaves the worker only as `fetch` of `store.substrat.internal`. With no direct binding and no runner configured, the host never falls back to an ambient binding |
 | L3 | The router refuses a `substrat.*` operation, a scope other than the routed one, and a binding the serving version does not declare, before it signs |
-| L4 | The store refuses an envelope whose signature fails, whose `kid` names no listed key, whose `script` is not its own, whose `digest` does not match the body, whose `aud` does not match `op`, whose `iat` is outside the window, or whose `name` differs from the first name it accepted. Each is checked before kind code runs |
-| L5 | A signature for one object, operation or audience does not open another. A validly signed envelope for name Y is refused by an object that remembers X |
+| L4 | The store refuses an envelope whose signature fails, whose `kid` names no listed key, whose `script` is not its own, whose `digest` does not match the body, whose `aud` does not match `op`, whose `iat` is outside the window, or whose `name` is not the name of the object's own id. Each is checked before kind code runs |
+| L5 | A signature for one object, operation or audience does not open another. A validly signed envelope for name Y is refused by the object whose id is `idFromName(X)`, used or fresh |
 | L6 | Every scope-deletion path stops routing the scope, then calls `substrat.wipe` on each binding, then deletes the scope's storage, in that order |
 | L7 | A failed or undecidable wipe stops the delete, and the scope's own storage is left for the retry. The delete never proceeds around the store |
 | L8 | A restore imports only bindings the destination version declares with the same kind. Any other dump binding refuses the restore before any write, ahead of `host.restoreScope`. This is the recommended answer to Q4, pending its decision |
@@ -710,6 +723,7 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | (p) Store script names are injective over (kind, vertical), and the `substrat-store-` name space is reserved against vertical scripts | `scopeStoreScriptName`, `platformScriptCollision` (#2247) |
 | (q) The router's route read applies the same rule as (i), so a scope pinned to another script gets no store | `READ_ROUTE_SQL` |
 | (n) Export, wipe, erasure and the meter reach every binding any version of the vertical declared, a re-kind is refused at publish, and an export leaves out an empty binding only an earlier version declared and refuses one that holds data (#2292, the accepted Q5 answer) | `vertical_scope_stores`, `HostAdmin.verticalScopeStores`, `scopeStoreReachOf` |
+| (b), (o) The platform's store entry runs checks 1–5 in front of the kind, evidenced on workerd with the counter test kind uploaded as the platform uploads it. No store script is uploaded behind it until #2210 (#2295) | `withStoreEntry`, `apps/vertical-egress/test/store-entry.workerd.test.ts` |
 | (c) The platform hop is the Cloudflare host's default, control plane or not. Only a runner or `transport: 'binding'` takes another path, `'platform'` beside runners is refused, and on the hop the host's local size, export and erase refuse (`unavailable`) instead of answering "no stores" (#2294) | `scopeStoreTransportOf`, `refuseLocalStoresOnPlatform` |
 | (a) The name-only MAC is gone. Both signers sign the Ed25519 envelope of §10.3, over the audience, key id, script, name, operation, body digest, time and nonce, and `verifyScopeStoreCall` holds checks 1–4 (#2293) | `issueScopeStoreEnvelope`, `verifyScopeStoreCall` |
 | (m) Snapshot deletion, preview reap and the sweeper's snapshot reap decide their refusals, then unbind every hostname, then wipe, then delete. Erasure's two arms take one claim that fences the version, the pin and the serving pointer's pair before the key goes (#2285) | `unrouteScope`, `claimScopeScriptReap`, `SUBJECT_ERASURE_CLAIM_SQL` |
@@ -718,9 +732,7 @@ Still open:
 
 | | Open item | Rule | Before #2210? |
 |---|---|---|---|
-| (b) | First-name memory and the audience check exist as helpers and in a test fixture, not in a store script. No kind is registered to carry them | L4, L5 | **Yes**, in the test kind and in the registration requirements (D-63) |
 | (f) | Replay and wipe skip when the destination's manifest is null. That is correct for a version that predates kept manifests, and needs a test that says so | L9, L7 | No, later |
-| (o) | The envelope checks are planned in the kind's script, which the kind controls. The platform has to supply the store script's entry module | L4, L5 | **Yes**, with #2210 |
 | (r) | The erasure replay runs inside one request and starts again from the first subject on a retry, so it converges only while it fits one request's budget. Resuming needs a cursor of its own | L9 | No, later |
 | (s) | The direct-path shred's audited receipt lacks the platform's store erasures, because the host's `shredSubject` takes no store list. The answer carries them | L12 | No, later |
 | (t) | Peer dispatch carries no store list, so a vertical serving a peer call has its store calls refused | L3 | No, later |
@@ -757,7 +769,7 @@ block it.
    binding and no runner, control plane or not, sends a vertical's call to
    `store.substrat.internal`. The ambient path is taken only where a binding or runner was
    given explicitly (L2).
-7. A platform-supplied store entry module that runs L4 and L5 in front of the kind's
+7. Done on #2295. A platform-supplied store entry module that runs L4 and L5 in front of the kind's
    class (o). The trivial test kind runs behind it, and the contract suite
    asserts L4 and L5 on workerd. The spike's "Not yet evidenced" items move to FINDINGS
    Shown only when they pass.
@@ -841,7 +853,7 @@ What each open PR keeps:
 |---|---|---|
 | Q1 | How long is the freshness window? | 60 seconds. The router and the control plane sign immediately before dispatch, and a long window only widens replay |
 | Q2 | Does an object remember nonces inside the window? | Not in v1. The reserved operations are idempotent, a kind call is a vertical retry the window bounds, and nonce memory is a write on every call. Revisit if a kind registers a non-idempotent operation the platform itself calls |
-| Q3 | The platform supplies the store script's entry module (§10.3). How does it hold the remembered name so the kind's class cannot rewrite it? | A platform-emitted entry module with its own re-emit check, as `lint:platform-entry` has. The entry module checks the remembered name before it constructs the kind's object. The kind's class shares the object's storage, so whether it can rewrite that name is held by the registration review until a platform mechanism can isolate it. A wrapper class the kind imports is not enough. **Decided 2026-10-15:** this answer stands. The registration review is a standing condition, to be revisited before any kind written outside this repo is registered. Whether an entry that routes by `idFromName` of the verified name makes the remembered name redundant is not yet shown on workerd and is checked in #2289 |
+| Q3 | The platform supplies the store script's entry module (§10.3). How does it hold the remembered name so the kind's class cannot rewrite it? | A platform-emitted entry module with its own re-emit check, as `lint:platform-entry` has. The entry module checks the remembered name before it constructs the kind's object. The kind's class shares the object's storage, so whether it can rewrite that name is held by the registration review until a platform mechanism can isolate it. A wrapper class the kind imports is not enough. **Decided 2026-10-15:** this answer stands. The registration review is a standing condition, to be revisited before any kind written outside this repo is registered. **Shown on #2295:** the entry refuses unless the object's own id is `idFromName` of the verified name, so the remembered name is gone and there is nothing for the kind to rewrite. The registration review still holds the rest of what a same-isolate kind could do (§10.3) |
 | Q4 | Does a dump binding the destination does not declare refuse the restore (L8), or get skipped and reported? | Refuse. A skipped binding is store data silently dropped, and the operator can restore into a version that declares it. L8 is written to this answer and changes if Q4 is decided otherwise |
 | Q5 | A bind, promote, rollback, re-upload or push would drop or re-kind a binding while objects exist (L17). Drive the lifecycle over a union, or refuse at every door? | The vertical-wide union of every (binding, kind) any version has declared, computed from `vertical_versions`, as the set export, wipe, erase and size reach. It holds whatever moved the pointer. Refusals at every door are the alternative, and would need one at each of the five. **Decided 2026-10-15:** the union. Retiring a binding from it is an explicit step after export and wipe, and the union never shrinks as a side effect of a push. Implemented on PR #2292: a directory record kept at publish, which refuses a re-kind there |
 | Q6 | Should a schedule or a connector reach a store? | Not in this amendment. When one needs it, it gets its own door, signed by the platform with audience `caller` for the scope it runs in (§9) |
@@ -852,12 +864,11 @@ What each open PR keeps:
 The spike (`spikes/scope-store-binding`) shows what its FINDINGS list under Shown. It does
 not show these, and the isolation argument in §1 rests on the first two:
 
-- **First-name memory.** `store.mjs` verifies the MAC against the `x-store-name` header
-  only. It stores no first name and compares nothing to it. A caller with a valid MAC for
-  X who sets header X but addresses `idFromName(Y)` is admitted.
-- **MAC audience (`platform` vs `caller`).** The MAC covers the name alone. Reserved
-  operations are refused by a flag on the spike's caller worker, which the RFC itself says
-  is not a control. No store-side refusal of `substrat.*` for a non-platform MAC exists.
+- **First-name memory, and the audience.** Not in the spike. Both are now evidenced outside
+  it, on workerd with the counter test kind behind the platform's store entry (#2295,
+  `apps/vertical-egress/test/store-entry.workerd.test.ts`): an object refuses an envelope for
+  any name but the one whose id it has, and `substrat.*` is refused for any audience but
+  `platform`. No real kind is uploaded behind the entry until #2210.
 - **The router hop.** `store.substrat.internal`, egress forwarding, the `ScopeStoreCalls`
   entrypoint and the declared-binding check are not in the spike; callers there address
   the namespace directly.
@@ -869,8 +880,8 @@ not show these, and the isolation argument in §1 rests on the first two:
 - **Hosted behaviour.** A dispatch-namespace upload, isolate sharing, jurisdiction,
   metering, snapshot and reap (§1, FINDINGS).
 
-- **The §10 envelope.** No code signs or verifies `aud`, `op`, `digest`, `iat` or `nonce` inside the
-  MAC. #2247 and #2254 sign the object name only.
+- **The §10 envelope.** Not in the spike. Signed by the router and the control plane and
+  verified by the store entry since #2293–#2295.
 
 Follow-up: extend the spike with first-name pinning (including a validly signed other
 name) and `platform` vs `caller` audience for `substrat.*`, each with an assertion in
