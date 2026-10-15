@@ -87,8 +87,10 @@ describe('the canary runs every reserved operation on a fresh platform object (D
     expect(binding).toBe('CANARY');
     expect(tenant).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
     expect(scope).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
-    // Two fresh ids, unrelated: not one the other plus one.
-    expect(tenant!.slice(10)).not.toBe(scope!.slice(10));
+    // Two fresh ids, unrelated: their random halves share no long prefix, as a monotonic mint's
+    // second id in the same millisecond would (the first plus one).
+    const common = [...tenant!.slice(10)].findIndex((ch, i) => ch !== scope![10 + i]);
+    expect(common).toBeLessThan(12);
     // A fresh object every canary.
     const again = canaryStore();
     await canaryStoreRelease({ call: again.call, scriptName: 'substrat-store-graph--canary' });

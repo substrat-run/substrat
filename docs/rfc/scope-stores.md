@@ -824,6 +824,18 @@ block it.
    as well as every module's name and bytes, so the same modules under another entry are another
    release. A rebuild happens only on that vertical's next push or serve, so a removed key or a
    verifier fix does not reach a script whose vertical is not pushed again: #2309.
+   On #2300: a release's bytes are stored by a person (a human staff sign-in, never the service
+   token), named by that sha256, before or after the pin lands. A rollout of a stored, pinned
+   release holds the kind exclusively, against every push and serve of a vertical that declares
+   it (each takes a shared hold for its store upload). It canaries the release in the kind's own
+   canary script, `substrat-store-<kind>--canary`, on a fresh object whose tenant and scope ids are
+   new and whose vertical segment no slug can be, through every reserved operation. Only then does
+   it move each vertical that ever declared the kind. A failure returns the verticals it reached to
+   the release it started from. A rollback returns to the immediately previous good release, which
+   each rollout records. **Proposed on #2300, for the maintainer to confirm:** each pin carries the
+   `schema` its release migrates objects to, and no move (a rollout, a rollback, or the return
+   after a failure) goes to a lower `schema` than the release it leaves. That is the
+   forward-only answer to D-63's "Rollback against a migrated schema"; D-63's text is not changed.
 9. Later: the null-manifest test (f), the Cloudflare host's wipe without a tenant id,
    per-object nonce memory if Q2 says so, and a door for schedules (§9).
 
