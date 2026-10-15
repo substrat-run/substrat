@@ -141,6 +141,7 @@ jobs:
       # snapshot and fail if it drifts from what is checked in — an agent that
       # widened a role must show it in the PR diff, not in a console nobody opens.
       # Needs the build above: it imports the engines' manifests.
+      - run: pnpm test:reserved-keys
       - run: pnpm lint:permissions --check
       # A deployable vertical that declares schedules wires `defineScopeSweeperDO`, or
       # those schedules never fire on a pushed deploy (#1646): the control plane's own
