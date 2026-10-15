@@ -6,7 +6,7 @@ description: A platform-run object per scope, declared as a kind and reached thr
 
 # RFC: scope stores
 
-**Status:** accepted (K-49 and K-50 ratified 2026-10-15; D-63 ratified, with a hash-and-commit pin, once [#2306](https://github.com/substrat-run/substrat/pull/2306) merges; D-64 as proposed on [#2298](https://github.com/substrat-run/substrat/pull/2298) not accepted as written; the open items of §10.8 remain open) · **Tracking:** [#2207](https://github.com/substrat-run/substrat/issues/2207)
+**Status:** accepted (K-49 and K-50 ratified 2026-10-15; D-63 ratified, with a hash-and-commit pin, once [#2306](https://github.com/substrat-run/substrat/pull/2306) merges; D-64 as proposed on [#2298](https://github.com/substrat-run/substrat/pull/2298) not accepted as written; the envelope's own record, K-52, proposed on the same pull request; the open items of §10.8 remain open) · **Tracking:** [#2207](https://github.com/substrat-run/substrat/issues/2207)
 · **Evidence:** [spikes/scope-store-binding/FINDINGS.md](../../spikes/scope-store-binding/FINDINGS.md)
 · **Decisions:** [K-49](../decisions/K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md),
 [D-63](../decisions/D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md),
@@ -64,7 +64,9 @@ The design closes that by having the store script remember the first name it acc
 refuse a later call that names a different object, including one that carries a valid MAC
 for that other name. The object cannot read its own `idFromName`, which is why the
 remembered string is the signed name. **This is design intent. The spike does not
-implement or exercise it** (see Not yet evidenced).
+implement or exercise it** (see Not yet evidenced). Superseded: the entry module binds an
+object to its name by its id instead, and the Ed25519 envelope of §10.3 replaces the MAC
+([K-52](../decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md)).
 
 One script per (kind, vertical), upgraded in place. A new release replaces the script.
 The objects keep their storage, and the kind migrates its schema when an object wakes.
@@ -147,16 +149,17 @@ Reserved names, only the platform may send:
 | `substrat.wipe` | none | `{}` | remove all of it |
 | `substrat.erase` | `{ subjectId }` | `{ erased }` | the kind's answer to subject erasure (#2068, D-45) |
 
-The design is that the store accepts a reserved name only when the MAC's audience is
-`platform`. The spike has no audience: its MAC covers the name alone, so this is not yet
-evidenced. That MAC is a second use of the same key, made by the control plane, which calls the store script
-through the dispatch namespace and does not go through the vertical. A caller holding a
+The store accepts a reserved name only when the envelope's audience is `platform`. The spike
+had no audience. Its MAC covered the name alone, and the control plane made it with the same
+key the router used. Since #2293 the control plane signs the Ed25519 envelope of §10.3 with
+its own `platform` key (K-52). It calls the store script through the dispatch namespace and
+does not go through the vertical. A caller holding a
 direct binding, or a request signed for audience `caller`, is refused by the store. The
 vertical's stub also refuses `substrat.*` before it fetches, so a vertical cannot ask.
 The refusal that matters is the store's. The spike's flag on the caller is not a control:
-the caller that holds the binding can leave the flag unset. A MAC over the name alone, with
-the audience beside it unsigned, does not carry this either. §10.3 replaces it with a
-signed envelope whose audience is inside the MAC.
+the caller that holds the binding can leave the flag unset. The spike's MAC over the name
+alone, with the audience beside it unsigned, did not carry this either. §10.3 replaced it with
+a signed envelope whose audience is inside the signature (Ed25519, K-52).
 
 `substrat.erase` is required of a kind before a hosted deploy stores tenant data. What
 it deletes is specified with #2068. This RFC only reserves the name and requires the
@@ -490,6 +493,9 @@ The list is what makes a rotation safe: add the new public key to every store sc
 the signer, then drop the old key. A key listed for both audiences is refused, by the store's configuration
 (`scopeStorePublicKeysFrom`) and again by the verifier, which compares decoded bytes, not
 spellings: its holder could otherwise sign `platform` envelopes from the `caller` key.
+The envelope, the keys and the id binding are recorded as
+[K-52](../decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md),
+which amends the MAC, per-script-key and first-name wording of K-49 and K-50.
 
 ### 10.4 What moves and what stays
 
@@ -730,7 +736,7 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | L13 | A store that cannot report its size is not recorded as size `0` |
 | L14 | The kind, the bindings and the vertical for any store call, from the router or the control plane, come from one shared resolution: the scope record's vertical, and the manifest of the version the scope's deployment runs. That is the pointer's version only when the pointer's ref is the scope's `serving_ref`; the bound version when the scope has no `serving_ref`; unknown otherwise, which fails closed. Never from the vertical's environment |
 | L15 | A masked export or pull carries no stores, and a failed store export fails the export |
-| L16 | One store-envelope signing key per audience, held only by that audience's signer. A store script holds only public keys, a list per audience, and never a key that can mint an envelope. No signer holds a key for an audience it does not sign |
+| L16 | One store-envelope signing key per audience, held only by that audience's signer. A store script holds only public keys, a list per audience, and never a key that can mint an envelope. No signer holds a key for an audience it does not sign (K-52) |
 | L17 | No operation (push, bind, promote, rollback of the serving pointer, serving re-upload) changes a scope's resolved set of (binding, kind) while objects of the old set may exist, unless the old binding stays reachable. Recommended (Q5): the lifecycle reaches the vertical-wide union of every (binding, kind) any version has declared |
 | L18 | A vertical-declared name (store binding, static binding, Durable Object binding) starting with `SUBSTRAT_STORE_` is refused at push and again at upload |
 | L19 | A bind that races a subject erasure either sees the erase or fails. The erase never destroys the key after a bind added a binding it did not reach |
@@ -887,7 +893,7 @@ What each open PR keeps:
 |---|---|---|
 | Q1 | How long is the freshness window? | 60 seconds. The router and the control plane sign immediately before dispatch, and a long window only widens replay |
 | Q2 | Does an object remember nonces inside the window? | Not in v1. The reserved operations are idempotent, a kind call is a vertical retry the window bounds, and nonce memory is a write on every call. Revisit if a kind registers a non-idempotent operation the platform itself calls |
-| Q3 | The platform supplies the store script's entry module (§10.3). How does it hold the remembered name so the kind's class cannot rewrite it? | A platform-emitted entry module with its own re-emit check (`lint:store-entry`), as `lint:platform-entry` has. It holds no remembered name: before it constructs the kind's object it refuses unless the object's own id is `idFromName` of the verified name, which is deterministic and stored nowhere, so there is nothing for the kind's class to rewrite (shown on workerd in #2295). A wrapper class the kind imports is not enough. **Decided 2026-10-15:** the registration review is a standing condition for everything else a kind in the same isolate could do (§10.3), to be revisited before any kind written outside this repo is registered |
+| Q3 | The platform supplies the store script's entry module (§10.3). How does it hold the remembered name so the kind's class cannot rewrite it? | A platform-emitted entry module with its own re-emit check (`lint:store-entry`), as `lint:platform-entry` has. It holds no remembered name: before it constructs the kind's object it refuses unless the object's own id is `idFromName` of the verified name, which is deterministic and stored nowhere, so there is nothing for the kind's class to rewrite (shown on workerd in #2295). A wrapper class the kind imports is not enough. **Decided 2026-10-15:** the registration review is a standing condition for everything else a kind in the same isolate could do (§10.3), to be revisited before any kind written outside this repo is registered. The id binding, in place of the first-name memory that K-49 and K-50 still describe, is recorded as [K-52](../decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md) (proposed), which amends both |
 | Q4 | Does a dump binding the destination does not declare refuse the restore (L8), or get skipped and reported? | Refuse. A skipped binding is store data silently dropped, and the operator can restore into a version that declares it. L8 is written to this answer and changes if Q4 is decided otherwise |
 | Q5 | A bind, promote, rollback, re-upload or push would drop or re-kind a binding while objects exist (L17). Drive the lifecycle over a union, or refuse at every door? | The vertical-wide union of every (binding, kind) any version has declared, computed from `vertical_versions`, as the set export, wipe, erase and size reach. It holds whatever moved the pointer. Refusals at every door are the alternative, and would need one at each of the five. **Decided 2026-10-15:** the union. Retiring a binding from it is an explicit step after export and wipe, and the union never shrinks as a side effect of a push. Implemented on PR #2292: a directory record kept at publish, which refuses a re-kind there |
 | Q6 | Should a schedule or a connector reach a store? | Not in this amendment. When one needs it, it gets its own door, signed by the platform with audience `caller` for the scope it runs in (§9) |
