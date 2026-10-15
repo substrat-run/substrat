@@ -1,5 +1,30 @@
 # @substrat-run/demo-auth-server
 
+## 0.14.2
+
+### Patch Changes
+
+- abd7f0f: The user import's preview and report warn about new people imported without `email_verified` (part of #1359). A relying party that identifies someone by address refuses an unverified one, so an export that dropped the column would lock every imported person out of a staff roster or an invite after cutover. The dry run now counts new people whose file entry carries no flag apart from those it reads as not verified, and says how to fix the export. Each created outcome carries the entry's own flag (`null` when it had none), and the result carries `unverified: { unasserted, unverified }`. What is stored is unchanged: an entry with no flag is still imported as unverified, and a person merged onto an existing row keeps the flag already stored.
+- 02a72f0: The application's sign-in settings show their methods at once. The "Accept every method this issuer offers" switch used to hide everything else, including "Require an SMS code after the password", so an operator could not find the option. Every method is now listed, all ticked for an application with no policy; the first change turns that into an explicit list, and "Back to every method" returns to the default, with the SMS step, "Ask for email first" and any domain rules cleared, so the form never shows a setting that saving would not store.
+
+  A login page now stays valid for 30 minutes instead of 10 (`codeExpiresIn`, which is also the authorization code's lifetime). The SMS step refuses an expired sign-in before an SMS is sent, and the screen says so with a "Start again" button instead of showing `invalid_signature` after the code has been typed. The time left is measured from when the page loaded rather than read off the device clock, so a phone or laptop whose clock is wrong is not locked out of the step.
+
+- 55c4df4: Register machine-to-machine (`client_credentials`) clients, gated by `MACHINE_SCOPES`. The console gains a `machine` application type: no redirect URIs, consent or sign-in policy, a secret shown once, and scopes chosen from the issuer's `MACHINE_SCOPES` list. Unset, no machine client can be registered or get a token. The token endpoint holds every request to the list as it is now, and machine scopes are never granted through a person's sign-in.
+- Updated dependencies [ad3ca19]
+- Updated dependencies [c4a0352]
+- Updated dependencies [f855218]
+- Updated dependencies [24ae42f]
+- Updated dependencies [a8b0842]
+- Updated dependencies [00253e0]
+- Updated dependencies [a9cbb6d]
+- Updated dependencies [7f8c6bf]
+- Updated dependencies [d175d87]
+- Updated dependencies [1bf5425]
+  - @substrat-run/contracts@0.148.0
+  - @substrat-run/kernel@0.148.0
+  - @substrat-run/vertical-host@0.148.0
+  - @substrat-run/oidc-rp@0.11.1
+
 ## 0.14.1
 
 ### Patch Changes

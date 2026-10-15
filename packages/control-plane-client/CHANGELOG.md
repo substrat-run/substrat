@@ -1,5 +1,23 @@
 # @substrat-run/control-plane-client
 
+## 0.2.0
+
+### Minor Changes
+
+- a8b0842: Add a staff/service API and `substrat connection bind|bindings` for existing Planima and Fortnox connections. Verify the landing permission in the serving scope before binding, reject copy or mismatched-vertical targets, and audit binding changes. Read hosted connector permissions from the serving deployment rather than the control plane's placeholder scope. This door does not grant new authority or change sweep cadence.
+
+### Patch Changes
+
+- a9cbb6d: A scope-store kind's release is stored, canaried and rolled out by a person (#2300). `substrat store-kind upload` stores a kind's package under its sha256, before or after its pin lands; `rollout` canaries a pinned release on the platform's own object through every reserved operation, then moves every vertical that declared the kind, holding the kind against pushes while it does; `rollback` returns to the immediately previous good release. A failure returns the verticals already moved. Each pin now names the `schema` its release migrates to, and no move lowers it.
+- Updated dependencies [ad3ca19]
+- Updated dependencies [c4a0352]
+- Updated dependencies [f855218]
+- Updated dependencies [a8b0842]
+- Updated dependencies [00253e0]
+- Updated dependencies [a9cbb6d]
+- Updated dependencies [1bf5425]
+  - @substrat-run/contracts@0.148.0
+
 ## 0.1.12
 
 ### Patch Changes
