@@ -80,6 +80,8 @@ import {
   sweepScopeScriptCopies,
   reapScopeScriptCopies,
   assertNoUnreachableScopeCopies,
+  claimScopeScriptReap,
+  drainScopeScriptCopies,
   createWfpUploader,
   createScopeStoreEnsurer,
   ed25519PublicKey,
@@ -141,6 +143,7 @@ import {
   unrouteScope,
   unreachablePlatformScopeStores,
   type PlatformScopeStores,
+  type PreviewAuthDeps,
 } from '@substrat-run/control-plane-api';
 import {
   ControlPlaneError,
@@ -536,11 +539,12 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   STORE_PLATFORM_KEY?: string;
   /**
-   * Raw Ed25519 public key, base64url, for audience `caller`. The control plane
-   * cannot derive it: that private key stays on the router. A store script verifies
-   * with it and cannot mint an envelope.
+   * The public halves a store script verifies with (#2287): raw Ed25519 keys, base64url,
+   * comma-separated, one list per audience, read through `scopeStorePublicKeysFrom`. Not secret. The
+   * store upload writes them into each store script; a list so a key can rotate.
    */
-  STORE_CALLER_PUBLIC_KEY?: string;
+  STORE_CALLER_PUBLIC_KEYS?: string;
+  STORE_PLATFORM_PUBLIC_KEYS?: string;
   /**
    * Seals connection credentials at rest (#101/#574) — base64(url) of 32 bytes
    * (`openssl rand -base64 32`), same convention as the dashboard's box. The
@@ -1476,7 +1480,7 @@ function platformStoresFor(env: Pick<Env, 'DISPATCH' | 'STORE_PLATFORM_KEY'>): P
     : unreachablePlatformScopeStores();
 }
 
-type StoreReadAdmin = Pick<HostAdmin, 'verticalServing' | 'versionManifest' | 'listVersions'>;
+type StoreReadAdmin = Pick<HostAdmin, 'verticalServing' | 'versionManifest' | 'verticalScopeStores'>;
 
 /**
  * `substrat.wipe` on each store the scope's running version declares, before its own bytes go
@@ -1489,10 +1493,66 @@ export async function wipeDeclaredScopeStores(
   scope: Scope,
   kinds: readonly StoreKindRegistration[] = STORE_KINDS,
 ): Promise<void> {
-  if (!scope.vertical) return;
-  const stores = await scopeStoresOf(admin, SWEEP_ACTOR, scope, kinds);
-  if (stores.length === 0) return;
-  await platformStoresFor(env).wipeStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical: scope.vertical, stores });
+  await (await declaredScopeStoresWipe(platformStoresFor(env), admin, scope, kinds))();
+}
+
+/** `wipeDeclaredScopeStores` in two halves: the stores resolved now (which may refuse), the wipe when called. */
+async function declaredScopeStoresWipe(
+  caller: PlatformScopeStores,
+  admin: StoreReadAdmin,
+  scope: Scope,
+  kinds: readonly StoreKindRegistration[],
+): Promise<() => Promise<void>> {
+  const vertical = scope.vertical;
+  const stores = vertical ? await scopeStoresOf(admin, SWEEP_ACTOR, scope, kinds) : [];
+  return async () => {
+    if (vertical && stores.length > 0) {
+      await caller.wipeStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical, stores });
+    }
+  };
+}
+
+/**
+ * The sweep's reap of an expired snapshot fork (preview-and-snapshots.md §3/§9): the ORCHESTRATED
+ * delete. Every refusal that can be decided up front comes first (#2285): the reap claim, or no
+ * copy the platform cannot reach, and stores that can be named. A refusal throws, the pass records
+ * it, and the fork stays routed and whole for the next pass. Then the unroute, the fork's own
+ * sign-in clients (#1704, while something still names them), the stores' wipe, the delete through
+ * every script that holds it, and the in-process delete for the directory row and audit.
+ */
+export async function reapExpiredSnapshot(
+  deps: {
+    host: Pick<ScopeHost, 'admin' | 'deleteSnapshot'>;
+    stores: PlatformScopeStores;
+    issuerClient: PreviewAuthDeps['issuerClient'];
+    resolveRef?: (deploymentRef: string) => Promise<VerticalClient | undefined>;
+    resolveVersion?: (slug: string, versionId: string, actor: PlatformActorId) => Promise<VerticalClient | undefined>;
+    kinds?: readonly StoreKindRegistration[];
+  },
+  tenantId: TenantId,
+  scopeId: ScopeId,
+): Promise<void> {
+  const { host, resolveRef, resolveVersion } = deps;
+  const actor = SWEEP_ACTOR;
+  const rec = await host.admin.getScopeRecord(actor, tenantId, scopeId);
+  if (resolveRef) await claimScopeScriptReap({ admin: host.admin, actor }, tenantId, scopeId);
+  else await assertNoUnreachableScopeCopies(host.admin, actor, tenantId, scopeId);
+  const wipeStores = rec ? await declaredScopeStoresWipe(deps.stores, host.admin, rec, deps.kinds ?? STORE_KINDS) : undefined;
+  // An expired fork can still be routed: stop routing before the wipe (#2285, L6).
+  if (rec) await unrouteScope(host.admin, actor, rec);
+  // Its own sign-in clients go once nothing routes to it, and before the row (#1704).
+  await retireClientsOfReapedScope({ admin: host.admin, actor, issuerClient: deps.issuerClient }, rec);
+  if (wipeStores) await wipeStores();
+  if (resolveRef) {
+    // #1722: a script that predates the delete verb strands its bytes; the reap records it
+    // as an ops failure and goes on, so an expired fork is never pinned forever.
+    const { storageStranded } = await drainScopeScriptCopies({ admin: host.admin, actor, resolveRef }, tenantId, scopeId);
+    if (storageStranded) console.warn(`snapshot reap: storage of ${scopeId} stranded in a script without delete-scope (recorded)`);
+  } else if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
+    const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, actor);
+    if (vertical) await vertical.deleteScope({ tenantId, scopeId });
+  }
+  await host.deleteSnapshot(actor, tenantId, scopeId);
 }
 
 /** Each declared store's size, for the storage gauge (#2207). Refuses as the wipe does. */
@@ -1963,34 +2023,13 @@ export default {
       // never sink the pass it is recording (the ops-failure recorder's shape).
       recordSweepRun: (e) => void host.admin.recordSweepRun(e).catch(() => undefined),
       drainRetries: false,
-      deleteSnapshotFn: async (tenantId, scopeId) => {
-        const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
-        // An expired PREVIEW's own sign-in clients go first (#1704), exactly as the
-        // interactive reap does: a failure here throws, the pass records it, and the next
-        // pass finds the preview again — after the row is gone nothing would name them.
-        await retireClientsOfReapedScope(
-          { admin: host.admin, actor: SWEEP_ACTOR, issuerClient: resolveVerticalForScopeFor(env) },
-          rec,
-        );
-        if (rec) {
-          // #2285: an expired fork can still be routed. Unbind before the wipe.
-          await unrouteScope(host.admin, SWEEP_ACTOR, rec);
-          await wipeDeclaredScopeStores(env, host.admin, rec);
-        }
-        if (resolveRef) {
-          // #1722: a script that predates the delete verb strands its bytes; the reap records it
-          // as an ops failure and goes on, so an expired fork is never pinned forever.
-          const { storageStranded } = await reapScopeScriptCopies({ admin: host.admin, actor: SWEEP_ACTOR, resolveRef }, tenantId, scopeId);
-          if (storageStranded) console.warn(`snapshot reap: storage of ${scopeId} stranded in a script without delete-scope (recorded)`);
-        } else {
-          await assertNoUnreachableScopeCopies(host.admin, SWEEP_ACTOR, tenantId, scopeId);
-          if (rec?.vertical && rec.verticalVersionId && resolveVersion) {
-            const vertical = await resolveVersion(rec.vertical, rec.verticalVersionId, SWEEP_ACTOR);
-            if (vertical) await vertical.deleteScope({ tenantId, scopeId });
-          }
-        }
-        await host.deleteSnapshot(SWEEP_ACTOR, tenantId, scopeId);
-      },
+      deleteSnapshotFn: (tenantId, scopeId) => reapExpiredSnapshot({
+        host,
+        stores: platformStoresFor(env),
+        issuerClient: resolveVerticalForScopeFor(env),
+        ...(resolveRef ? { resolveRef } : {}),
+        ...(resolveVersion ? { resolveVersion } : {}),
+      }, tenantId, scopeId),
       // §4.4 storage reap — opt-in via SCOPE_RETENTION_DAYS. Same orchestrated shape as
       // the snapshot delete: wipe the scope's DO in the vertical deployment that holds it
       // (its storage is CP-less), then the in-process reapScope for the directory

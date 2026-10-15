@@ -1,12 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import {
-  base64UrlToBytes,
-  parseScopeStoreEnvelope,
-  scopeStoreBodyDigest,
-  scopeStoreScriptName,
-  verifyScopeStoreEnvelope,
-} from '@substrat-run/contracts';
+import { scopeStoreScriptName } from '@substrat-run/contracts';
+import { verifyScopeStoreCall } from '@substrat-run/contracts/scope-store-envelope';
 import { callPlatformScopeStore } from '../src/platform-scope-stores.js';
 
 const vector = JSON.parse(
@@ -15,15 +10,14 @@ const vector = JSON.parse(
 
 describe('callPlatformScopeStore', () => {
   it('signs an envelope as the platform and addresses the kind script', async () => {
-    let seen: { script: string; canonical: string; signature: string; raw: string; body: { objectName?: string } } | undefined;
+    let seen: { script: string; header: string; signature: string; raw: string; body: { objectName?: string } } | undefined;
     const dispatch = {
       platformKey: vector.privateKeyPkcs8,
       fetch: async (scriptName: string, request: Request) => {
         const raw = await request.text();
-        const header = request.headers.get('x-substrat-store-envelope') ?? '';
         seen = {
           script: scriptName,
-          canonical: new TextDecoder().decode(base64UrlToBytes(header) ?? new Uint8Array()),
+          header: request.headers.get('x-substrat-store-envelope') ?? '',
           signature: request.headers.get('x-substrat-store-signature') ?? '',
           raw,
           body: JSON.parse(raw) as { objectName?: string },
@@ -40,9 +34,18 @@ describe('callPlatformScopeStore', () => {
     ).resolves.toEqual({ bytes: 4 });
     expect(seen?.script).toBe(scopeStoreScriptName('acme/crm', 'graph'));
     expect(seen?.body.objectName).toBe('T/acme/crm/S/GRAPH');
-    const envelope = parseScopeStoreEnvelope(seen?.canonical ?? '');
-    expect(envelope).toMatchObject({ aud: 'platform', name: 'T/acme/crm/S/GRAPH', op: 'substrat.size' });
-    expect(envelope?.digest).toBe(await scopeStoreBodyDigest(seen?.raw ?? ''));
-    expect(await verifyScopeStoreEnvelope(vector.publicKey, seen?.canonical ?? '', seen?.signature ?? '')).toBe(true);
+    // The store this was addressed to admits it, as the verifier every store entry runs.
+    const verdict = await verifyScopeStoreCall({
+      envelope: seen?.header,
+      signature: seen?.signature,
+      body: seen?.raw ?? '',
+      keys: { caller: [], platform: [vector.publicKey] },
+      script: seen?.script ?? '',
+      nowSeconds: Math.floor(Date.now() / 1000),
+    });
+    expect(verdict).toMatchObject({
+      ok: true,
+      envelope: { aud: 'platform', script: scopeStoreScriptName('acme/crm', 'graph'), name: 'T/acme/crm/S/GRAPH', op: 'substrat.size' },
+    });
   });
 });

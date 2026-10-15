@@ -136,6 +136,9 @@ export {
   type ScopeCopyBackfillResult,
   type CopyBackfillScopeRow,
   type ErasureEpochStamp,
+  SUBJECT_ERASURE_CLAIM_SQL,
+  subjectErasureClaimParams,
+  type SubjectErasureFence,
   COPY_EXPIRED_SQL,
   COPY_MOVE_CONFIRM_SQL,
   COPY_MOVE_LIVE_PREDICATE,
@@ -617,6 +620,13 @@ export {
   versionsAwaitSplit,
   writeVersionMigrations,
 } from './version-migrations.js';
+export {
+  VERTICAL_SCOPE_STORES_DDL,
+  forgetVerticalScopeStores,
+  indexVersionScopeStores,
+  verticalScopeStoresOf,
+  type VerticalScopeStore,
+} from './vertical-scope-stores.js';
 export type { SplitManifest } from './version-migrations.js';
 export {
   admitPeer,

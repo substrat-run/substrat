@@ -14,13 +14,13 @@
  * instead. `test/skus.test.ts` is what catches the next one: it reads every engine's
  * declared key off disk and fails if this list has fallen behind.
  *
- * Order is deliberate. The eight engine keys come first as a group, in the order the
+ * Order is deliberate. The nine engine keys come first as a group, in the order the
  * engines shipped, then the vertical/platform SKUs — and `workorder` stays first because
  * it is the dialog's default selection, and quietly moving that would change which key a
  * confirm-without-touching grants.
  */
 export const KNOWN_SKUS = [
-  // The eight engines (each declares `entitlementKey` in its own `src/index.ts`).
+  // The nine engines (each declares `entitlementKey` in its own `src/index.ts`).
   'workorder',
   'invoicing',
   'protocol',
@@ -29,6 +29,7 @@ export const KNOWN_SKUS = [
   'invites',
   'metering',
   'notifications',
+  'assistant',
   // Vertical- and platform-level SKUs.
   'shop',
   'builder',

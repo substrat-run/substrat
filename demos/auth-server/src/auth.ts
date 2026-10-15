@@ -513,6 +513,25 @@ function betterAuthFor(deps: AuthDeps) {
         // forced.
         allowPublicClientPrelogin: true,
         /**
+         * How long a login page stays usable: the plugin signs the authorize query with an `exp`
+         * of `codeExpiresIn`, and every sign-in step that carries it (password, SMS, BankID)
+         * is refused as `invalid_signature` after that. Ten minutes — the default — is too
+         * short for a first-time phone enrolment (type a number, wait for the SMS, find the
+         * code).
+         *
+         * It sets TWO lifetimes: the signed query's `exp` (`signParams`) and the authorization
+         * code's (`redirectWithAuthorizationCode`). @better-auth/oauth-provider 1.7.7 has no
+         * separate option for the query, so the login window cannot be widened alone. Thirty
+         * minutes is therefore a deliberate deviation from RFC 6749 §4.1.2, which recommends a
+         * code live at most ten: a phone enrolment that times out halfway is a person locked
+         * out, while an unspent code is worth little to anyone else. It is single-use (a
+         * replay revokes what it issued) and PKCE-bound — mandatory for a public client and on
+         * by default for every other. That last claim holds only while nothing here sets
+         * `require_pkce: false` on a client or `clientRegistrationRequirePKCE: false` on the
+         * plugin; whoever changes either should shorten this back to the default.
+         */
+        codeExpiresIn: 30 * 60,
+        /**
          * RESOURCE INDICATORS (RFC 8707), for the MCP endpoint every vertical mounts (#1619).
          *
          * A token for a `resource` is minted only if an `oauth_resource` row names it. Here

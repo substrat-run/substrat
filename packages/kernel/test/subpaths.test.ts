@@ -27,8 +27,17 @@ function subpathsOf(pkgDir: string): (readonly [string, string])[] {
  */
 const TEST_ONLY = new Set(['./testing']);
 
+/**
+ * The one contracts subpath held to nothing above, by name: `./assistant-stream` (#2304) is the
+ * assistant's stream schema, a subpath because it is experimental, not because an entry bundles it.
+ * It is zod schemas through and through, so it cannot be import-free, and the platform entry
+ * (invocation logging and the scope sweeper) has no use for it. Should the entry ever import it, the
+ * re-emitted entry would carry zod, in the diff `lint:platform-entry --check` makes a PR show.
+ */
+const CONTRACTS_NOT_IN_ENTRY = new Set(['./assistant-stream']);
+
 const KERNEL = subpathsOf(join(import.meta.dirname, '..')).filter(([path]) => !TEST_ONLY.has(path));
-const CONTRACTS = subpathsOf(join(import.meta.dirname, '../../contracts'));
+const CONTRACTS = subpathsOf(join(import.meta.dirname, '../../contracts')).filter(([path]) => !CONTRACTS_NOT_IN_ENTRY.has(path));
 
 /** The specifiers a module imports at run time: every `import`/`export … from` that is not type-only. */
 function runtimeImports(source: string): string[] {
@@ -49,7 +58,7 @@ function strayImports(file: string, siblings: readonly (readonly [string, string
 }
 
 describe('zero-import subpaths (#1998)', () => {
-  it('the kernel has the two the platform entry reaches, contracts the five', () => {
+  it('the kernel has the two the platform entry reaches, contracts the four', () => {
     expect(KERNEL.map(([path]) => path).sort()).toEqual(['./invocation-line', './ulid']);
     // And the exemption names a subpath that exists, so it cannot outlive what it exempts.
     const all = subpathsOf(join(import.meta.dirname, '..')).map(([path]) => path);
@@ -57,10 +66,11 @@ describe('zero-import subpaths (#1998)', () => {
     expect(CONTRACTS.map(([path]) => path).sort()).toEqual([
       './invocation-record',
       './scope-store-envelope',
-      './scope-store-mac',
       './wire-auth',
       './wire-headers',
     ]);
+    const allContracts = subpathsOf(join(import.meta.dirname, '../../contracts')).map(([path]) => path);
+    expect([...CONTRACTS_NOT_IN_ENTRY].filter((path) => !allContracts.includes(path))).toEqual([]);
   });
 
   it.each(KERNEL)('kernel %s imports nothing at run time', (_, file) => {

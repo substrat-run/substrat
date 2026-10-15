@@ -24,7 +24,25 @@ describe('scopeStoresOf (#2207)', () => {
       return serving ? { ref: 'stable', versionId: serving, doClasses: [], migrationTag: 't' } : null;
     },
     versionManifest: async (_a: unknown, _v: string, versionId: string) => manifests[versionId] ?? null,
-    listVersions: async () => Object.keys(manifests).map((versionId) => ({ id: versionId })),
+    // The host's record of every binding any version declared, refusing as it does: a manifest
+    // that does not read, or a binding re-kinded among versions stored before publish refused it.
+    verticalScopeStores: async () => {
+      const union = new Map<string, string>();
+      for (const json of Object.values(manifests)) {
+        if (json === null) continue;
+        let stores: { binding: string; kind: string }[];
+        try {
+          stores = (JSON.parse(json) as { scopeStores?: { binding: string; kind: string }[] }).scopeStores ?? [];
+        } catch {
+          throw substratError('unavailable', 'a manifest cannot be read');
+        }
+        for (const { binding, kind } of stores) {
+          if ((union.get(binding) ?? kind) !== kind) throw substratError('unavailable', 're-kinded');
+          union.set(binding, kind);
+        }
+      }
+      return [...union].map(([binding, kind]) => ({ binding, kind }));
+    },
   });
   const ask = (a: ReturnType<typeof admin>, scope: { servingRef: string | null; verticalVersionId: string | null }, kinds: never[] = registered) =>
     scopeStoresOf(a, actor, { id, vertical: 'docs', ...scope }, kinds);

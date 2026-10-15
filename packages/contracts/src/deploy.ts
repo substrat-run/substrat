@@ -3,6 +3,7 @@ import { moduleId, permissionKey, scopeId, tenantId, verticalSlug } from './ids.
 import { envVarSpec, capability, lifecycleHold, declaredEntityType, freshnessSpec, scheduleSpec, PLATFORM_BINDING_PREFIX, type ModuleManifest } from './manifest.js';
 import { eventType } from './events.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
+import { RESERVED_STORE_OPERATIONS } from './scope-store-envelope.js';
 import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
 import { scopeDumpTable } from './introspection.js';
@@ -312,19 +313,8 @@ export const assetsNeed = assetRouting.extend({
 });
 export type AssetsNeed = z.infer<typeof assetsNeed>;
 
-/**
- * The operations only the platform may send to a scope store (#2207). A vertical's
- * stub refuses every one of them. A kind's registration has to answer all of them,
- * `substrat.erase` included, before a hosted deploy may store tenant data.
- */
-export const RESERVED_STORE_OPERATIONS = [
-  'substrat.export',
-  'substrat.import',
-  'substrat.size',
-  'substrat.wipe',
-  'substrat.erase',
-] as const;
-export type ReservedStoreOperation = (typeof RESERVED_STORE_OPERATIONS)[number];
+// The reserved operations live beside the envelope that admits them, a module that imports nothing.
+export { RESERVED_STORE_OPERATIONS, type ReservedStoreOperation } from './scope-store-envelope.js';
 
 /** The operations a vertical may invoke on a scope store. No `substrat.*` name belongs here. */
 export interface StoreOperationCatalog {
