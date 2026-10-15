@@ -149,16 +149,17 @@ Reserved names, only the platform may send:
 | `substrat.wipe` | none | `{}` | remove all of it |
 | `substrat.erase` | `{ subjectId }` | `{ erased }` | the kind's answer to subject erasure (#2068, D-45) |
 
-The design is that the store accepts a reserved name only when the MAC's audience is
-`platform`. The spike has no audience: its MAC covers the name alone, so this is not yet
-evidenced. That MAC is a second use of the same key, made by the control plane, which calls the store script
-through the dispatch namespace and does not go through the vertical. A caller holding a
+The store accepts a reserved name only when the envelope's audience is `platform`. The spike
+had no audience. Its MAC covered the name alone, and the control plane made it with the same
+key the router used. Since #2293 the control plane signs the Ed25519 envelope of §10.3 with
+its own `platform` key (K-52). It calls the store script through the dispatch namespace and
+does not go through the vertical. A caller holding a
 direct binding, or a request signed for audience `caller`, is refused by the store. The
 vertical's stub also refuses `substrat.*` before it fetches, so a vertical cannot ask.
 The refusal that matters is the store's. The spike's flag on the caller is not a control:
-the caller that holds the binding can leave the flag unset. A MAC over the name alone, with
-the audience beside it unsigned, does not carry this either. §10.3 replaces it with a
-signed envelope whose audience is inside the signature (Ed25519, K-52).
+the caller that holds the binding can leave the flag unset. The spike's MAC over the name
+alone, with the audience beside it unsigned, did not carry this either. §10.3 replaced it with
+a signed envelope whose audience is inside the signature (Ed25519, K-52).
 
 `substrat.erase` is required of a kind before a hosted deploy stores tenant data. What
 it deletes is specified with #2068. This RFC only reserves the name and requires the
@@ -892,7 +893,7 @@ What each open PR keeps:
 |---|---|---|
 | Q1 | How long is the freshness window? | 60 seconds. The router and the control plane sign immediately before dispatch, and a long window only widens replay |
 | Q2 | Does an object remember nonces inside the window? | Not in v1. The reserved operations are idempotent, a kind call is a vertical retry the window bounds, and nonce memory is a write on every call. Revisit if a kind registers a non-idempotent operation the platform itself calls |
-| Q3 | The platform supplies the store script's entry module (§10.3). How does it hold the remembered name so the kind's class cannot rewrite it? | A platform-emitted entry module with its own re-emit check (`lint:store-entry`), as `lint:platform-entry` has. It holds no remembered name: before it constructs the kind's object it refuses unless the object's own id is `idFromName` of the verified name, which is deterministic and stored nowhere, so there is nothing for the kind's class to rewrite (shown on workerd in #2295). A wrapper class the kind imports is not enough. **Decided 2026-10-15:** the registration review is a standing condition for everything else a kind in the same isolate could do (§10.3), to be revisited before any kind written outside this repo is registered |
+| Q3 | The platform supplies the store script's entry module (§10.3). How does it hold the remembered name so the kind's class cannot rewrite it? | A platform-emitted entry module with its own re-emit check (`lint:store-entry`), as `lint:platform-entry` has. It holds no remembered name: before it constructs the kind's object it refuses unless the object's own id is `idFromName` of the verified name, which is deterministic and stored nowhere, so there is nothing for the kind's class to rewrite (shown on workerd in #2295). A wrapper class the kind imports is not enough. **Decided 2026-10-15:** the registration review is a standing condition for everything else a kind in the same isolate could do (§10.3), to be revisited before any kind written outside this repo is registered. The id binding, in place of the first-name memory that K-49 and K-50 still describe, is recorded as [K-52](../decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md) (proposed), which amends both |
 | Q4 | Does a dump binding the destination does not declare refuse the restore (L8), or get skipped and reported? | Refuse. A skipped binding is store data silently dropped, and the operator can restore into a version that declares it. L8 is written to this answer and changes if Q4 is decided otherwise |
 | Q5 | A bind, promote, rollback, re-upload or push would drop or re-kind a binding while objects exist (L17). Drive the lifecycle over a union, or refuse at every door? | The vertical-wide union of every (binding, kind) any version has declared, computed from `vertical_versions`, as the set export, wipe, erase and size reach. It holds whatever moved the pointer. Refusals at every door are the alternative, and would need one at each of the five. **Decided 2026-10-15:** the union. Retiring a binding from it is an explicit step after export and wipe, and the union never shrinks as a side effect of a push. Implemented on PR #2292: a directory record kept at publish, which refuses a re-kind there |
 | Q6 | Should a schedule or a connector reach a store? | Not in this amendment. When one needs it, it gets its own door, signed by the platform with audience `caller` for the scope it runs in (§9) |
