@@ -53,7 +53,7 @@ special-case one.
 
 **Engines** own invariants inside a domain. The work-order engine knows that a completed
 order cannot go back to scheduled, that every state change emits an event, that an
-exported billing basis is immutable afterwards. There are seven of them, each headless:
+exported billing basis is immutable afterwards. There are nine in the repository, each headless:
 no screens, no vocabulary, no opinion about what you call things.
 
 **Verticals** own everything a user touches: the words, the roles, the prices, the
@@ -158,6 +158,16 @@ executes it later and writes the outcome back.
 
 **Control plane, directory.** The platform's own service, and the database it keeps: which
 tenants and scopes exist, where they route, who holds which role, and the admin log.
+
+**Peer.** Another app in the same tenant, calling as an app identity under permissions
+the receiving app declares. Its scope remains a separate transaction (chapter 7).
+
+**Export, import, watermark.** A producer declares which event types may leave its
+scope. A consumer declares which it accepts from that producer and saves its position
+in the stream as a watermark in its own database (chapter 7).
+
+**Capability link.** A secret carrying bounded authority over an entity subtree,
+checked on every use. It is distinct from a grant to a named person (chapter 6).
 
 ## Two pictures, one system
 

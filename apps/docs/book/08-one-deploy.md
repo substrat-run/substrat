@@ -161,9 +161,28 @@ work, because you cannot un-run a migration. So the rollback strategy is
 **fork-before-you-promote** — snapshot right before binding the new version, and a bad
 version leaves the prior one still runnable at its correct frontier.
 
-A fork is a **governed dead end**. The export copies the kernel spine too, so no connector,
-no schedule and no billing consumes from a preview — a test copy cannot send a real invoice.
-Preview URLs are non-public: gated code running against real-shaped data.
+A preview or fork is barred from outward side effects and recurring schedules. Preview
+URLs are non-public: gated code running against real-shaped data.
+
+There is a broader rule underneath this: **a copy keeps history without re-running the
+source's work**. Loading a dump into a different scope id drops the source's capability
+links, settles copied pending intents and jobs as failed with a reason, and terminates
+copied executor retries. A copied-events mark stops historical events being consumed or
+shipped to the lake again. Loading a backup back into its original scope is a return,
+which preserves its work. Unknown provenance is treated as a copy.
+
+Keep that separate from preview isolation. An ordinary copy can create new work of its
+own; it is the preview/fork classification that bars outward effects. A source share
+link never becomes authority to open its copy.
+
+### Migrations keep their identity and their derived protections
+
+An applied migration is held to the digest of the SQL that actually ran. Editing that
+SQL under the same migration identity fails closed; write a new migration instead.
+An authored table rebuild must also preserve the columns the journal says exist.
+The migration pass re-establishes derived archive/trash guards, list indexes and search
+triggers, or refuses the migration inside its transaction. A create-copy-rename cannot
+quietly remove the kernel's enforcement.
 
 ## Backout
 

@@ -25,6 +25,10 @@ book links to it and moves on.
   gets run in seconds instead of at the next sweep.
 - How permission checks are answered without a network call.
 - Why engines never call each other, and what they do instead.
+- How separate apps communicate through peer calls and exported events, who authorizes
+  each direction, and what a pause, failure or replay does.
+- How notifications turn an occasion into durable email, and how the new assistant
+  engine separates conversation history, a running model and approval of a change.
 - What `substrat push` actually does, and what happens to data across a version change.
 - What the two background clocks are, what each sweeps, and why both are alarms rather
   than crons.
@@ -61,6 +65,8 @@ The whole book is also published as a single document, three ways:
   scrolling, printable web page.
 
 All three are generated from these chapters at build time, so they cannot fall behind.
+The EPUB and printable HTML include the diagrams; the text edition describes those
+same figures in words.
 
 ::: tip Reading it on a phone
 There is no URL that opens Books directly — iOS decides that from the file itself. Tapping
@@ -75,16 +81,28 @@ book — that is [llms-full.txt](/llms-full.txt), and the index agents read firs
 
 ## What changed in this edition
 
-The book first shipped with ten chapters. This edition adds three:
-[Seeing what happened](/book/10-seeing-what-happened),
-[The audit trail and the lake](/book/11-audit-and-the-lake) and
-[Metering and billing](/book/12-metering-and-billing). *Operating it* is now chapter 13.
+**Updated 15 October 2026.** This edition reviews the three complete weeks
+[21–27 September](/changelog/2026-w39), [28 September–4 October](/changelog/2026-w40)
+and [5–11 October](/changelog/2026-w41). It also covers the assistant engine's first
+implementation, which landed on 15 October, with its remaining integration work stated
+explicitly. The chapter numbers and reading order stay the same.
 
-It also answers questions readers of the first edition asked. Chapter 1 now has a glossary.
-Chapter 4 explains the absence of a query builder, the text timestamps, and what an `await`
-holds. Chapter 5 explains the kick that makes platform intents fast. And the chapters now
-reflect what shipped since: invocation ids and the event walks, the MCP surface, the lake drain,
-the dashboard's four tabs, and the new reference verticals.
+| If you read the previous edition | Where to return |
+|---|---|
+| Peer calls, exported events, permissions in both directions, instance selection, watermarks and replay | [Chapter 7](/book/07-engines-and-verticals), with two new diagrams |
+| Notifications and transactional email; the assistant's record, lease and approvals | [Chapter 7](/book/07-engines-and-verticals), with two more diagrams |
+| Derived creates and stamps, archive/trash, attachment text search, live reads and opaque paging cursors | [Chapter 4](/book/04-inside-an-operation) |
+| Capability links, binding invites, verified email and permission shapes that reach existing users | [Chapter 6](/book/06-permissions-and-identity) |
+| Copies that keep history without re-running the source's work, and migration integrity | [Chapter 8](/book/08-one-deploy) |
+| The supplied sweeper, durable off switches and cross-app delivery in the sweep | [Chapter 9](/book/09-the-two-clocks) |
+| Findings as an inbox of problems to resolve, and the current Observability navigation | [Chapter 10](/book/10-seeing-what-happened) |
+| Erasure reaching a module's own tables | [Chapter 11](/book/11-audit-and-the-lake) |
+
+The review also checks what the book already covered: the platform-written request log,
+background invocation lines and the daily storage gauge remain in chapters 10 and 12.
+Chapter 13's old statements that storage was unmeasured and denials had no invocation id
+have been corrected. The lake gateway's restricted, unconfigured status is kept consistent
+with chapter 11. Smaller demo and UI fixes remain in the weekly changelog.
 
 ## A note on honesty
 

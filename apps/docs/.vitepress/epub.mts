@@ -404,7 +404,7 @@ export function readCover(srcDir: string): Uint8Array | undefined {
   }
 }
 
-export async function epubArtifacts(srcDir: string): Promise<Artifact[]> {
-  const figures = await renderFigures(srcDir, figureRequests(srcDir));
+export async function epubArtifacts(srcDir: string, rendered?: FigureSet): Promise<Artifact[]> {
+  const figures = rendered ?? await renderFigures(srcDir, figureRequests(srcDir));
   return [{ path: 'book.epub', contents: buildEpub(srcDir, readCover(srcDir), figures) }];
 }

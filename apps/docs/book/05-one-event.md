@@ -269,7 +269,9 @@ pending intents throws rather than queueing without limit.
 
 Intent kinds are a closed set: provisioning a sibling scope or a whole tenant, archiving a
 scope, reconciling a managed tenant's entitlements, recording a model-usage line (chapter 12),
-and the `connector:<provider>` family. The platform uses one more kind for its own sweep
+email sends, queued peer calls, and the `connector:<provider>` family. Chapter 7 follows
+the new notifications engine and a call into another app through those paths.
+The platform uses one more kind for its own sweep
 records, and module code is refused it, so a vertical cannot forge a verdict about its own
 schedules.
 
@@ -373,9 +375,10 @@ been through exactly one version bump, and it was shipped as a replace.
 A replace fails loudly instead: a v1 consumer's strict parse rejects v2, and the event
 dead-letters where somebody sees it. Loud and stopped beats quiet and doubled.
 
-So no plan should promise a deprecation window that nothing can deliver. Routable
-dual-emit needs `(type, schemaVersion)` in the dispatch predicate plus a version dimension
-on the consumer registry — designed, filed, and postponed rather than abandoned.
+This limitation is about **in-scope dispatch**. Cross-vertical imports already match on
+`(type, schemaVersion)`, withholding a mismatch with a dead letter. That newer transport
+does not change how local consumers select their events. Chapter 7 follows the exported
+event across the second database and explains its separate version contract.
 
 ## The event stream is the audit log
 
