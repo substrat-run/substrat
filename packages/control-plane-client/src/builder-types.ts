@@ -211,3 +211,42 @@ export interface ListingRecord {
   slug: string;
   listed: boolean;
 }
+
+/** A stored store-kind release (#2300): its bytes are named by their sha256. */
+export interface StoreKindReleaseView {
+  kind: string;
+  sha256: string;
+  sourceCommit: string;
+  uploadedBy: string;
+  uploadedAt: string;
+}
+
+/** One attempt to move every script of a kind to a release. */
+export interface StoreKindRolloutView {
+  kind: string;
+  seq: number;
+  sha256: string;
+  action: 'rollout' | 'rollback';
+  fromSha256: string | null;
+  previousGoodSha256: string | null;
+  state: 'rolling' | 'good' | 'failed' | 'diverged';
+  actor: string;
+  startedAt: string;
+  endedAt: string | null;
+  detail: string | null;
+}
+
+export interface StoreKindView {
+  kind: string;
+  pins: { sha256: string; sourceCommit: string; schema: number }[];
+  current: { sha256: string; seq: number; previousGoodSha256: string | null } | null;
+  rollouts: StoreKindRolloutView[];
+}
+
+export interface StoreKindRolloutResultView {
+  rollout: StoreKindRolloutView;
+  /** The verticals this request moved. */
+  moved: string[];
+  /** False when verticals remain: post the same rollout again. */
+  complete: boolean;
+}

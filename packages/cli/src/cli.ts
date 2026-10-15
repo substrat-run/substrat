@@ -20,8 +20,6 @@
  * (in the console) still gates serving.
  */
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { loadConfig, saveConfig, resolveAuth } from './config.js';
@@ -44,7 +42,7 @@ import { printVersions } from './versions.js';
 import { checkOutboundDeclared } from './outbound-scan.js';
 import { exportBreakLines, promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
-import { packStoreKindDir, publishStoreKind, rollbackStoreKind } from './store-kind.js';
+import { packStoreKindDir, rollBackStoreKind, rollOutStoreKind, storeKindStatus, uploadStoreKindRelease } from './store-kind.js';
 import { fetchWhoami } from './whoami.js';
 import { planeFor } from './plane.js';
 import { cliVersion, warnIfDistStale } from './version.js';
@@ -152,9 +150,12 @@ Usage:
   substrat promote  <slug> --version <versionId>
                     [--ack-permissions] [--ack-migrations] [--ack-export-break]  (prod is the only channel)
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
-  substrat store-kind publish --kind <kind> [--dir <outdir>] [--entry <file.py>] [--release <id>]
-                                               publish a store kind from a pywrangler outdir (staff)
-  substrat store-kind rollback --kind <kind>  roll a store kind back to its previous release (staff)
+  substrat store-kind upload --kind <kind> --dir <dir> --entry <kind_x/…/module.py> [--commit <sha>]
+                                              store a release of a scope-store kind (staff, signed in)
+  substrat store-kind rollout --kind <kind> --sha256 <sha256>
+                                              canary a stored, pinned release, then roll it out
+  substrat store-kind rollback --kind <kind>  return to the previous good release
+  substrat store-kind status --kind <kind>    a kind's current release and rollouts
   substrat unpublish <slug>                   remove from the public marketplace (staff)
   substrat versions <slug>                    list a vertical's versions + channels
   substrat installs <slug>                    list this workspace's installs of a vertical
@@ -616,42 +617,62 @@ function reportStoreBackfill(result: PromoteResult): void {
   }
 }
 
+const STORE_KIND_USAGE = [
+  'usage: substrat store-kind upload   --kind <kind> --dir <dir> --entry <kind_x/…/module.py> [--commit <sha>]',
+  '       substrat store-kind rollout  --kind <kind> --sha256 <sha256>',
+  '       substrat store-kind rollback --kind <kind>',
+  '       substrat store-kind status   --kind <kind>',
+];
+
+/** The commit `dir` is checked out at, refusing uncommitted changes: they are not that commit. */
+function sourceCommitOf(dir: string): string {
+  const head = spawnSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+  if (head.status !== 0) throw new Error(`'${dir}' is not in a git checkout; pass --commit <sha>`);
+  const dirty = spawnSync('git', ['-C', dir, 'status', '--porcelain', '--', '.'], { encoding: 'utf8' });
+  if (dirty.status !== 0 || dirty.stdout.trim() !== '') {
+    throw new Error(`'${dir}' has uncommitted changes, so the bundle is not commit ${head.stdout.trim()}; commit them, or pass --commit`);
+  }
+  return head.stdout.trim();
+}
+
 async function cmdStoreKind(): Promise<void> {
   const sub = argv[1];
   const kind = flag('kind');
-  if ((sub !== 'publish' && sub !== 'rollback') || !kind) {
-    console.error('usage: substrat store-kind publish --kind <kind> [--dir <outdir>] [--entry <file.py>] [--release <id>]');
-    console.error('       substrat store-kind rollback --kind <kind>');
+  if (!['upload', 'rollout', 'rollback', 'status'].includes(sub ?? '') || !kind) {
+    for (const line of STORE_KIND_USAGE) console.error(line);
     process.exit(1);
   }
   const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   console.log(`authenticating with ${as}`);
   console.log(`control plane ${controlPlaneUrl}`);
-  if (sub === 'rollback') {
-    const result = await rollbackStoreKind({ controlPlaneUrl, header, kind });
-    console.log(`✓ ${kind} rolled back to ${result.release.releaseId} (${result.verticals.length} vertical(s))`);
+  const plane = { controlPlaneUrl, header, kind };
+  if (sub === 'status') {
+    const view = await storeKindStatus(plane);
+    console.log(`${kind}: current ${view.current?.sha256 ?? 'none'}, rolls back to ${view.current?.previousGoodSha256 ?? 'nothing'}`);
+    for (const r of view.rollouts.slice(-10)) console.log(`  #${r.seq} ${r.action} ${r.sha256} ${r.state}${r.detail ? ` — ${r.detail}` : ''}`);
     return;
   }
-  const entry = flag('entry');
-  if (!entry) {
-    console.error('usage: substrat store-kind publish --kind <kind> --entry <file.py> [--dir <outdir>]');
-    process.exit(1);
-  }
-  let dir = flag('dir');
-  if (!dir) {
-    dir = mkdtempSync(join(tmpdir(), 'store-kind-'));
-    const run = spawnSync('uv', ['run', 'pywrangler', 'deploy', '--dry-run', '--outdir', dir], { stdio: 'inherit' });
-    if (run.status !== 0) {
-      console.error('pywrangler deploy --dry-run failed');
-      process.exit(run.status ?? 1);
+  if (sub === 'upload') {
+    const dir = flag('dir');
+    const entry = flag('entry');
+    if (!dir || !entry) {
+      for (const line of STORE_KIND_USAGE) console.error(line);
+      process.exit(1);
     }
+    const body = packStoreKindDir(dir, entry, flag('commit') ?? sourceCommitOf(dir));
+    const { release, pinned } = await uploadStoreKindRelease({ ...plane, body });
+    console.log(`✓ stored ${kind} ${release.sha256} (commit ${release.sourceCommit})`);
+    console.log(pinned ? '  pinned: roll it out with `substrat store-kind rollout`' : '  not pinned yet: it runs once a reviewed change pins this sha256 and commit');
+    return;
   }
-  const release = flag('release') ?? new Date().toISOString().replace(/[:.]/g, '-');
-  const body = packStoreKindDir(dir, entry, release);
-  const result = await publishStoreKind({ controlPlaneUrl, header, kind, body });
-  console.log(`✓ ${kind} ${result.release.releaseId} is ${result.release.status}`);
-  for (const vertical of result.verticals) console.log(`  ${vertical}`);
+  const result =
+    sub === 'rollback'
+      ? await rollBackStoreKind(plane)
+      : await rollOutStoreKind({ ...plane, sha256: flag('sha256') ?? '' });
+  console.log(`✓ ${kind} ${result.rollout.action} to ${result.rollout.sha256}: ${result.rollout.state} (${result.moved.length} vertical(s) this run)`);
+  if (!result.complete) console.log('  verticals remain: run the same command again to continue');
 }
+
 
 async function cmdPublish(): Promise<void> {
   const slug = argv[1];
