@@ -8,7 +8,12 @@
 
 export const TERMINAL = new Set(['turn-finish', 'turn-error']);
 
-/** The digest an approval binds to: sha-256 of the canonical JSON of the proposed input. */
+/**
+ * The digest an approval binds to: sha-256 of `JSON.stringify` of the proposed input. That is
+ * NOT a canonical encoding (it depends on key order), which is harmless here only because both
+ * sides hash the same stored object. It binds the input alone: no operation, thread, call or
+ * approving principal (RFC §6.0 says what the real one binds).
+ */
 export async function digestOf(input) {
   const bytes = new TextEncoder().encode(JSON.stringify(input));
   const hash = await crypto.subtle.digest('SHA-256', bytes);

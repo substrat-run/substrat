@@ -17,7 +17,7 @@ export function connect(endpoint, thread, onState) {
       return m;
     };
     if (e.t === 'user-message') state.messages.push({ role: 'user', text: e.text });
-    if (e.t === 'turn-start') state.phase = 'streaming';
+    if (e.t === 'turn-start') Object.assign(state, { phase: 'streaming', error: null });
     if (e.t === 'text-delta') ai().text += e.delta;
     if (e.t === 'tool-input') ai().steps.push(`Running ${e.tool}`);
     if (e.t === 'approval-request') state.approval = e;
@@ -34,6 +34,13 @@ export function connect(endpoint, thread, onState) {
           headers: { ...(init?.headers ?? {}), ...(lastId ? { 'last-event-id': String(lastId) } : {}) },
           signal: controller.signal,
         });
+        // A refusal (409 busy, 400 digest_mismatch) has a JSON body, not a stream.
+        if (!res.ok) {
+          state.phase = 'idle';
+          state.error = (await res.json().catch(() => ({}))).error ?? `http_${res.status}`;
+          push();
+          return;
+        }
         const reader = res.body.getReader();
         const dec = new TextDecoder();
         let buf = '';
@@ -49,7 +56,9 @@ export function connect(endpoint, thread, onState) {
           }
           push();
         }
-        return;
+        // A clean close before a terminal event is a cut, not an end: resume after lastId.
+        if (state.phase !== 'streaming') return;
+        throw new Error('stream ended mid-turn');
       } catch (err) {
         if (controller.signal.aborted) return;
         await new Promise((r) => setTimeout(r, 500)); // resume exactly after lastId

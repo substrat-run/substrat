@@ -8,7 +8,8 @@ description: One chat in every product — a thread with an AI, and sometimes a 
 
 **Status: proposed. Nothing here is agreed.** It recommends; a human decides. The decisions it
 asks for are collected in §16, where the ones taken as working decisions for P1 are marked. Written against `origin/main` at `c95e6d73a` and against the
-outside world as of 2026-10-14. Claims about the repo carry a file or an issue; claims about
+outside world as of 2026-10-14; revised on 2026-10-15 after three review rounds, mainly to
+add the actor and its ceiling (§6.0), which the first draft lacked. Claims about the repo carry a file or an issue; claims about
 the outside world carry a source in §17; anything I could not check says so in §15.
 
 Related: [#1824](https://github.com/substrat-run/substrat/issues/1824) (delegated MCP access),
@@ -19,7 +20,15 @@ events), [#1671](https://github.com/substrat-run/substrat/issues/1671) (what K-1
 runtime UI), [#112](https://github.com/substrat-run/substrat/issues/112) (the MCP surface),
 [#1454](https://github.com/substrat-run/substrat/issues/1454) (closed: "two apps is not enough
 evidence to extract"). Companions: [scope-stores.md](scope-stores.md),
-[agent-surface.md](agent-surface.md).
+[agent-surface.md](agent-surface.md). Decisions it builds on:
+[K-42](../decisions/K-042-an-impersonated-operation-carries-two-actors-and-the-permis.md)
+(a second actor, stamped by the kernel),
+[K-43](../decisions/K-043-the-kernel-indexes-attachment-text-it-does-not-parse-file-fo.md)
+(attachment text),
+[K-46](../decisions/K-046-subject-erasure-reaches-a-module-s-own-tables-by-declaration-or.md)
+(erasure of a module's tables),
+[K-49](../decisions/K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md)
+(a scope store, proposed).
 
 ---
 
@@ -35,7 +44,7 @@ Four products want the same thing, in four shapes:
 |---|---|
 | A training-plan app | A coach: knows the user's programs and history, logs sets, adjusts a plan |
 | An internal CRM for a service company's staff | Ask questions of the data, make changes, with an audit trail |
-| ticket0, the support desk | Answer from the knowledge base, hand off to a person |
+| ticket0, the support desk | Answer from the knowledge base, hand off to a person. It already runs an assistant of its own (§12.1) |
 | The dashboard and the builder portal | "Why did my deploy fail?", "show me failing apps", then act |
 
 The user's own framing is the requirement: *as a user I want a chat that can answer my
@@ -51,9 +60,11 @@ for the developer who adds it. Both are part of the deliverable, not polish afte
 
 These are the parts of the design that are not up for trade during implementation.
 
-1. **The assistant acts as the signed-in user, with a ceiling.** It can never do something the
-   user could not. Every tool call goes through the same `assertAllowed` the user's own click
-   would. No standing authority of its own.
+1. **The assistant acts for the signed-in user, never as them, and never above them.** Every
+   call the loop makes carries two identities: the user it acts for, and the assistant as its
+   actor. Its authority is the user's permissions intersected with an assistant ceiling, which
+   the host enforces and the tenant can narrow. It is not a promise the loop keeps. Every record
+   of the call names both (§6.0).
 2. **One thread, three kinds of participant:** the user, the AI, a human agent. A person
    joining is a participant joining, not a different product.
 3. **The thread is the product's data.** It lives in the product's own scope, under its
@@ -66,8 +77,8 @@ These are the parts of the design that are not up for trade during implementatio
 6. **Untrusted text never decides a consequential action alone.** Anything a stranger could
    have written (a customer message, a note, an imported field) is data, not instruction.
 7. **Cost is bounded by construction**, per user and per day, before the call goes out.
-8. **Extract from evidence, build for the next consumer.** Four consumers exist; §12 orders
-   them so each one tests whether the shared part is really shared.
+8. **Extract from evidence, build for the next consumer.** Five consumers are planned; §12
+   orders them so each one tests whether the shared part is really shared.
 
 ## 3. What exists outside, and what it means for us
 
@@ -206,7 +217,7 @@ assistant-client                headless: connection, state, resume, approvals
 assistant host                  host code in vertical-host; the loop; one per thread
    ├── context assembly ───────► §7
    ├── model host ─────────────► platform inference: credential, budget, ledger (#1073)
-   ├── tools ──────────────────► the vertical's own operations, as the signed-in user
+   ├── tools ──────────────────► the vertical's own operations, for the user, actor stamped (§6.0)
    ├── record ─────────────────► engine-assistant (thread, messages, trace, approvals, memory)
    └── handoff ────────────────► a support desk (ticket0 first), via a contract
 ```
@@ -232,13 +243,24 @@ What reading `mountMcp` end to end (P0) showed, and what it changes here:
   keys, so a permission filter would remove almost nothing), and that `ScopeStub` has no way
   to read a principal's keys (connectors have `grants()`; a stub does not). Curation is
   `mcp: false` per operation today, and per-consumer scoping later (#111).
-- **A call is `stub.invoke(operation, input)` on a stub resolved per request.** The principal
-  is the stub's, so authority is the user's by construction, and a refusal is returned
-  **in-band** (`isError`) for the model to read. A 401 is the one error that is not swallowed.
+- **A call is `stub.invoke(operation, input)` on a stub resolved per request** (`mcp.ts:631`,
+  `:825`), the same path the HTTP mount uses. The principal is the stub's, so authority is the
+  user's, and a refusal is returned **in-band** (`isError`) for the model to read. A 401 is the
+  one error that is not swallowed. The same fact is the gap §6.0 closes: on this path the host
+  cannot tell a call the model chose from one the user made, so nothing can hold the model
+  below the user's role, and history credits the user with both.
 - **So the assistant's curation is the explicit `assistant.expose` opt-in (§6.1), not a
   permission filter.** Fifty-nine tools in a prompt is also a cost and an accuracy problem, not
-  only a safety one. The derivation and call path are reusable as they are; the default is
-  inverted (MCP is on unless `mcp: false`; the assistant is off unless exposed).
+  only a safety one. The derivation and call path are reusable; the default is inverted (MCP
+  is on unless `mcp: false`; the assistant is off unless exposed). `mcp.ts:15-17` argues
+  against a per-operation `mcp:` block, and this adds one, so the reason has to be stated: the
+  MCP door is used by a person who picked a client and points it at their own data, while the
+  assistant is a model the *product* puts in front of every user, so the product answers for
+  each tool it offers. **Proposed, maintainer to confirm (§16 Q15):** one derivation, with
+  `assistant.expose` as a filter over what `mcpToolsOf` yields, so an operation hidden from
+  MCP (`mcp: false`, or no HTTP route) cannot be exposed to the assistant, and a gate refuses
+  the declaration that tries. The two lists then cannot drift apart in the direction that
+  matters.
 
 ## 5. The parts
 
@@ -264,12 +286,19 @@ The engine owns the invariants and nothing else:
 
 - **Messages are append-only.** A message has a parent (a tree), so regenerate and edit-and-
   resend create branches. Nothing is overwritten.
-- **A gated tool call cannot run without an approval**, and the approval is bound to a digest
-  of the proposed input. The model cannot alter the arguments after the user said yes.
-  The approver must be the thread's user principal, not the AI participant.
+- **A gated tool call cannot run without an approval**, bound as §6.0 point 3 says: to the
+  approving principal, the thread, the call, the operation and a digest of the proposed input,
+  single-use and expiring. The digest alone shows only that the arguments did not change; the
+  binding to the principal is what shows the *user* said yes, and it needs the host to tell
+  the user's call from the loop's (§6.0).
 - **A tool call's states only move forward** (proposed, approved or denied, running, done or
   failed).
-- **Every mutation emits a fat event.** Nothing needs a cross-module read.
+- **Every mutation emits a fat event, except for message text.** Message text is declared
+  `erasable`, and K-46 keeps an erasable field off every event. So a message event carries the
+  thread, the message id, its parent, the participant, the kinds of its parts and their
+  digests, and not the words. No consumer may depend on the text; one that wants it is a sign
+  the thread is being read for something §8 does not allow. This also settles the Tier 2
+  question for the text: it never enters a payload, so there is no lake copy to erase.
 - **Memory items carry their source and are subject-keyed** (§8).
 - **Participants join and leave** with a recorded kind and time.
 
@@ -298,11 +327,14 @@ derivation from operations; context assembly (§7); and the handoff.
 **Where the live thread runs is the main open design question (§16, Q2).** Options:
 
 1. **In the request, `waitUntil` plus SSE**, resuming by replaying persisted events from the
-   engine. Simple, no new object, weaker on a long run and on reconnect mid-turn.
+   engine. Simple, no new object, weaker on a long run and on reconnect mid-turn. This is the
+   shape ticket0's existing assistant already has (`demos/ticket0/harness/assistant.ts`, run
+   under `executionCtx.waitUntil` after the widget's response has gone).
 2. **A Durable Object per thread** holding the WebSocket (hibernating) and the in-flight run,
    with the engine still the record. This is a platform-run object per scope, which is exactly
-   what [scope-stores.md](scope-stores.md) proposes as a *kind*. I have not checked whether the
-   assistant fits that mechanism; it looks like a natural first non-trivial kind.
+   what [scope-stores.md](scope-stores.md) and [K-49](../decisions/K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md)
+   (proposed) describe as a *kind*. I have not checked whether the assistant fits that
+   mechanism; it looks like a natural first non-trivial kind.
 3. **Cloudflare's `AIChatAgent` in the vertical's worker.** Rejected in §3.1.
 
 **P0 ran both** ([spikes/assistant-thread/FINDINGS.md](../../spikes/assistant-thread/FINDINGS.md),
@@ -327,6 +359,11 @@ local workerd, a scripted model). What it showed:
 - **Recommendation:** placement-agnostic loop and record in P1, option 2 as the live
   coordinator, option 1 as the fallback shape and not a second implementation. Confirm it
   deployed (P0b) before relying on it.
+
+Option 2 sharpens one requirement: its alarm can finish a turn with no request and no client
+attached, so the run's authority cannot be "the request's credential". §6.0 points 4 and 5
+(authority re-derived per step, ending at the subject's expiry, stopped by revocation) apply to
+both placements, and are the reason the record, not the request, carries what the run may do.
 
 The protocol in §5.1 is identical either way, so the choice does not leak to clients. How a
 vertical is given the object (a scope-store kind, or a class the uploader supplies as it does
@@ -398,27 +435,111 @@ exists.
   consent was given. Without this, "talk to support" quietly becomes "send my customers'
   records to the vendor".
 - **Transport:** the widget API or a cross-vertical event ([#1705](https://github.com/substrat-run/substrat/issues/1705))
-  outbound, and an inbound message path. New work, designed in P4.
+  outbound, and an inbound message path. New work, designed in P5.
+- **Who writes into the user's thread, under what.** A desk agent's reply is posted into the
+  product's scope by the product's own inbound handler, as a `human-agent` participant whose
+  identity is the desk's and whose authority there is one declared operation (post a reply to
+  a thread with an open handoff), not any role in the customer's scope. The handoff row is
+  the grant: it names the thread, the desk and its expiry, and closing the handoff ends it.
+  This is a boundary crossing, and §6.3 lists it as one.
 - **Delegated reads the other way** ([#1824](https://github.com/substrat-run/substrat/issues/1824)):
-  the desk's own assistant may read a user's diagnostic state (a team's last deploy, recent
-  failures) through token exchange with an actor ceiling. **Read-only, never writes on the
-  control plane.** Writes happen in the product's own assistant, with the user watching.
+  #1824 is one app's assistant calling *another app's MCP endpoint* as the end user, through
+  token exchange (`demos/auth-server/src/token-exchange.ts`). Part 1, the exchange, is built.
+  The part this would rely on is not: the exchanged token carries `act`, but "nothing here
+  reads either to allow anything", so until the host enforces an actor ceiling (#1824 part 2)
+  an exchanged token is checked like any bearer for that user, with the user's full role. A
+  desk reading a user's diagnostic state would also need an MCP surface on the product it
+  reads, which the dashboard does not have (§12.1). So this waits for §6.0's prerequisites,
+  is **read-only** when it comes, and never writes on the control plane. Writes happen in the
+  product's own assistant, with the user watching.
 
 ## 6. Authority and safety
 
+### 6.0 Who acts: the user and the actor
+
+The first draft had the loop call every operation as the signed-in user's principal. To the
+kernel, a write the model proposed and the user's own click were then the same call. Three
+things follow from that, and each is disqualifying on its own: "the approver must be the user,
+not the AI" cannot be enforced, because any route the user's credential reaches the loop's
+credential reaches too; history credits the user with writes the model chose; and the
+assistant can never be held below the user's role. The repository already has the pattern
+that answers this: K-42 (a second actor stamped by the kernel, out of reach of module code),
+#1824's `sub`/`act` model (the user's permissions intersected with an actor ceiling), and
+ticket0's own assistant, which runs under its own `assistant` and `assistant-autonomous` roles
+so that a grant, not the code, decides whether an answer reaches a customer
+(`demos/ticket0/src/provision.ts`).
+
+The rule, in seven points:
+
+1. **Two identities on every call.** The subject (the user) and the actor (the assistant,
+   identified by its thread and persona) are stamped by the host or the kernel, never supplied
+   by the loop's own arguments. The model is K-42: the actor is absent from `DomainEventInput`
+   and from `ctx`, so module code can neither claim it nor drop it nor branch on it, and it is
+   recorded on the K-34 envelope, the K-35 denial row and the platform-intent journal.
+2. **Authority is the user's permissions intersected with the actor's ceiling, checked by the
+   host on every invoke.** The ceiling is a set of scope permission keys, like ticket0's
+   `assistant` role, so unlike K-42's staff actor the intersection is not empty by
+   construction. A tenant admin can narrow the ceiling; nothing widens it past the user. Where
+   a ceiling is read-only, it is enforced as K-42 enforces read-only: the transaction is rolled
+   back, not trusted to the effecting verbs.
+3. **An approval is the user's act, not the loop's.** It arrives on a user-presence route that
+   is never offered as a tool and that the loop's credential cannot call. It binds the
+   approving principal, the thread, the call (and the step it belongs to), the operation, and a
+   digest of the input in a tagged, canonical encoding, plus an expiry and a nonce. It is
+   single-use, and that is enforced by the record's own conditional append, not by a read that
+   comes before it. An approval over a WebSocket is authenticated as the user on that message,
+   not inherited from the socket's opening.
+4. **Authority is re-derived each step** from a live credential, and it ends at the subject's
+   `AuthSubject.expiresAt`, as anything held open past a request already does
+   (`packages/vertical-auth/src/provider.ts`, #938). A run cannot outlive it, including a run
+   an object's alarm finishes with nobody attached (§5.3).
+5. **Revocation mid-run stops the run.** A role revoked, a session ended or the assistant
+   switched off takes effect at the next step. The run ends in a defined state (§10, "permission
+   denied"); it does not finish on authority it no longer has.
+6. **History shows who acted.** `readHistory` returns subject and actor, so an AI-proposed write
+   reads as "the assistant, for this user, approved by this user", and a write the user made
+   by hand reads as the user's alone.
+7. **Until the host can do this, nothing the assistant calls writes.** P1 is read-only, and
+   P2's gated write waits for the prerequisites below.
+
+**What this RFC decides, and what it only proposes.** Points 1 to 7 are this RFC's
+requirements: no assistant write runs on the user's bare principal, an approval is never a
+tool, an approval carries the bindings in point 3, and authority is per step, expiring and
+revocable. The mechanisms are **proposed prerequisites**, not built and not decided here:
+
+- (a) **the host-side ceiling and `act` on the authorization chain**, which is #1824 part 2,
+  with [#121](https://github.com/substrat-run/substrat/issues/121) (scopes as a ceiling)
+  related;
+- (b) **a kernel or host actor stamp for an actor that is not an impersonating staff
+  member**: K-42's mechanism generalised. Whether that amends K-42 or is a decision of its own
+  is the maintainer's call;
+- (c) **a `ScopeStub` read of a principal's keys**, needed only if the offered list is ever
+  filtered per user (§6.1, §6.4).
+
+**Proposed, maintainer to confirm (§16 Q11):** the default ceiling is one platform-defined
+`assistant` role per vertical, declared beside the vertical's roles so it appears in
+`PERMISSIONS.md`, which a tenant admin can narrow. And for P1, whose tools are dashboard
+routes rather than scope operations (§12.1), the actor is recorded on the dashboard's own
+request record (thread and persona beside the user) until the control plane can carry it. That
+is a known gap, stated rather than hidden: on that path the control plane records the platform
+service actor with the person beside it as `onBehalfOf` (#977, PR #1943), and has no slot for
+an assistant.
+
 ### 6.1 The rule
 
-Tools are the vertical's operations. The host invokes each as the signed-in user's principal.
-The assistant therefore needs no permission model of its own: the user's role is the ceiling.
-A call the user may not make is refused by the operation itself and comes back in-band for the
-model to read, as it does over MCP today.
+Tools are the vertical's operations. The host invokes each for the signed-in user with the
+assistant as actor (§6.0), so the user's role is the upper bound and the assistant's ceiling
+can hold it lower. A call outside either is refused by the host or by the operation itself and
+comes back in-band for the model to read, as it does over MCP today. ticket0 is the in-repo
+evidence that an assistant needs a permission model of its own: the difference between its
+supervised and autonomous assistant is one permission key.
 
 What the model is **offered** is the set of operations declared `assistant.expose`, which is a
 curation decision made per operation in the model and reviewed in the PR. Narrowing that set
 further by what *this* user may call would be a least-privilege floor and would shrink the
 prompt, but it needs a read of a principal's grants that `ScopeStub` does not have today
-(§4.1). It is worth adding for a narrow role (a customer or a trainee) and buys little for an
-admin; it is an open item, not something this design assumes.
+(§4.1, prerequisite (c) in §6.0). It is worth adding for a narrow role (a customer or a
+trainee) and buys little for an admin; it is an open item, not something this design assumes.
 
 An operation opts in, in the model:
 
@@ -426,7 +547,7 @@ An operation opts in, in the model:
 // illustrative sketch of an operation declaration, not a decided API
 assistant: {
   expose: true,
-  effect: 'read' | 'write' | 'irreversible',   // default derived; 'irreversible' explicit
+  effect: 'read' | 'write' | 'irreversible',   // fails closed: see below
   label: 'Log a set',                            // human wording shown in the UI
   preview: (input) => ({ ... }),                 // what the approval card shows
   undo: 'ops/unlog-set',                         // optional; makes a write reversible
@@ -434,15 +555,32 @@ assistant: {
 ```
 
 Reads run without a prompt. Writes show a **preview card** (what will change, in the user's
-words) and need approval; a write with a declared `undo` may instead run and show an undo
-control, which the research suggests is the right trade for low-stakes, reversible changes.
-Irreversible operations always need a preview and an approval. The default for an exposed
-write with no declaration is **approve first**; loosening is explicit and reviewed.
+words) and need approval. Irreversible operations always need a preview and an approval. The
+default for an exposed write with no declaration is **approve first**; loosening is explicit
+and reviewed.
+
+**The effect class fails closed.** An operation with no `effect` is a `write`, whatever its
+HTTP method. `read` is a claim, and it holds only where something enforces it: the
+`readOnlyHint` that `mcp.ts` derives from the method is a hint to a client, not a guarantee.
+So a tool declared `read` runs under K-42's read-only rollback, and a handler that writes is
+rolled back rather than trusted. (On the dashboard, where the tools are routes and not scope
+operations, "read-only" is a property of the tool list, not a mechanism; §12.1.)
+
+**`undo` relaxes the prompt only where nothing has left.** A write with a declared `undo` may
+run and show an undo control instead of asking first, which the research suggests is the
+right trade for low-stakes, reversible changes. But a write emits a fat event, and consumers
+act on it (a connector, the notifications engine sending mail), and an undo operation calls
+none of that back. So "reversible" means: no module consumes the operation's events and it
+requests no outbound effect. The first half can be gated from the composed manifests'
+`consumes` entries, and the gate refuses `undo` on an operation that fails it. The second half
+needs a declaration of an operation's outbound effects that does not exist yet; until it does,
+`undo` is refused on any operation that can request one. And `undo` never skips approval in a turn where untrusted text is in context (§6.3).
 
 ### 6.2 The permission-diff checkpoint covers the assistant
 
 `PERMISSIONS.md` already renders what each role can do. It gains an **assistant reach**
-section: for each role, the exposed operations and their effect class. Widening what the
+section: for each role, the exposed operations, their effect class, and which of them the
+assistant's ceiling (§6.0) leaves it able to call. Widening what the
 assistant can do then appears in the PR diff and cannot merge unseen, which is the
 repository's existing answer to "agents never self-approve". This is a new human checkpoint
 by extension, not a new mechanism.
@@ -454,10 +592,21 @@ by extension, not a new mechanism.
 | Training-plan app | Mostly the user's own input | Edit a plan, log sets | Low risk; approve writes anyway |
 | Internal CRM | Customer-authored notes, imported fields, inbound email | Edit or delete records, send mail | **Highest risk.** Writes approve-always; no tool that sends externally without approval; never let one turn both read an untrusted field and write on its basis without a human step |
 | ticket0 | Anything a visitor types or a KB article contains | Handoff, reply | Replies are drafts or constrained answers; no data tools beyond the asker's own |
-| Dashboard | Log lines, error messages from tenants' code | Roll back, redeploy (later) | Read-only in the first release (§12.1): no outward links or images, no tools that write |
+| Dashboard | Log lines and error messages from tenants' code: customer data, and untrusted | Roll back, redeploy (later) | Read-only in the first release (§12.1): no outward links or images, no tools that write. The text goes to a model provider, so §16 Q13 is a P1 prerequisite |
+| Any consumer with attachments | Text extracted from an uploaded file (K-43), and files from a connected source (the file-bearing sources RFC, #2280) | Whatever the consumer exposes | Attachment text is untrusted whoever uploaded it; it is a read result like any other and taints the turn |
 
 Design rules, all structural:
 
+- **Every read result is untrusted by default, and taints the rest of the turn.** The rule
+  below needs the host to know which text is untrusted, and no declaration says so today. The
+  fail-closed answer is to treat every tool result as untrusted: once a read result has
+  entered the turn, every write in that turn needs an approval, whatever its `undo`. A later
+  declaration may mark an output field as trusted (a status enum, a number the operation
+  computed); the default never changes.
+- **Context the host re-injects is data, never instructions.** Memory (§7 layer 3) and "where
+  the user is" (layer 4) can carry text someone else wrote: an entity title, a memory chip
+  proposed after a turn that read untrusted content. Both are passed to the model in a data
+  block, marked as such, and never in the standing instructions.
 - **Approve-always for writes where untrusted text is in context.** The approval card shows
   *our* description of the action (from `preview`), not the model's prose, so injected text
   cannot rewrite what the user is approving.
@@ -467,17 +616,32 @@ Design rules, all structural:
 - **No outward channel the model controls.** Markdown images and links are the classic
   exfiltration route. The renderer drops remote images and shows link targets, or routes them
   through an allowlist. Tools never take a free-form URL to fetch.
-- **Cross-tenant is impossible by construction**, because every call is an operation in the
-  user's own scope as the user.
+- **The model never picks the tenant or the scope.** A thread is pinned to one scope (and, on
+  the dashboard, one team) when it is created; a user who belongs to several tenants (K-22)
+  gets a thread per tenant, and nothing the model writes into a tool's arguments can move it.
+  That makes an ordinary tool call stay inside one scope. It does not make crossing
+  impossible, because three planned paths cross on purpose, and each names who writes and
+  under what:
+  - **The handoff** (§5.6) moves a user-approved summary to the platform's tenant, and the desk
+    posts into the customer's thread through one declared operation, granted by the open
+    handoff row.
+  - **Delegated reads** (#1824) cross apps as the user, under the exchanged token's grant, and
+    wait for the ceiling in §6.0.
+  - **A cross-scope read** (#2279) exposed as a tool reaches several scopes in one call. It is
+    declared and checked per scope by the host, and exposing one to the assistant is its own
+    review, since its result mixes data from scopes the thread is not pinned to.
 - **Defence in depth:** AI Gateway guardrails and DLP on the way in and out. Useful, never the
   control.
 
 ### 6.4 What testing must prove
 
-Mechanical, not hoped for (§11): a user without a permission never sees the tool and a forced
-call is refused; an injected instruction in a fixture note produces no write without approval;
-an approved call with altered arguments is refused; a budget-exhausted user gets the defined
-message, not a stack trace.
+Mechanical, not hoped for (§11): a call to an operation outside the user's role, or outside
+the assistant's ceiling, is refused in-band even when the model was offered it (the offered
+list is `assistant.expose` and is not filtered per user, §6.1); an injected instruction in a
+fixture note produces no write without approval; an approved call with altered arguments, or
+an approval replayed, expired, given for another thread, or sent with the loop's credential,
+is refused; a role revoked mid-run stops the next step; history shows the actor beside the
+user; a budget-exhausted user gets the defined message, not a stack trace.
 
 ## 7. Context
 
@@ -486,11 +650,13 @@ this order, because order decides whether the prompt cache hits:
 
 1. **Standing instructions** (persona, rules, locale, the effect-class policy). Pinned. Never
    summarised, never dropped, re-injected every turn so compaction cannot erase them.
-2. **Tool definitions** for this user (stable within a session, so cacheable).
-3. **Memory** (§8): the small set of active items, not a search result.
+2. **Tool definitions:** the offered set (§6.1), stable within a session, so cacheable.
+3. **Memory** (§8): the small set of active items, not a search result. Passed as data, never
+   as instructions (§6.3).
 4. **Where the user is.** The vertical supplies a function from the current route and entity
    to a few lines: "viewing order 123, status open". This is what makes the assistant feel
    like part of the app, and it is cheap. Shown to the user as a context chip they can remove.
+   An entity's title is text someone else may have written, so this layer is data too.
 5. **Retrieved knowledge** (KB, docs) when the persona has a search tool.
 6. **Thread history:** recent turns verbatim, older turns as a running summary.
 7. **Tool results** for the current turn.
@@ -556,8 +722,10 @@ and make deletion real.**
    fields in the model, so the kernel's subject-erasure path
    ([K-37](../decisions/K-037-subject-erasure-splits-by-store-tier-1-is-redacted-platform-.md),
    [K-46](../decisions/K-046-subject-erasure-reaches-a-module-s-own-tables-by-declaration-or.md))
-   covers them like any other module table. Events about messages carry a `piiClass` and a
-   `subjectId` so a payload can be shredded while the fact of the event remains.
+   covers them like any other module table. Because K-46 keeps an `erasable` field off every
+   event, message and memory text never rides an event payload (§5.2): the events carry ids,
+   participants and digests, so the fact of the event survives an erasure with nothing in it
+   to shred, and no Tier 2 copy of the text exists to chase.
 9. **Memory is exportable** with the rest of a user's data.
 
 ### 8.3 What not to build yet
@@ -568,9 +736,11 @@ version whose deletion semantics are easy to state truthfully.
 
 ## 9. Cost and limits
 
-- **Before the call:** the model host's `guard` checks a per-user budget. The platform
-  mirrors it with an AI Gateway spend limit scoped by user (custom metadata), so a bug in the
-  vertical's own check cannot overspend. Note spend limits are eventually consistent.
+- **Before the call:** the model host's `guard` checks a per-user budget, and that check is the
+  authoritative cap. The platform adds an AI Gateway spend limit scoped by user (custom
+  metadata) as defence in depth: it bounds how far a bug in the vertical's own check can
+  overspend, but spend limits are eventually consistent, so a burst can pass it briefly. It is
+  a backstop with an overshoot, not a hard cap.
 - **Per turn:** a step bound, a cap on output tokens, a cap on tool-result size entering
   context.
 - **Per user:** `engine-metering` (already composed by ticket0) records usage; a daily budget
@@ -696,7 +866,7 @@ first steps are ones we control end to end.
 
 | Order | Consumer | Why here | What it proves |
 |---|---|---|---|
-| 1 | **Dashboard, read-only** | Ours: no cross-repo release, no customer data, no special-category data. Platform code, so it may hold the model binding itself and does not wait for #1073's relay. The material to explain already exists as code | The loop, the protocol, resume, the element, provenance (#1749), cost control, the §10 acceptance run, and the deployed P0b measurements |
+| 1 | **Dashboard, read-only** | Ours: no cross-repo release, no special-category data. Not free of customer data: tenants' log lines and error messages are its input (§6.3), so the model-provider position (§16 Q13) comes first. Platform code, so it may hold the model binding itself and does not wait for #1073's relay. The material to explain already exists as code | The loop, the protocol, resume, the element, provenance (#1749), cost control, the §10 acceptance run, and the deployed P0b measurements |
 | 2 | **`demos/todo`** | In-repo, declared operations, sharing and revoke | The path the dashboard cannot test: `assistant.expose`, the assistant-reach section of `PERMISSIONS.md`, the scenario driver, the approval flow with a digest-bound gated write |
 | 3 | Training-plan app | Owned end to end, simple permissions, MCP already works, the clearest "coach" experience. First consumer outside this repo, so the first release cycle | Memory with special-category data; a persona that is not an operator tool |
 | 4 | Internal CRM | Staff users, audit matters, highest injection risk | Approve-always writes, quarantine, the audit trail as a feature |
@@ -714,7 +884,8 @@ explain already exists as code (`fleet-health.ts`, `failure-groups.ts`, `flow-fi
 
 What that buys:
 
-- **No release cycle across repositories,** and no customer's data or health data in play.
+- **No release cycle across repositories,** and no health data in play. Tenants' log lines and
+  error messages are in play, and they are customer data (§6.3).
 - **#1073's concern does not apply.** That issue is about a *pushed vertical* holding the model
   capability. The dashboard is platform code, so it holds the model binding itself, with the
   platform's own metering and a per-user budget. #1073 stays the path for verticals (P6).
@@ -725,8 +896,31 @@ What that buys:
   a real model, is how the 30 s `waitUntil` cap, eviction, first-token time and idle cost get
   measured, instead of a separate exercise.
 
+**How a dashboard tool is authorized, which is not how §6.1 describes a vertical's.** The
+dashboard's reads are Hono routes in `apps/dashboard/src/worker.ts`, not scope operations,
+and no `assertAllowed` stands in front of them. Take `/api/deployments/:slug/issues`: it
+resolves the account from the session and team cookies (`resolveAccount`), takes a control
+plane narrowed to that tenant by a tenant token, and checks ownership of the slug
+(`assertOwnedFromCp`); only then does it call the pure `deriveFailureGroups`, which checks
+nothing. So for P1:
+
+- **A dashboard tool calls the same guarded function its route calls, or the route itself,**
+  never the bare `derive*` helper. A wrapper that repeats each guard by hand is how one gets
+  forgotten; the P1 suite asserts, per tool, that a slug the team does not own is refused.
+- **The team is fixed when the thread is created.** The team a request reads is chosen per
+  request by the team cookie, so a thread records its team and every step resolves against
+  that team, not against whatever the cookie says now. A user who switches team gets a
+  different thread (§6.3).
+- **Attribution is weaker on this path, and that is stated.** The control plane records these
+  calls as the platform service actor with the person beside it as `onBehalfOf` (#977). It has
+  no slot for an assistant, so P1 records the actor on the dashboard's own request record
+  (§6.0, Q11).
+- **"Read-only" is a property of the tool list here, not a mechanism.** K-42's rollback applies
+  to a scope's transaction; control-plane reads are HTTP calls, and nothing would roll one
+  back. P1 offers no tool that maps to a writing route, and the P1 suite asserts the list.
+
 What it does **not** prove, which is why `demos/todo` follows immediately and is not optional:
-the dashboard's tools are **hand-written wrappers over the read helpers above**, not derived
+the dashboard's tools are **hand-written wrappers over those guarded reads**, not derived
 from declarations. So the dashboard cannot exercise `assistant.expose`, the generated tool
 manifest and its `--check`, the assistant-reach section of `PERMISSIONS.md`, or the gates that
 refuse an exposed write with no `preview`. Those are the parts with the most new mechanism and
@@ -742,9 +936,15 @@ team = tenant with scopes per team (the multi-team model); whether a thread belo
 user's scope, the team's, or a per-user store is a decision for P1, and it decides who can see
 a thread and what erasing a member removes.
 
-ticket0 becomes a **consumer** of the shared loop, with a persona, a KB-search tool and a
-handoff tool, and keeps its own conversation model (customer and agent, statuses,
-assignees, SLAs, snooze). It is not replaced. Its AI-authored messages link to an assistant
+**ticket0 already has an assistant**, and P5 is a migration, not a new consumer.
+`demos/ticket0/harness/assistant.ts` runs through the platform's model host under
+`waitUntil`, records through `ticket0/record-answer`, and comes out `answered` or `drafted`
+depending on whether its role holds the public-reply key (`assistant` versus
+`assistant-autonomous` in `src/provision.ts`). That supervised/autonomous policy is exactly
+the actor ceiling of §6.0, already working in one vertical, and moving ticket0 onto the shared
+loop must keep it. ticket0 becomes a **consumer** of the shared loop, with a persona, a
+KB-search tool and a handoff tool, and keeps its own conversation model (customer and agent,
+statuses, assignees, SLAs, snooze). It is not replaced. Its AI-authored messages link to an assistant
 thread for the reasoning and tool trace, by id, so the star topology holds: the vertical
 composes both, and the two engines never import each other.
 
@@ -783,11 +983,10 @@ is the real critical path.
 - **ticket0's conversation entities.** I did not read `spec/model.ts` for how a mirrored thread
   maps onto them; the mirror design depends on it.
 - **The dashboard facts in §12.1** were read from `apps/dashboard` (its module, wrangler
-  bindings, and the absence of model and MCP code), not run. Where a thread's record lives for
+  bindings, one route's guards, and the absence of model and MCP code; `mcp-resources.ts`
+  registers verticals' MCP endpoints at issuers and mounts nothing), not run. Where a thread's record lives for
   a team-scoped product is not decided.
 - **Scope-store fit.** I read the opening of [scope-stores.md](scope-stores.md) only.
-- **Dashboard tooling.** I did not check whether the dashboard exposes an MCP surface or only
-  its internal control-plane API.
 - **Library versions and sizes.** I did not pin an `ai` major, measure Lit's or Stencil's
   bundle size, or run either.
 - **The MCP Apps spec identifier** differs between the sources I found (SEP number and MIME
@@ -829,6 +1028,38 @@ is the real critical path.
    the door to runtime third-party UI.
 10. **Order of the consumers** in §12. **Working decision:** the dashboard first and read-only,
     then `demos/todo`. The dashboard does not wait for #1073's relay, which concerns verticals.
+11. **The actor and its ceiling (§6.0).** Points 1 to 7 of §6.0 are this RFC's requirements.
+    The mechanisms are proposed prerequisites: (a) the host-side ceiling and `act` on the
+    authorization chain (#1824 part 2, with #121); (b) an actor stamp for a non-impersonation
+    actor, K-42 generalised, as an amendment to K-42 or a decision of its own; (c) a
+    `ScopeStub` read of a principal's keys, only if the offered list is filtered per user.
+    **Proposed, maintainer to confirm:** the default ceiling is one platform-defined
+    `assistant` role per vertical, shown in `PERMISSIONS.md`, which a tenant admin can narrow;
+    and P1 records the actor on the dashboard's own request record until the control plane
+    can carry it.
+12. **Tenant-admin control.** Today only the vertical's author decides what is exposed.
+    **Proposed, maintainer to confirm:** a tenant admin can switch the assistant off for the
+    tenant and narrow its ceiling (Q11), but cannot widen it past what the author exposed or
+    past any user's role. Switching it off is a revocation, so a running turn stops at its
+    next step (§6.0 point 5).
+13. **The model provider as a sub-processor, and data residency.** Every read result in
+    context goes to the model provider, including, on the dashboard, tenants' log lines. The
+    platform's jurisdiction setting (`global`, `eu`, `us`; K-32) says where a tenant's data
+    lives and nothing yet says where its inference runs. **Proposed, maintainer to confirm,
+    and a P1 prerequisite:** the provider and its region are listed as a sub-processor before
+    any tenant text reaches it; a tenant in `eu` or `us` gets an assistant only where a
+    provider route in that region exists, and otherwise none, rather than a silent `global`
+    one; the context sent is the fields a tool returns, bounded (§9), never whole log
+    payloads; and nothing sent is retained by the provider for training.
+14. **Thread visibility.** **Proposed, maintainer to confirm:** a thread is visible to its
+    subject alone by default; a tenant admin may read threads only where the product declares
+    it (an internal staff tool may, a coach may not), and the user is told so. Tool references
+    in a thread are re-fetched as the *viewer*, never shown from what the subject saw, so a
+    viewer with less access sees less. Where a dashboard thread's record lives (§12.1) is the
+    P1 half of this question.
+15. **`assistant.expose` and `mcp: false` (§4.1).** **Proposed, maintainer to confirm:** one
+    derivation, with `expose` a filter over the MCP tool list, and a gate that refuses
+    exposing an operation hidden from MCP.
 
 ## 17. Risks
 
@@ -836,7 +1067,9 @@ is the real critical path.
 |---|---|
 | Injection through customer-authored text in the CRM | §6.3: approve-always writes, our preview text, quarantine, no outward channel |
 | Cost runaway from a looping agent | Step bound, per-turn caps, per-user budget before the call and at the gateway |
-| The abstraction is shaped by one consumer | §12 order; ticket0 third specifically to break an operation-only design |
+| The abstraction is shaped by one consumer | §12 order: the dashboard (routes, not operations) then `demos/todo` (declared operations) first, and ticket0 (retrieval-first, with a human side) specifically to break an operation-only design |
+| An AI-proposed write is recorded as the user's, or the assistant cannot be held below the user | §6.0: actor stamped by the host, ceiling enforced by the host, approvals bound to the approving principal; nothing writes until the prerequisites land |
+| Tenant text reaches a model provider the tenant did not agree to | §16 Q13 settled before P1 sends anything |
 | Wire format churn | Own the schema; adapt at the edge |
 | A clunky first release teaches users not to try | §10 is a release gate, with an acceptance run per consumer |
 | Memory feels creepy or is mishandled (special-category data) | Opt-in, visible list, real deletion, legal review before shipping the coach |
@@ -848,12 +1081,13 @@ is the real critical path.
 | Phase | Work | Exit |
 |---|---|---|
 | P0 | **Done locally** (`spikes/assistant-thread`): the loop, stream and resume on both placements, with a scripted model on local workerd | Q2 answered for correctness |
-| P1 | **Dashboard, read-only.** `contracts` event schema; `engine-assistant`; the thread object in the dashboard worker; the loop with a fake model first, then a real model through the platform's model host with a per-user budget; hand-written read tools over the existing helpers; the headless client and a first `<substrat-assistant>` inside the dashboard web app; provenance. A preview deploy for **P0b**: the 30 s cap, eviction, first-token time, the real append, idle cost | ⌘K Ask answers "why is this failing" with provenance, behind a flag; the §10 acceptance run passes; the P0b numbers are written into the spike's findings |
-| P2 | **`demos/todo`.** `assistant.expose` and `mountAssistant` for declared operations; the generated tool manifest with `--check`; the assistant-reach section of `PERMISSIONS.md`; `assistantScenario()` with a fake model; the first evals; a digest-bound gated write | A scripted conversation passes in the demo's suite, including permission, approval-digest and injection cases |
+| Prerequisites | **Before P1:** the model-provider and residency position (Q13). **Before P2's gated write:** the actor stamp (§6.0 (b)), the host-side ceiling and `act` on the chain (§6.0 (a), #1824 part 2), and approvals on a user-presence route bound as §6.0 point 3 says. **Before any hosted streaming for a vertical:** #1073's relay. **Only if the offered list is filtered:** a `ScopeStub` read of a principal's keys (§6.0 (c)) | Each lands as its own change, with its own decision record where it needs one |
+| P1 | **Dashboard, read-only.** `contracts` event schema; `engine-assistant`; the thread object in the dashboard worker, pinned to one team; the loop with a fake model first, then a real model through the platform's model host with a per-user budget; read tools that call the routes' guarded functions, never the bare helpers (§12.1), with the actor on the dashboard's request record; the headless client and a first `<substrat-assistant>` inside the dashboard web app; provenance. A preview deploy for **P0b**: the 30 s cap, eviction, first-token time, the real append, idle cost | ⌘K Ask answers "why is this failing" with provenance, behind a flag; the §10 acceptance run passes; the P0b numbers are written into the spike's findings |
+| P2 | **`demos/todo`.** `assistant.expose` and `mountAssistant` for declared operations; the generated tool manifest with `--check`; the assistant-reach section of `PERMISSIONS.md`; `assistantScenario()` with a fake model; the first evals; a gated write with an approval bound as §6.0 point 3 says, once the §6.0 prerequisites have landed (until then P2 ships reads only) | A scripted conversation passes in the demo's suite, including permission, ceiling, approval-binding, revocation and injection cases, and history shows the actor |
 | P3 | Training-plan app (first consumer outside this repo; the first release cycle). Memory, opt-in, with the view-and-delete UI. Settle the licence and package home (Q8) | Acceptance run passes; erasure removes memory and derived summaries |
 | P4 | Internal CRM | Acceptance run passes; approve-always writes hold under the injection fixtures |
 | P5 | ticket0 onto the loop; participants and the handoff contract and mirror | A thread escalates, a person replies in the user's chat, the user sees what was sent |
-| P6 | Dashboard writes (roll back, redeploy) behind approvals; delegated reads (#1824); platform-side inference and streaming relay for verticals (#1073) | A write from the dashboard assistant needs a recorded, digest-bound approval |
+| P6 | Dashboard writes (roll back, redeploy) behind approvals; delegated reads (#1824); platform-side inference and streaming relay for verticals (#1073) | A write from the dashboard assistant needs a recorded approval bound to the approving user (§6.0 point 3), and the control plane records the actor |
 
 ## Sources
 

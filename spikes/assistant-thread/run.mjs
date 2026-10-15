@@ -57,7 +57,13 @@ const B = await mf.getWorker('b');
 
 let n = 0;
 const uniq = () => `t${Date.now().toString(36)}${n++}`;
-const typesOf = (events) => events.map((e) => e.event?.t ?? e.t);
+// A run of `text-delta` events collapses to one: the 50 ms coalescing in the loop decides how
+// many deltas a step writes, and that depends on timing (8 in one run, 9 in another), not on
+// the loop. The rendered text is compared separately and exactly.
+const typesOf = (events) =>
+  events
+    .map((e) => e.event?.t ?? e.t)
+    .filter((t, i, ts) => !(t === 'text-delta' && ts[i - 1] === 'text-delta'));
 const contiguous = (events) => events.every((e, i) => e.id === events[0].id + i);
 
 // ---- placement drivers -------------------------------------------------------------
@@ -96,7 +102,7 @@ let a0;
   const ev2 = r2.events.map((e) => e.event);
   check('A: approval resumes and finishes', ev2.at(-1).t === 'turn-finish' && ev2.at(-1).reason === 'done');
   golden2 = render([...ev, ...ev2]);
-  a0 = [...ev, ...ev2].map((e) => e.t);
+  a0 = typesOf([...ev, ...ev2]);
   check('A: lease released at rest', (await aState(t)).runId === null);
 }
 {
@@ -112,7 +118,7 @@ let a0;
   await c.waitFor((e) => e.event.t === 'turn-finish' && e.event.reason === 'done');
   const all = c.events.map((e) => e.event).filter((e) => e.id);
   check('B: full render equals A', render(all) === golden2);
-  check('B: event type sequence equals A (same loop, same record)', JSON.stringify(typesOf(all)) === JSON.stringify(a0));
+  check('B: event type sequence equals A, modulo delta coalescing (same loop, same record)',JSON.stringify(typesOf(all)) === JSON.stringify(a0));
   c.close();
 }
 
