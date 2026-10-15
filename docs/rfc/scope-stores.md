@@ -6,7 +6,7 @@ description: A platform-run object per scope, declared as a kind and reached thr
 
 # RFC: scope stores
 
-**Status:** proposed · **Tracking:** [#2207](https://github.com/substrat-run/substrat/issues/2207)
+**Status:** accepted (K-49 and K-50 ratified 2026-10-15; D-63 ratified, with a hash-and-commit pin, once [#2306](https://github.com/substrat-run/substrat/pull/2306) merges; D-64 as proposed on [#2298](https://github.com/substrat-run/substrat/pull/2298) not accepted as written; the open items of §10.8 remain open) · **Tracking:** [#2207](https://github.com/substrat-run/substrat/issues/2207)
 · **Evidence:** [spikes/scope-store-binding/FINDINGS.md](../../spikes/scope-store-binding/FINDINGS.md)
 · **Decisions:** [K-49](../decisions/K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md),
 [D-63](../decisions/D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md),
@@ -323,7 +323,7 @@ the store.
 ## 10. The hosted lifecycle is the platform's
 
 *Amendment of 2026-10-13, recorded as [K-50](../decisions/K-050-a-hosted-scope-store-s-lifecycle-is-driven-by-the-platform-from-its-own-record.md).
-The owner has chosen this direction. It goes for ratification together with K-49.*
+The owner chose this direction and ratified it together with K-49 on 2026-10-15.*
 
 **Decision.** In a hosted deployment, everything the platform does to a scope's stores is
 driven by the platform. That covers export, snapshot, fork, carry, restore, import, reap,
@@ -612,7 +612,7 @@ reaches (export, wipe, erase, size) is the vertical-wide union of every (binding
 version of the vertical has declared, computed from `vertical_versions`. An object that was
 never written answers empty. The alternative is a refusal at every one of those doors.
 
-PR #2292 implements that answer, pending Q5's ratification. The union is a directory record,
+PR #2292 implements that answer, the accepted Q5 answer. The union is a directory record,
 `vertical_scope_stores`, kept by `publishVersion` in the transaction that inserts the version, so
 it is one indexed read (`HostAdmin.verticalScopeStores`). A version stored before the record, or
 loaded by a directory restore from an older dump, is indexed on the first read of its vertical.
@@ -672,7 +672,7 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | (l) A vertical cannot declare a binding in the `SUBSTRAT_` namespace, so no declared binding reads as a store binding | `control-plane-api/src/deploy.ts` (declared-binding check) |
 | (p) Store script names are injective over (kind, vertical), and the `substrat-store-` name space is reserved against vertical scripts | `scopeStoreScriptName`, `platformScriptCollision` (#2247) |
 | (q) The router's route read applies the same rule as (i), so a scope pinned to another script gets no store | `READ_ROUTE_SQL` |
-| (n) Export, wipe, erasure and the meter reach every binding any version of the vertical declared, a re-kind is refused at publish, and an export leaves out an empty binding only an earlier version declared and refuses one that holds data (#2292, the Q5 answer pending its ratification) | `vertical_scope_stores`, `HostAdmin.verticalScopeStores`, `scopeStoreReachOf` |
+| (n) Export, wipe, erasure and the meter reach every binding any version of the vertical declared, a re-kind is refused at publish, and an export leaves out an empty binding only an earlier version declared and refuses one that holds data (#2292, the accepted Q5 answer) | `vertical_scope_stores`, `HostAdmin.verticalScopeStores`, `scopeStoreReachOf` |
 | (m) Snapshot deletion, preview reap and the sweeper's snapshot reap decide their refusals, then unbind every hostname, then wipe, then delete. Erasure's two arms take one claim that fences the version, the pin and the serving pointer's pair before the key goes (#2285) | `unrouteScope`, `claimScopeScriptReap`, `SUBJECT_ERASURE_CLAIM_SQL` |
 
 Still open:
@@ -712,7 +712,7 @@ block it.
    control-plane store path, the sweeper included. With it: wipe fails closed on an unresolvable scope (j), the fail-closed
    erase arm on #2254's shred with `unavailable` as 503 (k), and unroute-then-wipe plus the
    bind fence (L6, L19, item (m)).
-4. The orphaned-binding rule (L17, item (n)): the union, on PR #2292, pending Q5's ratification.
+4. The orphaned-binding rule (L17, item (n)): the union, the accepted Q5 answer, on PR #2292.
 5. The signed envelope (§10.3), signed by the router and by the control plane with keys
    scoped as L16 says. It replaces `signScopeStoreName`.
 6. Make the hosted transport the platform hop. A host with no control plane, no direct
@@ -799,9 +799,9 @@ What each open PR keeps:
 |---|---|---|
 | Q1 | How long is the freshness window? | 60 seconds. The router and the control plane sign immediately before dispatch, and a long window only widens replay |
 | Q2 | Does an object remember nonces inside the window? | Not in v1. The reserved operations are idempotent, a kind call is a vertical retry the window bounds, and nonce memory is a write on every call. Revisit if a kind registers a non-idempotent operation the platform itself calls |
-| Q3 | The platform supplies the store script's entry module (§10.3). How does it hold the remembered name so the kind's class cannot rewrite it? | A platform-emitted entry module with its own re-emit check, as `lint:platform-entry` has. The entry module checks the remembered name before it constructs the kind's object. The kind's class shares the object's storage, so whether it can rewrite that name is held by the registration review until a platform mechanism can isolate it. A wrapper class the kind imports is not enough |
+| Q3 | The platform supplies the store script's entry module (§10.3). How does it hold the remembered name so the kind's class cannot rewrite it? | A platform-emitted entry module with its own re-emit check, as `lint:platform-entry` has. The entry module checks the remembered name before it constructs the kind's object. The kind's class shares the object's storage, so whether it can rewrite that name is held by the registration review until a platform mechanism can isolate it. A wrapper class the kind imports is not enough. **Decided 2026-10-15:** this answer stands. The registration review is a standing condition, to be revisited before any kind written outside this repo is registered. Whether an entry that routes by `idFromName` of the verified name makes the remembered name redundant is not yet shown on workerd and is checked in #2289 |
 | Q4 | Does a dump binding the destination does not declare refuse the restore (L8), or get skipped and reported? | Refuse. A skipped binding is store data silently dropped, and the operator can restore into a version that declares it. L8 is written to this answer and changes if Q4 is decided otherwise |
-| Q5 | A bind, promote, rollback, re-upload or push would drop or re-kind a binding while objects exist (L17). Drive the lifecycle over a union, or refuse at every door? | The vertical-wide union of every (binding, kind) any version has declared, computed from `vertical_versions`, as the set export, wipe, erase and size reach. It holds whatever moved the pointer. Refusals at every door are the alternative, and would need one at each of the five. Implemented as this answer on PR #2292, pending ratification, with a re-kind refused at publish |
+| Q5 | A bind, promote, rollback, re-upload or push would drop or re-kind a binding while objects exist (L17). Drive the lifecycle over a union, or refuse at every door? | The vertical-wide union of every (binding, kind) any version has declared, computed from `vertical_versions`, as the set export, wipe, erase and size reach. It holds whatever moved the pointer. Refusals at every door are the alternative, and would need one at each of the five. **Decided 2026-10-15:** the union. Retiring a binding from it is an explicit step after export and wipe, and the union never shrinks as a side effect of a push. Implemented on PR #2292: a directory record kept at publish, which refuses a re-kind there |
 | Q6 | Should a schedule or a connector reach a store? | Not in this amendment. When one needs it, it gets its own door, signed by the platform with audience `caller` for the scope it runs in (§9) |
 | Q7 | Does the control plane sign `platform` envelopes for every tenant from one place? | Yes. It already operates every scope's lifecycle, and the envelope's `name` is built from its own record, which is the authority this amendment relies on |
 
