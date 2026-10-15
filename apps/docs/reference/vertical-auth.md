@@ -138,9 +138,13 @@ page. The provider keeps that token in its own cookie, scoped to the logout path
 
 Two conditions live at the **issuer**, not here — at an Auth Server app they are the two
 fields on the application: RP-initiated logout must be enabled for the client, and the
-**exact** `post_logout_redirect_uri` the provider sends — the app's origin plus the
-post-logout path, `/` by default or the same-origin `returnTo` the logout link carried — must
-be on the post-logout list, which is separate from the sign-in callbacks. An origin alone
+**exact** `post_logout_redirect_uri` the provider sends must be on the post-logout list,
+which is separate from the sign-in callbacks. There are two, both the app's origin plus a
+fixed path: `/` when the logout link carried no `returnTo`, and `/api/auth/logged-out` when
+it did — register **both**. The `returnTo` itself (an invite link's `/invite/<token>`, say)
+never reaches the issuer: the provider parks it in a short-lived `HttpOnly`, `SameSite=Lax`
+`sb_oidc_return` cookie, and `/api/auth/logged-out` reads it once, clears it and redirects
+there (same-origin paths only; anything else lands on `/`). An origin alone
 does not match, and the mismatch is quiet: the person is signed out and left at the issuer
 instead of coming back. The first sign-out after
 turning them on can still show the confirmation page: the ID token minted before then
