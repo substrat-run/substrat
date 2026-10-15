@@ -539,10 +539,14 @@ export interface MountOptions {
 /**
  * A same-origin absolute path, or undefined. Guards the `returnTo` redirect against
  * open-redirect: only a path beginning with a single `/` (no scheme, no `//` network
- * path, no backslash) is allowed — never an absolute URL to another host.
+ * path, no backslash) is allowed — never an absolute URL to another host. ASCII control
+ * characters are refused too: the URL parser strips tab and newline before resolving, so
+ * `/<TAB>/host` would read as `//host`, and a newline cannot go in a `Location` header.
  */
 export function safePath(p: string | null | undefined): string | undefined {
-  if (!p || !p.startsWith('/') || p.startsWith('//') || p.includes('\\')) return undefined;
+  if (!p || !p.startsWith('/') || p.startsWith('//') || p.includes('\\') || /[\x00-\x1f\x7f]/.test(p)) {
+    return undefined;
+  }
   return p;
 }
 

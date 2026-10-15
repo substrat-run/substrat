@@ -209,7 +209,11 @@ describe('federated logout', () => {
     );
     const to = new URL(out.headers.get('location')!);
     expect(to.searchParams.get('post_logout_redirect_uri')).toBe(`${APP}/api/auth/logged-out`);
-    expect(named(out, LOGOUT_RETURN_COOKIE)[0]).toContain(encodeURIComponent(path));
+    const parked = named(out, LOGOUT_RETURN_COOKIE)[0]!;
+    expect(parked).toContain(encodeURIComponent(path));
+    expect(parked).toContain('Path=/api/auth/logged-out');
+    expect(parked).toContain('HttpOnly');
+    expect(parked).toContain('SameSite=Lax');
 
     const back = await provider.handle(
       new Request(`${APP}/api/auth/logged-out`, {
@@ -217,6 +221,10 @@ describe('federated logout', () => {
       }),
     );
     expect(back.headers.get('location')).toBe(path);
+    // Read once: a second visit to the route must not resume at the same place.
+    const cleared = named(back, LOGOUT_RETURN_COOKIE)[0]!;
+    expect(cleared).toContain('Max-Age=0');
+    expect(cleared).toContain('Path=/api/auth/logged-out');
 
     const evil = await provider.handle(
       new Request(`${APP}/api/auth/logged-out`, {
@@ -224,6 +232,32 @@ describe('federated logout', () => {
       }),
     );
     expect(evil.headers.get('location')).toBe('/');
+  });
+
+  const CONTROL = ['/\t/evil.test', '/\n/evil.test', '/\r/evil.test', '/\x7f/evil.test', '/ok\nx', '/ok\tx'];
+
+  it.each(CONTROL)('falls back to / for a control character in the return cookie: %j', async (value) => {
+    const provider = oidcRpAuthProvider(cfg);
+    const back = await provider.handle(
+      new Request(`${APP}/api/auth/logged-out`, {
+        headers: { cookie: `${LOGOUT_RETURN_COOKIE}=${encodeURIComponent(value)}` },
+      }),
+    );
+    expect(back.status).toBe(302);
+    expect(back.headers.get('location')).toBe('/');
+  });
+
+  it.each(CONTROL)('parks no cookie for a control character in returnTo: %j', async (value) => {
+    const provider = oidcRpAuthProvider(cfg);
+    const jar = cookiesOf(await signIn(provider));
+    const out = await provider.handle(
+      new Request(`${APP}/api/auth/logout?federated&returnTo=${encodeURIComponent(value)}`, {
+        headers: { cookie: `${LOGOUT_HINT_COOKIE}=${encodeURIComponent(jar.get(LOGOUT_HINT_COOKIE)!)}` },
+      }),
+    );
+    const to = new URL(out.headers.get('location')!);
+    expect(to.searchParams.get('post_logout_redirect_uri')).toBe(`${APP}/`);
+    expect(named(out, LOGOUT_RETURN_COOKIE).filter((c) => !c.includes('Max-Age=0'))).toEqual([]);
   });
 
   it('stays local when the issuer advertises no end-session endpoint', async () => {

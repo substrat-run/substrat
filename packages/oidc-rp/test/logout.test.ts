@@ -255,6 +255,11 @@ describe('federated logout', () => {
     const to = new URL(res.headers.get('location')!);
     expect(to.searchParams.get('post_logout_redirect_uri')).toBe(`${APP}/api/auth/logged-out`);
     expect(decodeURIComponent(cookiesOf(res).get(LOGOUT_RETURN_COOKIE)!)).toBe(path);
+    // Scoped to the one route that reads it, not sent with every request.
+    const parked = setCookieFor(res, LOGOUT_RETURN_COOKIE)!;
+    expect(parked).toContain('Path=/api/auth/logged-out');
+    expect(parked).toContain('HttpOnly');
+    expect(parked).toContain('SameSite=Lax');
 
     const back = await a.request(
       `${APP}/api/auth/logged-out`,
@@ -273,6 +278,40 @@ describe('federated logout', () => {
       env,
     );
     expect(back.headers.get('location')).toBe('/');
+  });
+
+  // The URL parser strips tab and newline before resolving, so `/<TAB>/evil.test` reads as
+  // `//evil.test`; a newline in a Location header throws. None may survive either side.
+  const CONTROL = ['/\t/evil.test', '/\n/evil.test', '/\r/evil.test', '/\x7f/evil.test', '/ok\nx', '/ok\tx'];
+
+  it.each(CONTROL)('falls back to / for a control character in the return cookie: %j', async (value) => {
+    const a = app();
+    const back = await a.request(
+      `${APP}/api/auth/logged-out`,
+      { headers: { cookie: `${LOGOUT_RETURN_COOKIE}=${encodeURIComponent(value)}` } },
+      env,
+    );
+    expect(back.status).toBe(302);
+    expect(back.headers.get('location')).toBe('/');
+  });
+
+  it.each(CONTROL)('parks no cookie for a control character in returnTo: %j', async (value) => {
+    const a = app();
+    const jar = await signIn(a);
+    const res = await a.request(
+      `${APP}/api/auth/logout?federated&returnTo=${encodeURIComponent(value)}`,
+      { headers: { cookie: `${LOGOUT_HINT_COOKIE}=${jar.get(LOGOUT_HINT_COOKIE)}` } },
+      env,
+    );
+    const to = new URL(res.headers.get('location')!);
+    expect(to.searchParams.get('post_logout_redirect_uri')).toBe(`${APP}/`);
+    expect(setCookieFor(res, LOGOUT_RETURN_COOKIE)).toBeUndefined();
+  });
+
+  it.each(CONTROL)('falls back on the plain logout and login sinks too: %j', async (value) => {
+    const a = app();
+    const out = await a.request(`${APP}/api/auth/logout?returnTo=${encodeURIComponent(value)}`, {}, env);
+    expect(out.headers.get('location')).toBe('/');
   });
 
   it('stays local when the issuer advertises no end-session endpoint', async () => {
