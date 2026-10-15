@@ -163,6 +163,11 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   resolve to exactly one version — the guarantee the overrides used to give.
 - `pnpm lint:permissions` — emit each vertical's `PERMISSIONS.md` (the permission-diff
   checkpoint below); CI runs it with `--check` and fails on drift
+  It also refuses (exit 2) a role or entity grant shape that holds a key reserved to a
+  system principal — `assistant:run` today (`tools/reserved-keys.mts`, tests via
+  `pnpm test:reserved-keys`). The system side is a schedule's or a peer's `permissions`,
+  which it does not read, so no marker is needed; a table is the right size for one key,
+  and a `holder: 'system'` on the permission declaration is the step when a second appears.
 - `pnpm lint:changelog` — the published weekly changelog (`apps/docs/changelog/`).
   With no flag it prints a week's raw material — every first-parent merge grouped by
   area, the commits that landed without a PR, and each package's version span
