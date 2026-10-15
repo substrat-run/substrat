@@ -21,13 +21,13 @@ import {
   scopeStoreCanaryObjectName,
   storeKindReleaseDigest,
   storeKindReleaseUpload,
+  type PlatformActorId,
   type ReservedStoreOperation,
   type ScopeStoreNeed,
   type StoreKindRegistration,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { createUlid, ulid, type HostAdmin, type StoreKindRolloutAction, type StoreKindRolloutRecord } from '@substrat-run/kernel';
-import type { PlatformActorId } from '@substrat-run/contracts';
 import { assertPythonKindModules } from './store-entry.js';
 import type { ScopeStoreEnsurerOptions, StoreKindReleaseArtifact } from './store-script.js';
 
