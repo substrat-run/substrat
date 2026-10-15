@@ -114,6 +114,7 @@ describe('a rostered address, through the deployed API', () => {
   it('a request with no session keeps the plain 401', async () => {
     const res = await tenants(new Headers());
     expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: 'unauthenticated' });
+    // A problem document (#113), still carrying the `error` a client read before it.
+    expect(await res.json()).toMatchObject({ error: 'unauthenticated', code: 'unauthenticated' });
   });
 });

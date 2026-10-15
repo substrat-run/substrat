@@ -6,7 +6,7 @@ description: A platform-run object per scope, declared as a kind and reached thr
 
 # RFC: scope stores
 
-**Status:** proposed · **Tracking:** [#2207](https://github.com/substrat-run/substrat/issues/2207)
+**Status:** accepted (K-49 and K-50 ratified 2026-10-15; D-63 ratified, with a hash-and-commit pin, once [#2306](https://github.com/substrat-run/substrat/pull/2306) merges; D-64 as proposed on [#2298](https://github.com/substrat-run/substrat/pull/2298) not accepted as written; the open items of §10.8 remain open) · **Tracking:** [#2207](https://github.com/substrat-run/substrat/issues/2207)
 · **Evidence:** [spikes/scope-store-binding/FINDINGS.md](../../spikes/scope-store-binding/FINDINGS.md)
 · **Decisions:** [K-49](../decisions/K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md),
 [D-63](../decisions/D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md),
@@ -323,7 +323,7 @@ the store.
 ## 10. The hosted lifecycle is the platform's
 
 *Amendment of 2026-10-13, recorded as [K-50](../decisions/K-050-a-hosted-scope-store-s-lifecycle-is-driven-by-the-platform-from-its-own-record.md).
-The owner has chosen this direction. It goes for ratification together with K-49.*
+The owner chose this direction and ratified it together with K-49 on 2026-10-15.*
 
 **Decision.** In a hosted deployment, everything the platform does to a scope's stores is
 driven by the platform. That covers export, snapshot, fork, carry, restore, import, reap,
@@ -484,6 +484,13 @@ delete would repopulate the object, which then outlives its scope with nothing l
 reach it. Tenant reap is already fenced by the tenant's status. Scope, preview and snapshot
 deletion need the scope unrouted before the wipe.
 
+PR #2285 does this for snapshot deletion, preview reap and the sweeper's snapshot reap. Each takes
+every refusal it can decide up front first: the reap claim (a copy move in flight), a copy the
+platform cannot reach, and the store resolution. A refused delete therefore leaves the scope
+routed and its stores untouched. Only then does it unbind every hostname of the scope, wipe and
+delete. Unbinding by hostname is the fast path, not a drain. The durable fence is a scope state
+that the store door itself checks, and that is a follow-up.
+
 A wipe that fails stops the delete. The scope's own storage is not deleted around the
 store, and the delete is retried. #2254's `wipePlatformStores` does this by throwing when
 a store call fails. A path that cannot tell which stores a scope has must fail the same way
@@ -527,6 +534,13 @@ A bind that races an erase either sees the erase or fails (L19). The erase reads
 declared bindings and then destroys the key. A bind landing in between could add a binding
 the erase never reached. So the erase runs under the same fence a bind takes on the scope,
 or it re-reads the resolution after its store calls and starts over if the resolution moved.
+
+PR #2285 takes the first form. Both arms, the orchestrated finalize and the direct shred, take one
+atomic claim just before the key goes (`SUBJECT_ERASURE_CLAIM_SQL`). It requires the bound
+version, the serving pin, the copy inventory and the serving pointer's exact (ref, version) pair
+to still be what the erasure read, and it moves the erasure epoch every bind compares. A bind
+that lands first fails the claim (412, key kept). One that lands after is refused. A version's
+manifest does not change after publish, so the version identity fences its store set.
 
 **Size and the meter.** The daily sweep calls `substrat.size` per declared binding. A store
 that cannot answer leaves that day's store rows unsampled. It is never written as `0`.
@@ -598,6 +612,19 @@ reaches (export, wipe, erase, size) is the vertical-wide union of every (binding
 version of the vertical has declared, computed from `vertical_versions`. An object that was
 never written answers empty. The alternative is a refusal at every one of those doors.
 
+PR #2292 implements that answer, the accepted Q5 answer. The union is a directory record,
+`vertical_scope_stores`, kept by `publishVersion` in the transaction that inserts the version, and
+read by its keys (`HostAdmin.verticalScopeStores`), with no per-version work once the vertical is
+marked indexed. A version stored before the record, or loaded by a directory restore from an older
+dump, leaves its vertical unmarked, and the first read or publish indexes every version of it,
+oldest first. A re-kind is refused at publish (`conflict`), judged against every older version: a
+binding keeps its kind for the life of its vertical, so the union holds one kind per binding and a
+dump never names one binding twice. A manifest that declares one binding twice is refused there
+too. Nothing retires a binding yet (item (v)). A
+restore still imports only the running version's bindings (L8), so an export leaves out a binding
+only an earlier version declared when its export is empty, and refuses one that holds data, naming
+the binding and the way out.
+
 Nothing here is per-vertical configuration that a worker carries. A deployed vertical with
 no control plane is covered by the records the platform already keeps.
 
@@ -648,6 +675,8 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | (l) A vertical cannot declare a binding in the `SUBSTRAT_` namespace, so no declared binding reads as a store binding | `control-plane-api/src/deploy.ts` (declared-binding check) |
 | (p) Store script names are injective over (kind, vertical), and the `substrat-store-` name space is reserved against vertical scripts | `scopeStoreScriptName`, `platformScriptCollision` (#2247) |
 | (q) The router's route read applies the same rule as (i), so a scope pinned to another script gets no store | `READ_ROUTE_SQL` |
+| (n) Export, wipe, erasure and the meter reach every binding any version of the vertical declared, a re-kind is refused at publish, and an export leaves out an empty binding only an earlier version declared and refuses one that holds data (#2292, the accepted Q5 answer) | `vertical_scope_stores`, `HostAdmin.verticalScopeStores`, `scopeStoreReachOf` |
+| (m) Snapshot deletion, preview reap and the sweeper's snapshot reap decide their refusals, then unbind every hostname, then wipe, then delete. Erasure's two arms take one claim that fences the version, the pin and the serving pointer's pair before the key goes (#2285) | `unrouteScope`, `claimScopeScriptReap`, `SUBJECT_ERASURE_CLAIM_SQL` |
 
 Still open:
 
@@ -657,13 +686,12 @@ Still open:
 | (b) | First-name memory and the audience check exist as helpers and in a test fixture, not in a store script. No kind is registered to carry them | L4, L5 | **Yes**, in the test kind and in the registration requirements (D-63) |
 | (c) | `transport: 'platform'` exists, but the host defaults to `'binding'` and nothing in production sets `'platform'` | L2 | **Yes** |
 | (f) | Replay and wipe skip when the destination's manifest is null. That is correct for a version that predates kept manifests, and needs a test that says so | L9, L7 | No, later |
-| (m) | No path unroutes a scope before wiping it, and erase is not fenced against a bind that lands between its manifest read and the key's destruction | L6, L19 | **Yes** |
-| (n) | Every lifecycle path reads only the current version's bindings, so objects under a dropped or re-kinded binding are unreachable. Push, bind, promote, rollback and re-upload can each cause it | L17 | **Yes** (Q5) |
 | (o) | The envelope checks are planned in the kind's script, which the kind controls. The platform has to supply the store script's entry module | L4, L5 | **Yes**, with #2210 |
 | (r) | The erasure replay runs inside one request and starts again from the first subject on a retry, so it converges only while it fits one request's budget. Resuming needs a cursor of its own | L9 | No, later |
 | (s) | The direct-path shred's audited receipt lacks the platform's store erasures, because the host's `shredSubject` takes no store list. The answer carries them | L12 | No, later |
 | (t) | Peer dispatch carries no store list, so a vertical serving a peer call has its store calls refused | L3 | No, later |
 | (u) | A store call works only during a request. A call from a Durable Object, a schedule included, does not pass egress and is refused (§9). The platform's own jobs are not affected | §9 | No, later |
+| (v) | Nothing retires a binding from a vertical's record (`vertical_scope_stores`, #2292). The step Q5's decision names, export then wipe then delete the record row, does not exist yet. Until it does, each binding no version still declares costs one store call per scope on every export, wipe, erasure and meter run, and its name cannot be declared again as another kind. It is also the way out for a vertical whose record cannot be read | L17 | No, later |
 
 Also open but not on #2254. The stack's `deleteScopeLocal` skips the store wipe when it is
 not given a tenant id (#2243). That is in the Cloudflare host (`adapter-cloudflare/src/host.ts`),
@@ -684,11 +712,11 @@ block it.
    prefix at push and at upload (L18, item (l)), and the store-script name space with
    injective names (L20, item (p)). The positive twin is that the same upload
    still carries the vertical's own declared bindings, none of which can now use the prefix.
-3. Done on #2254, except unroute-then-wipe and the bind fence (m), which stay open. One version resolver (L14, items (i) and (q)), called by the router and by every
+3. Done on #2254, and unroute-then-wipe with the bind fence (m) on #2285. One version resolver (L14, items (i) and (q)), called by the router and by every
    control-plane store path, the sweeper included. With it: wipe fails closed on an unresolvable scope (j), the fail-closed
    erase arm on #2254's shred with `unavailable` as 503 (k), and unroute-then-wipe plus the
    bind fence (L6, L19, item (m)).
-4. The orphaned-binding rule (L17, item (n)), in whichever form Q5 settles on.
+4. The orphaned-binding rule (L17, item (n)): the union, the accepted Q5 answer, on PR #2292.
 5. The signed envelope (§10.3), signed by the router and by the control plane with keys
    scoped as L16 says. It replaces `signScopeStoreName`.
 6. Make the hosted transport the platform hop. A host with no control plane, no direct
@@ -775,9 +803,9 @@ What each open PR keeps:
 |---|---|---|
 | Q1 | How long is the freshness window? | 60 seconds. The router and the control plane sign immediately before dispatch, and a long window only widens replay |
 | Q2 | Does an object remember nonces inside the window? | Not in v1. The reserved operations are idempotent, a kind call is a vertical retry the window bounds, and nonce memory is a write on every call. Revisit if a kind registers a non-idempotent operation the platform itself calls |
-| Q3 | The platform supplies the store script's entry module (§10.3). How does it hold the remembered name so the kind's class cannot rewrite it? | A platform-emitted entry module with its own re-emit check, as `lint:platform-entry` has. The entry module checks the remembered name before it constructs the kind's object. The kind's class shares the object's storage, so whether it can rewrite that name is held by the registration review until a platform mechanism can isolate it. A wrapper class the kind imports is not enough |
+| Q3 | The platform supplies the store script's entry module (§10.3). How does it hold the remembered name so the kind's class cannot rewrite it? | A platform-emitted entry module with its own re-emit check, as `lint:platform-entry` has. The entry module checks the remembered name before it constructs the kind's object. The kind's class shares the object's storage, so whether it can rewrite that name is held by the registration review until a platform mechanism can isolate it. A wrapper class the kind imports is not enough. **Decided 2026-10-15:** this answer stands. The registration review is a standing condition, to be revisited before any kind written outside this repo is registered. Whether an entry that routes by `idFromName` of the verified name makes the remembered name redundant is not yet shown on workerd and is checked in #2289 |
 | Q4 | Does a dump binding the destination does not declare refuse the restore (L8), or get skipped and reported? | Refuse. A skipped binding is store data silently dropped, and the operator can restore into a version that declares it. L8 is written to this answer and changes if Q4 is decided otherwise |
-| Q5 | A bind, promote, rollback, re-upload or push would drop or re-kind a binding while objects exist (L17). Drive the lifecycle over a union, or refuse at every door? | The vertical-wide union of every (binding, kind) any version has declared, computed from `vertical_versions`, as the set export, wipe, erase and size reach. It holds whatever moved the pointer. Refusals at every door are the alternative, and would need one at each of the five |
+| Q5 | A bind, promote, rollback, re-upload or push would drop or re-kind a binding while objects exist (L17). Drive the lifecycle over a union, or refuse at every door? | The vertical-wide union of every (binding, kind) any version has declared, computed from `vertical_versions`, as the set export, wipe, erase and size reach. It holds whatever moved the pointer. Refusals at every door are the alternative, and would need one at each of the five. **Decided 2026-10-15:** the union. Retiring a binding from it is an explicit step after export and wipe, and the union never shrinks as a side effect of a push. Implemented on PR #2292: a directory record kept at publish, which refuses a re-kind there |
 | Q6 | Should a schedule or a connector reach a store? | Not in this amendment. When one needs it, it gets its own door, signed by the platform with audience `caller` for the scope it runs in (§9) |
 | Q7 | Does the control plane sign `platform` envelopes for every tenant from one place? | Yes. It already operates every scope's lifecycle, and the envelope's `name` is built from its own record, which is the authority this amendment relies on |
 

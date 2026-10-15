@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import { authClient, phoneStatus, sendPhoneCode, verifyPhoneCode } from '../api';
 import { Card, Centered, Field } from '../primitives';
+import { isExpiredSignIn, restartUrl, signInDeadline } from './sign-in-window';
+
+const EXPIRED = 'This sign-in has expired. Start again from the application.';
 
 export function PhoneFactor({ oauthQuery, onDone, onBack }: { oauthQuery: string | null; onDone: () => void; onBack: () => void }) {
   const [status, setStatus] = useState<Awaited<ReturnType<typeof phoneStatus>> | null>(null);
@@ -10,18 +13,37 @@ export function PhoneFactor({ oauthQuery, onDone, onBack }: { oauthQuery: string
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // On the device's clock, but measured from page load — see `signInDeadline` for why.
+  const [deadline] = useState(() => signInDeadline(oauthQuery, Date.now()));
+  const [now, setNow] = useState(() => Date.now());
+  // The issuer refused the signed query: authoritative, whatever the deadline says.
+  const [refused, setRefused] = useState(false);
+  useEffect(() => {
+    if (deadline === null) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [deadline]);
+  const expired = refused || (deadline !== null && now >= deadline);
   useEffect(() => { void phoneStatus().then(setStatus).catch((e: Error) => setErr(e.message)); }, []);
   const act = async (fn: () => Promise<void>) => {
     setBusy(true); setErr(null);
-    try { await fn(); } catch (e) { setErr(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+    try { await fn(); } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (isExpiredSignIn(message)) setRefused(true);
+      else setErr(message);
+    } finally { setBusy(false); }
   };
   return <Centered><Card title="Verify your phone">
     {!status && !err && <p>Loading…</p>}
     {status && !status.available && <p className="notice">SMS verification is unavailable. Contact your publisher or use BankID.</p>}
-    {status?.available && <>
+    {expired && <>
+      <p className="error">{EXPIRED}</p>
+      {oauthQuery && <button className="btn primary" onClick={() => window.location.assign(restartUrl(oauthQuery))}>Start again</button>}
+    </>}
+    {status?.available && !expired && <>
       <p>{status.enrolled ? `Send a code to your registered phone ending in ${status.suffix}.` : 'Register your phone using an international number, then enter the SMS code.'}</p>
       {!status.enrolled && <Field label="Phone number" value={phone} onChange={setPhone} type="tel" hint="For example +46701234567" />}
-      <button className="btn" disabled={busy || (!status.enrolled && !status.emailVerified)} onClick={() => void act(async () => { await sendPhoneCode(status.enrolled ? undefined : phone); setSent(true); })}>{sent ? 'Send another code' : 'Send SMS code'}</button>
+      <button className="btn" disabled={busy || (!status.enrolled && !status.emailVerified)} onClick={() => void act(async () => { await sendPhoneCode(status.enrolled ? undefined : phone, oauthQuery); setSent(true); })}>{sent ? 'Send another code' : 'Send SMS code'}</button>
       {sent && <>
         <Field label="SMS code" value={code} onChange={setCode} />
         <button className="btn primary" disabled={busy} onClick={() => void act(async () => { await verifyPhoneCode(code, oauthQuery); if (!oauthQuery) onDone(); })}>Verify and continue</button>

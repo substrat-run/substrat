@@ -3,7 +3,10 @@ import {
   PASSWORD_METHOD,
   describeFlow,
   draftProblems,
+  editDraft,
+  everyMethod,
   newRoute,
+  shownDraft,
   type PolicyDraft,
 } from './sign-in-draft';
 
@@ -23,17 +26,22 @@ export function SignInPolicyEditor({
   offeredError: string | null;
   builtin: boolean;
 }) {
-  const set = (patch: Partial<PolicyDraft>) => onChange({ ...draft, ...patch });
+  const providers = offered ?? [];
+  // Until a method is changed the application takes every method the issuer offers, and that
+  // is what the boxes show: all ticked, everything else at its default. The first change turns
+  // it into an explicit list, so the choices are always on the page rather than behind a switch.
+  const shown = shownDraft(draft, providers);
+  const locked = !draft.restrict && !offered;
+  const set = (patch: Partial<PolicyDraft>) => onChange(editDraft(draft, providers, patch));
   const toggle = (id: string, on: boolean) => {
-    const methods = new Set(draft.methods);
+    const methods = new Set(shown.methods);
     if (on) methods.add(id);
     else methods.delete(id);
     set({ methods });
   };
-  const providers = offered ?? [];
-  const password = draft.methods.has(PASSWORD_METHOD);
-  const staged = !builtin && draft.identifierFirst;
-  const problems = draftProblems(draft, providers, builtin);
+  const password = shown.methods.has(PASSWORD_METHOD);
+  const staged = !builtin && shown.identifierFirst;
+  const problems = draftProblems(shown, providers, builtin);
   const flow = offered ? describeFlow(draft, providers, builtin) : null;
 
   return (
@@ -44,16 +52,21 @@ export function SignInPolicyEditor({
           ? 'Which buttons this console’s own sign-in screen draws. It is drawn, not enforced: a console sign-in never passes through the authorize endpoint, so this narrows the screen and nothing else.'
           : 'How people sign in when this application sends them here. This is enforced at the authorize endpoint, not merely on the screen: a session established another way is asked to sign in again rather than handed a code.'}
       </p>
-      <label className="toggle">
-        <input type="checkbox" checked={!draft.restrict} onChange={(e) => set({ restrict: !e.target.checked })} />
-        <span>
-          <strong>Accept every method this issuer offers</strong>
-          <em className="hint">The default. New providers become available to this application as they are added.</em>
-        </span>
-      </label>
+      {draft.restrict ? (
+        <p className="muted small">
+          Only the methods ticked below.{' '}
+          <button className="btn tiny" onClick={() => onChange(everyMethod())}>
+            Back to every method
+          </button>
+        </p>
+      ) : (
+        <p className="muted small">
+          Every method this issuer offers, including providers added later. Untick or change anything
+          below to pick specific methods instead.
+        </p>
+      )}
 
-      {draft.restrict && (
-        <div className="signin-editor">
+      <fieldset className="signin-editor" disabled={locked}>
           {offeredError ? (
             <p className="error">
               The issuer’s sign-in providers could not be read ({offeredError}), so this application’s
@@ -67,14 +80,14 @@ export function SignInPolicyEditor({
             <fieldset className="signin-group">
               <legend>1 · How people start</legend>
               <label className="toggle">
-                <input type="radio" name="signin-start" checked={!draft.identifierFirst} onChange={() => set({ identifierFirst: false })} />
+                <input type="radio" name="signin-start" checked={!shown.identifierFirst} onChange={() => set({ identifierFirst: false })} />
                 <span>
                   <strong>Show the methods on one screen</strong>
                   <em className="hint">Buttons for each provider, and the email and password form, side by side.</em>
                 </span>
               </label>
               <label className="toggle">
-                <input type="radio" name="signin-start" checked={draft.identifierFirst} onChange={() => set({ identifierFirst: true })} />
+                <input type="radio" name="signin-start" checked={shown.identifierFirst} onChange={() => set({ identifierFirst: true })} />
                 <span>
                   <strong>Ask for email first</strong>
                   <em className="hint">
@@ -95,7 +108,7 @@ export function SignInPolicyEditor({
             </label>
             {password && !builtin && (
               <label className="toggle nested">
-                <input type="checkbox" checked={draft.requireSms} onChange={(e) => set({ requireSms: e.target.checked })} />
+                <input type="checkbox" checked={shown.requireSms} onChange={(e) => set({ requireSms: e.target.checked })} />
                 <span>
                   <strong>Require an SMS code after the password</strong>
                   <em className="hint">
@@ -107,7 +120,7 @@ export function SignInPolicyEditor({
             )}
             {providers.map((provider) => (
               <label className="toggle" key={provider.id}>
-                <input type="checkbox" checked={draft.methods.has(provider.id)} onChange={(e) => toggle(provider.id, e.target.checked)} />
+                <input type="checkbox" checked={shown.methods.has(provider.id)} onChange={(e) => toggle(provider.id, e.target.checked)} />
                 <span>{provider.label}</span>
               </label>
             ))}
@@ -121,7 +134,7 @@ export function SignInPolicyEditor({
 
           {/* Also while rules exist but the start screen was switched back to one screen: they
               still fail validation, so they must stay visible and removable. */}
-          {!builtin && (staged || draft.routes.length > 0) && (
+          {!builtin && (staged || shown.routes.length > 0) && (
             <fieldset className="signin-group">
               <legend>3 · Reserved for an email domain</legend>
               <p className="muted small">
@@ -129,21 +142,21 @@ export function SignInPolicyEditor({
                 <strong> and no other way</strong> — also if they try a password. The provider does not
                 have to be ticked above: that list is for everyone, this one is for one organisation.
               </p>
-              {draft.routes.map((route, index) => (
+              {shown.routes.map((route, index) => (
                 <div className="route-row" key={route.key}>
                   <label className="field">
                     <span>Domains</span>
                     <input
                       value={route.domains}
                       placeholder="acme.se, acme.com"
-                      onChange={(e) => onChange({ ...draft, routes: draft.routes.map((r) => (r.key === route.key ? { ...r, domains: e.target.value } : r)) })}
+                      onChange={(e) => set({ routes: shown.routes.map((r) => (r.key === route.key ? { ...r, domains: e.target.value } : r)) })}
                     />
                   </label>
                   <label className="field">
                     <span>Must sign in with</span>
                     <select
                       value={route.provider}
-                      onChange={(e) => onChange({ ...draft, routes: draft.routes.map((r) => (r.key === route.key ? { ...r, provider: e.target.value } : r)) })}
+                      onChange={(e) => set({ routes: shown.routes.map((r) => (r.key === route.key ? { ...r, provider: e.target.value } : r)) })}
                     >
                       <option value="">Choose a provider…</option>
                       {providers.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
@@ -152,13 +165,13 @@ export function SignInPolicyEditor({
                   <button
                     className="btn danger tiny"
                     aria-label={`Remove rule ${index + 1}`}
-                    onClick={() => set({ routes: draft.routes.filter((r) => r.key !== route.key) })}
+                    onClick={() => set({ routes: shown.routes.filter((r) => r.key !== route.key) })}
                   >
                     Remove
                   </button>
                 </div>
               ))}
-              <button className="btn tiny" disabled={!offered} onClick={() => set({ routes: [...draft.routes, newRoute(providers.length === 1 ? providers[0]!.id : '')] })}>
+              <button className="btn tiny" disabled={!offered} onClick={() => set({ routes: [...shown.routes, newRoute(providers.length === 1 ? providers[0]!.id : '')] })}>
                 Add a domain rule
               </button>
             </fieldset>
@@ -185,8 +198,7 @@ export function SignInPolicyEditor({
               )}
             </div>
           )}
-        </div>
-      )}
+      </fieldset>
     </>
   );
 }
