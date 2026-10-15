@@ -43,13 +43,13 @@ const store = await host.getScopeStore(principal, tenantId, scopeId, 'GRAPH');
 const count = await store.invoke('increment', { by: 1 });
 ```
 
-On the platform path the call leaves the vertical as a fetch of `store.substrat.internal`. The egress worker hands it to the router, together with who the caller is. The vertical cannot change that part: it comes from the dispatch, not from the request. The router refuses a `substrat.*` operation, a scope other than the one the request was routed to, and a binding the running version does not declare. Then it addresses the store script. A Cloudflare host takes this path unless it was given a control plane, a runner, or `scopeStores: { transport: 'binding' }`.
+On the platform path the call leaves the vertical as a fetch of `store.substrat.internal`. The egress worker hands it to the router, together with who the caller is. The vertical cannot change that part: it comes from the dispatch, not from the request. The router refuses a `substrat.*` operation, a scope other than the one the request was routed to, and a binding the running version does not declare. Then it signs the call and addresses the store script. The signature is Ed25519, over the audience, the key, the store script, the object, the operation, the exact body and the time, and the store script holds only the public keys. A Cloudflare host takes this path unless it was given a runner or `scopeStores: { transport: 'binding' }`. A control plane does not change that. On this path the host does not hold the store objects, so it refuses to size, export or erase them locally (`unavailable`) rather than answer that it has none. The control plane reaches them instead.
 
 `invoke` takes an operation and its input, and nothing else. Idempotency belongs to a scope operation, and a store call has none. An operation name is a fixed label: no `@`, no whitespace and no `:`, at most 64 characters. Any other name is refused before the call leaves the vertical. So is a name that starts with `substrat.`. `substrat.export`, `substrat.import`, `substrat.size`, `substrat.wipe` and `substrat.erase` are the platform's operations. The control plane calls the store script for those itself. The vertical is not on that path.
 
 The call on the wire is `{ operation, input }`. The answer is `{ result }`, or `{ error: { code, status, body } }`, where `status` is an HTTP error status from 400 to 599. An answer with any other status is not the envelope, and it arrives as `bad_envelope`. A store error arrives as `StoreError`. The platform code comes from the HTTP status. The store's own `code` travels in `storeCode`. Its `body` travels in `storeBody` only for a 4xx whose JSON is at most 1 KiB (`STORE_BODY_MAX_BYTES`). A client can read that body, so a 5xx body, a larger one, or one that is not JSON stays in the store. The vertical's own code gets the same filtered `storeBody`.
 
-A direct binding exists for local development and for tests, and only when the host is created with `transport: 'binding'`. An ambient `SUBSTRAT_STORE_*` namespace is not used otherwise. The binding is not an isolation boundary. The checks the store script runs on each call are not built yet (see [Known limits](#known-limits)).
+A direct binding exists for local development and for tests, and only when the host is created with `transport: 'binding'`. An ambient `SUBSTRAT_STORE_*` namespace is not used otherwise. The binding is not an isolation boundary. The store script's own check of each call is not in place yet (see [Known limits](#known-limits)).
 
 ## The invocation line
 
@@ -111,8 +111,7 @@ These are open, and are tracked in the [scope-stores RFC](https://github.com/sub
 
 Before the first kind:
 
-- **The store script does not check the envelope yet.** The hop is the default for a host with no control plane and no runner. The signature and the remembered name are still to be checked inside the store.
-- **The store's checks on each call.** What the platform sends a store script does not yet bind the operation, the audience or the time, and no store script checks it yet. The checks are planned in an entry module the platform supplies in front of the kind.
+- **The store's checks on each call.** The platform signs every call, and the verifier is shipped, but no store script runs it yet. It is planned in an entry module the platform supplies in front of the kind, which also checks the object's remembered name.
 - **Unroute is not a drain.** Deleting a scope unbinds its hostnames before the wipe. That is the fast path. The durable fence, a scope state the store door itself checks, is still to come.
 
 Later:

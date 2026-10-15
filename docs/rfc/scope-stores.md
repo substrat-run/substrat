@@ -708,6 +708,7 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | (p) Store script names are injective over (kind, vertical), and the `substrat-store-` name space is reserved against vertical scripts | `scopeStoreScriptName`, `platformScriptCollision` (#2247) |
 | (q) The router's route read applies the same rule as (i), so a scope pinned to another script gets no store | `READ_ROUTE_SQL` |
 | (n) Export, wipe, erasure and the meter reach every binding any version of the vertical declared, a re-kind is refused at publish, and an export leaves out an empty binding only an earlier version declared and refuses one that holds data (#2292, the accepted Q5 answer) | `vertical_scope_stores`, `HostAdmin.verticalScopeStores`, `scopeStoreReachOf` |
+| (c) The platform hop is the Cloudflare host's default, control plane or not. Only a runner or `transport: 'binding'` takes another path, `'platform'` beside runners is refused, and on the hop the host's local size, export and erase refuse (`unavailable`) instead of answering "no stores" (#2294) | `scopeStoreTransportOf`, `refuseLocalStoresOnPlatform` |
 | (a) The name-only MAC is gone. Both signers sign the Ed25519 envelope of §10.3, over the audience, key id, script, name, operation, body digest, time and nonce, and `verifyScopeStoreCall` holds checks 1–4 (#2293) | `issueScopeStoreEnvelope`, `verifyScopeStoreCall` |
 | (m) Snapshot deletion, preview reap and the sweeper's snapshot reap decide their refusals, then unbind every hostname, then wipe, then delete. Erasure's two arms take one claim that fences the version, the pin and the serving pointer's pair before the key goes (#2285) | `unrouteScope`, `claimScopeScriptReap`, `SUBJECT_ERASURE_CLAIM_SQL` |
 
@@ -716,7 +717,6 @@ Still open:
 | | Open item | Rule | Before #2210? |
 |---|---|---|---|
 | (b) | First-name memory and the audience check exist as helpers and in a test fixture, not in a store script. No kind is registered to carry them | L4, L5 | **Yes**, in the test kind and in the registration requirements (D-63) |
-| (c) | `transport: 'platform'` exists, but the host defaults to `'binding'` and nothing in production sets `'platform'` | L2 | **Yes** |
 | (f) | Replay and wipe skip when the destination's manifest is null. That is correct for a version that predates kept manifests, and needs a test that says so | L9, L7 | No, later |
 | (o) | The envelope checks are planned in the kind's script, which the kind controls. The platform has to supply the store script's entry module | L4, L5 | **Yes**, with #2210 |
 | (r) | The erasure replay runs inside one request and starts again from the first subject on a retry, so it converges only while it fits one request's budget. Resuming needs a cursor of its own | L9 | No, later |
@@ -751,9 +751,10 @@ block it.
 4. The orphaned-binding rule (L17, item (n)): the union, the accepted Q5 answer, on PR #2292.
 5. Done on #2293. The signed envelope (§10.3), signed by the router and by the control plane
    with keys as L16 says. It replaces `signScopeStoreName`, which is deleted.
-6. Make the hosted transport the platform hop. A host with no control plane, no direct
-   binding and no runner sends a vertical's call to `store.substrat.internal`. The ambient
-   path is taken only where a binding or runner was given explicitly (L2).
+6. Done on #2294. Make the hosted transport the platform hop. A host with no direct
+   binding and no runner, control plane or not, sends a vertical's call to
+   `store.substrat.internal`. The ambient path is taken only where a binding or runner was
+   given explicitly (L2).
 7. A platform-supplied store entry module that runs L4 and L5 in front of the kind's
    class (o). The trivial test kind runs behind it, and the contract suite
    asserts L4 and L5 on workerd. The spike's "Not yet evidenced" items move to FINDINGS
