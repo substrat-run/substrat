@@ -4,14 +4,20 @@ import {
   STORE_CALLER_KEYS_VAR,
   STORE_CLASS_PLACEHOLDER,
   STORE_ENTRY_MODULE,
+  STORE_ENTRY_PYTHON_MODULE,
+  STORE_ENTRY_PYTHON_SOURCE,
+  STORE_ENTRY_PYTHON_VERIFIER_SOURCE,
   STORE_ENTRY_SOURCE,
   STORE_KIND_PLACEHOLDER,
   STORE_OBJECT_BINDING,
   STORE_OBJECT_CLASS,
   STORE_PLATFORM_KEYS_VAR,
+  STORE_PYTHON_COMPATIBILITY_DATE,
+  STORE_PYTHON_COMPATIBILITY_FLAGS,
   STORE_RESERVED_BINDING_PREFIX,
   STORE_RESERVED_MODULES,
   STORE_SCRIPT_VAR,
+  STORE_VERIFIER_MODULE,
 } from './store-entry.generated.js';
 
 export {
@@ -24,6 +30,7 @@ export {
   STORE_KIND_PLACEHOLDER,
   STORE_OBJECT_BINDING,
   STORE_OBJECT_CLASS,
+  STORE_PYTHON_COMPATIBILITY_DATE,
   STORE_RESERVED_MODULES,
   STORE_VERIFIER_MODULE,
 } from './store-entry.generated.js';
@@ -67,6 +74,37 @@ const REFUSED_KIND_FLAGS = ['allow_importable_env', 'enable_ctx_exports'];
 /** An inline config value. The shared binding schema does not carry `text`, so it is cast once here. */
 const plainText = (name: string, text: string) => ({ type: 'plain_text', name, text }) as DeclaredBinding;
 
+const encode = (text: string) => new TextEncoder().encode(text);
+
+/** A kind class name the entry can import: an identifier, and not the entry's own class. */
+function assertKindClass(className: string, identifier: RegExp): void {
+  if (!identifier.test(className)) throw new Error(`store kind class '${className}' is not an identifier`);
+  if (className === STORE_OBJECT_CLASS) {
+    throw new Error(`store kind class '${className}' is the entry's own object class`);
+  }
+}
+
+/**
+ * The bindings every store entry, JavaScript or Python, is uploaded with: the object namespace,
+ * the script's own name and both audiences' public keys. Throws on an empty script name and on
+ * keys `scopeStorePublicKeysFrom` refuses, one key for both audiences included.
+ */
+function storeEntryBindings(options: StoreEntryOptions): DeclaredBinding[] {
+  if (options.script.length === 0 || options.script.includes('\n')) {
+    throw new Error('a store script name is empty or contains a newline');
+  }
+  const keys = scopeStorePublicKeysFrom({
+    caller: options.callerPublicKeys.join(','),
+    platform: options.platformPublicKeys.join(','),
+  });
+  return [
+    { type: 'durable_object_namespace', name: STORE_OBJECT_BINDING, class_name: STORE_OBJECT_CLASS },
+    plainText(STORE_SCRIPT_VAR, options.script),
+    plainText(STORE_CALLER_KEYS_VAR, keys.caller.join(',')),
+    plainText(STORE_PLATFORM_KEYS_VAR, keys.platform.join(',')),
+  ];
+}
+
 /**
  * The store script as uploaded (#2289). The entry becomes the main module and imports the
  * kind module that was the bundle's entry. The object class is added to the SQLite migration,
@@ -76,9 +114,10 @@ const plainText = (name: string, text: string) => ({ type: 'plain_text', name, t
  * Refused, before anything is built: a class name that is not an identifier or is the entry's
  * own object class; a bundle entry that is not a plain module name; a bundle that ships a
  * module under one of the platform entries' names (`STORE_RESERVED_MODULES`), declares the
- * entry's class, or declares a binding in the entry's reserved `SUBSTRAT_STORE*` space (D-63); keys `scopeStorePublicKeysFrom` refuses,
- * one key for both audiences included; an empty script name; a compatibility flag that
- * would undo one of the upload's own (`allow_importable_env`, `enable_ctx_exports`).
+ * entry's class, or declares a binding in the entry's reserved `SUBSTRAT_STORE*` space (D-63);
+ * keys `scopeStorePublicKeysFrom` refuses, one key for both audiences included; an empty script
+ * name; a compatibility flag that would undo one of the upload's own (`allow_importable_env`,
+ * `enable_ctx_exports`).
  *
  * The upload carries `disallow_importable_env` and `disable_ctx_exports`, so the kind reaches
  * the entry's bindings neither through `cloudflare:workers` nor through `ctx.exports`.
@@ -87,12 +126,7 @@ export function withStoreEntry<
   B extends Pick<VerticalBundle, 'entry' | 'modules'> &
     Partial<Pick<VerticalBundle, 'doClasses' | 'bindings' | 'compatibilityFlags'>>,
 >(bundle: B, options: StoreEntryOptions): B {
-  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(options.className)) {
-    throw new Error(`store kind class '${options.className}' is not an identifier`);
-  }
-  if (options.className === STORE_OBJECT_CLASS) {
-    throw new Error(`store kind class '${options.className}' is the entry's own object class`);
-  }
+  assertKindClass(options.className, /^[A-Za-z_$][A-Za-z0-9_$]*$/);
   if (!MODULE_NAME.test(bundle.entry) || STORE_RESERVED_MODULES.includes(bundle.entry)) {
     throw new Error(`store kind entry '${bundle.entry}' is not a module name the store entry can import`);
   }
@@ -111,26 +145,13 @@ export function withStoreEntry<
   if (refusedFlag) {
     throw new Error(`a store kind release may not set '${refusedFlag}'`);
   }
-  if (options.script.length === 0 || options.script.includes('\n')) {
-    throw new Error('a store script name is empty or contains a newline');
-  }
-  const keys = scopeStorePublicKeysFrom({
-    caller: options.callerPublicKeys.join(','),
-    platform: options.platformPublicKeys.join(','),
-  });
-  const encode = (text: string) => new TextEncoder().encode(text);
+  const entryBindings = storeEntryBindings(options);
   const source = STORE_ENTRY_SOURCE.split(STORE_KIND_PLACEHOLDER)
     .join(`./${bundle.entry}`)
     .split(STORE_CLASS_PLACEHOLDER)
     .join(options.className);
   const kind = 'application/javascript+module';
-  const bindings: DeclaredBinding[] = [
-    ...(bundle.bindings ?? []),
-    { type: 'durable_object_namespace', name: STORE_OBJECT_BINDING, class_name: STORE_OBJECT_CLASS },
-    plainText(STORE_SCRIPT_VAR, options.script),
-    plainText(STORE_CALLER_KEYS_VAR, keys.caller.join(',')),
-    plainText(STORE_PLATFORM_KEYS_VAR, keys.platform.join(',')),
-  ];
+  const bindings: DeclaredBinding[] = [...(bundle.bindings ?? []), ...entryBindings];
   return {
     ...bundle,
     entry: STORE_ENTRY_MODULE,
@@ -139,6 +160,85 @@ export function withStoreEntry<
     compatibilityFlags: [
       ...new Set([...(bundle.compatibilityFlags ?? []), STORE_DISALLOW_IMPORTABLE_ENV, STORE_DISABLE_CTX_EXPORTS]),
     ],
+    bindings,
+  };
+}
+
+/** One release of a Python kind, as the publish flow hands it to the upload. */
+export interface PythonStoreKindRelease {
+  /** The module that exports the registered class, for example `kind_graph/store.py`. */
+  readonly entry: string;
+  readonly modules: readonly { readonly name: string; readonly content: Uint8Array }[];
+}
+
+/** The store script for a Python kind, ready to upload: the main module first. */
+export interface PythonStoreScript {
+  readonly mainModule: string;
+  readonly modules: readonly { readonly name: string; readonly content: Uint8Array; readonly contentType: string }[];
+  readonly compatibilityDate: string;
+  readonly compatibilityFlags: readonly string[];
+  readonly bindings: readonly DeclaredBinding[];
+}
+
+/**
+ * A Python kind module's path: one top-level package that starts with `kind_`, then
+ * identifiers, ending in `.py`. The prefix keeps a kind's modules off every name the Python
+ * entry imports or the runtime provides (`workers`, `js`, `pyodide`, the entry, its verifier),
+ * and off `metadata`, the upload's own form part.
+ */
+const PYTHON_KIND_MODULE = /^(kind_[a-z0-9_]+)(?:\/[A-Za-z_][A-Za-z0-9_]*)*\/[A-Za-z_][A-Za-z0-9_]*\.py$/;
+
+/**
+ * The store script as uploaded for a Python kind (#2290, #2210). The Python entry is the main
+ * module, with the kind's module and class in place of its two placeholders, and the verifier
+ * it imports is shipped beside it, so it runs the JavaScript entry's check. The kind's modules
+ * follow, byte for byte. The bindings and the two flags are the JavaScript entry's
+ * (`withStoreEntry`), with `python_workers`.
+ *
+ * Refused, before anything is built (D-63): a class name that is not a Python identifier or is
+ * the entry's own class; a module that is not `kind_<package>/…/<module>.py`; modules under more
+ * than one package; a module named twice; an entry that is not one of the modules; and
+ * whatever `withStoreEntry` refuses of the script name and the keys. A reserved module name
+ * cannot pass the path rule, and is refused again by name.
+ */
+export function withPythonStoreEntry(release: PythonStoreKindRelease, options: StoreEntryOptions): PythonStoreScript {
+  assertKindClass(options.className, /^[A-Za-z_][A-Za-z0-9_]*$/);
+  const packages = new Set<string>();
+  const names = new Set<string>();
+  for (const module of release.modules) {
+    const path = PYTHON_KIND_MODULE.exec(module.name);
+    if (!path || STORE_RESERVED_MODULES.includes(module.name)) {
+      throw new Error(`a store kind release may not ship a module named '${module.name}': a kind module is kind_<package>/…/<module>.py`);
+    }
+    if (names.has(module.name)) throw new Error(`a store kind release ships '${module.name}' twice`);
+    names.add(module.name);
+    packages.add(path[1]!);
+  }
+  if (packages.size > 1) {
+    throw new Error(`a store kind release ships more than one package (${[...packages].sort().join(', ')})`);
+  }
+  if (!names.has(release.entry)) {
+    throw new Error(`store kind entry '${release.entry}' is not one of the release's modules`);
+  }
+  const bindings = storeEntryBindings(options);
+  const kindModule = release.entry.replace(/\.py$/, '').replaceAll('/', '.');
+  const source = STORE_ENTRY_PYTHON_SOURCE.split(STORE_KIND_PLACEHOLDER)
+    .join(kindModule)
+    .split(STORE_CLASS_PLACEHOLDER)
+    .join(options.className);
+  return {
+    mainModule: STORE_ENTRY_PYTHON_MODULE,
+    modules: [
+      { name: STORE_ENTRY_PYTHON_MODULE, content: encode(source), contentType: 'text/x-python' },
+      {
+        name: STORE_VERIFIER_MODULE,
+        content: encode(STORE_ENTRY_PYTHON_VERIFIER_SOURCE),
+        contentType: 'application/javascript+module',
+      },
+      ...release.modules.map((module) => ({ name: module.name, content: module.content, contentType: 'text/x-python' })),
+    ],
+    compatibilityDate: STORE_PYTHON_COMPATIBILITY_DATE,
+    compatibilityFlags: [...STORE_PYTHON_COMPATIBILITY_FLAGS, STORE_DISALLOW_IMPORTABLE_ENV, STORE_DISABLE_CTX_EXPORTS],
     bindings,
   };
 }

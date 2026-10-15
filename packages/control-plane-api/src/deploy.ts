@@ -9,6 +9,7 @@ import {
   verticalScriptStem,
   type ScopeStoreNeed,
   type StoreKindRegistration,
+  type StoreKindRelease,
 } from '@substrat-run/contracts';
 import type { AssetRouting, DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 
@@ -191,7 +192,8 @@ export { scopeStoreScriptName };
 export interface ScopeStoreUploadPlan {
   readonly scripts: readonly {
     readonly kind: string;
-    readonly release: string;
+    /** Every pinned release of the kind (D-63). Which one a script runs is not the plan's. */
+    readonly releases: readonly StoreKindRelease[];
     readonly vertical: string;
     readonly scriptName: string;
     readonly className: string;
@@ -204,7 +206,7 @@ export interface ScopeStoreUploadPlan {
  * Which store scripts a vertical's stores need (#2210). One script per (kind, vertical), shared
  * by every binding of that kind, named by {@link scopeStoreScriptName}, which carries no release:
  * a new release of the kind is uploaded into the same name. A kind that is not in `kinds` is
- * refused. The default registry is empty. Nothing uploads these scripts yet.
+ * refused. The default registry is empty. The upload itself is `createScopeStoreEnsurer`.
  */
 export function scopeStoreUploadPlan(input: {
   readonly vertical: string;
@@ -220,14 +222,14 @@ export function scopeStoreUploadPlan(input: {
       throw substratError(
         'forbidden',
         `deploy refused: scope store '${store.binding}' declares kind '${store.kind}', which is not registered. ` +
-          `A store kind is platform code, pinned to a release the way a connector is.`,
+          `A store kind is platform code, registered in this repo.`,
       );
     }
     if (seen.has(kind.kind)) continue;
     seen.add(kind.kind);
     scripts.push({
       kind: kind.kind,
-      release: kind.release,
+      releases: kind.releases,
       vertical: input.vertical,
       scriptName: scopeStoreScriptName(input.vertical, kind.kind),
       className: kind.className,

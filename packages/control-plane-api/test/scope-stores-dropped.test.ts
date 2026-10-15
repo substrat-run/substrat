@@ -38,7 +38,7 @@ describe('a dropped scope-store binding stays reached (#2286)', () => {
   const auth = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
   const graph: StoreKindRegistration = {
     kind: 'graph',
-    release: '0.0.0-test',
+    releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40) }],
     className: 'GraphStore',
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],

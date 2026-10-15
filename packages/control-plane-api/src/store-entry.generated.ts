@@ -36,6 +36,15 @@ export const STORE_OBJECT_CLASS = "SubstratStoreObject";
 export const STORE_PLATFORM_KEYS_VAR = "SUBSTRAT_STORE_PLATFORM_KEYS";
 
 /**
+ * The compatibility date a Python kind's store script is uploaded with. One constant, so the
+ * upload and the package's probe cannot run different runtimes.
+ */
+export const STORE_PYTHON_COMPATIBILITY_DATE = "2026-03-01";
+
+/** The Python runtime's own flag. The upload adds the two that keep the entry's bindings from the kind. */
+export const STORE_PYTHON_COMPATIBILITY_FLAGS = ["python_workers"];
+
+/**
  * Every binding the entry owns starts with this. The kind's class is constructed with an env
  * that has none of them, and a kind bundle may not declare one.
  */

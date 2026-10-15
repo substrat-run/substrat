@@ -1,9 +1,10 @@
 /**
- * The Python store entry (#2290), run as uploaded under `pywrangler dev`.
+ * The Python store entry (#2290), run as uploaded under `pywrangler dev`. Run it with tsx, from
+ * the repo root: `pnpm exec tsx packages/store-entry-python/probe.mjs`.
  *
- * The script is built from the generated constants the upload ships, not from this package's
- * source: the Python entry with its two placeholders replaced by the counter kind, and the
- * verifier module beside it. A probe-only main module wraps the default entrypoint so a valid
+ * The script is what the upload builds (`withPythonStoreEntry`, #2210), not this package's
+ * source: the Python entry with its two placeholders replaced by the counter kind, the verifier
+ * module beside it, the kind's package, and the upload's bindings and flags. A probe-only main module wraps the default entrypoint so a valid
  * envelope can be delivered to an object of another name; the shipped entry has no such switch.
  *
  * Every call in the corpus below is judged twice: here, by the verifier module the script
@@ -13,7 +14,7 @@
  */
 import { spawn } from 'node:child_process';
 import { randomUUID, webcrypto } from 'node:crypto';
-import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -26,11 +27,12 @@ import {
   scopeStoreKeyId,
 } from '../contracts/dist/scope-store-envelope.js';
 import * as entry from '../control-plane-api/src/store-entry.generated.ts';
+import { withPythonStoreEntry } from '../control-plane-api/src/store-entry.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const vector = JSON.parse(readFileSync(join(here, '../contracts/test/vectors/scope-store-envelope.json'), 'utf8'));
 const out = join(here, '.uploaded');
-const KIND_MODULE = 'kind_counter';
+const KIND_PACKAGE = 'kind_counter';
 const KIND_CLASS = 'CounterStore';
 
 let failed = 0;
@@ -47,17 +49,21 @@ function check(condition, message, extra) {
 // ---- the script, as the upload builds it ----
 
 check(!/ALLOW_ADDRESS|parse_qs|\?object=/.test(entry.STORE_ENTRY_PYTHON_SOURCE), 'the shipped Python entry has no address override');
-const python = entry.STORE_ENTRY_PYTHON_SOURCE.split(entry.STORE_KIND_PLACEHOLDER)
-  .join(KIND_MODULE)
-  .split(entry.STORE_CLASS_PLACEHOLDER)
-  .join(KIND_CLASS);
+const platformPair = await generateScopeStoreKeyPair();
+const kindModules = readdirSync(join(here, 'src', KIND_PACKAGE))
+  .filter((file) => file.endsWith('.py'))
+  .map((file) => ({ name: `${KIND_PACKAGE}/${file}`, content: readFileSync(join(here, 'src', KIND_PACKAGE, file)) }));
+const built = withPythonStoreEntry(
+  { entry: `${KIND_PACKAGE}/store.py`, modules: kindModules },
+  { className: KIND_CLASS, script: vector.script, callerPublicKeys: [vector.publicKey], platformPublicKeys: [platformPair.publicKey] },
+);
 rmSync(out, { recursive: true, force: true });
-mkdirSync(join(out, 'src'), { recursive: true });
-writeFileSync(join(out, 'src', entry.STORE_ENTRY_PYTHON_MODULE), python);
-writeFileSync(join(out, 'src', entry.STORE_VERIFIER_MODULE), entry.STORE_ENTRY_PYTHON_VERIFIER_SOURCE);
-copyFileSync(join(here, 'src', `${KIND_MODULE}.py`), join(out, 'src', `${KIND_MODULE}.py`));
-// The probe's own main. \`?object=\` sends the call, unverified, straight to that object, past
-// the default entrypoint, so the object's own checks are what answer it. \`?unconfigured=1\`
+for (const module of built.modules) {
+  mkdirSync(dirname(join(out, 'src', module.name)), { recursive: true });
+  writeFileSync(join(out, 'src', module.name), module.content);
+}
+// The probe's own main. `?object=` sends the call, unverified, straight to that object, past
+// the default entrypoint, so the object's own checks are what answer it. `?unconfigured=1`
 // runs the entry's check with an env that has no key lists, as an upload that bound none.
 writeFileSync(
   join(out, 'src', 'probe_entry.py'),
@@ -90,24 +96,22 @@ class Default(store_entry.Default):
 `,
 );
 
-const platformPair = await generateScopeStoreKeyPair();
+// The upload's plain-text bindings become the dev server's vars; the kind gets one of its own.
 const vars = {
-  [entry.STORE_SCRIPT_VAR]: vector.script,
-  [entry.STORE_CALLER_KEYS_VAR]: vector.publicKey,
-  [entry.STORE_PLATFORM_KEYS_VAR]: platformPair.publicKey,
+  ...Object.fromEntries(built.bindings.filter((b) => b.type === 'plain_text').map((b) => [b.name, b.text])),
   KIND_SETTING: 'the kind may read this',
 };
+const namespace = built.bindings.find((b) => b.type === 'durable_object_namespace');
 writeFileSync(
   join(out, 'wrangler.jsonc'),
   JSON.stringify(
     {
       name: 'substrat-store-entry-python-probe',
       main: 'src/probe_entry.py',
-      compatibility_date: '2026-03-01',
-      // The flags the upload sets (withStoreEntry), beside the Python runtime's own.
-      compatibility_flags: ['python_workers', 'disallow_importable_env', 'disable_ctx_exports'],
+      compatibility_date: built.compatibilityDate,
+      compatibility_flags: built.compatibilityFlags,
       rules: [{ type: 'ESModule', globs: [`**/${entry.STORE_VERIFIER_MODULE}`] }],
-      durable_objects: { bindings: [{ name: entry.STORE_OBJECT_BINDING, class_name: entry.STORE_OBJECT_CLASS }] },
+      durable_objects: { bindings: [{ name: namespace.name, class_name: namespace.class_name }] },
       migrations: [{ tag: 'v1', new_sqlite_classes: [entry.STORE_OBJECT_CLASS] }],
       vars,
     },

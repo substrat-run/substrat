@@ -1,7 +1,7 @@
 name: Store entry Python
 
-# The Python store entry (#2290), run as uploaded: the probe builds the script from the
-# generated constants the upload ships. It runs when the entry, the verifier it shares with
+# The Python store entry (#2290), run as uploaded: the probe builds the script with
+# withPythonStoreEntry, the builder the store upload uses (#2210). It runs when the entry, the verifier it shares with
 # the JavaScript entry, the envelope, the shared vectors or the emitter change, and stays
 # quiet on every other pull request.
 on:
@@ -10,6 +10,7 @@ on:
       - 'packages/store-entry-python/**'
       - 'packages/control-plane-api/store-entry/**'
       - 'packages/control-plane-api/src/store-entry.generated.ts'
+      - 'packages/control-plane-api/src/store-entry.ts'
       - 'packages/contracts/src/scope-store-envelope.ts'
       - 'packages/contracts/test/vectors/scope-store-envelope.json'
       - 'tools/store-entry-emit.mts'
@@ -20,6 +21,7 @@ on:
       - 'packages/store-entry-python/**'
       - 'packages/control-plane-api/store-entry/**'
       - 'packages/control-plane-api/src/store-entry.generated.ts'
+      - 'packages/control-plane-api/src/store-entry.ts'
       - 'packages/contracts/src/scope-store-envelope.ts'
       - 'packages/contracts/test/vectors/scope-store-envelope.json'
       - 'tools/store-entry-emit.mts'
@@ -47,5 +49,5 @@ jobs:
       - run: pnpm --filter @substrat-run/contracts build
       # The probe reads the generated entry, so a stale one is refused before it is run.
       - run: pnpm run lint:store-entry --check
-      - run: node probe.mjs
-        working-directory: packages/store-entry-python
+      # The probe builds the script with the upload's own builder, so it runs under tsx.
+      - run: pnpm exec tsx packages/store-entry-python/probe.mjs

@@ -8,6 +8,7 @@ import {
   STORE_OBJECT_CLASS,
   STORE_RESERVED_MODULES,
   STORE_VERIFIER_MODULE,
+  withPythonStoreEntry,
   withStoreEntry,
 } from '../src/store-entry.js';
 
@@ -86,5 +87,65 @@ describe('withStoreEntry', async () => {
     const next = await generateScopeStoreKeyPair();
     const rotated = withStoreEntry(kindBundle(), { ...options, platformPublicKeys: [platform.publicKey, next.publicKey] });
     expect(rotated.bindings.at(-1)).toEqual({ type: 'plain_text', name: 'SUBSTRAT_STORE_PLATFORM_KEYS', text: `${platform.publicKey},${next.publicKey}` });
+  });
+});
+
+describe('withPythonStoreEntry', async () => {
+  const caller = await generateScopeStoreKeyPair();
+  const platform = await generateScopeStoreKeyPair();
+  const options = { className: 'GraphStore', script: 'substrat-store-graph-acme_crm', callerPublicKeys: [caller.publicKey], platformPublicKeys: [platform.publicKey] };
+  const py = (name: string) => ({ name, content: new TextEncoder().encode('class GraphStore: pass\n') });
+  const release = (patch: Record<string, unknown> = {}) => ({
+    entry: 'kind_graph/store.py',
+    modules: [py('kind_graph/store.py'), py('kind_graph/schema/tables.py')],
+    ...patch,
+  });
+
+  it('puts the Python entry first, imports the kind by its dotted path, and keeps the bytes', () => {
+    const given = release();
+    const script = withPythonStoreEntry(given, options);
+    expect(script.mainModule).toBe('substrat_store_entry.py');
+    expect(script.modules.map((m) => [m.name, m.contentType])).toEqual([
+      ['substrat_store_entry.py', 'text/x-python'],
+      [STORE_VERIFIER_MODULE, 'application/javascript+module'],
+      ['kind_graph/store.py', 'text/x-python'],
+      ['kind_graph/schema/tables.py', 'text/x-python'],
+    ]);
+    const entry = new TextDecoder().decode(script.modules[0]!.content);
+    expect(entry).toContain('from kind_graph.store import GraphStore as StoreKind');
+    expect(entry).not.toContain(STORE_KIND_PLACEHOLDER);
+    expect(entry).not.toContain(STORE_CLASS_PLACEHOLDER);
+    // The kind's modules are the release's own bytes, not a decoded and re-encoded copy.
+    expect(script.modules[2]!.content).toBe(given.modules[0]!.content);
+    expect(script.compatibilityFlags).toEqual(['python_workers', 'disallow_importable_env', 'disable_ctx_exports']);
+    expect(script.bindings).toEqual([
+      { type: 'durable_object_namespace', name: STORE_OBJECT_BINDING, class_name: STORE_OBJECT_CLASS },
+      { type: 'plain_text', name: 'SUBSTRAT_STORE_SCRIPT', text: options.script },
+      { type: 'plain_text', name: 'SUBSTRAT_STORE_CALLER_KEYS', text: caller.publicKey },
+      { type: 'plain_text', name: 'SUBSTRAT_STORE_PLATFORM_KEYS', text: platform.publicKey },
+    ]);
+  });
+
+  it.each([
+    ['a module outside a kind_ package', release({ modules: [py('kind_graph/store.py'), py('helpers.py')] }), {}, /helpers\.py/],
+    ["a module that shadows the runtime's", release({ modules: [py('kind_graph/store.py'), py('workers.py')] }), {}, /workers\.py/],
+    // A package of its own, so only the kind_ prefix refuses it: the runtime's own modules.
+    ["a package that shadows the runtime's FFI", release({ entry: 'js/ffi.py', modules: [py('js/ffi.py')] }), {}, /'js\/ffi\.py'/],
+    ["a package that shadows the runtime's SDK", release({ entry: 'workers/__init__.py', modules: [py('workers/__init__.py')] }), {}, /'workers\/__init__\.py'/],
+    ['a package that shadows Pyodide', release({ entry: 'pyodide/ffi.py', modules: [py('pyodide/ffi.py')] }), {}, /'pyodide\/ffi\.py'/],
+    ["the Python entry's own name", release({ modules: [py('kind_graph/store.py'), py('substrat_store_entry.py')] }), {}, /substrat_store_entry\.py/],
+    ["the verifier's name", release({ modules: [py('kind_graph/store.py'), py(STORE_VERIFIER_MODULE)] }), {}, /substrat-store-verify/],
+    ["the upload's metadata part", release({ modules: [py('kind_graph/store.py'), py('metadata')] }), {}, /'metadata'/],
+    ['a module that climbs out', release({ modules: [py('kind_graph/../store.py')] }), {}, /may not ship/],
+    ['a module that is not Python', release({ modules: [py('kind_graph/store.py'), py('kind_graph/data.json')] }), {}, /data\.json/],
+    ['a module named twice', release({ modules: [py('kind_graph/store.py'), py('kind_graph/store.py')] }), {}, /twice/],
+    ['two packages', release({ modules: [py('kind_graph/store.py'), py('kind_other/x.py')] }), {}, /more than one package/],
+    ['an entry that is not one of the modules', release({ entry: 'kind_graph/missing.py' }), {}, /not one of the release's modules/],
+    ["the entry's object class as the kind class", release(), { className: STORE_OBJECT_CLASS }, /entry's own object class/],
+    ['a class name that is not a Python identifier', release(), { className: 'Graph$Store' }, /not an identifier/],
+    ['an empty script name', release(), { script: '' }, /script name/],
+    ['one key for both audiences', release(), { platformPublicKeys: [caller.publicKey] }, /both audiences/],
+  ] as const)('refuses %s', (_, bad, patch, error) => {
+    expect(() => withPythonStoreEntry(bad, { ...options, ...patch })).toThrow(error);
   });
 });
