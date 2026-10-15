@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +17,9 @@ import {
 import {
   canaryStoreRelease,
   createControlPlaneApi,
+  createScopeStoreEnsurer,
+  createStoreCanaryEnsurer,
+  STORE_RELEASE_VAR,
   DEV_ACTOR_HEADER,
   ROLLOUT_FLEET_MAX,
   ROLLOUT_HOLD_TTL_MS,
@@ -293,8 +297,6 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     expect(first.events).toEqual(['canary:3', 'va:3', 'vb:3', 'vc:3']);
     expect(await current()).toBe(sha('2'));
     expect(await lastState()).toBe('diverged');
-    first.fail.clear();
-    await run(first, sha('2')).catch(() => undefined);
 
     // A return that fails leaves it diverged and says which.
     const back = fleet();
@@ -666,5 +668,112 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
   it('answers 501 when this control plane keeps no releases', async () => {
     const app = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), storeKinds: [registration], humanStaffActor: asPerson });
     expect((await call(app, 'PUT', '/store-kinds/graph/releases', person, wire(bundle(1)))).status).toBe(501);
+  });
+});
+
+describe('the real ensurer holds every move to the schema a script runs (#2300)', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  const person = platformActorId.parse(ulid());
+  const text = (s: string) => new TextEncoder().encode(s);
+  const bundle = (n: number) => ({
+    sourceCommit: COMMIT,
+    entry: 'kind_graph/store.py',
+    modules: [{ name: 'kind_graph/store.py', content: text(`class Store:\n    v = ${n}\n`) }],
+  });
+  const wire = (b: ReturnType<typeof bundle>) => ({
+    sourceCommit: b.sourceCommit,
+    entry: b.entry,
+    modules: b.modules.map((m) => ({ name: m.name, contentBase64: btoa(String.fromCharCode(...m.content)) })),
+  });
+  /** Cloudflare as the ensurer reaches it: each script's bindings, and PUTs that may fail. */
+  const scripts = new Map<string, { name: string; text?: string }[]>();
+  const failPut = new Set<string>();
+  const release = (script: string) => scripts.get(script)?.find((b) => b.name === STORE_RELEASE_VAR)?.text;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-store-schema-'));
+    host = new SqliteScopeHost({ dir });
+    scripts.clear();
+    failPut.clear();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: { method?: string; body?: FormData }) => {
+        const script = decodeURIComponent(url.split('/scripts/')[1]!.split('/')[0]!);
+        if (url.endsWith('/settings')) {
+          const bindings = scripts.get(script);
+          return bindings ? Response.json({ result: { bindings } }) : new Response('{}', { status: 404 });
+        }
+        if (failPut.has(script)) return new Response('{}', { status: 500 });
+        scripts.set(script, JSON.parse(await (init!.body!.get('metadata') as File).text()).bindings);
+        return new Response('{}', { status: 200 });
+      }),
+    );
+  });
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('refuses to undo a diverged schema raise by re-posting the lower release', async () => {
+    const [s1, s2] = [await storeKindReleaseDigest(bundle(1)), await storeKindReleaseDigest(bundle(2))];
+    const registration: StoreKindRegistration = {
+      kind: 'graph',
+      releases: [
+        { sha256: s1, sourceCommit: COMMIT, schema: 0 },
+        { sha256: s2, sourceCommit: COMMIT, schema: 1 },
+      ],
+      className: 'Store',
+      operations: [],
+      platformOperations: [...RESERVED_STORE_OPERATIONS],
+    };
+    for (const slug of ['va', 'vb']) {
+      await host.admin.registerVertical(person, { slug, name: slug, source: 'cli' });
+      const id = ulid();
+      await host.admin.publishVersion(person, {
+        id, verticalSlug: slug, version: '1.0.0', manifestDigest: `m-${id}`, permissionDigest: 'p', migrationDigest: 'g',
+        deploymentRef: null, manifestJson: JSON.stringify({ scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] }),
+      });
+    }
+    const keys = { caller: (await generateScopeStoreKeyPair()).publicKey, platform: (await generateScopeStoreKeyPair()).publicKey };
+    const ensurerOptions = { accountId: 'a', namespace: 'n', apiToken: 't', callerPublicKeys: [keys.caller], platformPublicKeys: [keys.platform], kinds: [registration] };
+    const bytes = new Map<string, Uint8Array>();
+    const app = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      storeKinds: [registration],
+      humanStaffActor: async () => person,
+      ensureScopeStores: ({ loadRelease, ...input }) => createScopeStoreEnsurer({ ...ensurerOptions, loadRelease })(input),
+      storeReleases: {
+        bytes: { get: async (k) => bytes.get(k), put: async (k, b) => void bytes.set(k, b) },
+        ensureCanary: ({ loadRelease, ...input }) => createStoreCanaryEnsurer({ ...ensurerOptions, loadRelease })(input),
+        callCanary: canaryStore().call,
+      },
+    });
+    const call = (method: string, path: string, body?: unknown) =>
+      app.request(path, {
+        method,
+        headers: { [DEV_ACTOR_HEADER]: person, 'content-type': 'application/json' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    for (const n of [1, 2]) expect((await call('PUT', '/store-kinds/graph/releases', wire(bundle(n)))).status).toBe(201);
+    expect((await call('POST', '/store-kinds/graph/rollouts', { sha256: s1 })).status).toBe(200);
+    // 1 → 2 raises the schema; vb's upload fails, va has moved and cannot go back: diverged.
+    failPut.add('substrat-store-graph-vb');
+    expect((await call('POST', '/store-kinds/graph/rollouts', { sha256: s2 })).status).toBe(502);
+    expect(release('substrat-store-graph-va')).toBe(s2);
+    failPut.clear();
+    // Re-posting the current release would move va from schema 1 back to 0: the ensurer refuses.
+    const back = await call('POST', '/store-kinds/graph/rollouts', { sha256: s1 });
+    expect(back.status).toBe(409);
+    expect(await back.text()).toMatch(/runs schema 1; release .* has schema 0/);
+    expect(release('substrat-store-graph-va')).toBe(s2);
+    // A rollback, which now converges on the current release, meets the same rule.
+    expect((await call('POST', '/store-kinds/graph/rollback')).status).toBe(409);
+    expect(release('substrat-store-graph-va')).toBe(s2);
+    // The way forward is forward: rolling out 2 again converges both.
+    expect((await call('POST', '/store-kinds/graph/rollouts', { sha256: s2 })).status).toBe(200);
+    expect([release('substrat-store-graph-va'), release('substrat-store-graph-vb')]).toEqual([s2, s2]);
   });
 });
