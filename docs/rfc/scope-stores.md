@@ -12,6 +12,8 @@ description: A platform-run object per scope, declared as a kind and reached thr
 [D-63](../decisions/D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md),
 [K-50](../decisions/K-050-a-hosted-scope-store-s-lifecycle-is-driven-by-the-platform-from-its-own-record.md)
 (the hosted lifecycle, §10)
+· **Proposed alternative:** [store-instances.md](store-instances.md), a tenant-level instance
+that several verticals of one tenant connect to (not decided)
 
 A vertical can hold state in four shapes, and none of them is a service with its own runtime.
 `runtimeNeeds.stores` is the vertical's own Durable Object classes. A static `d1` binding is
@@ -878,4 +880,6 @@ claims them as design.
   name its own identity, and the routes it needs are deleted by the router hop anyway. §10.1.
 - **Folding the store into `tenantStores`.** Wrong level. A scope store is per scope.
   The per-tenant lists being split into `tenantStores` and `blobStores` is a separate
-  defect, [#2221](https://github.com/substrat-run/substrat/issues/2221).
+  defect, [#2221](https://github.com/substrat-run/substrat/issues/2221). A store shared by
+  the verticals of one tenant is a different level again, argued (not decided) in
+  [store-instances.md](store-instances.md).
