@@ -19,6 +19,8 @@ import {
   sweepScriveReconciliations,
 } from '@substrat-run/connector-scrive';
 import {
+  bindFortnoxScope,
+  listFortnoxBindings,
   FORTNOX_CONNECTION_GRANTS,
   fortnoxConnectionActivity,
   fortnoxCredentialSummary,
@@ -27,6 +29,8 @@ import {
   sweepFortnoxLedger,
 } from '@substrat-run/connector-fortnox';
 import {
+  bindPlanimaScope,
+  listPlanimaBindings,
   PLANIMA_CONNECTION_GRANTS,
   planimaConnectionActivity,
   planimaCredentialSummary,
@@ -325,6 +329,8 @@ const FORTNOX: ConnectorRegistration = {
   provider: 'fortnox',
   grants: FORTNOX_CONNECTION_GRANTS,
   inspector: (env) => ({
+    bindScope: (h, row, target) => bindFortnoxScope(h, { ...target, connectionId: row.id }),
+    bindings: (h, row) => listFortnoxBindings(h, row.id),
     probe: async (h, row) =>
       probeFortnoxConnection(h, row, {
         fetch: globalFetch,
@@ -366,6 +372,8 @@ const PLANIMA: ConnectorRegistration = {
   provider: 'planima',
   grants: PLANIMA_CONNECTION_GRANTS,
   inspector: (env) => ({
+    bindScope: (h, row, target) => bindPlanimaScope(h, { ...target, connectionId: row.id }),
+    bindings: (h, row) => listPlanimaBindings(h, row.id),
     probe: async (h, row) =>
       probePlanimaConnection(h, row, {
         fetch: globalFetch,

@@ -232,6 +232,7 @@ import {
   ownerTransferAudit,
   memberChangeAudit,
   peerBindingAudit,
+  connectionBindingAudit,
   copyMarkAudit,
   redrainEventsInput,
   REDRAIN_BATCH,
@@ -12013,6 +12014,10 @@ export class SqliteScopeHost implements ScopeHost {
       recordMemberChange: async (actor, entry) => {
         const { tenantId, scopeId, ...after } = memberChangeAudit.parse(entry);
         this.recordAdmin(actor, 'manageScopeMember', { tenantId, scopeId }, null, after);
+      },
+      recordConnectionBindingChange: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = connectionBindingAudit.parse(entry);
+        this.recordAdmin(actor, 'bindConnectionScope', { tenantId, scopeId }, null, after);
       },
       recordPeerBindingChange: async (actor, entry) => {
         const { tenantId, scopeId, ...after } = peerBindingAudit.parse(entry);

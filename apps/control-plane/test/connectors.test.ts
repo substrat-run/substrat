@@ -1,3 +1,5 @@
+import type { ScopeHost } from '@substrat-run/kernel';
+import { connectionId, permissionKey } from '@substrat-run/contracts';
 import { describe, expect, it } from 'vitest';
 import { SCRIVE_CALLBACK_ROUTE, SCRIVE_CONNECTION_GRANTS } from '@substrat-run/connector-scrive';
 import { FORTNOX_CONNECTION_GRANTS } from '@substrat-run/connector-fortnox';
@@ -118,4 +120,26 @@ describe('connector registry', () => {
     ).rejects.toThrow(/SCRIVE_BASE_URL/);
     await expect(dispatcher(null as never, null as never)).rejects.toThrow(/SCRIVE_BASE_URL/);
   });
+});
+
+it('registered poll binding doors preserve the vertical landing configuration', async () => {
+  const id = connectionId.parse('01JZ0000000000000000000001');
+  const target = { tenantId: '01JZ0000000000000000000002', scopeId: '01JZ0000000000000000000003', vertical: 'acme-crm' };
+  for (const [provider, operation, permission] of [['planima', 'maintenance/record-plan', 'plan:record'], ['fortnox', 'ledger/record-period', 'ledger:record']] as const) {
+    const records = new Map<string, unknown>();
+    const host = {
+      connectionGrantsInScope: async () => [{ connectionId: id, permission: permissionKey.parse(permission) }],
+      admin: {
+        putConnectorState: async (_id: string, key: string, value: unknown) => { records.set(key, value); },
+        listConnectorState: async (_id: string, prefix: string) => [...records].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => ({ key, value })),
+      },
+    } as unknown as ScopeHost;
+    const row = { id } as Parameters<NonNullable<ReturnType<typeof connectionInspectorsFor>[string]['bindScope']>>[1];
+    const inspector = connectionInspectorsFor({})[provider]!;
+    const binding = await inspector.bindScope!(host, row, { ...target, operation: operation!, permission: permission!, ...(provider === 'planima' ? { organizationId: null, currency: 'SEK', window: null, horizonYears: 50 } : {}) });
+    expect(binding).toMatchObject({ ...target, operation, permission });
+    if (provider === 'planima') expect(binding).toMatchObject({ organizationId: null, currency: 'SEK', window: null, horizonYears: 50 });
+    expect(await inspector.bindings!(host, row)).toEqual([binding]);
+    expect(records.size).toBe(1);
+  }
 });

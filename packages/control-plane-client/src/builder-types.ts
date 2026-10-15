@@ -254,3 +254,22 @@ export interface StoreKindRolloutResultView {
   /** False when verticals remain: post the same rollout again. */
   complete: boolean;
 }
+
+/** A poll connector's landing target. Binding never grants new authority. */
+export interface ConnectionScopeBindingInput {
+  operation: string;
+  permission: string;
+  organizationId?: number | null;
+  currency?: string;
+  window?: { fromYear: number; toYear: number } | null;
+  horizonYears?: number;
+}
+export interface ConnectionScopeBinding extends ConnectionScopeBindingInput {
+  /** Read from the target scope's live projection by the API. */
+  permissionHeld?: boolean;
+  auditWarning?: string;
+  tenantId: string;
+  scopeId: string;
+  vertical: string;
+  boundAt: string;
+}

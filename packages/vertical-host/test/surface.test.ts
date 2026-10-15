@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { NO_APPLICATION_DETAIL, PLATFORM_SECRET_HEADER, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
+import { NO_APPLICATION_DETAIL, projectedConnectionGrant, PLATFORM_SECRET_HEADER, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
 import { mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
 import { registeredScopeSweepHost } from '../src/scope-sweep-host.js';
 
@@ -1616,6 +1616,20 @@ describe('mountPlatformSurface — the connector write-back verbs (#574)', () =>
       ENV,
     );
     expect(res.status).toBe(400);
+  });
+
+  it('connector-grants reads the target scope projection behind the platform gate', async () => {
+    const grants = [projectedConnectionGrant.parse({ connectionId: CONN, permission: 'plan:record' })];
+    let got: unknown[] = [];
+    const host = fakeHost({ connectionGrantsInScope: async (...args) => { got = args; return grants; } });
+    const request = { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE }) };
+    const response = await appWith(host).request('/internal/connector-grants', request, ENV);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(grants);
+    expect(got).toEqual([TENANT, SCOPE]);
+    const denied = await appWith(host).request('/internal/connector-grants', { ...request, headers: { 'content-type': 'application/json' } }, ENV);
+    expect(denied.status).toBe(403);
+    expect((await appWith(fakeHost()).request('/internal/connector-grants', request, ENV)).status).toBe(501);
   });
 
   it('connector-grant: parses and delivers the tuple write', async () => {

@@ -34,6 +34,12 @@ const S = '01HZZZZZZZZZZZZZZZZZZZZZZS';
 
 /** Every method, the wire it must put out: [call, method, path, body | undefined]. */
 const WIRE: Record<string, [(c: ControlPlaneBuilderClient) => Promise<unknown>, string | undefined, string, string | undefined]> = {
+  bindConnectionScope: [
+    (c) => c.bindConnectionScope(T, 'connection/1', S, { operation: 'maintenance/record-plan', permission: 'plan:record', organizationId: null, currency: 'SEK', window: null, horizonYears: 50 }),
+    'PUT', `/tenants/${T}/connections/connection%2F1/bindings/${S}`,
+    '{"operation":"maintenance/record-plan","permission":"plan:record","organizationId":null,"currency":"SEK","window":null,"horizonYears":50}',
+  ],
+  listConnectionBindings: [(c) => c.listConnectionBindings(T, 'connection/1'), undefined, `/tenants/${T}/connections/connection%2F1/bindings`, undefined],
   whoami: [(c) => c.whoami(), undefined, '/auth/whoami', undefined],
   exchangeLoginCode: [(c) => c.exchangeLoginCode('c', 'v'), 'POST', '/auth/cli/token', '{"code":"c","verifier":"v"}'],
   listVerticals: [(c) => c.listVerticals({ limit: 200 }), undefined, '/verticals?limit=200', undefined],

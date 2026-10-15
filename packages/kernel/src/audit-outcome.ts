@@ -42,6 +42,7 @@ import { ulid } from './ulid.js';
  * (`auditedCapabilityRevoke`), which on the shared control plane is another deployment's.
  */
 export const AUDITED_CHANGE_ACTIONS = [
+  'bindConnectionScope',
   'transferOwner',
   'manageScopeMember',
   'setPeerBinding',

@@ -147,6 +147,7 @@ import {
   ownerTransferAudit,
   memberChangeAudit,
   peerBindingAudit,
+  connectionBindingAudit,
   copyMarkAudit,
   type EventEffectsInput,
   type EffectsTree,
@@ -1927,6 +1928,9 @@ interface ScopeStubRpc {
  * platform cannot skip it any more than any other caller can.
  */
 export interface ConnectorDelegation {
+  /** Optional for older embedders; delegation configured without this fails closed. */
+  grants?(args: { tenantId: TenantId; scopeId: ScopeId }): Promise<ProjectedConnectionGrant[]>;
+
   /** Invoke one operation in the serving deployment, as the connection. */
   invoke(args: {
     connectionId: ConnectionId;
@@ -9748,6 +9752,10 @@ export class CloudflareScopeHost implements ScopeHost {
         const { tenantId, scopeId, ...after } = memberChangeAudit.parse(entry);
         await this.recordAdmin(actor, 'manageScopeMember', { tenantId, scopeId }, null, after);
       },
+      recordConnectionBindingChange: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = connectionBindingAudit.parse(entry);
+        await this.recordAdmin(actor, 'bindConnectionScope', { tenantId, scopeId }, null, after);
+      },
       recordPeerBindingChange: async (actor, entry) => {
         const { tenantId, scopeId, ...after } = peerBindingAudit.parse(entry);
         await this.recordAdmin(actor, 'setPeerBinding', { tenantId, scopeId }, null, after);
@@ -10439,6 +10447,10 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
   ): Promise<ProjectedConnectionGrant[]> {
     await this.validateScopeAccess(tenantId, scopeId);
+    if (this.connectorDelegation) {
+      if (!this.connectorDelegation.grants) throw new Error('connector grant inspection is not configured for the serving deployment');
+      return this.connectorDelegation.grants({ tenantId, scopeId });
+    }
     await this.migrateAndRecord(scopeId);
     const now = new Date().toISOString();
     // Both stores again, but the CF split is not the pure adapter's. The DO holds the

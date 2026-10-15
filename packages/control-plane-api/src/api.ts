@@ -1,7 +1,10 @@
+import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
+import type { ConnectionScopeBinding, ConnectionScopeBindingInput } from '@substrat-run/control-plane-client';
 import { resolveObservabilityWindow } from './observability-window.js';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import {
+  permissionKey,
   parseHostname,
   withLabel,
   RESERVED_LABEL_SEPARATOR,
@@ -287,6 +290,10 @@ import {
  * callback capability token), and redaction has to be structural.
  */
 export interface ConnectionInspector {
+  /** Poll-only landing setup. The API checks tenant, vertical and the in-scope grant first. */
+  bindScope?: (host: ScopeHost, connection: Connection, target: ConnectionScopeBindingInput & { tenantId: string; scopeId: string; vertical: string }) => Promise<ConnectionScopeBinding>;
+  bindings?: (host: ScopeHost, connection: Connection) => Promise<ConnectionScopeBinding[]>;
+
   probe?: (host: ScopeHost, connection: Connection) => Promise<ConnectionProbe>;
   activity?: (
     host: ScopeHost,
@@ -2749,6 +2756,67 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const rows = await c.var.admin.listConnections(c.get('actor'), { tenantId });
     return rows.find((r) => r.id === id);
   };
+
+  // Staff/service only: deliberately absent from BUILDER_ROUTES and TENANT_ROUTES.
+  // No generic connector-state write and no grant escalation: the connector verifies the
+  // scope's delivered permission again before writing its own binding record.
+  app.get('/tenants/:tenantId/connections/:id/bindings', async (c) => {
+    const row = await inspectableConnection(c);
+    if (!row) return refuse(c, 'not_found', 'unknown connection');
+    const read = options.connectionInspectors?.[row.provider]?.bindings;
+    if (!read) return refuseStatus(c, 501, `no scope binding registered for provider '${row.provider}'`);
+    const bindings = await read(c.var.host, row);
+    return c.json(await Promise.all(bindings.map(async (binding) => {
+      const scope = scopeIdSchema.parse(binding.scopeId);
+      const grants = await c.var.host.connectionGrantsInScope(row.tenantId, scope);
+      return { ...binding, permissionHeld: grants.some((g) => g.connectionId === row.id && g.permission === binding.permission) };
+    })));
+  });
+
+  app.put('/tenants/:tenantId/connections/:id/bindings/:scopeId', async (c) => {
+    const row = await inspectableConnection(c);
+    if (!row) return refuse(c, 'not_found', 'unknown connection');
+    const bind = options.connectionInspectors?.[row.provider]?.bindScope;
+    if (!bind) return refuseStatus(c, 501, `no scope binding registered for provider '${row.provider}'`);
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const target = await c.var.admin.getScopeRecord(c.get('actor'), row.tenantId, scopeId);
+    if (!target) return refuse(c, 'not_found', 'unknown scope');
+    if (!isPrimaryScope(target)) return refuseStatus(c, 403, PREVIEW_CONNECTIONS_REFUSAL);
+    if (target.status !== 'active' || !target.vertical || target.vertical !== row.vertical) {
+      return refuseStatus(c, 409, 'connection and target must share an active vertical scope');
+    }
+    const fields = {
+      operation: z.string().regex(/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/),
+      permission: permissionKey,
+    };
+    const schema = row.provider === 'planima'
+      ? z.object({ ...fields,
+          organizationId: z.number().int().positive().nullable().optional(),
+          currency: z.string().regex(/^[A-Z]{3}$/).optional(),
+          window: z.object({ fromYear: z.number().int(), toYear: z.number().int() })
+            .refine((w) => w.toYear >= w.fromYear, 'window ends before it starts').nullable().optional(),
+          horizonYears: z.number().int().min(0).optional(),
+        }).strict()
+      : z.object(fields).strict();
+    const input = schema.parse(await c.req.json());
+    const grants = await c.var.host.connectionGrantsInScope(row.tenantId, scopeId);
+    if (!grants.some((g) => g.connectionId === row.id && g.permission === input.permission)) {
+      return refuseStatus(c, 409, `connection does not hold '${input.permission}' on scope ${scopeId}; grant it through the tenant's authorized connection flow, then bind`);
+    }
+    const operationId = ulid();
+    const done = await auditedChange({
+      flow: 'connection-binding', operationId,
+      run: () => bind(c.var.host, row, { ...input, tenantId: row.tenantId, scopeId, vertical: target.vertical! }),
+      refused: () => false,
+      record: (phase) => c.var.admin.recordConnectionBindingChange(c.get('actor'), {
+        tenantId: row.tenantId, scopeId, connectionId: row.id, provider: row.provider,
+        ...input,
+        operationId, ...(phase.phase === 'applied' ? { phase: 'applied' } : phase),
+      }),
+    });
+    if ('error' in done) throw done.error;
+    return c.json({ ...done.result, permissionHeld: true, ...('unrecorded' in done ? { auditWarning: done.unrecorded } : {}) });
+  });
 
   /**
    * **Verify a credential against the provider** (#605) — the read that turns "stored"

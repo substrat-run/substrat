@@ -1,6 +1,8 @@
 import type { Page } from '@substrat-run/contracts';
 
 import type {
+  ConnectionScopeBindingInput,
+  ConnectionScopeBinding,
   AdoptServingResult,
   AdoptVerticalResult,
   BindHostnameBody,
@@ -87,6 +89,15 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
       headers: { ...JSON_TYPE },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     };
+  }
+
+  /** Staff/service-only on the server; no permission is granted by this call. */
+  bindConnectionScope(tenantId: string, connectionId: string, scopeId: string, input: ConnectionScopeBindingInput): Promise<ConnectionScopeBinding> {
+    return this.read(`/tenants/${seg(tenantId)}/connections/${seg(connectionId)}/bindings/${seg(scopeId)}`, this.write('PUT', input));
+  }
+
+  listConnectionBindings(tenantId: string, connectionId: string): Promise<ConnectionScopeBinding[]> {
+    return this.read(`/tenants/${seg(tenantId)}/connections/${seg(connectionId)}/bindings`);
   }
 
   // -- identity ---------------------------------------------------------------
