@@ -241,6 +241,8 @@ export interface StoreKindView {
   pins: { sha256: string; sourceCommit: string; schema: number }[];
   current: { sha256: string; seq: number; previousGoodSha256: string | null } | null;
   rollouts: StoreKindRolloutView[];
+  /** Where a rollback goes now: the server decides, a client never derives it. */
+  rollbackTarget: string | null;
 }
 
 export interface StoreKindRolloutResultView {

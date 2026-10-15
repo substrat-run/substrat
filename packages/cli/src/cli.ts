@@ -41,7 +41,7 @@ import { printVersions } from './versions.js';
 import { checkOutboundDeclared } from './outbound-scan.js';
 import { exportBreakLines, promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
-import { packedFilesOf, packStoreKindDir, rollBackStoreKind, sourceCommitOf, rollOutStoreKind, storeKindStatus, uploadStoreKindRelease } from './store-kind.js';
+import { isReleaseSha, packedFilesOf, packStoreKindDir, rollBackStoreKind, sourceCommitOf, rollOutStoreKind, storeKindStatus, storeKindStatusLines, uploadStoreKindRelease } from './store-kind.js';
 import { fetchWhoami } from './whoami.js';
 import { planeFor } from './plane.js';
 import { cliVersion, warnIfDistStale } from './version.js';
@@ -630,14 +630,19 @@ async function cmdStoreKind(): Promise<void> {
     for (const line of STORE_KIND_USAGE) console.error(line);
     process.exit(1);
   }
+  const sha256 = flag('sha256');
+  if (sub === 'rollout' && !isReleaseSha(sha256)) {
+    console.error('a rollout names the release by --sha256 <64 lowercase hex>, as `store-kind upload` printed it');
+    for (const line of STORE_KIND_USAGE) console.error(line);
+    process.exit(1);
+  }
   const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   console.log(`authenticating with ${as}`);
   console.log(`control plane ${controlPlaneUrl}`);
   const plane = { controlPlaneUrl, header, kind };
   if (sub === 'status') {
     const view = await storeKindStatus(plane);
-    console.log(`${kind}: current ${view.current?.sha256 ?? 'none'}, rolls back to ${view.current?.previousGoodSha256 ?? 'nothing'}`);
-    for (const r of view.rollouts.slice(-10)) console.log(`  #${r.seq} ${r.action} ${r.sha256} ${r.state}${r.detail ? ` — ${r.detail}` : ''}`);
+    for (const line of storeKindStatusLines(kind, view)) console.log(line);
     return;
   }
   if (sub === 'upload') {
@@ -656,7 +661,7 @@ async function cmdStoreKind(): Promise<void> {
   const result =
     sub === 'rollback'
       ? await rollBackStoreKind(plane)
-      : await rollOutStoreKind({ ...plane, sha256: flag('sha256') ?? '' });
+      : await rollOutStoreKind({ ...plane, sha256: sha256! });
   console.log(`✓ ${kind} ${result.rollout.action} to ${result.rollout.sha256}: ${result.rollout.state} (${result.moved.length} vertical(s) this run)`);
   if (!result.complete) console.log('  verticals remain: run the same command again to continue');
 }

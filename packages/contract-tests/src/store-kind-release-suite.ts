@@ -139,6 +139,16 @@ export function storeKindReleaseContractSuite(adapterName: string, makeFixture: 
       expect(next).toMatchObject({ fromSha256: sha('2'), previousGoodSha256: null });
       await host.admin.finishStoreKindRollout(staff, { kind, seq: next.seq, holder, state: 'good', detail: null });
       expect(await host.admin.storeKindState(staff, kind)).toMatchObject({ current: { sha256: sha('1') }, rollbackTarget: null });
+      // A rollback that ended diverged (a failure part way) continues to its target too.
+      await host.admin.recordStoreKindRelease(staff, { kind, sha256: sha('3'), sourceCommit: commit('c') });
+      const three = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('3'), action: 'rollout', holder });
+      await host.admin.finishStoreKindRollout(staff, { kind, seq: three.seq, holder, state: 'good', detail: null });
+      const broken = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('1'), action: 'rollback', holder });
+      await host.admin.finishStoreKindRollout(staff, { kind, seq: broken.seq, holder, state: 'diverged', detail: 'vb failed' });
+      expect((await host.admin.storeKindState(staff, kind)).rollbackTarget).toBe(sha('1'));
+      const again = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('1'), action: 'rollback', holder });
+      await host.admin.finishStoreKindRollout(staff, { kind, seq: again.seq, holder, state: 'good', detail: null });
+      expect((await host.admin.storeKindState(staff, kind)).current?.sha256).toBe(sha('1'));
       // A rollout that paused part way is undone onto the release the fleet was on.
       const paused = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('2'), action: 'rollout', holder });
       await host.admin.finishStoreKindRollout(staff, { kind, seq: paused.seq, holder, state: 'paused', detail: null });

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { storeKindReleaseUpload } from '@substrat-run/contracts';
-import { packedFilesOf, packStoreKindDir, sourceCommitOf } from '../src/store-kind.js';
+import { isReleaseSha, packedFilesOf, packStoreKindDir, sourceCommitOf, storeKindStatusLines } from '../src/store-kind.js';
 
 const COMMIT = 'a'.repeat(40);
 
@@ -108,5 +108,25 @@ describe('the files a release packs, and the commit they are (#2300)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('store-kind rollout and status, before and after a request (#2300)', () => {
+  it('names a release by its sha256 only', () => {
+    expect(isReleaseSha('a'.repeat(64))).toBe(true);
+    for (const bad of [undefined, '', 'A'.repeat(64), 'a'.repeat(63), `${'a'.repeat(63)}g`]) expect(isReleaseSha(bad), String(bad)).toBe(false);
+  });
+
+  it("prints the server's rollback target, not the current release's previous good one", () => {
+    const lines = storeKindStatusLines('graph', {
+      kind: 'graph',
+      pins: [],
+      current: { sha256: 'b'.repeat(64), seq: 3, previousGoodSha256: 'a'.repeat(64) },
+      rollouts: [],
+      // After a diverged rollout the server rolls back onto the current release.
+      rollbackTarget: 'b'.repeat(64),
+    });
+    expect(lines[0]).toBe(`graph: current ${'b'.repeat(64)}, rolls back to ${'b'.repeat(64)}`);
+    expect(storeKindStatusLines('graph', { kind: 'graph', pins: [], current: null, rollouts: [], rollbackTarget: null })[0]).toBe('graph: current none, rolls back to nothing');
   });
 });

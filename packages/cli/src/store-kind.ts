@@ -18,6 +18,7 @@ import { spawnSync } from 'node:child_process';
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { STORE_RELEASE_MAX_BYTES, type StoreKindReleaseUpload } from '@substrat-run/contracts';
+import type { StoreKindView } from '@substrat-run/control-plane-client';
 import { planeFor } from './plane.js';
 
 const KIND_MODULE = /^kind_[a-z0-9_]+\/(?:[A-Za-z_][A-Za-z0-9_]*\/)*[A-Za-z_][A-Za-z0-9_]*\.py$/;
@@ -102,6 +103,9 @@ export function packStoreKindDir(dir: string, entry: string, sourceCommit: strin
   return { sourceCommit, entry, modules };
 }
 
+/** A release is named by its sha256 as `upload` printed it; anything else is refused before a request. */
+export const isReleaseSha = (value: string | undefined): value is string => value !== undefined && /^[0-9a-f]{64}$/.test(value);
+
 type Plane = { controlPlaneUrl: string; header: Record<string, string> };
 
 export const uploadStoreKindRelease = (input: Plane & { kind: string; body: StoreKindReleaseUpload }) =>
@@ -115,3 +119,15 @@ export const rollBackStoreKind = (input: Plane & { kind: string }) =>
 
 export const storeKindStatus = (input: Plane & { kind: string }) =>
   planeFor(input.controlPlaneUrl, input.header).getStoreKind(input.kind);
+
+/**
+ * What `store-kind status` prints. "Rolls back to" is the server's `rollbackTarget`, never the
+ * current release's previous good one: after a diverged or paused rollout it is the current
+ * release, and a rollback still under way continues to its own target.
+ */
+export function storeKindStatusLines(kind: string, view: StoreKindView): string[] {
+  return [
+    `${kind}: current ${view.current?.sha256 ?? 'none'}, rolls back to ${view.rollbackTarget ?? 'nothing'}`,
+    ...view.rollouts.slice(-10).map((r) => `  #${r.seq} ${r.action} ${r.sha256} ${r.state}${r.detail ? ` — ${r.detail}` : ''}`),
+  ];
+}
