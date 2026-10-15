@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-113 decisions · 63 plan · 50 kernel
+114 decisions · 63 plan · 51 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -125,3 +125,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-63](decisions/D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md) | 2026-10-12 | plan | A store kind is platform code, registered and pinned like a connector <br>*awaiting ratification* | #2207, #2210 |
 | [K-49](decisions/K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md) | 2026-10-12 | kernel | A scope store is a platform-run object per scope, reached by its own door <br>*awaiting ratification* <br>*amended by K-50* | #2207 |
 | [K-50](decisions/K-050-a-hosted-scope-store-s-lifecycle-is-driven-by-the-platform-from-its-own-record.md) | 2026-10-13 | kernel | A hosted scope store's lifecycle is driven by the platform, from its own record <br>*awaiting ratification* <br>*amends K-49* | #2207, #2210, #2211 |
+| [K-51](decisions/K-051-the-assistant-s-record-is-an-engine-composed-by-call-the-run-is-host-code.md) | 2026-10-15 | kernel | The assistant's record is an engine composed by call; the run is host code, written by a key no person holds <br>*awaiting ratification* | #2283 |

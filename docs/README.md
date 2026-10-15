@@ -84,7 +84,7 @@ These are recorded rather than fixed, and are tracked in
 
 ## The decision log
 
-[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->113 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
+[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->114 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
 generated from [`decisions/`](decisions/), one file per decision. The tables in master plan
 §12 and kernel design §14 are generated from the same source and must not be hand-edited.
 
@@ -178,6 +178,7 @@ One per engine, mirroring `engines/*`.
 | document | status | |
 |---|---|---|
 | [absence.md](engines/absence.md) | `built` | The approved-absence ledger. |
+| [assistant.md](engines/assistant.md) | `built` | The record of a chat with an assistant — an append-only event log, a single-writer run lease, and tool calls whose gated writes need an approval bound to the exact input. |
 | [booking.md](engines/booking.md) | `built` | Reservation and slot allocation. |
 | [invites.md](engines/invites.md) | `built` | Invitations to an organization, and the connector seam that effects membership. |
 | [invoicing.md](engines/invoicing.md) | `built` | The invoice-basis ledger — consumes delivery events, immutable after export. |
