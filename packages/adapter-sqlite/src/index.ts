@@ -10439,7 +10439,7 @@ export class SqliteScopeHost implements ScopeHost {
       // Cloudflare control plane; each call is one transaction. A hold's expiry is judged against
       // this host's clock, so a test can let a lease lapse without waiting.
       recordStoreKindRelease: async (actor, input) => {
-        const at = new Date().toISOString();
+        const at: string = this.clock();
         const { record, created } = this.directory.transaction(() =>
           recordStoreKindReleaseIn(switchSqlOf(this.directory), { ...input, actor, at }),
         )();
@@ -10452,7 +10452,7 @@ export class SqliteScopeHost implements ScopeHost {
         return record;
       },
       storeKindState: async (actor, kind) => {
-        const state = storeKindStateIn(switchSqlOf(this.directory), kind);
+        const state = storeKindStateIn(switchSqlOf(this.directory), kind, Date.parse(this.clock()));
         this.recordAccess(actor, 'storeKindState', { tenantId: null }, { kind }, state.rollouts.length);
         return state;
       },
@@ -10469,17 +10469,17 @@ export class SqliteScopeHost implements ScopeHost {
         releaseStoreKindHoldIn(switchSqlOf(this.directory), input);
       },
       beginStoreKindRollout: async (actor, input) => {
-        const at = new Date().toISOString();
+        const at: string = this.clock();
         const row = this.directory.transaction(() =>
-          beginStoreKindRolloutIn(switchSqlOf(this.directory), { ...input, actor, at, nowMs: Date.parse(this.clock()) }),
+          beginStoreKindRolloutIn(switchSqlOf(this.directory), { ...input, actor, at, nowMs: Date.parse(at) }),
         )();
         this.recordAdmin(actor, input.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row, at);
         return row;
       },
       finishStoreKindRollout: async (actor, input) => {
-        const at = new Date().toISOString();
+        const at: string = this.clock();
         const row = this.directory.transaction(() =>
-          finishStoreKindRolloutIn(switchSqlOf(this.directory), { ...input, at, nowMs: Date.parse(this.clock()) }),
+          finishStoreKindRolloutIn(switchSqlOf(this.directory), { ...input, at, nowMs: Date.parse(at) }),
         )();
         this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row, at);
         return row;

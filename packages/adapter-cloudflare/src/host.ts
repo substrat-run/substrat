@@ -685,7 +685,7 @@ interface ControlPlaneStub {
   getStoreKindRelease(kind: string, sha256: string): Promise<StoreKindReleaseRecord | undefined>;
   storeKindState(kind: string): Promise<StoreKindState>;
   storeKindDeclarations(kind: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
-  holdStoreKind(input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number }): Promise<boolean>;
+  holdStoreKind(input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): Promise<boolean>;
   releaseStoreKindHold(input: { kind: string; holder: string }): Promise<void>;
   beginStoreKindRollout(input: {
     kind: string;

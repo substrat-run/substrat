@@ -50,6 +50,12 @@ export const PUSH_HOLD_TTL_MS = 2 * 60_000;
  * A fleet bigger than this is moved over several requests (the rollout answers `complete: false`).
  */
 export const ROLLOUT_VERTICALS_PER_REQUEST = 100;
+/**
+ * The most verticals one rollout walks. Every one costs a settings read and a hold renewal even
+ * when it is already at the release, so a bigger fleet would outrun one invocation; it is refused
+ * (409) rather than left unable to converge. Raising it needs a cursor on the rollout row.
+ */
+export const ROLLOUT_FLEET_MAX = 300;
 
 type LoadRelease = ScopeStoreEnsurerOptions['loadRelease'];
 
@@ -197,8 +203,11 @@ export interface StoreKindRolloutDeps {
   registration: StoreKindRegistration;
   sha256: string;
   action: StoreKindRolloutAction;
-  /** Move one vertical's scripts of the kind to `to` (the push's ensurer, with `to`). */
-  ensure: (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to: string }) => Promise<void>;
+  /**
+   * Move one vertical's scripts of the kind to `to` (the push's ensurer, with `to`). Answers
+   * whether anything was uploaded: false for a script already there, built the same way.
+   */
+  ensure: (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to: string }) => Promise<boolean>;
   /** Put `to` in the kind's canary script; answers its name. */
   ensureCanary: (to: string) => Promise<{ scriptName: string }>;
   callCanary: CanaryCall;
@@ -208,7 +217,7 @@ export interface StoreKindRolloutDeps {
 
 export interface StoreKindRolloutResult {
   rollout: StoreKindRolloutRecord;
-  /** The verticals whose scripts now run the release, this request. */
+  /** The verticals whose scripts this request uploaded. */
   moved: string[];
   /** False when verticals remain: post the same rollout again. */
   complete: boolean;
@@ -218,20 +227,33 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const schemaOf = (registration: StoreKindRegistration, sha256: string | null) =>
   sha256 === null ? undefined : registration.releases.find((pin) => pin.sha256 === sha256)?.schema;
 
+/** The hold lapsed, or another holder ended the rollout: nothing more may be moved under it. */
+class HoldLost extends ControlPlaneError {
+  constructor(kind: string) {
+    super(409, `the hold on kind '${kind}' lapsed or its rollout was ended by another; post the rollout again to converge it`);
+  }
+}
+
 /**
  * Move every script of a kind to a stored, pinned release (D-63): hold, canary, then each
  * vertical. A failure after a vertical moved returns every vertical it reached to the release
  * the rollout started from, rehashing those bytes as it uploads them, and ends `failed`. It ends
  * `diverged` instead, naming what is where, when there is nothing to return to (a kind's first
  * rollout), when returning would lower the stored schema, or when a return fails: the next
- * rollout or rollback converges every script. The hold is released however it ends.
+ * rollout or rollback converges every script. The hold is renewed before every upload, the
+ * returns included, and a hold that cannot be renewed stops everything at once: another holder
+ * may be moving the same scripts, so nothing is returned either. The hold is released however it
+ * ends.
+ *
+ * Each request uploads at most `perRequest` scripts. A vertical already at the release is
+ * walked past without counting, so posting the same rollout again continues where the last
+ * request stopped, and a fleet of any size within {@link ROLLOUT_FLEET_MAX} converges.
  */
 export async function runStoreKindRollout(deps: StoreKindRolloutDeps): Promise<StoreKindRolloutResult> {
   const { admin, actor, registration, sha256 } = deps;
   const kind = registration.kind;
   const holder = ulid();
-  const hold = () => admin.holdStoreKind(actor, { kind, holder, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS });
-  if (!(await hold())) {
+  if (!(await admin.holdStoreKind(actor, { kind, holder, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS }))) {
     throw new ControlPlaneError(409, `kind '${kind}' is being rolled out or a vertical declaring it is being pushed; try again shortly`);
   }
   try {
@@ -242,53 +264,68 @@ export async function runStoreKindRollout(deps: StoreKindRolloutDeps): Promise<S
         `kind '${kind}' cannot be rolled out: ${declared.unreadable.join(', ')} ha${declared.unreadable.length === 1 ? 's a version' : 've versions'} whose stores cannot be named`,
       );
     }
+    if (declared.verticals.length > ROLLOUT_FLEET_MAX) {
+      throw new ControlPlaneError(
+        409,
+        `kind '${kind}' is declared by ${declared.verticals.length} verticals; a rollout walks at most ${ROLLOUT_FLEET_MAX} per request`,
+      );
+    }
     const row = await admin.beginStoreKindRollout(actor, { kind, sha256, action: deps.action, holder });
     const end = (state: 'good' | 'failed' | 'diverged', detail: string | null) =>
       admin.finishStoreKindRollout(actor, { kind, seq: row.seq, holder, state, detail });
     const renew = async () => {
-      if (!(await hold())) throw new ControlPlaneError(409, `the hold on kind '${kind}' lapsed; post the rollout again to converge it`);
+      const held = await admin.holdStoreKind(actor, { kind, holder, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS, renew: true, rolloutSeq: row.seq });
+      if (!held) throw new HoldLost(kind);
     };
 
     try {
       await deps.ensureCanary(sha256).then(({ scriptName }) => canaryStoreRelease({ call: deps.callCanary, scriptName }));
     } catch (e) {
       // No vertical's script moved; the current release stays. A row the end cannot write (the
-      // hold lapsed) reads as diverged to the next rollout, which is what it then is.
+      // hold lapsed) reads as diverged, which is what it then is.
       await end('failed', message(e)).catch(() => undefined);
       throw e;
     }
 
     const targets = declared.verticals.map((v) => ({ vertical: v.vertical, stores: v.stores.map((s) => ({ binding: s.binding, kind })) }));
-    const batch = targets.slice(0, deps.perRequest ?? ROLLOUT_VERTICALS_PER_REQUEST);
+    const budget = deps.perRequest ?? ROLLOUT_VERTICALS_PER_REQUEST;
+    // Every vertical walked: the ones moved now, and the ones an earlier request moved.
     const reached: string[] = [];
-    for (const target of batch) {
+    const moved: string[] = [];
+    for (const target of targets) {
+      if (moved.length >= budget) {
+        const rest = targets.length - reached.length;
+        const rollout = await end('diverged', `this request moved ${moved.length}; ${rest} vertical(s) not walked yet: post the rollout again`);
+        return { rollout, moved, complete: false };
+      }
       try {
         await renew();
         reached.push(target.vertical);
-        await deps.ensure({ vertical: target.vertical, stores: target.stores, to: sha256 });
+        if (await deps.ensure({ vertical: target.vertical, stores: target.stores, to: sha256 })) moved.push(target.vertical);
       } catch (e) {
-        const detail = await restore(deps, row.fromSha256, reached, targets);
+        const detail = e instanceof HoldLost
+          ? { state: 'diverged' as const, text: `Nothing was returned: ${reached.join(', ') || 'no vertical'} may run ${sha256}.` }
+          : await restore(deps, row.fromSha256, reached, targets, renew);
         await end(detail.state, `${target.vertical}: ${message(e)}. ${detail.text}`).catch(() => undefined);
         throw new ControlPlaneError(e instanceof ControlPlaneError ? e.status : 502, `rollout of '${kind}' to ${sha256} stopped at ${target.vertical} (${message(e)}). ${detail.text}`);
       }
     }
-    if (batch.length < targets.length) {
-      const rest = targets.length - batch.length;
-      const rollout = await end('diverged', `moved ${batch.length} of ${targets.length} verticals; ${rest} remain: post the rollout again`);
-      return { rollout, moved: reached, complete: false };
-    }
-    return { rollout: await end('good', null), moved: reached, complete: true };
+    return { rollout: await end('good', null), moved, complete: true };
   } finally {
     await admin.releaseStoreKindHold(actor, { kind, holder }).catch(() => undefined);
   }
 }
 
-/** Return every vertical a failed rollout reached to the release it started from, where that is allowed. */
+/**
+ * Return every vertical a failed rollout reached to the release it started from, where that is
+ * allowed, renewing the hold before each upload. A hold that cannot be renewed stops the return.
+ */
 async function restore(
   deps: StoreKindRolloutDeps,
   from: string | null,
   reached: readonly string[],
   verticals: readonly { vertical: string; stores: readonly ScopeStoreNeed[] }[],
+  renew: () => Promise<void>,
 ): Promise<{ state: 'failed' | 'diverged'; text: string }> {
   if (reached.length === 0) return { state: 'failed', text: 'No vertical moved.' };
   if (from === null) {
@@ -303,7 +340,12 @@ async function restore(
     };
   }
   const stuck: string[] = [];
-  for (const vertical of reached) {
+  for (const [i, vertical] of reached.entries()) {
+    try {
+      await renew();
+    } catch {
+      return { state: 'diverged', text: `The hold was lost while returning; ${reached.slice(i).join(', ')} may run ${deps.sha256}.` };
+    }
     const target = verticals.find((v) => v.vertical === vertical)!;
     try {
       await deps.ensure({ vertical, stores: target.stores, to: from });

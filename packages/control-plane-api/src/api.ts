@@ -423,7 +423,8 @@ export interface ControlPlaneApiOptions {
     /** The release a rollout moves the scripts to; a push or serve passes none (#2300). */
     to?: string;
     loadRelease: ScopeStoreEnsurerOptions['loadRelease'];
-  }) => Promise<void>;
+    /** How many scripts it uploaded; absent counts as some. */
+  }) => Promise<void | { uploaded: number }>;
   /**
    * A store kind's release flow (D-63, #2300): where release bytes are kept, how a release is put
    * in the kind's canary script, and how the canary's reserved calls reach it. Absent ⇒ the
@@ -7642,7 +7643,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const loadRelease = options.storeReleases
         ? storedReleaseLoader({ admin: host.admin, actor, bytes: options.storeReleases.bytes })
         : async () => undefined;
-      await options.ensureScopeStores({ vertical: slug, stores, loadRelease });
+      // One kind at a time, each renewing every hold first: a push whose uploads outlast a hold
+      // stops (409) rather than upload after a rollout could have taken the kind.
+      for (const kind of kinds) {
+        for (const each of held) {
+          if (!(await host.admin.holdStoreKind(actor, { kind: each, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS, renew: true }))) {
+            throw new ControlPlaneError(409, `${operation} refused: the hold on scope store kind '${each}' lapsed during the upload; try again`);
+          }
+        }
+        await options.ensureScopeStores({ vertical: slug, stores: stores.filter((store) => store.kind === kind), loadRelease });
+      }
     } catch (e) {
       recordFailure(
         {
@@ -10298,7 +10308,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     return { flow: options.storeReleases, ensureScopeStores: options.ensureScopeStores };
   };
+  /**
+   * A write made by a person, on purpose. The staff session also rides a cookie, which a browser
+   * sends on a same-site request a page fires, so these writes take JSON only (a form or a
+   * `text/plain` beacon cannot set it without a CORS preflight, 415) and refuse a request a
+   * browser marks as from another origin (403). A request with neither header is the CLI's.
+   */
   const byAPerson = async (c: Context<{ Variables: Vars }>): Promise<PlatformActorId> => {
+    if (!/^application\/json\s*(;|$)/i.test(c.req.header('content-type') ?? '')) {
+      throw new ControlPlaneError(415, 'a store kind release write takes application/json');
+    }
+    const origin = c.req.header('origin');
+    const site = c.req.header('sec-fetch-site');
+    if ((origin && origin !== new URL(c.req.url).origin) || (site && site !== 'same-origin' && site !== 'none')) {
+      throw new ControlPlaneError(403, 'a store kind release write is not taken from another origin');
+    }
     const actor = c.get('actor');
     const person = options.humanStaffActor ? await options.humanStaffActor(c.req.raw) : null;
     if (!person || person !== actor) {
@@ -10334,7 +10358,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       registration,
       sha256,
       action,
-      ensure: (input) => ensureScopeStores({ ...input, loadRelease }),
+      ensure: async (input) => {
+        const result = await ensureScopeStores({ ...input, loadRelease });
+        return result ? result.uploaded > 0 : true;
+      },
       ensureCanary: (to) => flow.ensureCanary({ kind: registration.kind, to, loadRelease }),
       callCanary: flow.callCanary,
     });
@@ -10378,15 +10405,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return rollOut(c, registration, sha256, 'rollout');
   });
 
-  // Return to the immediately previous good release (D-63), never further and never a guess.
+  // Return to the immediately previous good release (D-63), never further and never a guess. After
+  // a rollout that ended diverged, that is the current good release itself: undoing the bad
+  // rollout converges every script back on the release the fleet was healthy on (kernel
+  // `storeKindStateIn`, `rollbackTarget`).
   app.post('/store-kinds/:kind/rollback', async (c) => {
     const registration = registeredKind(c.req.param('kind'));
     await byAPerson(c);
-    const { current } = await c.var.admin.storeKindState(c.get('actor'), registration.kind);
-    if (!current?.previousGoodSha256) throw new ControlPlaneError(409, `kind '${registration.kind}' has no previous good release to roll back to`);
-    const pin = await pinOf(c, registration, current.previousGoodSha256);
+    const { current, rollbackTarget } = await c.var.admin.storeKindState(c.get('actor'), registration.kind);
+    if (!current || !rollbackTarget) throw new ControlPlaneError(409, `kind '${registration.kind}' has no previous good release to roll back to`);
+    const pin = await pinOf(c, registration, rollbackTarget);
     assertSchemaKept(registration, current.sha256, pin);
-    return rollOut(c, registration, current.previousGoodSha256, 'rollback');
+    return rollOut(c, registration, rollbackTarget, 'rollback');
   });
 
   return app;

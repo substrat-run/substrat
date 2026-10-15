@@ -2328,14 +2328,14 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   storeKindState(kind: string): StoreKindState {
-    return this.ctx.storage.transactionSync(() => storeKindStateIn(this.kernelSql, kind));
+    return this.ctx.storage.transactionSync(() => storeKindStateIn(this.kernelSql, kind, Date.now()));
   }
 
   storeKindDeclarations(kind: string): { verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] } {
     return this.ctx.storage.transactionSync(() => kindDeclarationsOf(this.kernelSql, kind));
   }
 
-  holdStoreKind(input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number }): boolean {
+  holdStoreKind(input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): boolean {
     return this.ctx.storage.transactionSync(() => holdStoreKindIn(this.kernelSql, { ...input, nowMs: Date.now() }));
   }
 

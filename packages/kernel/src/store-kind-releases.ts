@@ -43,6 +43,8 @@ export const STORE_KIND_RELEASES_DDL = `
     previous_good_sha256 TEXT,
     state                TEXT NOT NULL,
     actor                TEXT NOT NULL,
+    -- The hold the rollout runs under: a rolling row whose holder holds nothing has stopped.
+    holder               TEXT NOT NULL,
     started_at           TEXT NOT NULL,
     ended_at             TEXT,
     detail               TEXT,
@@ -95,6 +97,8 @@ export interface StoreKindState {
   readonly current: { readonly sha256: string; readonly seq: number; readonly previousGoodSha256: string | null } | null;
   /** Every rollout, oldest first. */
   readonly rollouts: StoreKindRolloutRecord[];
+  /** Where a rollback goes now (see `storeKindStateIn`); null when nowhere. */
+  readonly rollbackTarget: string | null;
 }
 
 export type StoreKindHoldMode = 'shared' | 'exclusive';
@@ -172,29 +176,54 @@ export function recordStoreKindReleaseIn(
   return { record: storeKindReleaseIn(db, input.kind, input.sha256)!, created: true };
 }
 
-/** The kind's current release and every rollout. */
-export function storeKindStateIn(db: SwitchSql, kind: string): StoreKindState {
-  const rollouts = (db.all(
-    `SELECT ${ROLLOUT_COLUMNS} FROM store_kind_rollouts WHERE kind = ? ORDER BY seq`,
-    kind,
-  ) as unknown as RolloutRow[]).map(rolloutOf);
+/**
+ * The kind's current release, every rollout, and where a rollback goes now.
+ *
+ * With `nowMs`, a `rolling` row whose holder no longer holds the kind exclusively is reported as
+ * `diverged` (read-time only, nothing is written): its holder stopped, and its scripts may be on
+ * either release. The next rollout's begin writes that state.
+ *
+ * `rollbackTarget` is the immediately previous good release, or, when a rollout since the current
+ * one ended `diverged`, the current release itself: then the fleet may be mixed, and undoing the
+ * bad rollout means converging every script back on the release it was healthy on, never going
+ * past it. A diverged rollout never changes what "previous good" means.
+ */
+export function storeKindStateIn(db: SwitchSql, kind: string, nowMs?: number): StoreKindState {
+  const live = nowMs === undefined
+    ? undefined
+    : new Set((db.all("SELECT holder FROM store_kind_holds WHERE kind = ? AND mode = 'exclusive' AND expires_at > ?", kind, nowMs) as { holder: string }[]).map((h) => h.holder));
+  const rows = db.all(`SELECT ${ROLLOUT_COLUMNS}, holder FROM store_kind_rollouts WHERE kind = ? ORDER BY seq`, kind) as unknown as (RolloutRow & { holder: string | null })[];
+  const rollouts = rows.map((r) =>
+    live && r.state === 'rolling' && !(r.holder && live.has(r.holder))
+      ? rolloutOf({ ...r, state: 'diverged', detail: 'its holder no longer holds the kind; the rollout stopped before it ended' })
+      : rolloutOf(r),
+  );
   const [current] = db.all('SELECT sha256, seq FROM store_kind_current WHERE kind = ?', kind) as { sha256: string; seq: number }[];
-  if (!current) return { current: null, rollouts };
-  const row = rollouts.find((r) => r.seq === Number(current.seq));
+  if (!current) return { current: null, rollouts, rollbackTarget: null };
+  const seq = Number(current.seq);
+  const row = rollouts.find((r) => r.seq === seq);
+  const previousGoodSha256 = row?.previousGoodSha256 ?? null;
+  const mixed = rollouts.some((r) => r.seq > seq && r.state === 'diverged');
   return {
-    current: { sha256: current.sha256, seq: Number(current.seq), previousGoodSha256: row?.previousGoodSha256 ?? null },
+    current: { sha256: current.sha256, seq, previousGoodSha256 },
     rollouts,
+    rollbackTarget: mixed ? current.sha256 : previousGoodSha256,
   };
 }
 
 /**
  * Take, or renew, a hold on a kind. Answers false when another holder's live hold excludes it: an
  * exclusive one for any request, or any one for an exclusive request. A lapsed hold is dropped
- * first. A holder renews by asking again in the same mode; asking in the other mode is refused.
+ * first. Asking in the other mode than the one held is refused.
+ *
+ * `renew` only extends a hold the holder still holds: a holder whose lease lapsed gets false, even
+ * when nobody took the kind since, because a lapsed holder cannot know what happened meanwhile.
+ * With `rolloutSeq` it also answers false unless that rollout is still `rolling`, so a rollout
+ * whose row another holder ended stops instead of moving scripts the state no longer describes.
  */
 export function holdStoreKindIn(
   db: SwitchSql,
-  input: { kind: string; holder: string; mode: StoreKindHoldMode; nowMs: number; ttlMs: number },
+  input: { kind: string; holder: string; mode: StoreKindHoldMode; nowMs: number; ttlMs: number; renew?: boolean; rolloutSeq?: number },
 ): boolean {
   if (!(input.ttlMs > 0)) throw substratError('validation_failed', 'a store-kind hold needs a positive lifetime');
   db.run('DELETE FROM store_kind_holds WHERE kind = ? AND expires_at <= ?', input.kind, input.nowMs);
@@ -203,6 +232,8 @@ export function holdStoreKindIn(
   if (own && own.mode !== input.mode) {
     throw substratError('conflict', `holder ${input.holder} holds '${input.kind}' ${own.mode}, not ${input.mode}`);
   }
+  if ((input.renew || input.rolloutSeq !== undefined) && !own) return false;
+  if (input.rolloutSeq !== undefined && rolloutAt(db, input.kind, input.rolloutSeq)?.state !== 'rolling') return false;
   const others = live.filter((h) => h.holder !== input.holder);
   if (input.mode === 'exclusive' ? others.length > 0 : others.some((h) => h.mode === 'exclusive')) return false;
   db.run(
@@ -212,7 +243,6 @@ export function holdStoreKindIn(
   );
   return true;
 }
-
 /** Drop a hold. Dropping one already gone is not an error. */
 export function releaseStoreKindHoldIn(db: SwitchSql, input: { kind: string; holder: string }): void {
   db.run('DELETE FROM store_kind_holds WHERE kind = ? AND holder = ?', input.kind, input.holder);
@@ -244,27 +274,32 @@ export function beginStoreKindRolloutIn(
      WHERE kind = ? AND state = 'rolling'`,
     input.at, input.kind,
   );
-  const { current } = storeKindStateIn(db, input.kind);
+  const { current, rollbackTarget } = storeKindStateIn(db, input.kind, input.nowMs);
   let previousGood: string | null;
   if (input.action === 'rollback') {
-    if (!current?.previousGoodSha256) throw substratError('conflict', `'${input.kind}' has no previous good release to roll back to`);
-    if (current.previousGoodSha256 !== input.sha256) {
-      throw substratError('conflict', `a rollback of '${input.kind}' returns to ${current.previousGoodSha256}, not ${input.sha256}`);
+    if (!current || !rollbackTarget) throw substratError('conflict', `'${input.kind}' has no previous good release to roll back to`);
+    if (rollbackTarget !== input.sha256) {
+      throw substratError('conflict', `a rollback of '${input.kind}' returns to ${rollbackTarget}, not ${input.sha256}`);
     }
-    const [made] = db.all(
-      `SELECT previous_good_sha256 FROM store_kind_rollouts
-       WHERE kind = ? AND sha256 = ? AND state = 'good' ORDER BY seq DESC LIMIT 1`,
-      input.kind, input.sha256,
-    ) as { previous_good_sha256: string | null }[];
-    previousGood = made?.previous_good_sha256 ?? null;
+    if (input.sha256 === current.sha256) {
+      // Undoing a diverged rollout: back onto the current release, whose previous good stays.
+      previousGood = current.previousGoodSha256;
+    } else {
+      const [made] = db.all(
+        `SELECT previous_good_sha256 FROM store_kind_rollouts
+         WHERE kind = ? AND sha256 = ? AND state = 'good' ORDER BY seq DESC LIMIT 1`,
+        input.kind, input.sha256,
+      ) as { previous_good_sha256: string | null }[];
+      previousGood = made?.previous_good_sha256 ?? null;
+    }
   } else {
     // Rolling out the current release again (a resume) keeps where a rollback from it returns to.
     previousGood = current ? (current.sha256 === input.sha256 ? current.previousGoodSha256 : current.sha256) : null;
   }
   const next = Number((db.all('SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM store_kind_rollouts WHERE kind = ?', input.kind)[0] as { next: number }).next);
   db.run(
-    `INSERT INTO store_kind_rollouts (${ROLLOUT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, 'rolling', ?, ?, NULL, NULL)`,
-    input.kind, next, input.sha256, input.action, current?.sha256 ?? null, previousGood, input.actor, input.at,
+    `INSERT INTO store_kind_rollouts (${ROLLOUT_COLUMNS}, holder) VALUES (?, ?, ?, ?, ?, ?, 'rolling', ?, ?, NULL, NULL, ?)`,
+    input.kind, next, input.sha256, input.action, current?.sha256 ?? null, previousGood, input.actor, input.at, input.holder,
   );
   return rolloutAt(db, input.kind, next)!;
 }

@@ -80,20 +80,25 @@ async function buildDigest(script: PythonStoreScript): Promise<string> {
  *
  * Every upload hashes the module bytes it is about to send and refuses (422) bytes whose
  * sha256 the kind's registration does not pin, or that are not the release asked for. A kind
- * with no release to run is refused (409). The runtime's own failures are 502.
+ * with no release to run is refused (409). A script is never moved to a release whose pinned
+ * `schema` is lower than that of the release it runs (409): its objects may have migrated. The
+ * runtime's own failures are 502. Answers how many scripts were uploaded.
  */
 export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
   const ensure = scriptEnsurer(opts);
-  return async (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to?: string }): Promise<void> => {
+  return async (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to?: string }): Promise<{ uploaded: number }> => {
     const plan = scopeStoreUploadPlan({ vertical: input.vertical, stores: input.stores, kinds: opts.kinds });
-    for (const script of plan.scripts) await ensure(script, input.to);
+    let uploaded = 0;
+    for (const script of plan.scripts) if (await ensure(script, input.to)) uploaded++;
+    return { uploaded };
   };
 }
 
 /**
  * Put a kind's release in the platform's canary script (D-63, #2300), where it is canaried
  * before any vertical's script moves: `scopeStoreCanaryScriptName(kind)`, built and checked as a
- * vertical's script is. Answers the script's name.
+ * vertical's script is, except that it may move to a lower `schema`: every canary object is fresh
+ * and wiped, so none holds migrated data. Answers the script's name.
  */
 export function createStoreCanaryEnsurer(opts: ScopeStoreEnsurerOptions) {
   const ensure = scriptEnsurer(opts);
@@ -104,6 +109,7 @@ export function createStoreCanaryEnsurer(opts: ScopeStoreEnsurerOptions) {
     await ensure(
       { kind: kind.kind, vertical: SCOPE_STORE_CANARY, scriptName, className: kind.className, releases: kind.releases },
       input.to,
+      { anySchema: true },
     );
     return { scriptName };
   };
@@ -122,7 +128,7 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
     `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}` +
     `/workers/dispatch/namespaces/${opts.namespace}/scripts/${encodeURIComponent(name)}`;
 
-  return async (script: EnsuredScript, to: string | undefined): Promise<void> => {
+  return async (script: EnsuredScript, to: string | undefined, rule: { anySchema?: boolean } = {}): Promise<boolean> => {
     const current = await recorded(scriptUrl(script.scriptName));
     if (current.exists && !current.release) {
       // Not an upload of this code. Which release it runs cannot be told, so it is not guessed.
@@ -156,8 +162,21 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
     if (asked && sha256 !== asked) {
       throw new ControlPlaneError(422, `kind '${script.kind}' release ${asked} loaded as other bytes (${sha256})`);
     }
-    if (!script.releases.some((pin) => pin.sha256 === sha256)) {
+    const pin = script.releases.find((p) => p.sha256 === sha256);
+    if (!pin) {
       throw new ControlPlaneError(422, `kind '${script.kind}' release ${sha256} is not pinned in its registration`);
+    }
+    if (current.release && current.release !== sha256 && !rule.anySchema) {
+      const running = script.releases.find((p) => p.sha256 === current.release);
+      if (!running) {
+        throw new ControlPlaneError(409, `store script '${script.scriptName}' runs ${current.release}, which is not pinned, so its schema cannot be judged`);
+      }
+      if (pin.schema < running.schema) {
+        throw new ControlPlaneError(
+          409,
+          `store script '${script.scriptName}' runs schema ${running.schema}; release ${sha256} has schema ${pin.schema}, and a script never moves to a lower one`,
+        );
+      }
     }
     let built: PythonStoreScript;
     try {
@@ -171,8 +190,9 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
       throw new ControlPlaneError(422, e instanceof Error ? e.message : String(e));
     }
     const build = await buildDigest(built);
-    if (current.exists && current.release === sha256 && current.build === build) return;
+    if (current.exists && current.release === sha256 && current.build === build) return false;
     await put(scriptUrl(script.scriptName), script.scriptName, built, { sha256, build, first: !current.exists });
+    return true;
   };
   async function recorded(url: string): Promise<{ exists: boolean; release?: string; build?: string }> {
     const res = await fetch(`${url}/settings`, { headers: { authorization: `Bearer ${opts.apiToken}` } });
