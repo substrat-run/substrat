@@ -4,6 +4,9 @@ import {
   scopeStoresDeclaredIn,
   STORE_KINDS,
   issueScopeStoreEnvelope,
+  SCOPE_STORE_ENVELOPE_HEADER,
+  SCOPE_STORE_SIGNATURE_HEADER,
+  ScopeStoreKeyError,
   scopeStoreObjectName,
   scopeStoreScriptName,
   storeEraseResult,
@@ -254,27 +257,32 @@ export async function callPlatformScopeStore(
   try {
     return await callReservedStoreOperation(async (request) => {
       const objectName = scopeStoreObjectName(target.tenantId, target.vertical, target.scopeId, target.binding);
+      const scriptName = scopeStoreScriptName(target.vertical, target.kind);
       const body = JSON.stringify({ ...request, objectName });
       let issued;
       try {
         issued = await issueScopeStoreEnvelope({
           privateKey: dispatch.platformKey,
           aud: 'platform',
+          script: scriptName,
           name: objectName,
           op: request.operation,
           body,
         });
-      } catch {
-        throw new ControlPlaneError(503, 'this control plane holds no scope-store key');
+      } catch (error) {
+        if (!(error instanceof ScopeStoreKeyError)) throw error;
+        // Set but unusable, e.g. a raw key where PKCS8 belongs. The message never carries the key.
+        console.warn(`scope store call refused: STORE_PLATFORM_KEY is set but unusable (${error.message})`);
+        throw new ControlPlaneError(503, 'this control plane holds no usable scope-store key');
       }
       const response = await dispatch.fetch(
-        scopeStoreScriptName(target.vertical, target.kind),
+        scriptName,
         new Request('https://scope-store/invoke', {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            'x-substrat-store-envelope': issued.header,
-            'x-substrat-store-signature': issued.signature,
+            [SCOPE_STORE_ENVELOPE_HEADER]: issued.header,
+            [SCOPE_STORE_SIGNATURE_HEADER]: issued.signature,
           },
           body,
         }),

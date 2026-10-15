@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { errorCodeOf, scopeStoreObjectName, signScopeStoreName, STORE_BODY_MAX_BYTES, StoreError, storeResponse, toProblem, verifyScopeStoreName } from '../src/index.js';
+import { errorCodeOf, STORE_BODY_MAX_BYTES, StoreError, storeResponse, toProblem } from '../src/index.js';
 
 describe('StoreError (#2209)', () => {
   it('derives the taxonomy code from the status and keeps the store’s own code', () => {
@@ -52,20 +52,5 @@ describe('StoreError (#2209)', () => {
     const name = scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH');
     expect(name).toBe('01TENANT/acme/crm/01SCOPE/GRAPH');
     expect(name).not.toContain('1.0.0');
-  });
-});
-
-describe('scope store signature (#2210)', () => {
-  const secret = 'control-plane-store-key';
-  const name = scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH');
-
-  it('verifies a signature over the object name, and nothing else', async () => {
-    const mac = await signScopeStoreName(secret, name);
-    expect(await verifyScopeStoreName(secret, name, mac)).toBe(true);
-    expect(await verifyScopeStoreName(secret, `${name}-other`, mac)).toBe(false);
-    expect(await verifyScopeStoreName('other-key', name, mac)).toBe(false);
-    expect(await verifyScopeStoreName(secret, name, 'not-a-signature')).toBe(false);
-    expect(mac).not.toContain(secret);
-    expect(mac).not.toContain(name);
   });
 });

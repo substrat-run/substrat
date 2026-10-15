@@ -21,10 +21,6 @@
       "types": "./dist/invocation-record.d.ts",
       "default": "./dist/invocation-record.js"
     },
-    "./scope-store-mac": {
-      "types": "./dist/scope-store-mac.d.ts",
-      "default": "./dist/scope-store-mac.js"
-    },
     "./scope-store-envelope": {
       "types": "./dist/scope-store-envelope.d.ts",
       "default": "./dist/scope-store-envelope.js"
