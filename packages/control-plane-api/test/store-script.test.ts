@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest';
 import { RESERVED_STORE_OPERATIONS, storeKindReleaseDigest, type StoreKindRegistration } from '@substrat-run/contracts';
 import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
-import { createScopeStoreEnsurer, STORE_BUILD_VAR, STORE_RELEASE_VAR } from '../src/store-script.js';
+import { createScopeStoreEnsurer, createStoreCanaryEnsurer, STORE_BUILD_VAR, STORE_RELEASE_VAR } from '../src/store-script.js';
 import {
   STORE_ENTRY_PYTHON_MODULE,
   STORE_ENTRY_PYTHON_VERIFIER_SOURCE,
@@ -16,6 +16,21 @@ import {
  * this holds what it sends, when, and what it refuses.
  */
 afterEach(() => vi.unstubAllGlobals());
+
+/**
+ * A refusal as a plain `{ status, message }`, matched with `expect.stringMatching`. A bare RegExp as a
+ * `toMatchObject` value asserts nothing: subset equality reads it as an object with no keys, so
+ * `{ message: /x/ }` matches any message. A promise that resolves fails here.
+ */
+async function refusal(p: Promise<unknown>): Promise<{ status?: number; message: string }> {
+  return p.then(
+    () => {
+      throw new Error('expected a refusal, and the call resolved');
+    },
+    (e: Error & { status?: number }) => ({ status: e.status, message: e.message }),
+  );
+}
+
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 const artifact = (source: string) => ({
@@ -35,8 +50,8 @@ let caller: string;
 let platform: string;
 beforeAll(async () => {
   pins = [
-    { sha256: await storeKindReleaseDigest(v1), sourceCommit: v1.sourceCommit },
-    { sha256: await storeKindReleaseDigest(v2), sourceCommit: v2.sourceCommit },
+    { sha256: await storeKindReleaseDigest(v1), sourceCommit: v1.sourceCommit, schema: 0 },
+    { sha256: await storeKindReleaseDigest(v2), sourceCommit: v2.sourceCommit, schema: 0 },
   ];
   caller = (await generateScopeStoreKeyPair()).publicKey;
   platform = (await generateScopeStoreKeyPair()).publicKey;
@@ -183,10 +198,10 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
 
   it('refuses (422) a release whose bytes are not pinned, before anything is sent', async () => {
     const cf = cloudflare();
-    await expect(ensurer({ releases: [pins[1]!] })(need)).rejects.toMatchObject({ status: 422, message: /not pinned/ });
+    expect(await refusal(ensurer({ releases: [pins[1]!] })(need))).toMatchObject({ status: 422, message: expect.stringMatching(/not pinned/) });
     // One byte more than the pinned release is another release.
     const tampered = { ...v1, modules: [{ ...v1.modules[0]!, content: bytes('class Store:\n    pass\n ') }, v1.modules[1]!] };
-    await expect(ensurer({ rolledOut: tampered })(need)).rejects.toMatchObject({ status: 422, message: /not pinned/ });
+    expect(await refusal(ensurer({ rolledOut: tampered })(need))).toMatchObject({ status: 422, message: expect.stringMatching(/not pinned/) });
     expect(cf.puts).toEqual([]);
   });
 
@@ -203,7 +218,7 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
       kinds: [{ kind: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
       loadRelease: async () => v2,
     });
-    await expect(swapped(need)).rejects.toMatchObject({ status: 422, message: /loaded as other bytes/ });
+    expect(await refusal(swapped(need))).toMatchObject({ status: 422, message: expect.stringMatching(/loaded as other bytes/) });
     expect(cf.puts).toHaveLength(1);
   });
 
@@ -211,7 +226,7 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
     const cf = cloudflare();
     // The same bytes, with the entry importing another of them: not the release that was pinned.
     const moved = { ...v1, entry: 'kind_counter/blob.py' };
-    await expect(ensurer({ rolledOut: moved })(need)).rejects.toMatchObject({ status: 422, message: /is not pinned/ });
+    expect(await refusal(ensurer({ rolledOut: moved })(need))).toMatchObject({ status: 422, message: expect.stringMatching(/is not pinned/) });
     // And a script that runs v1 is not rebuilt onto the other entry under v1's sha256, even by a
     // loader that hands back v1's bytes with it.
     await ensurer({})(need);
@@ -226,7 +241,7 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
       kinds: [{ kind: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
       loadRelease: async () => moved,
     });
-    await expect(entryMoved(need)).rejects.toMatchObject({ status: 422, message: /loaded as other bytes/ });
+    expect(await refusal(entryMoved(need))).toMatchObject({ status: 422, message: expect.stringMatching(/loaded as other bytes/) });
     expect(cf.puts).toEqual([]);
   });
 
@@ -251,25 +266,146 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
   it('refuses (422) a release whose modules break the module rule', async () => {
     const cf = cloudflare();
     const bad = { ...v1, modules: [...v1.modules, { name: 'workers.py', content: bytes('') }] };
-    const releases = [{ sha256: await storeKindReleaseDigest(bad), sourceCommit: v1.sourceCommit }];
-    await expect(ensurer({ rolledOut: bad, releases })(need)).rejects.toMatchObject({ status: 422, message: /workers\.py/ });
+    const releases = [{ sha256: await storeKindReleaseDigest(bad), sourceCommit: v1.sourceCommit, schema: 0 }];
+    expect(await refusal(ensurer({ rolledOut: bad, releases })(need))).toMatchObject({ status: 422, message: expect.stringMatching(/workers\.py/) });
     expect(cf.puts).toEqual([]);
   });
 
   it('refuses (409) when there is no release to run, and a script that records none', async () => {
     const cf = cloudflare();
-    await expect(ensurer({ rolledOut: undefined })(need)).rejects.toMatchObject({ status: 409, message: /no release rolled out/ });
+    expect(await refusal(ensurer({ rolledOut: undefined })(need))).toMatchObject({ status: 409, message: expect.stringMatching(/no release rolled out/) });
     cf.scripts.set(SCRIPT, [{ name: 'SUBSTRAT_STORE' }]);
-    await expect(ensurer({})(need)).rejects.toMatchObject({ status: 409, message: /records no release/ });
+    expect(await refusal(ensurer({})(need))).toMatchObject({ status: 409, message: expect.stringMatching(/records no release/) });
     cf.scripts.set(SCRIPT, [{ name: STORE_RELEASE_VAR, text: 'a'.repeat(64) }]);
-    await expect(ensurer({})(need)).rejects.toMatchObject({ status: 409, message: /is not stored/ });
+    expect(await refusal(ensurer({})(need))).toMatchObject({ status: 409, message: expect.stringMatching(/is not stored/) });
     expect(cf.puts).toEqual([]);
   });
 
   it("answers the runtime's own failures as 502", async () => {
     cloudflare({ settingsStatus: 500 });
-    await expect(ensurer({})(need)).rejects.toMatchObject({ status: 502, message: /settings failed/ });
+    expect(await refusal(ensurer({})(need))).toMatchObject({ status: 502, message: expect.stringMatching(/settings failed/) });
     cloudflare({ putStatus: 500 });
-    await expect(ensurer({})(need)).rejects.toMatchObject({ status: 502, message: /upload failed/ });
+    expect(await refusal(ensurer({})(need))).toMatchObject({ status: 502, message: expect.stringMatching(/upload failed/) });
+  });
+});
+
+describe('a rollout moves a store script with `to`, and canaries in the platform script (#2300)', () => {
+  it('moves the script to `to`, re-hashing it, and a second run with the same `to` uploads nothing', async () => {
+    const cf = cloudflare();
+    const ensure = ensurer({});
+    await ensure(need);
+    expect(text(cf.puts[0]!, STORE_RELEASE_VAR)).toBe(pins[0]!.sha256);
+    const asked: { sha256?: string }[] = [];
+    await ensurer({ asked })({ ...need, to: pins[1]!.sha256 });
+    expect(asked).toEqual([{ sha256: pins[1]!.sha256 }]);
+    expect(cf.puts).toHaveLength(2);
+    expect(text(cf.puts[1]!, STORE_RELEASE_VAR)).toBe(pins[1]!.sha256);
+    // Not a first upload: no class migration a second time.
+    expect(cf.puts[1]!.meta.migrations).toBeUndefined();
+    await ensurer({})({ ...need, to: pins[1]!.sha256 });
+    expect(cf.puts).toHaveLength(2);
+    // A push afterwards rebuilds at the release the script now records, not the current one.
+    const pushAsked: { sha256?: string }[] = [];
+    await ensurer({ asked: pushAsked })(need);
+    expect(pushAsked).toEqual([{ sha256: pins[1]!.sha256 }]);
+    expect(cf.puts).toHaveLength(2);
+  });
+
+  it('refuses (422) a `to` the loader answers with other bytes, and a stored release the pins do not hold', async () => {
+    const cf = cloudflare();
+    // The store holds v2's bytes under v1's key.
+    const swapped = createScopeStoreEnsurer({
+      accountId: 'acct',
+      namespace: 'ns',
+      apiToken: 'tok',
+      callerPublicKeys: [caller],
+      platformPublicKeys: [platform],
+      kinds: [{ kind: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      loadRelease: async () => v2,
+    });
+    expect(await refusal(swapped({ ...need, to: pins[0]!.sha256 }))).toMatchObject({ status: 422, message: expect.stringMatching(/loaded as other bytes/) });
+    // A loader's own claim is held too, for a script that does not exist yet.
+    const claimed = createScopeStoreEnsurer({
+      accountId: 'acct',
+      namespace: 'ns',
+      apiToken: 'tok',
+      callerPublicKeys: [caller],
+      platformPublicKeys: [platform],
+      kinds: [{ kind: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      loadRelease: async () => ({ ...v2, sha256: pins[0]!.sha256 }),
+    });
+    expect(await refusal(claimed(need))).toMatchObject({ status: 422, message: expect.stringMatching(/loaded as other bytes/) });
+    expect(await refusal(ensurer({ releases: [pins[0]!] })({ ...need, to: pins[1]!.sha256 }))).toMatchObject({ status: 422, message: expect.stringMatching(/not pinned/) });
+    expect(cf.puts).toEqual([]);
+  });
+
+  it("uploads the canary to the platform's own script, pinned and built like a vertical's", async () => {
+    const cf = cloudflare();
+    const canary = createStoreCanaryEnsurer({
+      accountId: 'acct',
+      namespace: 'ns',
+      apiToken: 'tok',
+      callerPublicKeys: [caller],
+      platformPublicKeys: [platform],
+      kinds: [{ kind: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      loadRelease: async ({ sha256 }) => (sha256 === pins[1]!.sha256 ? v2 : undefined),
+    });
+    expect(await canary({ kind: 'graph', to: pins[1]!.sha256 })).toEqual({ scriptName: 'substrat-store-graph--canary' });
+    expect(cf.puts.map((p) => p.script)).toEqual(['substrat-store-graph--canary']);
+    expect(text(cf.puts[0]!, 'SUBSTRAT_STORE_SCRIPT')).toBe('substrat-store-graph--canary');
+    expect(text(cf.puts[0]!, STORE_RELEASE_VAR)).toBe(pins[1]!.sha256);
+    expect(await refusal(canary({ kind: 'graph', to: 'a'.repeat(64) }))).toMatchObject({ status: 409 });
+    expect(await refusal(canary({ kind: 'nokind', to: pins[1]!.sha256 }))).toMatchObject({ status: 403 });
+  });
+});
+
+describe('a script never moves to a release with a lower schema than the one it runs (#2300)', () => {
+  it('refuses (409) to move a script down, and moves it up or across', async () => {
+    const cf = cloudflare();
+    const ranked = [
+      { ...pins[0]!, schema: 1 },
+      { ...pins[1]!, schema: 0 },
+    ];
+    await ensurer({ releases: ranked })(need);
+    expect(text(cf.puts[0]!, STORE_RELEASE_VAR)).toBe(pins[0]!.sha256);
+    expect(await refusal(ensurer({ releases: ranked })({ ...need, to: pins[1]!.sha256 }))).toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/runs schema 1; release .* has schema 0/),
+    });
+    expect(cf.puts).toHaveLength(1);
+    // The same move is allowed when the schemas agree, or rise.
+    await ensurer({ releases: [{ ...pins[0]!, schema: 1 }, { ...pins[1]!, schema: 1 }] })({ ...need, to: pins[1]!.sha256 });
+    expect(text(cf.puts[1]!, STORE_RELEASE_VAR)).toBe(pins[1]!.sha256);
+    await ensurer({ releases: [{ ...pins[0]!, schema: 2 }, { ...pins[1]!, schema: 1 }] })({ ...need, to: pins[0]!.sha256 });
+    expect(text(cf.puts[2]!, STORE_RELEASE_VAR)).toBe(pins[0]!.sha256);
+    // A script on a release its registration no longer pins cannot be judged, so it is not moved.
+    expect(await refusal(ensurer({ releases: [pins[1]!] })({ ...need, to: pins[1]!.sha256 }))).toMatchObject({ status: 409, message: expect.stringMatching(/not pinned, so its schema/) });
+    expect(cf.puts).toHaveLength(3);
+  });
+
+  it('lets the canary script move down: its objects are fresh and wiped', async () => {
+    const cf = cloudflare();
+    const ranked = [
+      { ...pins[0]!, schema: 1 },
+      { ...pins[1]!, schema: 0 },
+    ];
+    const canary = createStoreCanaryEnsurer({
+      accountId: 'acct',
+      namespace: 'ns',
+      apiToken: 'tok',
+      callerPublicKeys: [caller],
+      platformPublicKeys: [platform],
+      kinds: [{ kind: 'graph', releases: ranked, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      loadRelease: async ({ sha256 }) => (sha256 === pins[0]!.sha256 ? v1 : v2),
+    });
+    await canary({ kind: 'graph', to: pins[0]!.sha256 });
+    await canary({ kind: 'graph', to: pins[1]!.sha256 });
+    expect(cf.puts.map((p) => text(p, STORE_RELEASE_VAR))).toEqual([pins[0]!.sha256, pins[1]!.sha256]);
+  });
+
+  it('answers how many scripts it uploaded', async () => {
+    cloudflare();
+    expect(await ensurer({})(need)).toEqual({ uploaded: 1 });
+    expect(await ensurer({})(need)).toEqual({ uploaded: 0 });
   });
 });

@@ -500,7 +500,16 @@ import {
   VERTICAL_SCOPE_STORES_DDL,
   forgetVerticalScopeStores,
   indexVersionScopeStores,
+  kindDeclarationsOf,
   verticalScopeStoresOf,
+  STORE_KIND_RELEASES_DDL,
+  beginStoreKindRolloutIn,
+  finishStoreKindRolloutIn,
+  holdStoreKindIn,
+  recordStoreKindReleaseIn,
+  releaseStoreKindHoldIn,
+  storeKindReleaseIn,
+  storeKindStateIn,
   splitManifestMigrations,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
@@ -2246,6 +2255,8 @@ export class SqliteScopeHost implements ScopeHost {
         created_at TEXT NOT NULL,
         PRIMARY KEY (tenant_id, vertical, binding)
       );
+      -- A store kind's stored releases, rollouts and holds (D-63, #2300).
+      ${STORE_KIND_RELEASES_DDL}
       -- The vertical + version registry (#31). A scope binds to a VERSION, so
       -- dev/staging/prod are the same vertical pinned differently, and a preview
       -- deployment is a version nothing has been promoted to yet.
@@ -10507,6 +10518,56 @@ export class SqliteScopeHost implements ScopeHost {
           ref: r.ref,
           createdAt: r.created_at,
         }));
+      },
+      // -- store-kind releases, rollouts and holds (D-63, #2300) -------------------
+      // The state is kernel code over the directory (store-kind-releases.ts), shared with the
+      // Cloudflare control plane; each call is one transaction. A hold's expiry is judged against
+      // this host's clock, so a test can let a lease lapse without waiting.
+      recordStoreKindRelease: async (actor, input) => {
+        const at: string = this.clock();
+        const { record, created } = this.directory.transaction(() =>
+          recordStoreKindReleaseIn(switchSqlOf(this.directory), { ...input, actor, at }),
+        )();
+        if (created) this.recordAdmin(actor, 'uploadStoreKindRelease', { tenantId: null }, null, record, at);
+        return record;
+      },
+      getStoreKindRelease: async (actor, kind, sha256) => {
+        const record = storeKindReleaseIn(switchSqlOf(this.directory), kind, sha256);
+        this.recordAccess(actor, 'getStoreKindRelease', { tenantId: null }, { kind, sha256 }, record ? 1 : 0);
+        return record;
+      },
+      storeKindState: async (actor, kind) => {
+        const state = storeKindStateIn(switchSqlOf(this.directory), kind, Date.parse(this.clock()));
+        this.recordAccess(actor, 'storeKindState', { tenantId: null }, { kind }, state.rollouts.length);
+        return state;
+      },
+      storeKindDeclarations: async (actor, kind) => {
+        const declared = this.directory.transaction(() => kindDeclarationsOf(switchSqlOf(this.directory), kind))();
+        this.recordAccess(actor, 'storeKindDeclarations', { tenantId: null }, { kind }, declared.verticals.length);
+        return declared;
+      },
+      holdStoreKind: async (_actor, input) =>
+        this.directory.transaction(() =>
+          holdStoreKindIn(switchSqlOf(this.directory), { ...input, nowMs: Date.parse(this.clock()) }),
+        )(),
+      releaseStoreKindHold: async (_actor, input) => {
+        releaseStoreKindHoldIn(switchSqlOf(this.directory), input);
+      },
+      beginStoreKindRollout: async (actor, input) => {
+        const at: string = this.clock();
+        const row = this.directory.transaction(() =>
+          beginStoreKindRolloutIn(switchSqlOf(this.directory), { ...input, actor, at, nowMs: Date.parse(at) }),
+        )();
+        this.recordAdmin(actor, input.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row, at);
+        return row;
+      },
+      finishStoreKindRollout: async (actor, input) => {
+        const at: string = this.clock();
+        const row = this.directory.transaction(() =>
+          finishStoreKindRolloutIn(switchSqlOf(this.directory), { ...input, at, nowMs: Date.parse(at) }),
+        )();
+        this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row, at);
+        return row;
       },
       getScopeRecord: async (actor, tenantId: TenantId, scopeId: ScopeId): Promise<Scope | undefined> => {
         const r = this.directory.prepare('SELECT * FROM scopes WHERE scope_id = ?').get(scopeId) as

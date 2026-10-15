@@ -175,6 +175,51 @@ export function verticalScopeStoresOf(db: SwitchSql, verticalSlug: string): Vert
   ) as { binding: string; kind: string }[]).map(({ binding, kind }) => ({ binding, kind }));
 }
 
+/**
+ * Every vertical whose any version declared a binding of `kind`, with those bindings (#2300): the
+ * store scripts a release rollout of the kind reaches, including a vertical whose serving version
+ * dropped the store while a pinned or preview scope still runs one that declares it. Every vertical
+ * not indexed yet is indexed first (the caller runs this in one transaction).
+ *
+ * `unreadable` names the verticals that cannot say: a version whose manifest cannot be read, or
+ * versions stored before the record that re-kinded a binding. Any of them may declare the kind, so
+ * a caller that must reach every script (a rollout) refuses while the list is not empty, rather
+ * than leave a script on another release without saying so.
+ */
+export function kindDeclarationsOf(
+  db: SwitchSql,
+  kind: string,
+): { verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] } {
+  const slugs = db.all('SELECT DISTINCT vertical_slug FROM vertical_versions ORDER BY vertical_slug') as { vertical_slug: string }[];
+  const unreadable = new Set<string>();
+  for (const { vertical_slug } of slugs) {
+    try {
+      indexVertical(db, vertical_slug);
+    } catch {
+      unreadable.add(vertical_slug);
+    }
+  }
+  for (const { vertical_slug } of db.all(
+    'SELECT DISTINCT vertical_slug FROM vertical_scope_store_versions WHERE readable = 0',
+  ) as { vertical_slug: string }[]) {
+    unreadable.add(vertical_slug);
+  }
+  const rows = db.all(
+    'SELECT vertical_slug, binding FROM vertical_scope_stores WHERE kind = ? ORDER BY vertical_slug, binding',
+    kind,
+  ) as { vertical_slug: string; binding: string }[];
+  const byVertical = new Map<string, VerticalScopeStore[]>();
+  for (const { vertical_slug, binding } of rows) {
+    const stores = byVertical.get(vertical_slug) ?? [];
+    stores.push({ binding, kind });
+    byVertical.set(vertical_slug, stores);
+  }
+  return {
+    verticals: [...byVertical].map(([vertical, stores]) => ({ vertical, stores })),
+    unreadable: [...unreadable].sort(),
+  };
+}
+
 /** A deleted vertical's declarations go with its versions, so a slug registered again starts clean. */
 export function forgetVerticalScopeStores(db: SwitchSql, verticalSlug: string): void {
   db.run('DELETE FROM vertical_scope_stores WHERE vertical_slug = ?', verticalSlug);

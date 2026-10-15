@@ -43,6 +43,7 @@ import {
   bindingInviteContractSuite,
   impersonationContractSuite,
   inertScopeContractSuite,
+  storeKindReleaseContractSuite,
   connectLinkContractSuite,
   causedByContractSuite,
   scopeCausedByContractSuite,
@@ -127,6 +128,19 @@ scopeHostContractSuite(
 // #2005: a fork or a preview causes no outbound effects — on the coordinator, which is where
 // a co-located host runs its executors and reads the directory that says what a scope is.
 inertScopeContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    fetch: connectorTestFetch,
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    checker: UNSAFE_allowAllChecker,
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #2300: a store kind's releases, rollouts and holds, in the ControlPlaneDO. The hold-expiry
+// transition is the pure host's alone: this object reads the wall clock (#956).
+storeKindReleaseContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     fetch: connectorTestFetch,

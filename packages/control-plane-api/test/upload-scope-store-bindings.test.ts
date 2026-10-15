@@ -65,7 +65,7 @@ describe('a vertical upload carries no scope-store binding, and its store script
   beforeAll(async () => {
     testKind = {
       kind: 'graph',
-      releases: [{ sha256: await storeKindReleaseDigest(release), sourceCommit: release.sourceCommit }],
+      releases: [{ sha256: await storeKindReleaseDigest(release), sourceCommit: release.sourceCommit, schema: 0 }],
       className: 'Store',
       operations: ['read'],
       platformOperations: [...RESERVED_STORE_OPERATIONS],
@@ -283,6 +283,30 @@ describe('a vertical upload carries no scope-store binding, and its store script
     expect(await failuresOf('store-unreleased/crm')).toEqual(
       expect.arrayContaining([expect.objectContaining({ stage: 'store-upload', status: 409 })]),
     );
+  });
+
+  it('a push waits out a rollout of its kind (409), naming no other vertical, and holds nothing after (#2300)', async () => {
+    stubCloudflare();
+    registry.push(testKind);
+    const rollout = ulid();
+    expect(await host.admin.holdStoreKind(staff, { kind: 'graph', holder: rollout, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
+    const before = puts.length;
+    const res = await push(await tenant('store-held'));
+    expect(res.status).toBe(409);
+    const body = await res.text();
+    expect(body).toMatch(/kind 'graph' is being rolled out; try again/);
+    // The vertical asking is the only one a push answer names.
+    expect(body).not.toMatch(/store-order|store-fails|store-upload\/|acme/);
+    expect(puts.length).toBe(before);
+    expect(await failuresOf('store-held/crm')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ stage: 'store-upload', status: 409 })]),
+    );
+    await host.admin.releaseStoreKindHold(staff, { kind: 'graph', holder: rollout });
+    const retried = await push('store-held');
+    expect(retried.status, await retried.clone().text()).toBe(201);
+    // The push let its shared hold go: a rollout can hold the kind now.
+    expect(await host.admin.holdStoreKind(staff, { kind: 'graph', holder: rollout, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
+    await host.admin.releaseStoreKindHold(staff, { kind: 'graph', holder: rollout });
   });
 
   it('a control plane with no store uploader refuses the push (501) and uploads nothing', async () => {

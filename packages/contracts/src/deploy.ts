@@ -8,7 +8,7 @@ import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
 import { scopeDumpTable } from './introspection.js';
 import { substratError } from './errors.js';
-import { STORE_KIND_ID } from './script-names.js';
+import { SCOPE_STORE_CANARY, STORE_KIND_ID } from './script-names.js';
 import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
 
 // The deploy manifest is the JSON part a `substrat push` sends alongside the
@@ -348,11 +348,18 @@ export const storeKindId = z.string().regex(STORE_KIND_ID, { message: 'a store k
  * platform checks at every upload, and the source commit the bundle was built from, which a
  * reviewer reads. The digest is {@link storeKindReleaseDigest} over the bundle's modules and the
  * module the entry imports.
+ *
+ * `schema` is the version of the stored data the release migrates an object to when it wakes
+ * (D-63, "Rollback against a migrated schema"; proposed in #2300, for the maintainer to confirm).
+ * The platform never moves a script to a release with a lower `schema` than the one it leaves:
+ * not by a rollout, a rollback, or the restore after a failed rollout. A kind's migrations are
+ * forward-only, so a release that changes the stored shape raises it.
  */
 export const storeKindRelease = z
   .object({
     sha256: z.string().regex(/^[0-9a-f]{64}$/, { message: 'a release sha256 is 64 lowercase hex' }),
     sourceCommit: z.string().regex(/^[0-9a-f]{40}$/, { message: 'a release source commit is 40 lowercase hex' }),
+    schema: z.number().int({ message: 'a release schema is an integer' }).nonnegative({ message: 'a release schema is not negative' }),
   })
   .strict();
 export type StoreKindRelease = z.infer<typeof storeKindRelease>;
@@ -384,6 +391,27 @@ export type StoreKindRegistration = z.infer<typeof storeKindRegistration>;
 
 /** Registered store kinds. None, until a reviewed registration lands (#2210). */
 export const STORE_KINDS: readonly StoreKindRegistration[] = [];
+
+/** The most module bytes one release bundle may carry (#2300), decoded. A bigger upload is 413. */
+export const STORE_RELEASE_MAX_BYTES = 10 * 1024 * 1024;
+
+/**
+ * A release bundle as `substrat store-kind upload` sends it (#2300): the commit it was built from,
+ * the module the platform's entry imports, and every module, base64. The control plane stores it
+ * keyed by its {@link storeKindReleaseDigest}, which it computes itself. Module names are judged
+ * by the Python entry's package rule when the bundle arrives, the same rule its upload applies.
+ */
+export const storeKindReleaseUpload = z
+  .object({
+    sourceCommit: z.string().regex(/^[0-9a-f]{40}$/, { message: 'a release source commit is 40 lowercase hex' }),
+    entry: z.string().min(1),
+    modules: z
+      .array(z.object({ name: z.string().min(1), contentBase64: z.string() }).strict())
+      .min(1)
+      .max(1000),
+  })
+  .strict();
+export type StoreKindReleaseUpload = z.infer<typeof storeKindReleaseUpload>;
 
 /** The domain tag a release digest starts with. Another framing is another tag, and a pin migration. */
 export const STORE_RELEASE_DIGEST_TAG = 'substrat.store-release/v1';
@@ -501,6 +529,15 @@ export function scopeStoreBindingName(binding: string): string {
  */
 export function scopeStoreObjectName(tenantId: string, vertical: string, scopeId: string, binding: string): string {
   return `${tenantId}/${vertical}/${scopeId}/${binding}`;
+}
+
+/**
+ * The object a release is canaried on (D-63, #2300), in the kind's canary script. Its vertical
+ * segment is {@link SCOPE_STORE_CANARY}, which no vertical slug is, so no route a tenant reaches
+ * names it; the tenant and scope ids are fresh for each canary and never in the directory.
+ */
+export function scopeStoreCanaryObjectName(tenantId: string, scopeId: string, binding: string): string {
+  return scopeStoreObjectName(tenantId, SCOPE_STORE_CANARY, scopeId, binding);
 }
 
 /** `{ operation, input }` over the store's fetch. */

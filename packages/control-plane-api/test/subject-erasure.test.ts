@@ -432,7 +432,7 @@ describe('subject erasure (#37)', () => {
   };
   const graphTable = { name: 'nodes', ddl: 'CREATE TABLE nodes(id TEXT)', columns: ['id'], rows: [['a']] };
   /** A registered graph kind: with none registered no store can exist (`mayHoldScopeStores`, #2242). */
-  const graphKind: StoreKindRegistration = { kind: 'graph', releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40) }], className: 'Graph', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] };
+  const graphKind: StoreKindRegistration = { kind: 'graph', releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }], className: 'Graph', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] };
 
   /** The control plane against a hosted `docs`, its stores reached through the platform. */
   const hosted = (calls: { imported: unknown[][]; erased: string[]; failErase?: boolean }, tables: number) =>
