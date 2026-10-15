@@ -46,6 +46,7 @@ import type {
   OwnerTransferAudit,
   MemberChangeAudit,
   PeerBindingAudit,
+  ConnectionBindingAudit,
   CopyMarkAudit,
   BindHostnameInput,
   AdminLogEntry,
@@ -4416,6 +4417,8 @@ export interface HostAdmin {
   recordMemberChange(actor: PlatformActorId, entry: MemberChangeAudit): Promise<void>;
 
   /** One intent or outcome of a tenant's peer-instance binding change (#1720). */
+  recordConnectionBindingChange(actor: PlatformActorId, entry: ConnectionBindingAudit): Promise<void>;
+
   recordPeerBindingChange(actor: PlatformActorId, entry: PeerBindingAudit): Promise<void>;
 
   /**

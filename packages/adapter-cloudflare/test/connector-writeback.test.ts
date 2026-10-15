@@ -306,6 +306,29 @@ describe('connector write-back (#574)', () => {
       });
     });
 
+    it('reads grants from the serving deployment, never the coordinator placeholder', async () => {
+      const calls: unknown[] = [];
+      const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, connectorDelegation: {
+        ...delegation,
+        grants: async (args) => { calls.push(args); return [{ connectionId: connId, permission: USE }]; },
+      } });
+      expect(await host.connectionGrantsInScope(t, s)).toEqual([{ connectionId: connId, permission: USE }]);
+      expect(calls).toEqual([{ tenantId: t, scopeId: s }]);
+      await expect(() => hostFor().connectionGrantsInScope(t, s)).rejects.toThrow(/inspection is not configured/);
+    });
+
+    it('audits connector binding changes with actor, target and phases', async () => {
+      const operationId = ulid();
+      const host = hostFor();
+      for (const phase of ['intent', 'applied'] as const) await host.admin.recordConnectionBindingChange(staff, {
+        tenantId: t, scopeId: s, connectionId: connectionIdOf.parse(connId), provider: 'fortnox',
+        operation: 'ledger/record-period', permission: permissionKey.parse('ledger:record'), operationId, phase,
+      });
+      const rows = (await host.admin.auditLog(staff, { tenantId: t })).filter((r) => r.action === 'bindConnectionScope');
+      expect(rows.map((r) => r.after)).toEqual([expect.objectContaining({ phase: 'intent' }), expect.objectContaining({ phase: 'applied' })]);
+      expect(rows[0]).toMatchObject({ actor: staff, scopeId: s, after: { connectionId: connId, operationId } });
+    });
+
     it('routes a SCOPE-level grantToConnection through the delegation, after the directory gates', async () => {
       await hostFor().admin.grantToConnection(staff, {
         connectionId: connId,

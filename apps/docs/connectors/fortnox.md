@@ -54,6 +54,23 @@ A sweep can therefore never be configured into a state where it fetches a year o
 then cannot write it down — the failure lands in the operator's hands, naming what to grant,
 instead of in a background timer nobody is watching.
 
+### Bind a hosted connection
+
+A staff or service operator can bind each company's existing connection:
+
+```sh
+substrat connection bind <connection-id> --tenant <tenant-id> --scope <scope-id> \
+  --operation ledger/record-period --permission ledger:record
+substrat connection bindings <connection-id> --tenant <tenant-id>
+```
+
+The connection must already hold `ledger:record` on that scope through the tenant's authorized
+connection flow. This command grants nothing. It verifies the live scope projection, refuses
+preview/fork and mismatched-vertical targets, and records the binding change in the admin log.
+The read reports `permissionHeld` alongside each stored binding. See the
+[hosted Planima binding door](/connectors/planima#bind-a-hosted-connection) for the HTTP paths
+and deployment prerequisite. Planima-specific options are rejected for Fortnox.
+
 ## The credential
 
 Fortnox's usual flow is OAuth2 authorization-code: a person signs in, you store an access token

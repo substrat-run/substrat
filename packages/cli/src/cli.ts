@@ -19,6 +19,7 @@
  * SUBSTRAT_SERVICE_TOKEN. A push is not a deploy — the version lands PENDING; admission
  * (in the console) still gates serving.
  */
+import { bindConnectionScope, listConnectionBindings } from './connections.js';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { loadConfig, saveConfig, resolveAuth } from './config.js';
@@ -166,6 +167,12 @@ Usage:
                                               (pseudonymized by default; --full is
                                               break-glass, audited server-side;
                                               'global' scopes only)
+  substrat connection bind <id> --scope <id> --operation <module/operation> --permission <key>
+                                              bind a poll connector to a scope (staff/service).
+                                              Requires its existing scoped landing grant.
+                                              Planima: --organization-id <id|null>, --currency,
+                                              --horizon-years, --from-year and --to-year.
+  substrat connection bindings <id>          read the connection's configured landing targets
   substrat scope restore <scopeId> --file <backup>
                                               load a backup into an existing hosted scope,
                                               REPLACING its data (a pull's .sqlite, a local
@@ -691,6 +698,41 @@ async function cmdUnpublish(): Promise<void> {
   console.log(`✓ ${r.slug} unpublished`);
 }
 
+async function cmdConnection(): Promise<void> {
+  const sub = argv[1];
+  const connectionId = argv[2];
+  if (!connectionId || connectionId.startsWith('--') || !['bind', 'bindings'].includes(sub ?? '')) {
+    throw new Error('usage: substrat connection bind <id> --scope <id> --operation <module/operation> --permission <key> [--organization-id <id|null>] [--currency SEK] [--horizon-years 50] [--from-year <year> --to-year <year>] [--tenant <id-or-slug>]\n       substrat connection bindings <id> [--tenant <id-or-slug>]');
+  }
+  const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
+  const tenantId = await resolveTenantId(controlPlaneUrl, header, flag('tenant') ?? process.env.SUBSTRAT_TENANT ?? loadConfig().defaultTenant);
+  const opts = { controlPlaneUrl, header, tenantId, connectionId };
+  if (sub === 'bindings') {
+    console.log(JSON.stringify(await listConnectionBindings(opts), null, 2));
+    return;
+  }
+  const scopeId = flag('scope'), operation = flag('operation'), permission = flag('permission');
+  if (!scopeId || !operation || !permission) throw new Error('connection bind requires --scope, --operation and --permission');
+  const numberFlag = (name: string): number | undefined => {
+    const raw = flag(name);
+    if (raw === undefined) return undefined;
+    const value = Number(raw);
+    if (!raw.trim() || !Number.isSafeInteger(value)) throw new Error(`--${name} must be an integer`);
+    return value;
+  };
+  const organization = flag('organization-id');
+  const fromYear = numberFlag('from-year'), toYear = numberFlag('to-year');
+  if ((fromYear === undefined) !== (toYear === undefined)) throw new Error('--from-year and --to-year must be supplied together');
+  const input = {
+    operation, permission,
+    ...(organization === undefined ? {} : { organizationId: organization === 'null' ? null : numberFlag('organization-id') }),
+    ...(flag('currency') === undefined ? {} : { currency: flag('currency') }),
+    ...(flag('horizon-years') === undefined ? {} : { horizonYears: numberFlag('horizon-years') }),
+    ...(fromYear === undefined || toYear === undefined ? {} : { window: { fromYear, toYear } }),
+  };
+  console.log(JSON.stringify(await bindConnectionScope({ ...opts, scopeId, input }), null, 2));
+}
+
 async function cmdScope(): Promise<void> {
   const sub = argv[1];
   const scope = argv[2];
@@ -1158,6 +1200,8 @@ async function main(): Promise<void> {
     case 'whoami':
     case 'workspaces':
       return cmdWhoami();
+    case 'connection':
+      return cmdConnection();
     case 'scope':
       return cmdScope();
     case 'hostnames':

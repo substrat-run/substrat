@@ -977,6 +977,8 @@ function connectorDelegationFor(env: Env): ConnectorDelegation | undefined {
     return client;
   };
   return {
+    grants: async (a) =>
+      (await clientFor(a.tenantId, a.scopeId)).connectorGrants(a),
     invoke: async (a) =>
       (await clientFor(a.tenantId, a.scopeId)).connectorInvoke({
         connectionId: a.connectionId,

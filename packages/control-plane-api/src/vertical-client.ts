@@ -1,3 +1,4 @@
+import { z } from '@substrat-run/contracts';
 import type {
   EntityGrantShape,
   AttachmentRecord,
@@ -67,6 +68,7 @@ import type {
 import {
   PREVIEW_CLIENT_PATH,
   attachmentRecord,
+  projectedConnectionGrant,
   denialFilterParams,
   capabilityFilterParams,
   capabilityPage,
@@ -897,6 +899,14 @@ export class VerticalClient {
    * (#574) — the delivery half of `grantToConnection` for a scope served there.
    * Idempotent at the far end.
    */
+  async connectorGrants(input: { tenantId: TenantId; scopeId: ScopeId }): Promise<ProjectedConnectionGrant[]> {
+    const value = await this.postInternal<unknown>('/internal/connector-grants', input, 'connector-grants');
+    // Parse at the boundary: an old deployment must fail, never look like an empty grant set.
+    const parsed = z.array(projectedConnectionGrant).safeParse(value);
+    if (!parsed.success) throw new ControlPlaneError(502, 'vertical answered connector-grants with an unexpected shape');
+    return parsed.data;
+  }
+
   async connectorGrant(input: {
     connectionId: ConnectionId;
     scopeId: ScopeId;
