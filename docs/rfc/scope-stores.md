@@ -176,10 +176,23 @@ to the platform first, but a release runs only once both values are pinned here 
 reviewed change. A review of that change is the review of what the platform will run.
 
 A release is published by a person with a staff credential, never by the CI or automation
-service token. The rollout's canary calls every reserved operation, `substrat.erase`
-included, and asserts each answer before the rollout continues. A rollback goes to the
-immediately previous good release. The module names in a release are validated, and the
-names the platform's entry module imports are reserved.
+service token. That rule keys on the actor: the service token resolves to the staff
+principal kind too, so publishing refuses a service actor rather than admitting "staff".
+The rollout's canary runs on a platform-owned canary object that holds no tenant data and
+is never a tenant's scope. It calls every reserved operation (`substrat.export`,
+`substrat.import`, `substrat.size`, `substrat.wipe`, `substrat.erase`) and asserts each
+answer before the rollout continues. A rollback goes to the immediately previous good
+release. The module names in a release are validated, and the names the platform's entry
+module imports are reserved. No kind written outside this repo is registered until a kind
+cannot affect data outside the object it serves by construction: a script per tenant, no
+outbound access, envelope verification outside the kind.
+
+The platform enforces the sha256; the source commit is what a reviewer checks, and the
+link between them holds only as far as the build is reproducible. Every upload of the
+script, restore and rollback included, re-hashes the bytes it sends and compares them with
+the pin. D-63's "Limits and follow-ups" lists what the pin does not yet settle: withdrawing
+a pinned release, a rollback across a schema migration, the canary id, and the allowlist
+taking effect at control-plane deploy.
 
 The registration has to show three things. The envelope. The reserved operations,
 including `substrat.erase`. No per-object state at module level: an object that wakes
@@ -722,8 +735,10 @@ block it.
    asserts L4 and L5 on workerd. The spike's "Not yet evidenced" items move to FINDINGS
    Shown only when they pass.
 8. #2210 itself: the store script upload. It is the first registration, reviewed against
-   D-63, uploaded behind the step-7 entry module. The upload runs only a release whose
-   sha256 and source commit the registration pins.
+   D-63, uploaded behind the step-7 entry module. The upload runs only a release the
+   registration pins (sha256 and source commit): it hashes the bytes it is about to send,
+   on every upload including restore and rollback, and refuses a sha256 that is not pinned.
+   The commit is checked in review, not at upload.
 9. Later: the null-manifest test (f), the Cloudflare host's wipe without a tenant id,
    per-object nonce memory if Q2 says so, and a door for schedules (§9).
 
