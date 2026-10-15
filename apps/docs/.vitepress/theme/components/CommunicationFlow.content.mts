@@ -1,4 +1,4 @@
-/** Shared facts for the book's SVG figures and their plain-text editions. */
+/** Shared facts for the docs' SVG figures and their plain-text editions. */
 interface Step {
   owner: string;
   title: string;
@@ -14,6 +14,20 @@ interface Flow {
 }
 
 export const flows: Record<string, Flow> = {
+  live: {
+    title: 'One change · a checked re-read',
+    aria: 'An operation commits a change in the scope. The live feed checks the subscriber and sends a change hint, without the row content. The browser calls its ordinary read operation again, which checks current permissions before returning data. Polling remains the fallback.',
+    steps: [
+      { owner: 'SCOPE · COMMITTED WRITE', title: 'A record changes', layer: 'vertical',
+        lines: ['The operation writes and emits.', 'A live target declares the read key.'] },
+      { owner: 'HOST · LIVE FEED', title: 'Check, then send a hint', layer: 'kernel',
+        lines: ['Check access before sending a frame.', 'The frame carries no row content.'] },
+      { owner: 'BROWSER · ORDINARY READ', title: 'Ask for the current data', layer: 'vertical',
+        lines: ['Re-read through the usual operation.', 'Current permissions decide the answer.'] },
+    ],
+    edges: ['committed activity wakes the feed', 'a hint asks the screen to refresh'],
+    caption: 'Push reduces the wait; polling remains the recovery path. A frame can be one permission evaluation stale. The read it triggers checks access again. This is invalidation, not offline sync or presence.',
+  },
   peer: {
     title: 'One peer call · one tenant',
     aria: 'The board-room host declares it calls the CRM. The platform proves the calling app and resolves the target in the same tenant. The CRM admits the peer, checks its permissions and runs its own transaction. The result returns to the calling host.',

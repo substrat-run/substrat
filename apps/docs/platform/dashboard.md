@@ -165,7 +165,7 @@ and a **non-production environment** for a vertical you build.
 of *that app's* data. **Create preview** forks the app's entire database into an independent copy with a
 retention choice (1/7/30 days, or keep until deleted); the list shows each copy's provenance, its own
 URL, and a live expiry countdown; expired copies are reaped by the platform's scheduled sweep. A
-preview is unmistakably *not* the live app: it receives no traffic, integrations are off, and deleting
+preview is unmistakably *not* the live app: it receives no production traffic, integrations are off, and deleting
 it is safe by construction — the platform refuses to hard-delete anything that isn't a copy. The same
 machinery backs the *Snapshot data first* checkbox in Deployments (above) and the safety copy taken
 before a data import. Authorization is the same key that manages apps (`dashboard:provision-app`),
@@ -228,7 +228,7 @@ with an **app filter** rather than tabs on each app. The app page links into bot
 
 - **Observability** — every app on the team on **one chart**, under **one time range** (1h, 24h
   or 3d), with an app selector that decides the mode rather than merely filtering rows. Its
-  menu children are **Pulse · Processes · Logs**, and each answers in the mode it makes sense in:
+  menu children are **Pulse · Processes · Logs · Findings**, and each answers in the mode it makes sense in:
   on *All apps* Pulse draws one line per installation, followed by a row per app and the
   worst-first health list; narrowed to one app it is the same chart at tenant grain, and Logs and
   Processes open for that app. **Processes** has two views. *State machines* draws each lifecycle
@@ -262,6 +262,30 @@ with an **app filter** rather than tabs on each app. The app page links into bot
   All apps, Refused asks you to pick one: refusals are kept in each app's own log. It is a team page
   because the log is written at the tenant grain and some entries — role changes, entitlements —
   name no app at all, which a per-app tab could never show.
+
+### Findings: triage repeated problems {#findings}
+
+**Observability → Findings** is a tenant-wide inbox with **Open · Acked · Resolved ·
+Suppressed** tabs. Use it when you need to track a recurring problem across requests;
+use Logs to investigate an individual occurrence.
+
+Findings are recorded when their evidence is written: an ops failure creates a recurring
+finding, a failed schedule run an invariant finding, and a stale freshness verdict a drift
+finding. A row carries severity, first and last seen, the observed codes, an evidence
+reference and the version a regression appeared under. The team sees its own findings,
+without fleet counts or evidence text from other tenants.
+
+You can acknowledge, resolve or reopen a finding. Suppress rules can narrow the matching
+scope and expire within at most 90 days; matching anomalies continue to be recorded.
+A suppressed finding is held by its rule, so revoke the rule instead of trying to change
+its status. Revocation leaves the existing finding suppressed until its next occurrence
+opens it again. Mutations are audited. Quiet open findings can be resolved as stale by
+retention, with an audit record, rather than silently disappearing. Resolved and suppressed
+findings can later be pruned once they are past the retention horizon.
+
+The list is paged by status. A partial or cut list is labelled as such, so a count over
+loaded rows is not presented as the team's total. A platform that cannot provide Findings
+shows an unavailable state, rather than an empty inbox.
 
 ## Status
 

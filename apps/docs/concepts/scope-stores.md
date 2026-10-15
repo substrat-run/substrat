@@ -32,7 +32,23 @@ scopeStores: [{ binding: 'GRAPH', kind: 'graph' }]
 
 A hosted vertical's upload carries no store binding. The vertical is given neither the store's namespace nor anything that opens it. A binding already used by another store is refused, and so is the name `ATTACHMENTS`. The vertical's own Durable Object bindings count as stores for that check. A name in the `SUBSTRAT_` namespace is the platform's and is refused. The push and the control plane apply the same checks, so a manifest that did not come through `substrat push` is refused the same way.
 
-A kind is registered before a push that names it can succeed. There is one store script per kind and vertical, and a later release replaces that script in place. The objects stay where they are. Uploading that script is [#2210](https://github.com/substrat-run/substrat/issues/2210).
+A kind is registered before a push that names it can succeed. There is one store script per
+kind and vertical; its objects keep their identities when the script changes. The upload and
+release machinery is implemented, but the empty kind registry still prevents hosted use.
+
+### Store releases and vertical deploys are separate
+
+A vertical push does not upgrade its store kind. A new store script starts at the kind's
+current good release; an existing script keeps its release, even when the platform rebuilds
+its entry or rotates verification keys. Release bytes are identified by a digest and must
+match a release pinned in the kind registration before upload.
+
+An explicit rollout first runs the reserved operations against a fresh canary object, then
+moves the verticals' scripts in bounded batches. A paused rollout resumes when posted again.
+A rollback also names a pinned release; it cannot lower the stored schema version. A failure
+can leave the fleet diverged when returning a script would lower its schema or the return
+itself fails. The rollout records that state so an operator can finish recovery rather than
+assuming every script moved together.
 
 ## Calling it
 

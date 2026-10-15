@@ -104,14 +104,16 @@ the copy is handled as personal data either way.
   Object with nothing underneath to rebuild it from — is
   [the control plane's scheduled directory backup](/platform/control-plane#backup-and-recovery).
 - **Not a sync.** The copy diverges the moment it's taken, and never merges back.
-- **Not a second production.** A copy receives no traffic, runs no integrations or scheduled
+- **Not a second production.** A copy receives no production traffic, runs no integrations or scheduled
   work, and expires. It contains real data, so the same access rules apply — but nothing you
   do in it touches the live app.
   Your code still runs in a copy, and its writes still commit. What it asks the platform to do
   in the outside world does not happen. A connector delivery or another platform request is
   recorded as not executed, with the reason "this scope is a preview or a fork". A `fetch` to
   a third-party host is refused with a 403, even for a host your app declares. Another app on
-  the platform answers its reads but refuses its writes. Previews and forks cannot send email
+  the platform can answer ordinary HTTP reads but refuses outbound writes to it; the
+  [peer-call door](/concepts/cross-vertical) refuses previews and forks entirely.
+  Previews and forks cannot send email
   or change a tenant's connections. Inference on the platform's own models still runs in a
   copy, and is metered like any other.
 

@@ -109,6 +109,10 @@ names, or takes it away on a removal, only within the authority of whoever asked
 
 ## Calling another vertical: the peer door
 
+Start with [Cross-vertical communication](/concepts/cross-vertical) to choose between a
+synchronous call, a queued request and an event import. It diagrams the transaction and
+permission boundaries. The declarations and runnable local example follow here.
+
 Two verticals of one tenant sometimes need each other's operations. A board-room app reads
 customers from a CRM, for example. Neither call is a person acting, so there is no user token
 to carry, and an API key pasted into the other app's settings would be a second enforcement
