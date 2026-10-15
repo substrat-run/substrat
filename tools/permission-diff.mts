@@ -34,6 +34,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from '
 import { join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { repoRoot, toPosix } from './repo-path.mjs';
+import { reservedKeyMessage, reservedKeyOffences } from './reserved-keys.mts';
 
 // Structural shapes — deliberately not imported from the kernel. The tool needs
 // four fields, and depending on the packages it inspects would be a cycle.
@@ -317,6 +318,11 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
         `  module's manifest.`,
     );
   }
+
+  // A key reserved to a system principal sits on the schedules/peers side above, never in a
+  // role or a per-entity shape a person can be handed.
+  const reserved = reservedKeyOffences({ roles, grants });
+  if (reserved.length) cannot(reservedKeyMessage(rel, entry, reserved));
 
   const holders = new Map<string, string[]>();
   for (const r of roles) for (const p of r.permissions) holders.set(p, [...(holders.get(p) ?? []), r.key]);

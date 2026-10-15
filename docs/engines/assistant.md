@@ -48,7 +48,7 @@ and its invariants and never talks to a model.
 4. **The two sides of the record are written by different keys.** The user's side (`user-message`,
    `turn-start`, `approval-resolved`) is written under `assistant:use` as the owner. The
    assistant's side is written under `assistant:run`, which a system principal holds and no
-   person's role does. Even that key writes only inside a turn the user opened, so a run cannot
+   person's role does (`lint:permissions` refuses a role or grant shape that grants it). Even that key writes only inside a turn the user opened, so a run cannot
    keep a resting thread busy.
 5. **An event is bounded** to 64 KiB, a user's message to 32 KiB, both in UTF-8 bytes as
    serialised. A large tool result stays in the operation that produced it.
