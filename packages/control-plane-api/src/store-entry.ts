@@ -75,8 +75,8 @@ const plainText = (name: string, text: string) => ({ type: 'plain_text', name, t
  *
  * Refused, before anything is built: a class name that is not an identifier or is the entry's
  * own object class; a bundle entry that is not a plain module name; a bundle that ships a
- * module under one of the platform entries' names (`STORE_RESERVED_MODULES`), declares the entry's class, or declares a binding in the
- * entry's reserved `SUBSTRAT_STORE*` space (D-63); keys `scopeStorePublicKeysFrom` refuses,
+ * module under one of the platform entries' names (`STORE_RESERVED_MODULES`), declares the
+ * entry's class, or declares a binding in the entry's reserved `SUBSTRAT_STORE*` space (D-63); keys `scopeStorePublicKeysFrom` refuses,
  * one key for both audiences included; an empty script name; a compatibility flag that
  * would undo one of the upload's own (`allow_importable_env`, `enable_ctx_exports`).
  *

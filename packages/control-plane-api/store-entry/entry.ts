@@ -5,9 +5,10 @@
  *
  * Every call is checked by `verify.ts`, which runs contracts' `verifyScopeStoreCall` (RFC
  * scope-stores §10.3 checks 1–4) against the public keys and the script name this upload was
- * given. The Python entry imports the same function. The default export addresses `SubstratStoreObject` by `idFromName` of the signed name. The object checks the
- * call again, and refuses unless its own id is the id of that name (check 5): an object is
- * bound to one name by construction, with nothing stored that the kind could rewrite.
+ * given. The Python entry imports the same function. The default export addresses
+ * `SubstratStoreObject` by `idFromName` of the signed name. The object checks the call again,
+ * and refuses unless its own id is the id of that name (check 5): an object is bound to one
+ * name by construction, with nothing stored that the kind could rewrite.
  *
  * The body is read once, verified as that string, and that same string is what the kind
  * receives.
