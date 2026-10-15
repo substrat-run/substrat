@@ -283,6 +283,43 @@ describe('scope store envelope (#2287)', () => {
     ).toMatchObject({ ok: true });
   });
 
+  it('refuses a small-order public key in either sign, so a forged signature under it matches nothing', async () => {
+    const hex = (h: string) => Uint8Array.from(h.match(/../g)!.map((b) => parseInt(b, 16)));
+    const smallOrder = [
+      '0000000000000000000000000000000000000000000000000000000000000000',
+      '0100000000000000000000000000000000000000000000000000000000000000',
+      '26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05',
+      'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a',
+      'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+      'edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+      'eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+    ];
+    for (const point of smallOrder) {
+      for (const signBit of [0, 0x80]) {
+        const bytes = hex(point);
+        bytes[31] = (bytes[31]! & 0x7f) | signBit;
+        const key = bytesToBase64Url(bytes);
+        expect(() => parseScopeStorePublicKeys(key), `${point} sign ${signBit}`).toThrow(/small-order/);
+        await expect(scopeStoreKeyId(key)).rejects.toThrow(/small-order/);
+      }
+    }
+
+    // Why: under the identity key, R = identity and S = 0 is a signature of every message for a
+    // verifier that does not refuse it. The store's verifier never matches such a key.
+    const identity = bytesToBase64Url(hex(smallOrder[1]!));
+    const forged = bytesToBase64Url(new Uint8Array([...hex(smallOrder[1]!), ...new Uint8Array(32)]));
+    const kidOf = async (key: string) =>
+      bytesToBase64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', base64UrlToBytes(key)! as Uint8Array<ArrayBuffer>)).slice(0, 8));
+    for (const key of [identity, bytesToBase64Url(hex(smallOrder[2]!))]) {
+      const lines = vector.canonical.split('\n');
+      lines[2] = await kidOf(key);
+      const envelope = encode(lines.join('\n'));
+      expect(await verify({ envelope, signature: forged, keys: { caller: [key], platform: [] } })).toEqual({ ok: false, refusal: 'kid' });
+    }
+    // The twin: the vector's real key is still found by its id.
+    expect(await verify({ keys: { caller: [identity, vector.publicKey], platform: [] } })).toMatchObject({ ok: true });
+  });
+
   it('the iat grammar admits exactly the safe integers the encoder emits', () => {
     const lines = vector.canonical.split('\n');
     lines[7] = '999999999999999';
