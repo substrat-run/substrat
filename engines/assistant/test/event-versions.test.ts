@@ -26,14 +26,17 @@ describe('assistant: event schemaVersion has one home', () => {
   });
 
   it('every emission carries the version the manifest declares for its type', () => {
-    const seen: { type: string; schemaVersion: number }[] = [];
-    const ctx = { emit: (e: { type: string; schemaVersion: number }) => seen.push(e) } as unknown as OperationContext;
+    const seen: { type: string; schemaVersion: number; piiClass: string; subjectId?: string }[] = [];
+    const ctx = { emit: (e: (typeof seen)[number]) => seen.push(e) } as unknown as OperationContext;
+    const subject = '01J00000000000000000000000';
     for (const type of Object.keys(assistantEventVersions) as AssistantEventType[]) {
       // The payload is irrelevant to the stamp; the cast is this test's, not the engine's.
-      emitAssistantEvent(ctx, { type, entity: { entityType: 'x', entityId: 'y' }, piiClass: 'none', payload: {} } as never);
+      emitAssistantEvent(ctx, subject, { type, entity: { entityType: 'x', entityId: 'y' }, payload: {} } as never);
     }
     expect(seen.map((e) => ({ type: e.type, schemaVersion: e.schemaVersion }))).toEqual(
       assistantManifest.events.emits.map((d) => ({ type: d.type, schemaVersion: d.schemaVersion })),
     );
+    // And every one is the thread subject's, so an erasure of that person reaches it.
+    expect(seen.every((e) => e.piiClass === 'pseudonymous' && e.subjectId === subject)).toBe(true);
   });
 });

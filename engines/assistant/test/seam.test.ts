@@ -45,7 +45,7 @@ describe('engine-assistant — the seam is parsed, not asserted', () => {
     expect(columnsOf(eventRow)).toBe('thread_id, seq, type, body, subject_id, created_at');
     expect(columnsOf(runRow)).toBe('thread_id, run_id, subject_id, beat_at');
     expect(columnsOf(toolCallRow)).toBe(
-      'thread_id, call_id, tool, state, digest, decided_by, decided_at, subject_id, created_at, updated_at',
+      'thread_id, call_id, tool, state, digest, step, operation, version, expires_at, nonce, request_seq, decided_by, decided_at, subject_id, created_at, updated_at',
     );
   });
 

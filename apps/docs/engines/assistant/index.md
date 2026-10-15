@@ -25,11 +25,13 @@ The engine never calls a model. A host runs the loop and writes the result throu
 1. A person says something: `sendMessage` appends their message and begins a turn.
 2. The host takes the lease with `acquireRun`, then calls the model and its tools.
 3. The host appends what happened with `appendEvents`: text, tool calls, sources.
-4. A tool that changes something is proposed with an `approval-request` carrying the digest of
-   its input. The turn rests there.
+4. A tool that changes something is proposed with an `approval-request`. Its digest binds the
+   person who may approve, the thread, the call, the operation, the input, the deployed version,
+   an expiry and a one-time value. The turn rests there.
 5. The person approves or denies with `resolveApproval`, passing the digest they were shown.
-6. The host takes the lease again, calls `claimExecution` with the input it is about to run, and
-   runs the operation only if that returns.
+   An approval after the expiry, or under a newer deploy, is refused; a denial always works.
+6. The host takes the lease again, calls `claimExecution` with the operation and input it is
+   about to run, and runs the operation only if that returns.
 
 ## What it guarantees
 
@@ -37,12 +39,15 @@ The engine never calls a model. A host runs the loop and writes the result throu
   so a dropped connection picks up exactly where it stopped.
 - **One run writes at a time.** A run replaced while still running cannot write.
 - **A change runs once, with the input the person approved.** The model cannot alter the
-  arguments after the person agreed, and a restarted loop cannot run the change twice.
+  arguments or the operation after the person agreed, an approval not used before it expires
+  runs nothing, and a restarted loop cannot run the change twice.
 - **The assistant's side and the person's side are written by different keys.** A person cannot
-  write an event that says the assistant said it.
+  write an event that says the assistant said it. The assistant's key belongs to a system
+  principal, never to a person's role, and writes only while a turn the person started is open.
 - **A person's thread is theirs.** Anyone else is told it does not exist. Audit widens a read,
   never a write.
-- **Erasing a person erases their threads.** The events the engine emits carry no text.
+- **Erasing a person erases their threads.** The events the engine emits carry no text, and an
+  erasure clears them too.
 
 ## What it will not do
 

@@ -24,25 +24,34 @@ sendMessage(ctx, { threadId, text });
 acquireRun(ctx, { threadId, runId });
 await appendEvents(ctx, { threadId, runId, events: [{ t: 'text-start', pid: 'p1' }, /* … */] });
 
-// A change waits for approval: the request carries the digest of its input.
-//   { t: 'approval-request', callId, tool, input, digest: await approvalDigest(input), preview }
-// The person approves with the digest they were shown (assistant:use, as the owner).
-resolveApproval(ctx, { threadId, callId, digest, approved: true });
+// A change waits for approval. The request carries what it binds and their digest, with the
+// thread's owner as the approver:
+//   digest = await approvalDigest({ version, approver: threadOwner, thread: threadId, step,
+//                                   call: callId, operation, expiresAt, nonce, input })
+//   { t: 'approval-request', callId, step, tool, operation, version, input, expiresAt, nonce, digest, preview }
+// The person approves with the digest they were shown (assistant:use, as the owner), on a
+// route the loop cannot call; `version` is the deployed version the HOST serves the answer under.
+await resolveApproval(ctx, { threadId, callId, digest, approved: true, version });
 
-// Before running the operation, the host claims its one execution with the input to run.
-await claimExecution(ctx, { threadId, runId, callId, input });
+// Before running the operation, the host claims its one execution with what it is about to run.
+await claimExecution(ctx, { threadId, runId, callId, operation, version, input });
 ```
 
-`approvalDigest` and the event vocabulary (`assistantStreamBody`) are in `@substrat-run/contracts`.
+`approvalDigest` and the event vocabulary (`assistantStreamBody`) are in
+`@substrat-run/contracts/assistant-stream`.
 
 ## Two keys
 
 `assistant:use` is a person's: open and read their own threads, say something, approve or deny.
-`assistant:run` is the host's, and **no person's role should hold it**: it writes the assistant's
-side of the record. `assistant:audit` reads other principals' threads and never writes.
+`assistant:run` is for a **system principal only** (the assistant host's), never a role a person
+holds: it writes the assistant's side of the record. Nothing checks that mechanically yet, so it
+is a rule for whoever writes the roles. `assistant:audit` reads other principals' threads and
+never writes, and only together with `assistant:use`, which every read checks first.
 
 ## What it guarantees
 
 See `docs/engines/assistant.md` in the repository. In short: an append-only numbered record, a
-fenced single writer, an approval bound to the input digest with a single claimed execution,
-bounded events, and erasure by delete.
+fenced single writer that writes only inside a turn the person opened, an approval bound to a
+tagged digest (version, approver, thread, step, call, operation, expiry, nonce, input) that is
+answered once and claimed once by conditional writes, bounded events, and an erasure that
+deletes the rows and redacts the milestones.

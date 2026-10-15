@@ -24,8 +24,9 @@ import { z } from 'zod';
  * Erasure (K-46). Everything that holds what the person said or what the assistant did for
  * them is theirs whole, so each table names `subject_id` as its subject column and erases by
  * `delete`. The rows have no `id` of their own to survive an erasure with, and nothing about
- * a thread is meaningful once its owner is gone. The events this engine EMITS carry no text
- * and no tool input or output, so the outbox keeps no copy.
+ * a thread is meaningful once its owner is gone. The events this engine EMITS carry no text,
+ * no tool input or output and no digest of one, and every one is `pseudonymous` with the
+ * thread's subject as its `subjectId`, so the same erasure redacts their payloads too.
  */
 export const assistantEntities = defineEntities({
   'assistant-thread': {
@@ -77,6 +78,15 @@ export const assistantEntities = defineEntities({
       tool: z.string(),
       state: z.enum(['running', 'awaiting-approval', 'approved', 'denied', 'executing', 'done', 'failed']),
       digest: z.string().nullable(),
+      // What the approval request bound (`approvalDigest`), kept so an answer and a claim can
+      // recompute the digest rather than trust one. Set together with `digest`, or all null.
+      // The input itself is not copied here: `request_seq` points at the request event.
+      step: z.string().nullable(),
+      operation: z.string().nullable(),
+      version: z.string().nullable(),
+      expires_at: z.string().nullable(),
+      nonce: z.string().nullable(),
+      request_seq: z.number().nullable(),
       decided_by: z.string().nullable(),
       decided_at: z.string().nullable(),
       subject_id: z.string(),

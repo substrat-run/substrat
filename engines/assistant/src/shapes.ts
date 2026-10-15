@@ -6,14 +6,37 @@
  * Published shapes are camelCase projections; the stored rows (snake_case) are in
  * `entities.ts`. A caller never sees a row.
  */
-import { assistantStreamBody, assistantStreamEvent, z } from '@substrat-run/contracts';
+import { z } from '@substrat-run/contracts';
+import { assistantStreamBody, assistantStreamEvent } from '@substrat-run/contracts/assistant-stream';
 
-/** The longest an event body may serialise to. See `MAX_EVENT_BYTES` in `index.ts`. */
+/**
+ * The longest an event body may serialise to, in UTF-8 bytes: the Durable Object row limit
+ * is in bytes. A large tool result belongs in the operation that produced it, by id.
+ */
 export const MAX_EVENT_BYTES = 64 * 1024;
+
+/**
+ * The longest a user's message may be, in UTF-8 bytes of its text AS SERIALISED (escapes
+ * included). Half the event bound, so a message that passes the input schema always fits in
+ * its `user-message` event: a message is refused as a message, at the boundary, never as an
+ * oversized event further in.
+ */
+export const MAX_MESSAGE_BYTES = 32 * 1024;
+
+/** UTF-8 byte length of a string, without a platform encoder (module code has none in its types). */
+export function utf8Length(s: string): number {
+  let bytes = 0;
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
+    bytes += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+  }
+  return bytes;
+}
 
 const threadId = z.string().min(1).max(64);
 const runId = z.string().min(1).max(64);
 const callId = z.string().min(1).max(64);
+const deployedVersion = z.string().min(1).max(128);
 
 /** One thread, projected. */
 export const thread = z.object({
@@ -57,7 +80,24 @@ export const eventsPage = z.object({
 });
 export type EventsPage = z.infer<typeof eventsPage>;
 
-export const sendMessageInput = z.object({ threadId, text: z.string().min(1).max(32_000) });
+export const sendMessageInput = z.object({
+  threadId,
+  // 32 000 characters is the stream protocol's own bound on `user-message`; the byte bound is
+  // the engine's, and is what a message in a wide script meets first.
+  text: z
+    .string()
+    .min(1)
+    .max(32_000)
+    .superRefine((text, ctx) => {
+      const bytes = utf8Length(JSON.stringify(text));
+      if (bytes > MAX_MESSAGE_BYTES) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `the message is ${bytes} bytes; a message may be at most ${MAX_MESSAGE_BYTES} bytes — send it in shorter parts`,
+        });
+      }
+    }),
+});
 export type SendMessageInput = z.infer<typeof sendMessageInput>;
 export const sentMessage = z.object({ firstSeq: z.number().int().positive(), lastSeq: z.number().int().positive() });
 export type SentMessage = z.infer<typeof sentMessage>;
@@ -65,9 +105,14 @@ export type SentMessage = z.infer<typeof sentMessage>;
 export const resolveApprovalInput = z.object({
   threadId,
   callId,
-  /** The digest the user was shown (`approvalDigest` of the proposed input). */
+  /** The digest the user was shown: the request's `digest`. */
   digest: z.string().regex(/^[0-9a-f]{64}$/),
   approved: z.boolean(),
+  /**
+   * The deployed version the answer arrives under, as the HOST knows it (never the client):
+   * an approval given under another version than the request was made under is refused.
+   */
+  version: deployedVersion,
 });
 export type ResolveApprovalInput = z.infer<typeof resolveApprovalInput>;
 export const resolvedApproval = z.object({ seq: z.number().int().positive() });
@@ -98,6 +143,10 @@ export const claimExecutionInput = z.object({
   threadId,
   runId,
   callId,
+  /** The operation the host is about to run: it must be the one the user approved. */
+  operation: z.string().min(1).max(128),
+  /** The deployed version the host runs it under: it must be the one the request was made under. */
+  version: deployedVersion,
   /** The input the host is about to execute: it must hash to what the user approved. */
   input: z.unknown(),
 });
