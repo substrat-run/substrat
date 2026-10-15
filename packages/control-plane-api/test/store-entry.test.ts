@@ -6,6 +6,8 @@ import {
   STORE_KIND_PLACEHOLDER,
   STORE_OBJECT_BINDING,
   STORE_OBJECT_CLASS,
+  STORE_RESERVED_MODULES,
+  STORE_VERIFIER_MODULE,
   withStoreEntry,
 } from '../src/store-entry.js';
 
@@ -62,6 +64,19 @@ describe('withStoreEntry', async () => {
     ['an empty script name', kindBundle(), { script: '' }, /script name/],
   ] as const)('refuses %s', (_, bundle, patch, error) => {
     expect(() => withStoreEntry(bundle, { ...options, ...patch })).toThrow(error);
+  });
+
+  it.each(STORE_RESERVED_MODULES)("refuses a kind bundle that ships the platform's module '%s'", (name) => {
+    expect(() => withStoreEntry(kindBundle({ modules: [module('kind.js'), module(name)] }), options)).toThrow(
+      `may not ship a module named '${name}'`,
+    );
+  });
+
+  it('reserves the Python entry and its verifier beside the JavaScript entry', () => {
+    expect(STORE_RESERVED_MODULES).toEqual([STORE_ENTRY_MODULE, 'substrat_store_entry.py', STORE_VERIFIER_MODULE]);
+    expect(() => withStoreEntry(kindBundle({ entry: STORE_VERIFIER_MODULE, modules: [module(STORE_VERIFIER_MODULE)] }), options)).toThrow(
+      /not a module name/,
+    );
   });
 
   it('refuses one key for both audiences, a key listed twice, and an empty list; admits a rotation', async () => {
