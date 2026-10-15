@@ -684,7 +684,7 @@ interface ControlPlaneStub {
   }>;
   getStoreKindRelease(kind: string, sha256: string): Promise<StoreKindReleaseRecord | undefined>;
   storeKindState(kind: string): Promise<StoreKindState>;
-  storeKindDeclarations(kind: string): Promise<{ vertical: string; stores: VerticalScopeStore[] }[]>;
+  storeKindDeclarations(kind: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
   holdStoreKind(input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number }): Promise<boolean>;
   releaseStoreKindHold(input: { kind: string; holder: string }): Promise<void>;
   beginStoreKindRollout(input: {
@@ -8434,7 +8434,7 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       storeKindDeclarations: async (actor, kind) => {
         const declared = await this.directory('storeKindDeclarations', kind);
-        await this.recordAccess(actor, 'storeKindDeclarations', { tenantId: null }, { kind }, declared.length);
+        await this.recordAccess(actor, 'storeKindDeclarations', { tenantId: null }, { kind }, declared.verticals.length);
         return declared;
       },
       holdStoreKind: async (_actor, input) => this.directory('holdStoreKind', input),

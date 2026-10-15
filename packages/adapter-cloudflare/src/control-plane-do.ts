@@ -2331,7 +2331,7 @@ export class ControlPlaneDO extends DurableObject {
     return this.ctx.storage.transactionSync(() => storeKindStateIn(this.kernelSql, kind));
   }
 
-  storeKindDeclarations(kind: string): { vertical: string; stores: VerticalScopeStore[] }[] {
+  storeKindDeclarations(kind: string): { verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] } {
     return this.ctx.storage.transactionSync(() => kindDeclarationsOf(this.kernelSql, kind));
   }
 

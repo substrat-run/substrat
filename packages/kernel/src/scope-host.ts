@@ -3074,7 +3074,7 @@ export interface HostAdmin {
    * Every vertical any version of which declared a store of `kind`, with those bindings: the
    * scripts a rollout reaches. Refuses (`unavailable`) while any version's manifest is unreadable.
    */
-  storeKindDeclarations(actor: PlatformActorId, kind: string): Promise<{ vertical: string; stores: VerticalScopeStore[] }[]>;
+  storeKindDeclarations(actor: PlatformActorId, kind: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
   /**
    * Take or renew a lease on a kind (#2300): `exclusive` for a rollout or rollback, `shared` for
    * a push or serve rebuilding a script. False when a live hold of another holder excludes it.

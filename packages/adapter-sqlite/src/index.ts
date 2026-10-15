@@ -10458,7 +10458,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       storeKindDeclarations: async (actor, kind) => {
         const declared = this.directory.transaction(() => kindDeclarationsOf(switchSqlOf(this.directory), kind))();
-        this.recordAccess(actor, 'storeKindDeclarations', { tenantId: null }, { kind }, declared.length);
+        this.recordAccess(actor, 'storeKindDeclarations', { tenantId: null }, { kind }, declared.verticals.length);
         return declared;
       },
       holdStoreKind: async (_actor, input) =>
