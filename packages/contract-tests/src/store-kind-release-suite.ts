@@ -126,6 +126,25 @@ export function storeKindReleaseContractSuite(adapterName: string, makeFixture: 
       expect((await host.admin.storeKindState(staff, kind)).rollbackTarget).toBe(sha('1'));
     });
 
+    it('continues a paused rollback onto its target, and undoes a paused rollout onto the current release', async () => {
+      const kind = freshKind();
+      const holder = ulid();
+      await rollOut(kind, holder, sha('1'), sha('2'));
+      const first = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('1'), action: 'rollback', holder });
+      await host.admin.finishStoreKindRollout(staff, { kind, seq: first.seq, holder, state: 'paused', detail: '2 of 5' });
+      // Part way back to 1: the rollback continues to 1, it does not turn around onto 2.
+      expect((await host.admin.storeKindState(staff, kind)).rollbackTarget).toBe(sha('1'));
+      await expectRefusal(host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('2'), action: 'rollback', holder }), 'conflict');
+      const next = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('1'), action: 'rollback', holder });
+      expect(next).toMatchObject({ fromSha256: sha('2'), previousGoodSha256: null });
+      await host.admin.finishStoreKindRollout(staff, { kind, seq: next.seq, holder, state: 'good', detail: null });
+      expect(await host.admin.storeKindState(staff, kind)).toMatchObject({ current: { sha256: sha('1') }, rollbackTarget: null });
+      // A rollout that paused part way is undone onto the release the fleet was on.
+      const paused = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('2'), action: 'rollout', holder });
+      await host.admin.finishStoreKindRollout(staff, { kind, seq: paused.seq, holder, state: 'paused', detail: null });
+      expect((await host.admin.storeKindState(staff, kind)).rollbackTarget).toBe(sha('1'));
+    });
+
     it('renews only a hold still held, and only for a rollout still rolling', async () => {
       const kind = freshKind();
       const [a, b] = [ulid(), ulid()];

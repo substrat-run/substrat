@@ -20,6 +20,7 @@ import {
   createScopeStoreEnsurer,
   createStoreCanaryEnsurer,
   STORE_RELEASE_VAR,
+  storedReleaseLoader,
   DEV_ACTOR_HEADER,
   ROLLOUT_FLEET_MAX,
   ROLLOUT_HOLD_TTL_MS,
@@ -36,9 +37,9 @@ import {
  */
 
 /**
- * A refusal as a plain `{ status, message }`. Matched against an Error, `toMatchObject` skips the
- * non-enumerable `message`, so a message pattern there would assert nothing. A promise that
- * resolves fails here.
+ * A refusal as a plain `{ status, message }`, matched with `expect.stringMatching`. A bare RegExp as a
+ * `toMatchObject` value asserts nothing: subset equality reads it as an object with no keys, so
+ * `{ message: /x/ }` matches any message. A promise that resolves fails here.
  */
 async function refusal(p: Promise<unknown>): Promise<{ status?: number; message: string }> {
   return p.then(
@@ -395,7 +396,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     for (const slug of ['vd', 've']) await declare(slug);
     const f = fleet();
     const first = await run(f, sha('1'), { perRequest: 2 });
-    expect(first).toMatchObject({ complete: false, moved: ['va', 'vb'], rollout: { state: 'diverged' } });
+    expect(first).toMatchObject({ complete: false, moved: ['va', 'vb'], rollout: { state: 'paused' } });
     expect(await current()).toBeUndefined();
     const second = await run(f, sha('1'), { perRequest: 2 });
     expect(second).toMatchObject({ complete: false, moved: ['vc', 'vd'] });
@@ -404,6 +405,37 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     expect(await current()).toBe(sha('1'));
     // Each script was uploaded once, after one canary per post.
     expect(f.events).toEqual(['canary:1', 'va:1', 'vb:1', 'canary:1', 'vc:1', 'vd:1', 'canary:1', 've:1']);
+  });
+
+  it('continues a rollback bigger than one request onto its target, never turning it around', async () => {
+    for (const slug of ['vd', 've']) await declare(slug);
+    const f = fleet();
+    await run(f, sha('1'));
+    await run(f, sha('2'));
+    f.events.length = 0;
+    // Each post asks the state where a rollback goes, as the route does.
+    const rollback = async () => {
+      const target = (await host.admin.storeKindState(staff, 'graph')).rollbackTarget!;
+      return runStoreKindRollout({
+        admin: host.admin, actor: staff, registration, sha256: target, action: 'rollback', ensure: f.ensure,
+        ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call, perRequest: 2,
+      });
+    };
+    expect(await rollback()).toMatchObject({ complete: false, moved: ['va', 'vb'], rollout: { sha256: sha('1'), state: 'paused' } });
+    expect((await host.admin.storeKindState(staff, 'graph')).rollbackTarget).toBe(sha('1'));
+    expect(await rollback()).toMatchObject({ complete: false, moved: ['vc', 'vd'], rollout: { sha256: sha('1') } });
+    expect(await rollback()).toMatchObject({ complete: true, moved: ['ve'], rollout: { sha256: sha('1'), state: 'good' } });
+    expect(await current()).toBe(sha('1'));
+    expect(new Set(f.runs.values())).toEqual(new Set([sha('1')]));
+    expect(f.events).toEqual(['va:1', 'vb:1', 'vc:1', 'vd:1', 've:1']);
+  });
+
+  it('rolls a paused rollout back onto the current release', async () => {
+    const f = fleet();
+    await run(f, sha('1'));
+    expect((await run(f, sha('2'), { perRequest: 2 })).rollout.state).toBe('paused');
+    // Undoing the part-way rollout converges on 1, the release the fleet was on.
+    expect((await host.admin.storeKindState(staff, 'graph')).rollbackTarget).toBe(sha('1'));
   });
 
   it('returns the verticals earlier posts moved too, when a later post fails', async () => {
@@ -797,10 +829,15 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
     expect((await call('POST', '/store-kinds/graph/rollouts', { sha256: s2 })).status).toBe(502);
     expect(release('substrat-store-graph-va')).toBe(s2);
     failPut.clear();
+    // A push of either vertical meanwhile rebuilds its script at the release it runs: va stays on
+    // 2, vb on 1. The schema rule refuses moves, and a push makes none.
+    const push = createScopeStoreEnsurer({ ...ensurerOptions, loadRelease: storedReleaseLoader({ admin: host.admin, actor: person, bytes: { get: async (k) => bytes.get(k), put: async () => undefined } }) });
+    for (const vertical of ['va', 'vb']) await push({ vertical, stores: [{ binding: 'GRAPH', kind: 'graph' }] });
+    expect([release('substrat-store-graph-va'), release('substrat-store-graph-vb')]).toEqual([s2, s1]);
     // Re-posting the current release would move va from schema 1 back to 0: the ensurer refuses.
     const back = await call('POST', '/store-kinds/graph/rollouts', { sha256: s1 });
     expect(back.status).toBe(409);
-    expect(await back.text()).toMatch(/runs schema 1; release .* has schema 0/);
+    expect(await back.text()).toMatch(/runs schema 1; release .* has schema 0.*converge it forward: post that rollout again/);
     expect(release('substrat-store-graph-va')).toBe(s2);
     // A rollback, which now converges on the current release, meets the same rule.
     expect((await call('POST', '/store-kinds/graph/rollback')).status).toBe(409);

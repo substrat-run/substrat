@@ -229,7 +229,7 @@ export interface StoreKindRolloutView {
   action: 'rollout' | 'rollback';
   fromSha256: string | null;
   previousGoodSha256: string | null;
-  state: 'rolling' | 'good' | 'failed' | 'diverged';
+  state: 'rolling' | 'good' | 'failed' | 'diverged' | 'paused';
   actor: string;
   startedAt: string;
   endedAt: string | null;

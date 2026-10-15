@@ -18,9 +18,9 @@ import {
 afterEach(() => vi.unstubAllGlobals());
 
 /**
- * A refusal as a plain `{ status, message }`. Matched against an Error, `toMatchObject` skips the
- * non-enumerable `message`, so a message pattern there would assert nothing. A promise that
- * resolves fails here.
+ * A refusal as a plain `{ status, message }`, matched with `expect.stringMatching`. A bare RegExp as a
+ * `toMatchObject` value asserts nothing: subset equality reads it as an object with no keys, so
+ * `{ message: /x/ }` matches any message. A promise that resolves fails here.
  */
 async function refusal(p: Promise<unknown>): Promise<{ status?: number; message: string }> {
   return p.then(

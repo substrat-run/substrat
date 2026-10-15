@@ -174,7 +174,8 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
       if (pin.schema < running.schema) {
         throw new ControlPlaneError(
           409,
-          `store script '${script.scriptName}' runs schema ${running.schema}; release ${sha256} has schema ${pin.schema}, and a script never moves to a lower one`,
+          `store script '${script.scriptName}' runs schema ${running.schema}; release ${sha256} has schema ${pin.schema}, and a script never moves to a lower one. ` +
+            `To undo a schema-raising rollout that stopped part way, converge it forward: post that rollout again`,
         );
       }
     }

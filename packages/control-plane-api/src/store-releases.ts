@@ -12,9 +12,10 @@
  * rollout's read and its upload, and two rollouts never interleave. It canaries the release on the
  * platform's own object first, and no vertical's script moves unless every reserved operation
  * answered there. Then it moves each vertical that ever declared the kind, at most
- * {@link ROLLOUT_VERTICALS_PER_REQUEST} per request: a bigger fleet, or a request that stops,
- * leaves the rollout `diverged`, and posting the same rollout again converges it, skipping the
- * scripts already there.
+ * {@link ROLLOUT_VERTICALS_PER_REQUEST} uploads per request. A bigger fleet ends the request
+ * `paused`, and posting the same rollout (or rollback) again continues it, walking past the scripts
+ * already there. A request that stops on a failure ends `failed` or `diverged`. One request walks at
+ * most {@link ROLLOUT_FLEET_MAX} verticals, a rollback included (issue linked in the PR, #2300).
  */
 import {
   STORE_RELEASE_MAX_BYTES,
@@ -275,7 +276,7 @@ export async function runStoreKindRollout(deps: StoreKindRolloutDeps): Promise<S
       );
     }
     const row = await admin.beginStoreKindRollout(actor, { kind, sha256, action: deps.action, holder });
-    const end = (state: 'good' | 'failed' | 'diverged', detail: string | null) =>
+    const end = (state: 'good' | 'failed' | 'diverged' | 'paused', detail: string | null) =>
       admin.finishStoreKindRollout(actor, { kind, seq: row.seq, holder, state, detail });
     const renew = async () => {
       const held = await admin.holdStoreKind(actor, { kind, holder, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS, renew: true, rolloutSeq: row.seq });
@@ -299,7 +300,7 @@ export async function runStoreKindRollout(deps: StoreKindRolloutDeps): Promise<S
     for (const target of targets) {
       if (moved.length >= budget) {
         const rest = targets.length - reached.length;
-        const rollout = await end('diverged', `this request moved ${moved.length}; ${rest} vertical(s) not walked yet: post the rollout again`);
+        const rollout = await end('paused', `this request moved ${moved.length}; ${rest} vertical(s) not walked yet: post the same ${deps.action} again`);
         return { rollout, moved, complete: false };
       }
       try {

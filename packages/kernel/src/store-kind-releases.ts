@@ -74,7 +74,11 @@ export interface StoreKindReleaseRecord {
 }
 
 export type StoreKindRolloutAction = 'rollout' | 'rollback';
-export type StoreKindRolloutState = 'rolling' | 'good' | 'failed' | 'diverged';
+/**
+ * `paused`: the request's batch ran out with verticals left to walk. Nothing failed; the fleet is
+ * part way, and posting the same rollout (or the same rollback) again continues it.
+ */
+export type StoreKindRolloutState = 'rolling' | 'good' | 'failed' | 'diverged' | 'paused';
 
 export interface StoreKindRolloutRecord {
   readonly kind: string;
@@ -183,10 +187,15 @@ export function recordStoreKindReleaseIn(
  * `diverged` (read-time only, nothing is written): its holder stopped, and its scripts may be on
  * either release. The next rollout's begin writes that state.
  *
- * `rollbackTarget` is the immediately previous good release, or, when a rollout since the current
- * one ended `diverged`, the current release itself: then the fleet may be mixed, and undoing the
- * bad rollout means converging every script back on the release it was healthy on, never going
- * past it. A diverged rollout never changes what "previous good" means.
+ * `rollbackTarget` is, in order:
+ * - the target of a rollback that is the newest attempt since the current release and has not
+ *   ended `good` (`paused`, `diverged` or `failed`): posting the rollback again continues it, and
+ *   never turns it around onto the release it is leaving;
+ * - the current release itself, when a rollout since it ended `diverged` or `paused`: the fleet may
+ *   be mixed, and undoing that rollout means converging every script back on the release it was
+ *   healthy on, never going past it;
+ * - otherwise the immediately previous good release.
+ * An unfinished attempt never changes what "previous good" means.
  */
 export function storeKindStateIn(db: SwitchSql, kind: string, nowMs?: number): StoreKindState {
   const live = nowMs === undefined
@@ -203,11 +212,14 @@ export function storeKindStateIn(db: SwitchSql, kind: string, nowMs?: number): S
   const seq = Number(current.seq);
   const row = rollouts.find((r) => r.seq === seq);
   const previousGoodSha256 = row?.previousGoodSha256 ?? null;
-  const mixed = rollouts.some((r) => r.seq > seq && r.state === 'diverged');
+  const since = rollouts.filter((r) => r.seq > seq);
+  const newest = since.at(-1);
+  const unfinishedRollback = newest?.action === 'rollback' && newest.state !== 'good' && newest.state !== 'rolling' ? newest.sha256 : null;
+  const mixed = since.some((r) => r.state === 'diverged' || r.state === 'paused');
   return {
     current: { sha256: current.sha256, seq, previousGoodSha256 },
     rollouts,
-    rollbackTarget: mixed ? current.sha256 : previousGoodSha256,
+    rollbackTarget: unfinishedRollback ?? (mixed ? current.sha256 : previousGoodSha256),
   };
 }
 
