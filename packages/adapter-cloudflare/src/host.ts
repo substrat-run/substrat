@@ -670,6 +670,25 @@ interface ControlPlaneStub {
       created_at: string;
     }[]
   >;
+  listStoreKindReleases(kind: string): Promise<
+    {
+      kind: string;
+      release_id: string;
+      sha256: string;
+      published_by: string;
+      published_at: string;
+      status: string;
+    }[]
+  >;
+  putStoreKindRelease(row: {
+    kind: string;
+    releaseId: string;
+    sha256: string;
+    publishedBy: string;
+    publishedAt: string;
+    status: string;
+  }): Promise<void>;
+  servingManifests(): Promise<{ slug: string; manifest_json: string }[]>;
   getBlobStore(
     tenantId: string,
     vertical: string,
@@ -8347,6 +8366,44 @@ export class CloudflareScopeHost implements ScopeHost {
           ref: r.ref,
           createdAt: r.created_at,
         }));
+      },
+      listStoreKindReleases: async (actor, kind) => {
+        const rows = await this.cp.listStoreKindReleases(kind);
+        await this.recordAccess(actor, 'listStoreKindReleases', { tenantId: null }, { kind }, rows.length);
+        return rows.map((r) => ({
+          kind: r.kind,
+          releaseId: r.release_id,
+          sha256: r.sha256,
+          publishedBy: r.published_by,
+          publishedAt: r.published_at,
+          status: r.status as 'current' | 'previous' | 'failed',
+        }));
+      },
+      putStoreKindRelease: async (actor, input) => {
+        const publishedAt = new Date().toISOString();
+        await this.cp.putStoreKindRelease({
+          kind: input.kind,
+          releaseId: input.releaseId,
+          sha256: input.sha256,
+          publishedBy: actor,
+          publishedAt,
+          status: input.status,
+        });
+        const row = {
+          kind: input.kind,
+          releaseId: input.releaseId,
+          sha256: input.sha256,
+          publishedBy: actor,
+          publishedAt,
+          status: input.status,
+        };
+        await this.recordAdmin(actor, input.action, { tenantId: null, vertical: input.kind }, null, row);
+        return row;
+      },
+      servingManifests: async (actor) => {
+        const rows = await this.cp.servingManifests();
+        await this.recordAccess(actor, 'servingManifests', { tenantId: null }, null, rows.length);
+        return rows.map((r) => ({ slug: r.slug, manifestJson: r.manifest_json }));
       },
       listScopeTables: async (actor, tenantId, scopeId): Promise<ScopeTable[]> => {
         // K-3 cross-check on the shared directory BEFORE reaching the scope DO: a pair

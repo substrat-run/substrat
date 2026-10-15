@@ -1906,6 +1906,16 @@ export interface ModuleRegistration<C extends readonly EventContract[] = []> {
  * store, so the contract is async everywhere. (`registerModule`/`defineOperation`
  * stay sync — they are code-time bookkeeping, not control-plane state.)
  */
+/** One published release of a store kind (#2297). The bytes are in R2, keyed by kind and release. */
+export interface StoreKindReleaseRecord {
+  kind: string;
+  releaseId: string;
+  sha256: string;
+  publishedBy: string;
+  publishedAt: string;
+  status: 'current' | 'previous' | 'failed';
+}
+
 export interface HostAdmin {
   /**
    * This same admin, with every row written through it also naming `onBehalfOf` (#977, #2069),
@@ -3034,6 +3044,23 @@ export interface HostAdmin {
     actor: PlatformActorId,
     filter?: { tenantId?: TenantId; vertical?: string },
   ): Promise<BlobStoreRecord[]>;
+  /**
+   * One store kind's published releases (#2297). `current` is the release a push uploads.
+   * Publishing a new current demotes the previous one.
+   */
+  listStoreKindReleases(actor: PlatformActorId, kind: string): Promise<StoreKindReleaseRecord[]>;
+  putStoreKindRelease(
+    actor: PlatformActorId,
+    input: {
+      kind: string;
+      releaseId: string;
+      sha256: string;
+      status: 'current' | 'previous' | 'failed';
+      action: 'store-kinds.publish' | 'store-kinds.rollback';
+    },
+  ): Promise<StoreKindReleaseRecord>;
+  /** Every vertical's serving manifest, so a publish can find who declares a kind. */
+  servingManifests(actor: PlatformActorId): Promise<{ slug: string; manifestJson: string }[]>;
   /**
    * One scope's directory record. Cross-checks the (tenantId, scopeId) pair and
    * returns undefined on a mismatch rather than another tenant's scope (K-3) —

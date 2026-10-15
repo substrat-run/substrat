@@ -2231,6 +2231,17 @@ export class SqliteScopeHost implements ScopeHost {
         created_at TEXT NOT NULL,
         PRIMARY KEY (tenant_id, vertical, binding)
       );
+      -- A published store-kind release (#2297). The bytes live in R2; this row is the
+      -- checksum, the publisher and which release is current. One current per kind.
+      CREATE TABLE IF NOT EXISTS store_kind_releases (
+        kind         TEXT NOT NULL,
+        release_id   TEXT NOT NULL,
+        sha256       TEXT NOT NULL,
+        published_by TEXT NOT NULL,
+        published_at TEXT NOT NULL,
+        status       TEXT NOT NULL,
+        PRIMARY KEY (kind, release_id)
+      );
       -- The vertical + version registry (#31). A scope binds to a VERSION, so
       -- dev/staging/prod are the same vertical pinned differently, and a preview
       -- deployment is a version nothing has been promoted to yet.
@@ -10398,6 +10409,75 @@ export class SqliteScopeHost implements ScopeHost {
           ref: r.ref,
           createdAt: r.created_at,
         }));
+      },
+      listStoreKindReleases: async (actor, kind) => {
+        const rows = this.directory
+          .prepare(
+            `SELECT kind, release_id, sha256, published_by, published_at, status
+             FROM store_kind_releases WHERE kind = ? ORDER BY published_at`,
+          )
+          .all(kind) as {
+          kind: string;
+          release_id: string;
+          sha256: string;
+          published_by: string;
+          published_at: string;
+          status: 'current' | 'previous' | 'failed';
+        }[];
+        this.recordAccess(actor, 'listStoreKindReleases', { tenantId: null }, { kind }, rows.length);
+        return rows.map((r) => ({
+          kind: r.kind,
+          releaseId: r.release_id,
+          sha256: r.sha256,
+          publishedBy: r.published_by,
+          publishedAt: r.published_at,
+          status: r.status,
+        }));
+      },
+      putStoreKindRelease: async (actor, input) => {
+        const at = new Date().toISOString();
+        this.directory.transaction(() => {
+          if (input.status === 'current') {
+            this.directory
+              .prepare(
+                `UPDATE store_kind_releases SET status = 'previous' WHERE kind = ? AND status = 'current' AND release_id != ?`,
+              )
+              .run(input.kind, input.releaseId);
+          }
+          this.directory
+            .prepare(
+              `INSERT INTO store_kind_releases (kind, release_id, sha256, published_by, published_at, status)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(kind, release_id) DO UPDATE SET
+                 sha256 = excluded.sha256,
+                 published_by = excluded.published_by,
+                 published_at = excluded.published_at,
+                 status = excluded.status`,
+            )
+            .run(input.kind, input.releaseId, input.sha256, actor, at, input.status);
+        })();
+        const row = {
+          kind: input.kind,
+          releaseId: input.releaseId,
+          sha256: input.sha256,
+          publishedBy: actor,
+          publishedAt: at,
+          status: input.status,
+        };
+        this.recordAdmin(actor, input.action, { tenantId: null, vertical: input.kind }, null, row);
+        return row;
+      },
+      servingManifests: async (actor) => {
+        const rows = this.directory
+          .prepare(
+            `SELECT v.slug AS slug, m.manifest_json AS manifest_json
+             FROM verticals v
+             JOIN vertical_versions m ON m.id = v.serving_version_id
+             WHERE v.serving_version_id IS NOT NULL AND m.manifest_json IS NOT NULL`,
+          )
+          .all() as { slug: string; manifest_json: string }[];
+        this.recordAccess(actor, 'servingManifests', { tenantId: null }, null, rows.length);
+        return rows.map((r) => ({ slug: r.slug, manifestJson: r.manifest_json }));
       },
       getScopeRecord: async (actor, tenantId: TenantId, scopeId: ScopeId): Promise<Scope | undefined> => {
         const r = this.directory.prepare('SELECT * FROM scopes WHERE scope_id = ?').get(scopeId) as

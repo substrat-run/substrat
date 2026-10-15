@@ -217,4 +217,14 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
     const path = `${this.scopePath(tenantId, scopeId)}/rebind-vertical`;
     return this.read(path, this.write('POST', body));
   }
+
+  /** Publish a store kind's modules (#2297). Staff only. The body is the release JSON. */
+  publishStoreKind(kind: string, body: unknown): Promise<{ release: { releaseId: string; status: string }; verticals: string[] }> {
+    return this.read(`/store-kinds/${seg(kind)}/releases`, this.write('POST', body));
+  }
+
+  /** Point a store kind back at its previous release and upload that to every vertical. */
+  rollbackStoreKind(kind: string): Promise<{ release: { releaseId: string; status: string }; verticals: string[] }> {
+    return this.read(`/store-kinds/${seg(kind)}/rollback`, this.write('POST'));
+  }
 }

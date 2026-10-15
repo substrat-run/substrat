@@ -903,6 +903,17 @@ const DIRECTORY_DDL = `
     created_at TEXT NOT NULL,
     PRIMARY KEY (tenant_id, vertical, binding)
   );
+  -- A published store-kind release (#2297). The bytes live in R2; this row is the
+  -- checksum, the publisher and which release is current. One current per kind.
+  CREATE TABLE IF NOT EXISTS store_kind_releases (
+    kind         TEXT NOT NULL,
+    release_id   TEXT NOT NULL,
+    sha256       TEXT NOT NULL,
+    published_by TEXT NOT NULL,
+    published_at TEXT NOT NULL,
+    status       TEXT NOT NULL,
+    PRIMARY KEY (kind, release_id)
+  );
   CREATE TABLE IF NOT EXISTS verticals (
     slug         TEXT PRIMARY KEY,
     name         TEXT NOT NULL,
@@ -2277,6 +2288,73 @@ export class ControlPlaneDO extends DurableObject {
       ref: string;
       created_at: string;
     }[];
+  }
+
+  listStoreKindReleases(kind: string): {
+    kind: string;
+    release_id: string;
+    sha256: string;
+    published_by: string;
+    published_at: string;
+    status: string;
+  }[] {
+    return this.sql
+      .exec(
+        `SELECT kind, release_id, sha256, published_by, published_at, status
+         FROM store_kind_releases WHERE kind = ? ORDER BY published_at`,
+        kind,
+      )
+      .toArray() as unknown as {
+      kind: string;
+      release_id: string;
+      sha256: string;
+      published_by: string;
+      published_at: string;
+      status: string;
+    }[];
+  }
+
+  putStoreKindRelease(row: {
+    kind: string;
+    releaseId: string;
+    sha256: string;
+    publishedBy: string;
+    publishedAt: string;
+    status: string;
+  }): void {
+    if (row.status === 'current') {
+      this.sql.exec(
+        `UPDATE store_kind_releases SET status = 'previous' WHERE kind = ? AND status = 'current' AND release_id != ?`,
+        row.kind,
+        row.releaseId,
+      );
+    }
+    this.sql.exec(
+      `INSERT INTO store_kind_releases (kind, release_id, sha256, published_by, published_at, status)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(kind, release_id) DO UPDATE SET
+         sha256 = excluded.sha256,
+         published_by = excluded.published_by,
+         published_at = excluded.published_at,
+         status = excluded.status`,
+      row.kind,
+      row.releaseId,
+      row.sha256,
+      row.publishedBy,
+      row.publishedAt,
+      row.status,
+    );
+  }
+
+  servingManifests(): { slug: string; manifest_json: string }[] {
+    return this.sql
+      .exec(
+        `SELECT v.slug AS slug, m.manifest_json AS manifest_json
+         FROM verticals v
+         JOIN vertical_versions m ON m.id = v.serving_version_id
+         WHERE v.serving_version_id IS NOT NULL AND m.manifest_json IS NOT NULL`,
+      )
+      .toArray() as unknown as { slug: string; manifest_json: string }[];
   }
 
   // -- scope lifecycle (control-plane.md §4.1/§4.2) ---------------------------

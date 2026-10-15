@@ -14,6 +14,7 @@ import {
   type PrincipalId,
   ASSET_PART_PREFIX,
   assetHash,
+  STORE_KINDS,
   channelName,
   connectLinkId,
   connectionActivity,
@@ -165,7 +166,8 @@ import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } fro
 import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
-import { pinnedServingVersionId, runningVersionStoresOf, sameDeclaredStores, scopeStoresOf, unrouteScope } from './platform-scope-stores.js';
+import { declaredStoresOf, pinnedServingVersionId, runningVersionStoresOf, sameDeclaredStores, scopeStoresOf, unrouteScope } from './platform-scope-stores.js';
+import { rollOutStoreRelease } from './store-rollout.js';
 import { assertNoUnreachableScopeCopies, listAllScopeScriptCopies, reapScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
@@ -385,7 +387,19 @@ export interface ControlPlaneApiOptions {
    * upload (#2210). Absent ⇒ a push that declares a store and has a registered kind is
    * refused, rather than serving a vertical whose store script was never uploaded.
    */
-  ensureScopeStores?: (input: { vertical: string; stores: readonly { binding: string; kind: string }[] }) => Promise<void>;
+  ensureScopeStores?: (input: {
+    vertical: string;
+    stores: readonly { binding: string; kind: string }[];
+    release?: { release: string; entry: string; modules: readonly { name: string; content: Uint8Array }[] };
+  }) => Promise<void>;
+  /**
+   * The bytes of a published store-kind release (#2297). The directory row is the
+   * checksum and the status; this holds the modules. Absent ⇒ publishing 501s.
+   */
+  storeReleases?: {
+    put(key: string, bytes: Uint8Array): Promise<void>;
+    get(key: string): Promise<Uint8Array | undefined>;
+  };
   /**
    * Reads a script's module contents back from the platform runtime (#286) — the
    * archive script is the bundle store the serving upload reads from. Host-injected
@@ -10176,6 +10190,158 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       options.modelMarginPercent ?? DEFAULT_MODEL_MARGIN_PERCENT,
     );
     return c.json(summary);
+  });
+
+  const storeReleaseBody = z.object({
+    releaseId: z.string().min(1).max(128),
+    entry: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*\.py$/),
+    modules: z
+      .array(z.object({ name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*\.py$/), contentBase64: z.string().min(1) }))
+      .min(1),
+  });
+  const decodeRelease = (raw: Uint8Array) => {
+    const parsed = storeReleaseBody.parse(JSON.parse(new TextDecoder().decode(raw)));
+    return {
+      release: parsed.releaseId,
+      entry: parsed.entry,
+      modules: parsed.modules.map((m) => ({
+        name: m.name,
+        content: Uint8Array.from(atob(m.contentBase64), (ch) => ch.charCodeAt(0)),
+      })),
+    };
+  };
+  const sha256Hex = async (bytes: Uint8Array): Promise<string> => {
+    const copy = new Uint8Array(bytes.byteLength);
+    copy.set(bytes);
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', copy));
+    return [...digest].map((b) => b.toString(16).padStart(2, '0')).join('');
+  };
+  const canaryTenant = tenantIdSchema.parse('01CANARYCANARYCANARYCANARY');
+  const canaryScope = scopeIdSchema.parse('01CANARYCANARYCANARYCANARY');
+
+  // Staff only: not on the builder allowlist. The audit action is `store-kinds.publish`.
+  app.post('/store-kinds/:kind/releases', async (c) => {
+    const kind = c.req.param('kind');
+    const kinds = options.storeKinds ?? STORE_KINDS;
+    if (!kinds.some((k) => k.kind === kind)) {
+      throw new ControlPlaneError(403, `kind '${kind}' is not registered`);
+    }
+    if (!options.storeReleases || !options.ensureScopeStores) {
+      throw new ControlPlaneError(501, 'this control plane stores no store-kind releases');
+    }
+    const raw = new Uint8Array(await c.req.arrayBuffer());
+    const artifact = decodeRelease(raw);
+    const sha256 = await sha256Hex(raw);
+    const actor = c.get('actor');
+    const existing = (await c.var.admin.listStoreKindReleases(actor, kind)).find(
+      (r) => r.releaseId === artifact.release,
+    );
+    if (existing && existing.status !== 'failed') {
+      throw new ControlPlaneError(409, `release '${artifact.release}' already exists`);
+    }
+    const manifests = await c.var.admin.servingManifests(actor);
+    const verticals = manifests.flatMap(({ slug, manifestJson }) => {
+      const stores = declaredStoresOf(manifestJson).filter((s) => s.kind === kind);
+      return stores.length > 0 ? [{ slug, stores }] : [];
+    });
+    if (verticals.length > 0 && !options.platformScopeStores) {
+      throw new ControlPlaneError(503, 'this control plane cannot canary a store release');
+    }
+    const previous = (await c.var.admin.listStoreKindReleases(actor, kind)).find((r) => r.status === 'current');
+    await options.storeReleases.put(`${kind}/${artifact.release}`, raw);
+    const upload = (release: typeof artifact) => async (vertical: string) => {
+      const found = verticals.find((v) => v.slug === vertical);
+      if (!found) return;
+      await options.ensureScopeStores!({ vertical, stores: found.stores, release });
+    };
+    try {
+      await rollOutStoreRelease({
+        verticals: verticals.map((v) => v.slug),
+        upload: upload(artifact),
+        canary: async (vertical) => {
+          const found = verticals.find((v) => v.slug === vertical);
+          if (!found || !options.platformScopeStores) return;
+          await options.platformScopeStores.sizeStores({
+            tenantId: canaryTenant,
+            scopeId: canaryScope,
+            vertical,
+            stores: found.stores,
+          });
+        },
+        restore: async (vertical) => {
+          if (!previous) return;
+          const prior = await options.storeReleases!.get(`${kind}/${previous.releaseId}`);
+          if (!prior) throw new ControlPlaneError(502, `previous release '${previous.releaseId}' has no bytes`);
+          await upload(decodeRelease(prior))(vertical);
+        },
+      });
+    } catch (err) {
+      await c.var.admin.putStoreKindRelease(actor, {
+        kind,
+        releaseId: artifact.release,
+        sha256,
+        status: 'failed',
+        action: 'store-kinds.publish',
+      });
+      throw err;
+    }
+    const row = await c.var.admin.putStoreKindRelease(actor, {
+      kind,
+      releaseId: artifact.release,
+      sha256,
+      status: 'current',
+      action: 'store-kinds.publish',
+    });
+    return c.json({ release: row, verticals: verticals.map((v) => v.slug) });
+  });
+
+  app.post('/store-kinds/:kind/rollback', async (c) => {
+    const kind = c.req.param('kind');
+    const kinds = options.storeKinds ?? STORE_KINDS;
+    if (!kinds.some((k) => k.kind === kind)) throw new ControlPlaneError(403, `kind '${kind}' is not registered`);
+    if (!options.storeReleases || !options.ensureScopeStores) {
+      throw new ControlPlaneError(501, 'this control plane stores no store-kind releases');
+    }
+    const actor = c.get('actor');
+    const previous = (await c.var.admin.listStoreKindReleases(actor, kind)).find((r) => r.status === 'previous');
+    if (!previous) throw new ControlPlaneError(409, `kind '${kind}' has no previous release`);
+    const prior = await options.storeReleases.get(`${kind}/${previous.releaseId}`);
+    if (!prior) throw new ControlPlaneError(502, `previous release '${previous.releaseId}' has no bytes`);
+    const artifact = decodeRelease(prior);
+    const manifests = await c.var.admin.servingManifests(actor);
+    const verticals = manifests.flatMap(({ slug, manifestJson }) => {
+      const stores = declaredStoresOf(manifestJson).filter((s) => s.kind === kind);
+      return stores.length > 0 ? [{ slug, stores }] : [];
+    });
+    await rollOutStoreRelease({
+      verticals: verticals.map((v) => v.slug),
+      upload: async (vertical) => {
+        const found = verticals.find((v) => v.slug === vertical);
+        if (!found) return;
+        await options.ensureScopeStores!({ vertical, stores: found.stores, release: artifact });
+      },
+      canary: async (vertical) => {
+        const found = verticals.find((v) => v.slug === vertical);
+        if (!found || !options.platformScopeStores) return;
+        await options.platformScopeStores.sizeStores({
+          tenantId: canaryTenant,
+          scopeId: canaryScope,
+          vertical,
+          stores: found.stores,
+        });
+      },
+      restore: async () => {
+        throw new ControlPlaneError(502, 'rollback could not be restored; the current release stays');
+      },
+    });
+    const row = await c.var.admin.putStoreKindRelease(actor, {
+      kind,
+      releaseId: previous.releaseId,
+      sha256: previous.sha256,
+      status: 'current',
+      action: 'store-kinds.rollback',
+    });
+    return c.json({ release: row, verticals: verticals.map((v) => v.slug) });
   });
 
   return app;

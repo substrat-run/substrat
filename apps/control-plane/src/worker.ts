@@ -541,6 +541,8 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * with it and cannot mint an envelope.
    */
   STORE_CALLER_PUBLIC_KEY?: string;
+  /** Published store-kind bytes (#2297). The directory row is the checksum. */
+  STORE_RELEASES?: R2Bucket;
   /**
    * Seals connection credentials at rest (#101/#574) — base64(url) of 32 bytes
    * (`openssl rand -base64 32`), same convention as the dashboard's box. The
@@ -603,15 +605,27 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
 }
 
 /**
- * Uploads a declared scope store's script before the vertical (#2210). The release
- * loader stays empty until a release can be published (#2297); a declared store then
- * fails closed instead of serving a vertical with no store script.
+ * Uploads a declared scope store's script before the vertical (#2210). A push loads
+ * the kind's current release from `STORE_RELEASES` (#2297). No current release fails
+ * closed, rather than serving a vertical whose store script was never uploaded.
  */
-function ensureScopeStoresFor(env: Env) {
+function ensureScopeStoresFor(
+  env: Env,
+  admin: {
+    listStoreKindReleases(
+      actor: typeof SERVICE_ACTOR,
+      kind: string,
+    ): Promise<{ status: string; releaseId: string }[]>;
+  },
+) {
   const accountId = env.CF_ACCOUNT_ID;
   const apiToken = env.CF_API_TOKEN;
   if (!apiToken || !accountId) return undefined;
-  return async (input: { vertical: string; stores: readonly { binding: string; kind: string }[] }) => {
+  return async (input: {
+    vertical: string;
+    stores: readonly { binding: string; kind: string }[];
+    release?: { release: string; entry: string; modules: readonly { name: string; content: Uint8Array }[] };
+  }) => {
     const callerPublicKey = env.STORE_CALLER_PUBLIC_KEY;
     const platformKey = env.STORE_PLATFORM_KEY;
     if (!callerPublicKey || !platformKey) {
@@ -623,7 +637,25 @@ function ensureScopeStoresFor(env: Env) {
       apiToken,
       callerPublicKey,
       platformPublicKey: await ed25519PublicKey(platformKey),
-      loadRelease: async () => undefined,
+      loadRelease: async (kind) => {
+        const current = (await admin.listStoreKindReleases(SERVICE_ACTOR, kind)).find((r) => r.status === 'current');
+        if (!current || !env.STORE_RELEASES) return undefined;
+        const object = await env.STORE_RELEASES.get(`${kind}/${current.releaseId}`);
+        if (!object) return undefined;
+        const parsed = JSON.parse(await object.text()) as {
+          releaseId: string;
+          entry: string;
+          modules: { name: string; contentBase64: string }[];
+        };
+        return {
+          release: parsed.releaseId,
+          entry: parsed.entry,
+          modules: parsed.modules.map((m) => ({
+            name: m.name,
+            content: Uint8Array.from(atob(m.contentBase64), (ch) => ch.charCodeAt(0)),
+          })),
+        };
+      },
     });
     await ensure(input);
   };
@@ -2748,7 +2780,20 @@ export default {
         resolveVerticalRef: resolveVerticalRefFor(env),
         platformScopeStores: platformStoresFor(env),
         deployVertical: deployVerticalFor(env),
-        ensureScopeStores: ensureScopeStoresFor(env),
+        ensureScopeStores: ensureScopeStoresFor(env, hostFor(env).admin),
+        ...(env.STORE_RELEASES
+          ? {
+              storeReleases: {
+                put: async (key: string, bytes: Uint8Array) => {
+                  await env.STORE_RELEASES!.put(key, bytes);
+                },
+                get: async (key: string) => {
+                  const object = await env.STORE_RELEASES!.get(key);
+                  return object ? new Uint8Array(await object.arrayBuffer()) : undefined;
+                },
+              },
+            }
+          : {}),
         fetchVerticalModules: fetchVerticalModulesFor(env),
         fetchVerticalAsset: fetchVerticalAssetFor(env),
         patchScriptBindings: patchScriptBindingsFor(env),

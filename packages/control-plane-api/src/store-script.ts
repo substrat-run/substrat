@@ -70,10 +70,15 @@ export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
     `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}` +
     `/workers/dispatch/namespaces/${opts.namespace}/scripts/${encodeURIComponent(name)}`;
 
-  return async (input: { vertical: string; stores: readonly ScopeStoreNeed[] }): Promise<void> => {
+  return async (input: {
+    vertical: string;
+    stores: readonly ScopeStoreNeed[];
+    /** This publish's bytes. A push omits it and the current release is loaded. */
+    release?: StoreKindReleaseArtifact;
+  }): Promise<void> => {
     const plan = scopeStoreUploadPlan({ vertical: input.vertical, stores: input.stores, kinds: opts.kinds });
     for (const script of plan.scripts) {
-      const release = await opts.loadRelease(script.kind);
+      const release = input.release ?? (await opts.loadRelease(script.kind));
       if (!release) {
         throw new ControlPlaneError(409, `kind '${script.kind}' has no published release`);
       }

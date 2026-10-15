@@ -19,6 +19,9 @@
  * SUBSTRAT_SERVICE_TOKEN. A push is not a deploy — the version lands PENDING; admission
  * (in the console) still gates serving.
  */
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { loadConfig, saveConfig, resolveAuth } from './config.js';
@@ -41,6 +44,7 @@ import { printVersions } from './versions.js';
 import { checkOutboundDeclared } from './outbound-scan.js';
 import { exportBreakLines, promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
+import { packStoreKindDir, publishStoreKind, rollbackStoreKind } from './store-kind.js';
 import { fetchWhoami } from './whoami.js';
 import { planeFor } from './plane.js';
 import { cliVersion, warnIfDistStale } from './version.js';
@@ -148,6 +152,9 @@ Usage:
   substrat promote  <slug> --version <versionId>
                     [--ack-permissions] [--ack-migrations] [--ack-export-break]  (prod is the only channel)
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
+  substrat store-kind publish --kind <kind> [--dir <outdir>] [--entry <file.py>] [--release <id>]
+                                               publish a store kind from a pywrangler outdir (staff)
+  substrat store-kind rollback --kind <kind>  roll a store kind back to its previous release (staff)
   substrat unpublish <slug>                   remove from the public marketplace (staff)
   substrat versions <slug>                    list a vertical's versions + channels
   substrat installs <slug>                    list this workspace's installs of a vertical
@@ -607,6 +614,43 @@ function reportStoreBackfill(result: PromoteResult): void {
         '  scope with `substrat scope provision <scopeId>`; `substrat scope status` shows the gap.',
     );
   }
+}
+
+async function cmdStoreKind(): Promise<void> {
+  const sub = argv[1];
+  const kind = flag('kind');
+  if ((sub !== 'publish' && sub !== 'rollback') || !kind) {
+    console.error('usage: substrat store-kind publish --kind <kind> [--dir <outdir>] [--entry <file.py>] [--release <id>]');
+    console.error('       substrat store-kind rollback --kind <kind>');
+    process.exit(1);
+  }
+  const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
+  console.log(`authenticating with ${as}`);
+  console.log(`control plane ${controlPlaneUrl}`);
+  if (sub === 'rollback') {
+    const result = await rollbackStoreKind({ controlPlaneUrl, header, kind });
+    console.log(`✓ ${kind} rolled back to ${result.release.releaseId} (${result.verticals.length} vertical(s))`);
+    return;
+  }
+  const entry = flag('entry');
+  if (!entry) {
+    console.error('usage: substrat store-kind publish --kind <kind> --entry <file.py> [--dir <outdir>]');
+    process.exit(1);
+  }
+  let dir = flag('dir');
+  if (!dir) {
+    dir = mkdtempSync(join(tmpdir(), 'store-kind-'));
+    const run = spawnSync('uv', ['run', 'pywrangler', 'deploy', '--dry-run', '--outdir', dir], { stdio: 'inherit' });
+    if (run.status !== 0) {
+      console.error('pywrangler deploy --dry-run failed');
+      process.exit(run.status ?? 1);
+    }
+  }
+  const release = flag('release') ?? new Date().toISOString().replace(/[:.]/g, '-');
+  const body = packStoreKindDir(dir, entry, release);
+  const result = await publishStoreKind({ controlPlaneUrl, header, kind, body });
+  console.log(`✓ ${kind} ${result.release.releaseId} is ${result.release.status}`);
+  for (const vertical of result.verticals) console.log(`  ${vertical}`);
 }
 
 async function cmdPublish(): Promise<void> {
@@ -1093,6 +1137,8 @@ async function main(): Promise<void> {
       return cmdPromote();
     case 'publish':
       return cmdPublish();
+    case 'store-kind':
+      return cmdStoreKind();
     case 'unpublish':
       return cmdUnpublish();
     case 'whoami':
