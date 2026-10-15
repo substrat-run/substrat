@@ -95,29 +95,32 @@ export function declaredStoresOf(manifestJson: string | null): DeclaredScopeStor
   return parsed.data.scopeStores;
 }
 
-/** The same bindings, whatever order the two manifests listed them in. */
-export function sameDeclaredStores(
-  left: readonly DeclaredScopeStore[],
-  right: readonly DeclaredScopeStore[],
-): boolean {
-  const key = (stores: readonly DeclaredScopeStore[]) =>
-    stores.map((store) => `${store.binding}\0${store.kind}`).sort().join('\n');
-  return key(left) === key(right);
+/**
+ * The version a scope's deployment runs, read once (#2207, L14). A scope with a serving pin runs
+ * the serving pointer's version when the pointer's ref is its pin, and an unknown one otherwise;
+ * a scope with no pin runs its bound version. `servingPointer` is the pointer as read, for a scope
+ * with a pin: the pair a subject-erasure claim requires to still hold (#2285). A pointer that
+ * cannot be read refuses (503): neither the version nor the fence can be named.
+ */
+export interface RunningVersion {
+  readonly versionId: string | null;
+  readonly servingPointer?: { ref: string; versionId: string } | null;
 }
 
-/**
- * The version a scope pinned to its vertical's serving script is running (#2285). Null when the
- * scope is not on that pin, or the pin names a script the pointer no longer serves: the bound
- * version decides then, and a subject-erasure claim does not fence the pointer.
- */
-export async function pinnedServingVersionId(
+export async function runningVersionOf(
   admin: Pick<HostAdmin, 'verticalServing'>,
   actor: PlatformActorId,
-  scope: Pick<Scope, 'vertical' | 'servingRef'>,
-): Promise<string | null> {
-  if (!scope.vertical || !scope.servingRef) return null;
-  const pointer = await admin.verticalServing(actor, scope.vertical).catch(() => null);
-  return pointer?.ref === scope.servingRef ? pointer.versionId : null;
+  scope: Pick<Scope, 'vertical' | 'verticalVersionId' | 'servingRef'>,
+): Promise<RunningVersion> {
+  if (!scope.vertical || !scope.servingRef) return { versionId: scope.verticalVersionId };
+  let pointer: Awaited<ReturnType<HostAdmin['verticalServing']>>;
+  try {
+    pointer = await admin.verticalServing(actor, scope.vertical);
+  } catch {
+    throw new ControlPlaneError(503, `the serving pointer of '${scope.vertical}' could not be read`);
+  }
+  const servingPointer = pointer ? { ref: pointer.ref, versionId: pointer.versionId } : null;
+  return { versionId: servingPointer?.ref === scope.servingRef ? servingPointer.versionId : null, servingPointer };
 }
 
 /**
@@ -132,36 +135,46 @@ export async function unrouteScope(
   actor: PlatformActorId,
   scope: Pick<Scope, 'tenantId' | 'id'>,
 ): Promise<void> {
-  const hostnames = await admin.listHostnames(actor, { tenantId: scope.tenantId, scopeId: scope.id });
-  for (const hostname of hostnames) {
-    await admin.unbindHostname(actor, hostname.hostname);
+  // Every page: an unbind deletes the row, so each read starts again from the first hostname left.
+  // A row still listed after its unbind would loop forever, so it refuses instead.
+  const unbound = new Set<string>();
+  for (;;) {
+    const page = await admin.listHostnames(actor, { tenantId: scope.tenantId, scopeId: scope.id, limit: LIST_PAGE_MAX });
+    if (page.length === 0) return;
+    for (const { hostname } of page) {
+      if (unbound.has(hostname)) throw new Error(`hostname '${hostname}' is still bound after its unbind`);
+      // Only while the row still names this scope: a name rebound elsewhere since the list stays bound.
+      await admin.unbindHostname(actor, hostname, { tenantId: scope.tenantId, scopeId: scope.id });
+      unbound.add(hostname);
+    }
   }
 }
 
 /**
- * The stores of the version a scope's deployment runs (#2207). A scope on its vertical's serving
- * pin runs the serving pointer's version, and any other scope its bound version; this is the
- * version the router reads (`READ_ROUTE_SQL`) and the one a restore may import into (L8).
- * Provisioning sets the serving pin and no bound version, so reading the bound version alone
- * answers "no store" for an ordinary install whose store the router serves. A pin that names
- * another script than the pointer's is unknown, as #2242's erasure gate has it.
+ * The scope stores of the version a scope's deployment runs (#2207). A scope on its vertical's
+ * serving pin runs the serving pointer's version, and any other scope its bound version; this
+ * is the version the router reads a scope's stores from (`READ_ROUTE_SQL`). Provisioning sets the
+ * serving pin and no bound version, so reading the bound version alone answers "no store" for an
+ * ordinary install whose store the router serves. A pin that names another script than the
+ * pointer's is unknown, as #2242's erasure gate has it.
  *
  * The gate is `mayHoldScopeStores`: with no kind registered nothing can hold a store, and the
  * answer is none. Otherwise a version that cannot be named, a manifest that cannot be read, or one
- * the gate says may hold a store without naming it refuses (503).
+ * the gate says may hold a store without naming it refuses (503), rather than let a backup, a
+ * wipe, a replay or an erasure skip a store that may hold data.
+ *
+ * `running` is a resolution the caller already holds (`runningVersionOf`), so a caller that fences
+ * on the version reads it once and judges the stores against the same read.
  */
-export async function runningVersionStoresOf(
+export async function scopeStoresOf(
   admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest'>,
   actor: PlatformActorId,
   scope: Pick<Scope, 'id' | 'vertical' | 'verticalVersionId' | 'servingRef'>,
   kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+  running?: RunningVersion,
 ): Promise<DeclaredScopeStore[]> {
   if (!scope.vertical || !mayHoldScopeStores(undefined, kinds)) return [];
-  let versionId: string | null = scope.verticalVersionId;
-  if (scope.servingRef) {
-    const pointer = await admin.verticalServing(actor, scope.vertical).catch(() => null);
-    versionId = pointer?.ref === scope.servingRef ? pointer.versionId : null;
-  }
+  const { versionId } = running ?? await runningVersionOf(admin, actor, scope);
   const manifestJson = versionId
     ? await admin.versionManifest(actor, scope.vertical, versionId).catch(() => undefined)
     : undefined;
@@ -169,58 +182,6 @@ export async function runningVersionStoresOf(
   const declared = typeof manifestJson === 'string' && scopeStoresDeclaredIn(manifestJson) ? declaredStoresOf(manifestJson) : [];
   if (declared.length > 0) return declared;
   throw new ControlPlaneError(503, `scope ${scope.id} may hold scope stores, and the version it runs cannot say which`);
-}
-
-/**
- * Every (binding, kind) any version of the scope's vertical has declared (#2286, L17), on top of
- * {@link runningVersionStoresOf}. Export, wipe, erasure and the meter reach a binding a later
- * version dropped. The running version is still resolved first, so an unknown one refuses before
- * the union is read. The same binding declared as two kinds, or a manifest that cannot be read,
- * refuses (503). A version with no manifest predates stores and adds none.
- *
- * Not the router's check and not a restore's import check. Those stay on the running version:
- * a vertical calls only what its current code declares, and a restore imports only what the
- * destination currently declares.
- */
-export async function scopeStoresOf(
-  admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest' | 'listVersions'>,
-  actor: PlatformActorId,
-  scope: Pick<Scope, 'id' | 'vertical' | 'verticalVersionId' | 'servingRef'>,
-  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
-): Promise<DeclaredScopeStore[]> {
-  const current = await runningVersionStoresOf(admin, actor, scope, kinds);
-  if (!scope.vertical || !mayHoldScopeStores(undefined, kinds)) return current;
-  const union = new Map(current.map((store) => [store.binding, store.kind]));
-  let cursor: string | undefined;
-  for (;;) {
-    const page = await admin.listVersions(actor, scope.vertical, {
-      limit: LIST_PAGE_MAX,
-      ...(cursor ? { cursor } : {}),
-    });
-    for (const version of page) {
-      let manifestJson: string | null;
-      try {
-        manifestJson = await admin.versionManifest(actor, scope.vertical, version.id);
-      } catch {
-        throw new ControlPlaneError(503, 'scope store declarations could not be read');
-      }
-      if (manifestJson === null) continue;
-      for (const store of declaredStoresOf(manifestJson)) {
-        const previous = union.get(store.binding);
-        if (previous !== undefined && previous !== store.kind) {
-          throw new ControlPlaneError(
-            503,
-            `scope store '${store.binding}' is declared as both '${previous}' and '${store.kind}'`,
-          );
-        }
-        union.set(store.binding, store.kind);
-      }
-    }
-    const last = page.at(-1);
-    if (page.length < LIST_PAGE_MAX || !last) break;
-    cursor = last.id;
-  }
-  return [...union].map(([binding, kind]) => ({ binding, kind }));
 }
 
 function asControlPlane(error: unknown): never {

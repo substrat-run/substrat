@@ -134,7 +134,7 @@ import {
   type ServingPointer,
 } from '@substrat-run/kernel';
 import {
-  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
   type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -3055,8 +3055,20 @@ export class ControlPlaneDO extends DurableObject {
     }
   }
 
-  deleteHostname(hostname: string): void {
-    this.sql.exec('DELETE FROM hostnames WHERE hostname = ?', hostname);
+  /**
+   * Delete a binding and answer the row it removed, or null. With `owner`, only while the row
+   * still names that tenant and scope (#2285): the delete decides it, not an earlier read.
+   */
+  deleteHostname(
+    hostname: string,
+    owner?: { tenantId: string; scopeId: string },
+  ): { tenant_id: string; scope_id: string; status: string } | null {
+    const rows = this.sql.exec(
+      `DELETE FROM hostnames WHERE hostname = ?${owner ? ' AND tenant_id = ? AND scope_id = ?' : ''}
+       RETURNING tenant_id, scope_id, status`,
+      hostname, ...(owner ? [owner.tenantId, owner.scopeId] : []),
+    ).toArray() as { tenant_id: string; scope_id: string; status: string }[];
+    return rows[0] ?? null;
   }
 
   listHostnames(
@@ -3308,28 +3320,9 @@ export class ControlPlaneDO extends DurableObject {
     return row.erasure_epoch;
   }
 
-  claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null,
-    expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number,
-    expectedServingVersionId: string | null = null): boolean {
-    // #2285: a promote can move the pointer's version while the scope's own serving_ref stays.
-    // A null expected version means the erasure did not resolve through the pointer.
-    return this.sql.exec(
-      `UPDATE scopes SET erasure_epoch = COALESCE(erasure_epoch, 0) + 1
-       WHERE tenant_id = ? AND scope_id = ? AND vertical_version_id IS ?
-         AND serving_ref IS ? AND COALESCE(erasure_epoch, 0) = ?
-         AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS copy
-           WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id
-             AND copy.state = 'pending')
-         AND (SELECT COUNT(*) FROM scope_script_copies AS copy
-           WHERE copy.tenant_id = scopes.tenant_id AND copy.scope_id = scopes.scope_id) = ?
-         AND (? IS NULL OR EXISTS (
-           SELECT 1 FROM verticals
-           WHERE verticals.slug = scopes.vertical
-             AND verticals.serving_ref IS scopes.serving_ref
-             AND verticals.serving_version_id IS ?))`,
-      tenantId, scopeId, expectedVersionId, expectedServingRef, expectedEpoch, expectedCopyCount,
-      expectedServingVersionId, expectedServingVersionId,
-    ).rowsWritten > 0;
+  /** The erasure claim (`SUBJECT_ERASURE_CLAIM_SQL`): false when the scope moved since the fence was read. */
+  claimSubjectErasure(tenantId: string, scopeId: string, fence: SubjectErasureFence): boolean {
+    return this.sql.exec(SUBJECT_ERASURE_CLAIM_SQL, ...subjectErasureClaimParams(tenantId, scopeId, fence)).rowsWritten > 0;
   }
 
   recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string,

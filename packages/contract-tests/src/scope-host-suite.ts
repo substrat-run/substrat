@@ -6126,7 +6126,8 @@ export function scopeHostContractSuite(
         .toEqual([null]);
     });
 
-    it('an erasure claim fails when the serving version is not the one it read, and the key stays (#2285)', async () => {
+    /** A vertical with one admitted version, served on `ref`, and a scope pinned to `scopeRef`. */
+    const pinnedErasureFixture = async (scopeRef?: string) => {
       const slug = `pin-${ulid().toLowerCase().slice(-8)}`;
       await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
       const versionId = ulid();
@@ -6151,17 +6152,46 @@ export function scopeHostContractSuite(
       await host.provisionScope(staff, { tenantId: t1, scopeId: s, vertical: slug });
       const [sealed] = await host.admin.sealSubjectPayloads(staff, t1, s, [{ subjectId: subject, plaintext: 'private' }]);
       await host.admin.setVerticalServing(staff, slug, { ref, versionId, doClasses: ['ScopeDO'], migrationTag: 'v1' });
-      await host.admin.setScopeServingRef(staff, t1, s, ref);
-      const redacted = [{ events: 0, intents: 0, jobRuns: 0, idempotencyResults: 0, intentIds: [],
-        vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] } }];
-      const expected = { versionId: null, servingRef: ref, epoch: 0, copyCount: 0, servingVersionId: ulid() };
+      await host.admin.setScopeServingRef(staff, t1, s, scopeRef ?? ref);
+      const opened = () => host.admin.openSubjectPayloads(staff, t1, s, [{ subjectId: subject, sealed: sealed! }]);
+      return { slug, versionId, ref, s, subject, opened };
+    };
+    const redacted = [{ events: 0, intents: 0, jobRuns: 0, idempotencyResults: 0, intentIds: [],
+      vertical: { verticalRows: [], hookRows: [], unreachedEntities: [] } }];
+
+    it('an erasure claim fails when the serving pointer is not the pair it read, and the key stays (#2285)', async () => {
+      const { versionId, ref, s, subject, opened } = await pinnedErasureFixture();
+      const expected = { versionId: null, servingRef: ref, epoch: 0, copyCount: 0, servingPointer: { ref, versionId: ulid() } };
       await expectRefusal(host.admin.finalizeSubjectShred(staff, t1, s, subject, redacted, expected), 'precondition_failed');
-      expect(await host.admin.openSubjectPayloads(staff, t1, s, [{ subjectId: subject, sealed: sealed! }]))
-        .toEqual(['private']);
+      expect(await opened()).toEqual(['private']);
       expect((await host.admin.finalizeSubjectShred(staff, t1, s, subject, redacted,
-        { ...expected, servingVersionId: versionId })).keyDestroyed).toBe(true);
-      expect(await host.admin.openSubjectPayloads(staff, t1, s, [{ subjectId: subject, sealed: sealed! }]))
-        .toEqual([null]);
+        { ...expected, servingPointer: { ref, versionId } })).keyDestroyed).toBe(true);
+      expect(await opened()).toEqual([null]);
+    });
+
+    it('a scope off its pin is fenced too: a pointer moved onto its script refuses the claim (#2285)', async () => {
+      // The scope's own script is not the pointer's when the erasure reads it, so it runs no
+      // pointer version. A rollback onto that script before the claim would make it run one.
+      const { slug, versionId, ref, s, subject, opened } = await pinnedErasureFixture('old-script');
+      const expected = { versionId: null, servingRef: 'old-script', epoch: 0, copyCount: 0, servingPointer: { ref, versionId } };
+      await host.admin.setVerticalServing(staff, slug, { ref: 'old-script', versionId, doClasses: ['ScopeDO'], migrationTag: 'v1' });
+      await expectRefusal(host.admin.finalizeSubjectShred(staff, t1, s, subject, redacted, expected), 'precondition_failed');
+      expect(await opened()).toEqual(['private']);
+      expect((await host.admin.finalizeSubjectShred(staff, t1, s, subject, redacted,
+        { ...expected, servingPointer: { ref: 'old-script', versionId } })).keyDestroyed).toBe(true);
+    });
+
+    it('a direct shred with a fence claims it: a moved scope keeps the key, and the pair it read destroys it (#2285)', async () => {
+      const { versionId, ref, s, subject, opened } = await pinnedErasureFixture();
+      const fence = { versionId: null, servingRef: ref, epoch: 0, copyCount: 0, servingPointer: { ref, versionId: ulid() } };
+      await expectRefusal(host.admin.shredSubject(staff, t1, s, subject, fence), 'precondition_failed');
+      expect(await opened()).toEqual(['private']);
+      expect(await host.admin.scopeErasureEpoch(staff, t1, s)).toBe(0);
+      expect((await host.admin.shredSubject(staff, t1, s, subject, { ...fence, servingPointer: { ref, versionId } })).keyDestroyed)
+        .toBe(true);
+      expect(await opened()).toEqual([null]);
+      // The claim moved the epoch every bind compares, as the orchestrated finalize's does.
+      expect(await host.admin.scopeErasureEpoch(staff, t1, s)).toBe(1);
     });
 
     // #1722 (Codex #2008 r7): the admin-log record of a staff resolution of a kept copy. The
@@ -8058,6 +8088,18 @@ export function scopeHostContractSuite(
         (h) => h.hostname === 'eu.example.com',
       );
       expect(reclaimed?.scopeId).toBe(s2);
+    });
+
+    it('an unbind for one scope leaves a name rebound to another scope bound (#2285)', async () => {
+      // `eu.example.com` is s2's now (the test above). An unroute of s1 that listed the name while
+      // it was s1's must not take it from s2: the owner is judged by the delete itself.
+      const s2Names = async () => (await host.admin.listHostnames(staff, { scopeId: s2 })).map((h) => h.hostname);
+      await host.admin.unbindHostname(staff, 'eu.example.com', { tenantId: t1, scopeId: s1 });
+      expect(await s2Names()).toContain('eu.example.com');
+      // The twin: the owner it names unbinds it, and the unbind is audited on that scope.
+      await host.admin.unbindHostname(staff, 'EU.example.com', { tenantId: t2, scopeId: s2 });
+      expect(await s2Names()).not.toContain('eu.example.com');
+      expect((await host.admin.auditLog(staff, { scopeId: s2 })).map((e) => e.action)).toContain('unbindHostname');
     });
 
     it('rejects duplicate module registration', () => {

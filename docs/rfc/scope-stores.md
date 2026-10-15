@@ -484,6 +484,13 @@ delete would repopulate the object, which then outlives its scope with nothing l
 reach it. Tenant reap is already fenced by the tenant's status. Scope, preview and snapshot
 deletion need the scope unrouted before the wipe.
 
+PR #2285 does this for snapshot deletion, preview reap and the sweeper's snapshot reap. Each takes
+every refusal it can decide up front first: the reap claim (a copy move in flight), a copy the
+platform cannot reach, and the store resolution. A refused delete therefore leaves the scope
+routed and its stores untouched. Only then does it unbind every hostname of the scope, wipe and
+delete. Unbinding by hostname is the fast path, not a drain. The durable fence is a scope state
+that the store door itself checks, and that is a follow-up.
+
 A wipe that fails stops the delete. The scope's own storage is not deleted around the
 store, and the delete is retried. #2254's `wipePlatformStores` does this by throwing when
 a store call fails. A path that cannot tell which stores a scope has must fail the same way
@@ -527,6 +534,13 @@ A bind that races an erase either sees the erase or fails (L19). The erase reads
 declared bindings and then destroys the key. A bind landing in between could add a binding
 the erase never reached. So the erase runs under the same fence a bind takes on the scope,
 or it re-reads the resolution after its store calls and starts over if the resolution moved.
+
+PR #2285 takes the first form. Both arms, the orchestrated finalize and the direct shred, take one
+atomic claim just before the key goes (`SUBJECT_ERASURE_CLAIM_SQL`). It requires the bound
+version, the serving pin, the copy inventory and the serving pointer's exact (ref, version) pair
+to still be what the erasure read, and it moves the erasure epoch every bind compares. A bind
+that lands first fails the claim (412, key kept). One that lands after is refused. A version's
+manifest does not change after publish, so the version identity fences its store set.
 
 **Size and the meter.** The daily sweep calls `substrat.size` per declared binding. A store
 that cannot answer leaves that day's store rows unsampled. It is never written as `0`.
@@ -648,6 +662,7 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | (l) A vertical cannot declare a binding in the `SUBSTRAT_` namespace, so no declared binding reads as a store binding | `control-plane-api/src/deploy.ts` (declared-binding check) |
 | (p) Store script names are injective over (kind, vertical), and the `substrat-store-` name space is reserved against vertical scripts | `scopeStoreScriptName`, `platformScriptCollision` (#2247) |
 | (q) The router's route read applies the same rule as (i), so a scope pinned to another script gets no store | `READ_ROUTE_SQL` |
+| (m) Snapshot deletion, preview reap and the sweeper's snapshot reap decide their refusals, then unbind every hostname, then wipe, then delete. Erasure's two arms take one claim that fences the version, the pin and the serving pointer's pair before the key goes (#2285) | `unrouteScope`, `claimScopeScriptReap`, `SUBJECT_ERASURE_CLAIM_SQL` |
 
 Still open:
 
@@ -657,7 +672,6 @@ Still open:
 | (b) | First-name memory and the audience check exist as helpers and in a test fixture, not in a store script. No kind is registered to carry them | L4, L5 | **Yes**, in the test kind and in the registration requirements (D-63) |
 | (c) | `transport: 'platform'` exists, but the host defaults to `'binding'` and nothing in production sets `'platform'` | L2 | **Yes** |
 | (f) | Replay and wipe skip when the destination's manifest is null. That is correct for a version that predates kept manifests, and needs a test that says so | L9, L7 | No, later |
-| (m) | No path unroutes a scope before wiping it, and erase is not fenced against a bind that lands between its manifest read and the key's destruction | L6, L19 | **Yes** |
 | (n) | Every lifecycle path reads only the current version's bindings, so objects under a dropped or re-kinded binding are unreachable. Push, bind, promote, rollback and re-upload can each cause it | L17 | **Yes** (Q5) |
 | (o) | The envelope checks are planned in the kind's script, which the kind controls. The platform has to supply the store script's entry module | L4, L5 | **Yes**, with #2210 |
 | (r) | The erasure replay runs inside one request and starts again from the first subject on a retry, so it converges only while it fits one request's budget. Resuming needs a cursor of its own | L9 | No, later |
@@ -684,7 +698,7 @@ block it.
    prefix at push and at upload (L18, item (l)), and the store-script name space with
    injective names (L20, item (p)). The positive twin is that the same upload
    still carries the vertical's own declared bindings, none of which can now use the prefix.
-3. Done on #2254, except unroute-then-wipe and the bind fence (m), which stay open. One version resolver (L14, items (i) and (q)), called by the router and by every
+3. Done on #2254, and unroute-then-wipe with the bind fence (m) on #2285. One version resolver (L14, items (i) and (q)), called by the router and by every
    control-plane store path, the sweeper included. With it: wipe fails closed on an unresolvable scope (j), the fail-closed
    erase arm on #2254's shred with `unavailable` as 503 (k), and unroute-then-wipe plus the
    bind fence (L6, L19, item (m)).

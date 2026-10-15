@@ -65,6 +65,8 @@ Subject erasure calls `substrat.erase` on every store the scope's version declar
 
 Erasure fails closed. When the platform cannot tell which stores a scope's version declares, or cannot reach them, the erasure is refused with 503 and the key stays until a retry reaches the store.
 
+A deploy that lands while an erasure runs does not slip past it. Before the key goes, the erasure checks that the scope still runs the version it read, on the same pin, with the vertical's serving pointer where it was. A bind, a promote, a rollback or a serving re-upload in between makes the erasure answer 412, and the key stays for the retry, which reads the new version's stores. A bind that comes after that check is refused instead.
+
 Erasure reaches the live store. It does not reach a copy already in a backup. See below.
 
 ## Snapshot, restore, export and backup
@@ -87,6 +89,8 @@ The host's own `restoreScope` result carries the same facts as `storeErasuresRep
 
 Reap, deleting a snapshot, reaping a preview and deleting the scope call `substrat.wipe` on each store before the scope's own storage goes. A wipe that cannot run stops the delete, and the scope's storage is left for the retry.
 
+Deleting a snapshot, reaping a preview and the sweep's snapshot reap stop routing the scope before they wipe it. They take every refusal they can decide up front (a copy move in flight, a copy the platform cannot reach, stores it cannot name), then unbind every hostname of the scope, then wipe its stores, then delete it. A refused delete leaves the scope routed and its stores untouched. Unbinding the hostnames is the fast path, not a drain. The durable fence is a scope state that the store door itself checks, and it is a follow-up (see [Known limits](#known-limits)).
+
 ## The storage meter
 
 The storage gauge samples each scope's stores in the same pass as the scope database, at most once a day. The hosted reading asks the store script for `substrat.size`. It keeps one row per binding per day in `_substrat_scope_store_storage`. Retention drops those rows on the same horizon as the database samples.
@@ -105,7 +109,7 @@ Before the first kind:
 
 - **The hosted path is not the default.** A Cloudflare host defaults to the direct binding, and nothing in production sets the platform path yet.
 - **The store's checks on each call.** What the platform sends a store script does not yet bind the operation, the audience or the time, and no store script checks it yet. The checks are planned in an entry module the platform supplies in front of the kind.
-- **Unroute before wipe.** No path stops routing a scope before it wipes the scope's stores, and an erasure is not fenced against a deploy that lands while it runs.
+- **Unroute is not a drain.** Deleting a scope unbinds its hostnames before the wipe. That is the fast path. The durable fence, a scope state the store door itself checks, is still to come.
 - **Orphaned bindings.** Every lifecycle path reads only the current version's bindings. Objects under a binding a later version dropped, or declared as another kind, are out of reach of wipe, erase and the meter.
 
 Later:
