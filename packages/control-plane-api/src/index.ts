@@ -115,6 +115,7 @@ export type {
 } from './vertical-client.js';
 export {
   callPlatformScopeStore,
+  callPlatformScopeStoreAt,
   platformScopeStoresFor,
   runningVersionStoresOf,
   scopeStoresOf,
@@ -144,7 +145,21 @@ export type {
   DeployManifest,
 } from './deploy.js';
 export { createWfpUploader, createWfpModulesFetcher, createWfpBindingsPatcher } from './wfp.js';
-export { createScopeStoreEnsurer, STORE_BUILD_VAR, STORE_RELEASE_VAR } from './store-script.js';
+export { createScopeStoreEnsurer, createStoreCanaryEnsurer, STORE_BUILD_VAR, STORE_RELEASE_VAR } from './store-script.js';
+export {
+  ROLLOUT_VERTICALS_PER_REQUEST,
+  canaryObjectName,
+  canaryStoreRelease,
+  decodeStoreKindRelease,
+  runStoreKindRollout,
+  storeKindRelease,
+  storeReleaseKey,
+  storedReleaseLoader,
+  type CanaryCall,
+  type StoreKindRolloutDeps,
+  type StoreKindRolloutResult,
+  type StoreReleaseBytes,
+} from './store-releases.js';
 export type { ScopeStoreEnsurerOptions, StoreKindReleaseArtifact } from './store-script.js';
 export {
   withPlatformEntry,
