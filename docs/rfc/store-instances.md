@@ -170,7 +170,7 @@ One object per (tenant, vertical, scope, binding), one script per (kind, vertica
 - **Cost.** The scripts number (kinds × verticals that declare a kind). One release fans out to
   that many uploads.
 - **When A is right.** For a kind whose data really is per scope: a scope's working copy, a
-  scope-local index. Nothing in this RFC argues against A for such a kind. §9 Q9 is how a
+  scope-local index. Nothing in this RFC argues against A for such a kind. §9 and §12 Q9 are how a
   kind says which grain it is.
 
 ### B. A tenant-level instance, explicit connections, one script per (kind, tenant)
@@ -266,7 +266,7 @@ already emit, and a separate read surface serves it.
 - **B now, with D added later.** Verticals write synchronously to their own partition, and a
   platform job later adds derived, cross-vertical views. The recommendation (§11) is close to
   this.
-- **A and B side by side.** Grain is a property of the kind (§9 Q9). A scope-grain kind keeps
+- **A and B side by side.** Grain is a property of the kind (§9 and §12 Q9). A scope-grain kind keeps
   A unchanged, and a tenant-grain kind takes B. Nothing in B removes A.
 
 ## 5. The connection model (B, and D's read side)
@@ -289,7 +289,7 @@ rows already are. The names are illustrative.
 
 - **Creating an instance** is a tenant-admin act on the dashboard. It is audited as
   `recordAdmin(…, 'createStoreInstance', …)`, the way `provisionTenantStore` and
-  `createConnection` are. The kind must be registered with grain `tenant` (§9 Q9). Whether a
+  `createConnection` are. The kind must be registered with grain `tenant` (§9 and §12 Q9). Whether a
   vertical's provisioning may also create one is §12 Q6.
 - **Connecting** a vertical's binding is a tenant-admin act behind a dashboard permission
   key. Today `dashboard:manage-integrations` (owner, admin) gates connections, and
@@ -309,7 +309,7 @@ rows already are. The names are illustrative.
 
 - **The declaration does not change shape.** `runtimeNeeds.scopeStores: [{ binding, kind }]`.
   Whether a binding is per scope or per instance is the kind's registered grain, not the
-  vertical's choice (§9 Q9). A vertical cannot name an instance, a tenant, or another
+  vertical's choice (§9 and §12 Q9). A vertical cannot name an instance, a tenant, or another
   vertical's binding.
 - **The door does not change shape either.** The call is still made from an operation in a
   scope, through `getScopeStore(principal, tenantId, scopeId, binding)`, and the vertical
@@ -520,8 +520,7 @@ These are requirements. They hold for B under either authorization shape, and fo
 
 A preview, fork or snapshot scope must not write to a tenant's live instance. Previews are
 inert by rule (#2005), and the connection relay already refuses non-primary scopes
-(`PREVIEW_CONNECTIONS_REFUSAL`: "a connection is the TENANT's … a preview or a fork shares
-it with the install"). The router therefore resolves **no** store connection for a
+(`PREVIEW_CONNECTIONS_REFUSAL`: "previews and forks cannot change a tenant's connections"). The router therefore resolves **no** store connection for a
 non-primary scope (§5.4). The alternatives, read-only access to the live instance or a
 copied instance per preview, are §12 Q12. A snapshot's dump carries no instance, so neither
 restoring a scope nor forking one touches an instance.
@@ -750,8 +749,8 @@ Each one is for the maintainer. The lean is stated so it can be rejected cleanly
 5. **Residency.** Is the instance's jurisdiction fixed at creation, and must every connected
    scope match it? *Lean:* yes to both. A connect across jurisdictions is refused. Every
    scope is `global` today, so this is a rule to write down, not to build.
-6. **Who may create instances.** Only a tenant admin, or also a vertical's provisioning (the
-   way `onProvision` provisions tenant stores)? *Lean:* tenant admin only. An instance is the
+6. **Who may create instances.** Only a tenant admin, or also a vertical's provisioning when it is
+   installed? *Lean:* tenant admin only. An instance is the
    tenant's shared thing, and no single vertical should mint one by being installed.
 7. **Quotas.** How many instances per tenant, how many connections per instance, and how many
    bytes? *Lean:* a small platform ceiling on instances per tenant (each is a script), no
