@@ -1,5 +1,38 @@
 # @substrat-run/kernel
 
+## 0.148.0
+
+### Minor Changes
+
+- c4a0352: An operation can mint a single-use, short-lived upload URL for one attachment on one entity, so a caller with no session (an MCP client's shell, a `curl`) uploads a file without sending base64 through a tool call. An `attachmentTargets` entry opts in with `uploadLinks: { maxBytes, contentTypes? }` (at most 25 MiB; absent, a mint is refused), and `ctx.attachments.mintUploadUrl({ entity, filename?, maxBytes?, ttlSeconds?, visibility? })` returns `{ id, secret, path, expiresAt, maxBytes, filename }`. It checks the target's `writePermission` on the entity as the caller, for a principal only, and lives ten minutes by default and an hour at most. `ctx.attachments.revokeUploadLink` and `ctx.attachments.uploadLinks` take a link back and list them, never with the secret.
+
+  `mountUploadLinkRedeem` from `@substrat-run/vertical-host` mounts `PUT`/`POST /api/attachment-uploads/:entityType/:entityId/:secret`. It reads the body under the link's size, decides the media type (the request's, else the extension, else the bytes; PDF, PNG, JPEG and GIF must match their bytes) and hands it to `ScopeHost.redeemUploadLink`, which writes it through the ordinary attachment write: bytes first, then the row and `attachment.added` in one transaction, authored by the principal who minted the link and checked against the target's `writePermission` as them again at redemption. The link is spent in that same transaction, so any refusal leaves it unspent. Answers: 201, 404 (unknown secret, or a path naming another target), 410 (used, expired or revoked), 413, 415, 403. The answer is `no-store`, carries no `ETag` or `Location`, and drops the CORS headers an outer layer set. `invocationLog` writes the secret segment of that path as `[redacted]`.
+
+  Only the secret's SHA-256 is stored, in the new kernel-owned `_substrat_upload_links` table, and a module that persists the secret is refused as it is for `ctx.capabilities`. A copy of a scope starts with no links. Three kernel-authored events, `attachment.upload-link-minted`, `attachment.upload-link-redeemed` (written with the `attachment.added` it caused, and naming the attachment) and `attachment.upload-link-revoked`, join the reserved set. `ScopeHost` gains `inspectUploadLink` and `redeemUploadLink`, both optional like `getCapabilityAttachments`. `lint:permissions` renders an _Upload links_ section for a vertical that declares one, and `@substrat-run/contract-tests` adds `uploadLinkContractSuite`, which both adapters run. Existing upload routes and their behaviour are unchanged.
+
+- a8b0842: Add a staff/service API and `substrat connection bind|bindings` for existing Planima and Fortnox connections. Verify the landing permission in the serving scope before binding, reject copy or mismatched-vertical targets, and audit binding changes. Read hosted connector permissions from the serving deployment rather than the control plane's placeholder scope. This door does not grant new authority or change sweep cadence.
+- 7f8c6bf: Export, wipe, erasure and the meter reach every scope-store binding any version of the vertical has declared (#2286), so an object under a binding a later version dropped is still reached, whatever moved the scope off the version that declared it. A restore still imports only what the destination's running version declares, and the router still admits only that version's bindings.
+
+  `@substrat-run/kernel` adds `HostAdmin.verticalScopeStores`: every binding any version of a vertical declared, with its kind, read by its keys from a directory record (`VERTICAL_SCOPE_STORES_DDL`), with no per-version work once the vertical is indexed. `publishVersion` keeps that record in the transaction that inserts the version, and refuses (`conflict`, 409 at the push) a version that declares an existing binding as another kind, judged against every older version, or one binding twice: a binding keeps its kind for the life of its vertical. A vertical whose versions were stored before the record is indexed by its first read or publish. `@substrat-run/adapter-sqlite` and `@substrat-run/adapter-cloudflare` keep the record, and `@substrat-run/contract-tests` holds both to it.
+
+  `@substrat-run/control-plane-api` adds `runningVersionStoresOf`, the running version's stores alone; `scopeStoresOf` is now the union. A backup, a full pull or a fork's export leaves out a binding only an earlier version declared when its export is empty, and refuses (409) one that still holds data, naming the binding: declare it again in a version the scope runs, or reap the scope without a backup.
+
+- d175d87: A scope is taken out of routing before its stores are wiped (#2285). The snapshot delete, the preview reap and the sweeper's snapshot reap first decide every refusal they can (the reap claim, a copy the platform cannot reach, stores that cannot be named), then unbind every hostname of the scope, then wipe its stores, then delete it. `HostAdmin.unbindHostname` takes an optional owner, and the unroute passes it: a hostname is removed only while its row still names that tenant and scope, decided by the delete itself, so a name rebound to another scope meanwhile stays bound there. A refused reap leaves the scope routed and untouched.
+
+  Subject erasure is fenced against a bind, a promote, a rollback or a serving re-upload that lands while the stores are erased. `@substrat-run/kernel` adds `SubjectErasureFence` and one shared claim (`SUBJECT_ERASURE_CLAIM_SQL`): it requires the scope's bound version, serving pin, erasure epoch, copy inventory and the serving pointer's exact (ref, version) pair to still be what the erasure read. `finalizeSubjectShred` takes it as `expected`, and `shredSubject` takes it as an optional `fence`, so the direct arm claims the same way, and a moved scope answers 412 with the key kept. `@substrat-run/adapter-sqlite` and `@substrat-run/adapter-cloudflare` take that claim, and `@substrat-run/contract-tests` holds both to it. `@substrat-run/control-plane-api` adds `unrouteScope`, `claimScopeScriptReap` and `drainScopeScriptCopies`.
+
+### Patch Changes
+
+- a9cbb6d: A scope-store kind's release is stored, canaried and rolled out by a person (#2300). `substrat store-kind upload` stores a kind's package under its sha256, before or after its pin lands; `rollout` canaries a pinned release on the platform's own object through every reserved operation, then moves every vertical that declared the kind, holding the kind against pushes while it does; `rollback` returns to the immediately previous good release. A failure returns the verticals already moved. Each pin now names the `schema` its release migrates to, and no move lowers it.
+- Updated dependencies [ad3ca19]
+- Updated dependencies [c4a0352]
+- Updated dependencies [f855218]
+- Updated dependencies [a8b0842]
+- Updated dependencies [00253e0]
+- Updated dependencies [a9cbb6d]
+- Updated dependencies [1bf5425]
+  - @substrat-run/contracts@0.148.0
+
 ## 0.147.0
 
 ### Minor Changes
@@ -6401,7 +6434,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

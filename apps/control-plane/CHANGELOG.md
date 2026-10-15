@@ -1,5 +1,52 @@
 # @substrat-run/control-plane
 
+## 0.15.11
+
+### Patch Changes
+
+- 00253e0: A scope-store call carries an Ed25519 signature over the audience, the key id, the store script, the object name, the operation, the body, the issue time and a nonce (#2287). The router signs audience `caller` and the control plane signs audience `platform`, each with its own key. A store script holds only public keys, a list per audience so a key can rotate, and checks every call with `verifyScopeStoreCall`. A public key listed for both audiences, or spelled in non-canonical base64url, is refused (`scopeStorePublicKeysFrom`). `PlatformScopeStoreDispatch.hmacKey` is now `platformKey`, a PKCS8 Ed25519 key. The name-only `signScopeStoreName` / `verifyScopeStoreName` and the `./scope-store-mac` subpath are removed.
+- a9cbb6d: A scope-store kind's release is stored, canaried and rolled out by a person (#2300). `substrat store-kind upload` stores a kind's package under its sha256, before or after its pin lands; `rollout` canaries a pinned release on the platform's own object through every reserved operation, then moves every vertical that declared the kind, holding the kind against pushes while it does; `rollback` returns to the immediately previous good release. A failure returns the verticals already moved. Each pin now names the `schema` its release migrates to, and no move lowers it.
+- 7f8c6bf: Export, wipe, erasure and the meter reach every scope-store binding any version of the vertical has declared (#2286), so an object under a binding a later version dropped is still reached, whatever moved the scope off the version that declared it. A restore still imports only what the destination's running version declares, and the router still admits only that version's bindings.
+
+  `@substrat-run/kernel` adds `HostAdmin.verticalScopeStores`: every binding any version of a vertical declared, with its kind, read by its keys from a directory record (`VERTICAL_SCOPE_STORES_DDL`), with no per-version work once the vertical is indexed. `publishVersion` keeps that record in the transaction that inserts the version, and refuses (`conflict`, 409 at the push) a version that declares an existing binding as another kind, judged against every older version, or one binding twice: a binding keeps its kind for the life of its vertical. A vertical whose versions were stored before the record is indexed by its first read or publish. `@substrat-run/adapter-sqlite` and `@substrat-run/adapter-cloudflare` keep the record, and `@substrat-run/contract-tests` holds both to it.
+
+  `@substrat-run/control-plane-api` adds `runningVersionStoresOf`, the running version's stores alone; `scopeStoresOf` is now the union. A backup, a full pull or a fork's export leaves out a binding only an earlier version declared when its export is empty, and refuses (409) one that still holds data, naming the binding: declare it again in a version the scope runs, or reap the scope without a backup.
+
+- d175d87: A scope is taken out of routing before its stores are wiped (#2285). The snapshot delete, the preview reap and the sweeper's snapshot reap first decide every refusal they can (the reap claim, a copy the platform cannot reach, stores that cannot be named), then unbind every hostname of the scope, then wipe its stores, then delete it. `HostAdmin.unbindHostname` takes an optional owner, and the unroute passes it: a hostname is removed only while its row still names that tenant and scope, decided by the delete itself, so a name rebound to another scope meanwhile stays bound there. A refused reap leaves the scope routed and untouched.
+
+  Subject erasure is fenced against a bind, a promote, a rollback or a serving re-upload that lands while the stores are erased. `@substrat-run/kernel` adds `SubjectErasureFence` and one shared claim (`SUBJECT_ERASURE_CLAIM_SQL`): it requires the scope's bound version, serving pin, erasure epoch, copy inventory and the serving pointer's exact (ref, version) pair to still be what the erasure read. `finalizeSubjectShred` takes it as `expected`, and `shredSubject` takes it as an optional `fence`, so the direct arm claims the same way, and a moved scope answers 412 with the key kept. `@substrat-run/adapter-sqlite` and `@substrat-run/adapter-cloudflare` take that claim, and `@substrat-run/contract-tests` holds both to it. `@substrat-run/control-plane-api` adds `unrouteScope`, `claimScopeScriptReap` and `drainScopeScriptCopies`.
+
+- 1bf5425: When a vertical declares a scope store, its store script is put in place before the vertical itself is uploaded, on a push and on a serve (#2210). The script is a Python worker. Its entry checks the envelope with the same verifier the JavaScript entry uses.
+
+  A store kind's registration now pins its releases as D-63 requires: each release is pinned by the sha256 of its bundle (`storeKindReleaseDigest`, which also covers the module the entry imports) and by the source commit it was built from. Module names in a release are printable ASCII. Every upload re-hashes the bytes it is about to send and refuses bytes that are not pinned. A push or a serve never moves a store script to another release. If the platform's entry or a key list changed, a push or serve rebuilds the script at the release it already runs. A kind with no release to run is refused.
+
+  A release's modules must sit in one `kind_<name>/` package. A store upload failure is recorded as an ops failure and stops the vertical's upload.
+
+- Updated dependencies [ad3ca19]
+- Updated dependencies [c4a0352]
+- Updated dependencies [c4a0352]
+- Updated dependencies [226f45a]
+- Updated dependencies [f855218]
+- Updated dependencies [24ae42f]
+- Updated dependencies [a8b0842]
+- Updated dependencies [58f90ca]
+- Updated dependencies [00253e0]
+- Updated dependencies [a9cbb6d]
+- Updated dependencies [03cd8e7]
+- Updated dependencies [6b558f3]
+- Updated dependencies [7f8c6bf]
+- Updated dependencies [d175d87]
+- Updated dependencies [1bf5425]
+  - @substrat-run/contracts@0.148.0
+  - @substrat-run/adapter-cloudflare@0.148.0
+  - @substrat-run/kernel@0.148.0
+  - @substrat-run/control-plane-api@0.148.0
+  - @substrat-run/oidc-rp@0.11.1
+  - @substrat-run/connector-fortnox@0.4.50
+  - @substrat-run/connector-microsoft365@0.0.9
+  - @substrat-run/connector-planima@0.2.45
+  - @substrat-run/connector-scrive@0.14.54
+
 ## 0.15.10
 
 ### Patch Changes
