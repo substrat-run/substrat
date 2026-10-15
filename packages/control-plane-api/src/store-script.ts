@@ -46,10 +46,11 @@ export interface ScopeStoreEnsurerOptions {
 /** Everything the upload sends, as one digest, so a script built from anything else differs. */
 async function buildDigest(script: PythonStoreScript): Promise<string> {
   const { modules, ...config } = script;
-  return storeKindReleaseDigest([
-    ...modules.map((module) => ({ name: `module/${module.name}/${module.contentType}`, content: module.content })),
-    { name: 'config', content: new TextEncoder().encode(JSON.stringify(config)) },
-  ]);
+  const named = modules.map((module) => ({ name: `module/${module.name}/${module.contentType}`, content: module.content }));
+  return storeKindReleaseDigest({
+    entry: named[0]!.name,
+    modules: [...named, { name: 'config', content: new TextEncoder().encode(JSON.stringify(config)) }],
+  });
 }
 
 /**
@@ -92,8 +93,14 @@ export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
             : `kind '${script.kind}' has no release rolled out to '${script.vertical}'`,
         );
       }
-      // The bytes about to be sent, hashed now: never a hash taken when they arrived (D-63).
-      const sha256 = await storeKindReleaseDigest(release.modules).catch((e: unknown) => {
+      // The bytes about to be sent, copied once and hashed now: never a hash taken when they
+      // arrived (D-63). The copy is what is built from and sent, so the hashed bytes are the
+      // sent bytes whatever the loader keeps or shares.
+      const loaded: PythonStoreKindRelease = {
+        entry: release.entry,
+        modules: release.modules.map((module) => ({ name: module.name, content: new Uint8Array(module.content) })),
+      };
+      const sha256 = await storeKindReleaseDigest(loaded).catch((e: unknown) => {
         throw new ControlPlaneError(422, e instanceof Error ? e.message : String(e));
       });
       if (current.release && sha256 !== current.release) {
@@ -104,7 +111,7 @@ export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
       }
       let built: PythonStoreScript;
       try {
-        built = withPythonStoreEntry(release, {
+        built = withPythonStoreEntry(loaded, {
           className: script.className,
           script: script.scriptName,
           callerPublicKeys: opts.callerPublicKeys,
@@ -150,7 +157,9 @@ export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
     const form = new FormData();
     form.set('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }), 'metadata.json');
     for (const module of built.modules) {
-      form.set(module.name, new Blob([new Uint8Array(module.content)], { type: module.contentType }), module.name);
+      // Sent as built, not copied again: every module is the ensurer's own copy or the entry's
+      // own encoding, so its buffer is an ArrayBuffer, and these are the bytes that were hashed.
+      form.set(module.name, new Blob([module.content as Uint8Array<ArrayBuffer>], { type: module.contentType }), module.name);
     }
     const res = await fetch(url, { method: 'PUT', headers: { authorization: `Bearer ${opts.apiToken}` }, body: form });
     if (!res.ok) throw new ControlPlaneError(502, `store script upload failed (${res.status}) for '${scriptName}'`);

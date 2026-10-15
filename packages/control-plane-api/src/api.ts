@@ -7582,13 +7582,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * uploaded (#2210). A declaration with no uploader configured is refused (501) rather than
    * served without its store. A failure is recorded as an ops failure at stage `store-upload`
    * (#559), then rethrown, so the push or serve answers it and the vertical upload never runs.
+   * The row carries the vertical's owner, so it shows in that tenant's failure view; the serve
+   * path reads the owner only once something has failed.
    */
   const ensureScopeStoresOf = async (
     actor: PlatformActorId,
     operation: 'deploy' | 'serve',
     slug: string,
     stores: readonly ScopeStoreNeed[],
-    tenantId: TenantId | null = null,
+    owner: () => Promise<TenantId | null>,
   ): Promise<void> => {
     if (stores.length === 0) return;
     try {
@@ -7606,7 +7608,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           operation: `${operation}.store-upload`,
           stage: 'store-upload',
           vertical: slug,
-          tenantId,
+          tenantId: await owner().catch(() => null),
           status: e instanceof ControlPlaneError ? e.status : 502,
           message: e instanceof Error ? e.message : String(e),
         },
@@ -7677,7 +7679,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         : { type: 'r2_bucket', name: b.name, bucket_name: b.bucketName },
     );
     // #2210: the store scripts first, so the vertical is never served before what it reaches.
-    await ensureScopeStoresOf(actor, 'serve', slug, manifest.scopeStores);
+    await ensureScopeStoresOf(actor, 'serve', slug, manifest.scopeStores, async () => (await ownerOf(actor, slug)) ?? null);
     await options.deployVertical(
       ref,
       {
@@ -8229,7 +8231,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const deploymentRef = deploymentRefFor(slug, id);
     // #2210: the store scripts first, outside the vertical upload's try, so a store failure
     // answers as itself and the vertical is not uploaded at all.
-    await ensureScopeStoresOf(c.get('actor'), 'deploy', slug, manifest.scopeStores, ownerTenant ?? null);
+    await ensureScopeStoresOf(c.get('actor'), 'deploy', slug, manifest.scopeStores, async () => ownerTenant ?? null);
     try {
       await options.deployVertical(deploymentRef, {
         entry: manifest.entry,

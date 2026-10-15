@@ -65,7 +65,7 @@ describe('a vertical upload carries no scope-store binding, and its store script
   beforeAll(async () => {
     testKind = {
       kind: 'graph',
-      releases: [{ sha256: await storeKindReleaseDigest(release.modules), sourceCommit: release.sourceCommit }],
+      releases: [{ sha256: await storeKindReleaseDigest(release), sourceCommit: release.sourceCommit }],
       className: 'Store',
       operations: ['read'],
       platformOperations: [...RESERVED_STORE_OPERATIONS],
@@ -156,8 +156,11 @@ describe('a vertical upload carries no scope-store binding, and its store script
   const putTo = (script: string) => [...puts].reverse().find((p) => p.script === script);
   const names = (meta: Record<string, any> | undefined): string[] =>
     ((meta?.['bindings'] ?? []) as { name: string }[]).map((b) => b.name);
+  const tenantIds = new Map<string, string>();
   const tenant = async (slug: string) => {
-    await host.admin.createTenant(staff, { id: tenantId.parse(ulid()), slug, name: slug });
+    const id = tenantId.parse(ulid());
+    await host.admin.createTenant(staff, { id, slug, name: slug });
+    tenantIds.set(slug, id);
     return slug;
   };
   const failuresOf = async (vertical: string) => {
@@ -226,7 +229,45 @@ describe('a vertical upload carries no scope-store binding, and its store script
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatch(/^substrat-store-graph-/);
     expect(await failuresOf('store-fails/crm')).toEqual(
-      expect.arrayContaining([expect.objectContaining({ operation: 'deploy.store-upload', stage: 'store-upload', status: 502 })]),
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: 'deploy.store-upload',
+          stage: 'store-upload',
+          status: 502,
+          tenantId: tenantIds.get('store-fails'),
+        }),
+      ]),
+    );
+  });
+
+  it('a failed store upload stops a promote before the serving upload, and is recorded for the owner', async () => {
+    stubCloudflare();
+    registry.push(testKind);
+    const res = await push(await tenant('store-serve-fails'));
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { id, verticalSlug } = (await res.json()) as { id: string; verticalSlug: string };
+    // The script is gone and its upload now fails: the promote must not serve without it.
+    scripts.delete(scopeStoreScriptName(verticalSlug, 'graph'));
+    failStorePut = true;
+    const before = puts.length;
+    const promoted = await app.request(`/verticals/${encodeURIComponent(verticalSlug)}/channels/prod/promote`, {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({ versionId: id }),
+    });
+    expect(promoted.ok, await promoted.clone().text()).toBe(false);
+    const sent = puts.slice(before).map((p) => p.script);
+    expect(sent).toEqual([scopeStoreScriptName(verticalSlug, 'graph')]);
+    expect(sent).not.toContain(stableDeploymentRefFor(verticalSlug));
+    expect(await failuresOf(verticalSlug)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: 'serve.store-upload',
+          stage: 'store-upload',
+          status: 502,
+          tenantId: tenantIds.get('store-serve-fails'),
+        }),
+      ]),
     );
   });
 

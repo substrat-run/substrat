@@ -346,7 +346,8 @@ export const storeKindId = z.string().regex(STORE_KIND_ID, { message: 'a store k
 /**
  * One pinned release of a store kind (D-63): the sha256 of the release bundle, which the
  * platform checks at every upload, and the source commit the bundle was built from, which a
- * reviewer reads. The digest is {@link storeKindReleaseDigest} over the bundle's modules.
+ * reviewer reads. The digest is {@link storeKindReleaseDigest} over the bundle's modules and the
+ * module the entry imports.
  */
 export const storeKindRelease = z
   .object({
@@ -384,24 +385,48 @@ export type StoreKindRegistration = z.infer<typeof storeKindRegistration>;
 /** Registered store kinds. None, until a reviewed registration lands (#2210). */
 export const STORE_KINDS: readonly StoreKindRegistration[] = [];
 
+/** The domain tag a release digest starts with. Another framing is another tag, and a pin migration. */
+export const STORE_RELEASE_DIGEST_TAG = 'substrat.store-release/v1';
+
+/** A name inside a release digest: printable ASCII, no space, so no NUL and no encoding choice. */
+const RELEASE_DIGEST_NAME = /^[\x21-\x7e]+$/;
+
 /**
- * The sha256 that pins a store kind's release (D-63): lowercase hex over the bundle's modules in
- * name order (UTF-16 code unit order, as `Array.prototype.sort` compares), each framed as its
- * UTF-8 name, one zero byte, its length as an unsigned 64-bit big-endian integer, then its exact
- * bytes. The framing is what makes the digest name one bundle: no two module lists encode alike.
- * A duplicate module name is refused, since a bundle with one has no single meaning.
+ * The sha256 that pins a store kind's release (D-63), as lowercase hex. It covers everything that
+ * decides what runs, apart from the class the registration names: the module the platform's
+ * entry imports, and every module's name and bytes. Framed as {@link STORE_RELEASE_DIGEST_TAG}
+ * and one zero byte, the entry's name and one zero byte, then each module in name order: its
+ * name, one zero byte, its length as an unsigned 64-bit big-endian integer, then its exact bytes.
+ *
+ * The framing is what makes the digest name one release, so its preconditions are held here,
+ * not left to a caller: every name (the entry's included) is non-empty printable ASCII without
+ * a space. A NUL would let one name absorb the next module's frame, and a lone surrogate encodes
+ * to the same bytes as U+FFFD, so either would let two releases share a digest. ASCII also makes
+ * the sort below (UTF-16 code units) the byte order, so a pin computed outside JavaScript agrees.
+ * A module named twice is refused, and so is an entry that is not one of the modules.
  */
-export async function storeKindReleaseDigest(
-  modules: readonly { readonly name: string; readonly content: Uint8Array }[],
-): Promise<string> {
-  const sorted = [...modules].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  const parts: Uint8Array[] = [];
+export async function storeKindReleaseDigest(release: {
+  readonly entry: string;
+  readonly modules: readonly { readonly name: string; readonly content: Uint8Array }[];
+}): Promise<string> {
+  const encode = (name: string) => {
+    if (!RELEASE_DIGEST_NAME.test(name)) {
+      throw new Error(`a release name must be printable ASCII without spaces: ${JSON.stringify(name)}`);
+    }
+    return new TextEncoder().encode(name);
+  };
+  const zero = new Uint8Array([0]);
+  const parts: Uint8Array[] = [encode(STORE_RELEASE_DIGEST_TAG), zero, encode(release.entry), zero];
+  if (!release.modules.some((module) => module.name === release.entry)) {
+    throw new Error(`a release's entry '${release.entry}' is not one of its modules`);
+  }
+  const sorted = [...release.modules].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   for (const [i, module] of sorted.entries()) {
     if (i > 0 && sorted[i - 1]!.name === module.name) throw new Error(`a release ships '${module.name}' twice`);
-    const name = new TextEncoder().encode(module.name);
+    const name = encode(module.name);
     const length = new Uint8Array(8);
     new DataView(length.buffer).setBigUint64(0, BigInt(module.content.byteLength));
-    parts.push(name, new Uint8Array([0]), length, module.content);
+    parts.push(name, zero, length, module.content);
   }
   const framed = new Uint8Array(parts.reduce((n, part) => n + part.byteLength, 0));
   let offset = 0;

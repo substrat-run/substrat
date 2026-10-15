@@ -129,6 +129,10 @@ describe('withPythonStoreEntry', async () => {
   it.each([
     ['a module outside a kind_ package', release({ modules: [py('kind_graph/store.py'), py('helpers.py')] }), {}, /helpers\.py/],
     ["a module that shadows the runtime's", release({ modules: [py('kind_graph/store.py'), py('workers.py')] }), {}, /workers\.py/],
+    // A package of its own, so only the kind_ prefix refuses it: the runtime's own modules.
+    ["a package that shadows the runtime's FFI", release({ entry: 'js/ffi.py', modules: [py('js/ffi.py')] }), {}, /'js\/ffi\.py'/],
+    ["a package that shadows the runtime's SDK", release({ entry: 'workers/__init__.py', modules: [py('workers/__init__.py')] }), {}, /'workers\/__init__\.py'/],
+    ['a package that shadows Pyodide', release({ entry: 'pyodide/ffi.py', modules: [py('pyodide/ffi.py')] }), {}, /'pyodide\/ffi\.py'/],
     ["the Python entry's own name", release({ modules: [py('kind_graph/store.py'), py('substrat_store_entry.py')] }), {}, /substrat_store_entry\.py/],
     ["the verifier's name", release({ modules: [py('kind_graph/store.py'), py(STORE_VERIFIER_MODULE)] }), {}, /substrat-store-verify/],
     ["the upload's metadata part", release({ modules: [py('kind_graph/store.py'), py('metadata')] }), {}, /'metadata'/],

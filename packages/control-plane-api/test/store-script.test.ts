@@ -35,8 +35,8 @@ let caller: string;
 let platform: string;
 beforeAll(async () => {
   pins = [
-    { sha256: await storeKindReleaseDigest(v1.modules), sourceCommit: v1.sourceCommit },
-    { sha256: await storeKindReleaseDigest(v2.modules), sourceCommit: v2.sourceCommit },
+    { sha256: await storeKindReleaseDigest(v1), sourceCommit: v1.sourceCommit },
+    { sha256: await storeKindReleaseDigest(v2), sourceCommit: v2.sourceCommit },
   ];
   caller = (await generateScopeStoreKeyPair()).publicKey;
   platform = (await generateScopeStoreKeyPair()).publicKey;
@@ -102,7 +102,7 @@ function ensurer(input: {
       input.asked?.push({ ...(sha256 ? { sha256 } : {}) });
       if (sha256 === undefined) return 'rolledOut' in input ? input.rolledOut : v1;
       for (const candidate of input.stored ?? [v1, v2]) {
-        if ((await storeKindReleaseDigest(candidate.modules)) === sha256) return candidate;
+        if ((await storeKindReleaseDigest(candidate)) === sha256) return candidate;
       }
       return undefined;
     },
@@ -207,10 +207,51 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
     expect(cf.puts).toHaveLength(1);
   });
 
+  it('refuses (422) the pinned modules under another entry: the entry is part of the pin', async () => {
+    const cf = cloudflare();
+    // The same bytes, with the entry importing another of them: not the release that was pinned.
+    const moved = { ...v1, entry: 'kind_counter/blob.py' };
+    await expect(ensurer({ rolledOut: moved })(need)).rejects.toMatchObject({ status: 422, message: /is not pinned/ });
+    // And a script that runs v1 is not rebuilt onto the other entry under v1's sha256, even by a
+    // loader that hands back v1's bytes with it.
+    await ensurer({})(need);
+    cf.puts.length = 0;
+    cf.scripts.set(SCRIPT, cf.scripts.get(SCRIPT)!.map((b) => (b.name === STORE_BUILD_VAR ? { ...b, text: 'stale' } : b)));
+    const entryMoved = createScopeStoreEnsurer({
+      accountId: 'acct',
+      namespace: 'ns',
+      apiToken: 'tok',
+      callerPublicKeys: [caller],
+      platformPublicKeys: [platform],
+      kinds: [{ kind: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      loadRelease: async () => moved,
+    });
+    await expect(entryMoved(need)).rejects.toMatchObject({ status: 422, message: /loaded as other bytes/ });
+    expect(cf.puts).toEqual([]);
+  });
+
+  it('sends the bytes it hashed, whatever the loader does with its own afterwards', async () => {
+    const cf = cloudflare();
+    const held = artifact('class Store:\n    pass\n');
+    const original = new Uint8Array(held.modules[0]!.content);
+    const digest = crypto.subtle.digest.bind(crypto.subtle);
+    // The loader rewrites the array it handed over as soon as the hash starts.
+    vi.spyOn(crypto.subtle, 'digest').mockImplementation(async (algorithm, data) => {
+      held.modules[0]!.content.fill(0x21);
+      return digest(algorithm, data);
+    });
+    try {
+      await ensurer({ rolledOut: held })(need);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(cf.puts[0]!.parts.get('kind_counter/store.py')!.bytes).toEqual(original);
+  });
+
   it('refuses (422) a release whose modules break the module rule', async () => {
     const cf = cloudflare();
     const bad = { ...v1, modules: [...v1.modules, { name: 'workers.py', content: bytes('') }] };
-    const releases = [{ sha256: await storeKindReleaseDigest(bad.modules), sourceCommit: v1.sourceCommit }];
+    const releases = [{ sha256: await storeKindReleaseDigest(bad), sourceCommit: v1.sourceCommit }];
     await expect(ensurer({ rolledOut: bad, releases })(need)).rejects.toMatchObject({ status: 422, message: /workers\.py/ });
     expect(cf.puts).toEqual([]);
   });

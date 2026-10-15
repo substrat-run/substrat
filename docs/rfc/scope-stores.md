@@ -820,7 +820,10 @@ block it.
    The commit is checked in review, not at upload. On #2299: a push or a serve uploads a
    missing script at the release the publish flow rolled out, and otherwise never moves it.
    It rebuilds the script at the release it runs only when what the script was built from
-   changed (the entry, the verifier, a key list).
+   changed (the entry, the verifier, a key list). The sha256 covers the module the entry imports
+   as well as every module's name and bytes, so the same modules under another entry are another
+   release. A rebuild happens only on that vertical's next push or serve, so a removed key or a
+   verifier fix does not reach a script whose vertical is not pushed again: #2309.
 9. Later: the null-manifest test (f), the Cloudflare host's wipe without a tenant id,
    per-object nonce memory if Q2 says so, and a door for schedules (§9).
 
