@@ -81,6 +81,8 @@ import {
   reapScopeScriptCopies,
   assertNoUnreachableScopeCopies,
   createWfpUploader,
+  createScopeStoreEnsurer,
+  ed25519PublicKey,
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
   createCfObservabilityReader,
@@ -534,6 +536,12 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   STORE_PLATFORM_KEY?: string;
   /**
+   * Raw Ed25519 public key, base64url, for audience `caller`. The control plane
+   * cannot derive it: that private key stays on the router. A store script verifies
+   * with it and cannot mint an envelope.
+   */
+  STORE_CALLER_PUBLIC_KEY?: string;
+  /**
    * Seals connection credentials at rest (#101/#574) — base64(url) of 32 bytes
    * (`openssl rand -base64 32`), same convention as the dashboard's box. The
    * coordinator-side key for the directory's `_substrat_connection_secrets`
@@ -592,6 +600,33 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
     bindAi: true,
     traceSampling: traceSamplingFor(env),
   });
+}
+
+/**
+ * Uploads a declared scope store's script before the vertical (#2210). The release
+ * loader stays empty until a release can be published (#2297); a declared store then
+ * fails closed instead of serving a vertical with no store script.
+ */
+function ensureScopeStoresFor(env: Env) {
+  const accountId = env.CF_ACCOUNT_ID;
+  const apiToken = env.CF_API_TOKEN;
+  if (!apiToken || !accountId) return undefined;
+  return async (input: { vertical: string; stores: readonly { binding: string; kind: string }[] }) => {
+    const callerPublicKey = env.STORE_CALLER_PUBLIC_KEY;
+    const platformKey = env.STORE_PLATFORM_KEY;
+    if (!callerPublicKey || !platformKey) {
+      throw new ControlPlaneError(503, 'a scope store is declared and the store public keys are not configured');
+    }
+    const ensure = createScopeStoreEnsurer({
+      accountId,
+      namespace: dispatchNamespaceOf(env),
+      apiToken,
+      callerPublicKey,
+      platformPublicKey: await ed25519PublicKey(platformKey),
+      loadRelease: async () => undefined,
+    });
+    await ensure(input);
+  };
 }
 
 /** The list of base domains a PLATFORM hostname is minted under (#305), read once (#973). */
@@ -2713,6 +2748,7 @@ export default {
         resolveVerticalRef: resolveVerticalRefFor(env),
         platformScopeStores: platformStoresFor(env),
         deployVertical: deployVerticalFor(env),
+        ensureScopeStores: ensureScopeStoresFor(env),
         fetchVerticalModules: fetchVerticalModulesFor(env),
         fetchVerticalAsset: fetchVerticalAssetFor(env),
         patchScriptBindings: patchScriptBindingsFor(env),

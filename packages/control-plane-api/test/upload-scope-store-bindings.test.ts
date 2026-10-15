@@ -14,6 +14,7 @@ import {
 import {
   createControlPlaneApi,
   createWfpUploader,
+  createScopeStoreEnsurer,
   deploymentRefFor,
   DEV_ACTOR_HEADER,
   stableDeploymentRefFor,
@@ -57,6 +58,18 @@ describe('a vertical upload carries no scope-store binding, with a kind register
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       deployVertical: createWfpUploader({ accountId: 'acct', namespace: 'ns', apiToken: 'tok' }),
+      ensureScopeStores: createScopeStoreEnsurer({
+        accountId: 'acct',
+        namespace: 'ns',
+        apiToken: 'tok',
+        callerPublicKey: 'caller-pub',
+        platformPublicKey: 'platform-pub',
+        loadRelease: async () => ({
+          release: '1.0.0',
+          entry: 'kind_counter.py',
+          modules: [{ name: 'kind_counter.py', content: new TextEncoder().encode('class Store:\n    pass\n') }],
+        }),
+      }),
       fetchVerticalModules: async () => [
         { name: 'worker.js', content: new TextEncoder().encode('export default {}'), contentType: 'application/javascript+module' },
       ],

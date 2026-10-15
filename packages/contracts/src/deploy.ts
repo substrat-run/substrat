@@ -711,7 +711,7 @@ export function assertScopeStoresRegistered(stores: readonly ScopeStoreNeed[]): 
       throw substratError(
         'forbidden',
         `deploy refused: scope store '${store.binding}' declares kind '${store.kind}', which is not registered. ` +
-          `A store kind is platform code, pinned to a release the way a connector is.`,
+          `A store kind is platform code, registered in this repo.`,
       );
     }
   }

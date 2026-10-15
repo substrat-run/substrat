@@ -381,6 +381,12 @@ export interface ControlPlaneApiOptions {
    */
   deployVertical?: DeployVerticalFn;
   /**
+   * Uploads the store script for each declared scope store before the vertical's own
+   * upload (#2210). Absent ⇒ a push that declares a store and has a registered kind is
+   * refused, rather than serving a vertical whose store script was never uploaded.
+   */
+  ensureScopeStores?: (input: { vertical: string; stores: readonly { binding: string; kind: string }[] }) => Promise<void>;
+  /**
    * Reads a script's module contents back from the platform runtime (#286) — the
    * archive script is the bundle store the serving upload reads from. Host-injected
    * like `deployVertical`. Absent ⇒ promotion moves channels without serving in
@@ -7568,6 +7574,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ? { type: 'd1', name: b.name, id: b.id }
         : { type: 'r2_bucket', name: b.name, bucket_name: b.bucketName },
     );
+    if (manifest.scopeStores.length > 0) {
+      if (!options.ensureScopeStores) {
+        throw new ControlPlaneError(
+          501,
+          `serve refused: '${slug}' declares a scope store and this control plane uploads no store script`,
+        );
+      }
+      await options.ensureScopeStores({ vertical: slug, stores: manifest.scopeStores });
+    }
     await options.deployVertical(
       ref,
       {
@@ -8145,6 +8160,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const id = ulid();
     const deploymentRef = deploymentRefFor(slug, id);
     try {
+      if (manifest.scopeStores.length > 0) {
+        if (!options.ensureScopeStores) {
+          throw new ControlPlaneError(
+            501,
+            `deploy refused: '${slug}' declares a scope store and this control plane uploads no store script`,
+          );
+        }
+        await options.ensureScopeStores({ vertical: slug, stores: manifest.scopeStores });
+      }
       await options.deployVertical(deploymentRef, {
         entry: manifest.entry,
         compatibilityDate: manifest.compatibilityDate,
@@ -8163,6 +8187,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ...(manifest.assets ? { assets: { ...manifest.assets, files: assets } } : {}),
       });
     } catch (e) {
+      if (e instanceof ControlPlaneError) throw e;
       // The upload to the runtime failed. Surface the detail (the builder is
       // authenticated) rather than the anonymous 500 the generic handler would give, so a
       // push failure is diagnosable without reading worker logs. The version label is NOT

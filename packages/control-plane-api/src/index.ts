@@ -146,6 +146,8 @@ export type {
   DeployManifest,
 } from './deploy.js';
 export { createWfpUploader, createWfpModulesFetcher, createWfpBindingsPatcher } from './wfp.js';
+export { createScopeStoreEnsurer, ed25519PublicKey, STORE_SCRIPT_ENTRY } from './store-script.js';
+export type { ScopeStoreEnsurerOptions, StoreKindReleaseArtifact } from './store-script.js';
 export {
   withPlatformEntry,
   platformEntrySkipReason,
