@@ -488,7 +488,14 @@ The rule, in seven points:
    digest of the input in a tagged, canonical encoding, plus an expiry and a nonce. It is
    single-use, and that is enforced by the record's own conditional append, not by a read that
    comes before it. An approval over a WebSocket is authenticated as the user on that message,
-   not inherited from the socket's opening.
+   not inherited from the socket's opening. A digest of the input alone is not enough: the
+   same `{ id }` then gives one digest for an archive and a delete, and for one call in two
+   threads (the gap found in the contracts draft, #2304). So the digest hashes a tagged tuple
+   (`['substrat.approval/v1', operation, thread, call, input]`) in an encoding of its own,
+   pinned by fixed test vectors and refusing values JSON cannot carry, rather than sharing the
+   idempotency fingerprint's encoding; and the `approval-resolved` event records the approver
+   and echoes the digest. Digests are stored and compared across deploys, so this is settled
+   before the schema is published, not after.
 4. **Authority is re-derived each step** from a live credential, and it ends at the subject's
    `AuthSubject.expiresAt`, as anything held open past a request already does
    (`packages/vertical-auth/src/provider.ts`, #938). A run cannot outlive it, including a run
