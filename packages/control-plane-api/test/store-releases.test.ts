@@ -333,6 +333,25 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     await host.admin.releaseStoreKindHold(staff, { kind: 'graph', holder: other });
   });
 
+  it('does not take the kind back after its lease lapsed, even once the other holder is gone', async () => {
+    const f = fleet();
+    await run(f, sha('1'));
+    f.events.length = 0;
+    const other = ulid();
+    // The lease runs out; another holder takes the kind, finishes, and lets it go again.
+    f.before.set('vb:2', async () => {
+      clock.advance(ROLLOUT_HOLD_TTL_MS + 1);
+      expect(await host.admin.holdStoreKind(staff, { kind: 'graph', holder: other, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS })).toBe(true);
+      const row = await host.admin.beginStoreKindRollout(staff, { kind: 'graph', sha256: sha('1'), action: 'rollout', holder: other });
+      await host.admin.finishStoreKindRollout(staff, { kind: 'graph', seq: row.seq, holder: other, state: 'good', detail: null });
+      await host.admin.releaseStoreKindHold(staff, { kind: 'graph', holder: other });
+    });
+    await expect(run(f, sha('2'))).rejects.toMatchObject({ status: 409, message: /lapsed or its rollout was ended by another/ });
+    // vc is not moved to 2 while the state says 1 is current.
+    expect(f.events).toEqual(['canary:2', 'va:2', 'vb:2']);
+    expect(await current()).toBe(sha('1'));
+  });
+
   it('stops returning when the hold is lost during the return', async () => {
     const f = fleet();
     await run(f, sha('1'));
