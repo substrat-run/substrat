@@ -512,7 +512,7 @@ describe('engine-assistant', () => {
       // literal such as the weight can occur in one by chance (a shard once failed on `…W105`).
       const payload = e!.payload as Record<string, unknown>;
       expect(Object.keys(payload).sort()).toEqual(['callId', 'threadId', 'tool']);
-      expect(Object.values(payload)).not.toContain(digest);
+      expect(JSON.stringify(payload)).not.toContain(digest); // 64 hex characters: no id can contain it
       for (const [field, value] of Object.entries(LOG)) {
         expect(Object.values(payload), field).not.toContain(value);
       }
