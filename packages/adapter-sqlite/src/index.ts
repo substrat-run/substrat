@@ -494,7 +494,16 @@ import {
   VERTICAL_SCOPE_STORES_DDL,
   forgetVerticalScopeStores,
   indexVersionScopeStores,
+  kindDeclarationsOf,
   verticalScopeStoresOf,
+  STORE_KIND_RELEASES_DDL,
+  beginStoreKindRolloutIn,
+  finishStoreKindRolloutIn,
+  holdStoreKindIn,
+  recordStoreKindReleaseIn,
+  releaseStoreKindHoldIn,
+  storeKindReleaseIn,
+  storeKindStateIn,
   splitManifestMigrations,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
@@ -2235,17 +2244,8 @@ export class SqliteScopeHost implements ScopeHost {
         created_at TEXT NOT NULL,
         PRIMARY KEY (tenant_id, vertical, binding)
       );
-      -- A published store-kind release (#2297). The bytes live in R2; this row is the
-      -- checksum, the publisher and which release is current. One current per kind.
-      CREATE TABLE IF NOT EXISTS store_kind_releases (
-        kind         TEXT NOT NULL,
-        release_id   TEXT NOT NULL,
-        sha256       TEXT NOT NULL,
-        published_by TEXT NOT NULL,
-        published_at TEXT NOT NULL,
-        status       TEXT NOT NULL,
-        PRIMARY KEY (kind, release_id)
-      );
+      -- A store kind's stored releases, rollouts and holds (D-63, #2300).
+      ${STORE_KIND_RELEASES_DDL}
       -- The vertical + version registry (#31). A scope binds to a VERSION, so
       -- dev/staging/prod are the same vertical pinned differently, and a preview
       -- deployment is a version nothing has been promoted to yet.
@@ -10434,74 +10434,55 @@ export class SqliteScopeHost implements ScopeHost {
           createdAt: r.created_at,
         }));
       },
-      listStoreKindReleases: async (actor, kind) => {
-        const rows = this.directory
-          .prepare(
-            `SELECT kind, release_id, sha256, published_by, published_at, status
-             FROM store_kind_releases WHERE kind = ? ORDER BY published_at`,
-          )
-          .all(kind) as {
-          kind: string;
-          release_id: string;
-          sha256: string;
-          published_by: string;
-          published_at: string;
-          status: 'current' | 'previous' | 'failed';
-        }[];
-        this.recordAccess(actor, 'listStoreKindReleases', { tenantId: null }, { kind }, rows.length);
-        return rows.map((r) => ({
-          kind: r.kind,
-          releaseId: r.release_id,
-          sha256: r.sha256,
-          publishedBy: r.published_by,
-          publishedAt: r.published_at,
-          status: r.status,
-        }));
-      },
-      putStoreKindRelease: async (actor, input) => {
+      // -- store-kind releases, rollouts and holds (D-63, #2300) -------------------
+      // The state is kernel code over the directory (store-kind-releases.ts), shared with the
+      // Cloudflare control plane; each call is one transaction. A hold's expiry is judged against
+      // this host's clock, so a test can let a lease lapse without waiting.
+      recordStoreKindRelease: async (actor, input) => {
         const at = new Date().toISOString();
-        this.directory.transaction(() => {
-          if (input.status === 'current') {
-            this.directory
-              .prepare(
-                `UPDATE store_kind_releases SET status = 'previous' WHERE kind = ? AND status = 'current' AND release_id != ?`,
-              )
-              .run(input.kind, input.releaseId);
-          }
-          this.directory
-            .prepare(
-              `INSERT INTO store_kind_releases (kind, release_id, sha256, published_by, published_at, status)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(kind, release_id) DO UPDATE SET
-                 sha256 = excluded.sha256,
-                 published_by = excluded.published_by,
-                 published_at = excluded.published_at,
-                 status = excluded.status`,
-            )
-            .run(input.kind, input.releaseId, input.sha256, actor, at, input.status);
-        })();
-        const row = {
-          kind: input.kind,
-          releaseId: input.releaseId,
-          sha256: input.sha256,
-          publishedBy: actor,
-          publishedAt: at,
-          status: input.status,
-        };
-        this.recordAdmin(actor, input.action, { tenantId: null, vertical: input.kind }, null, row);
+        const { record, created } = this.directory.transaction(() =>
+          recordStoreKindReleaseIn(switchSqlOf(this.directory), { ...input, actor, at }),
+        )();
+        if (created) this.recordAdmin(actor, 'store-kinds.upload', { tenantId: null }, null, record, at);
+        return record;
+      },
+      getStoreKindRelease: async (actor, kind, sha256) => {
+        const record = storeKindReleaseIn(switchSqlOf(this.directory), kind, sha256);
+        this.recordAccess(actor, 'getStoreKindRelease', { tenantId: null }, { kind, sha256 }, record ? 1 : 0);
+        return record;
+      },
+      storeKindState: async (actor, kind) => {
+        const state = storeKindStateIn(switchSqlOf(this.directory), kind);
+        this.recordAccess(actor, 'storeKindState', { tenantId: null }, { kind }, state.rollouts.length);
+        return state;
+      },
+      storeKindDeclarations: async (actor, kind) => {
+        const declared = this.directory.transaction(() => kindDeclarationsOf(switchSqlOf(this.directory), kind))();
+        this.recordAccess(actor, 'storeKindDeclarations', { tenantId: null }, { kind }, declared.length);
+        return declared;
+      },
+      holdStoreKind: async (_actor, input) =>
+        this.directory.transaction(() =>
+          holdStoreKindIn(switchSqlOf(this.directory), { ...input, nowMs: Date.parse(this.clock()) }),
+        )(),
+      releaseStoreKindHold: async (_actor, input) => {
+        releaseStoreKindHoldIn(switchSqlOf(this.directory), input);
+      },
+      beginStoreKindRollout: async (actor, input) => {
+        const at = new Date().toISOString();
+        const row = this.directory.transaction(() =>
+          beginStoreKindRolloutIn(switchSqlOf(this.directory), { ...input, actor, at, nowMs: Date.parse(this.clock()) }),
+        )();
+        this.recordAdmin(actor, input.action === 'rollback' ? 'store-kinds.rollback' : 'store-kinds.rollout', { tenantId: null }, null, row, at);
         return row;
       },
-      servingManifests: async (actor) => {
-        const rows = this.directory
-          .prepare(
-            `SELECT v.slug AS slug, m.manifest_json AS manifest_json
-             FROM verticals v
-             JOIN vertical_versions m ON m.id = v.serving_version_id
-             WHERE v.serving_version_id IS NOT NULL AND m.manifest_json IS NOT NULL`,
-          )
-          .all() as { slug: string; manifest_json: string }[];
-        this.recordAccess(actor, 'servingManifests', { tenantId: null }, null, rows.length);
-        return rows.map((r) => ({ slug: r.slug, manifestJson: r.manifest_json }));
+      finishStoreKindRollout: async (actor, input) => {
+        const at = new Date().toISOString();
+        const row = this.directory.transaction(() =>
+          finishStoreKindRolloutIn(switchSqlOf(this.directory), { ...input, at, nowMs: Date.parse(this.clock()) }),
+        )();
+        this.recordAdmin(actor, row.action === 'rollback' ? 'store-kinds.rollback' : 'store-kinds.rollout', { tenantId: null }, null, row, at);
+        return row;
       },
       getScopeRecord: async (actor, tenantId: TenantId, scopeId: ScopeId): Promise<Scope | undefined> => {
         const r = this.directory.prepare('SELECT * FROM scopes WHERE scope_id = ?').get(scopeId) as

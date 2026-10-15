@@ -503,6 +503,14 @@ import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, ty
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
+import type {
+  StoreKindHoldMode,
+  StoreKindReleaseRecord,
+  StoreKindRolloutAction,
+  StoreKindRolloutRecord,
+  StoreKindRolloutState,
+  StoreKindState,
+} from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
   isUpgradeRequest,
@@ -670,25 +678,31 @@ interface ControlPlaneStub {
       created_at: string;
     }[]
   >;
-  listStoreKindReleases(kind: string): Promise<
-    {
-      kind: string;
-      release_id: string;
-      sha256: string;
-      published_by: string;
-      published_at: string;
-      status: string;
-    }[]
-  >;
-  putStoreKindRelease(row: {
+  recordStoreKindRelease(input: { kind: string; sha256: string; sourceCommit: string; actor: string; at: string }): Promise<{
+    record: StoreKindReleaseRecord;
+    created: boolean;
+  }>;
+  getStoreKindRelease(kind: string, sha256: string): Promise<StoreKindReleaseRecord | undefined>;
+  storeKindState(kind: string): Promise<StoreKindState>;
+  storeKindDeclarations(kind: string): Promise<{ vertical: string; stores: VerticalScopeStore[] }[]>;
+  holdStoreKind(input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number }): Promise<boolean>;
+  releaseStoreKindHold(input: { kind: string; holder: string }): Promise<void>;
+  beginStoreKindRollout(input: {
     kind: string;
-    releaseId: string;
     sha256: string;
-    publishedBy: string;
-    publishedAt: string;
-    status: string;
-  }): Promise<void>;
-  servingManifests(): Promise<{ slug: string; manifest_json: string }[]>;
+    action: StoreKindRolloutAction;
+    holder: string;
+    actor: string;
+    at: string;
+  }): Promise<StoreKindRolloutRecord>;
+  finishStoreKindRollout(input: {
+    kind: string;
+    seq: number;
+    holder: string;
+    state: Exclude<StoreKindRolloutState, 'rolling'>;
+    detail: string | null;
+    at: string;
+  }): Promise<StoreKindRolloutRecord>;
   getBlobStore(
     tenantId: string,
     vertical: string,
@@ -8401,43 +8415,41 @@ export class CloudflareScopeHost implements ScopeHost {
           createdAt: r.created_at,
         }));
       },
-      listStoreKindReleases: async (actor, kind) => {
-        const rows = await this.cp.listStoreKindReleases(kind);
-        await this.recordAccess(actor, 'listStoreKindReleases', { tenantId: null }, { kind }, rows.length);
-        return rows.map((r) => ({
-          kind: r.kind,
-          releaseId: r.release_id,
-          sha256: r.sha256,
-          publishedBy: r.published_by,
-          publishedAt: r.published_at,
-          status: r.status as 'current' | 'previous' | 'failed',
-        }));
+      // -- store-kind releases, rollouts and holds (D-63, #2300) -------------------
+      recordStoreKindRelease: async (actor, input) => {
+        const at = new Date().toISOString();
+        const { record, created } = await this.directory('recordStoreKindRelease', { ...input, actor, at });
+        if (created) await this.recordAdmin(actor, 'store-kinds.upload', { tenantId: null }, null, record);
+        return record;
       },
-      putStoreKindRelease: async (actor, input) => {
-        const publishedAt = new Date().toISOString();
-        await this.cp.putStoreKindRelease({
-          kind: input.kind,
-          releaseId: input.releaseId,
-          sha256: input.sha256,
-          publishedBy: actor,
-          publishedAt,
-          status: input.status,
-        });
-        const row = {
-          kind: input.kind,
-          releaseId: input.releaseId,
-          sha256: input.sha256,
-          publishedBy: actor,
-          publishedAt,
-          status: input.status,
-        };
-        await this.recordAdmin(actor, input.action, { tenantId: null, vertical: input.kind }, null, row);
+      getStoreKindRelease: async (actor, kind, sha256) => {
+        const record = await this.cp.getStoreKindRelease(kind, sha256);
+        await this.recordAccess(actor, 'getStoreKindRelease', { tenantId: null }, { kind, sha256 }, record ? 1 : 0);
+        return record;
+      },
+      storeKindState: async (actor, kind) => {
+        const state = await this.cp.storeKindState(kind);
+        await this.recordAccess(actor, 'storeKindState', { tenantId: null }, { kind }, state.rollouts.length);
+        return state;
+      },
+      storeKindDeclarations: async (actor, kind) => {
+        const declared = await this.directory('storeKindDeclarations', kind);
+        await this.recordAccess(actor, 'storeKindDeclarations', { tenantId: null }, { kind }, declared.length);
+        return declared;
+      },
+      holdStoreKind: async (_actor, input) => this.directory('holdStoreKind', input),
+      releaseStoreKindHold: async (_actor, input) => {
+        await this.cp.releaseStoreKindHold(input);
+      },
+      beginStoreKindRollout: async (actor, input) => {
+        const row = await this.directory('beginStoreKindRollout', { ...input, actor, at: new Date().toISOString() });
+        await this.recordAdmin(actor, input.action === 'rollback' ? 'store-kinds.rollback' : 'store-kinds.rollout', { tenantId: null }, null, row);
         return row;
       },
-      servingManifests: async (actor) => {
-        const rows = await this.cp.servingManifests();
-        await this.recordAccess(actor, 'servingManifests', { tenantId: null }, null, rows.length);
-        return rows.map((r) => ({ slug: r.slug, manifestJson: r.manifest_json }));
+      finishStoreKindRollout: async (actor, input) => {
+        const row = await this.directory('finishStoreKindRollout', { ...input, at: new Date().toISOString() });
+        await this.recordAdmin(actor, row.action === 'rollback' ? 'store-kinds.rollback' : 'store-kinds.rollout', { tenantId: null }, null, row);
+        return row;
       },
       listScopeTables: async (actor, tenantId, scopeId): Promise<ScopeTable[]> => {
         // K-3 cross-check on the shared directory BEFORE reaching the scope DO: a pair

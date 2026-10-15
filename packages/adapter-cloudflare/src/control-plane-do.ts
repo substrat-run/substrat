@@ -83,6 +83,21 @@ import {
   tenantHeldOf,
   VERSION_MIGRATIONS_DDL,
   VERTICAL_SCOPE_STORES_DDL,
+  STORE_KIND_RELEASES_DDL,
+  beginStoreKindRolloutIn,
+  finishStoreKindRolloutIn,
+  holdStoreKindIn,
+  kindDeclarationsOf,
+  recordStoreKindReleaseIn,
+  releaseStoreKindHoldIn,
+  storeKindReleaseIn,
+  storeKindStateIn,
+  type StoreKindHoldMode,
+  type StoreKindReleaseRecord,
+  type StoreKindRolloutAction,
+  type StoreKindRolloutRecord,
+  type StoreKindRolloutState,
+  type StoreKindState,
   forgetVerticalScopeStores,
   indexVersionScopeStores,
   verticalScopeStoresOf,
@@ -908,17 +923,8 @@ const DIRECTORY_DDL = `
     created_at TEXT NOT NULL,
     PRIMARY KEY (tenant_id, vertical, binding)
   );
-  -- A published store-kind release (#2297). The bytes live in R2; this row is the
-  -- checksum, the publisher and which release is current. One current per kind.
-  CREATE TABLE IF NOT EXISTS store_kind_releases (
-    kind         TEXT NOT NULL,
-    release_id   TEXT NOT NULL,
-    sha256       TEXT NOT NULL,
-    published_by TEXT NOT NULL,
-    published_at TEXT NOT NULL,
-    status       TEXT NOT NULL,
-    PRIMARY KEY (kind, release_id)
-  );
+  -- A store kind's stored releases, rollouts and holds (D-63, #2300).
+  ${STORE_KIND_RELEASES_DDL}
   CREATE TABLE IF NOT EXISTS verticals (
     slug         TEXT PRIMARY KEY,
     name         TEXT NOT NULL,
@@ -1463,6 +1469,13 @@ export const REPLIED_METHODS = [
   // #2286: refuses a re-kinded scope-store binding with conflict, and an unreadable manifest with unavailable.
   'insertVersion',
   'verticalScopeStores',
+  // #2300: a store kind's release, rollout and hold writes refuse with conflict, not_found,
+  // validation_failed or unavailable.
+  'recordStoreKindRelease',
+  'storeKindDeclarations',
+  'holdStoreKind',
+  'beginStoreKindRollout',
+  'finishStoreKindRollout',
 ] as const;
 export type RepliedMethod = (typeof REPLIED_METHODS)[number];
 
@@ -2299,71 +2312,57 @@ export class ControlPlaneDO extends DurableObject {
     }[];
   }
 
-  listStoreKindReleases(kind: string): {
-    kind: string;
-    release_id: string;
-    sha256: string;
-    published_by: string;
-    published_at: string;
-    status: string;
-  }[] {
-    return this.sql
-      .exec(
-        `SELECT kind, release_id, sha256, published_by, published_at, status
-         FROM store_kind_releases WHERE kind = ? ORDER BY published_at`,
-        kind,
-      )
-      .toArray() as unknown as {
-      kind: string;
-      release_id: string;
-      sha256: string;
-      published_by: string;
-      published_at: string;
-      status: string;
-    }[];
+  // -- store-kind releases, rollouts and holds (D-63, #2300) ---------------------
+  // Kernel code over the directory (store-kind-releases.ts), shared with the SQLite host. Each
+  // call is one transaction, and the object runs one at a time, so a hold is taken atomically.
+
+  recordStoreKindRelease(input: { kind: string; sha256: string; sourceCommit: string; actor: string; at: string }): {
+    record: StoreKindReleaseRecord;
+    created: boolean;
+  } {
+    return this.ctx.storage.transactionSync(() => recordStoreKindReleaseIn(this.kernelSql, input));
   }
 
-  putStoreKindRelease(row: {
-    kind: string;
-    releaseId: string;
-    sha256: string;
-    publishedBy: string;
-    publishedAt: string;
-    status: string;
-  }): void {
-    if (row.status === 'current') {
-      this.sql.exec(
-        `UPDATE store_kind_releases SET status = 'previous' WHERE kind = ? AND status = 'current' AND release_id != ?`,
-        row.kind,
-        row.releaseId,
-      );
-    }
-    this.sql.exec(
-      `INSERT INTO store_kind_releases (kind, release_id, sha256, published_by, published_at, status)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(kind, release_id) DO UPDATE SET
-         sha256 = excluded.sha256,
-         published_by = excluded.published_by,
-         published_at = excluded.published_at,
-         status = excluded.status`,
-      row.kind,
-      row.releaseId,
-      row.sha256,
-      row.publishedBy,
-      row.publishedAt,
-      row.status,
-    );
+  getStoreKindRelease(kind: string, sha256: string): StoreKindReleaseRecord | undefined {
+    return storeKindReleaseIn(this.kernelSql, kind, sha256);
   }
 
-  servingManifests(): { slug: string; manifest_json: string }[] {
-    return this.sql
-      .exec(
-        `SELECT v.slug AS slug, m.manifest_json AS manifest_json
-         FROM verticals v
-         JOIN vertical_versions m ON m.id = v.serving_version_id
-         WHERE v.serving_version_id IS NOT NULL AND m.manifest_json IS NOT NULL`,
-      )
-      .toArray() as unknown as { slug: string; manifest_json: string }[];
+  storeKindState(kind: string): StoreKindState {
+    return this.ctx.storage.transactionSync(() => storeKindStateIn(this.kernelSql, kind));
+  }
+
+  storeKindDeclarations(kind: string): { vertical: string; stores: VerticalScopeStore[] }[] {
+    return this.ctx.storage.transactionSync(() => kindDeclarationsOf(this.kernelSql, kind));
+  }
+
+  holdStoreKind(input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number }): boolean {
+    return this.ctx.storage.transactionSync(() => holdStoreKindIn(this.kernelSql, { ...input, nowMs: Date.now() }));
+  }
+
+  releaseStoreKindHold(input: { kind: string; holder: string }): void {
+    releaseStoreKindHoldIn(this.kernelSql, input);
+  }
+
+  beginStoreKindRollout(input: {
+    kind: string;
+    sha256: string;
+    action: StoreKindRolloutAction;
+    holder: string;
+    actor: string;
+    at: string;
+  }): StoreKindRolloutRecord {
+    return this.ctx.storage.transactionSync(() => beginStoreKindRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() }));
+  }
+
+  finishStoreKindRollout(input: {
+    kind: string;
+    seq: number;
+    holder: string;
+    state: Exclude<StoreKindRolloutState, 'rolling'>;
+    detail: string | null;
+    at: string;
+  }): StoreKindRolloutRecord {
+    return this.ctx.storage.transactionSync(() => finishStoreKindRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() }));
   }
 
   // -- scope lifecycle (control-plane.md §4.1/§4.2) ---------------------------
