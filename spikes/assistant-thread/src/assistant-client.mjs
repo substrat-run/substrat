@@ -22,7 +22,10 @@ export function connect(endpoint, thread, onState) {
     if (e.t === 'tool-input') ai().steps.push(`Running ${e.tool}`);
     if (e.t === 'approval-request') state.approval = e;
     if (e.t === 'approval-resolved') state.approval = null;
+    // Both terminal events end the turn; without `turn-error` here a stream that ended on one
+    // would stay `streaming` and the clean-close path below would reconnect forever.
     if (e.t === 'turn-finish') state.phase = 'idle';
+    if (e.t === 'turn-error') Object.assign(state, { phase: 'idle', error: e.error ?? 'turn_error' });
   }
 
   async function stream(url, init) {

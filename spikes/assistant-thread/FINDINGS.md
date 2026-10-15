@@ -12,10 +12,10 @@ runs and called an earlier 40 of 41 "an unexplained blemish". It had a cause. A 
 decides how many deltas a step writes, and that depends on timing. The rendered text was
 identical in both (`B: full render equals A` passed), so correctness was never in question;
 the assertion compared something timing-dependent. It now compares the sequence with each run
-of `text-delta` collapsed to one, and the render is still compared exactly. After that change
-the suite passed 41 of 41 on ten consecutive runs on 15 October 2026 (see
-[the run record](#run-record-after-the-fix)). The run that printed no summary line is still
-unexplained.
+of `text-delta` collapsed to one, and the render is still compared exactly. One other early
+run printed no summary line at all; its output was not kept, so its cause is unknown. After
+the fix, and a second one to the test client, the suite passed 41 of 41 on ten consecutive
+runs on 15 October 2026 (see [the run record](#run-record-after-the-fix)).
 
 ## What was built
 
@@ -55,8 +55,9 @@ for approval, execute, conclude) with configurable delay.
 
 ## Measured (local, so relative)
 
-Numbers vary with machine load. Ranges are across the ten runs; other workerd processes were
-running on the machine.
+Numbers vary with machine load. Ranges are across the ten runs of the first version of these
+findings (14 to 15 October), not the later batches in the run record; other workerd processes
+were running on the machine.
 
 | | A: request | B: Durable Object |
 |---|---|---|
