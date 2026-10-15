@@ -35,6 +35,20 @@ import {
  * release each one runs; the directory is the real pure host.
  */
 
+/**
+ * A refusal as a plain `{ status, message }`. Matched against an Error, `toMatchObject` skips the
+ * non-enumerable `message`, so a message pattern there would assert nothing. A promise that
+ * resolves fails here.
+ */
+async function refusal(p: Promise<unknown>): Promise<{ status?: number; message: string }> {
+  return p.then(
+    () => {
+      throw new Error('expected a refusal, and the call resolved');
+    },
+    (e: Error & { status?: number }) => ({ status: e.status, message: e.message }),
+  );
+}
+
 const sha = (c: string) => c.repeat(64);
 const COMMIT = 'c'.repeat(40);
 
@@ -115,21 +129,21 @@ describe('the canary runs every reserved operation on a fresh platform object (D
       [{ 'substrat.erase': boom }, /erase failed/],
       [{ 'substrat.wipe': boom }, /wipe failed/],
     ];
-    for (const [fail, refusal] of cases) {
+    for (const [fail, pattern] of cases) {
       const store = canaryStore(fail);
-      await expect(canaryStoreRelease({ call: store.call, scriptName: 's' }), String(refusal)).rejects.toMatchObject({
+      expect(await refusal(canaryStoreRelease({ call: store.call, scriptName: 's' })), String(pattern)).toMatchObject({
         status: 502,
-        message: expect.stringMatching(refusal),
+        message: expect.stringMatching(pattern),
       });
     }
     // An import the object does not keep: the second export differs.
     let exports = 0;
     const forgetful = canaryStore({ 'substrat.export': (a) => (++exports === 2 ? { tables: [] } : a) });
-    await expect(canaryStoreRelease({ call: forgetful.call, scriptName: 's' })).rejects.toMatchObject({ message: /did not export what it imported/ });
+    expect(await refusal(canaryStoreRelease({ call: forgetful.call, scriptName: 's' }))).toMatchObject({ message: expect.stringMatching(/did not export what it imported/) });
     // A wipe that leaves rows behind: the export after it says so.
     let seen = 0;
     const sticky = canaryStore({ 'substrat.export': (x) => (++seen === 3 ? { tables: [{ name: 'nodes', rows: [{ id: 1 }] }] } : x) });
-    await expect(canaryStoreRelease({ call: sticky.call, scriptName: 's' })).rejects.toMatchObject({ message: /still holds rows after its wipe/ });
+    expect(await refusal(canaryStoreRelease({ call: sticky.call, scriptName: 's' }))).toMatchObject({ message: expect.stringMatching(/still holds rows after its wipe/) });
   });
 });
 
@@ -247,7 +261,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     expect(await lastState()).toBe('failed');
     // A canary whose answers are wrong stops it the same way.
     f.events.length = 0;
-    await expect(
+    expect(await refusal(
       runStoreKindRollout({
         admin: host.admin,
         actor: staff,
@@ -258,7 +272,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
         ensureCanary: async () => ({ scriptName: 'c' }),
         callCanary: canaryStore({ 'substrat.erase': () => ({ erased: 1 }) }).call,
       }),
-    ).rejects.toMatchObject({ status: 502, message: /canary refused/ });
+    )).toMatchObject({ status: 502, message: expect.stringMatching(/canary refused/) });
     expect(f.events).toEqual([]);
     expect(await current()).toBe(sha('1'));
   });
@@ -268,7 +282,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     await run(f, sha('1'));
     f.events.length = 0;
     f.fail.add('vb:2');
-    await expect(run(f, sha('2'))).rejects.toMatchObject({ message: /stopped at vb.*va, vb returned to 1{64}/ });
+    expect(await refusal(run(f, sha('2')))).toMatchObject({ message: expect.stringMatching(/stopped at vb.*va, vb returned to 1{64}/) });
     // va moved and returned. vb failed, and its return is asked too, in case the upload landed; the
     // fleet finds it still on 1 and uploads nothing. vc never moved.
     expect(f.events).toEqual(['canary:2', 'va:2', 'vb:2', 'va:1']);
@@ -280,7 +294,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
   it('ends diverged, returning nothing, on a first rollout, across a schema raise, or when a return fails', async () => {
     const first = fleet();
     first.fail.add('vb:1');
-    await expect(run(first, sha('1'))).rejects.toMatchObject({ message: /no earlier release/ });
+    expect(await refusal(run(first, sha('1')))).toMatchObject({ message: expect.stringMatching(/no earlier release/) });
     expect(first.events).toEqual(['canary:1', 'va:1', 'vb:1']);
     expect(await current()).toBeUndefined();
     expect(await lastState()).toBe('diverged');
@@ -293,7 +307,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     // 2 → 3 raises the schema: objects that woke under 3 may have migrated, so nothing returns to 2.
     first.events.length = 0;
     first.fail.add('vc:3');
-    await expect(run(first, sha('3'))).rejects.toMatchObject({ message: /lower the stored schema/ });
+    expect(await refusal(run(first, sha('3')))).toMatchObject({ message: expect.stringMatching(/lower the stored schema/) });
     expect(first.events).toEqual(['canary:3', 'va:3', 'vb:3', 'vc:3']);
     expect(await current()).toBe(sha('2'));
     expect(await lastState()).toBe('diverged');
@@ -303,7 +317,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     await run(back, sha('1'));
     back.fail.add('vb:2');
     back.fail.add('va:1');
-    await expect(run(back, sha('2'))).rejects.toMatchObject({ message: /Could not return va/ });
+    expect(await refusal(run(back, sha('2')))).toMatchObject({ message: expect.stringMatching(/Could not return va/) });
     expect(await lastState()).toBe('diverged');
   });
 
@@ -311,7 +325,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     const f = fleet();
     await run(f, sha('1'));
     f.landed.add('vb:2');
-    await expect(run(f, sha('2'))).rejects.toMatchObject({ message: /va, vb returned to 1{64}/ });
+    expect(await refusal(run(f, sha('2')))).toMatchObject({ message: expect.stringMatching(/va, vb returned to 1{64}/) });
     expect([...f.runs]).toEqual([['va', sha('1')], ['vb', sha('1')], ['vc', sha('1')]]);
   });
 
@@ -325,7 +339,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
       clock.advance(ROLLOUT_HOLD_TTL_MS + 1);
       expect(await host.admin.holdStoreKind(staff, { kind: 'graph', holder: other, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS })).toBe(true);
     });
-    await expect(run(f, sha('2'))).rejects.toMatchObject({ status: 409, message: /lapsed or its rollout was ended by another.*Nothing was returned/ });
+    expect(await refusal(run(f, sha('2')))).toMatchObject({ status: 409, message: expect.stringMatching(/lapsed or its rollout was ended by another.*Nothing was returned/) });
     // vc was never moved, and va and vb were not moved back under the other holder.
     expect(f.events).toEqual(['canary:2', 'va:2', 'vb:2']);
     // The stopped rollout reads as diverged, though nothing could write that.
@@ -346,7 +360,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
       await host.admin.finishStoreKindRollout(staff, { kind: 'graph', seq: row.seq, holder: other, state: 'good', detail: null });
       await host.admin.releaseStoreKindHold(staff, { kind: 'graph', holder: other });
     });
-    await expect(run(f, sha('2'))).rejects.toMatchObject({ status: 409, message: /lapsed or its rollout was ended by another/ });
+    expect(await refusal(run(f, sha('2')))).toMatchObject({ status: 409, message: expect.stringMatching(/lapsed or its rollout was ended by another/) });
     // vc is not moved to 2 while the state says 1 is current.
     expect(f.events).toEqual(['canary:2', 'va:2', 'vb:2']);
     expect(await current()).toBe(sha('1'));
@@ -362,7 +376,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
       clock.advance(ROLLOUT_HOLD_TTL_MS + 1);
       await host.admin.holdStoreKind(staff, { kind: 'graph', holder: other, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS });
     });
-    await expect(run(f, sha('2'))).rejects.toMatchObject({ message: /hold was lost while returning; vb, vc may run/ });
+    expect(await refusal(run(f, sha('2')))).toMatchObject({ message: expect.stringMatching(/hold was lost while returning; vb, vc may run/) });
     // va went back; vb was not touched once the hold was gone.
     expect(f.events).toEqual(['canary:2', 'va:2', 'vb:2', 'vc:2', 'va:1']);
     await host.admin.releaseStoreKindHold(staff, { kind: 'graph', holder: other });
@@ -372,7 +386,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     const f = fleet();
     const push = ulid();
     expect(await host.admin.holdStoreKind(staff, { kind: 'graph', holder: push, mode: 'shared', ttlMs: 60_000 })).toBe(true);
-    await expect(run(f, sha('1'))).rejects.toMatchObject({ status: 409, message: /being rolled out or a vertical declaring it is being pushed/ });
+    expect(await refusal(run(f, sha('1')))).toMatchObject({ status: 409, message: expect.stringMatching(/being rolled out or a vertical declaring it is being pushed/) });
     expect(f.events).toEqual([]);
     expect((await host.admin.storeKindState(staff, 'graph')).rollouts).toEqual([]);
   });
@@ -398,7 +412,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     f.events.length = 0;
     expect((await run(f, sha('2'), { perRequest: 2 })).complete).toBe(false);
     f.fail.add('vc:2');
-    await expect(run(f, sha('2'), { perRequest: 2 })).rejects.toMatchObject({ message: /va, vb, vc returned to 1{64}/ });
+    expect(await refusal(run(f, sha('2'), { perRequest: 2 }))).toMatchObject({ message: expect.stringMatching(/va, vb, vc returned to 1{64}/) });
     expect([...f.runs]).toEqual([['va', sha('1')], ['vb', sha('1')], ['vc', sha('1')]]);
     expect(await lastState()).toBe('failed');
   });
@@ -406,8 +420,8 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
   it('refuses a fleet bigger than one request can walk', async () => {
     const big = { ...host.admin, storeKindDeclarations: async () => ({ verticals: Array.from({ length: ROLLOUT_FLEET_MAX + 1 }, (_, i) => ({ vertical: `v${i}`, stores: [] })), unreadable: [] }) };
     const f = fleet();
-    await expect(runStoreKindRollout({ admin: big, actor: staff, registration, sha256: sha('1'), action: 'rollout', ensure: f.ensure, ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call }))
-      .rejects.toMatchObject({ status: 409, message: /at most 300 per request/ });
+    expect(await refusal(runStoreKindRollout({ admin: big, actor: staff, registration, sha256: sha('1'), action: 'rollout', ensure: f.ensure, ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call })))
+      .toMatchObject({ status: 409, message: expect.stringMatching(/at most 300 per request/) });
     expect(f.events).toEqual([]);
   });
 
@@ -425,7 +439,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
       manifestJson: '{nope',
     });
     const f = fleet();
-    await expect(run(f, sha('1'))).rejects.toMatchObject({ status: 409, message: /broken has a version whose stores cannot be named/ });
+    expect(await refusal(run(f, sha('1')))).toMatchObject({ status: 409, message: expect.stringMatching(/broken has a version whose stores cannot be named/) });
     expect(f.events).toEqual([]);
   });
 });
