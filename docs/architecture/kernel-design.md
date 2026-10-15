@@ -1458,8 +1458,8 @@ translations are not).
 21. **No store is shared by the verticals of one tenant.** Every store the platform runs or
     mints is per vertical. A scope store is per (tenant, vertical, scope, binding) (K-49).
     `tenantStores` and `blobStores` are per (tenant, vertical, binding) (§5.2). A connection
-    is per (tenant, vertical, provider). A data layer that several verticals of one tenant
-    read and write, and that no other tenant reaches, has no shape. *Proposed answer, not
+    is per (tenant, vertical, provider, account). A data layer that several verticals of one
+    tenant read and write, and that no other tenant reaches, has no shape. *Proposed answer, not
     decided:* [rfc/store-instances.md](../rfc/store-instances.md) — a tenant-level store
     instance that a tenant admin connects verticals to, weighed against the per-scope store,
     with its authorization and lifecycle left open there.

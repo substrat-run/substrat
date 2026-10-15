@@ -215,9 +215,20 @@ signs, rather than configuration the relying party verifies.
 - **Variant B′: a script per (kind, tenant, partition).** Each partition (§6 (ii)) is its own
   script, so two partitions never share an isolate, and moving data between them takes a
   platform-signed call. This is the only form in which separation inside a tenant does not rest
-  on review. It costs a script per connection rather than per tenant, an upload per
-  connection, a release that fans out to every partition, and a cold isolate per partition.
-  Reads across partitions become calls between scripts, and the router signs each one.
+  on review. It costs a script per partition, and with partitions keyed by (instance,
+  scope, binding) (§5.1, §12 Q16) that is a script per installation scope × binding, not per
+  tenant. It also costs:
+  - an upload on every first connect of a pair;
+  - a release that fans out to every partition;
+  - a cold isolate per partition;
+  - reads across partitions that become calls between scripts, each signed by the router.
+
+  K-28's first-deploy window of about 15 seconds opens on **every** first connect, not only at
+  instance creation. A connect therefore cannot be reported live when the upload returns. The
+  control plane must hold the connection as pending until the new script answers. A
+  vertical's first call after a connect meets either "not connected yet" or that window,
+  which makes connect a slow, asynchronous step under B′. The Workers for Platforms
+  script-count question of §13 applies to B′ at its own, much larger, count.
 - **Meets the requirement?** Yes: one object (or one object per partition, §6) per instance,
   reached by every connected vertical.
 - **Cost (§10).**
@@ -302,7 +313,7 @@ rows already are. The names are illustrative.
 
 - **An instance:** `(id ULID, tenant_id, kind, display_name, jurisdiction, status, created_by,
   created_at)`. `status` follows the scope's vocabulary: `active`, `deleting`, `reaped`.
-- **A store connection:** `(id, tenant_id, instance_id, scope_id, vertical, binding, reads,
+- **A store connection:** `(id, tenant_id, instance_id, scope_id, vertical, binding,
   created_by, created_at, ended_at)`.
   - At most one live connection per `(tenant_id, scope_id, binding)`. A connection is per
     **installation scope**, not per vertical. Two installations of one vertical in a tenant
@@ -311,12 +322,27 @@ rows already are. The names are illustrative.
     seated at a scope, and the auth wiring is delivered per scope (§2.1). A vertical whose
     installation spans many scopes is connected scope by scope, and the dashboard may do that
     in one act that writes one row each (§12 Q16).
-  - Each connection is one **partition** (§6). The partition is named by the connection, so
-    two connections never share one.
-  - `reads` is the read grant of §6, the list of partitions (connections) this connection may
-    read.
   - An ended connection's row is kept while its partition holds data. That is the
     connection-history counterpart of the union rule of L17 (§7.4).
+- **A partition:** `(tenant_id, instance_id, scope_id, binding, vertical, shareable,
+  shareable_recorded_at, status)`, keyed by `(instance_id, scope_id, binding)`.
+  - The partition is **not** the connection. It is created on the first connect of that
+    `(scope, binding)` to that instance, and it outlives the connection.
+  - A disconnect followed by a reconnect of the same `(scope, binding)` to the same instance
+    **revives the same partition**, with its data, and every `reads` entry that names it keeps
+    working. A disconnect without a delete leaves the partition holding its data, unwritable
+    and readable only through existing grants (§12 Q10).
+  - Two installations of one vertical, or two bindings of one installation, are two
+    partitions. Connecting to a *different* instance creates a different partition there, and
+    the old one stays where it was.
+  - `shareable` is the producer's declared list of read operations others may be granted
+    (§6), copied from the version the producer's scope runs at connect, and again whenever that
+    scope's resolved version changes while connected (the L14 resolution). When the producer's
+    connection ends, the last recorded list stands, and the admin may narrow it, never widen
+    it, until the producer reconnects (§12 Q22).
+- **A read grant:** `(tenant_id, reader_connection_id, alias, partition (instance_id,
+  scope_id, binding), operations, granted_by, granted_at, revoked_at)`. This is the `reads`
+  of §6, as rows. Its constraints are in §6 (ii).
 
 ### 5.2 Who creates, who connects
 
@@ -348,6 +374,13 @@ rows already are. The names are illustrative.
   scope, through `getScopeStore(principal, tenantId, scopeId, binding)`, and the vertical
   never sees an instance id. Whether a tenant-grain binding deserves its own door name is
   §12 Q13.
+- **A source is named by an alias the reading vertical declares.** A binding that may read
+  other partitions declares its aliases beside it, in the same SCREAMING_SNAKE grammar, for
+  example `{ binding: 'GRAPH', kind: 'graph', sources: ['PEOPLE'] }`. The call names the alias
+  on the stub it already holds (`store.source('PEOPLE').invoke(op, input)`; the spelling is
+  illustrative). When a tenant admin grants a read, they map an alias to a partition. The
+  vertical never sees the partition, the instance or the other installation. An alias with no
+  live grant is a named refusal, as an unconnected binding is.
 - **An unconnected binding is a named refusal, never an empty store.** The router refuses
   before it signs. The vertical gets a `StoreError` it can show as "not connected; ask an
   admin". A binding that silently answered empty would read as "no data" to every screen built
@@ -363,8 +396,14 @@ The router already reads, per dispatch, the scope's stores from the version reco
 2. For a tenant-grain kind, the live store connection for `(tenant, scope, binding)` names
    the instance, which must be `active` and of the same kind. Its `vertical` must be the
    scope record's.
-3. The result in `OUTBOUND_POLICY.stores` carries the connection id (the partition), the
-   instance id and the connection's `reads`, alongside the binding.
+3. The caller's own partition is `(instance, scope, binding)` from that same row.
+4. For each alias the binding declares, the live read grant on that connection names a
+   target partition. It is kept only if that partition's `tenant_id` is the dispatch's tenant,
+   its `instance_id` is the reader connection's instance, its status is not deleted, and the
+   granted operations are within its recorded `shareable` list.
+5. The result in `OUTBOUND_POLICY.stores` carries the instance id, the caller's partition, and
+   the surviving aliases with their target `(scope, binding)` and operations, alongside the
+   binding.
 
 Every step fails closed:
 
@@ -377,9 +416,10 @@ A disconnect takes effect on the next dispatch, because the policy is set per di
 ### 5.5 The name and the envelope
 
 - **The object name** for an instance is built by the router from its own records:
-  `<tenantId>/i/<instanceId>/p/<connectionId>` under §6 shape (ii), and
-  `<tenantId>/i/<instanceId>` under shape (i). The connection id is the partition, so two
-  bindings, or two installations, never resolve to one object by accident. The display name
+  `<tenantId>/i/<instanceId>/p/<scopeId>/<binding>` under §6 shape (ii), and
+  `<tenantId>/i/<instanceId>` under shape (i). The partition key is `(instance, scope,
+  binding)`, so two bindings or two installations never resolve to one object, and a
+  reconnect of the same pair revives the same object (§5.1). The display name
   never appears in the name.
 - **The script name** is a new reserved form, `substrat-store-<kind>-t-<tenantId>`. It must
   be injective against the per-(kind, vertical) names of L20, with a prefix no vertical slug
@@ -401,8 +441,8 @@ A disconnect takes effect on the next dispatch, because the policy is set per di
 
 - One instance has many connections.
 - One `(tenant, scope, binding)` has at most one live connection. A vertical that wants two
-  layers declares two bindings, and each connection is its own partition even when both
-  point at one instance.
+  layers declares two bindings, and each binding is its own partition even when both point
+  at one instance.
 - Moving an installation from one instance to another is a disconnect followed by a connect.
   Its old partition stays in the old instance. Copying a partition across instances is a later
   platform operation (§12 Q10).
@@ -449,11 +489,25 @@ two things have to be kept apart when grading them:
   partition (§5.1). The router builds the name with the partition taken from the connection
   it resolved for the dispatch's own scope (§5.4). So a vertical's `caller` call reaches its
   own partition by construction. It can name nothing else.
-- **Reading another partition** is an explicit read grant (`reads` on the connection). The
-  call takes the same hop, is signed with audience `reader` for the other partition's name,
-  and only for an operation the kind's registration lists as read-only. The router refuses an
-  unlisted operation and a partition not in `reads` before it signs. The entry module in the
-  target object refuses a `reader` envelope for a non-read operation before the kind runs.
+- **Reading another partition** takes an explicit read grant (`reads`, §5.1). The vertical
+  names a declared alias (§5.3). The call takes the same hop, is signed with audience
+  `reader` for the other partition's name, and only for an operation that is both listed
+  read-only in the kind's registration and in the producer's recorded `shareable` list. The
+  router refuses an unknown alias, an unlisted operation and an ungranted partition before it
+  signs. The entry module in the target object refuses a `reader` envelope for a non-read
+  operation before the kind runs.
+- **A read grant cannot leave the reader's tenant or instance.** This is the isolation edge of
+  `reads`, and it is held twice:
+  - **At grant.** The control plane refuses a grant whose target partition does not have the
+    reader connection's `tenant_id` and `instance_id`.
+  - **At resolution.** The router keeps a grant only when the target partition's `tenant_id`
+    is the dispatch's tenant and its `instance_id` is the reader connection's (§5.4 step 4).
+    A row edited past the grant-time check is therefore still dropped.
+  - **In the name.** The tenant and the instance in a `reader` envelope's name come from the
+    reader's own resolution: the dispatch's tenant (`OUTBOUND_POLICY`) and the instance of the
+    reader's connection. Neither comes from the call, from the alias or from the text of the
+    grant. The grant contributes only the target's `(scope, binding)`, checked to exist in
+    that instance.
 - **What holds it: addressing, mechanically.** A caller cannot name another partition, and
   cannot run a non-read operation on one. Router and envelope enforce both, in platform code,
   before any kind code runs. A store script holds no key that mints an envelope (open PR
@@ -477,7 +531,7 @@ two things have to be kept apart when grading them:
   - Every cross-vertical query is a fan-out by the caller: the calling vertical, or a
     platform read surface, reads N partitions and combines them.
   - The kind cannot traverse across partitions in one call.
-  - Partitions multiply objects: one per connection.
+  - Partitions multiply objects: one per connected (scope, binding).
   - A shared, vertical-neutral partition (tenant reference data every vertical writes) needs
     its own rule. Either it is a partition with several writers, which is (i) inside that
     partition, or it is platform-fed, which is (iii).
@@ -592,7 +646,7 @@ These are requirements. They hold for B under either authorization shape, and fo
   snapshot deletion, the sweeper's reap) wipes the scope's **scope-grain** stores only. An
   instance is not the scope's to wipe.
 - **Data a deleted scope wrote into an instance** is a decision, not a default (§12 Q11).
-  Under (ii) that data is the deleted scope's connection's partition: it is kept, or it is
+  Under (ii) that data is the deleted scope's partitions: it is kept, or it is
   wiped by the disconnect-then-wipe order. Under (i), a reserved
   `substrat.forgetScope { vertical, scopeId }` would remove the rows that scope wrote, which
   needs every write to carry its scope, as the §5.5 envelope does.
@@ -635,7 +689,7 @@ restoring a scope nor forking one touches an instance.
 
 `substrat.size` is called per instance object. Under (ii) that is per partition, so a
 tenant's store bytes are attributable to the installation that wrote them, because each
-partition's object is one connection's. Under (i) attribution is only what the kind reports
+partition's object is one (scope, binding)'s. Under (i) attribution is only what the kind reports
 about itself. The gauge table (`_substrat_scope_store_storage`, #2212) is keyed by scope and
 binding today, so instances need their own key. L13 carries over: a size that cannot be read
 is never recorded as `0`.
@@ -755,7 +809,7 @@ tenant grain. There is no platform migration between the two today:
 - the data's identifiers are scope-local.
 
 A move would be an explicit tenant-admin job: export each scope's store, import it into that
-scope's connection's partition with a merge-capable import the kind would have to add, replay erasures
+scope's partition with a merge-capable import the kind would have to add, replay erasures
 (§7.1), then retire the scope-grain binding by the L17 order. That is possible, but it is a
 second import contract and a per-tenant migration run.
 
@@ -776,8 +830,8 @@ and lifecycle differ. A kind that wants both registers twice, under two kind ids
 | | A per scope | B instance, script per (kind, tenant) | B′ script per (kind, tenant, partition) | C instance on per-(kind, vertical) scripts | D platform ingestion |
 |---|---|---|---|---|---|
 | Meets the requirement | No | Yes | Yes | Only by becoming B or a fleet-wide script | Reads yes; synchronous writes no |
-| Store scripts | kinds × verticals | kinds × tenants with an instance | kinds × connections | kinds × verticals | kinds × tenants (as B) |
-| Release fan-out | per vertical | per tenant | per connection | per vertical | per tenant |
+| Store scripts | kinds × verticals | kinds × tenants with an instance | kinds × partitions (scope × binding) | kinds × verticals | kinds × tenants (as B) |
+| Release fan-out | per vertical | per tenant | per partition | per vertical | per tenant |
 | Kind-code exposure (§3) | every tenant of the vertical | one tenant | one partition | every tenant of the hosting vertical, plus others' data | one tenant |
 | Isolate shared with | other tenants of the vertical | the tenant's other partitions | nothing else | other tenants and verticals | the tenant's other partitions |
 | Caller addressing of a partition | n/a | (i) kind; (ii) router | router | kind | platform |
@@ -786,7 +840,7 @@ and lifecycle differ. A kind that wants both registers twice, under two kind ids
 | Cross-partition traversal in one call | n/a | (i) yes; (ii) no | no | yes | in the platform's read model |
 | New directory records | none | instances, connections | as B | instances, connections, a placement | instances, connections, watermarks |
 | New dashboard surface | none | create, connect, read grants | as B | as B | create, connect |
-| Erasure | per scope (built) | fan-in per connection (§7.1) | as B | as B | as B, plus ingestion replay |
+| Erasure | per scope (built) | fan-in per partition (§7.1) | as B | as B | as B, plus ingestion replay |
 | Tenant teardown | per scope (built) | new | new, per partition script | new | new |
 | Reuse of the open stack | all | most, with the §8.1 changes | as B | most | envelope, entry, release; not the vertical door |
 
@@ -829,8 +883,9 @@ between verticals.** Keep A for any kind registered at scope grain.
   for data separation, which is review-held in both shapes. That should be written down as a
   standing condition, the way #2302 records Q3.
 - **B′ over B**: the maintainer wants separation between partitions inside a tenant held by
-  the platform rather than by review, and accepts a script per connection: more uploads, a
-  per-partition release fan-out, more cold isolates, and cross-script reads.
+  the platform rather than by review, and accepts a script per (scope, binding): an upload
+  and a first-deploy window on every first connect, a per-partition release fan-out, more
+  cold isolates, and cross-script reads.
 - **Not C** in any case (§4).
 
 ## 12. Open questions
@@ -873,9 +928,11 @@ Each one is for the maintainer. The lean is stated so it can be rejected cleanly
    - script names `substrat-store-<kind>-t-<tenantId>`, held injective against L20's form.
 9. **How a kind declares its grain.** *Lean:* `grain: 'scope' | 'tenant'` in the
    registration (§9), decided for the first kind before #2210 registers it.
-10. **What disconnect does to the data.** Keep the partition, or wipe it? *Lean:* keep it.
-    Deleting it is an explicit tenant-admin step in the export, wipe, drop order. Copying a
-    partition to another instance is later work.
+10. **What disconnect does to the data.** Keep the partition, or wipe it? *Lean:* keep it,
+    unwritable and readable only through existing grants. A reconnect of the same
+    `(scope, binding)` to the same instance revives it (§5.1). Deleting it is an explicit
+    tenant-admin step in the export, wipe, drop order. Copying a partition to another instance
+    is later work.
 11. **What a deleted scope's rows in an instance become.** Keep them, or remove them with a
     reserved `substrat.forgetScope`? *Lean:* remove them for a reaped scope, keep them for an
     archived one. It needs every write to carry its scope (§5.5).
@@ -923,6 +980,11 @@ Each one is for the maintainer. The lean is stated so it can be rejected cleanly
     partition)? *Lean:* B, with separation inside the tenant written down as review-held. B′ is
     to be revisited before a kind written outside this repo is registered at tenant grain,
     which is the same condition #2302 sets for Q3.
+22. **The shareable list after the producer's connection ends.** The last recorded list
+    stands, and the admin may only narrow it (§5.1). Or the ended partition becomes unreadable
+    to everyone, or its grants lapse with the connection? *Lean:* the last recorded list stands,
+    narrowable. The data is unchanged, so the producer's last declaration about it is still the
+    right bound, and a reconnect replaces it with the producer's current declaration.
 
 ## 13. Unverified
 
@@ -930,8 +992,10 @@ Not in this repository, or not shown by anything in it:
 
 - **Workers for Platforms limits.** No figure for scripts per dispatch namespace, upload rate
   or script size is recorded in the repo. K-28 says a script-cap lift exists, gives no
-  number, and records the first-deploy window of about 15 seconds. B's script count per
-  tenant has to be checked against a real account before it is chosen.
+  number, and records the first-deploy window of about 15 seconds. B's script count (one per
+  kind and tenant) has to be checked against a real account before it is chosen. So does B′'s
+  count (one per kind and partition, that is per installation scope × binding), together with
+  the window it opens on every first connect.
 - **A real dispatch-namespace upload of a store script, Python or JS.** It has not been run.
   Open PRs #2299, #2300 and #2301 say the same.
 - **Isolate sharing between objects of one script.** It has not been exercised (spike
