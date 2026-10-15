@@ -78,6 +78,18 @@ export const FLOW_COOKIE = 'sb_oidc_flow';
 export const LOGOUT_HINT_COOKIE = 'sb_oidc_idt';
 /** Path the hint cookie is scoped to — must match wherever the logout route is mounted. */
 export const LOGOUT_PATH = '/api/auth/logout';
+/**
+ * Where the issuer sends the browser back after a federated logout that has a `returnTo`.
+ * Issuers match `post_logout_redirect_uri` EXACTLY against the client's allowed logout
+ * URLs, so a `returnTo` that varies per request (`/invite/<token>`) can never be one of
+ * them. The issuer is therefore always given this one fixed URL, and the path the person
+ * was heading for waits in `LOGOUT_RETURN_COOKIE` until they arrive here.
+ */
+export const LOGGED_OUT_PATH = '/api/auth/logged-out';
+/** The same-origin path to resume at after the issuer's logout round-trip. */
+export const LOGOUT_RETURN_COOKIE = 'sb_oidc_return';
+/** Long enough for the issuer's confirmation page when there is no `id_token_hint`. */
+export const LOGOUT_RETURN_MAXAGE = 60 * 10;
 /** Session lifetime; the flow (login round-trip) is deliberately short. */
 export const SESSION_MAXAGE = 60 * 60 * 24 * 7; // 7 days
 export const FLOW_MAXAGE = 60 * 10; // 10 minutes
@@ -527,10 +539,14 @@ export interface MountOptions {
 /**
  * A same-origin absolute path, or undefined. Guards the `returnTo` redirect against
  * open-redirect: only a path beginning with a single `/` (no scheme, no `//` network
- * path, no backslash) is allowed — never an absolute URL to another host.
+ * path, no backslash) is allowed — never an absolute URL to another host. ASCII control
+ * characters are refused too: the URL parser strips tab and newline before resolving, so
+ * `/<TAB>/host` would read as `//host`, and a newline cannot go in a `Location` header.
  */
 export function safePath(p: string | null | undefined): string | undefined {
-  if (!p || !p.startsWith('/') || p.startsWith('//') || p.includes('\\')) return undefined;
+  if (!p || !p.startsWith('/') || p.startsWith('//') || p.includes('\\') || /[\x00-\x1f\x7f]/.test(p)) {
+    return undefined;
+  }
   return p;
 }
 
@@ -612,11 +628,43 @@ export function mountOidcRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>, o
     // the shared IdP session keep theirs). Requires the origin to be registered as an
     // allowed logout URL on the IdP client; discovery failure falls back to local.
     if (c.req.query('federated') !== undefined) {
-      const away = await federatedLogoutUrl(c.env, new URL(c.req.url).origin, local, idTokenHint);
-      if (away) return c.redirect(away);
+      const origin = new URL(c.req.url).origin;
+      const out = await federatedLogout(c.env, origin, local, idTokenHint, onSuccess);
+      if (out) {
+        if (out.returnTo) {
+          // Lax, not Strict: it is read on the issuer's cross-site redirect back.
+          setCookie(c, LOGOUT_RETURN_COOKIE, out.returnTo, cookieOpts(origin, LOGOUT_RETURN_MAXAGE, LOGGED_OUT_PATH));
+        }
+        return c.redirect(out.location);
+      }
     }
     return c.redirect(local);
   });
+
+  app.get(LOGGED_OUT_PATH, (c) => {
+    const back = safePath(getCookie(c, LOGOUT_RETURN_COOKIE)) ?? onSuccess;
+    deleteCookie(c, LOGOUT_RETURN_COOKIE, { path: LOGGED_OUT_PATH });
+    return c.redirect(back);
+  });
+}
+
+/**
+ * `federatedLogoutUrl` for a caller that has a `returnTo`. The issuer only accepts a
+ * `post_logout_redirect_uri` registered on the client, so the default landing path is
+ * sent as-is (what is registered today) and any other path goes via `LOGGED_OUT_PATH`,
+ * with `returnTo` for the caller to park in `LOGOUT_RETURN_COOKIE`.
+ */
+export async function federatedLogout(
+  env: OidcEnv,
+  origin: string,
+  local: string,
+  idTokenHint?: string,
+  defaultPath = '/',
+): Promise<{ location: string; returnTo?: string } | null> {
+  const viaDefault = local === defaultPath;
+  const location = await federatedLogoutUrl(env, origin, viaDefault ? local : LOGGED_OUT_PATH, idTokenHint);
+  if (!location) return null;
+  return viaDefault ? { location } : { location, returnTo: local };
 }
 
 /**

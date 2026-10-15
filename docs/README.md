@@ -193,12 +193,15 @@ Open proposals. A document leaves when it is decided — to `architecture/` rewr
 | document | status | |
 |---|---|---|
 | [agent-surface.md](rfc/agent-surface.md) | `building` | How any agent discovers and works with Substrat. #749 open. |
+| [assistant.md](rfc/assistant.md) | `proposed` | One chat in every product — a thread with an AI, and sometimes a person, that answers and acts for the signed-in user, with the assistant stamped as actor under a ceiling. Argues the stream protocol, the record, the host loop, the UI element, context, memory and the support handoff, and the bar for the experience. |
 | [booking-social.md](rfc/booking-social.md) | `building` | Booking engine shipped; the cross-tenant social tier is not. |
 | [callout-concept.md](rfc/callout-concept.md) | `historical` | The Callout field-service concept — the first demo vertical, which the workorder, invoicing and protocol engines were cut against; the demo is gone, the argument stays. |
 | [callout-testrun.md](rfc/callout-testrun.md) | `historical` | The original test-run spec the first engines (workorder, invoicing) were cut from — kept after the Callout demo was removed. |
+| [cross-scope-read.md](rfc/cross-scope-read.md) | `proposed` | A read for the screen that lists a principal's scopes — declared, run by the host, checked by every scope it touches. #1581. |
 | [disclosure-register.md](rfc/disclosure-register.md) | `proposed` | Can the platform say which processors hold data about one subject? Argues #860 against the two positions it must survive; lands on not-yet-in-this-shape, and on one live erasure hole found while arguing. Revision 2 takes the forks and recommends a derived register plus a declared superset. |
 | [docs-restructure.md](rfc/docs-restructure.md) | `building` | Audit of docs/ and the restructure. All four phases executed; the prose rewrite is what remains. |
 | [error-model.md](rfc/error-model.md) | `superseded` | Moved — the error-model RFC shipped in @substrat-run/contracts and now lives in architecture/. |
+| [file-bearing-sources.md](rfc/file-bearing-sources.md) | `proposed` | A connector shape for sources that hold files rather than records (#1578) — enumerate a tree incrementally and resumably, move bytes as streams, follow a change feed with a walk as the floor, write back only where the binding allows it. Recommends running the walk as a #1577 job run whose record lives in the scope and whose passes run where the credential is; leaves five forks to a human. |
 | [model-phase-plan.md](rfc/model-phase-plan.md) | `building` | The model phase. Umbrella #685 open. |
 | [rallypoint-concept.md](rfc/rallypoint-concept.md) | `historical` | The RallyPoint concept — the racket-club demo that drove engine-booking; the demo is gone, the argument stays. |
 | [scope-stores.md](rfc/scope-stores.md) | `proposed` | A platform-run object per scope, declared as a kind and reached through its own door. #2207. |

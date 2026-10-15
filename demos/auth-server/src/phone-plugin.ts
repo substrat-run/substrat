@@ -17,7 +17,12 @@ export const phonePlugin = (verifier: PhoneVerifier | undefined) => ({
       return ctx.json({ available: Boolean(verifier), enrolled: Boolean(user.phoneNumber), emailVerified: user.emailVerified, suffix: user.phoneNumber?.slice(-4) ?? null });
     }),
     phoneSend: createAuthEndpoint('/phone/send', {
-      method: 'POST', use: [sessionMiddleware], body: z.object({ phoneNumber: phoneNumber.optional() }),
+      method: 'POST', use: [sessionMiddleware],
+      // The phone screen sends the signed authorize query here so that the oauthProvider
+      // before-hook — which reads `oauth_query` off ANY body, ahead of this schema — refuses an
+      // expired sign-in before an SMS is paid for, not after. Declared so the field is part of
+      // the endpoint's stated surface, not because the refusal needs it (test/phone-invitations).
+      body: z.object({ phoneNumber: phoneNumber.optional(), oauth_query: z.string().optional() }),
     }, async (ctx) => {
       if (!verifier) throw new APIError('SERVICE_UNAVAILABLE', { message: 'SMS verification is not configured' });
       const { session, user } = ctx.context.session;
