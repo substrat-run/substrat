@@ -11,7 +11,7 @@ export class ScopeStoreCalls extends WorkerEntrypoint<Env> {
     const dispatch = this.env.DISPATCH;
     return handleStoreCall(
       {
-        STORE_HMAC_KEY: this.env.STORE_HMAC_KEY,
+        STORE_CALLER_KEY: this.env.STORE_CALLER_KEY,
         DISPATCH: dispatch
           ? { get: (scriptName) => ({ fetch: (req) => dispatch.get(scriptName).fetch(req) }) }
           : undefined,

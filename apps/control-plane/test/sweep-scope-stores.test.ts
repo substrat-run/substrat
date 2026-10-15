@@ -36,7 +36,8 @@ describe('the sweep reaches a serving-pinned store, and never skips one silently
   it('with a route, a serving-pinned install is wiped and sized through its store script', async () => {
     const asked: string[] = [];
     const routed = {
-      STORE_HMAC_KEY: 'test-store-key',
+      // The shared vector's PKCS8 key (packages/contracts/test/vectors/scope-store-envelope.json).
+      STORE_PLATFORM_KEY: 'MC4CAQAwBQYDK2VwBCIEIOPA7a30FgDjM6aB-oV3_tRs_eDbRaDFHMxNOY5aAiZJ',
       DISPATCH: {
         get: (script: string) => ({
           fetch: async (request: Request) => {

@@ -89,10 +89,11 @@ export interface Env {
    */
   DISPATCH?: DispatchNamespace;
   /**
-   * The HMAC key for a scope-store object name (#2207). The store script holds the
-   * same key. A vertical does not. Absent ⇒ every store call is refused.
+   * PKCS8 Ed25519 private key, base64url, for audience `caller` (#2287). The store
+   * script holds only the public key. A vertical does not hold this one. Absent ⇒
+   * every store call is refused.
    */
-  STORE_HMAC_KEY?: string;
+  STORE_CALLER_KEY?: string;
   /**
    * Tenant-keyed request metering (design/observability.md §4.2). The router is the
    * one place that knows which TENANT a request belonged to — Cloudflare's own

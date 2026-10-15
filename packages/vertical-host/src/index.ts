@@ -1477,7 +1477,7 @@ export function mountPlatformSurface<Env extends object>(
   });
 
   // Scope stores are not reached through this script (#2207). The control plane
-  // signs the object name and calls the store script in the dispatch namespace.
+  // signs the envelope and calls the store script in the dispatch namespace.
 
   // #286: the PITR bookmarks one scope recorded before its migration passes — the rewind
   // points a backout offers. Metadata only; no scope bytes cross the boundary.

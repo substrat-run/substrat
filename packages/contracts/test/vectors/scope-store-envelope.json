@@ -1,0 +1,13 @@
+{
+  "privateKeyPkcs8": "MC4CAQAwBQYDK2VwBCIEIOPA7a30FgDjM6aB-oV3_tRs_eDbRaDFHMxNOY5aAiZJ",
+  "publicKey": "amgPRBy-2qDhpCAN3sIEQNX7LqDq80ksL-7zHJYTIp4",
+  "kid": "fX5Yi3zNBp0",
+  "script": "substrat-store-graph-vertical",
+  "body": "{\"objectName\":\"tenant/vertical/scope/graph\",\"operation\":\"read\",\"input\":{}}",
+  "canonical": "1\ncaller\nfX5Yi3zNBp0\nsubstrat-store-graph-vertical\ntenant/vertical/scope/graph\nread\n7fdf8652b427f7d58b8b0c197dc8d8083dd60644b6761efc4d1c3c800b9f6426\n1700000000\nAAAAAAAAAAAAAAAAAAAAAA",
+  "signature": "9HQF1WNplPco-byNA5Ip8ZsdHlcvuM1sjrL_Nnj0ITdDAyTm3AKjuEyCyRSbzfY09_4i1m-tUPp5rSLqEyPKBw",
+  "header": "MQpjYWxsZXIKZlg1WWkzek5CcDAKc3Vic3RyYXQtc3RvcmUtZ3JhcGgtdmVydGljYWwKdGVuYW50L3ZlcnRpY2FsL3Njb3BlL2dyYXBoCnJlYWQKN2ZkZjg2NTJiNDI3ZjdkNThiOGIwYzE5N2RjOGQ4MDgzZGQ2MDY0NGI2NzYxZWZjNGQxYzNjODAwYjlmNjQyNgoxNzAwMDAwMDAwCkFBQUFBQUFBQUFBQUFBQUFBQUFBQUE",
+  "staleCanonical": "1\ncaller\nfX5Yi3zNBp0\nsubstrat-store-graph-vertical\ntenant/vertical/scope/graph\nread\n7fdf8652b427f7d58b8b0c197dc8d8083dd60644b6761efc4d1c3c800b9f6426\n1699999880\nAAAAAAAAAAAAAAAAAAAAAA",
+  "staleSignature": "-GLxfCxqPzd9q3hiTEkJv7hib8tnp1bMwLJNVTnDhSozu038TL5zKKjOVMr-DOJkJJPCqd4AFlACM2SwrwxuCA",
+  "windowSeconds": 60
+}

@@ -1,7 +1,10 @@
 import {
+  issueScopeStoreEnvelope,
+  SCOPE_STORE_ENVELOPE_HEADER,
+  SCOPE_STORE_SIGNATURE_HEADER,
+  ScopeStoreKeyError,
   scopeStoreObjectName,
   scopeStoreScriptName,
-  signScopeStoreName,
   storeCallRequest,
   type StoreCallRequest,
 } from '@substrat-run/contracts';
@@ -23,14 +26,15 @@ export type StoreCallOutcome =
   | { ok: false; status: number; message: string };
 
 export interface StoreCallEnv {
-  readonly STORE_HMAC_KEY?: string;
+  /** PKCS8 Ed25519 private key, base64url. Signs audience `caller`. The store holds only the public key. */
+  readonly STORE_CALLER_KEY?: string;
   readonly DISPATCH?: {
     get(scriptName: string): { fetch(request: Request): Promise<Response> };
   };
 }
 
 /**
- * Sign the object name and address that kind's script. The key stays here.
+ * Sign the envelope and address that kind's script. The private key stays here.
  * A reserved operation is not signed with the caller key: the platform calls
  * those directly, with its own key.
  */
@@ -54,25 +58,47 @@ export async function handleStoreCall(
   if (!declared) {
     return { ok: false, status: 404, message: `store call refused: '${request.binding}' is not a store this version declares` };
   }
-  if (!env.STORE_HMAC_KEY) {
+  if (!env.STORE_CALLER_KEY) {
+    console.warn('scope store call refused: STORE_CALLER_KEY is not set');
     return { ok: false, status: 503, message: 'this router is not configured for scope stores' };
   }
   if (!env.DISPATCH) {
     return { ok: false, status: 503, message: 'this router cannot dispatch scope stores' };
   }
   const objectName = scopeStoreObjectName(caller.tenantId, caller.vertical, request.scopeId, request.binding);
-  const mac = await signScopeStoreName(env.STORE_HMAC_KEY, objectName);
-  const script = env.DISPATCH.get(scopeStoreScriptName(caller.vertical, declared.kind));
+  const scriptName = scopeStoreScriptName(caller.vertical, declared.kind);
+  const body = JSON.stringify({ ...request, objectName });
+  let issued;
+  try {
+    issued = await issueScopeStoreEnvelope({
+      privateKey: env.STORE_CALLER_KEY,
+      aud: 'caller',
+      script: scriptName,
+      name: objectName,
+      op: request.operation,
+      body,
+    });
+  } catch (error) {
+    if (!(error instanceof ScopeStoreKeyError)) throw error;
+    // Set but unusable, e.g. a raw key where PKCS8 belongs. The message never carries the key.
+    console.warn(`scope store call refused: STORE_CALLER_KEY is set but unusable (${error.message})`);
+    return { ok: false, status: 503, message: 'this router is not configured for scope stores' };
+  }
+  const script = env.DISPATCH.get(scriptName);
   const response = await script.fetch(
     new Request('https://scope-store/invoke', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-substrat-store-mac': mac, 'x-substrat-store-audience': 'caller' },
-      body: JSON.stringify({ ...request, objectName }),
+      headers: {
+        'content-type': 'application/json',
+        [SCOPE_STORE_ENVELOPE_HEADER]: issued.header,
+        [SCOPE_STORE_SIGNATURE_HEADER]: issued.signature,
+      },
+      body,
     }),
   );
-  const body: unknown = await response.json().catch(() => null);
+  const result: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     return { ok: false, status: response.status, message: 'the scope store refused the call' };
   }
-  return { ok: true, status: response.status, body };
+  return { ok: true, status: response.status, body: result };
 }

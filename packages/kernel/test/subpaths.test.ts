@@ -63,7 +63,12 @@ describe('zero-import subpaths (#1998)', () => {
     // And the exemption names a subpath that exists, so it cannot outlive what it exempts.
     const all = subpathsOf(join(import.meta.dirname, '..')).map(([path]) => path);
     expect([...TEST_ONLY].filter((path) => !all.includes(path))).toEqual([]);
-    expect(CONTRACTS.map(([path]) => path).sort()).toEqual(['./invocation-record', './scope-store-mac', './wire-auth', './wire-headers']);
+    expect(CONTRACTS.map(([path]) => path).sort()).toEqual([
+      './invocation-record',
+      './scope-store-envelope',
+      './wire-auth',
+      './wire-headers',
+    ]);
     const allContracts = subpathsOf(join(import.meta.dirname, '../../contracts')).map(([path]) => path);
     expect([...CONTRACTS_NOT_IN_ENTRY].filter((path) => !allContracts.includes(path))).toEqual([]);
   });

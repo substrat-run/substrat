@@ -272,8 +272,9 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         expect(await keyKept()).toBe(false);
       });
 
-      // The serving script runs the serving pointer's version, not the scope's bound one, so
-      // that manifest is the one read. A pointer naming another script is a version unknown.
+      // Erasure reaches every binding any version of the vertical declared (#2286), so a
+      // binding that exists only on the bound version is still erased. A pointer naming
+      // another script is a version unknown.
       const onServingScript = async (opts: { boundStores?: unknown[]; servedStores?: unknown[]; pointerRef?: string }) => {
         // Its own vertical: a serving pointer is the vertical's, and would reroute later binds.
         const slug = `served-${ulid().toLowerCase().slice(-10)}`;
