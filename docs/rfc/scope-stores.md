@@ -391,28 +391,36 @@ the platform, and the binding is not claimed to be an isolation boundary.
 
 A MAC over the object name alone, which is what #2247 and #2254 sign, binds no audience,
 no operation and no time. A captured signature therefore stays valid for every operation
-on that object, forever. The design replaces it with one envelope that both signers use:
+on that object, forever. The design replaces it with one envelope that both signers use,
+an Ed25519 signature over every field (#2287, `@substrat-run/contracts/scope-store-envelope`):
 
 | Field | Meaning |
 |---|---|
 | `v` | Envelope version, starting at `1`. The store refuses a version it does not know |
 | `aud` | `caller` (the router, for a vertical's call) or `platform` (the control plane) |
+| `kid` | The signing key's id: base64url of the first 8 bytes of SHA-256 over its raw public key. A store refuses an id none of its listed keys has |
+| `script` | The store script the call is addressed to, as the signer named it. The store compares it with its own name as an opaque string, so an envelope for one kind's script does not open another's |
 | `name` | `<tenantId>/<vertical>/<scopeId>/<binding>`, built by the signer from its own records |
 | `op` | The operation name |
-| `digest` | SHA-256 of the request body (`{ operation, input }`), so a signed envelope carries one input |
+| `digest` | SHA-256 of the exact request body, which also carries `objectName`, `scopeId` and `binding`, so a signed envelope carries one input |
 | `iat` | Issue time, in seconds |
 | `nonce` | 128 random bits |
 
-The MAC covers a canonical encoding of every field, and every field travels inside the
-signed bytes. Nothing the store acts on rides beside the MAC. The store checks, in order,
-before any of the kind's code runs:
+The signature covers a canonical encoding of every field (nine lines, in that order), and
+every field travels inside the signed bytes. Nothing the store acts on rides beside the
+signature. The store checks, before any of the kind's code runs:
 
-1. The MAC verifies, and `digest` matches the body received.
-2. `aud` matches `op`: a `substrat.*` operation needs `platform`, and any other operation
-   needs `caller`.
-3. `iat` is inside the freshness window.
-4. `name` equals the first name this object accepted. On an object's first accepted call
+1. The version is known, and (`v`, `aud`, `op`) is in a closed table: `platform` sends
+   exactly the reserved `substrat.*` operations, and `caller` sends anything else.
+2. `kid` names a listed key for `aud`, the signature verifies under it, and `digest`
+   matches the body received.
+3. `iat` is inside the freshness window (60 seconds either side).
+4. `script` is this store script's own name, and the body names the signed `op` and `name`.
+5. `name` equals the first name this object accepted. On an object's first accepted call
    the name is recorded in the object's own storage, before the operation runs.
+
+Checks 1–4 are one function, `verifyScopeStoreCall`, which the store entry calls; check 5
+needs the object's storage and is the entry's own.
 
 Replay inside the window is bounded by the window. The reserved operations are idempotent,
 and a kind operation's retry safety is the vertical's (§9). Per-object nonce memory is
@@ -428,9 +436,11 @@ The entry module verifies the envelope and the remembered name before it hands t
 to the kind's object. How the entry module reaches the object's storage for the remembered
 name, without the kind's class being able to rewrite it, is open question Q3.
 
-**Keys (L16).** Store-envelope signing keys are scoped per store script and per audience.
-A store script never holds a key that can mint an envelope for another script, and no signer
-holds a key for an audience it does not sign.
+**Keys (L16).** One Ed25519 signing key per audience. The router holds the `caller` private
+key and the control plane the `platform` one. A store script holds only public keys, a list
+per audience, so no store script can mint an envelope for itself or for any other script.
+The list is what makes a rotation safe: add the new public key to every store script, switch
+the signer, then drop the old key.
 
 ### 10.4 What moves and what stays
 
@@ -659,7 +669,7 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | L1 | A hosted serving upload carries no binding named `SUBSTRAT_STORE_*`, whatever `STORE_KINDS` holds. With L18, that holds for every name in the upload, the vertical's own included |
 | L2 | A hosted `getScopeStore` call leaves the worker only as `fetch` of `store.substrat.internal`. With no direct binding and no runner configured, the host never falls back to an ambient binding |
 | L3 | The router refuses a `substrat.*` operation, a scope other than the routed one, and a binding the serving version does not declare, before it signs |
-| L4 | The store refuses an envelope whose MAC fails, whose `digest` does not match the body, whose `aud` does not match `op`, whose `iat` is outside the window, or whose `name` differs from the first name it accepted. Each is checked before kind code runs |
+| L4 | The store refuses an envelope whose signature fails, whose `kid` names no listed key, whose `script` is not its own, whose `digest` does not match the body, whose `aud` does not match `op`, whose `iat` is outside the window, or whose `name` differs from the first name it accepted. Each is checked before kind code runs |
 | L5 | A signature for one object, operation or audience does not open another. A validly signed envelope for name Y is refused by an object that remembers X |
 | L6 | Every scope-deletion path stops routing the scope, then calls `substrat.wipe` on each binding, then deletes the scope's storage, in that order |
 | L7 | A failed or undecidable wipe stops the delete, and the scope's own storage is left for the retry. The delete never proceeds around the store |
@@ -671,7 +681,7 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | L13 | A store that cannot report its size is not recorded as size `0` |
 | L14 | The kind, the bindings and the vertical for any store call, from the router or the control plane, come from one shared resolution: the scope record's vertical, and the manifest of the version the scope's deployment runs. That is the pointer's version only when the pointer's ref is the scope's `serving_ref`; the bound version when the scope has no `serving_ref`; unknown otherwise, which fails closed. Never from the vertical's environment |
 | L15 | A masked export or pull carries no stores, and a failed store export fails the export |
-| L16 | Store-envelope signing keys are scoped per store script and per audience. A store script never holds a key that can mint an envelope for another script, and no signer holds a key for an audience it does not sign |
+| L16 | One store-envelope signing key per audience, held only by that audience's signer. A store script holds only public keys, a list per audience, and never a key that can mint an envelope. No signer holds a key for an audience it does not sign |
 | L17 | No operation (push, bind, promote, rollback of the serving pointer, serving re-upload) changes a scope's resolved set of (binding, kind) while objects of the old set may exist, unless the old binding stays reachable. Recommended (Q5): the lifecycle reaches the vertical-wide union of every (binding, kind) any version has declared |
 | L18 | A vertical-declared name (store binding, static binding, Durable Object binding) starting with `SUBSTRAT_STORE_` is refused at push and again at upload |
 | L19 | A bind that races a subject erasure either sees the erase or fails. The erase never destroys the key after a bind added a binding it did not reach |
@@ -698,13 +708,13 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | (p) Store script names are injective over (kind, vertical), and the `substrat-store-` name space is reserved against vertical scripts | `scopeStoreScriptName`, `platformScriptCollision` (#2247) |
 | (q) The router's route read applies the same rule as (i), so a scope pinned to another script gets no store | `READ_ROUTE_SQL` |
 | (n) Export, wipe, erasure and the meter reach every binding any version of the vertical declared, a re-kind is refused at publish, and an export leaves out an empty binding only an earlier version declared and refuses one that holds data (#2292, the accepted Q5 answer) | `vertical_scope_stores`, `HostAdmin.verticalScopeStores`, `scopeStoreReachOf` |
+| (a) The name-only MAC is gone. Both signers sign the Ed25519 envelope of §10.3, over the audience, key id, script, name, operation, body digest, time and nonce, and `verifyScopeStoreCall` holds checks 1–4 (#2293) | `issueScopeStoreEnvelope`, `verifyScopeStoreCall` |
 | (m) Snapshot deletion, preview reap and the sweeper's snapshot reap decide their refusals, then unbind every hostname, then wipe, then delete. Erasure's two arms take one claim that fences the version, the pin and the serving pointer's pair before the key goes (#2285) | `unrouteScope`, `claimScopeScriptReap`, `SUBJECT_ERASURE_CLAIM_SQL` |
 
 Still open:
 
 | | Open item | Rule | Before #2210? |
 |---|---|---|---|
-| (a) | The MAC covers the name only. The audience header is unsigned, and nothing binds the operation, the time or a nonce | L4, L5 | **Yes** |
 | (b) | First-name memory and the audience check exist as helpers and in a test fixture, not in a store script. No kind is registered to carry them | L4, L5 | **Yes**, in the test kind and in the registration requirements (D-63) |
 | (c) | `transport: 'platform'` exists, but the host defaults to `'binding'` and nothing in production sets `'platform'` | L2 | **Yes** |
 | (f) | Replay and wipe skip when the destination's manifest is null. That is correct for a version that predates kept manifests, and needs a test that says so | L9, L7 | No, later |
@@ -739,8 +749,8 @@ block it.
    erase arm on #2254's shred with `unavailable` as 503 (k), and unroute-then-wipe plus the
    bind fence (L6, L19, item (m)).
 4. The orphaned-binding rule (L17, item (n)): the union, the accepted Q5 answer, on PR #2292.
-5. The signed envelope (§10.3), signed by the router and by the control plane with keys
-   scoped as L16 says. It replaces `signScopeStoreName`.
+5. Done on #2293. The signed envelope (§10.3), signed by the router and by the control plane
+   with keys as L16 says. It replaces `signScopeStoreName`, which is deleted.
 6. Make the hosted transport the platform hop. A host with no control plane, no direct
    binding and no runner sends a vertical's call to `store.substrat.internal`. The ambient
    path is taken only where a binding or runner was given explicitly (L2).

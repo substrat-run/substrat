@@ -4,4 +4,4 @@
 '@substrat-run/router': patch
 ---
 
-A scope-store call carries an Ed25519 signature over the audience, the object name, the operation and the body (#2287). The router signs audience `caller` and the control plane signs audience `platform`, each with its own key. A store script holds only the public keys.
+A scope-store call carries an Ed25519 signature over the audience, the key id, the store script, the object name, the operation, the body, the issue time and a nonce (#2287). The router signs audience `caller` and the control plane signs audience `platform`, each with its own key. A store script holds only public keys, a list per audience so a key can rotate, and checks every call with `verifyScopeStoreCall`. The name-only `signScopeStoreName` / `verifyScopeStoreName` and the `./scope-store-mac` subpath are removed.

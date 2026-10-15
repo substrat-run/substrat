@@ -537,6 +537,13 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   STORE_PLATFORM_KEY?: string;
   /**
+   * The public halves a store script verifies with (#2287): raw Ed25519 keys, base64url,
+   * comma-separated (`parseScopeStorePublicKeys`), one list per audience. Not secret. The
+   * store upload writes them into each store script; a list so a key can rotate.
+   */
+  STORE_CALLER_PUBLIC_KEYS?: string;
+  STORE_PLATFORM_PUBLIC_KEYS?: string;
+  /**
    * Seals connection credentials at rest (#101/#574) — base64(url) of 32 bytes
    * (`openssl rand -base64 32`), same convention as the dashboard's box. The
    * coordinator-side key for the directory's `_substrat_connection_secrets`
