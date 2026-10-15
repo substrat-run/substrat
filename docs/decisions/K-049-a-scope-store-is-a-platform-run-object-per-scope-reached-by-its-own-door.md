@@ -3,7 +3,7 @@ id: K-49
 date: 2026-10-12
 layer: kernel
 title: "A scope store is a platform-run object per scope, reached by its own door"
-status: proposed
+status: accepted
 aliases: []
 amends: []
 tracking: ["#2207"]
