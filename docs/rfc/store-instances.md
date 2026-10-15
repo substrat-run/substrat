@@ -1,7 +1,7 @@
 ---
 status: proposed
 layer: kernel
-description: A tenant-level store instance that several verticals of one tenant connect to, weighed against the per-scope store of K-49/K-50. Four options, three authorization shapes, the lifecycle a shared object needs, and what it does to the open scope-store stack. Recommends a named instance per tenant on a script per (kind, tenant), with platform-enforced partitions; decides nothing.
+description: A tenant-level store instance that several verticals of one tenant connect to, weighed against the per-scope store of K-49/K-50. Four options, three authorization shapes, the lifecycle a shared object needs, and what it does to the open scope-store stack. Recommends a named instance per tenant on a script per (kind, tenant), with partitions the platform addresses (separation inside a tenant held by review unless each partition gets its own script); decides nothing.
 ---
 
 # RFC: store instances
@@ -115,8 +115,9 @@ the auth-server (`demos/auth-server`) in hosted mode.
   party. In a store call it is the platform's envelope, checked by the instance.
 
 **The requirement this precedent gives the store connection.** A connection carries its own
-identity binding: which instance, which tenant, which vertical, which binding, and which
-partition and reads (§5.1). The instance checks every call against that binding. What a
+identity binding: which instance, which tenant, which installation scope and vertical, which
+binding, and which partition and reads (§5.1). The instance checks every call against that
+binding. What a
 connection grants is therefore bounded by the connection itself, not by the tenant the
 caller belongs to. "Caller is in the same tenant" is never enough to reach an instance. This
 holds whether or not the two mechanisms are unified (§12 Q15).
@@ -132,7 +133,7 @@ differ in which layers they keep, so they are named first.
    vertical names a binding, never an object (K-49).
 2. **What the envelope binds.** The signed envelope (scope-stores §10.3; open PR #2293) puts
    the version, the audience, the name, the operation, a body digest, the issue time and a
-   nonce inside the signature. The store script holds verification keys only (open PR #2298).
+   nonce inside the signature. The store script holds verification keys only (open PR #2293).
    So nothing that runs in a store script can mint an envelope.
 3. **Which script holds the object.** `idFromName` is per script. Two scripts never share an
    object. Open PR #2295's entry module also refuses a name whose vertical is not the
@@ -152,6 +153,21 @@ in platform code. What the kind's code does inside its isolate is not held by a 
 mechanism. D-63 accepts this for the first kind on the reasoning that *"a tenant that exhausts
 an isolate should restart that vertical's objects only"*. That bounds the blast radius by
 vertical. It does not bound it by tenant.
+
+**What layer 3 and layer 4 together mean for any partition inside one script.** Objects that
+share a script share a class and may share an isolate. Code in that isolate can therefore
+carry data from one object to another through memory, without any envelope. D-63's rule of
+"no per-object state at module level" exists for exactly this reason, and it is enforced by
+the registration review. So **the envelope makes addressing mechanical, and only a separate
+script makes the data of two objects mechanically separate.** Everything this RFC says
+about partitions (§6) is bounded by that.
+
+**A requirement of every option.** The environment the platform hands the kind's class
+leaves out the store's own Durable Object namespace binding and the envelope's
+verification-key bindings. The entry module holds them, and the kind receives only what its
+operations need. This narrows what the kind's code can address without relying on review.
+Whether it can be guaranteed for every runtime a kind uses, including any route the runtime
+offers module code to reach the script's bindings, is unverified (§13).
 
 Each option in §4 is graded on these four layers and on that exposure.
 
@@ -188,12 +204,20 @@ signs, rather than configuration the relying party verifies.
   - Layer 2: the envelope is unchanged in shape (§5.5).
   - Layer 3: the script is the tenant's, and the entry module's own-vertical check becomes an
     own-tenant check.
-  - Layer 4: the isolate holds one tenant's objects only.
+  - Layer 4: the isolate holds one tenant's objects only. Inside the tenant, every instance
+    and every partition of that kind shares the script and may share the isolate.
 - **The §3 exposure.** A kind's code can reach only objects in its own script, and in B that
   is one tenant's instances. A misbehaving kind affects one tenant's layer, which is the data
   that tenant chose to share across its verticals anyway. That is strictly narrower than A. It
   is the strongest argument for a script per tenant, and it holds whichever authorization shape
-  §6 settles on.
+  §6 settles on. **Within the tenant, separation between partitions and between instances is
+  held by review**, for the reason §3 gives, unless the variant below is chosen.
+- **Variant B′: a script per (kind, tenant, partition).** Each partition (§6 (ii)) is its own
+  script, so two partitions never share an isolate, and moving data between them takes a
+  platform-signed call. This is the only form in which separation inside a tenant does not rest
+  on review. It costs a script per connection rather than per tenant, an upload per
+  connection, a release that fans out to every partition, and a cold isolate per partition.
+  Reads across partitions become calls between scripts, and the router signs each one.
 - **Meets the requirement?** Yes: one object (or one object per partition, §6) per instance,
   reached by every connected vertical.
 - **Cost (§10).**
@@ -278,10 +302,19 @@ rows already are. The names are illustrative.
 
 - **An instance:** `(id ULID, tenant_id, kind, display_name, jurisdiction, status, created_by,
   created_at)`. `status` follows the scope's vocabulary: `active`, `deleting`, `reaped`.
-- **A store connection:** `(id, tenant_id, instance_id, vertical, binding, reads,
+- **A store connection:** `(id, tenant_id, instance_id, scope_id, vertical, binding, reads,
   created_by, created_at, ended_at)`.
-  - At most one live connection per `(tenant_id, vertical, binding)`.
-  - `reads` is the read grant of §6, the list of partitions this connection may read.
+  - At most one live connection per `(tenant_id, scope_id, binding)`. A connection is per
+    **installation scope**, not per vertical. Two installations of one vertical in a tenant
+    are two connections, and so are two bindings of one installation. This follows the
+    precedents: `peer_bindings` is keyed by the caller's scope, a connector's grants are
+    seated at a scope, and the auth wiring is delivered per scope (§2.1). A vertical whose
+    installation spans many scopes is connected scope by scope, and the dashboard may do that
+    in one act that writes one row each (§12 Q16).
+  - Each connection is one **partition** (§6). The partition is named by the connection, so
+    two connections never share one.
+  - `reads` is the read grant of §6, the list of partitions (connections) this connection may
+    read.
   - An ended connection's row is kept while its partition holds data. That is the
     connection-history counterpart of the union rule of L17 (§7.4).
 
@@ -295,7 +328,7 @@ rows already are. The names are illustrative.
   key. Today `dashboard:manage-integrations` (owner, admin) gates connections, and
   `dashboard:provision-app` (owner, admin, member) gates peer bindings. A new key, held by
   owner and admin, is the lean (§12 Q2), because a connection here grants one vertical's
-  code access to what other verticals wrote. The key reaches `demos/*/PERMISSIONS.md`
+  code access to what other verticals wrote. The key reaches `apps/dashboard/PERMISSIONS.md`
   through `lint:permissions`, so the human permission-diff checkpoint sees it.
 - **Every connect, disconnect and change to `reads`** writes an admin-log row naming the
   instance, the vertical and the binding.
@@ -327,10 +360,11 @@ The router already reads, per dispatch, the scope's stores from the version reco
 `OUTBOUND_POLICY.stores`. Under B the same read gains a join:
 
 1. The scope's version declares `(binding, kind)`, exactly as today (L14).
-2. For a tenant-grain kind, the live store connection for `(tenant, scope's vertical,
-   binding)` names the instance, which must be `active` and of the same kind.
-3. The result in `OUTBOUND_POLICY.stores` carries the instance id and the connection's
-   `reads`, alongside the binding.
+2. For a tenant-grain kind, the live store connection for `(tenant, scope, binding)` names
+   the instance, which must be `active` and of the same kind. Its `vertical` must be the
+   scope record's.
+3. The result in `OUTBOUND_POLICY.stores` carries the connection id (the partition), the
+   instance id and the connection's `reads`, alongside the binding.
 
 Every step fails closed:
 
@@ -343,16 +377,20 @@ A disconnect takes effect on the next dispatch, because the policy is set per di
 ### 5.5 The name and the envelope
 
 - **The object name** for an instance is built by the router from its own records:
-  `<tenantId>/i/<instanceId>/<partition>` under §6 shape (ii), and
-  `<tenantId>/i/<instanceId>` under shape (i). The display name never appears in it.
+  `<tenantId>/i/<instanceId>/p/<connectionId>` under §6 shape (ii), and
+  `<tenantId>/i/<instanceId>` under shape (i). The connection id is the partition, so two
+  bindings, or two installations, never resolve to one object by accident. The display name
+  never appears in the name.
 - **The script name** is a new reserved form, `substrat-store-<kind>-t-<tenantId>`. It must
   be injective against the per-(kind, vertical) names of L20, with a prefix no vertical slug
   can produce.
 - **The envelope** keeps every field of scope-stores §10.3. It adds, inside the signature, the
   caller's vertical, scope and connection id, under a new `v`, so the kind can attribute a
   write and the entry module can check that the partition in the name is the caller's own
-  (§6). The store refuses a `v` it does not know (§10.10 of scope-stores), so the change is
-  additive.
+  (§6). The rollout order is what makes it safe: every store script accepts the new `v`
+  before any signer sends it (scope-stores §10.10, "a store script newer than the signer").
+  A store refusing an unknown `v` is what makes the wrong order fail loudly rather than
+  silently.
 - **The audience** is `caller` for a vertical's call, as now. A read of another partition
   (§6 (ii)) is `reader`, a third audience whose operations the registration lists as
   read-only. The audience is inside the signature.
@@ -362,10 +400,11 @@ A disconnect takes effect on the next dispatch, because the policy is set per di
 ### 5.6 Several instances
 
 - One instance has many connections.
-- One `(tenant, vertical, binding)` has at most one live connection. A vertical that wants
-  two layers declares two bindings.
-- Moving a vertical from one instance to another is a disconnect followed by a connect. Its
-  old partition stays in the old instance. Copying a partition across instances is a later
+- One `(tenant, scope, binding)` has at most one live connection. A vertical that wants two
+  layers declares two bindings, and each connection is its own partition even when both
+  point at one instance.
+- Moving an installation from one instance to another is a disconnect followed by a connect.
+  Its old partition stays in the old instance. Copying a partition across instances is a later
   platform operation (§12 Q10).
 
 ## 6. Authorization inside a cross-vertical layer
@@ -382,7 +421,14 @@ data to. Principals are per scope, the same `sub` under two issuers is two subje
 (cross-scope-read §7, invariant 2), and nothing in a row carries X's decision about who may
 see it.
 
-Three shapes are possible. They differ in who enforces the partition between verticals.
+Three shapes are possible. They differ in who enforces the partition between verticals, and
+two things have to be kept apart when grading them:
+
+- **Addressing.** Which object a *caller* can name. The router and the envelope can make this
+  mechanical.
+- **Data separation against the kind's own code.** Whether the kind, running inside a
+  partition, can move data into another partition. §3 shows this is mechanical only across
+  scripts.
 
 ### (i) Kind-enforced partitions
 
@@ -397,31 +443,41 @@ Three shapes are possible. They differ in who enforces the partition between ver
 - **Against it.** The tenant's admin grants a read list that no platform mechanism enforces.
   A defect in the kind leaks across verticals inside the tenant without any signal.
 
-### (ii) Platform-enforced partitions
+### (ii) Platform-addressed partitions
 
-- **How it works.** One object per (instance, connected vertical). The router builds the name
-  with the partition taken from `OUTBOUND_POLICY`, which is the caller's own vertical. So a
-  vertical's `caller` call reaches its own partition by construction. It can write nothing
-  else, because it can name nothing else.
+- **How it works.** One object per (instance, connection), the connection being the
+  partition (§5.1). The router builds the name with the partition taken from the connection
+  it resolved for the dispatch's own scope (§5.4). So a vertical's `caller` call reaches its
+  own partition by construction. It can name nothing else.
 - **Reading another partition** is an explicit read grant (`reads` on the connection). The
   call takes the same hop, is signed with audience `reader` for the other partition's name,
   and only for an operation the kind's registration lists as read-only. The router refuses an
   unlisted operation and a partition not in `reads` before it signs. The entry module in the
   target object refuses a `reader` envelope for a non-read operation before the kind runs.
-- **What holds it.** The object boundary. Storage is per object. One object reaching another
-  needs an envelope, and the store script holds no key to mint one (open PR #2298). So the
-  kind's code, inside one partition's object, cannot write into another partition. That is a
-  platform property, not a review finding. It holds even though the entry check shares an
-  interpreter with the kind, because the boundary is no longer inside one object.
-- **What still rests on review.** That a `reader` operation the registration calls read-only
-  really does not write. Inside the read partition's object, the kind runs. A misbehaving read
-  operation can therefore change the partition it reads, but still only within one tenant's
-  instance.
+- **What holds it: addressing, mechanically.** A caller cannot name another partition, and
+  cannot run a non-read operation on one. Router and envelope enforce both, in platform code,
+  before any kind code runs. A store script holds no key that mints an envelope (open PR
+  #2293).
+- **What does not hold mechanically: data separation against the kind.** Every partition of
+  every instance of the tenant is an object of one class in the one (kind, tenant) script.
+  The objects may share an isolate, and the kind's code can carry data between them through
+  isolate memory with no envelope at all (§3). Storage being per object does not stop that.
+  **Within a tenant, partition separation against the kind's own code is review-only**, as it
+  is under (i). That holds unless the variant B′ cost is paid: a script per (kind, tenant,
+  partition), where partitions never share an isolate (§4).
+- **What also rests on review.** That a `reader` operation the registration calls read-only
+  really does not write. Inside the read partition's object, the kind runs, so a misbehaving
+  read operation can change the partition it reads. That stays within one tenant's instance.
+- **What (ii) still buys over (i), even on one script.**
+  - Caller addressing does not depend on the kind being correct.
+  - The partition is the platform's unit of wipe, export, size and erasure (§7), so those
+    never depend on the kind filtering its own rows.
+  - The read list is checked by the router rather than by the kind.
 - **Against it.**
   - Every cross-vertical query is a fan-out by the caller: the calling vertical, or a
     platform read surface, reads N partitions and combines them.
   - The kind cannot traverse across partitions in one call.
-  - Partitions multiply objects: one per connected vertical.
+  - Partitions multiply objects: one per connection.
   - A shared, vertical-neutral partition (tenant reference data every vertical writes) needs
     its own rule. Either it is a partition with several writers, which is (i) inside that
     partition, or it is platform-fed, which is (iii).
@@ -444,21 +500,44 @@ Three shapes are possible. They differ in who enforces the partition between ver
 
 - **The operation checks first.** It is unchanged and still the first line of every
   operation that calls a store. Under B the calling vertical's own permission model decides
-  which of its people may trigger a read of another partition. The tenant admin's read grant
-  is the consent that this vertical's model governs that data. This is the authority shape of
-  peer calls and cross-vertical events, and the cross-scope-read RFC names it (§2, candidate
-  A): the authority is the vertical's, not the person's.
+  which of its people may trigger a read of another partition.
+- **The exposure a read grant creates, said plainly.** A read of another partition runs with
+  the *reading vertical's* authority, not the person's standing in the producing vertical.
+  The cross-scope-read RFC **rejects** that shape for its own case (§2, candidate A) because
+  it would show a person more than they may read, and it had an alternative: each scope
+  checks the person itself. Here no such alternative exists. The store has no permission
+  model, principals are per scope, and nothing in a partition says who in the producing
+  vertical may see a row. So this RFC does not claim the exposure away. It bounds it, and
+  leaves avoiding it as a live option (§12 Q3):
+  - **Bounded by the producer.** A partition is readable by others only for read operations
+    the producing installation's binding declares shareable, the way #1705's `exports`
+    names a `readPermission`. Nothing is readable by default.
+  - **Bounded by consent.** A tenant admin grants each `reads` entry. The grant is audited, and
+    it is the admin accepting that the reading vertical's model governs that data.
+  - **Bounded by classification.** Reads across partitions are limited to non-personal
+    shapes (§7.1 says why the erasure fan-in cannot lift this).
+  - **Avoided entirely** if no partition is readable by another, and cross-vertical views come
+    only from a platform-run read model, shape (iii). That is the honest alternative if the
+    bounds above are judged not enough.
+
+  Peer calls and cross-vertical events already run with this vertical authority (#1706,
+  #1705). The second limits what crosses to `piiClass: 'none'`, and the bounds above take the
+  same line.
 - **Classification and PII.**
   - The kind's data is opaque to the platform. A masked export carries no instance, as it
     carries no store today (L15).
-  - Whether a partition may hold `piiClass` other than `none` is tied to the erasure fan-in
-    of §7.1, and §12 Q3 asks whether reads across partitions are limited to declared,
-    non-personal shapes, as #1705 limits events.
-- **What the platform can enforce:** the tenant (every shape); which partition a caller
-  writes (shape (ii) only); which partitions it reads, and with which operations (shape (ii)
-  only, by operation name); and who connected what, with the audit trail (every shape).
+  - A partition may hold personal data written by its own installation, because the fan-in
+    of §7.1 reaches it. What is *read across* partitions is limited to non-personal shapes,
+    because no erasure reaches a reader's copy (§7.1, §12 Q3).
+- **What the platform can enforce:**
+  - the tenant, in every shape, down to the script and isolate under B;
+  - which partition a caller *addresses*, under shape (ii) only;
+  - which partitions a caller reads, and with which operations, under shape (ii) only and by
+    operation name;
+  - who connected what, with the audit trail, in every shape;
+  - data separation between partitions against the kind's own code, only under B′.
 - **What the platform cannot enforce:**
-  - what the kind does inside an object;
+  - what the kind does inside an object or, on one script, across the objects of its isolate;
   - what a reading vertical does with data after it has read it, including copying it into
     its own partition or its own scope;
   - whether person P in vertical Y "should" see a row written in vertical X.
@@ -477,24 +556,32 @@ These are requirements. They hold for B under either authorization shape, and fo
   (`POST /tenants/:tenantId/scopes/:scopeId/subjects/:subjectId/shred`) names one scope and
   resolves that scope's stores (`platformStoresOf`). A shared instance holds subjects from
   every connected scope.
-- **The requirement.** A shred in any scope of a connected vertical calls `substrat.erase` on
-  every instance that vertical's binding is connected to, **or was connected to while its
-  partition still holds data**. The key is destroyed only after each of those has answered.
+- **The requirement.** A shred in a scope calls `substrat.erase` on every partition that
+  scope's connections name, live **or ended while the partition still holds data**. The key is
+  destroyed only after each of those has answered.
   Fail closed as L12 does:
   - an unreadable connection history is "may hold";
   - an unreachable instance keeps the key and answers 503.
-- **The erase input** carries `(vertical, scopeId, subjectId)`, not `subjectId` alone. A
+- **The erase input.** Under (ii) the partition is the scope's own, so `subjectId` within that
+  partition's object is unambiguous. Under (i) it carries `(vertical, scopeId, subjectId)`. A
   subject id means something in its own scope only. The same person in another vertical is
   another subject, and is erased by that vertical's shred.
-- **Copies across partitions.** Under (ii), data a reading vertical copied into its own
-  partition is that vertical's own data, and its own shred reaches it. Under (i), a kind that
-  derives rows across verticals must record where they came from, so that an erase reaches
-  the derivations. That is a registration requirement.
+- **Copies across partitions are beyond this erasure.** Suppose vertical Y reads X's
+  partition and keeps what it read, in its own partition or its own scope. That copy is keyed,
+  if at all, by X's subject id, which means nothing in Y. Erasing the subject in X never
+  reaches Y's copy, and Y's own shreds name Y's subjects, not X's. This is the reason #1705
+  lets only `piiClass: 'none'` events cross between verticals. **The fan-in does not lift this
+  limit:** it reaches the partitions the erased scope wrote, never what others derived from
+  them. Lifting it would need a subject identity shared across verticals, which no part of
+  the platform has. So reads across partitions stay limited to non-personal shapes (§6,
+  §12 Q3). Under (i), a kind that derives rows across verticals *inside the store* must
+  record where they came from, so that an erase reaches the derivations. That is a
+  registration requirement, and it is reviewed.
 - **The fence (L19's counterpart).** A connect or reconnect that races a shred either sees it
   or fails.
 - **The restore replay (L9's counterpart).** Restoring an instance re-erases every subject
-  whose key row in **any scope of the tenant** has `shredded_at` set, on the partition of
-  that scope's vertical. The rows are in the directory with their `tenant_id`, so the source
+  whose key row in **any scope of the tenant** has `shredded_at` set, on the partitions of that
+  scope's connections. The rows are in the directory with their `tenant_id`, so the source
   is the whole tenant and never unknown. This closes, for instances, the gap scope-stores §8
   leaves open for scopes (a tenant-level ledger), as far as subjects erased on this host are
   concerned. A deleted snapshot's rows are still lost (scope-stores §8).
@@ -505,14 +592,15 @@ These are requirements. They hold for B under either authorization shape, and fo
   snapshot deletion, the sweeper's reap) wipes the scope's **scope-grain** stores only. An
   instance is not the scope's to wipe.
 - **Data a deleted scope wrote into an instance** is a decision, not a default (§12 Q11).
-  Either it stays, as the vertical's data in a tenant-level store, or a reserved
-  `substrat.forgetScope { vertical, scopeId }` removes the rows that scope wrote. The second
-  needs every write to carry its scope, which the §5.5 envelope does.
+  Under (ii) that data is the deleted scope's connection's partition: it is kept, or it is
+  wiped by the disconnect-then-wipe order. Under (i), a reserved
+  `substrat.forgetScope { vertical, scopeId }` would remove the rows that scope wrote, which
+  needs every write to carry its scope, as the §5.5 envelope does.
 - **A scope archived while connected.** It is not routed, so it makes no calls. Its data
   stays, and erasure still reaches it (§7.1).
-- **A vertical uninstalled while connected.** The uninstall ends every connection of that
-  vertical in the tenant. Its partition stays, readable only through grants another
-  connection already holds. It stays reachable by erasure and by tenant deletion through the
+- **A vertical uninstalled while connected.** The uninstall ends every connection of its
+  scopes in the tenant. Their partitions stay, readable only through grants other
+  connections already hold. It stays reachable by erasure and by tenant deletion through the
   kept connection rows. Deleting it is an explicit tenant-admin step: export, wipe, then drop
   the row, the L17 retirement order.
 
@@ -540,14 +628,14 @@ restoring a scope nor forking one touches an instance.
   scope-grain stores only. An instance is never in a scope dump, because it is not the
   scope's.
 - **Restore of an instance** is a tenant-level operation of its own. It imports only
-  partitions whose vertical has a connection row (live or ended) of the same kind (the L8
-  counterpart), and then runs the replay of §7.1.
+  partitions that have a connection row (live or ended) of the same kind on the instance (the
+  L8 counterpart). It then runs the replay of §7.1.
 
 ### 7.5 Metering and attribution
 
 `substrat.size` is called per instance object. Under (ii) that is per partition, so a
-tenant's store bytes are attributable to the vertical that wrote them, because each
-partition's object is a vertical's. Under (i) attribution is only what the kind reports
+tenant's store bytes are attributable to the installation that wrote them, because each
+partition's object is one connection's. Under (i) attribution is only what the kind reports
 about itself. The gauge table (`_substrat_scope_store_storage`, #2212) is keyed by scope and
 binding today, so instances need their own key. L13 carries over: a size that cannot be read
 is never recorded as `0`.
@@ -640,10 +728,11 @@ is open.
   - the union of bindings gains a union of connections;
   - a restore that "imports only bindings the destination declares" does not apply to an
     instance, which is never in a scope dump;
-  - erasure of a scope fans in to every instance its vertical is or was connected to.
+  - erasure of a scope fans in to every partition its connections name or named.
 - **#2302's Q3 answer** (a platform-emitted entry module; registration review holds the
-  remembered name) stands in B and D. Under (ii) it matters less, because the boundary
-  between verticals is an object boundary rather than a remembered name.
+  remembered name) stands in B and D. Under B on one (kind, tenant) script, the separation
+  between partitions is held by the same review (§6 (ii)). Only under B′ does an object
+  boundary that is also a script boundary carry it.
 - **#2302's Q5 answer** (the vertical-wide union; a push never shrinks it) stands for
   scope-grain kinds. A tenant-grain kind needs the connection-history counterpart.
 - **D-63, "one script per (kind, vertical)"**, and its reason ("a tenant that exhausts an
@@ -665,8 +754,8 @@ tenant grain. There is no platform migration between the two today:
 - object names carry the scope;
 - the data's identifiers are scope-local.
 
-A move would be an explicit tenant-admin job: export each scope's store, import it into the
-vertical's partition with a merge-capable import the kind would have to add, replay erasures
+A move would be an explicit tenant-admin job: export each scope's store, import it into that
+scope's connection's partition with a merge-capable import the kind would have to add, replay erasures
 (§7.1), then retire the scope-grain binding by the L17 order. That is possible, but it is a
 second import contract and a per-tenant migration run.
 
@@ -684,20 +773,22 @@ and lifecycle differ. A kind that wants both registers twice, under two kind ids
 
 ## 10. Cost and complexity
 
-| | A per scope | B instance, script per (kind, tenant) | C instance on per-(kind, vertical) scripts | D platform ingestion |
-|---|---|---|---|---|
-| Meets the requirement | No | Yes | Only by becoming B or a fleet-wide script | Reads yes; synchronous writes no |
-| Store scripts | kinds × verticals | kinds × tenants with an instance | kinds × verticals | kinds × tenants (as B) |
-| Release fan-out | per vertical | per tenant | per vertical | per tenant |
-| Kind-code exposure (§3) | every tenant of the vertical | one tenant | every tenant of the hosting vertical, plus others' data | one tenant |
-| Isolate shared with | other tenants of the vertical | one tenant only | other tenants and verticals | one tenant only |
-| Who enforces the partition between verticals | n/a (no sharing) | (i) kind review, (ii) object boundary | kind review | platform code |
-| Synchronous write | yes | yes | yes | no |
-| New directory records | none | instances, connections | instances, connections, a placement | instances, connections, watermarks |
-| New dashboard surface | none | create, connect, read grants | as B | create, connect |
-| Erasure | per scope (built) | per-tenant fan-in (§7.1) | as B | as B, plus ingestion replay |
-| Tenant teardown | per scope (built) | new | new | new |
-| Reuse of the open stack | all | most, with the §8.1 changes | most | envelope, entry, release; not the vertical door |
+| | A per scope | B instance, script per (kind, tenant) | B′ script per (kind, tenant, partition) | C instance on per-(kind, vertical) scripts | D platform ingestion |
+|---|---|---|---|---|---|
+| Meets the requirement | No | Yes | Yes | Only by becoming B or a fleet-wide script | Reads yes; synchronous writes no |
+| Store scripts | kinds × verticals | kinds × tenants with an instance | kinds × connections | kinds × verticals | kinds × tenants (as B) |
+| Release fan-out | per vertical | per tenant | per connection | per vertical | per tenant |
+| Kind-code exposure (§3) | every tenant of the vertical | one tenant | one partition | every tenant of the hosting vertical, plus others' data | one tenant |
+| Isolate shared with | other tenants of the vertical | the tenant's other partitions | nothing else | other tenants and verticals | the tenant's other partitions |
+| Caller addressing of a partition | n/a | (i) kind; (ii) router | router | kind | platform |
+| Data separation between partitions, against kind code | n/a | review | script boundary | review | review for the kind; ingestion is platform code |
+| Synchronous write | yes | yes | yes | yes | no |
+| Cross-partition traversal in one call | n/a | (i) yes; (ii) no | no | yes | in the platform's read model |
+| New directory records | none | instances, connections | as B | instances, connections, a placement | instances, connections, watermarks |
+| New dashboard surface | none | create, connect, read grants | as B | as B | create, connect |
+| Erasure | per scope (built) | fan-in per connection (§7.1) | as B | as B | as B, plus ingestion replay |
+| Tenant teardown | per scope (built) | new | new, per partition script | new | new |
+| Reuse of the open stack | all | most, with the §8.1 changes | as B | most | envelope, entry, release; not the vertical door |
 
 ## 11. Recommendation
 
@@ -708,14 +799,23 @@ between verticals.** Keep A for any kind registered at scope grain.
   grain is also what makes strict tenant isolation hold below the envelope: a kind's code
   never runs where another tenant's objects are. That is a stronger isolation property than
   the status quo, at the price of a script count that grows with tenants.
-- **(ii) puts the partition between verticals where the platform can enforce it.** The
-  boundary between two objects is not one the kind's code can cross. (i) would make the
-  tenant admin's read grant a promise that only review keeps.
-- **The first slice** is: tenant-admin connections behind a new key; a write reaches only the
-  caller's own partition; and reads of another partition are read-only, by named operation,
-  with an explicit grant per connection.
+- **Within a tenant, partition separation is review-only on one (kind, tenant) script.**
+  That holds for (i) and (ii) alike (§3, §6). (ii) does not make the kind unable to move data
+  between partitions. What it makes mechanical is caller addressing: which partition a call
+  names, and which reads the router signs. It also makes the partition the platform's unit of
+  wipe, export, size and erasure. That is why it is still the lean over (i). The gap between
+  them is narrower than "platform-enforced against review-enforced", and (i)'s native
+  traversal weighs more for that reason.
+- **The first slice** is:
+  - tenant-admin connections, per installation scope, behind a new key;
+  - a write reaches only the caller's own partition;
+  - reads of another partition only where the producer declares them shareable, read-only,
+    by named operation, with an explicit grant per connection, and for non-personal shapes
+    only (§6, §7.1).
 - **Cross-partition traversal** is the main cost of (ii). If it proves necessary, add it as a
   platform-fed view, the D side of the hybrid, before considering (i).
+- **Every option** hands the kind an environment without the store namespace and the
+  verification keys (§3).
 
 **Choose otherwise when:**
 
@@ -725,8 +825,12 @@ between verticals.** Keep A for any kind registered at scope grain.
   count fails on a real Workers for Platforms account (§13). D then still needs B's script
   grain for its instance.
 - **(i) over (ii)**: cross-vertical traversal in one call is the kind's core value, and the
-  maintainer accepts registration review as the control for the partition, writing that
-  down as a standing condition the way #2302 records Q3.
+  maintainer accepts registration review as the control for caller addressing too, as well as
+  for data separation, which is review-held in both shapes. That should be written down as a
+  standing condition, the way #2302 records Q3.
+- **B′ over B**: the maintainer wants separation between partitions inside a tenant held by
+  the platform rather than by review, and accepts a script per connection: more uploads, a
+  per-partition release fan-out, more cold isolates, and cross-script reads.
 - **Not C** in any case (§4).
 
 ## 12. Open questions
@@ -740,10 +844,18 @@ Each one is for the maintainer. The lean is stated so it can be rejected cleanly
    `dashboard:provision-app` (owner, admin, member), or add a new key? *Lean:* a new key held
    by owner and admin. A connection here exposes one vertical's writes to another vertical's
    code, and that is wider than an integration.
-3. **Cross-vertical read authorization.** Shape (i), (ii) or (iii) (§6). Within it: a read
-   list per connection, all connected partitions readable, or reads limited to declared,
-   non-personal shapes, as #1705 limits events? *Lean:* (ii) with a per-connection read list.
-   Reads are limited to non-personal shapes until §7.1's fan-in is built and tested.
+3. **Cross-vertical read authorization.** Shape (i), (ii) or (iii) (§6). Within it, the
+   options are:
+   - no reads across partitions at all, with cross-vertical views only from a platform read
+     model;
+   - a read list per connection, over what the producer declares shareable;
+   - all connected partitions readable.
+
+   *Lean:* (ii), with a per-connection read list over producer-declared shareable operations,
+   limited to non-personal shapes. The limit is permanent rather than "until the fan-in": the
+   fan-in cannot reach a reader's copy (§7.1). If vertical authority over another vertical's
+   data is judged unacceptable (the reason cross-scope-read rejects its candidate A), the
+   first option is the one to take.
 4. **Is the first slice ingestion-only (D)?** *Lean:* no, unless B's script count or upload
    behaviour fails on a real account. D cannot give the synchronous write.
 5. **Residency.** Is the instance's jurisdiction fixed at creation, and must every connected
@@ -753,9 +865,9 @@ Each one is for the maintainer. The lean is stated so it can be rejected cleanly
    installed? *Lean:* tenant admin only. An instance is the
    tenant's shared thing, and no single vertical should mint one by being installed.
 7. **Quotas.** How many instances per tenant, how many connections per instance, and how many
-   bytes? *Lean:* a small platform ceiling on instances per tenant (each is a script), no
-   separate connection cap beyond installed verticals, and bytes metered per partition
-   (§7.5). The numbers come from a real account.
+   bytes? *Lean:* a small platform ceiling on instances per tenant (each is a script under
+   B), and a ceiling on connections per instance (each is an object, and a script under B′).
+   Bytes are metered per partition (§7.5). The numbers come from a real account.
 8. **Naming.** *Lean:*
    - a ULID id in every name, and the display name in the directory only;
    - script names `substrat-store-<kind>-t-<tenantId>`, held injective against L20's form.
@@ -783,6 +895,34 @@ Each one is for the maintainer. The lean is stated so it can be rejected cleanly
     tenant admin sees one place where verticals are connected to tenant-level things) and
     keep the transports separate. OIDC verification and the platform-routed envelope do not
     become one protocol, and the auth-server's per-scope wiring already ships.
+16. **The connection's grain.** Per installation scope (§5.1), or per (tenant, vertical) so
+    that every installation of a vertical shares one partition? *Lean:* per scope. It matches
+    `peer_bindings`, connector grants and the auth wiring, and two installations of one
+    vertical are separate data. A multi-scope installation is connected in one act that writes
+    a row per scope.
+17. **Per-call audit of `reader` calls.** A read of another partition is today one invocation
+    log line in the reading vertical's request (scope-stores §6). Is that enough, or does each
+    `reader` call also leave a row the producing installation's admin can see? *Lean:* the log
+    line plus a per-connection read counter the dashboard shows, not a K-24 row per call. A row
+    per read would be an audit class no other tenant read has (cross-scope-read §8.2 makes the
+    same argument).
+18. **Who sees the connection graph.** Which instances exist, which installations are
+    connected, and who reads whom. Only tenant admins, every member with `dashboard:read`, or
+    also the connected verticals? *Lean:* tenant admins, plus a read-only view for
+    `dashboard:read`. A vertical sees only its own bindings' state (connected or not), never
+    the graph.
+19. **Deleting an instance that still has live connections.** Refuse until every connection is
+    ended, or end them as the first step of the delete? *Lean:* refuse, and name the live
+    connections in the refusal. Deletion then runs in the disconnect, wipe, drop order (§7.4),
+    so a vertical never meets an instance vanishing under a live connection.
+20. **Noisy neighbours within a tenant.** On one (kind, tenant) script, one installation's load
+    or memory can restart every partition of the tenant. Accept it, add per-partition limits in
+    the entry module, or take B′? *Lean:* accept it for the first kind and measure it. The
+    isolate is the tenant's own, and B′ is the remedy if it bites.
+21. **The script grain inside a tenant.** B (per kind and tenant) or B′ (per kind, tenant and
+    partition)? *Lean:* B, with separation inside the tenant written down as review-held. B′ is
+    to be revisited before a kind written outside this repo is registered at tenant grain,
+    which is the same condition #2302 sets for Q3.
 
 ## 13. Unverified
 
@@ -796,6 +936,12 @@ Not in this repository, or not shown by anything in it:
   Open PRs #2299, #2300 and #2301 say the same.
 - **Isolate sharing between objects of one script.** It has not been exercised (spike
   FINDINGS, "Not shown"). The §3 exposure is argued from the design, not measured.
+- **A filtered environment for the kind (§3).** Whether the entry module can hand the kind's
+  class an environment without the namespace and verification-key bindings, with no other
+  route left to them, has not been shown for either runtime (JS, or Python through its FFI).
+- **Script isolation as the boundary for B′.** B′ rests on objects in different scripts never
+  sharing an isolate. That is the Workers model every vertical already relies on, but it is
+  not exercised for store scripts in this repo.
 - **Read-only storage access for one call.** Whether a store object can run a `reader`
   operation under storage that refuses writes is not established. §6 (ii) therefore holds
   "read-only" by operation name and review, not by the storage layer.
