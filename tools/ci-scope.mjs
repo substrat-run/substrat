@@ -404,13 +404,13 @@ export const READS = [
     paths: /^packages\/adapter-cloudflare\/src\/scope-do\.ts$/,
     suite: 'packages/kernel/test/carried-copy.test.ts',
   },
-  // The store hop and the store entry on workerd (#2207, #2289): the hop bundles the router's
-  // store-call source, the entry suite uploads control-plane-api's store entry, and this
-  // package's typecheck covers the entry's sources. None of it is an import pnpm can see.
+  // The store hop on workerd (#2207) bundles the router's store-call source. The router is a
+  // worker, not a package vertical-egress can depend on. (The store entry it uploads comes
+  // through declared devDependencies on control-plane-api and the CLI, so needs no row.)
   {
     reader: '@substrat-run/vertical-egress',
-    paths: /^(apps\/router\/src\/store-calls|packages\/control-plane-api\/(store-entry\/|src\/store-entry))/,
-    suite: 'apps/vertical-egress/test/store-entry.workerd.test.ts',
+    paths: /^apps\/router\/src\/store-calls/,
+    suite: 'apps/vertical-egress/test/store-hop.workerd.test.ts',
   },
 ];
 

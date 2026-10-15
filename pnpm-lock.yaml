@@ -521,6 +521,12 @@ importers:
       '@cloudflare/workers-types':
         specifier: 'catalog:'
         version: 4.20260702.1
+      '@substrat-run/cli':
+        specifier: workspace:^
+        version: link:../../packages/cli
+      '@substrat-run/control-plane-api':
+        specifier: workspace:^
+        version: link:../../packages/control-plane-api
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
