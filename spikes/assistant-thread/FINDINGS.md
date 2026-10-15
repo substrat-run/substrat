@@ -196,3 +196,5 @@ needed nothing in memory to continue.
   was nothing to resume. The client now stops at the disconnect.
 - **Second batch of ten (both fixes):** 10 of 10 passed 41 of 41, at load averages from about 55
   falling to about 9.
+- **Third batch of five (after the client learned that `turn-error` ends a turn):** 5 of 5
+  passed 41 of 41, at load averages from about 8 to about 54. The gzip sizes did not change.
