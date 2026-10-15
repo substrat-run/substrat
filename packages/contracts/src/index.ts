@@ -79,4 +79,3 @@ export * from './auth-delivery.js';
 export * from './places.js';
 export * from './delegations.js';
 export * from './preview-client.js';
-export * from './assistant-stream.js';
