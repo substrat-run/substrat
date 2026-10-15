@@ -243,9 +243,16 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         await host.admin.admitVersion(staff, id);
         return { id, ref };
       };
+      /** Its own vertical (#2286): erasure reaches every binding any version of it declared. */
+      const ownVertical = async () => {
+        const slug = `own-${ulid().toLowerCase().slice(-10)}`;
+        await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+        return slug;
+      };
       const bound = async (scopeStores?: unknown[], platform = platformStores()) => {
-        const scope = await sealedScope();
-        const version = await publish(scopeStores);
+        const slug = await ownVertical();
+        const scope = await sealedScope(slug);
+        const version = await publish(scopeStores, slug);
         await host.admin.bindScopeVersion(staff, t, scope.s, version.id);
         const api = createControlPlaneApi({
           host,
@@ -296,11 +303,16 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       };
       const stores = [{ binding: 'GRAPH', kind: 'graph' }];
 
-      it('on the serving script, the served version decides, not the bound one', async () => {
+      it('on the serving script, every binding any version of the vertical declared is erased (#2286)', async () => {
         const served = await onServingScript({ servedStores: stores });
         expect(served).toEqual({ status: 200, asked: served.expected, expected: served.expected, keyKept: false });
+        // The served version declares none and the bound one GRAPH: a version of the vertical
+        // declared GRAPH, so its object may hold the subject, and it is erased too.
         const boundOnly = await onServingScript({ boundStores: stores });
-        expect(boundOnly).toEqual({ status: 200, asked: [], expected: boundOnly.expected, keyKept: false });
+        expect(boundOnly).toEqual({ status: 200, asked: boundOnly.expected, expected: boundOnly.expected, keyKept: false });
+        // Neither declares one: nothing is asked.
+        const none = await onServingScript({});
+        expect(none).toEqual({ status: 200, asked: [], expected: none.expected, keyKept: false });
       });
 
       // Stricter than asking (#2207): a version unknown names no binding to erase, so it refuses.

@@ -168,7 +168,7 @@ import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } fro
 import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
-import { runningVersionOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
+import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
 import { assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, listAllScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
@@ -1536,11 +1536,35 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   /** `substrat.wipe` on each declared store, before the scope's own bytes go. */
   const wipePlatformStores = async (c: ReqCtx, scope: Scope): Promise<void> => (await platformStoresWipe(c, scope))();
 
-  /** `substrat.export` on each declared store, for a backup, a full pull or a fork. */
+  /**
+   * `substrat.export` on each store the lifecycle reaches, for a backup, a full pull or a fork.
+   *
+   * A dump is only worth taking if it restores, and a restore imports only what the destination's
+   * version declares (L8). So a binding only an earlier version declared (#2286) is left out of the
+   * dump when its export is empty, which is what an object that was never written, or one already
+   * wiped, answers. One that still holds rows refuses the export (409), naming the binding and the
+   * way out, rather than produce a dump its own scope could not restore. Wipe, reap and erasure
+   * never export, so they reach such a store regardless.
+   */
   const exportPlatformStores = async (c: ReqCtx, scope: Scope): Promise<ScopeDump['stores'] | undefined> => {
-    const reach = await platformStoresOf(c, scope);
-    if (!reach) return undefined;
-    return reach.caller.exportStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical: reach.vertical, stores: reach.stores });
+    const caller = options.platformScopeStores;
+    if (!caller || !scope.vertical) return undefined;
+    const { running, all } = await scopeStoreReachOf(c.var.admin, c.get('actor'), scope, options.storeKinds);
+    if (all.length === 0) return undefined;
+    const exported = await caller.exportStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical: scope.vertical, stores: all });
+    const current = new Set(running.map((store) => store.binding));
+    const dropped = exported.filter((store) => !current.has(store.binding));
+    const held = dropped.find((store) => store.tables.some((table) => table.rows.length > 0));
+    if (held) {
+      throw new ControlPlaneError(
+        409,
+        `scope ${scope.id}'s store '${held.binding}' was declared by an earlier version of '${scope.vertical}' and ` +
+          `still holds data, and the version the scope runs does not declare it, so a dump of it could not be ` +
+          `restored. Declare '${held.binding}' as a '${held.kind}' again in a version the scope runs, then export; ` +
+          `or reap the scope without a backup, which wipes it`,
+      );
+    }
+    return exported.filter((store) => current.has(store.binding));
   };
 
   /**
@@ -1604,7 +1628,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   ): Promise<void> => {
     if (stores.length === 0) return;
     if (!scope.vertical) throw new ControlPlaneError(422, 'restore refused: the dump names stores and the scope names no vertical');
-    const declared = new Map((await manifestStores(c, scope)).map((d) => [d.binding, d.kind]));
+    // The destination's running version only (L8): a binding only an earlier version declared
+    // would be imported into an object nothing in the code the scope runs reads.
+    const declared = new Map((await runningVersionStoresOf(c.var.admin, c.get('actor'), scope, options.storeKinds))
+      .map((d) => [d.binding, d.kind]));
     for (const store of stores) {
       const kind = declared.get(store.binding);
       if (kind === undefined) {

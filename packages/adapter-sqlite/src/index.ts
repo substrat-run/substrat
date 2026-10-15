@@ -491,6 +491,10 @@ import {
   staleCarryReverts,
   withRecorded,
   VERSION_MIGRATIONS_DDL,
+  VERTICAL_SCOPE_STORES_DDL,
+  forgetVerticalScopeStores,
+  indexVersionScopeStores,
+  verticalScopeStoresOf,
   splitManifestMigrations,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
@@ -2301,6 +2305,7 @@ export class SqliteScopeHost implements ScopeHost {
         UNIQUE (vertical_slug, version)
       );
       ${VERSION_MIGRATIONS_DDL}
+      ${VERTICAL_SCOPE_STORES_DDL}
       -- Channels (#31 step 2): a named pointer per vertical. Promotion moves it,
       -- and promotion is where the migration and permission diffs fire — the
       -- moment a change reaches anyone, rather than the moment it was typed.
@@ -9079,12 +9084,20 @@ export class SqliteScopeHost implements ScopeHost {
               new Date().toISOString(),
             );
           writeVersionMigrations(switchSqlOf(this.directory), audited.id, split.migrations);
+          // #2286: the version's scope-store bindings, refusing one re-kinded, in the insert's transaction.
+          indexVersionScopeStores(switchSqlOf(this.directory), audited.verticalSlug, audited.id, split.manifestJson);
         })();
         this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
           ...audited,
           ...(origin ? { origin } : {}),
           admission: selfAdmits ? 'admitted' : 'pending',
         });
+      },
+      verticalScopeStores: async (actor, verticalSlug: string) => {
+        // One transaction: versions not indexed yet are indexed by the read (#2286).
+        const stores = this.directory.transaction(() => verticalScopeStoresOf(switchSqlOf(this.directory), verticalSlug))();
+        this.recordAccess(actor, 'verticalScopeStores', {}, { verticalSlug }, stores.length);
+        return stores;
       },
       listVersions: async (actor, verticalSlug: string, page) => {
         const where: string[] = ['vertical_slug = ?'];
@@ -9196,6 +9209,7 @@ export class SqliteScopeHost implements ScopeHost {
               WHERE version_id IN (SELECT id FROM vertical_versions WHERE vertical_slug = ?)`,
           )
           .run(slug);
+        forgetVerticalScopeStores(switchSqlOf(this.directory), slug);
         this.directory.prepare('DELETE FROM vertical_versions WHERE vertical_slug = ?').run(slug);
         this.directory.prepare('DELETE FROM verticals WHERE slug = ?').run(slug);
         this.recordAdmin(

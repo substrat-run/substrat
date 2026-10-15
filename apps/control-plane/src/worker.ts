@@ -1443,7 +1443,7 @@ function platformStoresFor(env: Pick<Env, 'DISPATCH' | 'STORE_HMAC_KEY'>): Platf
     : unreachablePlatformScopeStores();
 }
 
-type StoreReadAdmin = Pick<HostAdmin, 'verticalServing' | 'versionManifest'>;
+type StoreReadAdmin = Pick<HostAdmin, 'verticalServing' | 'versionManifest' | 'verticalScopeStores'>;
 
 /**
  * `substrat.wipe` on each store the scope's running version declares, before its own bytes go
