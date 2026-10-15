@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair } from 'jose';
-import { LOGOUT_HINT_COOKIE, SESSION_COOKIE, FLOW_COOKIE } from '@substrat-run/oidc-rp';
+import { LOGOUT_HINT_COOKIE, LOGOUT_RETURN_COOKIE, SESSION_COOKIE, FLOW_COOKIE } from '@substrat-run/oidc-rp';
 import { oidcRpAuthProvider, type OidcRpConfig } from '../src/oidc-rp-provider.js';
 
 /**
@@ -195,6 +195,35 @@ describe('federated logout', () => {
     const to = new URL(out.headers.get('location')!);
     expect(to.origin + to.pathname).toBe(`${ISSUER}/api/auth/oauth2/end-session`);
     expect(to.searchParams.has('id_token_hint')).toBe(false);
+  });
+
+  it('gives the issuer one fixed URL for a per-request returnTo, and resumes there after', async () => {
+    const provider = oidcRpAuthProvider(cfg);
+    const jar = cookiesOf(await signIn(provider));
+    const path = '/invite/abc.def';
+
+    const out = await provider.handle(
+      new Request(`${APP}/api/auth/logout?federated&returnTo=${encodeURIComponent(path)}`, {
+        headers: { cookie: `${LOGOUT_HINT_COOKIE}=${encodeURIComponent(jar.get(LOGOUT_HINT_COOKIE)!)}` },
+      }),
+    );
+    const to = new URL(out.headers.get('location')!);
+    expect(to.searchParams.get('post_logout_redirect_uri')).toBe(`${APP}/api/auth/logged-out`);
+    expect(named(out, LOGOUT_RETURN_COOKIE)[0]).toContain(encodeURIComponent(path));
+
+    const back = await provider.handle(
+      new Request(`${APP}/api/auth/logged-out`, {
+        headers: { cookie: `${LOGOUT_RETURN_COOKIE}=${encodeURIComponent(path)}` },
+      }),
+    );
+    expect(back.headers.get('location')).toBe(path);
+
+    const evil = await provider.handle(
+      new Request(`${APP}/api/auth/logged-out`, {
+        headers: { cookie: `${LOGOUT_RETURN_COOKIE}=${encodeURIComponent('//evil.test/x')}` },
+      }),
+    );
+    expect(evil.headers.get('location')).toBe('/');
   });
 
   it('stays local when the issuer advertises no end-session endpoint', async () => {
