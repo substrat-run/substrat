@@ -76,7 +76,9 @@ The API is `PUT /tenants/:tenantId/connections/:id/bindings/:scopeId`; the body 
 `operation`, `permission`, and optionally `organizationId`, `currency`, `window` and
 `horizonYears`. Omit `window` for a rolling horizon; the CLI's `--from-year` and `--to-year`
 set a fixed window. `GET /tenants/:tenantId/connections/:id/bindings` reads the targets and
-reports `permissionHeld` from each target scope's live grants.
+reports `permissionHeld` from each target scope's live grants. If a target cannot be inspected
+(for example, its scope is suspended or its deployment is unavailable), the stored binding
+remains in the response with `permissionInspectionError` and no `permissionHeld` value.
 
 This door does **not** grant permissions. The tenant's authorized connection flow must have
 granted the landing key first. A missing or undelivered grant returns 409 before a binding is

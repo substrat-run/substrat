@@ -2768,8 +2768,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const bindings = await read(c.var.host, row);
     return c.json(await Promise.all(bindings.map(async (binding) => {
       const scope = scopeIdSchema.parse(binding.scopeId);
-      const grants = await c.var.host.connectionGrantsInScope(row.tenantId, scope);
-      return { ...binding, permissionHeld: grants.some((g) => g.connectionId === row.id && g.permission === binding.permission) };
+      try {
+        const grants = await c.var.host.connectionGrantsInScope(row.tenantId, scope);
+        return { ...binding, permissionHeld: grants.some((g) => g.connectionId === row.id && g.permission === binding.permission), permissionInspectionError: undefined };
+      } catch (error) {
+        // A stored target remains inspectable when its scope is inactive or its
+        // deployment is unavailable. Unknown authority must not read as a missing grant.
+        return { ...binding, permissionHeld: undefined, permissionInspectionError: error instanceof Error ? error.message : String(error) };
+      }
     })));
   });
 

@@ -393,3 +393,23 @@ describe('auditedCapabilityRevoke (#1686)', () => {
     expect(outcome.failure).toMatchObject({ operation: 'audit.revokeCapability', reference: 'op-1' });
   });
 });
+
+describe('connection binding audit settlement', () => {
+  it.each(['planima', 'fortnox'])('settles %s intents with the binding configuration and failure reference', (provider) => {
+    const tenantId = '01J00000000000000000000001';
+    const scopeId = '01J00000000000000000000002';
+    const after = {
+      operationId: 'connection-binding-op', phase: 'intent',
+      connectionId: '01J00000000000000000000003', provider,
+      operation: 'maintenance/record-plan', permission: 'plan:record',
+      ...(provider === 'planima' ? { organizationId: null, currency: 'SEK', window: null, horizonYears: 50 } : {}),
+    };
+    const outcome = unknownOutcomeOf({
+      id: 'binding-intent', action: 'bindConnectionScope', tenant_id: tenantId, scope_id: scopeId,
+      vertical: null, after: JSON.stringify(after),
+    }, 'binding-intent', 'no outcome was recorded');
+    expect(outcome.after).toEqual({ ...after, phase: 'unknown', error: 'no outcome was recorded' });
+    expect(outcome.operation).toEqual({ action: 'bindConnectionScope', operationId: after.operationId, tenantId, scopeId });
+    expect(outcome.failure).toMatchObject({ operation: 'audit.bindConnectionScope', reference: after.operationId, tenantId, scopeId });
+  });
+});

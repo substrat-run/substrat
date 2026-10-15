@@ -265,8 +265,10 @@ export interface ConnectionScopeBindingInput {
   horizonYears?: number;
 }
 export interface ConnectionScopeBinding extends ConnectionScopeBindingInput {
-  /** Read from the target scope's live projection by the API. */
+  /** Read from the target scope's live projection; omitted when inspection fails. */
   permissionHeld?: boolean;
+  /** A failure to inspect this target, preserving the stored binding in list responses. */
+  permissionInspectionError?: string;
   auditWarning?: string;
   tenantId: string;
   scopeId: string;

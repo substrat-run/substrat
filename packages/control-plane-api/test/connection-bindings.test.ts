@@ -134,4 +134,23 @@ describe('poll connector binding door', () => {
     expect(response.status).toBe(200);
     expect(await host.admin.getConnectorState(fortnox, 'unrelated')).toEqual({ keep: true });
   });
+  it('preserves unavailable targets alongside held and missing permission results', async () => {
+    const held = { ...input, tenantId: tenant, scopeId: scope, vertical: 'acme-crm', boundAt: '2026-10-15T12:00:00.000Z' };
+    const missing = { ...held, scopeId: wrongVertical };
+    const unavailable = { ...held, scopeId: preview };
+    const read = vi.spyOn(host, 'connectionGrantsInScope').mockImplementation(async (_tenant, target) => {
+      if (target === preview) throw new Error('scope not active (status: suspended)');
+      return target === scope ? [{ connectionId: connection, permission: permissionKey.parse(input.permission) }] : [];
+    });
+    bindings.mockResolvedValueOnce([held, missing, unavailable]);
+    try {
+      const response = await app.request(`/tenants/${tenant}/connections/${connection}/bindings`, { headers });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual([
+        { ...held, permissionHeld: true },
+        { ...missing, permissionHeld: false },
+        { ...unavailable, permissionInspectionError: 'scope not active (status: suspended)' },
+      ]);
+    } finally { read.mockRestore(); }
+  });
 });

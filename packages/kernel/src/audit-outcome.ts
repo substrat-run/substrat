@@ -27,7 +27,7 @@
  * settle's grace window, so a live request cannot normally be overtaken this way. The rule is
  * stated for the case where one is.
  */
-import { AUDIT_ERROR_MAX, auditOperationId, memberChangeAudit, ownerTransferAudit, peerBindingAudit, provesNothingChanged, substratError, type AdminAction, type CapabilityRecord } from '@substrat-run/contracts';
+import { AUDIT_ERROR_MAX, auditOperationId, connectionBindingAudit, memberChangeAudit, ownerTransferAudit, peerBindingAudit, provesNothingChanged, substratError, type AdminAction, type CapabilityRecord } from '@substrat-run/contracts';
 import type { OpsFailureInput } from './scope-host.js';
 import { SWITCH_ACTIONS, type SwitchAction } from './system-switch-record.js';
 import { ulid } from './ulid.js';
@@ -345,7 +345,8 @@ function auditedUnknownOf(row: SettleIntentRow, after: Record<string, unknown>, 
   const { tenantId: _t, scopeId: _s, ...parsed } =
     row.action === 'transferOwner' ? ownerTransferAudit.parse(entry)
       : row.action === 'manageScopeMember' ? memberChangeAudit.parse(entry)
-        : peerBindingAudit.parse(entry);
+        : row.action === 'bindConnectionScope' ? connectionBindingAudit.parse(entry)
+          : peerBindingAudit.parse(entry);
   return parsed;
 }
 
