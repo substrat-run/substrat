@@ -508,9 +508,15 @@ describe('engine-assistant', () => {
       const [e] = h.eventsOfType('assistant.approval-requested');
       expect(e!.payload).toEqual({ threadId: t.id, callId: 'c2', tool: 'logSet' });
       expect(e).toMatchObject({ piiClass: 'pseudonymous', subjectId: owner.principal });
-      expect(JSON.stringify(e!.payload)).not.toContain(digest);
-      expect(JSON.stringify(e!.payload)).not.toContain('squat');
-      expect(JSON.stringify(e!.payload)).not.toContain('105');
+      // Judged by shape, never by a substring: the ids in the payload are random, so a short
+      // literal such as the weight can occur in one by chance (a shard once failed on `…W105`).
+      const payload = e!.payload as Record<string, unknown>;
+      expect(Object.keys(payload).sort()).toEqual(['callId', 'threadId', 'tool']);
+      expect(JSON.stringify(payload)).not.toContain(digest); // 64 hex characters: no id can contain it
+      for (const [field, value] of Object.entries(LOG)) {
+        expect(Object.values(payload), field).not.toContain(value);
+      }
+      expect(JSON.stringify(payload)).not.toContain(JSON.stringify(LOG));
     });
 
     it('a turn rests awaiting approval only with one waiting, and finishes done only with none', async () => {
