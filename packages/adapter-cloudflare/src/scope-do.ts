@@ -3978,7 +3978,15 @@ export function defineScopeDO(
         }
         // #1525: null. An attachment RPC carries no invocation, exactly as its denial
         // records none — so the deliveries it drains name no call rather than a wrong one.
-        await this.settleCommitted(tenantId, scopeId, liveSince, null);
+        // The row has COMMITTED, so a failed drain must not reach the caller as a refusal:
+        // the host deletes the bytes on a refusal, which would leave this row without them
+        // (and a redeemed link spent). An undelivered event stays in the outbox with no
+        // delivery row, so the next drain in this scope delivers it.
+        try {
+          await this.settleCommitted(tenantId, scopeId, liveSince, null);
+        } catch (err) {
+          console.error('substrat: consumer drain failed after an attachment committed', err);
+        }
         return parsed;
       });
     }

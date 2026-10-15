@@ -4361,12 +4361,9 @@ export class CloudflareScopeHost implements ScopeHost {
     // Bytes first, row second, exactly as an upload: a refusal (size, type, a lost key, a link
     // someone else spent first) compensates the object away, and the link is unspent with it.
     await store.put(key, input.body, { contentType: input.contentType });
-    try {
-      return unwrapReply(await stub.attachmentRedeemUploadLinkReply(record, secret, tenantId, scopeId));
-    } catch (err) {
-      await store.delete(key).catch(() => {});
-      throw err;
-    }
+    return unwrapReply(await compensatingRefusal(store, key, () =>
+      stub.attachmentRedeemUploadLinkReply(record, secret, tenantId, scopeId),
+    ));
   }
 
   async getSystemAttachments(
@@ -4553,12 +4550,9 @@ export class CloudflareScopeHost implements ScopeHost {
         // Bytes first, row second — a crash between the two leaves an orphaned object
         // (harmless, GC-able), never a row without bytes; a refused gate compensates.
         await store.put(key, input.body, { contentType: input.contentType });
-        try {
-          return unwrapReply(await stub.attachmentAddReply(record, asPrincipalId, tenantId, scopeId, connectionId));
-        } catch (err) {
-          await store.delete(key).catch(() => {});
-          throw err;
-        }
+        return unwrapReply(await compensatingRefusal(store, key, () =>
+          stub.attachmentAddReply(record, asPrincipalId, tenantId, scopeId, connectionId),
+        ));
       },
       list: async (entity) =>
         unwrapReply(await stub.attachmentListReply(entity, asPrincipalId, tenantId, scopeId, connectionId)),
