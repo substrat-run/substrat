@@ -1,14 +1,11 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
-  base64UrlToBytes,
-  parseScopeStoreEnvelope,
   scopeId,
-  scopeStoreBodyDigest,
   scopeStoreObjectName,
   tenantId,
-  verifyScopeStoreEnvelope,
 } from '@substrat-run/contracts';
+import { generateScopeStoreKeyPair, verifyScopeStoreCall } from '@substrat-run/contracts/scope-store-envelope';
 import { handleStoreCall } from '../src/store-calls.js';
 
 const TENANT = tenantId.parse('01JTESTATTACHTENANT000000A');
@@ -35,7 +32,7 @@ describe('handleStoreCall', () => {
   });
 
   it('signs an envelope over the body it sends and dispatches that kind script', async () => {
-    const seen: { script?: string; canonical?: string; signature?: string; name?: string; raw?: string } = {};
+    const seen: { script?: string; header?: string; signature?: string; name?: string; raw?: string } = {};
     const outcome = await handleStoreCall(
       {
         STORE_CALLER_KEY: KEY,
@@ -44,9 +41,8 @@ describe('handleStoreCall', () => {
             fetch: async (request) => {
               seen.script = scriptName;
               seen.raw = await request.text();
-              const header = request.headers.get('x-substrat-store-envelope') ?? '';
+              seen.header = request.headers.get('x-substrat-store-envelope') ?? '';
               seen.signature = request.headers.get('x-substrat-store-signature') ?? '';
-              seen.canonical = new TextDecoder().decode(base64UrlToBytes(header) ?? new Uint8Array());
               seen.name = (JSON.parse(seen.raw) as { objectName?: string }).objectName;
               return Response.json({ result: 1 });
             },
@@ -59,9 +55,38 @@ describe('handleStoreCall', () => {
     expect(outcome).toMatchObject({ ok: true });
     expect(seen.script).toBe('substrat-store-graph-docs');
     expect(seen.name).toBe(scopeStoreObjectName(TENANT, 'docs', SCOPE, 'GRAPH'));
-    const envelope = parseScopeStoreEnvelope(seen.canonical ?? '');
-    expect(envelope).toMatchObject({ aud: 'caller', name: seen.name, op: 'read' });
-    expect(envelope?.digest).toBe(await scopeStoreBodyDigest(seen.raw ?? ''));
-    expect(await verifyScopeStoreEnvelope(vector.publicKey, seen.canonical ?? '', seen.signature ?? '')).toBe(true);
+    // The store this was addressed to admits it, as the verifier every store entry runs.
+    const verdict = await verifyScopeStoreCall({
+      envelope: seen.header,
+      signature: seen.signature,
+      body: seen.raw ?? '',
+      keys: { caller: [vector.publicKey], platform: [] },
+      script: seen.script ?? '',
+      nowSeconds: Math.floor(Date.now() / 1000),
+    });
+    expect(verdict).toMatchObject({ ok: true, envelope: { aud: 'caller', script: 'substrat-store-graph-docs', name: seen.name, op: 'read' } });
+  });
+});
+
+describe('handleStoreCall without a usable key (#2287)', () => {
+  const caller = { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', kind: 'graph' }] };
+  const dispatch = { get: () => { throw new Error('not dispatched'); } };
+  const request = { scopeId: SCOPE, binding: 'GRAPH', operation: 'read' };
+
+  it('refuses with 503 and logs whether the key is absent or set but unusable, never the key', async () => {
+    const warnings: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation((message: unknown) => { warnings.push(String(message)); });
+    try {
+      const pair = await generateScopeStoreKeyPair();
+      expect(await handleStoreCall({ DISPATCH: dispatch }, caller, request)).toMatchObject({ ok: false, status: 503 });
+      // A raw public key pasted where the PKCS8 private key belongs.
+      expect(await handleStoreCall({ STORE_CALLER_KEY: pair.publicKey, DISPATCH: dispatch }, caller, request)).toMatchObject({ ok: false, status: 503 });
+      expect(warnings).toHaveLength(2);
+      expect(warnings[0]).toMatch(/is not set/);
+      expect(warnings[1]).toMatch(/set but unusable/);
+      expect(warnings.join('\n')).not.toContain(pair.publicKey);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

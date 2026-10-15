@@ -47,7 +47,7 @@ export type {
 export * from './browser.js';
 export { VerticalClient, AUDITED_CALL_DEADLINE_MS } from './vertical-client.js';
 export {
-  assertNoUnreachableScopeCopies, retryScopeScriptCopy, retryScopeScriptCopies, reapScopeScriptCopies,
+  assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, retryScopeScriptCopy, retryScopeScriptCopies, reapScopeScriptCopies,
   settleExpiredScopeScriptCopies, sweepScopeScriptCopies,
 } from './scope-copy-cleanup.js';
 export {
@@ -115,10 +115,8 @@ export type {
 } from './vertical-client.js';
 export {
   callPlatformScopeStore,
-  pinnedServingVersionId,
   platformScopeStoresFor,
   runningVersionStoresOf,
-  sameDeclaredStores,
   scopeStoresOf,
   unrouteScope,
   unreachablePlatformScopeStores,
@@ -146,7 +144,7 @@ export type {
   DeployManifest,
 } from './deploy.js';
 export { createWfpUploader, createWfpModulesFetcher, createWfpBindingsPatcher } from './wfp.js';
-export { createScopeStoreEnsurer, ed25519PublicKey, STORE_SCRIPT_ENTRY } from './store-script.js';
+export { createScopeStoreEnsurer, STORE_BUILD_VAR, STORE_RELEASE_VAR } from './store-script.js';
 export type { ScopeStoreEnsurerOptions, StoreKindReleaseArtifact } from './store-script.js';
 export {
   withPlatformEntry,
@@ -155,8 +153,18 @@ export {
   PLATFORM_ENTRY_MODULE,
   PLATFORM_SWEEPER_MODULE,
 } from './platform-entry.js';
-export { withStoreEntry, STORE_ENTRY_MODULE, STORE_ENTRY_PYTHON_SOURCE, STORE_OBJECT_CLASS } from './store-entry.js';
-export type { StoreEntryOptions } from './store-entry.js';
+export {
+  withStoreEntry,
+  withPythonStoreEntry,
+  STORE_ENTRY_MODULE,
+  STORE_ENTRY_PYTHON_MODULE,
+  STORE_ENTRY_PYTHON_SOURCE,
+  STORE_ENTRY_PYTHON_VERIFIER_SOURCE,
+  STORE_OBJECT_CLASS,
+  STORE_RESERVED_MODULES,
+  STORE_VERIFIER_MODULE,
+} from './store-entry.js';
+export type { StoreEntryOptions, PythonStoreKindRelease, PythonStoreScript } from './store-entry.js';
 export type {
   WfpUploaderOptions,
   PatchScriptBindingsFn,

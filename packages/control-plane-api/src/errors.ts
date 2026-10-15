@@ -12,19 +12,34 @@ import { SecretBoxUnconfiguredError } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { ConnectionRelayError } from './connection-relay.js';
 
+/**
+ * The log line the API writes when it answers a failure that is NOT a problem document
+ * (#113) — the tripwire in `createControlPlaneApi`. Named once, because the package's test
+ * setup fails a test on it and an operator searches for it.
+ */
+export const NON_PROBLEM_REFUSAL = 'control-plane.non-problem-refusal';
+
 export interface ApiError {
   status: ContentfulStatusCode;
   body: Problem;
 }
 
-/** A body built from a code this layer decided, rather than one the throw declared. */
-const coded = (code: ErrorCode, message: string): ApiError => ({
+/**
+ * A body built from a code this layer decided, rather than one the throw declared. The
+ * status follows from the catalog, so a route that refuses by code cannot pick a status
+ * the code does not mean.
+ */
+export const coded = (code: ErrorCode, message: string): ApiError => ({
   status: PROBLEM_CATALOG[code].status as ContentfulStatusCode,
   body: toProblem(substratError(code, message)),
 });
 
-/** A status raised somewhere else and relayed — `about:blank`, because it is not ours. */
-const relayed = (status: number, message: string): ApiError => ({
+/**
+ * A body for a status and nothing else — `about:blank`. Two kinds of answer take it: a
+ * status raised somewhere else and relayed (not ours to type), and a status this layer
+ * answers that the closed taxonomy has no code for (501, 422, 502).
+ */
+export const relayed = (status: number, message: string): ApiError => ({
   status: status as ContentfulStatusCode,
   body: problemForStatus(status, message),
 });

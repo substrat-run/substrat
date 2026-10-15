@@ -5,7 +5,7 @@
   "description": "The dispatch-namespace outbound worker — platform-bound vertical egress loops back through the router (#442, K-27)",
   "type": "module",
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.store-entry.json",
     "test": "vitest run",
     "dev": "wrangler dev",
     "cf:deploy": "wrangler deploy",
@@ -17,6 +17,8 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
+    "@substrat-run/cli": "workspace:^",
+    "@substrat-run/control-plane-api": "workspace:^",
     "esbuild": "^0.28.2",
     "miniflare": "^4.20260310.0",
     "typescript": "catalog:",

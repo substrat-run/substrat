@@ -499,7 +499,7 @@ import {
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
-import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
+import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
@@ -802,7 +802,7 @@ interface ControlPlaneStub {
       validationRecords: string | null;
     },
   ): Promise<void>;
-  deleteHostname(hostname: string): Promise<void>;
+  deleteHostname(hostname: string, owner?: { tenantId: string; scopeId: string }): Promise<{ tenant_id: string; scope_id: string; status: string } | null>;
   listHostnames(
     filter: { tenantId?: string; scopeId?: string; status?: string; verticalSlug?: string } & ListPage,
   ): Promise<HostnameRow[]>;
@@ -826,6 +826,7 @@ interface ControlPlaneStub {
     migrations: DeclaredMigration[] | null;
     createdAt: string;
   }): Promise<void>;
+  verticalScopeStores(slug: string): Promise<VerticalScopeStore[]>;
   readVersionMigrations(
     id: string,
   ): Promise<{ verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined>;
@@ -833,7 +834,7 @@ interface ControlPlaneStub {
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation): Promise<boolean>;
   scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
-  claimSubjectErasure(tenantId: string, scopeId: string, expectedVersionId: string | null, expectedServingRef: string | null, expectedEpoch: number, expectedCopyCount: number, expectedServingVersionId?: string | null): Promise<boolean>;
+  claimSubjectErasure(tenantId: string, scopeId: string, fence: SubjectErasureFence): Promise<boolean>;
   recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, role?: ScopeCopyRole | null, loadStamp?: string | null, leaseMs?: number): Promise<'recorded' | 'reaping' | 'missing' | 'invalid'>;
   backfillScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, audit: AdminEntry): Promise<ScopeCopyBackfillResult>;
   claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): Promise<ScopeScriptCopyRow[]>;
@@ -2197,8 +2198,10 @@ export interface CloudflareScopeHostOptions {
    * Scope stores answered in this isolate (#2213). When a binding has a runner
    * here, `getScopeStore` uses it. A direct binding reads `SUBSTRAT_STORE_<BINDING>`
    * from the worker env, and only when `transport` is `'binding'`: an ambient
-   * namespace is not a store this host was given. With no control plane, no runner
-   * and no transport, the call takes the platform hop (#2288). `vertical`, when set,
+   * namespace is not a store this host was given. With no runner and no transport,
+   * the call takes the platform hop (#2288), whether or not a control plane is given.
+   * `runners: []` is no runner, so it takes the hop too; a test that wants the ambient
+   * namespace says `transport: 'binding'`. `vertical`, when set,
    * is the only vertical this host serves. A deployed vertical has no control plane,
    * so that field is where the slug comes from.
    */
@@ -2558,17 +2561,20 @@ function isScopeStoreNamespace(value: unknown): value is ScopeStoreNamespace {
 const SCOPE_STORE_BINDING_PREFIX = `${PLATFORM_BINDING_PREFIX}STORE_`;
 
 /**
- * `platform` unless this host was given another way to reach a store (#2288).
- * A control plane keeps the direct binding, which is how the directory's own host
- * and the binding tests address an object. A runner is in-process. `transport`
- * set by the caller wins, including `'binding'`, which is the only thing that
- * reads an ambient `SUBSTRAT_STORE_*` namespace.
+ * `platform` unless this host was handed another way to reach a store (#2288): a
+ * non-empty `runners` list (in-process), or `transport: 'binding'`, which is the only
+ * thing that reads an ambient `SUBSTRAT_STORE_*` namespace. A control plane does not
+ * change the answer: whoever wants the direct namespace says so. An explicit
+ * `'platform'` beside runners is refused, since the runners would never be used.
  */
 function scopeStoreTransportOf(options: CloudflareScopeHostOptions): 'platform' | 'binding' {
-  if (options.scopeStores?.transport) return options.scopeStores.transport;
-  if ((options.scopeStores?.runners?.length ?? 0) > 0) return 'binding';
-  if (options.controlPlane) return 'binding';
-  return 'platform';
+  const runners = options.scopeStores?.runners?.length ?? 0;
+  const transport = options.scopeStores?.transport;
+  if (transport === 'platform' && runners > 0) {
+    throw substratError('validation_failed', "scopeStores: transport 'platform' takes no runners; they would never be used");
+  }
+  if (transport) return transport;
+  return runners > 0 ? 'binding' : 'platform';
 }
 
 /** Bindings this script declares by having a `SUBSTRAT_STORE_*` namespace. */
@@ -3849,6 +3855,7 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<{ binding: string; bytes: number }[]> {
+    this.refuseLocalStoresOnPlatform('size');
     return this.readScopeStoreSizes(tenantId, scopeId);
   }
 
@@ -3860,6 +3867,7 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
+    this.refuseLocalStoresOnPlatform('export');
     return this.exportScopeStores(tenantId, scopeId);
   }
 
@@ -3877,7 +3885,22 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     subjectId: string,
   ): Promise<{ binding: string; erased: number }[]> {
+    this.refuseLocalStoresOnPlatform('erase');
     return this.eraseScopeStores(tenantId, scopeId, subjectId);
+  }
+
+  /**
+   * On the platform hop this host holds no store object, so it cannot say what its stores
+   * hold: an empty answer would read as "no stores" (#2242). It refuses instead, and the
+   * control plane, which reaches the store script, is the one to ask.
+   */
+  private refuseLocalStoresOnPlatform(what: 'size' | 'export' | 'erase'): void {
+    if (this.scopeStoreTransport === 'platform') {
+      throw substratError(
+        'unavailable',
+        `this host reaches its scope stores through the platform and cannot ${what} them here; ask the control plane`,
+      );
+    }
   }
 
   /**
@@ -4879,7 +4902,8 @@ export class CloudflareScopeHost implements ScopeHost {
   /**
    * Configured runners, or the ambient namespaces when this host was told to use a
    * direct binding. The platform hop holds no object in this isolate, so an ambient
-   * namespace is not one of its stores.
+   * namespace is not one of its stores, and the admin's store paths answer for none: the
+   * control plane reaches the platform's stores itself (see `eraseScopeStores`).
    */
   private scopeStoreBindingNames(): string[] {
     if (this.scopeStoreTransport === 'platform') return [];
@@ -4940,8 +4964,13 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /**
    * `substrat.erase` on each declared binding (#2068). A store error throws so the
-   * caller can leave the subject key untouched. Fail closed: an empty answer means
-   * this host KNOWS it holds nothing for the scope, never that it could not tell.
+   * caller can leave the subject key untouched. An empty answer means this host holds no
+   * store object for the scope, never that it could not tell. On the platform hop that is
+   * true by construction (`scopeStoreBindingNames` is empty): the stores live behind the
+   * store script, and control-plane-api erases, exports, sizes and wipes them itself around
+   * its calls to this host's admin (`shredSubject`, `exportScope`, `scopeStoreSizes`, the
+   * wipe and the replay); an erasure reaches them before the host's shred destroys the key. Only the vertical-host `*Local` reads, which no control plane fronts,
+   * refuse on the hop instead (`refuseLocalStoresOnPlatform`).
    */
   private async eraseScopeStores(
     tenantId: TenantId,
@@ -7496,11 +7525,11 @@ export class CloudflareScopeHost implements ScopeHost {
           { status: fields.status, note: fields.note ?? null },
         );
       },
-      unbindHostname: async (actor, raw: string) => {
+      unbindHostname: async (actor, raw: string, owner) => {
         const hostname = raw.toLowerCase(); // DNS is case-insensitive; the map is normalized
-        const row = await this.cp.readHostname(hostname);
+        // The row the delete removed, so an owner is judged by the delete itself (#2285).
+        const row = await this.cp.deleteHostname(hostname, owner);
         if (!row) return; // idempotent, and a no-op is not audited
-        await this.cp.deleteHostname(hostname);
         await this.recordAdmin(
           actor,
           'unbindHostname',
@@ -7627,7 +7656,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // The SQL migrations are stored apart from the manifest (#1764), so no read of the
         // version but the promote review's carries them.
         const split = splitManifestMigrations(manifestJson ?? null, 'push');
-        await this.cp.insertVersion({
+        await this.directory('insertVersion', {
           ...audited,
           manifestJson: split.manifestJson,
           migrations: split.migrations,
@@ -7641,6 +7670,11 @@ export class CloudflareScopeHost implements ScopeHost {
           ...(origin ? { origin } : {}),
           admission: selfAdmits ? 'admitted' : 'pending',
         });
+      },
+      verticalScopeStores: async (actor, verticalSlug: string) => {
+        const stores = await this.directory('verticalScopeStores', verticalSlug);
+        await this.recordAccess(actor, 'verticalScopeStores', {}, { verticalSlug }, stores.length);
+        return stores;
       },
       listVersions: async (actor, verticalSlug: string, page) => {
         const rows = await this.cp.listVersions(verticalSlug, page);
@@ -8916,11 +8950,12 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'listShreddedSubjects', { tenantId, scopeId }, null, subjects.length);
         return { subjects, nextCursor };
       },
-      shredSubject: async (actor, tenantId, scopeId, subjectId): Promise<SubjectShredReceipt> => {
+      shredSubject: async (actor, tenantId, scopeId, subjectId, fence): Promise<SubjectShredReceipt> => {
         await this.assertScope(tenantId, scopeId);
-        // #1722: a direct shred claims nothing; it records the epoch it ran under, as an orchestrated
-        // one records the epoch its claim compared, so the backfill can order every erasure.
-        const stamp: ErasureEpochStamp = { erasureEpoch: await this.cp.scopeErasureEpoch(tenantId, scopeId), path: 'direct' };
+        // #1722: a direct shred records the epoch it ran under, as an orchestrated one records the
+        // epoch its claim compared, so the backfill can order every erasure. With a fence (#2285) it
+        // claims what it read just before the key goes, and records the epoch that claim compared.
+        const stamp: ErasureEpochStamp = { erasureEpoch: fence?.epoch ?? await this.cp.scopeErasureEpoch(tenantId, scopeId), path: 'direct' };
         // Redact the live spine FIRST, destroy the key LAST. Both halves are idempotent and
         // a crash between them converges on retry, so the order is decided by which
         // half-done state harms the person: dying after the redaction leaves ciphertext in
@@ -9003,6 +9038,7 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.cp.redactSubjectText({ tenantId, scopeId, subjectId, intentIds });
         // Scope stores after the scope-side redaction and before the key (#2068).
         const storeErasures = await this.eraseScopeStores(tenantId, scopeId, subjectId);
+        if (fence) await this.claimSubjectErasure(tenantId, scopeId, fence);
         const at = new Date().toISOString();
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
@@ -9034,10 +9070,7 @@ export class CloudflareScopeHost implements ScopeHost {
       finalizeSubjectShred: async (actor, tenantId, scopeId, subjectId, redactions, expected, storeErasures = []): Promise<SubjectShredReceipt> => {
         await this.assertScope(tenantId, scopeId);
         if (redactions.length === 0) throw substratError('conflict', 'subject erasure has no confirmed scope redaction');
-        if (!await this.cp.claimSubjectErasure(tenantId, scopeId, expected.versionId, expected.servingRef,
-          expected.epoch, expected.copyCount, expected.servingVersionId ?? null)) {
-          throw substratError('precondition_failed', 'scope route or copy inventory changed during subject erasure; retry after it settles');
-        }
+        await this.claimSubjectErasure(tenantId, scopeId, expected);
         const intentIds = [...new Set(redactions.flatMap((r) => r.intentIds))];
         await this.cp.redactSubjectText({ tenantId, scopeId, subjectId, intentIds });
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, new Date().toISOString());
@@ -10198,6 +10231,13 @@ export class CloudflareScopeHost implements ScopeHost {
    * subject-key operation touches anything. Without it a caller could reach another
    * tenant's keys by naming their scope id.
    */
+  /** The erasure claim (`SUBJECT_ERASURE_CLAIM_SQL`); a scope that moved refuses with the key kept. */
+  private async claimSubjectErasure(tenantId: TenantId, scopeId: ScopeId, fence: SubjectErasureFence): Promise<void> {
+    if (!await this.cp.claimSubjectErasure(tenantId, scopeId, fence)) {
+      throw substratError('precondition_failed', 'scope route or copy inventory changed during subject erasure; retry after it settles');
+    }
+  }
+
   private async assertScope(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
     const rec = await this.cp.getScopeRecord(tenantId, scopeId);
     if (!rec) throw unknownScopeForTenant(tenantId, scopeId);

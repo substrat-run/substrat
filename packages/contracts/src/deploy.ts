@@ -3,6 +3,7 @@ import { moduleId, permissionKey, scopeId, tenantId, verticalSlug } from './ids.
 import { envVarSpec, capability, lifecycleHold, declaredEntityType, freshnessSpec, scheduleSpec, PLATFORM_BINDING_PREFIX, type ModuleManifest } from './manifest.js';
 import { eventType } from './events.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
+import { RESERVED_STORE_OPERATIONS } from './scope-store-envelope.js';
 import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
 import { scopeDumpTable } from './introspection.js';
@@ -312,19 +313,8 @@ export const assetsNeed = assetRouting.extend({
 });
 export type AssetsNeed = z.infer<typeof assetsNeed>;
 
-/**
- * The operations only the platform may send to a scope store (#2207). A vertical's
- * stub refuses every one of them. A kind's registration has to answer all of them,
- * `substrat.erase` included, before a hosted deploy may store tenant data.
- */
-export const RESERVED_STORE_OPERATIONS = [
-  'substrat.export',
-  'substrat.import',
-  'substrat.size',
-  'substrat.wipe',
-  'substrat.erase',
-] as const;
-export type ReservedStoreOperation = (typeof RESERVED_STORE_OPERATIONS)[number];
+// The reserved operations live beside the envelope that admits them, a module that imports nothing.
+export { RESERVED_STORE_OPERATIONS, type ReservedStoreOperation } from './scope-store-envelope.js';
 
 /** The operations a vertical may invoke on a scope store. No `substrat.*` name belongs here. */
 export interface StoreOperationCatalog {
@@ -354,14 +344,34 @@ const storeCatalogOperation = storeOperationName.refine((name) => !name.startsWi
 export const storeKindId = z.string().regex(STORE_KIND_ID, { message: 'a store kind id is [a-z0-9]+' });
 
 /**
- * A store kind, pinned the way a connector is: an exact release, the class
- * the platform runs, the catalog a vertical may call, and every reserved operation.
- * The list itself is {@link STORE_KINDS}. Empty until a kind is reviewed in.
+ * One pinned release of a store kind (D-63): the sha256 of the release bundle, which the
+ * platform checks at every upload, and the source commit the bundle was built from, which a
+ * reviewer reads. The digest is {@link storeKindReleaseDigest} over the bundle's modules and the
+ * module the entry imports.
+ */
+export const storeKindRelease = z
+  .object({
+    sha256: z.string().regex(/^[0-9a-f]{64}$/, { message: 'a release sha256 is 64 lowercase hex' }),
+    sourceCommit: z.string().regex(/^[0-9a-f]{40}$/, { message: 'a release source commit is 40 lowercase hex' }),
+  })
+  .strict();
+export type StoreKindRelease = z.infer<typeof storeKindRelease>;
+
+/**
+ * A store kind, registered in this repo and pinned (D-63): every release the platform may run,
+ * the class it runs, the catalog a vertical may call, and every reserved operation. A release is
+ * pinned by a reviewed change to this list, and a pin is never removed, a superseded release
+ * included. The list itself is {@link STORE_KINDS}. Empty until a kind is reviewed in.
  */
 export const storeKindRegistration = z.object({
   // Held to the kind-id grammar first (L20), so a second kind cannot be added outside it.
   kind: storeKindId.pipe(z.literal('graph')),
-  release: z.string().min(1),
+  releases: z
+    .array(storeKindRelease)
+    .min(1)
+    .refine((releases) => new Set(releases.map((r) => r.sha256)).size === releases.length, {
+      message: 'a release is pinned once',
+    }),
   // No script name: the platform names the upload `scopeStoreScriptName(vertical, kind)`.
   className: z.string().min(1),
   operations: z.array(storeCatalogOperation),
@@ -374,6 +384,59 @@ export type StoreKindRegistration = z.infer<typeof storeKindRegistration>;
 
 /** Registered store kinds. None, until a reviewed registration lands (#2210). */
 export const STORE_KINDS: readonly StoreKindRegistration[] = [];
+
+/** The domain tag a release digest starts with. Another framing is another tag, and a pin migration. */
+export const STORE_RELEASE_DIGEST_TAG = 'substrat.store-release/v1';
+
+/** A name inside a release digest: printable ASCII, no space, so no NUL and no encoding choice. */
+const RELEASE_DIGEST_NAME = /^[\x21-\x7e]+$/;
+
+/**
+ * The sha256 that pins a store kind's release (D-63), as lowercase hex. It covers everything that
+ * decides what runs, apart from the class the registration names: the module the platform's
+ * entry imports, and every module's name and bytes. Framed as {@link STORE_RELEASE_DIGEST_TAG}
+ * and one zero byte, the entry's name and one zero byte, then each module in name order: its
+ * name, one zero byte, its length as an unsigned 64-bit big-endian integer, then its exact bytes.
+ *
+ * The framing is what makes the digest name one release, so its preconditions are held here,
+ * not left to a caller: every name (the entry's included) is non-empty printable ASCII without
+ * a space. A NUL would let one name absorb the next module's frame, and a lone surrogate encodes
+ * to the same bytes as U+FFFD, so either would let two releases share a digest. ASCII also makes
+ * the sort below (UTF-16 code units) the byte order, so a pin computed outside JavaScript agrees.
+ * A module named twice is refused, and so is an entry that is not one of the modules.
+ */
+export async function storeKindReleaseDigest(release: {
+  readonly entry: string;
+  readonly modules: readonly { readonly name: string; readonly content: Uint8Array }[];
+}): Promise<string> {
+  const encode = (name: string) => {
+    if (!RELEASE_DIGEST_NAME.test(name)) {
+      throw new Error(`a release name must be printable ASCII without spaces: ${JSON.stringify(name)}`);
+    }
+    return new TextEncoder().encode(name);
+  };
+  const zero = new Uint8Array([0]);
+  const parts: Uint8Array[] = [encode(STORE_RELEASE_DIGEST_TAG), zero, encode(release.entry), zero];
+  if (!release.modules.some((module) => module.name === release.entry)) {
+    throw new Error(`a release's entry '${release.entry}' is not one of its modules`);
+  }
+  const sorted = [...release.modules].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const [i, module] of sorted.entries()) {
+    if (i > 0 && sorted[i - 1]!.name === module.name) throw new Error(`a release ships '${module.name}' twice`);
+    const name = encode(module.name);
+    const length = new Uint8Array(8);
+    new DataView(length.buffer).setBigUint64(0, BigInt(module.content.byteLength));
+    parts.push(name, zero, length, module.content);
+  }
+  const framed = new Uint8Array(parts.reduce((n, part) => n + part.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) {
+    framed.set(part, offset);
+    offset += part.byteLength;
+  }
+  const hash = await crypto.subtle.digest('SHA-256', framed);
+  return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 
 /**
  * Whether a version's stored manifest (`HostAdmin.versionManifest`) declares a scope

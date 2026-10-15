@@ -84,7 +84,7 @@ These are recorded rather than fixed, and are tracked in
 
 ## The decision log
 
-[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->114 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
+[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->115 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
 generated from [`decisions/`](decisions/), one file per decision. The tables in master plan
 §12 and kernel design §14 are generated from the same source and must not be hand-edited.
 
@@ -178,6 +178,7 @@ One per engine, mirroring `engines/*`.
 | document | status | |
 |---|---|---|
 | [absence.md](engines/absence.md) | `built` | The approved-absence ledger. |
+| [assistant.md](engines/assistant.md) | `built` | The record of a chat with an assistant — an append-only event log, a single-writer run lease, and tool calls whose gated writes need an approval bound to the exact input. |
 | [booking.md](engines/booking.md) | `built` | Reservation and slot allocation. |
 | [invites.md](engines/invites.md) | `built` | Invitations to an organization, and the connector seam that effects membership. |
 | [invoicing.md](engines/invoicing.md) | `built` | The invoice-basis ledger — consumes delivery events, immutable after export. |
@@ -193,15 +194,19 @@ Open proposals. A document leaves when it is decided — to `architecture/` rewr
 | document | status | |
 |---|---|---|
 | [agent-surface.md](rfc/agent-surface.md) | `building` | How any agent discovers and works with Substrat. #749 open. |
+| [assistant.md](rfc/assistant.md) | `proposed` | One chat in every product — a thread with an AI, and sometimes a person, that answers and acts for the signed-in user, with the assistant stamped as actor under a ceiling. Argues the stream protocol, the record, the host loop, the UI element, context, memory and the support handoff, and the bar for the experience. |
 | [booking-social.md](rfc/booking-social.md) | `building` | Booking engine shipped; the cross-tenant social tier is not. |
 | [callout-concept.md](rfc/callout-concept.md) | `historical` | The Callout field-service concept — the first demo vertical, which the workorder, invoicing and protocol engines were cut against; the demo is gone, the argument stays. |
 | [callout-testrun.md](rfc/callout-testrun.md) | `historical` | The original test-run spec the first engines (workorder, invoicing) were cut from — kept after the Callout demo was removed. |
+| [cross-scope-read.md](rfc/cross-scope-read.md) | `proposed` | A read for the screen that lists a principal's scopes — declared, run by the host, checked by every scope it touches. #1581. |
 | [disclosure-register.md](rfc/disclosure-register.md) | `proposed` | Can the platform say which processors hold data about one subject? Argues #860 against the two positions it must survive; lands on not-yet-in-this-shape, and on one live erasure hole found while arguing. Revision 2 takes the forks and recommends a derived register plus a declared superset. |
 | [docs-restructure.md](rfc/docs-restructure.md) | `building` | Audit of docs/ and the restructure. All four phases executed; the prose rewrite is what remains. |
 | [error-model.md](rfc/error-model.md) | `superseded` | Moved — the error-model RFC shipped in @substrat-run/contracts and now lives in architecture/. |
+| [file-bearing-sources.md](rfc/file-bearing-sources.md) | `proposed` | A connector shape for sources that hold files rather than records (#1578) — enumerate a tree incrementally and resumably, move bytes as streams, follow a change feed with a walk as the floor, write back only where the binding allows it. Recommends running the walk as a #1577 job run whose record lives in the scope and whose passes run where the credential is; leaves five forks to a human. |
 | [model-phase-plan.md](rfc/model-phase-plan.md) | `building` | The model phase. Umbrella #685 open. |
 | [rallypoint-concept.md](rfc/rallypoint-concept.md) | `historical` | The RallyPoint concept — the racket-club demo that drove engine-booking; the demo is gone, the argument stays. |
 | [scope-stores.md](rfc/scope-stores.md) | `proposed` | A platform-run object per scope, declared as a kind and reached through its own door. #2207. |
+| [store-instances.md](rfc/store-instances.md) | `proposed` | A tenant-level store instance that several verticals of one tenant connect to, weighed against the per-scope store of K-49/K-50. Four options, three authorization shapes, the lifecycle a shared object needs, and what it does to the open scope-store stack. Records the maintainer's direction of 2026-10-15: named tenant-level instances with explicit connections and platform-addressed partitions (B), a script per partition as the upgrade for stronger separation (B′), and per-scope stores kept for scope-grain kinds. Still proposed; its 22 open questions are unanswered. |
 | [sub-transactions.md](rfc/sub-transactions.md) | `superseded` | Moved — the sub-transactions RFC shipped as ctx.atomic and now lives in architecture/. |
 | [vat-carriage.md](rfc/vat-carriage.md) | `proposed` | Concept spec for VAT carriage in engine-invoicing (#326) — a rate and a tax amount on a line, a per-rate decomposition frozen at export. Argued against the currency work that already shipped and against K-39; recommends per-line carriage and leaves the replace-or-additive question to a human. |
 

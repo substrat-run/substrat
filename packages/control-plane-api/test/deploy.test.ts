@@ -216,9 +216,11 @@ describe('assertSandboxContract', () => {
 });
 
 describe('scope store upload plan (#2210)', () => {
+  // A release is pinned by sha256 (D-63); the label here only names which test pin it is.
+  const pinOf = (release: string) => ({ sha256: (release === '1.0.0' ? 'a' : 'b').repeat(64), sourceCommit: 'c'.repeat(40) });
   const kind = (release: string): StoreKindRegistration => ({
     kind: 'graph',
-    release,
+    releases: [pinOf(release)],
     className: 'Store',
     operations: ['read'],
     platformOperations: [...RESERVED_STORE_OPERATIONS],
@@ -261,14 +263,15 @@ describe('scope store upload plan (#2210)', () => {
     expect(first.scripts).toEqual([
       {
         kind: 'graph',
-        release: '1.0.0',
+        releases: [pinOf('1.0.0')],
         vertical: 'acme/crm',
         className: 'Store',
         scriptName: scopeStoreScriptName('acme/crm', 'graph'),
       },
     ]);
     expect(next.scripts[0]?.scriptName).toBe(first.scripts[0]?.scriptName);
-    expect(first.scripts[0]?.scriptName).not.toMatch(/[12]\.0\.0/);
+    // The name carries no release: a new pin uploads into the same script.
+    expect(first.scripts[0]?.scriptName).not.toContain(pinOf('1.0.0').sha256.slice(0, 8));
     expect(scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH')).toBe('01TENANT/acme/crm/01SCOPE/GRAPH');
   });
 
