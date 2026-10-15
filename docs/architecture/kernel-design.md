@@ -489,6 +489,8 @@ directory's `tenant_stores` ledger, and attaches it to the vertical's serving sc
 binding named `<BINDING>__<TENANTID>` — re-derived from the ledger on every in-place serving
 upload, so a re-deploy cannot drop it. The worker opens the binding directly (request-time);
 the control plane's `openTenantStore` uses the D1 HTTP API (out-of-band migrations, ops reads).
+A per-tenant store is per (tenant, vertical, binding), so no two verticals share one; a store
+shared across a tenant's verticals is §13 question 21.
 
 ### 5.3 Migrations and version skew
 
@@ -1453,6 +1455,14 @@ translations are not).
     counter-design. Decide with the documents service (does the dedup boundary become the
     per-tenant blob store, and does that make cross-tenant dedup a thing we deliberately
     refuse?), not before — but decide it there rather than discovering it.
+21. **No store is shared by the verticals of one tenant.** Every store the platform runs or
+    mints is per vertical. A scope store is per (tenant, vertical, scope, binding) (K-49).
+    `tenantStores` and `blobStores` are per (tenant, vertical, binding) (§5.2). A connection
+    is per (tenant, vertical, provider). A data layer that several verticals of one tenant
+    read and write, and that no other tenant reaches, has no shape. *Proposed answer, not
+    decided:* [rfc/store-instances.md](../rfc/store-instances.md) — a tenant-level store
+    instance that a tenant admin connects verticals to, weighed against the per-scope store,
+    with its authorization and lifecycle left open there.
 
 ### 13.1 The answer to question 17, in full: what subject erasure reaches (#37)
 
