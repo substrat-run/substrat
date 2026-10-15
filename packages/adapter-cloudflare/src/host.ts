@@ -4883,7 +4883,8 @@ export class CloudflareScopeHost implements ScopeHost {
   /**
    * Configured runners, or the ambient namespaces when this host was told to use a
    * direct binding. The platform hop holds no object in this isolate, so an ambient
-   * namespace is not one of its stores.
+   * namespace is not one of its stores, and the admin's store paths answer for none: the
+   * control plane reaches the platform's stores itself (see `eraseScopeStores`).
    */
   private scopeStoreBindingNames(): string[] {
     if (this.scopeStoreTransport === 'platform') return [];
@@ -4944,8 +4945,13 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /**
    * `substrat.erase` on each declared binding (#2068). A store error throws so the
-   * caller can leave the subject key untouched. Fail closed: an empty answer means
-   * this host KNOWS it holds nothing for the scope, never that it could not tell.
+   * caller can leave the subject key untouched. An empty answer means this host holds no
+   * store object for the scope, never that it could not tell. On the platform hop that is
+   * true by construction (`scopeStoreBindingNames` is empty): the stores live behind the
+   * store script, and control-plane-api erases, exports, sizes and wipes them itself around
+   * its calls to this host's admin (`shredSubject`, `exportScope`, `scopeStoreSizes`, the
+   * wipe and the replay); an erasure reaches them before the host's shred destroys the key. Only the vertical-host `*Local` reads, which no control plane fronts,
+   * refuse on the hop instead (`refuseLocalStoresOnPlatform`).
    */
   private async eraseScopeStores(
     tenantId: TenantId,
