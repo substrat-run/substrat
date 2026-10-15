@@ -1,4 +1,12 @@
-import { storeKindReleaseDigest, type ScopeStoreNeed, type StoreKindRegistration } from '@substrat-run/contracts';
+import {
+  SCOPE_STORE_CANARY,
+  STORE_KINDS,
+  scopeStoreCanaryScriptName,
+  storeKindReleaseDigest,
+  type ScopeStoreNeed,
+  type StoreKindRegistration,
+  type StoreKindRelease,
+} from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { scopeStoreUploadPlan } from './deploy.js';
 import { STORE_OBJECT_CLASS, STORE_RESERVED_BINDING_PREFIX } from './store-entry.generated.js';
@@ -20,6 +28,11 @@ export const STORE_BUILD_VAR = `${STORE_RESERVED_BINDING_PREFIX}_BUILD`;
 export interface StoreKindReleaseArtifact extends PythonStoreKindRelease {
   /** The commit the bundle was built from. A reviewer reads it; the upload checks the sha256. */
   readonly sourceCommit: string;
+  /**
+   * The sha256 the loader read these bytes as (its storage key). When present, the bytes must
+   * hash to it, so a store that answers other bytes under a key is refused, not uploaded.
+   */
+  readonly sha256?: string;
 }
 
 export interface ScopeStoreEnsurerOptions {
@@ -32,9 +45,9 @@ export interface ScopeStoreEnsurerOptions {
   platformPublicKeys: readonly string[];
   kinds?: readonly StoreKindRegistration[];
   /**
-   * A release's bytes. With `sha256`, that release, which the script already runs. Without it,
-   * the release the publish flow rolled out to this vertical last (#2297). Undefined when there
-   * is none.
+   * A release's bytes. With `sha256`, that release: the one the script runs, or the one a
+   * rollout moves it to. Without it, the kind's current good release (#2300). Undefined when
+   * there is none.
    */
   loadRelease: (input: {
     readonly kind: string;
@@ -56,76 +69,111 @@ async function buildDigest(script: PythonStoreScript): Promise<string> {
 /**
  * Put every (kind, vertical) store script a vertical's stores need in place, before the
  * vertical's own upload (#2210, D-63). A push or a serve never moves a script to another
- * release: only the publish flow and its rollback do (#2297).
+ * release: only a rollout or a rollback does (#2300), and it says so with `to`.
  *
- * - No script yet: it is uploaded at the release the publish flow rolled out to this vertical.
- * - A script: it is rebuilt at the release it already runs, and uploaded again only when what
- *   it was built from changed (the platform's entry, the verifier, a key list, a flag), so a
+ * - No `to`, no script yet: it is uploaded at the kind's current good release.
+ * - No `to`, a script: it is rebuilt at the release it already runs, and uploaded again only when
+ *   what it was built from changed (the platform's entry, the verifier, a key list, a flag), so a
  *   fix or a key rotation reaches it without a release moving.
+ * - `to`: the script is moved to that release, or left alone when it already runs it, built the
+ *   same way. Re-running a rollout therefore converges and uploads nothing twice.
  *
  * Every upload hashes the module bytes it is about to send and refuses (422) bytes whose
  * sha256 the kind's registration does not pin, or that are not the release asked for. A kind
  * with no release to run is refused (409). The runtime's own failures are 502.
  */
 export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
+  const ensure = scriptEnsurer(opts);
+  return async (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to?: string }): Promise<void> => {
+    const plan = scopeStoreUploadPlan({ vertical: input.vertical, stores: input.stores, kinds: opts.kinds });
+    for (const script of plan.scripts) await ensure(script, input.to);
+  };
+}
+
+/**
+ * Put a kind's release in the platform's canary script (D-63, #2300), where it is canaried
+ * before any vertical's script moves: `scopeStoreCanaryScriptName(kind)`, built and checked as a
+ * vertical's script is. Answers the script's name.
+ */
+export function createStoreCanaryEnsurer(opts: ScopeStoreEnsurerOptions) {
+  const ensure = scriptEnsurer(opts);
+  return async (input: { kind: string; to: string }): Promise<{ scriptName: string }> => {
+    const kind = (opts.kinds ?? STORE_KINDS).find((k) => k.kind === input.kind);
+    if (!kind) throw new ControlPlaneError(403, `scope store kind '${input.kind}' is not registered`);
+    const scriptName = scopeStoreCanaryScriptName(kind.kind);
+    await ensure(
+      { kind: kind.kind, vertical: SCOPE_STORE_CANARY, scriptName, className: kind.className, releases: kind.releases },
+      input.to,
+    );
+    return { scriptName };
+  };
+}
+
+interface EnsuredScript {
+  readonly kind: string;
+  readonly vertical: string;
+  readonly scriptName: string;
+  readonly className: string;
+  readonly releases: readonly StoreKindRelease[];
+}
+
+function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
   const scriptUrl = (name: string) =>
     `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}` +
     `/workers/dispatch/namespaces/${opts.namespace}/scripts/${encodeURIComponent(name)}`;
 
-  return async (input: { vertical: string; stores: readonly ScopeStoreNeed[] }): Promise<void> => {
-    const plan = scopeStoreUploadPlan({ vertical: input.vertical, stores: input.stores, kinds: opts.kinds });
-    for (const script of plan.scripts) {
-      const current = await recorded(scriptUrl(script.scriptName));
-      if (current.exists && !current.release) {
-        // Not an upload of this code. Which release it runs cannot be told, so it is not guessed.
-        throw new ControlPlaneError(409, `store script '${script.scriptName}' records no release`);
-      }
-      const release = await opts.loadRelease({
-        kind: script.kind,
-        vertical: script.vertical,
-        ...(current.release ? { sha256: current.release } : {}),
-      });
-      if (!release) {
-        throw new ControlPlaneError(
-          409,
-          current.release
-            ? `kind '${script.kind}' release ${current.release} is not stored`
-            : `kind '${script.kind}' has no release rolled out to '${script.vertical}'`,
-        );
-      }
-      // The bytes about to be sent, copied once and hashed now: never a hash taken when they
-      // arrived (D-63). The copy is what is built from and sent, so the hashed bytes are the
-      // sent bytes whatever the loader keeps or shares.
-      const loaded: PythonStoreKindRelease = {
-        entry: release.entry,
-        modules: release.modules.map((module) => ({ name: module.name, content: new Uint8Array(module.content) })),
-      };
-      const sha256 = await storeKindReleaseDigest(loaded).catch((e: unknown) => {
-        throw new ControlPlaneError(422, e instanceof Error ? e.message : String(e));
-      });
-      if (current.release && sha256 !== current.release) {
-        throw new ControlPlaneError(422, `kind '${script.kind}' release ${current.release} loaded as other bytes (${sha256})`);
-      }
-      if (!script.releases.some((pin) => pin.sha256 === sha256)) {
-        throw new ControlPlaneError(422, `kind '${script.kind}' release ${sha256} is not pinned in its registration`);
-      }
-      let built: PythonStoreScript;
-      try {
-        built = withPythonStoreEntry(loaded, {
-          className: script.className,
-          script: script.scriptName,
-          callerPublicKeys: opts.callerPublicKeys,
-          platformPublicKeys: opts.platformPublicKeys,
-        });
-      } catch (e) {
-        throw new ControlPlaneError(422, e instanceof Error ? e.message : String(e));
-      }
-      const build = await buildDigest(built);
-      if (current.exists && current.build === build) continue;
-      await put(scriptUrl(script.scriptName), script.scriptName, built, { sha256, build, first: !current.exists });
+  return async (script: EnsuredScript, to: string | undefined): Promise<void> => {
+    const current = await recorded(scriptUrl(script.scriptName));
+    if (current.exists && !current.release) {
+      // Not an upload of this code. Which release it runs cannot be told, so it is not guessed.
+      throw new ControlPlaneError(409, `store script '${script.scriptName}' records no release`);
     }
+    const wanted = to ?? current.release;
+    const release = await opts.loadRelease({
+      kind: script.kind,
+      vertical: script.vertical,
+      ...(wanted ? { sha256: wanted } : {}),
+    });
+    if (!release) {
+      throw new ControlPlaneError(
+        409,
+        wanted
+          ? `kind '${script.kind}' release ${wanted} is not stored`
+          : `kind '${script.kind}' has no release rolled out to '${script.vertical}'`,
+      );
+    }
+    // The bytes about to be sent, copied once and hashed now: never a hash taken when they
+    // arrived (D-63). The copy is what is built from and sent, so the hashed bytes are the
+    // sent bytes whatever the loader keeps or shares.
+    const loaded: PythonStoreKindRelease = {
+      entry: release.entry,
+      modules: release.modules.map((module) => ({ name: module.name, content: new Uint8Array(module.content) })),
+    };
+    const sha256 = await storeKindReleaseDigest(loaded).catch((e: unknown) => {
+      throw new ControlPlaneError(422, e instanceof Error ? e.message : String(e));
+    });
+    const asked = wanted ?? release.sha256;
+    if (asked && sha256 !== asked) {
+      throw new ControlPlaneError(422, `kind '${script.kind}' release ${asked} loaded as other bytes (${sha256})`);
+    }
+    if (!script.releases.some((pin) => pin.sha256 === sha256)) {
+      throw new ControlPlaneError(422, `kind '${script.kind}' release ${sha256} is not pinned in its registration`);
+    }
+    let built: PythonStoreScript;
+    try {
+      built = withPythonStoreEntry(loaded, {
+        className: script.className,
+        script: script.scriptName,
+        callerPublicKeys: opts.callerPublicKeys,
+        platformPublicKeys: opts.platformPublicKeys,
+      });
+    } catch (e) {
+      throw new ControlPlaneError(422, e instanceof Error ? e.message : String(e));
+    }
+    const build = await buildDigest(built);
+    if (current.exists && current.release === sha256 && current.build === build) return;
+    await put(scriptUrl(script.scriptName), script.scriptName, built, { sha256, build, first: !current.exists });
   };
-
   async function recorded(url: string): Promise<{ exists: boolean; release?: string; build?: string }> {
     const res = await fetch(`${url}/settings`, { headers: { authorization: `Bearer ${opts.apiToken}` } });
     if (res.status === 404) return { exists: false };
