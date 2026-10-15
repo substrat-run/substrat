@@ -1,15 +1,21 @@
 # Findings: where a live assistant thread runs
 
 Run locally on macOS, 14 to 15 October 2026. `node run.mjs` (miniflare 4.20260730.0, workerd,
-Node 22) passed 41 assertions on ten consecutive runs, and 43 with `SLOW=1`. `node bundle.mjs`
+Node 22) has 41 assertions, and 43 with `SLOW=1`; the run history, corrected, is below. `node bundle.mjs`
 (esbuild 0.25.10, Lit 3.3.1) measured the element. No Cloudflare account, no deploy, no real
 model.
 
-**One caveat on the run history.** Two earlier runs in the same session behaved differently:
-one printed no summary line and one reported 40 of 41. I did not capture their output and could
-not reproduce either in the fourteen runs that followed, so I do not know what they were. The
-machine was busy with other workerd processes at the time. Treat the suite as passing and
-that history as an unexplained blemish.
+**A correction to the run history.** The first version of these findings reported ten clean
+runs and called an earlier 40 of 41 "an unexplained blemish". It had a cause. A reviewer got
+40 of 41 on two of five runs, both times on `B: event type sequence equals A`: step 2 wrote 8
+`text-delta` events in A and 9 in B, because the loop's 50 ms coalescing (`src/loop.mjs`)
+decides how many deltas a step writes, and that depends on timing. The rendered text was
+identical in both (`B: full render equals A` passed), so correctness was never in question;
+the assertion compared something timing-dependent. It now compares the sequence with each run
+of `text-delta` collapsed to one, and the render is still compared exactly. After that change
+the suite passed 41 of 41 on ten consecutive runs on 15 October 2026 (see
+[the run record](#run-record-after-the-fix)). The run that printed no summary line is still
+unexplained.
 
 ## What was built
 
@@ -34,9 +40,11 @@ for approval, execute, conclude) with configurable delay.
    with no gap and no duplicate, and render to the same text as an uninterrupted run.
 2. **The run survives the client leaving**, in both, for a run of a second or two (S2).
 3. **Approvals work across a gap and are bound to the input.** An approval carrying a digest of
-   a different input is refused (`400` / `digest_mismatch`), approving twice is refused (`409` /
-   `already_resolved`), a denial skips the tool, and an approval 1.5 s later from a fresh
-   connection is accepted. The model cannot change the arguments after the user said yes.
+   a different input is refused (`400` / `digest_mismatch`), approving twice in sequence is
+   refused (`409` / `already_resolved`), a denial skips the tool, and an approval 1.5 s later
+   from a fresh connection is accepted. This shows that whoever approves cannot change the
+   arguments after the approval was given. It does **not** show that the approver is the
+   user: see "Not shown".
 4. **A dead holder is fenced.** A holder that lost the lease cannot append, and the takeover is
    reported as a takeover. This is what makes two places able to run a turn safely.
 5. **Two sends at once start one turn.** The other gets `409` (A) or `busy` (B).
@@ -79,9 +87,11 @@ The leading edge matters: the first token after a quiet spell goes out at once, 
 costs the user nothing on the first token. Rows stay small, so the Durable Object row ceiling
 is a concern only for large tool results, which the RFC already stores by reference.
 
-**Shipping weight** (minified, gzip): Lit alone 5.7 KB; the headless client alone 0.8 KB; the
-spike element with client and Lit 7.4 KB. The shipped element will be larger (markdown, the
-approval preview, branches, the memory view, the renderer registry), so 7.4 KB is a floor.
+**Shipping weight** (minified, gzip): Lit alone 5.7 KB; the headless client alone 0.9 KB; the
+spike element with client and Lit 7.5 KB (0.8 and 7.4 KB before the client learned to resume a
+stream that closes cleanly mid-turn and to read a refusal as one). The shipped element will be
+larger (markdown, the approval preview, branches, the memory view, the renderer registry), so
+7.5 KB is a floor.
 
 **Hibernation (B, `SLOW=1`).** An object holding one idle socket was constructed again after
 25 s (the constructor counter went from 1 to 2), and the old socket still carried a turn
@@ -89,6 +99,24 @@ afterwards. So on local workerd the socket survives the object leaving memory, a
 needed nothing in memory to continue.
 
 ## Not shown, and why it matters
+
+- **That the user approved.** The approve endpoints take no principal: `approve` in
+  `src/worker-a.mjs` and the `approve` message in `src/worker-b.mjs`'s `webSocketMessage` accept
+  any caller who knows the thread name. So the spike binds an approval to the *input*, not to
+  the *person*, and the model's own credential could have approved. That is the gap the RFC's
+  §6.0 closes: an approval arrives on a user-presence route the loop cannot call, and binds
+  the approving principal, thread, call, operation, expiry and a nonce.
+- **Single-use under a race.** "Approving twice is refused" was shown in sequence only. The
+  check is check-then-act: `worker-a.mjs` reads the record for `already_resolved`, then
+  `startRun` takes the lease and appends `approval-resolved` without checking again;
+  `worker-b.mjs` does the same across an RPC to the record object. Two approvals arriving
+  together could both pass the check. Found by reading, not reproduced. In P1 the single-use
+  and digest checks belong inside the record's own conditional append.
+- **A real digest.** `digestOf` (`src/protocol.mjs`) is SHA-256 over `JSON.stringify` of the
+  input. That is not a canonical encoding: it depends on key order. It is harmless here because
+  both sides hash the same stored object, but P1 needs a canonical encoding (or a digest over
+  the stored bytes), tagged with what it binds, so the same input for two operations or two
+  threads does not give the same digest.
 
 - **The 30 s `waitUntil` cap did not reproduce.** The documentation says `waitUntil` extends
   execution for up to 30 seconds after the response is sent or the client disconnects. In `SLOW`

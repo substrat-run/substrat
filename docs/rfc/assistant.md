@@ -1,10 +1,10 @@
 ---
 status: proposed
 layer: plan
-description: One chat in every product — a thread with an AI, and sometimes a person, that answers and acts as the signed-in user. Argues the stream protocol, the record, the host loop, the UI element, context, memory and the support handoff, and the bar for the experience.
+description: One chat in every product — a thread with an AI, and sometimes a person, that answers and acts for the signed-in user, with the assistant stamped as actor under a ceiling. Argues the stream protocol, the record, the host loop, the UI element, context, memory and the support handoff, and the bar for the experience.
 ---
 
-# RFC: the assistant — one thread, any product, acting as the user
+# RFC: the assistant — one thread, any product, acting for the user
 
 **Status: proposed. Nothing here is agreed.** It recommends; a human decides. The decisions it
 asks for are collected in §16, where the ones taken as working decisions for P1 are marked. Written against `origin/main` at `c95e6d73a` and against the

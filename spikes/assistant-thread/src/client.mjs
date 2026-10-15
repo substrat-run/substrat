@@ -57,6 +57,10 @@ export function sseClient(worker, path, { method = 'GET', body, headers = {}, on
           const entry = { event, at: now() - t0 };
           events.push(entry);
           onEvent?.(entry, result);
+          // A disconnect means nothing after it was seen. Without this, frames already
+          // buffered in the same chunk were still recorded, and under load one chunk can hold
+          // the rest of the phase, which left S2 nothing to resume.
+          if (result.aborted) return result;
         }
       }
     } catch (err) {
