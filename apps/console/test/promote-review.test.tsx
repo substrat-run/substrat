@@ -3,6 +3,7 @@ import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';
 import { buildPermissionRegistry, migrationsOnTop, type PermissionRegistry } from '@substrat-run/contracts';
 import {
+  boundAcknowledgement,
   migrationReviewOf,
   permissionReviewOf,
   promoteAckSatisfied,
@@ -64,7 +65,7 @@ describe('the console promote review (#1677)', () => {
         reader({ versionRegistry: async (_s, id) => ({ registry: id === nullId ? null : registry(['a:read']) }) }),
         'v', 'old', 'new', { permission: true, migration: false },
       );
-      expect(r).toEqual({ kind: 'ready', permission: { kind: 'cannot-diff' }, migration: null });
+      expect(r).toEqual({ kind: 'ready', permission: { kind: 'cannot-diff' }, migration: null, binding: null });
     }
     const html = renderToString(createElement(PermissionDiffView, { review: { kind: 'cannot-diff' } }));
     expect(html).toContain('cannot be shown');
@@ -113,6 +114,39 @@ describe('the console promote review (#1677)', () => {
       'v', 'old', 'new', { permission: false, migration: true },
     );
     expect(calls).toEqual(['migrations']);
+  });
+
+  // #2333: the acknowledgement names the review it answers.
+  describe('the review binding (#2333)', () => {
+    const B = { base: 'old', digest: 'c'.repeat(64) };
+    it('comes from the migrations read, made whenever anything is to be acknowledged', async () => {
+      const calls: string[] = [];
+      const r = await readReview(
+        reader({ versionMigrations: async (_s, id, base) => (calls.push(`${id}@${base}`), { migrations, review: B }) }),
+        'v', 'old', 'new', { permission: true, migration: false },
+      );
+      // Read for the binding alone: the migration diff is not shown, since its digest did not move.
+      expect(calls).toEqual(['new@old']);
+      expect(r).toMatchObject({ kind: 'ready', migration: null, binding: B });
+    });
+    it('nothing to acknowledge reads nothing', async () => {
+      const calls: string[] = [];
+      await readReview(
+        reader({
+          versionRegistry: async () => (calls.push('registry'), { registry: null }),
+          versionMigrations: async () => (calls.push('migrations'), { migrations: null }),
+        }),
+        'v', 'old', 'new', { permission: false, migration: false },
+      );
+      expect(calls).toEqual([]);
+    });
+    it('the promote carries it only from a review that was read', () => {
+      const ack = { migrationChange: true };
+      expect(boundAcknowledgement(ack, { kind: 'ready', permission: null, migration: null, binding: B })).toEqual({ migrationChange: true, review: B });
+      expect(boundAcknowledgement(ack, { kind: 'ready', permission: null, migration: null, binding: null })).toEqual(ack);
+      expect(boundAcknowledgement(ack, { kind: 'loading' })).toEqual(ack);
+      expect(boundAcknowledgement(ack, { kind: 'error', message: 'x' })).toEqual(ack);
+    });
   });
 
   it('a failed read is an error, and the acknowledgement stays required', async () => {

@@ -435,7 +435,7 @@ Once a version is **admitted** — which for your private verticals is immediate
 type it:
 
 ```bash
-substrat promote helpdesk --version 01J… --ack-migrations
+substrat promote helpdesk --version 01J… --ack-migrations --review 01J…:5f3c…
 ```
 
 Promotion re-points the prod scope at a new version — a **rebind**: the same scope and data,
@@ -479,6 +479,31 @@ would run, with its declared moves and discards, so a change to any of them is r
 acknowledge it, from the CLI, the API and the dashboard alike. A version pushed by a CLI older than
 0.38.0 hashed only its Durable-Object classes, so between two such versions the registry does not
 refuse a change to SQL alone; the dashboard asks you to acknowledge one anyway.
+
+### An acknowledgement answers one review {#acknowledgement-answers-one-review}
+
+The diffs you read are computed against the version prod points at **when you read them**. If
+someone else promotes in between, the promote you then acknowledge would apply a different diff
+from the one you were shown. So an acknowledgement names the review it answers: the refusal prints
+a `--review` token (the version prod pointed at, and a digest of the stored migrations, declared
+moves and discards and digests the review was computed from), and you re-run with it:
+
+```text
+to acknowledge exactly what is shown above, re-run with the --ack-* flags it needs and --review 01J…:5f3c…
+```
+
+The control plane recomputes that digest from its own stored rows. If prod has moved, or the rows
+no longer give the digest, the promote is refused as stale and nothing changes; `substrat promote`
+prints the diffs as they stand now, with a new token. The dashboard's promote dialog does the same
+in place: it reads the review again and asks again from scratch, saying that prod changed, and no
+box ticked against the old review carries over. The digest you send is only ever compared, never
+read as the diff.
+
+The compatibility rule: a `--ack-migrations` without a token is refused when the migration digest
+moved — it is the acknowledgement that lets a migration, and any data loss it declares, reach live
+data — and the refusal names the CLI release that sends one. A `--ack-permissions` without a
+token is still honoured, so an older CLI keeps promoting where no migration changes; a token, when
+sent, covers the permission diff too.
 
 The staff gate returns only when you **widen the audience**: `substrat publish <slug>` lists the
 vertical on the marketplace, and from then on its pushes land pending and its prod promotion is a

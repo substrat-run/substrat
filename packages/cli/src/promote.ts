@@ -12,10 +12,16 @@
  * #1705 PR 3: a promote that drops or re-versions an exported event an installed app imports
  * is refused too (409), and the refusal lists the apps it would break: the caller's own tenant's
  * by name, any other tenant only as a count. `--ack-export-break` passes it once that is read.
+ *
+ * #2333: an acknowledgement answers ONE review — the diffs printed against the version prod served
+ * when they were read. Every refusal that prints them also prints the `--review` token they were
+ * read with, and the control plane refuses a token whose base or stored rows have moved since
+ * (and a `--ack-migrations` sent with none), so a person never acknowledges a diff they were not shown.
  */
 import {
   diffRegistries,
   grantShapeHolderNotes,
+  promoteReviewReasonIn,
   clipReviewText,
   discardTally,
   reviewSql,
@@ -31,6 +37,7 @@ import {
   type ExportBreaks,
   type MintedStore,
   type PromoteResult,
+  type PromoteReviewBinding,
 } from '@substrat-run/control-plane-client';
 import { planeFor, viaPlane, walkAll } from './plane.js';
 import { failureMessage, readRefused } from './problem.js';
@@ -41,7 +48,21 @@ export interface PromoteOptions {
   slug: string;
   channel: string;
   versionId: string;
-  acknowledge?: { permissionChange?: boolean; migrationChange?: boolean; exportBreak?: boolean };
+  acknowledge?: { permissionChange?: boolean; migrationChange?: boolean; exportBreak?: boolean; review?: PromoteReviewBinding };
+}
+
+/** How a review binding is written on the command line: `<base>:<digest>`, `-` for no base. */
+export function reviewToken(review: PromoteReviewBinding): string {
+  return `${review.base ?? '-'}:${review.digest}`;
+}
+
+/** `reviewToken` read back, or null when it is not one. The digest is hex, so the last `:` splits it. */
+export function parseReviewToken(token: string): PromoteReviewBinding | null {
+  const at = token.lastIndexOf(':');
+  const base = token.slice(0, at);
+  const digest = token.slice(at + 1);
+  if (at <= 0 || !/^[0-9a-f]{64}$/.test(digest)) return null;
+  return { base: base === '-' ? null : base, digest };
 }
 
 /** The listing a refused (or acknowledged) export break carries, one line per affected app. */
@@ -89,10 +110,13 @@ export async function promote(opts: PromoteOptions): Promise<PromoteResult> {
         ? `\n  (${parsed.exportBreaksUnavailable}; re-run with --ack-export-break to promote anyway)`
         : '';
     const message = failureMessage('promote failed', e.status, body);
-    if (!message.includes(NEEDS_ACK)) throw new Error(message + listing);
+    // A review that moved under the acknowledgement, or a migration acknowledgement sent with none
+    // (#2333), is answered like a digest refusal: by the diffs as they stand now, and their token.
+    const review = promoteReviewReasonIn(parsed);
+    if (!message.includes(NEEDS_ACK) && review === undefined) throw new Error(message + listing);
     const lines = await explainRefusal(opts, {
       permission: message.includes('changes the permission surface'),
-      migration: message.includes('changes migrations'),
+      migration: message.includes('changes migrations') || review === 'promote_review_unbound',
     });
     throw new Error(`${message}${listing}\n\n${lines.join('\n')}`);
   }
@@ -123,19 +147,26 @@ export async function explainRefusal(
     if (!serving) return ['(nothing serves this channel yet, so there is nothing to diff against)'];
     const registry = (id: string) =>
       get(() => client.getVersionRegistry<PermissionRegistry>(opts.slug, id)).then((r) => r.registry);
-    const [from, to, migrations] = await Promise.all([
+    const [from, to, read] = await Promise.all([
       registry(serving),
       registry(opts.versionId),
-      get(() => client.getVersionMigrations<MigrationDiff>(opts.slug, opts.versionId, serving)).then((r) => r.migrations),
+      get(() => client.getVersionMigrations<MigrationDiff>(opts.slug, opts.versionId, serving)),
     ]);
+    // The token is the one the migrations read answered beside the diff printed here, never one
+    // put together from separate reads: the two must describe the same review.
+    const token = read.review ? reviewToken(read.review) : null;
     return [
-      `${opts.channel} serves ${serving}; promoting ${opts.versionId}.`,
+      `${opts.channel} serves ${idOf(serving)}; promoting ${idOf(opts.versionId)}.`,
       '',
       'permission changes:',
       ...formatRegistryDiff(from, to, refused.permission).map((l) => `  ${l}`),
       '',
       'migration changes:',
-      ...formatMigrationDiff(migrations, refused.migration).map((l) => `  ${l}`),
+      ...formatMigrationDiff(read.migrations, refused.migration).map((l) => `  ${l}`),
+      '',
+      token === null
+        ? '(this control plane hands out no review token, so --review cannot be given)'
+        : `to acknowledge exactly what is shown above, re-run with the --ack-* flags it needs and --review ${idOf(token)}`,
     ];
   } catch (e) {
     return [`(the diffs could not be read: ${e instanceof Error ? e.message : String(e)})`];

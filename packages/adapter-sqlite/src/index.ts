@@ -674,6 +674,8 @@ import {
   importCursorSourceOf,
   exportBreaksOf,
   exportBreakRefusal,
+  assertPromoteReviewCurrent,
+  type ReviewedVersion,
   bindExportBreaksOf,
   bindExportBreakRefusal,
   scopeMoveOf,
@@ -9439,6 +9441,19 @@ export class SqliteScopeHost implements ScopeHost {
           versionId,
           served || owned.length > 0 ? this.provisionedVersionsOf(verticalSlug, served, owned.length > 0 ? owning!.ownerTenant : null) : [],
         );
+
+        // #2333: the acknowledgements answer the review they were given against, or none at all.
+        const reviewed = (v: VerticalVersion): ReviewedVersion => ({
+          ...v,
+          migrations: versionMigrationsOf(switchSqlOf(this.directory), v.id)?.migrations ?? null,
+        });
+        await assertPromoteReviewCurrent({
+          ack,
+          channel,
+          baseId: outgoing?.id ?? null,
+          migrationsChange: outgoing !== undefined && outgoing.migrationDigest !== incoming.migrationDigest,
+          read: async () => ({ base: outgoing ? reviewed(outgoing) : null, incoming: reviewed(incoming) }),
+        });
 
         // §4's two checkpoints, fired where the blast radius is. A FIRST promotion
         // has nothing to diff against, so there is nothing to acknowledge — the

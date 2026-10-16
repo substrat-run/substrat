@@ -455,6 +455,8 @@ import {
   importCursorSourceOf,
   exportBreaksOf,
   exportBreakRefusal,
+  assertPromoteReviewCurrent,
+  type ReviewedVersion,
   bindExportBreaksOf,
   bindExportBreakRefusal,
   scopeMoveOf,
@@ -7949,6 +7951,21 @@ export class CloudflareScopeHost implements ScopeHost {
             ? await this.cp.provisionedVersionsOf(verticalSlug, served, owned.length > 0 ? owning!.owner_tenant : null)
             : [],
         );
+
+        // #2333: the acknowledgements answer the review they were given against, or none at all.
+        const reviewed = async (v: VersionRow): Promise<ReviewedVersion> => ({
+          id: v.id,
+          permissionDigest: v.permission_digest,
+          migrationDigest: v.migration_digest,
+          migrations: (await this.cp.readVersionMigrations(v.id))?.migrations ?? null,
+        });
+        await assertPromoteReviewCurrent({
+          ack,
+          channel,
+          baseId: outgoing?.id ?? null,
+          migrationsChange: outgoing !== undefined && outgoing.migration_digest !== incoming.migration_digest,
+          read: async () => ({ base: outgoing ? await reviewed(outgoing) : null, incoming: await reviewed(incoming) }),
+        });
 
         // §4's checkpoints, at the moment of exposure. A first promotion has
         // nothing to diff against — the gate is about change, not existence.

@@ -95,6 +95,18 @@ export interface PromoteAcknowledge {
   permissionChange?: boolean;
   migrationChange?: boolean;
   exportBreak?: boolean;
+  /**
+   * #2333: the review these acknowledgements answer, as the migrations read returned it beside the
+   * diff that was shown (`getVersionMigrations` → `review`). The control plane refuses one that no
+   * longer holds, and a migration acknowledgement without one.
+   */
+  review?: PromoteReviewBinding;
+}
+
+/** What a promote review is bound to (#2333): the base it was read against, and the host's digest of it. */
+export interface PromoteReviewBinding {
+  base: string | null;
+  digest: string;
 }
 
 export interface PromoteResult {

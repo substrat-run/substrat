@@ -4,6 +4,7 @@ import type {
   MigrationDiff,
   PermissionRegistry,
   PromotionAcknowledgement,
+  PromotionReviewBinding,
   RegistryDiff,
 } from '@substrat-run/contracts';
 
@@ -24,6 +25,15 @@ export type ImpactState =
  */
 export function exportBreakAckNeeded(impact: ImpactState): boolean {
   return impact.kind === 'ready' && (impact.affected.length > 0 || impact.otherTenants > 0);
+}
+
+/**
+ * #2333: the acknowledgement a promote sends — what was ticked, bound to the review it was ticked
+ * against when there is one. A review still loading (or failed) sends none, and the registry then
+ * refuses a migration acknowledgement rather than take it unbound.
+ */
+export function boundAcknowledgement(ack: PromotionAcknowledgement, review: ReviewState): PromotionAcknowledgement {
+  return review.kind === 'ready' && review.binding ? { ...ack, review: review.binding } : ack;
 }
 
 /** Every acknowledgement the dialog shows is satisfied. */
@@ -70,16 +80,33 @@ export function migrationReviewOf(migrations: MigrationDiff | null): MigrationRe
 
 export type ReviewState =
   | { kind: 'loading' }
-  | { kind: 'ready'; permission: PermissionReview | null; migration: MigrationReview | null }
+  | {
+      kind: 'ready';
+      permission: PermissionReview | null;
+      migration: MigrationReview | null;
+      /**
+       * #2333: what the acknowledgements given against this review are bound to — the migrations
+       * read's own answer, so it names the diff shown. Null from a plane that hands none out.
+       */
+      binding: PromotionReviewBinding | null;
+    }
   | { kind: 'error'; message: string };
 
 /** The reads a review needs; `Api` satisfies it. Each must throw when the read did not happen. */
 export interface ReviewReader {
   versionRegistry(slug: string, versionId: string): Promise<{ registry: PermissionRegistry | null }>;
-  versionMigrations(slug: string, versionId: string, base?: string): Promise<{ migrations: MigrationDiff | null }>;
+  versionMigrations(
+    slug: string,
+    versionId: string,
+    base?: string,
+  ): Promise<{ migrations: MigrationDiff | null; review?: PromotionReviewBinding }>;
 }
 
-/** Reads only the diffs whose digest differs. A failed read is `error`, never an empty diff. */
+/**
+ * Reads only the diffs whose digest differs. A failed read is `error`, never an empty diff. The
+ * migrations read is made whenever anything is to be acknowledged, since it is what hands out the
+ * binding the acknowledgement carries (#2333); its diff is shown only when the migrations changed.
+ */
 export async function readReview(
   reader: ReviewReader,
   slug: string,
@@ -88,17 +115,20 @@ export async function readReview(
   needs: { permission: boolean; migration: boolean },
 ): Promise<ReviewState> {
   try {
-    const [permission, migration] = await Promise.all([
+    const [permission, migrations] = await Promise.all([
       needs.permission
         ? Promise.all([reader.versionRegistry(slug, servingId), reader.versionRegistry(slug, incomingId)]).then(
             ([a, b]) => permissionReviewOf(a.registry, b.registry),
           )
         : null,
-      needs.migration
-        ? reader.versionMigrations(slug, incomingId, servingId).then((r) => migrationReviewOf(r.migrations))
-        : null,
+      needs.permission || needs.migration ? reader.versionMigrations(slug, incomingId, servingId) : null,
     ]);
-    return { kind: 'ready', permission, migration };
+    return {
+      kind: 'ready',
+      permission,
+      migration: needs.migration && migrations ? migrationReviewOf(migrations.migrations) : null,
+      binding: migrations?.review ?? null,
+    };
   } catch (e) {
     return { kind: 'error', message: e instanceof Error ? e.message : String(e) };
   }
