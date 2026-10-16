@@ -16,7 +16,8 @@
 import {
   diffRegistries,
   grantShapeHolderNotes,
-  discardCount,
+  clipReviewText,
+  discardTally,
   reviewText,
   unitemisedRegistryChanges,
   type ExportBreak,
@@ -177,18 +178,31 @@ export function formatRegistryDiff(from: PermissionRegistry | null, to: Permissi
     : ['none'];
 }
 
-/** Pusher-supplied text on one terminal line: bidi controls made visible, then quoted and escaped. */
+/**
+ * Pusher-supplied text on one terminal line (#2322): every control, format and bidi character
+ * made visible (`reviewText`), then quoted, which escapes the newlines and tabs it keeps. So no
+ * reason, table name or id prints as a terminal command, a reordered word or a forged line.
+ */
 const quoted = (text: string): string => JSON.stringify(reviewText(text));
 
 /**
+ * A discard's reason as the listing shows it: quoted, and cut where the review cuts it
+ * (`clipReviewText`: 280 characters or 6 lines), saying where the rest is. A terminal has no
+ * expander, and the listing must stay readable down to the acknowledgement.
+ */
+function reasonOf(why: string): string {
+  const { shown, clipped } = clipReviewText(why);
+  return clipped ? `${JSON.stringify(shown)}… (cut; the whole reason is in the dashboard's promote dialog and the migration's source)` : quoted(why);
+}
+
+/**
  * What one migration declares it moves and discards (#2322), one line each under its id.
- * Every target and reason is the pusher's text, so each is quoted: a newline, an ESC or a
- * bidi control in it prints as an escape, never as a terminal command or a forged line.
+ * Every target and reason is the pusher's text, so each goes through `quoted`.
  */
 function declarationLines(m: MigrationEntry): string[] {
   if (m.declarationsLeftOut) return ['    (declares moves or discards, left out: past the size bound of this answer; read them in the repository)'];
   return [
-    ...Object.entries(m.discards ?? {}).map(([target, why]) => `    discards ${quoted(target)}: ${quoted(why)}`),
+    ...Object.entries(m.discards ?? {}).map(([target, why]) => `    discards ${quoted(target)}: ${reasonOf(why)}`),
     ...Object.entries(m.moves ?? {}).map(([from, to]) => `    moves ${quoted(from)} → ${quoted(to)} (verified at apply)`),
   ];
 }
@@ -204,16 +218,23 @@ export function formatMigrationDiff(diff: MigrationDiff | null, digestMoved: boo
         'older than migrations in the manifest, or its migrations were over the size a manifest carries. Read them in the repository.',
     ];
   }
+  // The id and the SQL are the pusher's text too: each SQL line, and the id, go through
+  // `reviewText`, so a control or bidi character in them prints as `<U+XXXX>`, not as itself.
   const entry = (mark: string, m: MigrationEntry) => [
-    `${mark} ${m.moduleId} ${m.version}`,
+    `${mark} ${reviewText(m.moduleId)} ${reviewText(m.version)}`,
     ...declarationLines(m),
-    ...(m.sql === null ? ['    (SQL left out: past the size bound of this answer)'] : m.sql.split('\n').map((l) => `    ${l}`)),
+    ...(m.sql === null ? ['    (SQL left out: past the size bound of this answer)'] : m.sql.split('\n').map((l) => `    ${reviewText(l)}`)),
   ];
-  const discards = discardCount(diff);
+  const discards = discardTally(diff);
   const lines = [
-    ...(discards > 0
-      ? [`! this promote deliberately discards data in ${discards} place${discards === 1 ? '' : 's'}; each reason is the migration author's own`]
-      : []),
+    ...(discards.count > 0
+      ? [
+          `! this promote deliberately discards data in ${discards.atLeast ? 'at least ' : ''}${discards.count} place${discards.count === 1 ? '' : 's'}; ` +
+            "each reason is the migration author's own",
+        ]
+      : discards.atLeast
+        ? ["! this list is cut, so it cannot show whether a migration left out of it discards data; read the rest in the repository"]
+        : []),
     ...(diff.baseline === 'unavailable'
       ? ['(the serving version predates carried migrations, so every migration this version ships is listed)']
       : []),
