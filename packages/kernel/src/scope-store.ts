@@ -36,12 +36,12 @@ export interface ScopeStoreAddress {
 }
 
 /**
- * What a kind ships for the pure adapter and for tests (#2213). One runner per
- * kind. `invoke` speaks the envelope. `start` runs on the first store call.
+ * What a driver ships for the pure adapter and for tests (#2213). One runner per
+ * driver. `invoke` speaks the envelope. `start` runs on the first store call.
  * `stop` runs from `close`, including when `start` never ran, so it tolerates that.
  */
 export interface ScopeStoreRunner {
-  readonly kind: string;
+  readonly driver: string;
   start(): Promise<void>;
   stop(): Promise<void>;
   invoke(address: ScopeStoreAddress, request: StoreRequest): Promise<StoreResponse>;
@@ -52,7 +52,7 @@ export interface ScopeStoreHostOptions {
   /** When set, a scope running any other vertical is refused. */
   readonly vertical?: string;
   readonly runners?: readonly { readonly binding: string; readonly runner: ScopeStoreRunner }[];
-  readonly kinds?: Readonly<Record<string, string>>;
+  readonly drivers?: Readonly<Record<string, string>>;
   /**
    * `platform` fetches `store.substrat.internal`. The router signs and addresses
    * the object. `binding` is the direct namespace, for local development and
@@ -144,7 +144,7 @@ export function scopeStoreLifecycleOf(runners: ReadonlyMap<string, ScopeStoreRun
  * `invoke` takes an operation and its input. It does not take `InvokeOptions`:
  * those belong to a scope operation (idempotency, observers), and a store call
  * is not one. A third argument is refused at runtime as well as by this type.
- * The catalog parameter narrows `operation` for a caller who knows the kind.
+ * The catalog parameter narrows `operation` for a caller who knows the driver.
  */
 export interface StoreStub<C extends StoreOperationCatalog = StoreOperationCatalog> {
   readonly tenantId: TenantId;

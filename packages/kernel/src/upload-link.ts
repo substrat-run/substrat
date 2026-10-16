@@ -5,6 +5,7 @@ import {
   UPLOAD_LINK_DEFAULT_TTL_SECONDS,
   UPLOAD_LINK_MAX_BYTES_CEILING,
   UPLOAD_LINK_SECRET_PREFIX,
+  isUploadLinkSecretShape,
   principalId as principalIdSchema,
   substratError,
   uploadLinkMintInput,
@@ -129,15 +130,90 @@ export function mintUploadLinkSecret(): string {
   return UPLOAD_LINK_SECRET_PREFIX + toBase64url(crypto.getRandomValues(new Uint8Array(32)));
 }
 
-/** A secret that cannot be one of ours is refused before it is hashed. */
-const plausibleSecret = (secret: unknown): secret is string =>
-  typeof secret === 'string' && secret.startsWith(UPLOAD_LINK_SECRET_PREFIX) && secret.length <= 128;
+/**
+ * A media type as the platform judges and records it: the essence only — parameters dropped,
+ * whitespace trimmed, lowercased — and `image/jpg` spelled `image/jpeg`. The route and the
+ * kernel's redemption both judge through this, so a host that calls `redeemUploadLink` with
+ * `'image/svg+xml; charset=utf-8'` meets the same rule a `curl` does.
+ */
+export function normalizeUploadMediaType(raw: string): string {
+  const t = raw.split(';')[0]!.trim().toLowerCase();
+  return t === 'image/jpg' ? 'image/jpeg' : t;
+}
 
-/** Is `type` (already stripped of parameters, lowercase) admitted by `allowed`? `null` admits anything. */
+/**
+ * Types a browser runs rather than shows, named one by one: HTML; `text/xsl`, which Chrome
+ * parses as HTML even under `nosniff`; `multipart/x-mixed-replace`, whose parts WebKit renders
+ * as documents even under `nosniff`; the two essences the WHATWG MIME Sniffing standard (§7.1)
+ * hands to its unknown-type sniffer, which finds HTML in an HTML body; and the JavaScript MIME
+ * type essences of the same standard. With them, by rule rather than by list, is every XML type
+ * (`isActiveContentType`): a top-level navigation renders XML as a document, where an
+ * XHTML-namespace `<script>` runs. The third essence §7.1 sniffs, the any-type wildcard, is not
+ * a type a file can be declared as at all (`isMediaTypeEssence`).
+ */
+export const ACTIVE_CONTENT_TYPES: ReadonlySet<string> = new Set([
+  'text/html',
+  'application/xhtml+xml',
+  'image/svg+xml',
+  'text/xml',
+  'application/xml',
+  'text/xsl',
+  // WHATWG MIME Sniffing §7.1: sniffed as an unknown type, so an HTML body is read as HTML.
+  'application/unknown',
+  'unknown/unknown',
+  // WebKit renders each part as a document, script included, even under `nosniff`.
+  'multipart/x-mixed-replace',
+  // WHATWG MIME Sniffing §4.6, "JavaScript MIME type".
+  'application/ecmascript',
+  'application/javascript',
+  'application/x-ecmascript',
+  'application/x-javascript',
+  'text/ecmascript',
+  'text/javascript',
+  'text/javascript1.0',
+  'text/javascript1.1',
+  'text/javascript1.2',
+  'text/javascript1.3',
+  'text/javascript1.4',
+  'text/javascript1.5',
+  'text/jscript',
+  'text/livescript',
+  'text/x-ecmascript',
+  'text/x-javascript',
+]);
+
+/**
+ * Would a browser run `type` (normalized) instead of showing it, when served inline as the
+ * vertical's origin? The named set, and every XML type: `+xml` structured syntax
+ * (`image/foo+xml`, `application/rss+xml`) as well as `text/xml` and `application/xml`.
+ */
+export const isActiveContentType = (type: string): boolean => ACTIVE_CONTENT_TYPES.has(type) || type.endsWith('+xml');
+
+/**
+ * One media type essence, exactly: `type/subtype`, each an RFC 9110 token (lowercase, since it is
+ * judged normalized) less `*`. No comma, so a header listing several types is not one; no space,
+ * tab, NUL, CR or LF; one slash with something on both sides. A browser reading
+ * `image/png,text/html` keeps the LAST type it can parse, and reads `text/html,x` or
+ * `text/html x` as `text/html`, so either would let a family judge one type and a page serve
+ * another. No `*`: a wildcard is what an allowlist ENTRY may say, never what a file is, and the
+ * any-type wildcard is sniffed for HTML.
+ */
+const MEDIA_TYPE_ESSENCE = /^[a-z0-9!#$%&'+.^_`|~-]+\/[a-z0-9!#$%&'+.^_`|~-]+$/;
+export const isMediaTypeEssence = (type: string): boolean => MEDIA_TYPE_ESSENCE.test(type);
+
+/**
+ * Is `type` admitted by `allowed`? It is normalized first (`normalizeUploadMediaType`), and a
+ * result that is not exactly one essence (`isMediaTypeEssence`) is admitted by nothing, not even
+ * an absent allowlist: it could not be judged, and it could not be served as a header. `null`
+ * admits any well-formed type. A family (`image/*`) admits its members except an active type
+ * (`isActiveContentType`): the person holding a link chooses the bytes. An exact entry admits
+ * itself, active or not, so admitting SVG or HTML is a line a reviewer reads in `PERMISSIONS.md`.
+ */
 export function uploadContentTypeAllowed(allowed: readonly string[] | null, type: string): boolean {
+  const t = normalizeUploadMediaType(type);
+  if (!isMediaTypeEssence(t)) return false;
   if (allowed === null) return true;
-  const t = type.toLowerCase();
-  return allowed.some((a) => (a.endsWith('/*') ? t.startsWith(a.slice(0, -1)) : a === t));
+  return allowed.some((a) => (a.endsWith('/*') ? t.startsWith(a.slice(0, -1)) && !isActiveContentType(t) : a === t));
 }
 
 const stateOf = (row: UploadLinkRow, now: Instant): UploadLinkRecord['state'] =>
@@ -370,13 +446,23 @@ const unknownLink = () => substratError('not_found', 'This upload link is not va
 const goneLink = () =>
   substratError('conflict', 'This upload link has been used, has expired or was revoked.', { reason: UPLOAD_LINK_GONE });
 
-async function liveRow(sql: ScopedSql, now: Instant, secret: unknown): Promise<UploadLinkRow> {
-  if (!plausibleSecret(secret)) throw unknownLink();
+/** The 404 for a link that exists but was minted for another target than the one the request names. */
+const wrongTarget = () =>
+  substratError('not_found', 'This upload link is not valid for that target.', { reason: UPLOAD_LINK_WRONG_TARGET });
+
+/**
+ * The link a secret names, if it is still usable for `target`. The target is judged BEFORE the
+ * state, so a request naming another entity is the same 404 whether the link is pending, used,
+ * expired or revoked: the path decides, never the link's history. Nothing here spends it.
+ */
+async function liveRow(sql: ScopedSql, now: Instant, secret: unknown, target?: EntityRef): Promise<UploadLinkRow> {
+  if (!isUploadLinkSecretShape(secret)) throw unknownLink();
   const row = sql.query<UploadLinkRow>(
     `SELECT ${COLUMNS} FROM _substrat_upload_links WHERE token_hash = ?`,
     [await capabilityTokenHash(secret)],
   )[0];
   if (!row) throw unknownLink();
+  if (target && (row.entity_type !== target.entityType || row.entity_id !== target.entityId)) throw wrongTarget();
   if (stateOf(row, now) !== 'pending') throw goneLink();
   return row;
 }
@@ -388,14 +474,17 @@ export interface UploadLinkInspection {
 }
 
 /**
- * Look a secret up without spending it: `not_found` for one that names nothing, `conflict`
- * with reason `upload_link_gone` for one that is used, expired or revoked.
+ * Look a secret up without spending it: `not_found` for one that names nothing, `not_found`
+ * with reason `upload_link_wrong_target` for one minted for another target than `target`
+ * (whatever its state), `conflict` with reason `upload_link_gone` for one that is used,
+ * expired or revoked.
  */
 export async function inspectUploadLink(
   deps: { sql: ScopedSql; now: Instant },
   secret: unknown,
+  target?: EntityRef,
 ): Promise<UploadLinkInspection> {
-  const row = await liveRow(deps.sql, deps.now, secret);
+  const row = await liveRow(deps.sql, deps.now, secret, target);
   const r = recordOf(row, deps.now);
   return {
     view: {
@@ -423,13 +512,8 @@ export async function redeemUploadLinkInTransaction(
   secret: unknown,
   record: AttachmentRecord,
 ): Promise<void> {
-  const row = await liveRow(deps.sql, deps.now, secret);
-  if (row.entity_type !== record.entity.entityType || row.entity_id !== record.entity.entityId) {
-    // The path named another entity than the link was minted for: nothing is spent.
-    throw substratError('not_found', 'This upload link is not valid for that target.', {
-      reason: UPLOAD_LINK_WRONG_TARGET,
-    });
-  }
+  // The path named another entity than the link was minted for: nothing is spent.
+  const row = await liveRow(deps.sql, deps.now, secret, record.entity);
   if (record.createdBy !== row.minted_by) {
     throw substratError('internal', 'an upload link was redeemed as someone other than its minter');
   }

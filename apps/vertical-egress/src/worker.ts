@@ -95,7 +95,7 @@ export interface OutboundPolicy {
   scope?: string;
   calls?: string[] | null;
   /** Scope stores the dispatched version declares (#2207). Absent refuses a store call. */
-  stores?: { binding: string; kind: string }[] | null;
+  stores?: { binding: string; driver: string }[] | null;
   depth?: number;
   /**
    * #2005: whether that scope is the real install. `false` — a fork, a snapshot or a preview

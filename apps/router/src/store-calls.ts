@@ -18,7 +18,7 @@ export interface StoreCallCaller {
   readonly vertical: string;
   readonly tenantId: string;
   readonly scopeId: string;
-  readonly stores: readonly { readonly binding: string; readonly kind: string }[] | null;
+  readonly stores: readonly { readonly binding: string; readonly driver: string }[] | null;
 }
 
 export type StoreCallOutcome =
@@ -34,7 +34,7 @@ export interface StoreCallEnv {
 }
 
 /**
- * Sign the envelope and address that kind's script. The private key stays here.
+ * Sign the envelope and address that driver's script. The private key stays here.
  * A reserved operation is not signed with the caller key: the platform calls
  * those directly, with its own key.
  */
@@ -66,7 +66,7 @@ export async function handleStoreCall(
     return { ok: false, status: 503, message: 'this router cannot dispatch scope stores' };
   }
   const objectName = scopeStoreObjectName(caller.tenantId, caller.vertical, request.scopeId, request.binding);
-  const scriptName = scopeStoreScriptName(caller.vertical, declared.kind);
+  const scriptName = scopeStoreScriptName(caller.vertical, declared.driver);
   const body = JSON.stringify({ ...request, objectName });
   let issued;
   try {

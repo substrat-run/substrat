@@ -258,7 +258,7 @@ export const problem = z.object({
   reason: z.string().min(1).optional(),
   errors: z.array(validationIssue).optional(),
   retryAfter: z.number().int().nonnegative().optional(),
-  /** The code the scope store itself answered with (#2207). The kind's, not this taxonomy's. */
+  /** The code the scope store itself answered with (#2207). The driver's, not this taxonomy's. */
   storeCode: z.string().min(1).max(64).optional(),
   /** The scope store's error body, as it sent it. */
   storeBody: z.unknown().optional(),

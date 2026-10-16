@@ -9,7 +9,7 @@ const vector = JSON.parse(
 ) as { privateKeyPkcs8: string; publicKey: string };
 
 describe('callPlatformScopeStore', () => {
-  it('signs an envelope as the platform and addresses the kind script', async () => {
+  it('signs an envelope as the platform and addresses the driver script', async () => {
     let seen: { script: string; header: string; signature: string; raw: string; body: { objectName?: string } } | undefined;
     const dispatch = {
       platformKey: vector.privateKeyPkcs8,
@@ -28,7 +28,7 @@ describe('callPlatformScopeStore', () => {
     await expect(
       callPlatformScopeStore(
         dispatch,
-        { vertical: 'acme/crm', kind: 'graph', tenantId: 'T', scopeId: 'S', binding: 'GRAPH' },
+        { vertical: 'acme/crm', driver: 'graph', tenantId: 'T', scopeId: 'S', binding: 'GRAPH' },
         'substrat.size',
       ),
     ).resolves.toEqual({ bytes: 4 });

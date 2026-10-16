@@ -20,24 +20,24 @@ const totalOf = (object: ReadonlyMap<string | null, number> | undefined): number
   [...(object?.values() ?? [])].reduce((sum, n) => sum + n, 0);
 
 /**
- * The trivial kind (#2213, RFC §7): a counter per address, in the process. The
+ * The trivial driver (#2213, RFC §7): a counter per address, in the process. The
  * reference runner both contract suites use, and the one the runner suite holds to
  * the contract on itself.
  *
  * Its catalog is `read` (the total) and `increment` (`{ by?, subjectId? }`, `by` never
  * negative). Each increment is kept against the subject it names, so the object holds
- * personal data the way a real kind does: `substrat.erase` removes that subject's part
+ * personal data the way a real driver does: `substrat.erase` removes that subject's part
  * and answers `{ erased: 1 }` only if there was one, so a repeat, or a subject that
  * never wrote, answers 0. A wipe or an import replaces everything, subjects included.
  * `substrat.size` reports the total as `bytes`: a stand-in for storage, never negative.
  *
  * The objects live on the runner, not in `start`, so a stop and a start serve the same
- * ones, as a kind's repositories outlive its process.
+ * ones, as a driver's repositories outlive its process.
  */
 export function counterScopeStoreRunner(): ScopeStoreRunner {
   const objects = new Map<string, Map<string | null, number>>();
   return {
-    kind: 'counter',
+    driver: 'counter',
     async start() {},
     async stop() {},
     async invoke(address, request) {

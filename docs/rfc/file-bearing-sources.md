@@ -50,7 +50,7 @@ contract-tested against a fixture provider.
 
 Scope stores ([scope-stores.md](scope-stores.md)) were checked as a home for a mirrored tree and
 are not one: a store call works only during a request, `getConnectorScope` deliberately has no
-store door (that RFC's Q6), and a kind is a service, not bytes.
+store door (that RFC's Q6), and a driver is a service, not bytes.
 
 ## 3. Three things that break if a file source is treated as a record source
 
@@ -163,7 +163,7 @@ reaches a scope store.
 - − On a hosted vertical the job handler is the vertical author's code. B puts provider calls,
   spending a tenant's credential, in code the platform did not review — where a connector is
   host code, never module code (D-18's third bucket), and is registered and pinned by the
-  platform (the reasoning D-63 applies to store kinds). A credentialed proxy is also the largest
+  platform (the reasoning D-63 applies to store drivers). A credentialed proxy is also the largest
   new trust surface of the three.
 
 **C (recommended) — the run record lives in the scope; the pass runs where the credential is.**
