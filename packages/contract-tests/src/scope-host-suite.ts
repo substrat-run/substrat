@@ -7152,6 +7152,29 @@ export function scopeHostContractSuite(
         expect(await prodOf(slug)).toBe(c);
       });
 
+      it('two promotes bound to the same base, racing: one moves the channel, the other is refused as stale', async () => {
+        const { slug, put, a } = await fresh();
+        const b = await put('pB', 'gB', [MIGRATION({ c: 'gone' })]);
+        const c = await put('pC', 'gC', [MIGRATION({ c: 'gone too' })]);
+        const [forB, forC] = [await reviewOf(slug, b), await reviewOf(slug, c)];
+        expect([forB.base, forC.base]).toEqual([a, a]);
+        const ACK = { permissionChange: true, migrationChange: true } as const;
+        // Neither awaited before the other starts: each judges its gates against `a`.
+        const settled = await Promise.allSettled([
+          host.admin.promoteVersion(staff, slug, 'prod', b, { ...ACK, review: forB }),
+          host.admin.promoteVersion(staff, slug, 'prod', c, { ...ACK, review: forC }),
+        ]);
+        const won = settled.flatMap((s, i) => (s.status === 'fulfilled' ? [[b, c][i]!] : []));
+        const lost = settled.flatMap((s) => (s.status === 'rejected' ? [s.reason as unknown] : []));
+        expect(won).toHaveLength(1);
+        expect(lost.map((e) => promoteReviewRefusalOf(e))).toEqual(['stale']);
+        expect(await prodOf(slug)).toBe(won[0]);
+        // One move away from `a`, by the winner; the loser recorded nothing.
+        const history = await host.admin.listChannelHistory(staff, slug, 'prod');
+        expect(history.filter((h) => h.fromVersionId === a).map((h) => h.versionId)).toEqual(won);
+        expect(history.some((h) => h.versionId === (won[0] === b ? c : b))).toBe(false);
+      });
+
       it('a binding is checked whatever it acknowledges: a moved base refuses even a promote that needs no acknowledgement', async () => {
         const { slug, put, a } = await fresh();
         const same = await put('pA', 'gA', []);
@@ -7207,8 +7230,10 @@ export function scopeHostContractSuite(
         const unbound = await refusal(host.admin.promoteVersion(staff, slug, 'prod', c, { migrationChange: true }));
         expect(unbound.kind).toBe('unbound');
         // It names the fix: the client release that binds, and how to read the review.
-        expect(unbound.message).toMatch(/@substrat-run\/cli \d+\.\d+\.\d+ or later/);
-        expect(unbound.message).toContain('--review');
+        // By what the release does, never a version number the release tooling has not cut yet.
+        expect(unbound.message).toContain("a CLI release whose 'substrat promote' supports --review");
+        expect(unbound.message).toContain('/guide/deploying#acknowledgement-answers-one-review');
+        expect(unbound.message).not.toMatch(/\d+\.\d+\.\d+/);
         // The compatibility rule: no migration moves, so an older client's bare flag still promotes.
         const p = await put('pP', 'gA', []);
         await host.admin.promoteVersion(staff, slug, 'prod', p, { permissionChange: true });

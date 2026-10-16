@@ -456,6 +456,7 @@ import {
   exportBreaksOf,
   exportBreakRefusal,
   assertPromoteReviewCurrent,
+  promoteRaceRefusal,
   type ReviewedVersion,
   bindExportBreaksOf,
   bindExportBreakRefusal,
@@ -872,7 +873,7 @@ interface ControlPlaneStub {
   setScopeExpiresAt(scopeId: string, expiresAt: string | null): Promise<void>;
   deleteScopeDirectory(scopeId: string): Promise<void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
-  setChannel(verticalSlug: string, channel: string, versionId: string, updatedAt: string): Promise<void>;
+  moveChannel(from: string | null, history: ChannelHistoryRow): Promise<boolean>;
   listChannels(verticalSlug: string, page?: ListPage): Promise<ChannelRow[]>;
   insertChannelHistory(h: ChannelHistoryRow): Promise<void>;
   listChannelHistory(
@@ -7990,10 +7991,13 @@ export class CloudflareScopeHost implements ScopeHost {
         }
 
         const promotedAt = new Date().toISOString();
-        await this.cp.setChannel(verticalSlug, channel, versionId, promotedAt);
-        // The timeline row: what makes rollback a choice among recorded moments, and
-        // `at` the PITR anchor a data rollback would rewind to.
-        await this.cp.insertChannelHistory({
+        // #2333: a compare-and-set. Every gate above — the review binding, the digest checkpoints,
+        // the export breaks — was judged against `outgoing`, across awaits another promote can run
+        // in. The control plane moves the pointer, and writes the timeline row (what makes rollback a
+        // choice among recorded moments, and `at` the PITR anchor a data rollback would rewind to),
+        // only if the pointer still names `outgoing`; the promote that lost the race is refused as
+        // stale and writes nothing.
+        const moved = await this.cp.moveChannel(outgoing?.id ?? null, {
           id: ulid(),
           vertical_slug: verticalSlug,
           channel,
@@ -8002,6 +8006,7 @@ export class CloudflareScopeHost implements ScopeHost {
           actor,
           at: promotedAt,
         });
+        if (!moved) throw promoteRaceRefusal(channel);
         // For a PRIVATE vertical, prod IS what the owner's apps run: re-point the
         // owning tenant's live scopes in the same act, so merge-to-main (push +
         // promote) is a complete deploy and a rollback promote reaches the running

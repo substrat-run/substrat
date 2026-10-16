@@ -420,6 +420,7 @@ export const INDEX_VALUE_EXPORTS = [
   'platformRequestRedactionQuery',
   'plausibleCapabilitySecret',
   'plausibleSessionToken',
+  'promoteRaceRefusal',
   'promoteReviewDigest',
   'promoteReviewRefusalOf',
   'provisionedVersionsParams',

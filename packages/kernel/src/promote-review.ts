@@ -73,8 +73,26 @@ export async function promoteReviewDigest(base: ReviewedVersion | null, incoming
   return Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** The first CLI release whose `substrat promote` sends the binding. */
-const PROMOTE_REVIEW_CLI = '@substrat-run/cli 0.45.0';
+/**
+ * Where the unbound refusal sends a person, by what the release does rather than its number: the
+ * number is the release tooling's to assign, and a version named here before it is cut can name
+ * one that does not carry `--review`.
+ */
+const PROMOTE_REVIEW_DOCS = 'https://substrat.net/guide/deploying#acknowledgement-answers-one-review';
+
+/**
+ * The refusal for a promote that lost a race (#2333): the channel moved to another version after
+ * this promote's gates and review binding were judged against it. Its acknowledgements answered a
+ * diff that is no longer the one it would apply, so it is refused as stale whether bound or not.
+ */
+export function promoteRaceRefusal(channel: string): Error {
+  return substratError(
+    'precondition_failed',
+    `the promote review is stale: ${reviewLine(channel)} moved to another version while this promote was being ` +
+      'judged. Read the review again and acknowledge what it shows now',
+    { reason: PROMOTE_REVIEW_REASONS.stale },
+  );
+}
 
 /** Whether a throw is one of the refusals below, and which. */
 export function promoteReviewRefusalOf(err: unknown): 'stale' | 'unbound' | null {
@@ -112,8 +130,8 @@ export async function assertPromoteReviewCurrent(opts: {
         'precondition_failed',
         `acknowledging a migration change needs the review it answers: send acknowledge.review (the base and ` +
           `digest the migrations read returned beside the diff that was shown). From the command line, upgrade ` +
-          `to ${PROMOTE_REVIEW_CLI} or later and run 'substrat promote' without --ack-migrations: it prints the ` +
-          `migrations and the --review token to acknowledge them with`,
+          `to a CLI release whose 'substrat promote' supports --review, and run it without --ack-migrations: it ` +
+          `prints the migrations and the --review token to acknowledge them with (${PROMOTE_REVIEW_DOCS})`,
         { reason: PROMOTE_REVIEW_REASONS.unbound },
       );
     }

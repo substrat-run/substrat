@@ -857,6 +857,7 @@ export {
   promoteReviewDigest,
   assertPromoteReviewCurrent,
   promoteReviewRefusalOf,
+  promoteRaceRefusal,
   type ReviewedVersion,
 } from './promote-review.js';
 export {

@@ -3607,13 +3607,25 @@ export class ControlPlaneDO extends DurableObject {
       .toArray()[0] as unknown as ChannelRow | undefined;
   }
 
-  setChannel(verticalSlug: string, channel: string, versionId: string, updatedAt: string): void {
-    this.sql.exec(
-      `INSERT INTO vertical_channels (vertical_slug, channel, version_id, updated_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT (vertical_slug, channel) DO UPDATE SET version_id = ?, updated_at = ?`,
-      verticalSlug, channel, versionId, updatedAt, versionId, updatedAt,
-    );
+  /**
+   * #2333: move a channel's pointer, and record the move, only if it still names `from` (null: the
+   * channel has none yet). A compare-and-set in one synchronous transaction, so no other promote
+   * runs between the read and the write: a promote judged its gates against `from` across awaits,
+   * and the one that lost the race is told so (`false`) and writes nothing.
+   */
+  moveChannel(from: string | null, history: ChannelHistoryRow): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const now = this.readChannel(history.vertical_slug, history.channel);
+      if ((now?.version_id ?? null) !== from) return false;
+      this.sql.exec(
+        `INSERT INTO vertical_channels (vertical_slug, channel, version_id, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (vertical_slug, channel) DO UPDATE SET version_id = ?, updated_at = ?`,
+        history.vertical_slug, history.channel, history.version_id, history.at, history.version_id, history.at,
+      );
+      this.insertChannelHistory(history);
+      return true;
+    });
   }
 
   listChannels(verticalSlug: string, page?: ListPage): ChannelRow[] {

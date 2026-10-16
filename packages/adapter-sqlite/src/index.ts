@@ -675,6 +675,7 @@ import {
   exportBreaksOf,
   exportBreakRefusal,
   assertPromoteReviewCurrent,
+  promoteRaceRefusal,
   type ReviewedVersion,
   bindExportBreaksOf,
   bindExportBreakRefusal,
@@ -9479,22 +9480,34 @@ export class SqliteScopeHost implements ScopeHost {
         }
 
         const promotedAt = new Date().toISOString();
-        this.directory
-          .prepare(
-            `INSERT INTO vertical_channels (vertical_slug, channel, version_id, updated_at)
-             VALUES (?, ?, ?, ?)
-             ON CONFLICT (vertical_slug, channel) DO UPDATE SET version_id = ?, updated_at = ?`,
-          )
-          .run(verticalSlug, channel, versionId, promotedAt, versionId, promotedAt);
-        // The timeline row: what makes rollback a choice among recorded moments, and
-        // `at` the PITR anchor a data rollback would rewind to.
-        this.directory
-          .prepare(
-            `INSERT INTO vertical_channel_history
-               (id, vertical_slug, channel, version_id, from_version_id, actor, at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(ulid(), verticalSlug, channel, versionId, outgoing?.id ?? null, actor, promotedAt);
+        // #2333: a compare-and-set. Every gate above — the review binding, the digest checkpoints,
+        // the export breaks — was judged against `outgoing`, across awaits another promote can run
+        // in. So the pointer moves only if it still names `outgoing`, read and written in one
+        // transaction; the promote that lost the race is refused as stale and writes nothing.
+        const moved = this.directory.transaction(() => {
+          const now = this.directory
+            .prepare('SELECT version_id FROM vertical_channels WHERE vertical_slug = ? AND channel = ?')
+            .get(verticalSlug, channel) as { version_id: string } | undefined;
+          if ((now?.version_id ?? null) !== (outgoing?.id ?? null)) return false;
+          this.directory
+            .prepare(
+              `INSERT INTO vertical_channels (vertical_slug, channel, version_id, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT (vertical_slug, channel) DO UPDATE SET version_id = ?, updated_at = ?`,
+            )
+            .run(verticalSlug, channel, versionId, promotedAt, versionId, promotedAt);
+          // The timeline row: what makes rollback a choice among recorded moments, and
+          // `at` the PITR anchor a data rollback would rewind to.
+          this.directory
+            .prepare(
+              `INSERT INTO vertical_channel_history
+                 (id, vertical_slug, channel, version_id, from_version_id, actor, at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(ulid(), verticalSlug, channel, versionId, outgoing?.id ?? null, actor, promotedAt);
+          return true;
+        })();
+        if (!moved) throw promoteRaceRefusal(channel);
 
         // For a PRIVATE vertical, prod IS what the owner's apps run: re-point the
         // owning tenant's live scopes in the same act, so merge-to-main (push +
