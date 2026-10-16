@@ -79,7 +79,8 @@ describe('substrat promote — a refusal prints both diffs (#1677)', () => {
     expect(text).toContain('prod serves v1; promoting v2.');
     expect(text).toMatch(/permission changes:\n {2}\+ desk:admin {2}Administer\n {2}role agent: \+desk:admin/);
     expect(text).toMatch(/migration changes:\n {2}\+ desk 0002-priority\n {6}ALTER TABLE ticket\n {6}ADD COLUMN priority TEXT;/);
-    expect(text).toContain('#1754');
+    // #1754 is fixed (#1949): the registry refuses a SQL-only change, so no note says otherwise.
+    expect(text).not.toContain('does not yet require');
     // The diff was taken against what prod SERVES, over the owner routes.
     expect(seen).toContain('GET /api/verticals/desk/versions/v2/migrations?base=v1');
   });

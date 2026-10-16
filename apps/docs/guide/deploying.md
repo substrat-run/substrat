@@ -474,9 +474,11 @@ the new declarations.
     …
 ```
 
-The migration digest covers the app's Durable-Object classes, not its SQL, so a change to SQL
-migrations alone is not refused yet ([#1754](https://github.com/substrat-run/substrat/issues/1754)).
-The dashboard asks you to acknowledge one anyway.
+The migration digest covers the app's Durable-Object classes and every SQL migration the host
+would run, with its declared moves and discards, so a change to any of them is refused until you
+acknowledge it, from the CLI, the API and the dashboard alike. A version pushed by a CLI older than
+0.38.0 hashed only its Durable-Object classes, so between two such versions the registry does not
+refuse a change to SQL alone; the dashboard asks you to acknowledge one anyway.
 
 The staff gate returns only when you **widen the audience**: `substrat publish <slug>` lists the
 vertical on the marketplace, and from then on its pushes land pending and its prod promotion is a

@@ -78,7 +78,7 @@ export function PromoteMigrations({ section }: { section: MigrationSection }) {
       <div style={{ ...muted, fontSize: 12 }}>
         {section.enforced
           ? 'The registry refuses this promotion until the migration change is acknowledged.'
-          : 'This acknowledgement is asked for by this dialog. The registry does not yet require it for a change to SQL migrations alone (#1754), so a promote from the CLI or the API is not stopped by it.'}
+          : 'This acknowledgement is asked for by this dialog. The registry refuses a migration change too, unless both versions were pushed by a CLI older than 0.38.0, whose digest covered only the Durable-Object classes: then a promote from the CLI or the API is not stopped by a change to SQL alone.'}
       </div>
     </div>
   );

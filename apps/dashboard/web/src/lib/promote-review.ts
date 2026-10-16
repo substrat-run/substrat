@@ -66,8 +66,9 @@ export type PermissionSection =
  * - From the review, when the incoming version's migrations add to or edit the serving
  *   version's, or when its manifest carries no SQL at all (pushed by an older CLI, or over
  *   the size a manifest carries), so nothing can say whether they changed. `enforced: false`:
- *   the registry's gate does not see SQL-only changes (its migration digest covers the
- *   Durable-Object classes, #1754), so this acknowledgement is the dialog's own. It is still
+ *   the dialog asks before anything is sent. The registry's gate refuses the same change on
+ *   its own (#1949), except between versions pushed by a CLI older than 0.38.0, whose digest
+ *   covered only the Durable-Object classes, so this acknowledgement is the dialog's own. It is still
  *   required: showing SQL a person may skip — or not showing it — is how a schema change
  *   slips through.
  * - From the gate's own refusal on the migration digest. `enforced: true`, with the digest
@@ -84,8 +85,9 @@ export interface MigrationSection {
  * The migration section a review yields before anything is sent. Null only when the review
  * SHOWS no change — a diff with nothing in it — or has nothing to compare (a first promotion,
  * or promoting what already serves). A version whose manifest carries no SQL is not "no
- * change": it is "SQL not available", and it is asked about, because the gate will not ask
- * for a SQL-only change (#1754) and this would otherwise promote one with no prompt at all.
+ * change": it is "SQL not available", and it is asked about, because a version pushed by a CLI
+ * older than 0.38.0 moves no digest on a SQL-only change, and this would otherwise promote one
+ * with no prompt at all.
  */
 export function planMigration(review: PromoteReviewWire): MigrationSection | null {
   if (review.serving === null || review.serving.versionId === review.incoming.versionId) return null;

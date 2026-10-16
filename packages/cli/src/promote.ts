@@ -134,8 +134,6 @@ export async function explainRefusal(
       '',
       'migration changes:',
       ...formatMigrationDiff(migrations, refused.migration).map((l) => `  ${l}`),
-      '',
-      'note: the registry does not yet require --ack-migrations for a change to SQL migrations alone (#1754).',
     ];
   } catch (e) {
     return [`(the diffs could not be read: ${e instanceof Error ? e.message : String(e)})`];
