@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  HISTORIC_ADMIN_ACTIONS,
   RESERVED_STORE_OPERATIONS,
+  SCOPE_STORE_DUMP_KIND_RENAMED,
+  adminAction,
+  scopeDump,
   assertDeclaredScopeStores,
   assertScopeStoresRegistered,
   assertStoreBindingsDistinct,
@@ -11,6 +15,8 @@ import {
   type StoreDriverRegistration,
   runtimeNeeds,
   scopeStoreBindingName,
+  scopeStoreNeed,
+  SCOPE_STORE_KIND_RENAMED,
   storeDriverId,
   storeDriverRegistration,
   storeDriverReleaseDigest,
@@ -63,6 +69,21 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
     expect(() =>
       runtimeNeeds.parse({ entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH' }] }),
     ).toThrow();
+  });
+
+  // K-53's rename is a clean break: no alias, and the old spelling names the rename.
+  it('refuses the pre-rename `kind`, naming the rename, in the declaration and on a stored manifest', () => {
+    const old = { entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] };
+    const needs = runtimeNeeds.safeParse(old);
+    expect(needs.success).toBe(false);
+    expect(needs.error?.issues.map((i) => i.message)).toContain(SCOPE_STORE_KIND_RENAMED);
+    expect(needs.error?.issues.find((i) => i.message === SCOPE_STORE_KIND_RENAMED)?.path).toEqual(['scopeStores', 0, 'kind']);
+    // Beside a `driver` too: the old key is never dropped silently.
+    expect(() =>
+      deployManifest.parse({ ...baseManifest, scopeStores: [{ binding: 'GRAPH', driver: 'graph', kind: 'graph' }] }),
+    ).toThrow(/scopeStores\[\]\.kind was renamed driver/);
+    // The twin: the new spelling parses, and the output carries no `kind` key.
+    expect(Object.keys(scopeStoreNeed.parse({ binding: 'GRAPH', driver: 'graph' }))).toEqual(['binding', 'driver']);
   });
 
   it('names the injected binding SUBSTRAT_STORE_<BINDING>', () => {
@@ -228,7 +249,7 @@ describe('a store driver release is pinned by sha256 and source commit (D-63)', 
     // printf 'substrat.store-release/v1\000' 'driver_graph/store.py\000', then the modules in name
     // order: 'driver_graph/__init__.py\000' + 8 zero bytes, 'driver_graph/store.py\000' + 7 zero
     // bytes + '\033' + the 27 bytes of the module, piped to `shasum -a 256`.
-    expect(await storeDriverReleaseDigest(bundle)).toBe('99b9a70c48f2304ed01034abc9b70e9661231a4e89a26e2bad49074afb6f933f');
+    expect(await storeDriverReleaseDigest(bundle)).toBe('2a4399c86cd301f2944ac96cfcd9774c9fd3d12058df13a2ab20c46d51163038');
   });
 
   it('is the same digest in any order, and another for any other bytes, name, split or entry', async () => {
@@ -360,5 +381,33 @@ describe('reserved store results are additive (#2239)', () => {
     expect(storeEraseResult.safeParse({ erased: 0, note: 'x' }).success).toBe(true);
     expect(storeImportResult.safeParse({ tables: 1, took: 3 }).success).toBe(true);
     expect(storeExportResult.safeParse({ tables: [], at: 'now' }).success).toBe(true);
+  });
+});
+
+// K-53's rename, on what a store's old spelling may already have reached: a dump and the admin log.
+describe('the store driver rename, on the dump and the admin log', () => {
+  const dump = { tenantId: 't', scopeId: 's', capturedAt: '2026-10-16T00:00:00.000Z', tables: [] };
+
+  it('loads a dump from before scope stores, and one whose stores are empty, unchanged', () => {
+    expect(scopeDump.parse(dump).stores).toEqual([]);
+    expect(scopeDump.parse({ ...dump, stores: [] }).stores).toEqual([]);
+  });
+
+  it('refuses a dump store that still spells `kind`, naming the rename, and loads `driver`', () => {
+    const old = scopeDump.safeParse({ ...dump, stores: [{ binding: 'GRAPH', kind: 'graph', tables: [] }] });
+    expect(old.success).toBe(false);
+    expect(old.error?.issues.map((i) => i.message)).toContain(SCOPE_STORE_DUMP_KIND_RENAMED);
+    expect(scopeDump.parse({ ...dump, stores: [{ binding: 'GRAPH', driver: 'graph', tables: [] }] }).stores).toEqual([
+      { binding: 'GRAPH', driver: 'graph', tables: [] },
+    ]);
+  });
+
+  it('still reads an admin-log row written under a pre-rename action, and the new names', () => {
+    for (const action of [...HISTORIC_ADMIN_ACTIONS, 'uploadStoreDriverRelease', 'rollOutStoreDriver', 'rollBackStoreDriver']) {
+      expect(adminAction.parse(action)).toBe(action);
+    }
+    expect(HISTORIC_ADMIN_ACTIONS).toEqual(['uploadStoreKindRelease', 'rollOutStoreKind', 'rollBackStoreKind']);
+    // The next case along: a name that was never an action is still refused.
+    expect(adminAction.safeParse('rollOutStoreKinds').success).toBe(false);
   });
 });
