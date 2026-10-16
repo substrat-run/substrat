@@ -11,12 +11,18 @@
  * pass against a wrong model perfectly and forever. That is the one thing this
  * refuses.
  *
+ * A second, unrelated way a test agrees with whatever it is given: a bare RegExp as a
+ * `toMatchObject` value is never applied (#2313) — see `tools/bare-regexp.mjs`. Every tracked
+ * script file that mentions `toMatchObject` is read, whatever it is named.
+ *
  * Exit codes follow boundary-lint's: 0 = fine, 1 = a violation, 2 = the tool
  * could not do its job. A checkpoint that checked nothing must never print a
  * green light.
  */
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { findBareRegExps, REMEDY } from './bare-regexp.mjs';
 
 const GROUPS = ['demos', 'engines'];
 const violations = [];
@@ -52,6 +58,19 @@ for (const group of GROUPS) {
   }
 }
 
+const SCRIPT = /\.[cm]?[jt]sx?$/;
+let matcherFiles = 0;
+for (const path of execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8', maxBuffer: 1 << 28 })
+  .split('\0')
+  .filter((f) => SCRIPT.test(f) && existsSync(f))) {
+  const src = readFileSync(path, 'utf8');
+  if (!src.includes('toMatchObject')) continue;
+  matcherFiles += 1;
+  for (const { line, text } of findBareRegExps(src)) {
+    violations.push(`${path}:${line}  bare ${text} inside toMatchObject\n    ${REMEDY}`);
+  }
+}
+
 if (checked === 0) {
   console.error('test-independence: found no scenario tests to check — run from the repo root');
   process.exit(2);
@@ -61,4 +80,7 @@ if (violations.length > 0) {
   for (const v of violations) console.error(`  ${v}\n`);
   process.exit(1);
 }
-console.log(`test-independence: ${checked} scenario suite(s) independent of the model`);
+console.log(
+  `test-independence: ${checked} scenario suite(s) independent of the model; ` +
+    `${matcherFiles} file(s) with toMatchObject hold no bare RegExp`,
+);
