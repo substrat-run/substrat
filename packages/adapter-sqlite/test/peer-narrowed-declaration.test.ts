@@ -9,10 +9,9 @@ import {
   platformActorId,
   scopeId,
   tenantId,
-  type ModuleRegistration,
   type VerticalCaller,
 } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { ulid, type ModuleRegistration } from '@substrat-run/kernel';
 import { PEER_CALLER, freshnessMod, peerMod, peerModNarrowed, peerModWithoutCaller } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
 
