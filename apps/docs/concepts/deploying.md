@@ -149,6 +149,44 @@ A version is badged **code-only** or **schema-change** at publish, so you know w
 touches the schema. A code-only update just re-points; a schema-change update runs migrations, so
 it wants its migration diff acknowledged first.
 
+## A migration cannot quietly lose data
+
+Migrations run forward against production data, so the kernel refuses one that would lose some
+of it. Before and after each migration you wrote, inside the same transaction, it counts what the
+scope holds: rows per table, and values per column, by storage class. A migration made only of
+`CREATE …` and `ALTER TABLE … ADD …` is not counted, because it cannot remove anything. Any other
+migration is refused if it leaves a table that held rows gone or with fewer rows, or a column
+that held values gone, holding fewer values, or holding them as a different type (`'1.50'` turned
+into `1`). Renames (`ALTER TABLE … RENAME TO`, `RENAME COLUMN`) are followed, and so is the usual
+create-copy-drop-rename rebuild. A table that holds nothing yet can be dropped or reshaped freely:
+before there is data, there is nothing to protect.
+
+A refused migration rolls back whole. The scope fails closed, exactly as it does for any failed
+migration, with its data where it was. You recover by promoting the previous version back (the
+migration never ran, so the old code still fits the schema) or by shipping a fixed one.
+
+When losing or moving data is the point, say so on the migration, beside its SQL, where the
+migration diff is reviewed:
+
+```ts
+{
+  version: '0007-retire-drafts',
+  sql: `INSERT INTO notes (id, body) SELECT id, body FROM drafts; DROP TABLE drafts; ALTER TABLE notes DROP COLUMN legacy_flag;`,
+  // Verified: `notes` must gain at least the rows `drafts` held.
+  moves: { drafts: 'notes' },
+  // Given up on purpose. The reason is required; it is what the reviewer reads.
+  discards: { 'notes.legacy_flag': 'the flag was never read after the 0004 redesign' },
+}
+```
+
+A move goes table to table or `table.column` to `table.column`, and it is checked: if the target
+gains less than its sources held, the migration is still refused. A declaration that names a table
+or column the scope does not hold is refused as a typo. Migrations the model planner generates
+never need either: it refuses to write a destructive change in the first place.
+
+In this repository `pnpm lint:migration-fence` replays every migration against a scope that holds
+data, so an undeclared loss fails in the pull request that adds it.
+
 ## Previews: run a version against a copy of the data
 
 Before a promotion whose *migrations* changed, you often want to see the new version run against

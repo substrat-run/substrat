@@ -193,7 +193,7 @@ async function main(): Promise<void> {
     console.error(
       'Each one is refused at apply in any scope that holds that data, which closes the scope. Fix the\n' +
         'migration, or declare the loss on it (`moves` / `discards`) for review — see\n' +
-        'apps/docs/concepts/migrations.md.',
+        'apps/docs/concepts/deploying.md ("A migration cannot quietly lose data").',
     );
     process.exit(1);
   }

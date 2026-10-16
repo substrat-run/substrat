@@ -668,6 +668,14 @@ merges. The supplied sweeper's firing half is held in workerd on a fixture verti
 (`packages/adapter-cloudflare/supplied-sweeper`), run as the uploader ships it
 (`tools/workerd-as-uploaded.mjs`); the in-repo deployed verticals keep their own sweeper until
 the release carrying #1902 is live),
+`lint:migration-fence` (`tools/migration-fence.mts`, #115: every authored migration in the repo,
+replayed in host order against a scope where every table holds a row and every column a value,
+through the kernel's own `runMigrationStatements` — the data-loss fence both adapters run at
+apply. A migration that loses rows or values, or retypes them, without declaring it on
+`SqlMigration` (`moves`, verified; `discards`, with a required reason) is red in its own PR
+instead of failing a populated scope closed after a promote. Each declaration is printed with
+its reason. Foreign keys and CHECKs are off in the replay, since a synthetic row satisfies
+neither, so a cascade's loss is the run-time fence's to catch. Needs the build),
 `lint:tests`, `lint:floating-promises` (`tools/floating-promises.mjs`, #2131: oxlint's
 type-aware `no-floating-promises` over every workerd suite, found from the vitest configs that
 load `@cloudflare/vitest-plugin`, and the shared contract-tests suites they run; a suite whose
