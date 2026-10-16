@@ -63,8 +63,14 @@ describe('unknown-scope refusals are typed not_found (#1718)', () => {
       scope: env.SCOPE,
       controlPlane: env.CONTROL_PLANE,
       secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
-      // Configured so the attachments door reaches its gate; no bucket is ever touched.
-      attachmentBuckets: () => ({}),
+      // Configured so the attachments door reaches its gate. It takes writes, since a restore
+      // writes the orphan sweep's fence into it first (#2314); nothing else touches it.
+      attachmentBuckets: () => ({
+        put: async () => undefined,
+        get: async () => null,
+        delete: async () => undefined,
+        list: async () => ({ objects: [], truncated: false }),
+      }),
     });
     const own = tenantId.parse(ulid());
     const foreign = tenantId.parse(ulid());
