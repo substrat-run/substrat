@@ -96,7 +96,7 @@ const MANIFEST = {
       SERVICE_TOKEN: 'SERVICE_TOKEN',
       PLATFORM_SECRET: 'PLATFORM_SECRET',
       ROUTER_SECRET: 'ROUTER_SECRET',
-      // PKCS8 Ed25519, base64url. Signs audience `platform`. Not the router's key. Optional until a store kind is served.
+      // PKCS8 Ed25519, base64url. Signs audience `platform`. Not the router's key. Optional until a store driver is served.
       STORE_PLATFORM_KEY: 'STORE_PLATFORM_KEY',
       // Not secret: the raw Ed25519 public keys (base64url, comma-separated) a store script
       // verifies each audience with (#2287). The control plane uploads store scripts and writes
@@ -222,7 +222,7 @@ const MANIFEST = {
     secrets: {
       PLATFORM_SECRET: 'PLATFORM_SECRET',
       ROUTER_SECRET: 'ROUTER_SECRET',
-      // PKCS8 Ed25519, base64url. Signs audience `caller`. Optional until a store kind is served.
+      // PKCS8 Ed25519, base64url. Signs audience `caller`. Optional until a store driver is served.
       STORE_CALLER_KEY: 'STORE_CALLER_KEY',
     },
   },

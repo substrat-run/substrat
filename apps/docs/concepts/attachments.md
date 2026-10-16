@@ -51,9 +51,39 @@ attachmentTargets: [
 ```
 
 Declaring `uploadLinks` is the opt-in. A target without it refuses a mint. `maxBytes` is required
-and held under 25 MiB. `contentTypes` is an allowlist of media types or families, and absent
-means any type. A mint may only narrow this, and the declaration appears in the vertical's
-`PERMISSIONS.md` under *Upload links*, so widening it is a reviewed diff.
+and held under 25 MiB. `contentTypes` is an allowlist of media types or families. A mint may only
+narrow the size, and the declaration appears in the vertical's `PERMISSIONS.md` under *Upload
+links*, so widening it is a reviewed diff.
+
+**A family never admits an active type.** `image/*` admits PNG, JPEG and the rest, but not
+`image/svg+xml`. `text/*` admits plain text and CSV, but not `text/html`. Active means HTML,
+`text/xsl` (which Chrome parses as HTML even under `nosniff`), `multipart/x-mixed-replace` (whose
+parts WebKit renders as documents, also under `nosniff`), the types a browser sniffs for
+HTML (`application/unknown`, `unknown/unknown`), every XML type (`text/xml`, `application/xml` and any subtype ending in `+xml`, such as
+`image/svg+xml`, `application/xhtml+xml` or `application/rss+xml`), and every JavaScript MIME
+type the WHATWG MIME Sniffing standard lists (`text/javascript`, `application/javascript`,
+`application/x-javascript`, `text/ecmascript` and the rest). A browser runs these instead of
+showing them, and the person holding the link chooses the bytes. The type is judged as its
+essence, without parameters, spaces or capitals, so `image/svg+xml; charset=utf-8` is still SVG,
+and `image/jpg` is judged and recorded as `image/jpeg` (so an allowlist entry spelled `image/jpg`
+never matches; write `image/jpeg`). A type that is not exactly one `type/subtype` (a list such as
+`image/png,text/html`, which a browser reads as its last type; `text/html,x` or `text/html x`,
+read as `text/html`; one with a control character; or a wildcard such as `*/*` or `image/*`, which
+is an allowlist entry and never a file) is refused by every allowlist, including an absent one. To take an active type, name it exactly:
+
+```ts
+uploadLinks: { maxBytes: 2 * 1024 * 1024, contentTypes: ['image/*', 'image/svg+xml'] },
+```
+
+::: warning Serve stored files as downloads, whatever the allowlist
+Any route of yours that serves an attachment should answer with all three of
+`X-Content-Type-Options: nosniff`, `Content-Disposition: attachment` and a sandboxing
+`Content-Security-Policy` (`default-src 'none'; sandbox`), as the platform's link-share download
+does, so a stored file is never run as your origin. The active-type rule is a second line, not the
+first: leaving `contentTypes` out admits every well-formed type, active ones included, and an
+exact entry admits the type it names. The rule was checked against Chrome and WebKit; Firefox was
+not covered.
+:::
 
 ### Mint it, in an operation
 
@@ -72,8 +102,9 @@ means any type. A mint may only narrow this, and the declaration appears in the 
 ```
 
 `mintUploadUrl` checks the target's `writePermission` on the entity, as the caller, so a caller
-without it is refused even if the operation forgot its own guard. Only a principal can mint. A
-schedule, a connector or a consumer holds no authorship to lend. The result is
+without it is refused even if the operation forgot its own guard. Only a principal can mint or
+revoke. A schedule, a connector or a consumer holds no authorship to lend, and is refused with
+`forbidden` and reason `upload_link_delegation`. The result is
 `{ id, secret, path, expiresAt, maxBytes, filename }`. `path` is
 `/api/attachment-uploads/<entityType>/<entityId>/<secret>`, and the origin is yours to put in
 front of it.
@@ -107,15 +138,17 @@ the claim, so a PNG called `contract.pdf` is refused.
 | Answer | When | Spends the link? |
 |---|---|---|
 | **201** | the file is stored | yes |
-| **404** | the secret names nothing, or the path names another entity or type than the link was minted for | no |
-| **410** | the link was used, has expired or was revoked | n/a |
+| **404** | the secret names nothing or is not shaped like one, or the path names another entity or type than the link was minted for (whatever the link's state) | no |
+| **410** | the link was used, has expired or was revoked, asked for at its own path | n/a |
 | **413** | the body is over the link's size, judged by `Content-Length` and again as bytes arrive | no |
 | **415** | the type is not admitted, or the bytes contradict it | no |
 | **403** | the minter no longer holds the write key | no |
 | **400** | an empty body | no |
 
 A refusal never spends the link: the caller can fix the file and send it again within the time
-box.
+box. A malformed secret is answered by the route without the scope being asked, with the same
+404 an unknown one gets. The route listens at `/api/attachment-uploads/…` only, the path the
+mint returns.
 
 ### What it is, and is not
 
@@ -132,16 +165,19 @@ box.
   recognise one. Only its SHA-256 is stored. An operation that tries to persist the secret in
   an event, its own table or a platform intent is refused, the same tripwire `ctx.capabilities`
   has.
-- **It is bound to one target.** The target is in the path as well as in the link, so a URL
-  pasted onto another entity is a 404 that spends nothing.
+- **It is bound to one target and one scope.** The target is in the path as well as in the link,
+  so a URL pasted onto another entity is a 404 that spends nothing, and it is the same 404 whether
+  the link is still pending or already spent. A link is not found in any other scope, of your
+  tenant or another.
 - **It never acts.** A link is not a [capability](./permissions.md#sharing-by-link-capabilities): it has
   no session, acts as nobody and can only ever produce the one attachment it was minted for.
 - **Your own locks are checked at mint, not at redemption.** An entity lock or state check in the
   operation runs before the mint. The platform does not know it and cannot run it again later, so
   keep `ttlSeconds` short, and revoke a link whose entity is locked after it was minted. It also
   does not check that the entity exists, which is true of an ordinary upload too.
-- **The platform does not scan.** The type check is the allowlist plus the four sniffed formats.
-  Anything stronger is the vertical's, in a consumer of `attachment.added`.
+- **The platform does not scan.** The type check is the allowlist, the active-type rule for
+  families, and the four sniffed formats. Anything stronger is the vertical's, in a consumer of
+  `attachment.added`.
 
 ### Find the file afterwards
 
@@ -163,7 +199,8 @@ so module code cannot forge or suppress them.
 
 - **The secret is in the path.** A header-only secret could not be used with `curl --upload-file URL`
   alone. What contains the cost: a link lives ten minutes by default and an hour at most, it is
-  single-use, and `invocationLog` writes its secret segment as `[redacted]`. A log the *runtime*
+  single-use, and `invocationLog` writes the secret segment, and any path segment that starts with
+  `sbup_`, as `[redacted]`. A log the *runtime*
   keeps of full request URLs (Workers Logs, a proxy in front of the vertical) can still hold an
   unused link until it expires. Do not keep such a log for longer than the link lives.
 - **CORS.** The route sends no CORS headers and removes the ones an outer layer set. A blanket

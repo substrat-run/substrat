@@ -232,6 +232,7 @@ export type {
   ScopeTupleReader,
 } from './permission-eval.js';
 export {
+  ACTIVE_CONTENT_TYPES,
   UPLOAD_LINK_DDL,
   UPLOAD_LINK_GONE,
   UPLOAD_LINK_TOO_LARGE,
@@ -239,6 +240,9 @@ export {
   UPLOAD_LINK_WRONG_TARGET,
   createAttachmentVerbs,
   inspectUploadLink,
+  isActiveContentType,
+  isMediaTypeEssence,
+  normalizeUploadMediaType,
   redeemUploadLinkInTransaction,
   uploadContentTypeAllowed,
 } from './upload-link.js';
@@ -643,26 +647,28 @@ export {
   VERTICAL_SCOPE_STORES_DDL,
   forgetVerticalScopeStores,
   indexVersionScopeStores,
-  kindDeclarationsOf,
+  driverDeclarationsOf,
   verticalScopeStoresOf,
   type VerticalScopeStore,
 } from './vertical-scope-stores.js';
 export {
-  STORE_KIND_RELEASES_DDL,
-  beginStoreKindRolloutIn,
-  finishStoreKindRolloutIn,
-  holdStoreKindIn,
-  recordStoreKindReleaseIn,
-  releaseStoreKindHoldIn,
-  storeKindReleaseIn,
-  storeKindStateIn,
-  type StoreKindHoldMode,
-  type StoreKindReleaseRecord,
-  type StoreKindRolloutAction,
-  type StoreKindRolloutRecord,
-  type StoreKindRolloutState,
-  type StoreKindState,
-} from './store-kind-releases.js';
+  STORE_DRIVER_RELEASES_DDL,
+  beginStoreDriverRolloutIn,
+  finishStoreDriverRolloutIn,
+  holdStoreDriverIn,
+  legacyStoreDriverConflict,
+  legacyStoreDriverRenames,
+  recordStoreDriverReleaseIn,
+  releaseStoreDriverHoldIn,
+  storeDriverReleaseIn,
+  storeDriverStateIn,
+  type StoreDriverHoldMode,
+  type StoreDriverReleaseRecord,
+  type StoreDriverRolloutAction,
+  type StoreDriverRolloutRecord,
+  type StoreDriverRolloutState,
+  type StoreDriverState,
+} from './store-driver-releases.js';
 export type { SplitManifest } from './version-migrations.js';
 export {
   admitPeer,

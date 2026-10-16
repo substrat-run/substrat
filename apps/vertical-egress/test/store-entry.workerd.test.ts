@@ -13,10 +13,10 @@ import {
 import { storeScriptAsUploaded } from '../../../tools/workerd-as-uploaded.mjs';
 
 /**
- * The counter kind behind the platform's store entry, on workerd, uploaded as the platform
+ * The counter driver behind the platform's store entry, on workerd, uploaded as the platform
  * uploads it (#2289). L4: each refusal leaves the counter where it was. L5: an object is bound
  * to the id of the name it was addressed by, so a valid envelope for another name does not
- * open it, a used object or a fresh one. The kind is handed the exact body the entry verified,
+ * open it, a used object or a fresh one. The driver is handed the exact body the entry verified,
  * and an env without the entry's own bindings.
  */
 
@@ -41,7 +41,7 @@ beforeAll(async () => {
   callerKid = caller.kid;
   platformKid = platform.kid;
   const uploaded = await storeScriptAsUploaded(fileURLToPath(new URL('../../../packages/control-plane-api/', import.meta.url)), {
-    kindMain: 'store-entry/counter.ts',
+    driverMain: 'store-entry/counter.ts',
     className: 'CounterStore',
     script: SCRIPT,
     callerPublicKeys: [caller.publicKey],
@@ -156,7 +156,7 @@ async function call(c: Call = {}): Promise<{ status: number; text: string }> {
 
 /**
  * A call whose canonical lines are signed by hand with `key`: how a pair the issuer will not
- * mint, (caller, substrat.*) or (platform, a kind operation), reaches the store at all.
+ * mint, (caller, substrat.*) or (platform, a driver operation), reaches the store at all.
  */
 async function signedByHand(key: string, aud: 'caller' | 'platform', op: string, kid: string): Promise<{ status: number; text: string }> {
   const body = JSON.stringify({ operation: op, objectName: NAME });
@@ -178,9 +178,9 @@ async function signedByHand(key: string, aud: 'caller' | 'platform', op: string,
 const counter = async () => JSON.parse((await call({ op: 'read' })).text) as { result: number };
 
 describe('the counter behind the store entry (#2289)', () => {
-  it('admits a signed call, and the kind gets the exact body verified and none of the entry bindings', async () => {
+  it('admits a signed call, and the driver gets the exact body verified and none of the entry bindings', async () => {
     expect(await call()).toEqual({ status: 200, text: JSON.stringify({ result: 1 }) });
-    // Spacing and key order a re-serialization would change: the kind sees the bytes as signed.
+    // Spacing and key order a re-serialization would change: the driver sees the bytes as signed.
     const odd = `{ "objectName" : ${JSON.stringify(NAME)},"operation":"echo" , "input": {"é": 1} }`;
     const echoed = await call({ op: 'echo', body: odd });
     expect(echoed.status).toBe(200);
@@ -193,11 +193,11 @@ describe('the counter behind the store entry (#2289)', () => {
     expect(JSON.parse(ambient.text)).toEqual({ result: [] });
   });
 
-  it('at a current compatibility date the kind reaches nothing through ctx.exports, and the entry still admits', async () => {
+  it('at a current compatibility date the driver reaches nothing through ctx.exports, and the entry still admits', async () => {
     expect(await call({ worker: 'current', op: 'exports' })).toEqual({ status: 200, text: JSON.stringify({ result: [] }) });
     expect(await call({ worker: 'current', op: 'ambient' })).toEqual({ status: 200, text: JSON.stringify({ result: [] }) });
     expect(await call({ worker: 'current' })).toEqual({ status: 200, text: JSON.stringify({ result: 1 }) });
-    // Without the flag, the same kind would hold a loopback to the entry's class and default export.
+    // Without the flag, the same driver would hold a loopback to the entry's class and default export.
     expect(JSON.parse((await call({ worker: 'exported', op: 'exports' })).text)).toEqual({ result: ['SubstratStoreObject', 'default'] });
   });
 
@@ -211,7 +211,7 @@ describe('the counter behind the store entry (#2289)', () => {
     expect((await counter()).result).toBe(before);
   });
 
-  it('refuses each forged, stale, edited or misaddressed call before the kind runs', async () => {
+  it('refuses each forged, stale, edited or misaddressed call before the driver runs', async () => {
     const before = (await counter()).result;
     const now = Math.floor(Date.now() / 1000);
     const refusals: [string, Call][] = [
@@ -317,7 +317,7 @@ describe('the counter behind the store entry (#2289)', () => {
     expect((await counter()).result).toBe(before + 2);
   });
 
-  it("forwards the object's alarm to the kind, which keeps one instance across calls", async () => {
+  it("forwards the object's alarm to the driver, which keeps one instance across calls", async () => {
     expect((await call({ op: 'arm' })).status).toBe(200);
     let alarms = 0;
     for (let i = 0; i < 100 && alarms === 0; i++) {

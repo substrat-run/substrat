@@ -15,6 +15,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import {
   UPLOAD_LINK_PATH_PREFIX,
+  UPLOAD_LINK_SECRET_PREFIX,
   platformActorId,
   principalId,
   scopeId,
@@ -23,11 +24,12 @@ import {
   type MintedUploadLink,
   type UploadLinkRecord,
 } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { UPL_MAX_BYTES, UPL_READ, UPL_WRITE, uploadLinkMod } from '@substrat-run/contract-tests';
 import {
   UPLOAD_LINK_LOG_PREFIX,
+  UPLOAD_LINK_LOG_SECRET_PREFIX,
   mountUploadLinkRedeem,
   redactUploadLinkSecret,
   resolveUploadMediaType,
@@ -52,6 +54,33 @@ describe('mountUploadLinkRedeem — an upload link, over HTTP', () => {
   app.use('*', cors({ origin: '*', allowMethods: ['GET', 'PUT', 'POST'], exposeHeaders: ['etag'] }));
   mountUploadLinkRedeem(app, { host: () => host, node: () => node });
   app.get('/elsewhere', (c) => c.text('ok'));
+
+  /**
+   * A second mount of the same route over a host that counts what the route asks of it — so a
+   * test can say "refused WITHOUT touching the scope" (or without reaching the write) and mean it.
+   */
+  const counted = () => {
+    const calls = { host: 0, inspect: 0, redeem: 0 };
+    const spied: Pick<ScopeHost, 'inspectUploadLink' | 'redeemUploadLink'> = {
+      inspectUploadLink: (...a) => {
+        calls.inspect++;
+        return host.inspectUploadLink(...a);
+      },
+      redeemUploadLink: (...a) => {
+        calls.redeem++;
+        return host.redeemUploadLink(...a);
+      },
+    };
+    const spyApp = new Hono();
+    mountUploadLinkRedeem(spyApp, {
+      host: () => {
+        calls.host++;
+        return spied;
+      },
+      node: () => node,
+    });
+    return { calls, app: spyApp };
+  };
 
   let n = 0;
   const target = (): EntityRef => ({ entityType: 'udoc', entityId: `http-doc-${++n}` });
@@ -139,6 +168,57 @@ describe('mountUploadLinkRedeem — an upload link, over HTTP', () => {
     }
   });
 
+  it('a malformed secret is the same 404, answered without asking the host, the scope or its Durable Object', async () => {
+    const entity = target();
+    const at = (secret: string) => `http://crm.test${UPLOAD_LINK_PATH_PREFIX}/udoc/${entity.entityId}/${secret}`;
+    // The twin first: a well-shaped secret that names nothing IS asked about, and its answer is the reference.
+    const shaped = counted();
+    const unknown = await shaped.app.request(at('sbup_' + 'A'.repeat(43)), { method: 'PUT', body: 'x' });
+    expect(unknown.status).toBe(404);
+    expect(shaped.calls).toMatchObject({ host: 1, inspect: 1, redeem: 0 });
+    const reference = await unknown.text();
+
+    for (const secret of [
+      'nonsense',
+      'sbup_',
+      'sbup_' + 'A'.repeat(42),
+      'sbup_' + 'A'.repeat(44),
+      'sbup_' + '!'.repeat(43),
+      'sbcap_' + 'A'.repeat(43),
+      'x'.repeat(500),
+    ]) {
+      const { calls, app: spyApp } = counted();
+      const res = await spyApp.request(at(encodeURIComponent(secret)), { method: 'PUT', body: 'x' });
+      expect(res.status).toBe(404);
+      expect(await res.text()).toBe(reference);
+      expect(calls).toEqual({ host: 0, inspect: 0, redeem: 0 });
+    }
+  });
+
+  it('a path naming another target is the same 404 whatever the link’s state — pending, used or revoked — and spends nothing', async () => {
+    const entity = target();
+    const other = target();
+    const wrongPath = (m: MintedUploadLink) => `${UPLOAD_LINK_PATH_PREFIX}/udoc/${other.entityId}/${m.secret}?filename=a.txt`;
+    const pending = await mint(entity);
+    const used = await mint(entity);
+    expect((await put(`${used.path}?filename=a.txt`, 'x')).status).toBe(201);
+    const revoked = await mint(entity);
+    await (await host.getScope(alice, t1, s1)).invoke('upl/revoke', { id: revoked.id });
+
+    const answers = await Promise.all(
+      [pending, used, revoked].map(async (m) => {
+        const res = await put(wrongPath(m), 'x');
+        return { status: res.status, reason: ((await res.json()) as { reason?: string }).reason };
+      }),
+    );
+    expect(answers).toEqual([1, 2, 3].map(() => ({ status: 404, reason: 'upload_link_wrong_target' })));
+    expect(await filesOf(other)).toEqual([]);
+    // The twin: at their own path the spent links are gone, and the pending one still works.
+    expect((await put(`${used.path}?filename=a.txt`, 'x')).status).toBe(410);
+    expect((await put(`${revoked.path}?filename=a.txt`, 'x')).status).toBe(410);
+    expect((await put(`${pending.path}?filename=a.txt`, 'x')).status).toBe(201);
+  });
+
   it('a path naming another entity or another type is 404 and spends nothing; the right path then works', async () => {
     const entity = target();
     const minted = await mint(entity);
@@ -179,6 +259,46 @@ describe('mountUploadLinkRedeem — an upload link, over HTTP', () => {
     expect((await put(`${minted.path}?filename=a.txt`, new Uint8Array(UPL_MAX_BYTES).fill(97))).status).toBe(201);
   });
 
+  it('stops reading a chunked body one chunk past the ceiling: it cancels the stream, answers 413, and never reaches the write', async () => {
+    const entity = target();
+    const minted = await mint(entity);
+    const CHUNK = 16;
+    const OFFERED = 1000; // 16 000 bytes on offer — far past the 64 the link admits
+    let pulls = 0;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull(c) {
+          if (pulls === OFFERED) return c.close();
+          pulls++;
+          c.enqueue(new Uint8Array(CHUNK).fill(97));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const { calls, app: spyApp } = counted();
+    const res = await spyApp.fetch(
+      new Request(`http://crm.test${minted.path}?filename=a.txt`, {
+        method: 'PUT',
+        body: stream,
+        headers: { 'content-type': 'text/plain' },
+        duplex: 'half',
+      } as RequestInit),
+    );
+    expect(res.status).toBe(413);
+    expect(((await res.json()) as { reason?: string }).reason).toBe('upload_link_too_large');
+    // Read up to the first chunk that crosses the ceiling, and a little read-ahead — never the body.
+    expect(pulls).toBeLessThanOrEqual(Math.ceil(UPL_MAX_BYTES / CHUNK) + 2);
+    expect(cancelled).toBe(true);
+    // Refused by the route, not by the kernel after the bytes were handed on.
+    expect(calls).toMatchObject({ inspect: 1, redeem: 0 });
+    expect(await stateOf(minted.id)).toBe('pending');
+    expect(await filesOf(entity)).toEqual([]);
+  });
+
   it('refuses a disallowed type with 415 and spends nothing; the same link then takes an allowed one', async () => {
     const entity = target();
     const minted = await mint(entity);
@@ -187,6 +307,51 @@ describe('mountUploadLinkRedeem — an upload link, over HTTP', () => {
     expect(((await exe.json()) as { reason?: string }).reason).toBe('upload_link_type_refused');
     expect(await stateOf(minted.id)).toBe('pending');
     expect((await put(`${minted.path}?filename=a.png`, PNG, { 'content-type': 'image/png' })).status).toBe(201);
+  });
+
+  it('refuses an SVG under the link’s `image/*` with 415 — a family admits no active type — while a PNG goes through', async () => {
+    const entity = target();
+    const minted = await mint(entity);
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>';
+    const res = await put(`${minted.path}?filename=a.svg`, svg, { 'content-type': 'image/svg+xml' });
+    expect(res.status).toBe(415);
+    expect(((await res.json()) as { reason?: string }).reason).toBe('upload_link_type_refused');
+    // Any `+xml` claim is XML by rule, and an XHTML body under it would run as this origin.
+    const xhtml = '<a:script xmlns:a="http://www.w3.org/1999/xhtml"/>'; // under the link's 64 bytes
+    expect((await put(`${minted.path}?filename=a.xml`, xhtml, { 'content-type': 'image/x+xml' })).status).toBe(415);
+    expect((await put(`${minted.path}?filename=a.svg`, svg, { 'content-type': 'Image/SVG+XML; charset=utf-8' })).status).toBe(415);
+    // A header listing several types: a browser keeps the LAST it can parse, so it is not one type to judge.
+    // The body is not sniffable, so the claim alone decides — as for an XHTML page under it.
+    for (const listed of ['image/x-icon,application/xhtml+xml,*/*', 'text/plain, text/html']) {
+      expect((await put(`${minted.path}?filename=a.bin`, 'x', { 'content-type': listed })).status, listed).toBe(415);
+    }
+    expect(await filesOf(entity)).toEqual([]);
+    expect(await stateOf(minted.id)).toBe('pending');
+    expect((await put(`${minted.path}?filename=a.png`, PNG, { 'content-type': 'image/png' })).status).toBe(201);
+  });
+
+  it('refuses with 415 what each family leaves out: types a browser sniffs or parses as HTML, wildcards, one-slash spellings a browser reads as HTML', async () => {
+    const entity: EntityRef = { entityType: 'ufile', entityId: `http-file-${++n}` };
+    const minted = await mint(entity);
+    for (const contentType of [
+      'text/xsl',
+      'application/unknown',
+      'unknown/unknown',
+      'multipart/x-mixed-replace',
+      'text/html,x',
+      'text/html x',
+      'text/html\tx',
+      '*/*',
+      'text/*',
+    ]) {
+      // The body is not sniffable, so the claim alone decides.
+      const res = await put(`${minted.path}?filename=a.bin`, '<p>x</p>', { 'content-type': contentType });
+      expect(res.status, JSON.stringify(contentType)).toBe(415);
+    }
+    expect(await filesOf(entity)).toEqual([]);
+    expect(await stateOf(minted.id)).toBe('pending');
+    // The twin: an ordinary member of the same family goes through on the same link.
+    expect((await put(`${minted.path}?filename=a.csv`, 'a,b', { 'content-type': 'text/csv' })).status).toBe(201);
   });
 
   it('refuses a file whose bytes contradict its name — a PNG called .pdf — with 415', async () => {
@@ -258,6 +423,21 @@ describe('mountUploadLinkRedeem — an upload link, over HTTP', () => {
       // The twin: no other path is touched.
       expect(redactUploadLinkSecret('/api/attachments/udoc/D1')).toBe('/api/attachments/udoc/D1');
       expect(redactUploadLinkSecret('/api/capability/attachments/01ABC')).toBe('/api/capability/attachments/01ABC');
+    });
+
+    it('is redacted wherever a secret-shaped segment sits, so a route of the vertical’s own that carries one is covered too', () => {
+      expect(UPLOAD_LINK_LOG_SECRET_PREFIX).toBe(UPLOAD_LINK_SECRET_PREFIX);
+      const secret = 'sbup_' + 'A'.repeat(43);
+      expect(redactUploadLinkSecret(`/files/${secret}/raw`)).toBe('/files/[redacted]/raw');
+      expect(redactUploadLinkSecret(`/${secret}`)).toBe('/[redacted]');
+      expect(redactUploadLinkSecret(`/a/b/${secret}`)).toBe('/a/b/[redacted]');
+      // The twin: a segment that merely contains the letters is not a secret.
+      expect(redactUploadLinkSecret('/api/sbupfoo/x_sbup_y')).toBe('/api/sbupfoo/x_sbup_y');
+    });
+
+    it('the route has one path, the one the log redacts and the mint names — it takes no `path` option', () => {
+      // @ts-expect-error -- `path` was removed: a custom mount would match no minted URL, and escape the redaction.
+      mountUploadLinkRedeem(new Hono(), { host: () => host, node: () => node, path: '/elsewhere/:entityType/:entityId/:secret' });
     });
   });
 });

@@ -3,8 +3,8 @@
  * the repo root: `pnpm exec tsx packages/store-entry-python/probe.mjs`.
  *
  * The script is what the upload builds (`withPythonStoreEntry`, #2210), not this package's
- * source: the Python entry with its two placeholders replaced by the counter kind, the verifier
- * module beside it, the kind's package, and the upload's bindings and flags. A probe-only main module wraps the default entrypoint so a valid
+ * source: the Python entry with its two placeholders replaced by the counter driver, the verifier
+ * module beside it, the driver's package, and the upload's bindings and flags. A probe-only main module wraps the default entrypoint so a valid
  * envelope can be delivered to an object of another name; the shipped entry has no such switch.
  *
  * Every call in the corpus below is judged twice: here, by the verifier module the script
@@ -32,8 +32,8 @@ import { withPythonStoreEntry } from '../control-plane-api/src/store-entry.ts';
 const here = dirname(fileURLToPath(import.meta.url));
 const vector = JSON.parse(readFileSync(join(here, '../contracts/test/vectors/scope-store-envelope.json'), 'utf8'));
 const out = join(here, '.uploaded');
-const KIND_PACKAGE = 'kind_counter';
-const KIND_CLASS = 'CounterStore';
+const DRIVER_PACKAGE = 'driver_counter';
+const DRIVER_CLASS = 'CounterStore';
 
 let failed = 0;
 function check(condition, message, extra) {
@@ -50,12 +50,12 @@ function check(condition, message, extra) {
 
 check(!/ALLOW_ADDRESS|parse_qs|\?object=/.test(entry.STORE_ENTRY_PYTHON_SOURCE), 'the shipped Python entry has no address override');
 const platformPair = await generateScopeStoreKeyPair();
-const kindModules = readdirSync(join(here, 'src', KIND_PACKAGE))
+const driverModules = readdirSync(join(here, 'src', DRIVER_PACKAGE))
   .filter((file) => file.endsWith('.py'))
-  .map((file) => ({ name: `${KIND_PACKAGE}/${file}`, content: readFileSync(join(here, 'src', KIND_PACKAGE, file)) }));
+  .map((file) => ({ name: `${DRIVER_PACKAGE}/${file}`, content: readFileSync(join(here, 'src', DRIVER_PACKAGE, file)) }));
 const built = withPythonStoreEntry(
-  { entry: `${KIND_PACKAGE}/store.py`, modules: kindModules },
-  { className: KIND_CLASS, script: vector.script, callerPublicKeys: [vector.publicKey], platformPublicKeys: [platformPair.publicKey] },
+  { entry: `${DRIVER_PACKAGE}/store.py`, modules: driverModules },
+  { className: DRIVER_CLASS, script: vector.script, callerPublicKeys: [vector.publicKey], platformPublicKeys: [platformPair.publicKey] },
 );
 rmSync(out, { recursive: true, force: true });
 for (const module of built.modules) {
@@ -96,10 +96,10 @@ class Default(store_entry.Default):
 `,
 );
 
-// The upload's plain-text bindings become the dev server's vars; the kind gets one of its own.
+// The upload's plain-text bindings become the dev server's vars; the driver gets one of its own.
 const vars = {
   ...Object.fromEntries(built.bindings.filter((b) => b.type === 'plain_text').map((b) => [b.name, b.text])),
-  KIND_SETTING: 'the kind may read this',
+  DRIVER_SETTING: 'the driver may read this',
 };
 const namespace = built.bindings.find((b) => b.type === 'durable_object_namespace');
 writeFileSync(
@@ -253,7 +253,7 @@ try {
   const patched = async (label, patch, key) => corpus.push([label, await raw({ lines: await linesFor(name, 'read', b, patch), body: b, key })]);
   await patched('version 2', { v: '2' });
   await patched('an unknown audience', { aud: 'admin' });
-  await patched('a platform envelope on a kind operation', { aud: 'platform', kid: platformKid }, platformKey);
+  await patched('a platform envelope on a driver operation', { aud: 'platform', kid: platformKid }, platformKey);
   corpus.push(['a caller envelope on a reserved operation', await raw({ lines: await linesFor(name, 'substrat.wipe', bodyOf(name, 'substrat.wipe')), body: bodyOf(name, 'substrat.wipe') })]);
   await patched('a caller envelope signed with the platform key', {}, platformKey);
   await patched('a kid no key has', { kid: strangerKid });
@@ -284,7 +284,7 @@ try {
   }
   check(admitted === 2, 'the oracle admits the two well-formed calls, so the corpus is not refused wholesale', admitted);
 
-  // ---- the object, the body and the kind ----
+  // ---- the object, the body and the driver ----
   const count = result(await send(await signed(name, 'read')));
   const attacked = await send(await signed(other, 'increment'), `?object=${encodeURIComponent(name)}`);
   check(attacked.status === 401 && attacked.text === 'unauthorized: object', 'an object refuses a valid envelope for another name', attacked);
@@ -306,29 +306,29 @@ try {
   // An upload that bound no keys answers 503, not the caller's 401.
   const unconfigured = await send(await signed(name, 'read'), '?unconfigured=1');
   check(unconfigured.status === 503 && unconfigured.text === 'this store script is not configured', 'an unconfigured store answers 503', unconfigured);
-  check(result(await send(await signed(name, 'constructed'))).count === 1, 'the kind is constructed once, however many calls it serves');
+  check(result(await send(await signed(name, 'constructed'))).count === 1, 'the driver is constructed once, however many calls it serves');
   const fresh = `tenant/vertical/${randomUUID()}/graph`;
   const refused = await send(await signed(other, 'increment'), `?object=${encodeURIComponent(fresh)}`);
   check(refused.status === 401, 'a call refused at the object', refused);
   await sleep(1500);
   const constructed = result(await send(await signed(fresh, 'constructed')));
-  check(constructed.count === 1 && constructed.lead_ms < 1000, 'did not construct the kind there before it was refused', constructed);
+  check(constructed.count === 1 && constructed.lead_ms < 1000, 'did not construct the driver there before it was refused', constructed);
 
   const exact = JSON.stringify({ objectName: name, operation: 'body', input: { text: 'é   \\u00e9' } });
-  check(result(await send(await signed(name, 'body', { body: exact }))) === exact, 'the kind receives the exact body that was verified');
+  check(result(await send(await signed(name, 'body', { body: exact }))) === exact, 'the driver receives the exact body that was verified');
 
   const env = result(await send(await signed(name, 'env')));
-  check(JSON.stringify(env.given) === JSON.stringify(['KIND_SETTING']), "the kind's env has none of the entry's bindings", env);
+  check(JSON.stringify(env.given) === JSON.stringify(['DRIVER_SETTING']), "the driver's env has none of the entry's bindings", env);
   check(env.importable.length === 0, 'an importable env reads nothing (disallow_importable_env)', env);
-  check(env.exports === false, 'the kind has no ctx.exports (disable_ctx_exports)', env);
+  check(env.exports === false, 'the driver has no ctx.exports (disable_ctx_exports)', env);
 
-  check(result(await send(await signed(name, 'set-alarm'))) === true, 'the kind sets an alarm');
+  check(result(await send(await signed(name, 'set-alarm'))) === true, 'the driver sets an alarm');
   let alarms = 0;
   for (let i = 0; i < 40 && alarms === 0; i++) {
     await sleep(250);
     alarms = result(await send(await signed(name, 'alarms')));
   }
-  check(alarms === 1, "the object's alarm reaches the kind", alarms);
+  check(alarms === 1, "the object's alarm reaches the driver", alarms);
 } catch (err) {
   failed++;
   console.error(`FAIL  ${err?.stack ?? err}`);

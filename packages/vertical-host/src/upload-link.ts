@@ -26,8 +26,9 @@
  * failure leaves it unspent.
  *
  * Answers: **201** `{ id, filename, contentType, size, sha256 }`; **404** for a secret that
- * names nothing and for a path naming another target than the link's (nothing is spent);
- * **410** for a link already used, expired or revoked; **413** over the link's size;
+ * names nothing — a malformed one answered here, without asking the scope — and for a path
+ * naming another target than the link's, whatever the link's state (nothing is spent);
+ * **410** for a link already used, expired or revoked at its own path; **413** over the link's size;
  * **415** for a type the link refuses; **403** when the minter no longer holds the key.
  *
  * **Response hygiene, set before anything can fail.** `Cache-Control: no-store`,
@@ -44,6 +45,7 @@ import type { Context, Env, Hono } from 'hono';
 import {
   PROBLEM_CONTENT_TYPE,
   UPLOAD_LINK_PATH_PREFIX,
+  isUploadLinkSecretShape,
   substratError,
   uploadLinkFilename,
   type ErrorCode,
@@ -54,6 +56,7 @@ import {
   UPLOAD_LINK_TOO_LARGE,
   UPLOAD_LINK_TYPE_REFUSED,
   UPLOAD_LINK_WRONG_TARGET,
+  normalizeUploadMediaType,
   uploadContentTypeAllowed,
   type ScopeHost,
 } from '@substrat-run/kernel';
@@ -63,7 +66,10 @@ import type { CapabilityNode } from './capability-exchange.js';
 
 type Awaitable<T> = T | Promise<T>;
 
-/** Where `mountUploadLinkRedeem` listens unless told otherwise. */
+/**
+ * Where `mountUploadLinkRedeem` listens — the one path, not an option: `uploadLinkPath` mints
+ * URLs under it, and `invocationLog` redacts the secret segment under it.
+ */
 export const UPLOAD_LINK_REDEEM_PATH = `${UPLOAD_LINK_PATH_PREFIX}/:entityType/:entityId/:secret`;
 
 export interface UploadLinkRedeemOptions<E extends Env = Env> {
@@ -71,8 +77,6 @@ export interface UploadLinkRedeemOptions<E extends Env = Env> {
   host: (c: Context<E>) => Awaitable<Pick<ScopeHost, 'inspectUploadLink' | 'redeemUploadLink'>>;
   /** Which scope this request is for — the router-asserted (tenant, scope) the vertical already resolves. */
   node: (c: Context<E>) => Awaitable<CapabilityNode>;
-  /** Defaults to `UPLOAD_LINK_REDEEM_PATH`; must carry `:entityType`, `:entityId` and `:secret`. */
-  path?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,10 +115,6 @@ export function sniffMediaType(bytes: Uint8Array): string | null {
 }
 const SNIFFABLE = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/gif']);
 
-const normalizeType = (raw: string): string => {
-  const t = raw.split(';')[0]!.trim().toLowerCase();
-  return t === 'image/jpg' ? 'image/jpeg' : t;
-};
 
 /**
  * The type the platform will record. Order: the request's own `Content-Type` unless it is
@@ -128,7 +128,7 @@ export function resolveUploadMediaType(
   filename: string,
   bytes: Uint8Array,
 ): string | null {
-  const fromHeader = header ? normalizeType(header) : '';
+  const fromHeader = header ? normalizeUploadMediaType(header) : '';
   const ext = filename.includes('.') ? filename.slice(filename.lastIndexOf('.') + 1).toLowerCase() : '';
   const claimed = fromHeader && !GENERIC_TYPES.has(fromHeader) ? fromHeader : (EXTENSION_TYPES[ext] ?? null);
   const sniffed = sniffMediaType(bytes);
@@ -256,12 +256,14 @@ function errorStatus(err: unknown): ContentfulStatusCode {
   return (code && STATUS_BY_CODE[code]) || 500;
 }
 
+/** The 404 every secret that names nothing gets — the scope's answer, and this route's for a malformed one. */
+const unknownLink = () => substratError('not_found', 'This upload link is not valid.');
+
 /**
- * Mount `PUT <path>` and `POST <path>`: redeem one upload link. See the module header for the
- * answers and the hygiene.
+ * Mount `PUT` and `POST` on `UPLOAD_LINK_REDEEM_PATH`: redeem one upload link. See the module
+ * header for the answers and the hygiene.
  */
 export function mountUploadLinkRedeem<E extends Env>(app: Hono<E>, options: UploadLinkRedeemOptions<E>): void {
-  const path = options.path ?? UPLOAD_LINK_REDEEM_PATH;
   const handler = async (c: Context<E>): Promise<Response> => {
     // Before anything can fail: nothing here may be cached or handed onwards, and an outer
     // blanket CORS layer must not make the answer readable by a page that learned the link.
@@ -273,19 +275,20 @@ export function mountUploadLinkRedeem<E extends Env>(app: Hono<E>, options: Uplo
       const entityType = c.req.param('entityType');
       const entityId = c.req.param('entityId');
       const secret = c.req.param('secret');
-      if (!entityType || !entityId || !secret) throw substratError('not_found', 'This upload link is not valid.');
+      // A secret that cannot be one the kernel minted costs the scope nothing: the same 404 an
+      // unknown one gets, before the host, the scope or its Durable Object is touched.
+      if (!entityType || !entityId || !isUploadLinkSecretShape(secret)) throw unknownLink();
       const [host, node] = await Promise.all([options.host(c), options.node(c)]);
       if (!host.inspectUploadLink || !host.redeemUploadLink) {
         throw substratError('unavailable', 'this scope host serves no upload links');
       }
-      // The link first, so a refusal costs no body: unknown (404), used / expired / revoked (410),
-      // and what the body will be judged against.
-      const view: UploadLinkView = await host.inspectUploadLink(node.tenantId, node.scopeId, secret);
-      if (view.entity.entityType !== entityType || view.entity.entityId !== entityId) {
-        throw substratError('not_found', 'This upload link is not valid for that target.', {
-          reason: UPLOAD_LINK_WRONG_TARGET,
-        });
-      }
+      // The link first, so a refusal costs no body: unknown or minted for another target (404,
+      // judged before its state), used / expired / revoked (410), and what the body will be
+      // judged against.
+      const view: UploadLinkView = await host.inspectUploadLink(node.tenantId, node.scopeId, secret, {
+        entityType,
+        entityId,
+      });
       const filename =
         view.filename ??
         cleanFilename(c.req.query('filename')) ??
@@ -330,6 +333,6 @@ export function mountUploadLinkRedeem<E extends Env>(app: Hono<E>, options: Uplo
       return refuse(c, err);
     }
   };
-  app.put(path, handler);
-  app.post(path, handler);
+  app.put(UPLOAD_LINK_REDEEM_PATH, handler);
+  app.post(UPLOAD_LINK_REDEEM_PATH, handler);
 }

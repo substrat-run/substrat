@@ -23,7 +23,7 @@
  * {@link SCOPE_STORE_ENVELOPE_WINDOW_SECONDS} on either side of the verifier's clock. A
  * store does not remember nonces (RFC Q2): an envelope replayed inside the window, at the
  * same script and object with the same body, is accepted again. The reserved operations are
- * idempotent, and a kind operation's retry safety is the vertical's.
+ * idempotent, and a driver operation's retry safety is the vertical's.
  *
  * The script line is an opaque string compared for equality: the signer builds it, the
  * verifier is told its own. Nothing here parses it.
@@ -43,7 +43,7 @@ export const SCOPE_STORE_SIGNATURE_HEADER = 'x-substrat-store-signature';
 
 /**
  * The operations only the platform may send to a scope store (#2207). A vertical's
- * stub refuses every one of them. A kind's registration has to answer all of them,
+ * stub refuses every one of them. A driver's registration has to answer all of them,
  * `substrat.erase` included, before a hosted deploy may store tenant data.
  */
 export const RESERVED_STORE_OPERATIONS = [
@@ -449,14 +449,14 @@ export type ScopeStoreCallVerdict =
   | { readonly ok: false; readonly refusal: ScopeStoreRefusal };
 
 /**
- * Every envelope check a store makes on a call before the kind's class runs (RFC §10.3
+ * Every envelope check a store makes on a call before the driver's class runs (RFC §10.3
  * checks 1–4, L4, L5), in one place, so a store entry carries no copy. The object binding
  * (check 5: the object's id is `idFromName` of the signed name) is the entry's, because it
  * needs the object's id; so is reading the configured keys and script name.
  *
  * `script` is the store script's own name, compared with the signed line for equality.
  * The body must be JSON naming the signed operation as `operation` and the signed object
- * as `objectName`, so the signed name is the one the kind is asked about.
+ * as `objectName`, so the signed name is the one the driver is asked about.
  */
 export async function verifyScopeStoreCall(input: {
   readonly envelope: string | null | undefined;

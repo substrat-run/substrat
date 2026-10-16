@@ -32,7 +32,7 @@ export const storeCallRequest = z
   .object({
     scopeId,
     binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
-    // The same fixed-label rule a log line and a kind's catalog hold (#2245).
+    // The same fixed-label rule a log line and a driver's catalog hold (#2245).
     operation: storeOperationName,
     input: z.unknown().optional(),
   })

@@ -26,7 +26,7 @@ interface Backup {
   origin?: { tenantId: string; scopeId: string };
   capturedAt?: string;
   /** Present when the file named scope stores. Absent leaves them untouched on restore. */
-  stores?: { binding: string; kind: string; tables: DumpTable[] }[];
+  stores?: { binding: string; driver: string; tables: DumpTable[] }[];
 }
 
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/i;

@@ -119,7 +119,7 @@ export interface DumpTable {
 /** One scope store inside a pull or a restore (#2211). Opaque tables, not sealed. */
 export interface StoreDump {
   binding: string;
-  kind: string;
+  driver: string;
   tables: DumpTable[];
 }
 
@@ -212,18 +212,18 @@ export interface ListingRecord {
   listed: boolean;
 }
 
-/** A stored store-kind release (#2300): its bytes are named by their sha256. */
-export interface StoreKindReleaseView {
-  kind: string;
+/** A stored store-driver release (#2300): its bytes are named by their sha256. */
+export interface StoreDriverReleaseView {
+  driver: string;
   sha256: string;
   sourceCommit: string;
   uploadedBy: string;
   uploadedAt: string;
 }
 
-/** One attempt to move every script of a kind to a release. */
-export interface StoreKindRolloutView {
-  kind: string;
+/** One attempt to move every script of a driver to a release. */
+export interface StoreDriverRolloutView {
+  driver: string;
   seq: number;
   sha256: string;
   action: 'rollout' | 'rollback';
@@ -236,19 +236,19 @@ export interface StoreKindRolloutView {
   detail: string | null;
 }
 
-export interface StoreKindView {
-  kind: string;
+export interface StoreDriverView {
+  driver: string;
   pins: { sha256: string; sourceCommit: string; schema: number }[];
   current: { sha256: string; seq: number; previousGoodSha256: string | null } | null;
-  rollouts: StoreKindRolloutView[];
+  rollouts: StoreDriverRolloutView[];
   /** Where a rollback goes now: the server decides, a client never derives it. */
   rollbackTarget: string | null;
   /** A rollback that stopped part way, until it ends good. Unless it targets the current release, no rollout begins meanwhile. */
   unfinishedRollback: string | null;
 }
 
-export interface StoreKindRolloutResultView {
-  rollout: StoreKindRolloutView;
+export interface StoreDriverRolloutResultView {
+  rollout: StoreDriverRolloutView;
   /** The verticals this request moved. */
   moved: string[];
   /** False when verticals remain: post the same rollout again. */
