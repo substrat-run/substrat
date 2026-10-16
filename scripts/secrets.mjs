@@ -229,6 +229,20 @@ const MANIFEST = {
 };
 
 /**
+ * The scope-store envelope's keys (K-52), one signer per audience: the canonical name of the
+ * PKCS8 private key, the worker that signs with it, and the public-key list every store script
+ * is uploaded with. The control plane uploads store scripts, so it alone maps both lists.
+ * `tools/store-keys.mts` generates and checks these; `tools/secrets-coverage.mjs` holds the
+ * manifest, both env templates and secrets/README.md to them.
+ */
+const STORE_KEY_AUDIENCES = {
+  caller: { privateKey: 'STORE_CALLER_KEY', signer: 'router', publicKeys: 'STORE_CALLER_PUBLIC_KEYS' },
+  platform: { privateKey: 'STORE_PLATFORM_KEY', signer: 'control-plane', publicKeys: 'STORE_PLATFORM_PUBLIC_KEYS' },
+};
+/** The worker that uploads store scripts, and so holds both public-key lists. */
+const STORE_KEY_UPLOADER = 'control-plane';
+
+/**
  * Canonical keys the file carries that NO worker should ever receive → `key: why`.
  *
  * `push` already only walks MANIFEST, so these are excluded by construction; the list
@@ -311,6 +325,11 @@ function parseEnvFile(path) {
   } catch {
     fail(`env file not found: ${path}\n  copy the template: cp ${path}.example ${path}`);
   }
+  return parseEnvText(text);
+}
+
+/** The grammar `parseEnvFile` reads, on text. `tools/store-keys.mts` reads the same file with it. */
+function parseEnvText(text) {
   const out = {};
   for (const raw of text.split('\n')) {
     const line = raw.trim();
@@ -730,4 +749,4 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   }
 }
 
-export { MANIFEST };
+export { MANIFEST, STORE_KEY_AUDIENCES, STORE_KEY_UPLOADER, parseEnvText };

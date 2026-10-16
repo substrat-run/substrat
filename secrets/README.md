@@ -91,6 +91,7 @@ throwaway — never reuse a prod secret locally.
 | `secrets.mjs dev` | Write `apps/*/.dev.vars` from the dev file. |
 | `secrets.mjs generate` | Fill blank *generatable* random secrets in the file. |
 | `secrets.mjs github` | Publish the allow-listed account **ids** to the repo's Actions **variables**. Never secrets. |
+| `pnpm store-keys generate\|doctor\|rotate` | The scope-store envelope keys: make one, check the set, walk a rotation. Never edits the file. See [store-keys.md](./store-keys.md). |
 | flags | `--file <path>` · `--only control-plane\|builder\|dashboard\|router` · `--dry-run` · `--skip-verticals` |
 
 Root aliases: `pnpm secrets:check`, `pnpm secrets:push`, `pnpm secrets:dev`.
@@ -118,6 +119,16 @@ The env file holds one canonical key; the tool sets it under each worker's own n
 | `SECRET_BOX_KEY` | — | `SECRET_BOX_KEY` | — |
 | `GITHUB_APP_ID` / `_SLUG` / `_PRIVATE_KEY` | — | same names | — |
 | `R2_LAKE_SQL_TOKEN` | `R2_SQL_TOKEN` | — | — |
+| `STORE_PLATFORM_KEY` | `STORE_PLATFORM_KEY` | — | — |
+| `STORE_CALLER_KEY` | — | — | `STORE_CALLER_KEY` |
+| `STORE_CALLER_PUBLIC_KEYS` / `STORE_PLATFORM_PUBLIC_KEYS` | same names | — | — |
+
+The four `STORE_*` keys sign and verify the scope-store envelope (K-52). Each private key
+lives on its signer alone; the two public lists are not secret and live on the control
+plane, which writes them into every store script it uploads. `generate` does not fill them,
+since a random token is not a key: [store-keys.md](./store-keys.md) is their runbook, and
+`pnpm lint:secrets-coverage` holds these rows, both templates and the manifest to one
+inventory (`STORE_KEY_AUDIENCES` in `scripts/secrets.mjs`).
 
 `PLATFORM_SECRET` and `ROUTER_SECRET` are also injected into every pushed vertical by
 the control plane's WfP uploader — verticals need no secret setup of their own, but the
