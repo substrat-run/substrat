@@ -8,6 +8,9 @@
  * - `store_kind_rollouts`: one row per attempt to move every script of the kind to a release, in
  *   `seq` order. A row is `rolling` until its holder ends it `good`, `failed` or `diverged`.
  * - `store_kind_current`: the release the last `good` rollout moved every script to.
+ * - `store_kind_rollout_walks`: the walk ledger of a rollout paged over several requests (#2312).
+ *   Each row is one declaration (vertical, binding, and the version that first declared it) an
+ *   earlier request of the same attempt walked; the next request walks only what is not in it.
  *
  * "The immediately previous good release" (D-63) is recorded, never derived from an ordering:
  * each rollout row names `previous_good_sha256`, the release a rollback from it returns to. A
@@ -23,6 +26,7 @@
  */
 import { substratError } from '@substrat-run/contracts';
 import type { SwitchSql } from './system-switch.js';
+import { kindDeclarationsOf } from './vertical-scope-stores.js';
 
 /** Interpolated into both adapters' directory DDL, so `lint:spine-ddl` sees one spelling on each side. */
 export const STORE_KIND_RELEASES_DDL = `
@@ -54,6 +58,16 @@ export const STORE_KIND_RELEASES_DDL = `
     kind   TEXT PRIMARY KEY,
     sha256 TEXT NOT NULL,
     seq    INTEGER NOT NULL
+  );
+  -- One declaration an attempt walked (#2312). The attempt is the seq of its first row; a row
+  -- continues it while the rows before it are paused at the same release and action.
+  CREATE TABLE IF NOT EXISTS store_kind_rollout_walks (
+    kind             TEXT NOT NULL,
+    attempt          INTEGER NOT NULL,
+    vertical_slug    TEXT NOT NULL,
+    binding          TEXT NOT NULL,
+    first_version_id TEXT NOT NULL,
+    PRIMARY KEY (kind, attempt, vertical_slug, binding, first_version_id)
   );
   CREATE TABLE IF NOT EXISTS store_kind_holds (
     kind       TEXT NOT NULL,
@@ -335,19 +349,54 @@ export function beginStoreKindRolloutIn(
   return rolloutAt(db, input.kind, next)!;
 }
 
-/** End a rollout the caller began, as the exclusive holder. A good one makes its release current. */
+/**
+ * End a rollout the caller began, as the exclusive holder. A good one makes its release current.
+ *
+ * `walked` is what this request walked, and only a `paused` end takes it (#2312): it joins the
+ * attempt's ledger in the transaction that writes the state, so a request that stops before its
+ * end leaves no ledger rows, and the next attempt walks those verticals again rather than skip
+ * them. Any end drops the kind's ledger of every other attempt, and any end but `paused` drops this
+ * attempt's too: only a paused attempt is continued.
+ */
 export function finishStoreKindRolloutIn(
   db: SwitchSql,
-  input: { kind: string; seq: number; holder: string; state: Exclude<StoreKindRolloutState, 'rolling'>; detail: string | null; at: string; nowMs: number },
+  input: {
+    kind: string;
+    seq: number;
+    holder: string;
+    state: Exclude<StoreKindRolloutState, 'rolling'>;
+    detail: string | null;
+    walked?: readonly StoreKindRolloutTarget[];
+    at: string;
+    nowMs: number;
+  },
 ): StoreKindRolloutRecord {
   assertExclusive(db, input.kind, input.holder, input.nowMs);
   const row = rolloutAt(db, input.kind, input.seq);
   if (!row) throw substratError('not_found', `'${input.kind}' has no rollout ${input.seq}`);
   if (row.state !== 'rolling') throw substratError('conflict', `rollout ${input.seq} of '${input.kind}' already ended ${row.state}`);
+  if (input.walked && input.state !== 'paused') {
+    throw substratError('validation_failed', `only a paused rollout records what it walked; ${input.seq} of '${input.kind}' ends ${input.state}`);
+  }
   db.run(
     'UPDATE store_kind_rollouts SET state = ?, ended_at = ?, detail = ? WHERE kind = ? AND seq = ?',
     input.state, input.at, input.detail, input.kind, input.seq,
   );
+  const attempt = attemptOf(db, input.kind, input.seq, row.sha256, row.action);
+  db.run(
+    `DELETE FROM store_kind_rollout_walks WHERE kind = ?${input.state === 'paused' ? ' AND attempt <> ?' : ''}`,
+    ...(input.state === 'paused' ? [input.kind, attempt] : [input.kind]),
+  );
+  if (input.state === 'paused') {
+    for (const target of input.walked ?? []) {
+      for (const store of target.stores) {
+        db.run(
+          `INSERT OR IGNORE INTO store_kind_rollout_walks (kind, attempt, vertical_slug, binding, first_version_id) VALUES (?, ?, ?, ?, ?)`,
+          input.kind, attempt, target.vertical, store.binding, store.firstVersionId,
+        );
+      }
+    }
+  }
   if (input.state === 'good') {
     db.run(
       `INSERT INTO store_kind_current (kind, sha256, seq) VALUES (?, ?, ?)
@@ -356,4 +405,104 @@ export function finishStoreKindRolloutIn(
     );
   }
   return rolloutAt(db, input.kind, input.seq)!;
+}
+
+/**
+ * One vertical's bindings of a kind as a rollout walks them (#2312). `firstVersionId` is the
+ * version that first declared the binding: a vertical deleted and registered again under the
+ * same slug declares it anew, under another id, so the ledger never counts the new one walked.
+ */
+export interface StoreKindRolloutTarget {
+  readonly vertical: string;
+  readonly stores: readonly { readonly binding: string; readonly firstVersionId: string }[];
+}
+
+/**
+ * The attempt the rollout at `seq` belongs to: the seq of the first row of the run of `paused`
+ * rows of the same release and action just before it, or `seq` itself. Any other row between
+ * (good, failed, diverged, a rolling one left by a holder that stopped, another release) ends the
+ * run, so its ledger is never read: what it walked may since have been moved elsewhere.
+ */
+function attemptOf(db: SwitchSql, kind: string, seq: number, sha256: string, action: StoreKindRolloutAction): number {
+  const before = db.all(
+    'SELECT seq, sha256, action, state FROM store_kind_rollouts WHERE kind = ? AND seq < ? ORDER BY seq DESC',
+    kind, seq,
+  ) as { seq: number; sha256: string; action: StoreKindRolloutAction; state: StoreKindRolloutState }[];
+  let attempt = seq;
+  for (const row of before) {
+    if (row.state !== 'paused' || row.sha256 !== sha256 || row.action !== action) break;
+    attempt = Number(row.seq);
+  }
+  return attempt;
+}
+
+interface DeclarationRow {
+  vertical_slug: string;
+  binding: string;
+  first_version_id: string;
+}
+
+/** Rows in (vertical, binding) order, grouped by vertical. */
+function targetsOf(rows: readonly DeclarationRow[]): StoreKindRolloutTarget[] {
+  const byVertical = new Map<string, { binding: string; firstVersionId: string }[]>();
+  for (const r of rows) {
+    const stores = byVertical.get(r.vertical_slug) ?? [];
+    stores.push({ binding: r.binding, firstVersionId: r.first_version_id });
+    byVertical.set(r.vertical_slug, stores);
+  }
+  return [...byVertical].map(([vertical, stores]) => ({ vertical, stores }));
+}
+
+/** A declaration the attempt walked: the ledger row of the same vertical, binding and first version. */
+const WALKED = `EXISTS (SELECT 1 FROM store_kind_rollout_walks AS w
+  WHERE w.kind = s.kind AND w.attempt = ? AND w.vertical_slug = s.vertical_slug
+    AND w.binding = s.binding AND w.first_version_id = s.first_version_id)`;
+
+/**
+ * What the next request of a rollout of `sha256` (or a rollback to it) walks (#2312): the first
+ * `limit` verticals, in (vertical, binding) order, with a declaration of the kind that the attempt
+ * it would continue has not walked, and how many verticals are pending in all. Asked before the
+ * request's row begins, as the exclusive holder will begin it: a request that continues no attempt
+ * walks every declaration. `walked` counts the verticals the continued attempt walked that still
+ * declare the kind. `unreadable` is `kindDeclarationsOf`'s: a caller that must reach every script
+ * refuses while it is not empty.
+ */
+export function storeKindRolloutPendingIn(
+  db: SwitchSql,
+  input: { kind: string; sha256: string; action: StoreKindRolloutAction; limit: number },
+): { verticals: StoreKindRolloutTarget[]; pending: number; walked: number; unreadable: string[] } {
+  if (!(Number.isInteger(input.limit) && input.limit > 0)) throw substratError('validation_failed', 'a rollout page needs a positive limit');
+  // Indexes every vertical not indexed yet, and names the ones that cannot say what they declare.
+  const { unreadable } = kindDeclarationsOf(db, input.kind);
+  const next = Number((db.all('SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM store_kind_rollouts WHERE kind = ?', input.kind)[0] as { next: number }).next);
+  const attempt = attemptOf(db, input.kind, next, input.sha256, input.action);
+  const rows = db.all(
+    `SELECT s.vertical_slug, s.binding, s.first_version_id, ${WALKED} AS walked
+       FROM vertical_scope_stores AS s WHERE s.kind = ? ORDER BY s.vertical_slug, s.binding`,
+    attempt, input.kind,
+  ) as (DeclarationRow & { walked: number })[];
+  const pending = targetsOf(rows.filter((r) => !r.walked));
+  const walked = new Set(rows.filter((r) => r.walked).map((r) => r.vertical_slug)).size;
+  return { verticals: pending.slice(0, input.limit), pending: pending.length, walked, unreadable };
+}
+
+/**
+ * What the attempt of the rollout at `seq` walked in its EARLIER requests and still declares the
+ * kind, in (vertical, binding) order: the verticals a failure part way returns, besides the ones
+ * its own request reached (#2312). At most `limit`, and `walked` counts them all.
+ */
+export function storeKindRolloutWalkedIn(
+  db: SwitchSql,
+  input: { kind: string; seq: number; limit: number },
+): { verticals: StoreKindRolloutTarget[]; walked: number } {
+  if (!(Number.isInteger(input.limit) && input.limit > 0)) throw substratError('validation_failed', 'a rollout page needs a positive limit');
+  const row = rolloutAt(db, input.kind, input.seq);
+  if (!row) throw substratError('not_found', `'${input.kind}' has no rollout ${input.seq}`);
+  const attempt = attemptOf(db, input.kind, input.seq, row.sha256, row.action);
+  const walked = targetsOf(db.all(
+    `SELECT s.vertical_slug, s.binding, s.first_version_id FROM vertical_scope_stores AS s
+      WHERE s.kind = ? AND ${WALKED} ORDER BY s.vertical_slug, s.binding`,
+    input.kind, attempt,
+  ) as DeclarationRow[]);
+  return { verticals: walked.slice(0, input.limit), walked: walked.length };
 }

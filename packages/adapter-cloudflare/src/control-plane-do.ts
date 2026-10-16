@@ -92,11 +92,14 @@ import {
   releaseStoreKindHoldIn,
   storeKindReleaseIn,
   storeKindStateIn,
+  storeKindRolloutPendingIn,
+  storeKindRolloutWalkedIn,
   type StoreKindHoldMode,
   type StoreKindReleaseRecord,
   type StoreKindRolloutAction,
   type StoreKindRolloutRecord,
   type StoreKindRolloutState,
+  type StoreKindRolloutTarget,
   type StoreKindState,
   forgetVerticalScopeStores,
   indexVersionScopeStores,
@@ -1473,6 +1476,9 @@ export const REPLIED_METHODS = [
   // validation_failed or unavailable.
   'recordStoreKindRelease',
   'storeKindDeclarations',
+  // #2312: a rollout page refuses a limit that is not positive, and an unknown rollout.
+  'storeKindRolloutPending',
+  'storeKindRolloutWalked',
   'holdStoreKind',
   'beginStoreKindRollout',
   'finishStoreKindRollout',
@@ -2335,6 +2341,19 @@ export class ControlPlaneDO extends DurableObject {
     return this.ctx.storage.transactionSync(() => kindDeclarationsOf(this.kernelSql, kind));
   }
 
+  storeKindRolloutPending(input: { kind: string; sha256: string; action: StoreKindRolloutAction; limit: number }): {
+    verticals: StoreKindRolloutTarget[];
+    pending: number;
+    walked: number;
+    unreadable: string[];
+  } {
+    return this.ctx.storage.transactionSync(() => storeKindRolloutPendingIn(this.kernelSql, input));
+  }
+
+  storeKindRolloutWalked(input: { kind: string; seq: number; limit: number }): { verticals: StoreKindRolloutTarget[]; walked: number } {
+    return this.ctx.storage.transactionSync(() => storeKindRolloutWalkedIn(this.kernelSql, input));
+  }
+
   holdStoreKind(input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): boolean {
     return this.ctx.storage.transactionSync(() => holdStoreKindIn(this.kernelSql, { ...input, nowMs: Date.now() }));
   }
@@ -2360,6 +2379,7 @@ export class ControlPlaneDO extends DurableObject {
     holder: string;
     state: Exclude<StoreKindRolloutState, 'rolling'>;
     detail: string | null;
+    walked?: readonly StoreKindRolloutTarget[];
     at: string;
   }): StoreKindRolloutRecord {
     return this.ctx.storage.transactionSync(() => finishStoreKindRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() }));

@@ -147,7 +147,7 @@ export type {
 export { createWfpUploader, createWfpModulesFetcher, createWfpBindingsPatcher } from './wfp.js';
 export { createScopeStoreEnsurer, createStoreCanaryEnsurer, STORE_BUILD_VAR, STORE_RELEASE_VAR } from './store-script.js';
 export {
-  ROLLOUT_FLEET_MAX,
+  ROLLOUT_WALKS_PER_REQUEST,
   ROLLOUT_HOLD_TTL_MS,
   ROLLOUT_VERTICALS_PER_REQUEST,
   canaryObjectName,

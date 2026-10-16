@@ -5,7 +5,7 @@ import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
 import type { ScopeCopyBackfillResult, SubjectErasureFence } from './scope-copy-ledger.js';
 import type { VerticalScopeStore } from './vertical-scope-stores.js';
-import type { StoreKindHoldMode, StoreKindReleaseRecord, StoreKindRolloutAction, StoreKindRolloutRecord, StoreKindRolloutState, StoreKindState } from './store-kind-releases.js';
+import type { StoreKindHoldMode, StoreKindReleaseRecord, StoreKindRolloutAction, StoreKindRolloutRecord, StoreKindRolloutState, StoreKindRolloutTarget, StoreKindState } from './store-kind-releases.js';
 import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
   OnBehalfOf,
@@ -3109,6 +3109,25 @@ export interface HostAdmin {
    */
   storeKindDeclarations(actor: PlatformActorId, kind: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
   /**
+   * What the next request of a rollout of `sha256` (or a rollback to it) walks (#2312): the first
+   * `limit` verticals, in (vertical, binding) order, holding a declaration of the kind the attempt
+   * it would continue has not walked yet; `pending` counts them all and `walked` the verticals that
+   * attempt walked. A request that continues no attempt (the rows before it are not `paused` at the
+   * same release and action) walks every declaration. `unreadable` as `storeKindDeclarations`.
+   */
+  storeKindRolloutPending(
+    actor: PlatformActorId,
+    input: { kind: string; sha256: string; action: StoreKindRolloutAction; limit: number },
+  ): Promise<{ verticals: StoreKindRolloutTarget[]; pending: number; walked: number; unreadable: string[] }>;
+  /**
+   * What the attempt of the rollout at `seq` walked in its earlier requests, in (vertical, binding)
+   * order, at most `limit` (#2312): what a failure part way returns besides its own request's.
+   */
+  storeKindRolloutWalked(
+    actor: PlatformActorId,
+    input: { kind: string; seq: number; limit: number },
+  ): Promise<{ verticals: StoreKindRolloutTarget[]; walked: number }>;
+  /**
    * Take or renew a lease on a kind (#2300): `exclusive` for a rollout or rollback, `shared` for
    * a push or serve rebuilding a script. False when a live hold of another holder excludes it.
    * `renew` extends only a hold the holder still holds (a lapsed one answers false, never a fresh
@@ -3128,10 +3147,21 @@ export interface HostAdmin {
     actor: PlatformActorId,
     input: { kind: string; sha256: string; action: StoreKindRolloutAction; holder: string },
   ): Promise<StoreKindRolloutRecord>;
-  /** End a rollout as its exclusive holder; a `good` end makes its release current. Audited as its begin. */
+  /**
+   * End a rollout as its exclusive holder; a `good` end makes its release current. Audited as its
+   * begin. A `paused` end records `walked`, what its request walked, in the attempt's ledger, in
+   * the same transaction (#2312); any other end drops the ledger, and `walked` with it is refused.
+   */
   finishStoreKindRollout(
     actor: PlatformActorId,
-    input: { kind: string; seq: number; holder: string; state: Exclude<StoreKindRolloutState, 'rolling'>; detail: string | null },
+    input: {
+      kind: string;
+      seq: number;
+      holder: string;
+      state: Exclude<StoreKindRolloutState, 'rolling'>;
+      detail: string | null;
+      walked?: readonly StoreKindRolloutTarget[];
+    },
   ): Promise<StoreKindRolloutRecord>;
   /**
    * One scope's directory record. Cross-checks the (tenantId, scopeId) pair and

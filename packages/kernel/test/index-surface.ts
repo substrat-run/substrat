@@ -534,6 +534,8 @@ export const INDEX_VALUE_EXPORTS = [
   'statefulTablesOf',
   'storeKindReleaseIn',
   'storeKindStateIn',
+  'storeKindRolloutPendingIn',
+  'storeKindRolloutWalkedIn',
   'strandJudgmentsOf',
   'subjectErasureClaimParams',
   'subjectGrantState',

@@ -513,6 +513,7 @@ import type {
   StoreKindRolloutAction,
   StoreKindRolloutRecord,
   StoreKindRolloutState,
+  StoreKindRolloutTarget,
   StoreKindState,
 } from '@substrat-run/kernel';
 import {
@@ -689,6 +690,13 @@ interface ControlPlaneStub {
   getStoreKindRelease(kind: string, sha256: string): Promise<StoreKindReleaseRecord | undefined>;
   storeKindState(kind: string): Promise<StoreKindState>;
   storeKindDeclarations(kind: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
+  storeKindRolloutPending(input: { kind: string; sha256: string; action: StoreKindRolloutAction; limit: number }): Promise<{
+    verticals: StoreKindRolloutTarget[];
+    pending: number;
+    walked: number;
+    unreadable: string[];
+  }>;
+  storeKindRolloutWalked(input: { kind: string; seq: number; limit: number }): Promise<{ verticals: StoreKindRolloutTarget[]; walked: number }>;
   holdStoreKind(input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): Promise<boolean>;
   releaseStoreKindHold(input: { kind: string; holder: string }): Promise<void>;
   beginStoreKindRollout(input: {
@@ -705,6 +713,7 @@ interface ControlPlaneStub {
     holder: string;
     state: Exclude<StoreKindRolloutState, 'rolling'>;
     detail: string | null;
+    walked?: readonly StoreKindRolloutTarget[];
     at: string;
   }): Promise<StoreKindRolloutRecord>;
   getBlobStore(
@@ -8518,6 +8527,16 @@ export class CloudflareScopeHost implements ScopeHost {
         const declared = await this.directory('storeKindDeclarations', kind);
         await this.recordAccess(actor, 'storeKindDeclarations', { tenantId: null }, { kind }, declared.verticals.length);
         return declared;
+      },
+      storeKindRolloutPending: async (actor, input) => {
+        const page = await this.directory('storeKindRolloutPending', input);
+        await this.recordAccess(actor, 'storeKindRolloutPending', { tenantId: null }, { kind: input.kind, sha256: input.sha256, action: input.action }, page.verticals.length);
+        return page;
+      },
+      storeKindRolloutWalked: async (actor, input) => {
+        const walked = await this.directory('storeKindRolloutWalked', input);
+        await this.recordAccess(actor, 'storeKindRolloutWalked', { tenantId: null }, { kind: input.kind, seq: input.seq }, walked.verticals.length);
+        return walked;
       },
       holdStoreKind: async (_actor, input) => this.directory('holdStoreKind', input),
       releaseStoreKindHold: async (_actor, input) => {

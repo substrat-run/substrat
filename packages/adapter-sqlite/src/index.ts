@@ -511,6 +511,8 @@ import {
   releaseStoreKindHoldIn,
   storeKindReleaseIn,
   storeKindStateIn,
+  storeKindRolloutPendingIn,
+  storeKindRolloutWalkedIn,
   splitManifestMigrations,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
@@ -10552,6 +10554,16 @@ export class SqliteScopeHost implements ScopeHost {
         const declared = this.directory.transaction(() => kindDeclarationsOf(switchSqlOf(this.directory), kind))();
         this.recordAccess(actor, 'storeKindDeclarations', { tenantId: null }, { kind }, declared.verticals.length);
         return declared;
+      },
+      storeKindRolloutPending: async (actor, input) => {
+        const page = this.directory.transaction(() => storeKindRolloutPendingIn(switchSqlOf(this.directory), input))();
+        this.recordAccess(actor, 'storeKindRolloutPending', { tenantId: null }, { kind: input.kind, sha256: input.sha256, action: input.action }, page.verticals.length);
+        return page;
+      },
+      storeKindRolloutWalked: async (actor, input) => {
+        const walked = this.directory.transaction(() => storeKindRolloutWalkedIn(switchSqlOf(this.directory), input))();
+        this.recordAccess(actor, 'storeKindRolloutWalked', { tenantId: null }, { kind: input.kind, seq: input.seq }, walked.verticals.length);
+        return walked;
       },
       holdStoreKind: async (_actor, input) =>
         this.directory.transaction(() =>

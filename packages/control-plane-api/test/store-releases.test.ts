@@ -22,7 +22,7 @@ import {
   STORE_RELEASE_VAR,
   storedReleaseLoader,
   DEV_ACTOR_HEADER,
-  ROLLOUT_FLEET_MAX,
+  ROLLOUT_WALKS_PER_REQUEST,
   ROLLOUT_HOLD_TTL_MS,
   runStoreKindRollout,
   UNSAFE_devPlatformActorAuth,

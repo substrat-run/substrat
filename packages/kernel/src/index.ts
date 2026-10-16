@@ -656,11 +656,14 @@ export {
   releaseStoreKindHoldIn,
   storeKindReleaseIn,
   storeKindStateIn,
+  storeKindRolloutPendingIn,
+  storeKindRolloutWalkedIn,
   type StoreKindHoldMode,
   type StoreKindReleaseRecord,
   type StoreKindRolloutAction,
   type StoreKindRolloutRecord,
   type StoreKindRolloutState,
+  type StoreKindRolloutTarget,
   type StoreKindState,
 } from './store-kind-releases.js';
 export type { SplitManifest } from './version-migrations.js';
