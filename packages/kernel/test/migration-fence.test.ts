@@ -229,9 +229,9 @@ describe('the data-loss fence (#115)', () => {
 
     it('a __proto__ declaration key is refused, as the push boundary refuses it (#2322 r2)', () => {
       const discards = JSON.parse('{"__proto__":"why"}') as Record<string, string>;
-      expect(invalid({ sql: 'DROP TABLE notes;', discards })).toContain('discards names __proto__');
+      expect(invalid({ sql: 'DROP TABLE notes;', discards })).toContain('discards names __proto__, which a declaration cannot carry');
       const moves = JSON.parse('{"__proto__":"notes"}') as Record<string, string>;
-      expect(invalid({ sql: 'DROP TABLE notes;', moves })).toContain('moves names __proto__');
+      expect(invalid({ sql: 'DROP TABLE notes;', moves })).toContain('moves names __proto__, which a declaration cannot carry');
     });
 
     it('while constructor and prototype are ordinary table names a discard may name (#2322 r2)', () => {
