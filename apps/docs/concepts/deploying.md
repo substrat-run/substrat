@@ -221,7 +221,9 @@ declarations were carried, or a migration that declares none, shows none.
 
 A reason has to say something a reviewer can read: one of only whitespace or invisible characters
 is refused, by the same rule at the push and when the migration runs. A declaration cannot name
-`__proto__`, `constructor` or `prototype`.
+`__proto__`, refused at both too; `constructor` and `prototype` are ordinary table names. A
+migration's `version` is plain text: one holding a newline, tab or any other invisible character
+is refused at the push, because the review prints it on one line.
 
 Declarations are not part of the SQL, so they do not change the digest a scope journals for the
 migration, and editing one on a shipped migration does not make a scope that already ran it fail
