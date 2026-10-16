@@ -29,7 +29,8 @@ export interface PromotionReview {
    * when there is nothing to compare (a first promotion, or promoting what already serves)
    * or when the incoming version's manifest carries no SQL. Null is never "no migrations":
    * with something serving and a different version incoming, the dialog says the SQL is not
-   * available and asks, whether or not the registry's gate refuses (#1754).
+   * available and asks, whether or not the registry's gate refuses (a version pushed by a CLI
+   * older than 0.38.0 moves no digest on a SQL-only change).
    */
   migrations: MigrationDiff | null;
   /**

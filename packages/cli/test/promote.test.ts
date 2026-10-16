@@ -79,7 +79,8 @@ describe('substrat promote — a refusal prints both diffs (#1677)', () => {
     expect(text).toContain('prod serves v1; promoting v2.');
     expect(text).toMatch(/permission changes:\n {2}\+ desk:admin {2}Administer\n {2}role agent: \+desk:admin/);
     expect(text).toMatch(/migration changes:\n {2}\+ desk 0002-priority\n {6}ALTER TABLE ticket\n {6}ADD COLUMN priority TEXT;/);
-    expect(text).toContain('#1754');
+    // #1754 is fixed (#1949): the registry refuses a SQL-only change, so no note says otherwise.
+    expect(text).not.toContain('does not yet require');
     // The diff was taken against what prod SERVES, over the owner routes.
     expect(seen).toContain('GET /api/verticals/desk/versions/v2/migrations?base=v1');
   });
@@ -204,10 +205,101 @@ describe('the diff formatters', () => {
       diff({ baseline: 'unavailable', changed: [{ moduleId: 'desk', version: '0001', sql: null }], total: 9, truncated: true }),
       true,
     );
-    expect(out[0]).toMatch(/predates carried migrations/);
-    expect(out[1]).toMatch(/^~ \(edited after shipping.*\) desk 0001$/);
-    expect(out[2]).toMatch(/SQL left out/);
+    // A cut list cannot say whether an entry left out of it discards data, so it says so first.
+    expect(out[0]).toMatch(/^! this list is cut, so it cannot show whether/);
+    expect(out[1]).toMatch(/predates carried migrations/);
+    expect(out[2]).toMatch(/^~ \(edited after shipping.*\) desk 0001$/);
+    expect(out[3]).toMatch(/SQL left out/);
     expect(out.at(-1)).toBe('(2 of 9 shown; read the rest in the repository)');
     expect(formatMigrationDiff(diff({ added: [], total: 0 }), false)).toEqual(['no SQL migration added or edited']);
+  });
+
+  it('formatMigrationDiff: each declared move and discard under its migration, counted first, every pusher string quoted (#2322)', () => {
+    const out = formatMigrationDiff(
+      diff({
+        added: [
+          { moduleId: 'desk', version: '0002', sql: 'DROP TABLE legacy;', discards: { legacy: 'unused since 2024\n+ desk 0003\u001b[2J\u202Ekeep' }, moves: { 'a.b': 'c.d' } },
+          { moduleId: 'desk', version: '0003', sql: 'SELECT 1;' },
+        ],
+        changed: [{ moduleId: 'desk', version: '0001', sql: 'SELECT 0;', edited: 'declarations', discards: { t: 'why' } }],
+        total: 3,
+      }),
+      false,
+    );
+    expect(out[0]).toBe("! this promote deliberately discards data in 2 places; each reason is the migration author's own");
+    expect(out[1]).toMatch(/^~ \(declarations edited after shipping; .*\) desk 0001$/);
+    expect(out[2]).toBe('    discards "t": "why"');
+    const i = out.indexOf('+ desk 0002');
+    // The newline, the ESC and the override are escapes on ONE line: nothing forges "+ desk 0003".
+    expect(out[i + 1]).toBe('    discards "legacy": "unused since 2024\\n+ desk 0003<U+001B>[2J<U+202E>keep"');
+    expect(out[i + 2]).toBe('    moves "a.b" → "c.d" (verified at apply)');
+    expect(out[i + 3]).toBe('    DROP TABLE legacy;');
+    expect(out.filter((l) => l === '+ desk 0003')).toHaveLength(1);
+    // A migration declaring nothing prints no declaration line, and a set with no discard no count.
+    expect(out[out.indexOf('+ desk 0003') + 1]).toBe('    SELECT 1;');
+    expect(formatMigrationDiff(diff({ added: [{ moduleId: 'd', version: '1', sql: 's', moves: { a: 'b' } }], total: 1 }), false)[0]).toBe('+ d 1');
+    const leftOut = formatMigrationDiff(diff({ added: [{ moduleId: 'd', version: '1', sql: null, declarationsLeftOut: true }], total: 1, truncated: true }), false);
+    expect(leftOut[0]).toMatch(/^! this list is cut, so it cannot show whether a migration left out of it discards data/);
+    expect(leftOut[2]).toMatch(/declares moves or discards, left out/);
+  });
+
+  it('formatMigrationDiff: no pusher string reaches the terminal raw — reason, target, id and SQL alike (#2322 r1)', () => {
+    const c = (...p: number[]) => String.fromCodePoint(...p);
+    // ESC, CR, BEL, DEL, CSI (C1), a bidi override, a zero-width space and a line separator.
+    const hostile = c(0x1b) + '[2J' + c(0x0d, 0x07, 0x7f, 0x9b, 0x202e, 0x200b, 0x2028);
+    const shown = '<U+001B>[2J<U+000D><U+0007><U+007F><U+009B><U+202E><U+200B><U+2028>';
+    const out = formatMigrationDiff(
+      diff({
+        added: [{ moduleId: `desk${hostile}`, version: `0002${hostile}`, sql: `SELECT 1;${hostile}\nSELECT 2;`, discards: { [`t${hostile}`]: `why${hostile}` }, moves: { [`a${hostile}`]: `b${hostile}` } }],
+        total: 1,
+      }),
+      false,
+    );
+    expect(out).toContain(`+ "desk${shown}" "0002${shown}"`);
+    expect(out).toContain(`    discards "t${shown}": "why${shown}"`);
+    expect(out).toContain(`    moves "a${shown}" → "b${shown}" (verified at apply)`);
+    expect(out).toContain(`    SELECT 1;${shown}`);
+    expect(out).toContain('    SELECT 2;');
+    for (const line of out) expect(line, line).not.toMatch(/[\p{Cc}\p{Cf}\u2028\u2029]/u);
+  });
+
+  it('formatMigrationDiff: a version with a newline cannot forge an entry above the real one (#2322 r2)', () => {
+    const version = '0007\n+ helpdesk 0008-harmless\n    SELECT 1;\nfake';
+    const out = formatMigrationDiff(
+      diff({ added: [{ moduleId: 'helpdesk', version, sql: 'DROP TABLE x;', discards: { x: 'why' } }], total: 1 }),
+      false,
+    );
+    const at = out.findIndex((l) => l.startsWith('+ '));
+    expect(out[at]).toBe('+ helpdesk "0007\\n+ helpdesk 0008-harmless\\n    SELECT 1;\\nfake"');
+    expect(out.slice(at + 1)).toEqual(['    discards "x": "why"', '    DROP TABLE x;']);
+    expect(out.filter((l) => l.startsWith('+ '))).toHaveLength(1);
+    // Tab, zero-width and bidi too, all inside the one quoted header token (#2322 r3).
+    const odd = `0007\n+ x\t${String.fromCodePoint(0x200b, 0x202e)}y`;
+    const oddOut = formatMigrationDiff(diff({ added: [{ moduleId: 'helpdesk', version: odd, sql: 's' }], total: 1 }), false);
+    expect(oddOut[0]).toBe('+ helpdesk "0007\\n+ x\\t<U+200B><U+202E>y"');
+    expect(oddOut).toHaveLength(2);
+    // A plain id prints bare, as before.
+    expect(formatMigrationDiff(diff({ added: [{ moduleId: '@acme/desk', version: '0001-init', sql: 's' }], total: 1 }), false)[0]).toBe('+ @acme/desk 0001-init');
+  });
+
+  it('formatMigrationDiff: CRLF SQL prints its lines, and a lone CR still shows (#2322 r2)', () => {
+    const out = formatMigrationDiff(diff({ added: [{ moduleId: 'd', version: '1', sql: 'SELECT 1;\r\nSELECT 2;\rX' }], total: 1 }), false);
+    expect(out).toEqual(['+ d 1', '    SELECT 1;', '    SELECT 2;<U+000D>X']);
+  });
+
+  it('formatMigrationDiff: a long or many-line reason is cut where the review cuts it, saying where the rest is (#2322 r1)', () => {
+    const many = Array.from({ length: 10 }, (_, i) => `line ${i}`).join('\n');
+    const out = formatMigrationDiff(diff({ added: [{ moduleId: 'd', version: '1', sql: 's', discards: { t: many } }], total: 1 }), false);
+    const line = out.find((l) => l.startsWith('    discards'))!;
+    expect(line).toContain('line 5"…');
+    expect(line).not.toContain('line 6');
+    expect(line).toMatch(/\(cut; the whole reason is in the dashboard.s promote dialog and the migration.s source\)$/);
+    const short = formatMigrationDiff(diff({ added: [{ moduleId: 'd', version: '1', sql: 's', discards: { t: 'why' } }], total: 1 }), false);
+    expect(short).toContain('    discards "t": "why"');
+  });
+
+  it('formatMigrationDiff: says "at least" when the answer is cut (#2322 r1)', () => {
+    const out = formatMigrationDiff(diff({ added: [{ moduleId: 'd', version: '1', sql: 's', discards: { t: 'why' } }], total: 300, truncated: true }), false);
+    expect(out[0]).toBe("! this promote deliberately discards data in at least 1 place; each reason is the migration author's own");
   });
 });

@@ -648,3 +648,75 @@ describe('a restore whose backfill cannot be armed still succeeds', () => {
     });
   });
 });
+
+describe('a directory from before #2322: its migration rows predate the declarations column', () => {
+  type Directory = ControlPlaneDO & {
+    readVersionMigrations(id: string): { verticalSlug: string; migrations: unknown[] | null } | undefined;
+    backfillArmed: Promise<void>;
+    exportDump(): ScopeDumpTable[];
+    importDump(tables: ScopeDumpTable[]): Promise<void>;
+  };
+  const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`version-declarations-${ulid()}`));
+  const inDirectory = <R>(fn: (d: Directory, state: DurableObjectState) => R | Promise<R>) =>
+    runInDurableObject(stub, (instance, state) => fn(instance as unknown as Directory, state));
+  const plain = [{ moduleId: 'helpdesk', version: '0001-init', sql: 'CREATE TABLE a (id TEXT);' }];
+  const declared = [{ ...plain[0]!, discards: { 'a.note': 'never read' } }];
+  const older = ulid();
+  const columns = (state: DurableObjectState) =>
+    state.storage.sql
+      .exec("SELECT name FROM pragma_table_info('vertical_version_migrations')")
+      .toArray()
+      .map((r) => r.name);
+  let before: ScopeDumpTable[] = [];
+
+  beforeAll(async () => {
+    await inDirectory((instance, state) => {
+      state.storage.sql.exec('ALTER TABLE vertical_version_migrations DROP COLUMN declarations');
+      state.storage.sql.exec(
+        `INSERT INTO vertical_versions (id, vertical_slug, version, manifest_digest, permission_digest,
+           migration_digest, admission, manifest_json, created_at, migration_count, migrations_split)
+         VALUES (?, 'acme', '1.0.0', 'm', 'p', 'g', 'admitted', '{}', '2026-09-01T00:00:00.000Z', 1, 1)`,
+        older,
+      );
+      state.storage.sql.exec(
+        `INSERT INTO vertical_version_migrations (version_id, ordinal, module_id, version, sql) VALUES (?, 0, ?, ?, ?)`,
+        older, plain[0]!.moduleId, plain[0]!.version, plain[0]!.sql,
+      );
+      before = instance.exportDump();
+      expect(before.find((t) => t.name === 'vertical_version_migrations')!.columns).not.toContain('declarations');
+    });
+  });
+
+  const check = (d: Directory, state: DurableObjectState) => {
+    expect(columns(state)).toContain('declarations');
+    expect(d.readVersionMigrations(older)?.migrations).toEqual(plain);
+    // A row written since carries its declarations, and reads them back.
+    const id = ulid();
+    state.storage.sql.exec(
+      `INSERT INTO vertical_versions (id, vertical_slug, version, manifest_digest, permission_digest,
+         migration_digest, admission, manifest_json, created_at, migration_count, migrations_split)
+       VALUES (?, 'acme', ?, 'm', 'p', 'g', 'admitted', '{}', '2026-09-01T00:00:00.000Z', 1, 1)`,
+      id, `1.1.${id.toLowerCase()}`,
+    );
+    state.storage.sql.exec(
+      `INSERT INTO vertical_version_migrations (version_id, ordinal, module_id, version, sql, declarations) VALUES (?, 0, ?, ?, ?, ?)`,
+      id, plain[0]!.moduleId, plain[0]!.version, plain[0]!.sql, JSON.stringify({ discards: declared[0]!.discards }),
+    );
+    expect(d.readVersionMigrations(id)?.migrations).toEqual(declared);
+  };
+
+  it('constructs over it, adds the column, and reads the older rows as declaring nothing', async () => {
+    await inDirectory(async (_instance, state) => {
+      const deployed = new ControlPlaneDO(state, env) as Directory;
+      await deployed.backfillArmed;
+      check(deployed, state);
+    });
+  });
+
+  it('and a restore of a dump of the older shape does the same', async () => {
+    await inDirectory(async (instance, state) => {
+      await instance.importDump(before);
+      check(instance, state);
+    });
+  });
+});

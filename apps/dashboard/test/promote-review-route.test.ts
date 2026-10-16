@@ -142,7 +142,8 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
     await publish(v.v3, '1.2.0', { p: 'perm-1', m: 'mig-3' }, registryOf());
     await publish(v.v4, '2.0.0', { p: 'perm-4', m: 'mig-4' }, registryOf(['hr:admin', 'hr:export']));
     await publish(v.old, '0.1.0', { p: 'perm-0', m: 'mig-0' }, null); // pushed before D-39: no registry
-    // s1 → s2 adds one SQL migration and moves NO digest: what #1754 is about.
+    // s1 → s2 adds one SQL migration and moves NO digest: two versions pushed by a CLI older than
+    // 0.38.0, whose digest covered only the Durable-Object classes (#1754, fixed for later pushes by #1949).
     await publish(v.s1, '3.0.0', { p: 'perm-1', m: 'mig-1' }, registryOf(), [INIT]);
     await publish(v.s2, '3.1.0', { p: 'perm-1', m: 'mig-1' }, registryOf(), [INIT, ADD]);
     // Same digests as v1, and no SQL carried (an older CLI, or over the cap): the gate sees nothing.
@@ -378,7 +379,7 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
 
     it('SQL-only → the migrations the gate cannot see are shown and asked for, migrationChange alone', async () => {
       await promoteTo(v.s1);
-      // The gate itself would let this through with no acknowledgement at all (#1754) …
+      // The gate itself would let this through with no acknowledgement at all (an old-CLI digest) …
       const declined = drive(v.s2, {});
       expect(await declined.run()).toBe('cancelled');
       expect(declined.shown[0]!.migration).toMatchObject({ enforced: false, sql: { baseline: 'version', added: [ADD], changed: [] } });

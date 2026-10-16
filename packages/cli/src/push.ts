@@ -18,6 +18,7 @@ import {
   DEPLOY_MANIFEST_BYTES_SAFE,
   deployManifest,
   emittedModel,
+  declaredMigrationDeclarations,
   sqlBytes,
   utf8Length,
   type DeclaredMigration,
@@ -203,8 +204,10 @@ export type ModuleMigrationsFn = (registration: PermissionsInput['modules'][numb
  * resolvable) a module declaring either cannot be carried completely, so the field is left
  * off rather than carried short; one declaring neither has only its authored set.
  *
+ * Each migration's declared `moves` and `discards` (#2322) are carried beside its SQL.
+ *
  * `migrations` is undefined (and `omitted` says why) when the set is over the manifest's caps,
- * or incomplete as above. The field is then left off, which the promote dialog reads as "SQL
+ * incomplete as above, or declares something the manifest cannot carry. The field is then left off, which the promote dialog reads as "SQL
  * not available" and still asks for the acknowledgement: metadata must never fail a push.
  * `digestMigrations` retains the complete SQL set even when the manifest omits it, so the
  * promotion gate still sees a change. Without a kernel, `unresolvedIndexes` records the
@@ -226,6 +229,11 @@ export function flattenDeclaredMigrations(
       moduleId: m.manifest.id,
       version: s.version,
       sql: s.sql,
+      // #2322: the data losses the migration declares (`SqlMigration.moves` / `discards`, #115),
+      // copied as written. An empty record is the fence's "none", so it is left off — which is
+      // also what keeps a declaration-free migration's digest entry what it was before.
+      ...declarationsOf('moves', (s as { moves?: unknown }).moves),
+      ...declarationsOf('discards', (s as { discards?: unknown }).discards),
     })),
   );
   const unresolvedIndexes = !moduleMigrations
@@ -244,6 +252,15 @@ export function flattenDeclaredMigrations(
         'to derive their index migrations with (upgrade the kernel)',
     };
   }
+  const malformed = migrations.find((m) => !declaredMigrationDeclarations.safeParse(m).success);
+  if (malformed) {
+    return {
+      digestMigrations: migrations,
+      omitted:
+        `${malformed.moduleId} ${malformed.version} declares moves or discards this push cannot carry ` +
+        '(each a non-empty { table or table.column: string } record within the bounds, every discard with a reason)',
+    };
+  }
   if (migrations.length > DECLARED_MIGRATIONS_MAX) {
     return {
       digestMigrations: migrations,
@@ -260,17 +277,39 @@ export function flattenDeclaredMigrations(
   return { migrations, digestMigrations: migrations };
 }
 
-/** The promotion gate covers store classes and every SQL migration the host would apply.
- * Hash SQL separately so the digest input stays small even for an omitted manifest list. */
-async function migrationDigest(
+/**
+ * A migration's `moves` or `discards`, as the spread of a `DeclaredMigration`: absent when the
+ * migration declares none (undefined, or an empty record). Anything else is carried as written,
+ * and `declaredMigrationDeclarations` decides whether the manifest can carry it.
+ */
+function declarationsOf(key: 'moves' | 'discards', value: unknown): Partial<Pick<DeclaredMigration, 'moves' | 'discards'>> {
+  if (value === undefined || value === null) return {};
+  if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) return {};
+  return { [key]: value as Record<string, string> };
+}
+
+/**
+ * The promotion gate covers store classes and every SQL migration the host would apply.
+ * Hash SQL separately so the digest input stays small even for an omitted manifest list.
+ *
+ * A migration's declared `moves` and `discards` (#2322) join its entry only when it declares
+ * any, so a declaration-free entry hashes exactly as it did before them, and adding, removing
+ * or rewording a declaration moves the digest — a promote of it then asks for the migration
+ * acknowledgement. This digest is computed HERE, by the pushing client, and nothing on the
+ * platform re-derives it: the promote review shows the declarations the control plane stored,
+ * never what this hash claims, so a client that hashed something else cannot hide one.
+ */
+export async function migrationDigest(
   doClasses: string[],
   declared: ReturnType<typeof flattenDeclaredMigrations>,
 ): Promise<string> {
   const sql = await Promise.all(
-    declared.digestMigrations.map(async ({ moduleId, version, sql }) => ({
+    declared.digestMigrations.map(async ({ moduleId, version, sql, moves, discards }) => ({
       moduleId,
       version,
       sqlHash: await fullSha256(Buffer.from(sql)),
+      ...(moves ? { moves } : {}),
+      ...(discards ? { discards } : {}),
     })),
   );
   return sha256(

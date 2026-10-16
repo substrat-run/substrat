@@ -1617,6 +1617,8 @@ export class ControlPlaneDO extends DurableObject {
     this.ensureDirectoryColumns();
     // #1764's, held back by `planDirectoryDdl`: its index names a column added just above.
     for (const stmt of DIRECTORY_DDL_PLAN.afterColumns) this.sql.exec(stmt);
+    // #2322: a migration's declared moves and discards, on a table created before they were carried.
+    this.addColumn('vertical_version_migrations', 'declarations TEXT');
   }
 
   /**

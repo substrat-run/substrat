@@ -10,7 +10,7 @@ import {
   migrationsOnTop,
   type DeployManifest,
 } from '@substrat-run/contracts';
-import { boundManifest, flattenDeclaredMigrations } from '../src/push.js';
+import { boundManifest, flattenDeclaredMigrations, migrationDigest } from '../src/push.js';
 import { built, kernelBuilt, pushed, pushedWith, pushJs, STORES, vertical } from './push-harness.js';
 
 // The SQL migrations a push carries (#1677), driven through the real `push()` (./push-harness.ts).
@@ -252,5 +252,90 @@ describe('boundManifest (#1677)', () => {
     expect(sent.migrations).toBeUndefined();
     expect({ ...sent, migrations: over.migrations }).toEqual(over);
     expect(warnings).toHaveLength(1);
+  });
+});
+
+describe('the migration digest and the declared moves and discards (#2322)', () => {
+  const LISTS = { moduleId: 'todo', version: '0001-init', sql: 'CREATE TABLE lists (id TEXT PRIMARY KEY, name TEXT NOT NULL);' };
+  const ITEMS = { moduleId: 'todo', version: '0002-items', sql: 'CREATE TABLE items (id TEXT PRIMARY KEY, list_id TEXT NOT NULL);' };
+  const digestOf = (digestMigrations: Parameters<typeof migrationDigest>[1]['digestMigrations']) =>
+    migrationDigest(['ScopeDO'], { digestMigrations } as never);
+
+  it('hashes a declaration-free set exactly as it did before declarations were carried', async () => {
+    // Computed on main BEFORE #2322 (eda31d19b): every version pushed until now carries it.
+    await expect(digestOf([LISTS, ITEMS] as never)).resolves.toBe('e11daf00e03398b8750c29e110467456');
+  });
+
+  it('moves when a declaration is added, a reason is reworded or a move retargeted; not when keys reorder', async () => {
+    const plain = await digestOf([LISTS, ITEMS] as never);
+    const discard = await digestOf([LISTS, { ...ITEMS, discards: { 'lists.name': 'renamed to title' } }] as never);
+    const reworded = await digestOf([LISTS, { ...ITEMS, discards: { 'lists.name': 'renamed to title, see 0003' } }] as never);
+    const moved = await digestOf([LISTS, { ...ITEMS, moves: { legacy: 'items' } }] as never);
+    const retargeted = await digestOf([LISTS, { ...ITEMS, moves: { legacy: 'lists' } }] as never);
+    expect(new Set([plain, discard, reworded, moved, retargeted]).size).toBe(5);
+    const ab = await digestOf([{ ...ITEMS, discards: { a: 'x', b: 'y' } }] as never);
+    const ba = await digestOf([{ ...ITEMS, discards: { b: 'y', a: 'x' } }] as never);
+    expect(ab).toBe(ba);
+  });
+});
+
+describe('flattenDeclaredMigrations carries the declarations (#2322)', () => {
+  const surface = (migrations: unknown[]) => ({ modules: [{ manifest: { id: 'helpdesk', permissions: [] }, migrations }], roles: [] });
+
+  it('copies moves and discards as written, and leaves an empty record off', () => {
+    const r = flattenDeclaredMigrations(
+      surface([
+        { ...INIT, moves: { legacy: 'ticket' }, discards: { 'ticket.note': 'never read' } },
+        { ...ADD, moves: {}, discards: {} },
+      ]) as never,
+    );
+    expect(r.migrations).toEqual([
+      { moduleId: 'helpdesk', ...INIT, moves: { legacy: 'ticket' }, discards: { 'ticket.note': 'never read' } },
+      { moduleId: 'helpdesk', ...ADD },
+    ]);
+    expect(r.omitted).toBeUndefined();
+  });
+
+  it('carries constructor and prototype, legal table names, and hashes them like any other declaration (#2322 r2)', async () => {
+    const named = { ...INIT, discards: { constructor: 'replaced by builders', prototype: 'never shipped' } };
+    const r = flattenDeclaredMigrations(surface([named]) as never);
+    expect(r.omitted).toBeUndefined();
+    expect(r.migrations).toEqual([{ moduleId: 'helpdesk', ...named }]);
+    const plain = await migrationDigest(['ScopeDO'], flattenDeclaredMigrations(surface([INIT]) as never));
+    const declared = await migrationDigest(['ScopeDO'], r);
+    expect(declared).not.toBe(plain);
+  });
+
+  it('leaves the field off for a __proto__ key, which the manifest cannot carry (#2322 r2)', () => {
+    const r = flattenDeclaredMigrations(surface([{ ...INIT, discards: JSON.parse('{"__proto__":"why"}') }]) as never);
+    expect(r.migrations).toBeUndefined();
+    expect(r.omitted).toMatch(/declares moves or discards this push cannot carry/);
+  });
+
+  it('leaves the field off, with the reason, for a declaration the manifest cannot carry — and still hashes it', () => {
+    const r = flattenDeclaredMigrations(surface([{ ...INIT, discards: { 'ticket.note': ' ' } }]) as never);
+    expect(r.migrations).toBeUndefined();
+    expect(r.omitted).toMatch(/helpdesk 0001-init declares moves or discards this push cannot carry/);
+    expect(r.digestMigrations[0]?.discards).toEqual({ 'ticket.note': ' ' });
+    expect(flattenDeclaredMigrations(surface([{ ...INIT, moves: { a: 7 } }]) as never).migrations).toBeUndefined();
+  });
+});
+
+describe.runIf(built)('a migration version is metadata, which never fails a push (#2322 r3)', () => {
+  it('a version with a newline, tab, zero-width or bidi character is carried as it is, and the push goes through', () => {
+    const version = `0007\n+ x\t${String.fromCodePoint(0x200b, 0x202e)}y`;
+    // `pushed` throws unless the upload happened, so its manifest is parseManifest's own output.
+    const m = pushed(vertical([{ id: 'helpdesk', migrations: [{ ...INIT, version }] }]));
+    expect(m.migrations).toEqual([{ moduleId: 'helpdesk', ...INIT, version }]);
+  });
+});
+
+describe.runIf(built)('push carries the declarations in the manifest it sends (#2322)', () => {
+  it('a declared migration arrives with them, and a declaration-only change moves the digest', () => {
+    const before = pushed(vertical([{ id: 'helpdesk', migrations: [INIT, ADD] }]));
+    const after = pushed(vertical([{ id: 'helpdesk', migrations: [INIT, { ...ADD, discards: { 'ticket.legacy': 'unused since 2024' } }] }]));
+    expect(before.migrations?.[1]).toEqual({ moduleId: 'helpdesk', ...ADD });
+    expect(after.migrations?.[1]).toEqual({ moduleId: 'helpdesk', ...ADD, discards: { 'ticket.legacy': 'unused since 2024' } });
+    expect(after.digests.migration).not.toBe(before.digests.migration);
   });
 });

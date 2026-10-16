@@ -240,6 +240,31 @@ including a table you know is empty everywhere, which the replay fills like any 
 In this repository `pnpm lint:migration-fence` runs the same replay over every migration, so an
 undeclared loss fails in the pull request that adds it.
 
+The declarations also travel with the version. `substrat push` carries each migration's `moves` and
+`discards` beside its SQL, and the promote review (the dashboard's promote dialog and
+`substrat promote`) lists them under the migration: every move as source → target, every discard
+with its reason word for word. A promote that discards anything says so first, and says "at
+least" when the list is cut. Everything the review shows from the version (the reason, the table
+and column names, the migration's id and its SQL) is the author's own text, so it is shown as
+plain text with every control, format and bidirectional character made visible as `<U+XXXX>`: an
+escape sequence cannot drive your terminal, and a reason cannot reorder, hide or forge what you
+read. A long reason, or one of many lines, is cut behind a "show all". A version pushed before
+declarations were carried, or a migration that declares none, shows none.
+
+A reason has to say something a reviewer can read: one of only whitespace or invisible characters
+is refused, by the same rule at the push and when the migration runs. A declaration cannot name
+`__proto__`, refused at both too; `constructor` and `prototype` are ordinary table names. A
+migration's id and `version` are shown on one line, with a newline or tab in them made visible
+too, so neither can start a line of its own in the review.
+
+Declarations are not part of the SQL, so they do not change the digest a scope journals for the
+migration, and editing one on a shipped migration does not make a scope that already ran it fail
+closed. They are part of the version's migration digest, so a promote that adds, removes or
+rewords a declaration asks for the migration acknowledgement like a SQL change does. That digest
+is computed by the pushing CLI and nothing on the platform recomputes it. What the review shows is
+read from the declarations the control plane stored, never inferred from the digest, so a client
+that hashed something else still cannot hide a declared discard from the review.
+
 ## Previews: run a version against a copy of the data
 
 Before a promotion whose *migrations* changed, you often want to see the new version run against

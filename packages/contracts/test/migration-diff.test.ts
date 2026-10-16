@@ -3,6 +3,8 @@ import {
   deployManifest,
   storedDeployManifest,
   migrationsOnTop,
+  discardTally,
+  declaredMigration,
   DECLARED_MIGRATIONS_SQL_BYTES_MAX,
   MIGRATION_READ_MAX,
   MIGRATION_READ_SQL_BYTES_MAX,
@@ -73,5 +75,169 @@ describe('deployManifest.migrations', () => {
     const over = { ...base, migrations: [m('1', sql), m('2', 'y')] };
     expect(deployManifest.safeParse(over).success).toBe(false);
     expect(storedDeployManifest.parse(over).migrations).toHaveLength(2);
+  });
+});
+
+describe('migrationsOnTop carries the declared moves and discards (#2322)', () => {
+  const declared = (version: string, extra: { moves?: Record<string, string>; discards?: Record<string, string> }, sql = `-- ${version}`) => ({
+    ...m(version, sql),
+    ...extra,
+  });
+
+  it('lists a declared migration with its moves and discards, and an undeclared one with neither key', () => {
+    const d = declared('0002', { moves: { legacy: 'orders' }, discards: { 'orders.note': 'free text nobody reads' } });
+    const diff = migrationsOnTop([m('0001'), d], []);
+    expect(diff.added[0]).toEqual(m('0001'));
+    expect(diff.added[1]).toEqual(d);
+    expect(diff.truncated).toBe(false);
+  });
+
+  it('lists a shipped migration whose declarations alone changed, as `edited: declarations`', () => {
+    const was = declared('0002', { discards: { 'orders.note': 'unused' } });
+    const now = declared('0002', { discards: { 'orders.note': 'unused since 2024' } });
+    const diff = migrationsOnTop([now], [was]);
+    expect(diff.changed).toEqual([{ ...now, edited: 'declarations' }]);
+    expect(diff.total).toBe(1);
+    // A declaration added to, or removed from, a shipped migration is an edit too.
+    expect(migrationsOnTop([now], [m('0002')]).changed[0]?.edited).toBe('declarations');
+    expect(migrationsOnTop([m('0002')], [now]).changed[0]).toEqual({ ...m('0002'), edited: 'declarations' });
+  });
+
+  it('marks a SQL edit `edited: sql`, and reads key order as no edit at all', () => {
+    expect(migrationsOnTop([m('0001', 'new')], [m('0001', 'old')]).changed[0]?.edited).toBe('sql');
+    const a = declared('0001', { discards: { a: 'x', b: 'y' } });
+    const b = declared('0001', { discards: { b: 'y', a: 'x' } });
+    expect(migrationsOnTop([a], [b]).total).toBe(0);
+  });
+
+  it('charges the declarations before the SQL, and flags them left out rather than dropping them silently', () => {
+    const big = 'x'.repeat(MIGRATION_READ_SQL_BYTES_MAX);
+    const reason = 'r'.repeat(100);
+    // The first entry's SQL fills the budget once its declaration is paid for.
+    const first = declared('0001', { discards: { t: reason } }, 'x'.repeat(MIGRATION_READ_SQL_BYTES_MAX - 101));
+    const second = declared('0002', { discards: { u: reason } }, 'small');
+    const diff = migrationsOnTop([first, second], []);
+    expect(diff.added[0]).toMatchObject({ discards: { t: reason } });
+    expect(diff.added[0]?.sql).not.toBeNull();
+    expect(diff.added[1]).toEqual({ moduleId: 'helpdesk', version: '0002', sql: null, declarationsLeftOut: true });
+    expect(diff.truncated).toBe(true);
+    // Declarations still fit when the SQL does not.
+    const third = migrationsOnTop([declared('0003', { moves: { a: 'b' } }, big + 'x')], []);
+    expect(third.added[0]).toEqual({ moduleId: 'helpdesk', version: '0003', sql: null, moves: { a: 'b' } });
+  });
+
+  it('shows what was stored, whatever digest the pusher sent: the diff never reads `digests`', () => {
+    // The diff's inputs are the stored migrations alone; a manifest whose client-computed
+    // digest left the declarations out still has them in its stored list, and so in the answer.
+    const stored = deployManifest.parse({
+      version: '1.0.0',
+      entry: 'index.js',
+      compatibilityDate: '2026-07-01',
+      registry: { permissions: [], roles: [], entityGrants: [] },
+      digests: { manifest: 'm', permission: 'p', migration: 'digest-of-a-declaration-free-set' },
+      migrations: [declared('0001', { discards: { orders: 'replaced by invoices' } })],
+    });
+    expect(migrationsOnTop(stored.migrations ?? [], [m('0001')]).changed[0]?.discards).toEqual({ orders: 'replaced by invoices' });
+  });
+});
+
+describe('deployManifest.migrations declarations (#2322)', () => {
+  const base = {
+    version: '1.0.0',
+    entry: 'index.js',
+    compatibilityDate: '2026-07-01',
+    registry: { permissions: [], roles: [], entityGrants: [] },
+    digests: { manifest: 'm', permission: 'p', migration: 'g' },
+  };
+  const ok = (extra: Record<string, unknown>) =>
+    deployManifest.safeParse({ ...base, migrations: [{ ...m('0001'), ...extra }] }).success;
+
+  it('accepts moves and discards spelled as SqlMigration spells them', () => {
+    expect(ok({ moves: { 'a.b': 'c.d' }, discards: { e: 'why' } })).toBe(true);
+  });
+
+  it('refuses a discard with no reason, or a blank one', () => {
+    expect(ok({ discards: { e: '' } })).toBe(false);
+    expect(ok({ discards: { e: '  \n' } })).toBe(false);
+  });
+
+  it('refuses an empty record: no declarations is an absent field', () => {
+    expect(ok({ moves: {} })).toBe(false);
+    expect(ok({ discards: {} })).toBe(false);
+  });
+
+  it('bounds the entries, the targets and the reason', () => {
+    const many = Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`t${i}`, 'why']));
+    expect(ok({ discards: many })).toBe(false);
+    expect(ok({ discards: { ['t'.repeat(201)]: 'why' } })).toBe(false);
+    expect(ok({ discards: { t: 'w'.repeat(2001) } })).toBe(false);
+    expect(ok({ moves: { a: '' } })).toBe(false);
+  });
+
+  it('counts declarations toward the byte cap', () => {
+    const sql = 'x'.repeat(DECLARED_MIGRATIONS_SQL_BYTES_MAX - 4);
+    expect(ok({ sql, discards: { t: 'why' } })).toBe(true);
+    expect(ok({ sql, discards: { t: 'why?' } })).toBe(false);
+  });
+});
+
+describe('discardTally (#2322)', () => {
+  it('counts the shown discards, edited and added, and says "at least" when the answer is cut', () => {
+    const diff = migrationsOnTop(
+      [
+        { moduleId: 'a', version: '1', sql: 's', discards: { t: 'why', u: 'why' } },
+        { moduleId: 'a', version: '2', sql: 's', moves: { x: 'y' } },
+        { moduleId: 'a', version: '3', sql: 'new', discards: { v: 'why' } },
+      ],
+      [{ moduleId: 'a', version: '3', sql: 'old' }],
+    );
+    expect(discardTally(diff)).toEqual({ count: 3, atLeast: false });
+    // Past the count bound, the discards of the entries left out are not in the answer.
+    const many = Array.from({ length: MIGRATION_READ_MAX + 1 }, (_, i) => ({
+      moduleId: 'a', version: String(i).padStart(4, '0'), sql: 's', discards: { t: 'why' },
+    }));
+    expect(discardTally(migrationsOnTop(many, []))).toEqual({ count: MIGRATION_READ_MAX, atLeast: true });
+  });
+});
+
+describe('deployManifest.migrations refuses keys a record would drop, and an invisible reason (#2322)', () => {
+  const parse = (json: string) => deployManifest.safeParse({
+    version: '1.0.0', entry: 'index.js', compatibilityDate: '2026-07-01',
+    registry: { permissions: [], roles: [], entityGrants: [] }, digests: { manifest: 'm', permission: 'p', migration: 'g' },
+    migrations: [JSON.parse(json)],
+  }).success;
+  it('refuses __proto__ as a declaration key, as JSON delivers it, which a record would silently drop', () => {
+    expect(parse('{"moduleId":"m","version":"1","sql":"","discards":{"__proto__":"gone","b":"ok"}}')).toBe(false);
+    expect(parse('{"moduleId":"m","version":"1","sql":"","moves":{"__proto__":"b"}}')).toBe(false);
+    expect(parse('{"moduleId":"m","version":"1","sql":"","discards":{"b":"ok"}}')).toBe(true);
+  });
+  it('keeps constructor and prototype, legal table names, as ordinary own keys (#2322 r2)', () => {
+    const json = '{"moduleId":"m","version":"1","sql":"","discards":{"constructor":"why","prototype":"why"},"moves":{"constructor.a":"prototype.a"}}';
+    const r = declaredMigration.safeParse(JSON.parse(json));
+    expect(r.success).toBe(true);
+    expect(r.data?.discards).toEqual({ constructor: 'why', prototype: 'why' });
+    expect(Object.keys(r.data?.discards ?? {})).toEqual(['constructor', 'prototype']);
+    expect(r.data?.moves).toEqual({ 'constructor.a': 'prototype.a' });
+    // And the diff reads them as declarations, not as the object's machinery.
+    const diff = migrationsOnTop([r.data!], [{ moduleId: 'm', version: '1', sql: '' }]);
+    expect(diff.changed[0]).toMatchObject({ edited: 'declarations', discards: { constructor: 'why', prototype: 'why' } });
+  });
+  it('accepts a version with a newline, tab, zero-width or bidi character, pushed and stored alike (#2322 r3)', () => {
+    // A version is metadata the kernel journals as it is: it never fails a push, and every review
+    // surface prints it escaped on one line instead.
+    const version = `0007\n+ x\t${String.fromCodePoint(0x200b, 0x202e)}y`;
+    const migration = { moduleId: 'm', version, sql: '' };
+    expect(parse(JSON.stringify(migration))).toBe(true);
+    const stored = storedDeployManifest.parse({
+      version: '1.0.0', entry: 'index.js', compatibilityDate: '2026-07-01',
+      digests: { manifest: 'm', permission: 'p', migration: 'g' }, migrations: [migration],
+    });
+    expect(stored.migrations?.[0]?.version).toBe(version);
+  });
+
+  it('refuses a reason of only invisible characters, and keeps one with some text', () => {
+    const zw = String.fromCodePoint(0x200b, 0xfeff, 0x2060);
+    expect(parse(JSON.stringify({ moduleId: 'm', version: '1', sql: '', discards: { b: zw } }))).toBe(false);
+    expect(parse(JSON.stringify({ moduleId: 'm', version: '1', sql: '', discards: { b: `${zw}why` } }))).toBe(true);
   });
 });

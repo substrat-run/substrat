@@ -23,6 +23,7 @@
  *   is split on the way in.
  */
 import {
+  declaredMigrationDeclarations,
   deployManifest,
   storedDeployManifest,
   type DeclaredMigration,
@@ -49,6 +50,9 @@ export const VERSION_MIGRATIONS_DDL = `
     -- The module's SqlMigration.version, e.g. 0001-init.
     version    TEXT NOT NULL,
     sql        TEXT NOT NULL,
+    -- The migration's declared moves and discards (#2322), as JSON { moves?, discards? }.
+    -- NULL = it declares none, or was stored before they were carried.
+    declarations TEXT,
     PRIMARY KEY (version_id, ordinal)
   );
   CREATE INDEX IF NOT EXISTS vertical_versions_unsplit
@@ -99,6 +103,36 @@ export function splitManifestMigrations(manifestJson: string | null, mode: 'push
   };
 }
 
+/** The `declarations` column of one row: JSON `{ moves?, discards? }`, or NULL when it declares none. */
+function declarationsJson(m: DeclaredMigration): string | null {
+  if (!m.moves && !m.discards) return null;
+  return JSON.stringify({ ...(m.moves ? { moves: m.moves } : {}), ...(m.discards ? { discards: m.discards } : {}) });
+}
+
+/** What a stored `declarations` column must parse as: the push boundary's own schema, and nothing else. */
+const storedDeclarations = declaredMigrationDeclarations.strict();
+
+/**
+ * One row's declarations as a `DeclaredMigration`'s spread, or null when the column holds
+ * something that is not a declaration — which the caller answers as "not available" for the
+ * whole version, never as a list that silently lost what a migration may lose.
+ */
+function declarationsOf(json: string | null): Pick<DeclaredMigration, 'moves' | 'discards'> | null {
+  if (json === null) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  const result = storedDeclarations.safeParse(parsed);
+  if (!result.success || (!result.data.moves && !result.data.discards)) return null;
+  return {
+    ...(result.data.moves ? { moves: result.data.moves } : {}),
+    ...(result.data.discards ? { discards: result.data.discards } : {}),
+  };
+}
+
 /** Replace one version's migration rows. The caller sets its `migration_count` and `migrations_split`. */
 export function writeVersionMigrations(
   db: SwitchSql,
@@ -108,9 +142,9 @@ export function writeVersionMigrations(
   db.run('DELETE FROM vertical_version_migrations WHERE version_id = ?', versionId);
   (migrations ?? []).forEach((m, ordinal) => {
     db.run(
-      `INSERT INTO vertical_version_migrations (version_id, ordinal, module_id, version, sql)
-       VALUES (?, ?, ?, ?, ?)`,
-      versionId, ordinal, m.moduleId, m.version, m.sql,
+      `INSERT INTO vertical_version_migrations (version_id, ordinal, module_id, version, sql, declarations)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      versionId, ordinal, m.moduleId, m.version, m.sql, declarationsJson(m),
     );
   });
 }
@@ -216,15 +250,20 @@ export function versionMigrationsOf(
   }
   if (row.migration_count === null) return { verticalSlug: row.vertical_slug, migrations: null };
   const rows = db.all(
-    `SELECT module_id, version, sql FROM vertical_version_migrations
+    `SELECT module_id, version, sql, declarations FROM vertical_version_migrations
       WHERE version_id = ? ORDER BY ordinal`,
     versionId,
-  ) as { module_id: string; version: string; sql: string }[];
+  ) as { module_id: string; version: string; sql: string; declarations: string | null }[];
   // Never a short list: rows that disagree with the count are not the version's migrations.
   if (rows.length !== row.migration_count) return { verticalSlug: row.vertical_slug, migrations: null };
-  return {
-    verticalSlug: row.vertical_slug,
+  const migrations: DeclaredMigration[] = [];
+  for (const r of rows) {
+    // Never a list without what a migration declares it may lose (#2322): a row whose
+    // declarations do not read makes the whole version "not available".
+    const declared = declarationsOf(r.declarations);
+    if (declared === null) return { verticalSlug: row.vertical_slug, migrations: null };
     // Parsed on the way in (`splitManifestMigrations`), so the brand is the stored value's.
-    migrations: rows.map((r) => ({ moduleId: r.module_id as ModuleId, version: r.version, sql: r.sql })),
-  };
+    migrations.push({ moduleId: r.module_id as ModuleId, version: r.version, sql: r.sql, ...declared });
+  }
+  return { verticalSlug: row.vertical_slug, migrations };
 }
