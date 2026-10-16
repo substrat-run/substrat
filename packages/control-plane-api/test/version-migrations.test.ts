@@ -43,7 +43,7 @@ describe('version migrations route (#1677)', () => {
   let dir: string;
   let host: SqliteScopeHost;
   let app: ReturnType<typeof createControlPlaneApi>;
-  const v = { base: ulid(), next: ulid(), edited: ulid(), preField: ulid(), bare: ulid(), rival: ulid() };
+  const v = { base: ulid(), next: ulid(), edited: ulid(), preField: ulid(), bare: ulid(), rival: ulid(), declared: ulid() };
   const as: Record<'tenantA' | 'tenantB' | 'builderA' | 'builderB', Record<string, string>> = {} as never;
 
   const manifest = (migrations?: unknown[]) =>
@@ -83,6 +83,8 @@ describe('version migrations route (#1677)', () => {
     await publish(v.preField, 'acme/app', manifest());
     await publish(v.bare, 'acme/app');
     await publish(v.rival, 'rival/app', manifest([RIVAL]));
+    // #2322: the base's SQL, plus a declared loss — under the SAME client-sent digest as the base.
+    await publish(v.declared, 'acme/app', manifest([INIT, { ...ADD, discards: { 'secret_ledger.note': 'superseded <by> "memo"' } }]));
 
     const tenant = async (t: string) => ({ [SERVICE_TOKEN_HEADER]: await mintTenantToken(SECRET, { tenantId: t }) });
     const builder = async (t: string, slug: string) => ({
@@ -179,6 +181,16 @@ describe('version migrations route (#1677)', () => {
       expect(res.status).toBe(200);
       expect(diffOf(res.text)).toBeNull();
     }
+  });
+
+  it('shows the declarations the control plane stored, whatever digest the pusher sent (#2322)', async () => {
+    // Both versions were published with migrationDigest 'g' and the same digests in their
+    // manifests; the answer is read from the stored migrations, so the discard is there.
+    const added = diffOf((await read('acme/app', v.declared, as.tenantA, v.base)).text);
+    expect(added?.added).toEqual([{ ...ADD, discards: { 'secret_ledger.note': 'superseded <by> "memo"' } }]);
+    // Against a base with the same SQL and no declaration, it is a declarations-only edit.
+    const redeclared = diffOf((await read('acme/app', v.declared, as.tenantA, v.next)).text);
+    expect(redeclared).toMatchObject({ added: [], changed: [{ ...ADD, edited: 'declarations' }] });
   });
 
   it('says the baseline is unavailable when the serving version predates the field', async () => {
