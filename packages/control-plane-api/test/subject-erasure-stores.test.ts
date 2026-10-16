@@ -34,7 +34,7 @@ import {
  * bindings to erase. Every case below reads the key back after the request: kept
  * means a retry can still converge, destroyed means the erasure is final.
  *
- * Gated on the store-driver registry: with no kind registered no deployment can hold a store,
+ * Gated on the store-driver registry: with no driver registered no deployment can hold a store,
  * and erasure proceeds as it did before stores existed.
  */
 describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
@@ -44,7 +44,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
   const t = tenantId.parse(ulid());
   const auth = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
   const graph: StoreDriverRegistration = {
-    kind: 'graph',
+    driver: 'graph',
     releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
     operations: [],
@@ -152,7 +152,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       const ownDir = mkdtempSync(join(tmpdir(), 'cp-shred-colocated-'));
       const asked: string[] = [];
       const runner: ScopeStoreRunner = {
-        kind: 'counter',
+        driver: 'counter',
         async start() {},
         async stop() {},
         async invoke(_address, request) {
@@ -302,7 +302,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         const status = (await shred(api, scope.s, scope.subject)).status;
         return { status, asked: platform.asked, expected: [`${scope.s}/${scope.subject}`], keyKept: await scope.keyKept() };
       };
-      const stores = [{ binding: 'GRAPH', kind: 'graph' }];
+      const stores = [{ binding: 'GRAPH', driver: 'graph' }];
 
       it('on the serving script, every binding any version of the vertical declared is erased (#2286)', async () => {
         const served = await onServingScript({ servedStores: stores });
@@ -351,7 +351,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         const caller: PlatformScopeStores = {
           ...unreachablePlatformScopeStores(),
           eraseSubject: async () => {
-            const added = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }], slug);
+            const added = await publish([{ binding: 'GRAPH', driver: 'graph' }, { binding: 'NOTES', driver: 'graph' }], slug);
             await host.admin.bindScopeVersion(staff, t, scope.s, added.id);
             return [{ binding: 'GRAPH', erased: 1 }];
           },
@@ -375,7 +375,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       const direct = async (move: (s: ScopeId, slug: string) => Promise<void>) => {
         const slug = await ownVertical();
         const scope = await sealedScope(slug);
-        const version = await publish([{ binding: 'GRAPH', kind: 'graph' }], slug, false);
+        const version = await publish([{ binding: 'GRAPH', driver: 'graph' }], slug, false);
         await host.admin.bindScopeVersion(staff, t, scope.s, version.id);
         const caller: PlatformScopeStores = {
           ...unreachablePlatformScopeStores(),
@@ -395,7 +395,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
 
       it('on the direct arm, a bind that adds a binding while the stores are erased keeps the key (#2285)', async () => {
         const { res, keyKept } = await direct(async (s, slug) => {
-          const added = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }], slug, false);
+          const added = await publish([{ binding: 'GRAPH', driver: 'graph' }, { binding: 'NOTES', driver: 'graph' }], slug, false);
           await host.admin.bindScopeVersion(staff, t, s, added.id);
         });
         expect(res.status).toBe(412);
@@ -423,7 +423,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         const caller: PlatformScopeStores = {
           ...unreachablePlatformScopeStores(),
           eraseSubject: async () => {
-            const next = await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'NOTES', kind: 'graph' }], slug);
+            const next = await publish([{ binding: 'GRAPH', driver: 'graph' }, { binding: 'NOTES', driver: 'graph' }], slug);
             await host.admin.setVerticalServing(staff, slug, {
               ref: servingRef, versionId: next.id, doClasses: ['ScopeDO'], migrationTag: 'v1',
             });
@@ -443,7 +443,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       });
 
       it('a version that declares a store is asked', async () => {
-        const { s, subject, keyKept, api, asked } = await bound([{ binding: 'GRAPH', kind: 'graph' }]);
+        const { s, subject, keyKept, api, asked } = await bound([{ binding: 'GRAPH', driver: 'graph' }]);
         const res = await shred(api, s, subject);
         expect(res.status).toBe(200);
         expect(asked).toEqual([`${s}/${subject}`]);

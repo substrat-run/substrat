@@ -61,24 +61,24 @@ const VERTICAL_SLUG = /^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\/)?[a-z0-9](?:[a-z0-9-]
 /**
  * The script a scope-store driver is uploaded as, for one vertical (#2210).
  *
- * Stable across releases and across the vertical's own pushes: a new release of the kind
+ * Stable across releases and across the vertical's own pushes: a new release of the driver
  * replaces this script in place, and the objects stay where `scopeStoreObjectName` addresses
  * them, since that carries no version either.
  *
- * Injective over (kind, vertical) (L20): `substrat-store-<kind>-<vertical>`, with the `/` of a
- * `<tenant>/<name>` slug written as `_`. A slug never contains `_` and a kind never contains `-`,
- * so the kind ends at the first `-` after the prefix and the rest maps back to exactly one slug.
+ * Injective over (driver, vertical) (L20): `substrat-store-<driver>-<vertical>`, with the `/` of a
+ * `<tenant>/<name>` slug written as `_`. A slug never contains `_` and a driver never contains `-`,
+ * so the driver ends at the first `-` after the prefix and the rest maps back to exactly one slug.
  * A vertical's own stem flattens `/` to `-`, which is not injective; this name does not reuse it.
  * Anything outside those two grammars is refused rather than flattened.
  */
-export function scopeStoreScriptName(vertical: string, kind: string): string {
-  if (!STORE_DRIVER_ID.test(kind)) {
-    throw new Error(`not a scope-store driver id: '${kind}' (expected [a-z0-9]+)`);
+export function scopeStoreScriptName(vertical: string, driver: string): string {
+  if (!STORE_DRIVER_ID.test(driver)) {
+    throw new Error(`not a scope-store driver id: '${driver}' (expected [a-z0-9]+)`);
   }
   if (!VERTICAL_SLUG.test(vertical)) {
     throw new Error(`not a vertical slug: '${vertical}'`);
   }
-  return `${SCOPE_STORE_SCRIPT_PREFIX}${kind}-${vertical.replace('/', '_')}`;
+  return `${SCOPE_STORE_SCRIPT_PREFIX}${driver}-${vertical.replace('/', '_')}`;
 }
 
 /**
@@ -88,15 +88,15 @@ export function scopeStoreScriptName(vertical: string, kind: string): string {
 export const SCOPE_STORE_CANARY = '-canary';
 
 /**
- * The script a kind's release is canaried in before any vertical runs it (D-63, #2300): the
- * platform's own, `substrat-store-<kind>--canary`. {@link scopeStoreScriptName} cannot produce it,
- * because the part after the kind would be a slug starting with `-`.
+ * The script a driver's release is canaried in before any vertical runs it (D-63, #2300): the
+ * platform's own, `substrat-store-<driver>--canary`. {@link scopeStoreScriptName} cannot produce it,
+ * because the part after the driver would be a slug starting with `-`.
  */
-export function scopeStoreCanaryScriptName(kind: string): string {
-  if (!STORE_DRIVER_ID.test(kind)) {
-    throw new Error(`not a scope-store driver id: '${kind}' (expected [a-z0-9]+)`);
+export function scopeStoreCanaryScriptName(driver: string): string {
+  if (!STORE_DRIVER_ID.test(driver)) {
+    throw new Error(`not a scope-store driver id: '${driver}' (expected [a-z0-9]+)`);
   }
-  return `${SCOPE_STORE_SCRIPT_PREFIX}${kind}-${SCOPE_STORE_CANARY}`;
+  return `${SCOPE_STORE_SCRIPT_PREFIX}${driver}-${SCOPE_STORE_CANARY}`;
 }
 
 /**

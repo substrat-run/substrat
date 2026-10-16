@@ -14,7 +14,7 @@ import { withPythonStoreEntry, type PythonStoreDriverRelease, type PythonStoreSc
 
 /**
  * The binding that records which pinned release a store script runs: the release bundle's
- * sha256 (D-63). In the entry's reserved prefix, so the kind's env never carries it.
+ * sha256 (D-63). In the entry's reserved prefix, so the driver's env never carries it.
  */
 export const STORE_RELEASE_VAR = `${STORE_RESERVED_BINDING_PREFIX}_RELEASE`;
 
@@ -24,7 +24,7 @@ export const STORE_RELEASE_VAR = `${STORE_RESERVED_BINDING_PREFIX}_RELEASE`;
  */
 export const STORE_BUILD_VAR = `${STORE_RESERVED_BINDING_PREFIX}_BUILD`;
 
-/** One release of a kind's code, as the publish flow stores it (#2297). */
+/** One release of a driver's code, as the publish flow stores it (#2297). */
 export interface StoreDriverReleaseArtifact extends PythonStoreDriverRelease {
   /** The commit the bundle was built from. A reviewer reads it; the upload checks the sha256. */
   readonly sourceCommit: string;
@@ -43,14 +43,14 @@ export interface ScopeStoreEnsurerOptions {
   callerPublicKeys: readonly string[];
   /** The `platform` audience's public keys, in the same form. Never one of the caller's. */
   platformPublicKeys: readonly string[];
-  kinds?: readonly StoreDriverRegistration[];
+  drivers?: readonly StoreDriverRegistration[];
   /**
    * A release's bytes. With `sha256`, that release: the one the script runs, or the one a
-   * rollout moves it to. Without it, the kind's current good release (#2300). Undefined when
+   * rollout moves it to. Without it, the driver's current good release (#2300). Undefined when
    * there is none.
    */
   loadRelease: (input: {
-    readonly kind: string;
+    readonly driver: string;
     readonly vertical: string;
     readonly sha256?: string;
   }) => Promise<StoreDriverReleaseArtifact | undefined>;
@@ -67,11 +67,11 @@ async function buildDigest(script: PythonStoreScript): Promise<string> {
 }
 
 /**
- * Put every (kind, vertical) store script a vertical's stores need in place, before the
+ * Put every (driver, vertical) store script a vertical's stores need in place, before the
  * vertical's own upload (#2210, D-63). A push or a serve never moves a script to another
  * release: only a rollout or a rollback does (#2300), and it says so with `to`.
  *
- * - No `to`, no script yet: it is uploaded at the kind's current good release.
+ * - No `to`, no script yet: it is uploaded at the driver's current good release.
  * - No `to`, a script: it is rebuilt at the release it already runs, and uploaded again only when
  *   what it was built from changed (the platform's entry, the verifier, a key list, a flag), so a
  *   fix or a key rotation reaches it without a release moving.
@@ -79,7 +79,7 @@ async function buildDigest(script: PythonStoreScript): Promise<string> {
  *   same way. Re-running a rollout therefore converges and uploads nothing twice.
  *
  * Every upload hashes the module bytes it is about to send and refuses (422) bytes whose
- * sha256 the kind's registration does not pin, or that are not the release asked for. A kind
+ * sha256 the driver's registration does not pin, or that are not the release asked for. A driver
  * with no release to run is refused (409). A script is never moved to a release whose pinned
  * `schema` is lower than that of the release it runs (409): its objects may have migrated. The
  * runtime's own failures are 502. Answers how many scripts were uploaded.
@@ -87,7 +87,7 @@ async function buildDigest(script: PythonStoreScript): Promise<string> {
 export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
   const ensure = scriptEnsurer(opts);
   return async (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to?: string }): Promise<{ uploaded: number }> => {
-    const plan = scopeStoreUploadPlan({ vertical: input.vertical, stores: input.stores, kinds: opts.kinds });
+    const plan = scopeStoreUploadPlan({ vertical: input.vertical, stores: input.stores, drivers: opts.drivers });
     let uploaded = 0;
     for (const script of plan.scripts) if (await ensure(script, input.to)) uploaded++;
     return { uploaded };
@@ -95,19 +95,19 @@ export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
 }
 
 /**
- * Put a kind's release in the platform's canary script (D-63, #2300), where it is canaried
- * before any vertical's script moves: `scopeStoreCanaryScriptName(kind)`, built and checked as a
+ * Put a driver's release in the platform's canary script (D-63, #2300), where it is canaried
+ * before any vertical's script moves: `scopeStoreCanaryScriptName(driver)`, built and checked as a
  * vertical's script is, except that it may move to a lower `schema`: every canary object is fresh
  * and wiped, so none holds migrated data. Answers the script's name.
  */
 export function createStoreCanaryEnsurer(opts: ScopeStoreEnsurerOptions) {
   const ensure = scriptEnsurer(opts);
-  return async (input: { kind: string; to: string }): Promise<{ scriptName: string }> => {
-    const kind = (opts.kinds ?? STORE_DRIVERS).find((k) => k.kind === input.kind);
-    if (!kind) throw new ControlPlaneError(403, `scope store driver '${input.kind}' is not registered`);
-    const scriptName = scopeStoreCanaryScriptName(kind.kind);
+  return async (input: { driver: string; to: string }): Promise<{ scriptName: string }> => {
+    const driver = (opts.drivers ?? STORE_DRIVERS).find((k) => k.driver === input.driver);
+    if (!driver) throw new ControlPlaneError(403, `scope store driver '${input.driver}' is not registered`);
+    const scriptName = scopeStoreCanaryScriptName(driver.driver);
     await ensure(
-      { kind: kind.kind, vertical: SCOPE_STORE_CANARY, scriptName, className: kind.className, releases: kind.releases },
+      { driver: driver.driver, vertical: SCOPE_STORE_CANARY, scriptName, className: driver.className, releases: driver.releases },
       input.to,
       { anySchema: true },
     );
@@ -116,7 +116,7 @@ export function createStoreCanaryEnsurer(opts: ScopeStoreEnsurerOptions) {
 }
 
 interface EnsuredScript {
-  readonly kind: string;
+  readonly driver: string;
   readonly vertical: string;
   readonly scriptName: string;
   readonly className: string;
@@ -136,7 +136,7 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
     }
     const wanted = to ?? current.release;
     const release = await opts.loadRelease({
-      kind: script.kind,
+      driver: script.driver,
       vertical: script.vertical,
       ...(wanted ? { sha256: wanted } : {}),
     });
@@ -144,8 +144,8 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
       throw new ControlPlaneError(
         409,
         wanted
-          ? `kind '${script.kind}' release ${wanted} is not stored`
-          : `kind '${script.kind}' has no release rolled out to '${script.vertical}'`,
+          ? `driver '${script.driver}' release ${wanted} is not stored`
+          : `driver '${script.driver}' has no release rolled out to '${script.vertical}'`,
       );
     }
     // The bytes about to be sent, copied once and hashed now: never a hash taken when they
@@ -160,11 +160,11 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
     });
     const asked = wanted ?? release.sha256;
     if (asked && sha256 !== asked) {
-      throw new ControlPlaneError(422, `kind '${script.kind}' release ${asked} loaded as other bytes (${sha256})`);
+      throw new ControlPlaneError(422, `driver '${script.driver}' release ${asked} loaded as other bytes (${sha256})`);
     }
     const pin = script.releases.find((p) => p.sha256 === sha256);
     if (!pin) {
-      throw new ControlPlaneError(422, `kind '${script.kind}' release ${sha256} is not pinned in its registration`);
+      throw new ControlPlaneError(422, `driver '${script.driver}' release ${sha256} is not pinned in its registration`);
     }
     if (current.release && current.release !== sha256 && !rule.anySchema) {
       const running = script.releases.find((p) => p.sha256 === current.release);

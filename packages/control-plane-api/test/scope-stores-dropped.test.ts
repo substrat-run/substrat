@@ -37,14 +37,14 @@ describe('a dropped scope-store binding stays reached (#2286)', () => {
   const t = tenantId.parse(ulid());
   const auth = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
   const graph: StoreDriverRegistration = {
-    kind: 'graph',
+    driver: 'graph',
     releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],
   };
-  const GRAPH = { binding: 'GRAPH', kind: 'graph' };
-  const OLD = { binding: 'OLD', kind: 'graph' };
+  const GRAPH = { binding: 'GRAPH', driver: 'graph' };
+  const OLD = { binding: 'OLD', driver: 'graph' };
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'cp-dropped-store-'));
@@ -61,7 +61,7 @@ describe('a dropped scope-store binding stays reached (#2286)', () => {
   const vertical = async () => {
     const slug = `drop-${ulid().toLowerCase().slice(-10)}`;
     await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
-    const publish = async (scopeStores: { binding: string; kind: string }[]) => {
+    const publish = async (scopeStores: { binding: string; driver: string }[]) => {
       const id = ulid();
       await host.admin.publishVersion(staff, {
         id,

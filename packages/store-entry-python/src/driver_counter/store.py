@@ -1,6 +1,6 @@
-"""The Python twin of the counter kind, for the probe only. It reports what the entry gave it.
+"""The Python twin of the counter driver, for the probe only. It reports what the entry gave it.
 
-Module-level state is what a real kind may not keep (D-63). This one keeps, per object, how
+Module-level state is what a real driver may not keep (D-63). This one keeps, per object, how
 often it was constructed and when, so the probe can see that the entry constructs it once, and
 not for a call it refused.
 """

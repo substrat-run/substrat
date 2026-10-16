@@ -36,7 +36,7 @@ const baseManifest = {
   digests: { manifest: 'm', permission: 'p', migration: 'g' },
 };
 
-describe('a scope store is declared by binding and kind (#2208)', () => {
+describe('a scope store is declared by binding and driver (#2208)', () => {
   it('defaults to no scope stores', () => {
     expect(runtimeNeeds.parse({ entry: 'src/worker.ts' }).scopeStores).toEqual([]);
     expect(deployManifest.parse(baseManifest).scopeStores).toEqual([]);
@@ -45,21 +45,21 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
   it('accepts graph and carries it on the manifest', () => {
     const needs = runtimeNeeds.parse({
       entry: 'src/worker.ts',
-      scopeStores: [{ binding: 'GRAPH', kind: 'graph' }],
+      scopeStores: [{ binding: 'GRAPH', driver: 'graph' }],
     });
-    expect(needs.scopeStores).toEqual([{ binding: 'GRAPH', kind: 'graph' }]);
+    expect(needs.scopeStores).toEqual([{ binding: 'GRAPH', driver: 'graph' }]);
     expect(
       deployManifest.parse({ ...baseManifest, scopeStores: needs.scopeStores }).scopeStores,
-    ).toEqual([{ binding: 'GRAPH', kind: 'graph' }]);
+    ).toEqual([{ binding: 'GRAPH', driver: 'graph' }]);
   });
 
-  it('refuses a kind other than graph', () => {
+  it('refuses a driver other than graph', () => {
     expect(() =>
-      runtimeNeeds.parse({ entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', kind: 'document' }] }),
+      runtimeNeeds.parse({ entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', driver: 'document' }] }),
     ).toThrow();
   });
 
-  it('refuses a scope store that omits its kind', () => {
+  it('refuses a scope store that omits its driver', () => {
     expect(() =>
       runtimeNeeds.parse({ entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH' }] }),
     ).toThrow();
@@ -132,8 +132,8 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     );
   });
 
-  it('refuses graph while no kind is registered', () => {
-    const stores = [{ binding: 'GRAPH', kind: 'graph' as const }];
+  it('refuses graph while no driver is registered', () => {
+    const stores = [{ binding: 'GRAPH', driver: 'graph' as const }];
     expect(() => assertScopeStoresRegistered(stores)).toThrow(/not registered/);
     expect(() => assertDeclaredScopeStores({ scopeStores: stores })).toThrow(/not registered/);
   });
@@ -142,7 +142,7 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     const reserved = RESERVED_STORE_OPERATIONS.filter((op) => op !== 'substrat.erase');
     expect(() =>
       storeDriverRegistration.parse({
-        kind: 'graph',
+        driver: 'graph',
         releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
         className: 'Store',
         operations: ['read'],
@@ -151,30 +151,30 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
     ).toThrow(/substrat.erase/);
   });
 
-  it('holds a kind id to [a-z0-9]+ (L20), at the registration and in every registered kind', () => {
-    const registration = (kind: string) => ({
-      kind,
+  it('holds a driver id to [a-z0-9]+ (L20), at the registration and in every registered driver', () => {
+    const registration = (driver: string) => ({
+      driver,
       releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
       className: 'Store',
       operations: ['read'],
       platformOperations: [...RESERVED_STORE_OPERATIONS],
     });
-    for (const kind of ['graph-x', 'graph_x', 'Graph', 'gr aph', '']) {
-      expect(storeDriverId.safeParse(kind).success, kind).toBe(false);
-      const parsed = storeDriverRegistration.safeParse(registration(kind));
-      expect(parsed.success, kind).toBe(false);
-      expect(JSON.stringify(parsed.error?.issues), kind).toContain('[a-z0-9]+');
+    for (const driver of ['graph-x', 'graph_x', 'Graph', 'gr aph', '']) {
+      expect(storeDriverId.safeParse(driver).success, driver).toBe(false);
+      const parsed = storeDriverRegistration.safeParse(registration(driver));
+      expect(parsed.success, driver).toBe(false);
+      expect(JSON.stringify(parsed.error?.issues), driver).toContain('[a-z0-9]+');
     }
-    // The twin: ids in the grammar parse, and the registered kind is one.
-    for (const kind of ['graph', 'g2', '0']) expect(storeDriverId.safeParse(kind).success, kind).toBe(true);
+    // The twin: ids in the grammar parse, and the registered driver is one.
+    for (const driver of ['graph', 'g2', '0']) expect(storeDriverId.safeParse(driver).success, driver).toBe(true);
     expect(storeDriverRegistration.safeParse(registration('graph')).success).toBe(true);
-    for (const kind of STORE_DRIVERS) expect(storeDriverRegistration.safeParse(kind).success, kind.kind).toBe(true);
+    for (const driver of STORE_DRIVERS) expect(storeDriverRegistration.safeParse(driver).success, driver.driver).toBe(true);
   });
 
   it('refuses a catalog operation on the reserved prefix', () => {
     expect(() =>
       storeDriverRegistration.parse({
-        kind: 'graph',
+        driver: 'graph',
         releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
         className: 'Store',
         operations: ['substrat.wipe'],
@@ -186,7 +186,7 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
 
 describe('a store driver release is pinned by sha256 and source commit (D-63)', () => {
   const registration = (releases: unknown) => ({
-    kind: 'graph',
+    driver: 'graph',
     releases,
     className: 'GraphStore',
     operations: [],
@@ -219,14 +219,14 @@ describe('a store driver release is pinned by sha256 and source commit (D-63)', 
 
   const text = (value: string) => new TextEncoder().encode(value);
   const modules = [
-    { name: 'kind_graph/store.py', content: text('class GraphStore:\n    pass\n') },
-    { name: 'kind_graph/__init__.py', content: new Uint8Array() },
+    { name: 'driver_graph/store.py', content: text('class GraphStore:\n    pass\n') },
+    { name: 'driver_graph/__init__.py', content: new Uint8Array() },
   ];
-  const bundle = { entry: 'kind_graph/store.py', modules };
+  const bundle = { entry: 'driver_graph/store.py', modules };
 
   it('digests a release to a fixed vector, computed outside this code', async () => {
-    // printf 'substrat.store-release/v1\000' 'kind_graph/store.py\000', then the modules in name
-    // order: 'kind_graph/__init__.py\000' + 8 zero bytes, 'kind_graph/store.py\000' + 7 zero
+    // printf 'substrat.store-release/v1\000' 'driver_graph/store.py\000', then the modules in name
+    // order: 'driver_graph/__init__.py\000' + 8 zero bytes, 'driver_graph/store.py\000' + 7 zero
     // bytes + '\033' + the 27 bytes of the module, piped to `shasum -a 256`.
     expect(await storeDriverReleaseDigest(bundle)).toBe('99b9a70c48f2304ed01034abc9b70e9661231a4e89a26e2bad49074afb6f933f');
   });
@@ -236,10 +236,10 @@ describe('a store driver release is pinned by sha256 and source commit (D-63)', 
     expect(await storeDriverReleaseDigest({ ...bundle, modules: [...modules].reverse() })).toBe(digest);
     const others = [
       { ...bundle, modules: [modules[0]!, { ...modules[1]!, content: text(' ') }] },
-      { entry: 'kind_graph/graph.py', modules: [{ ...modules[0]!, name: 'kind_graph/graph.py' }, modules[1]!] },
+      { entry: 'driver_graph/graph.py', modules: [{ ...modules[0]!, name: 'driver_graph/graph.py' }, modules[1]!] },
       { ...bundle, modules: [modules[0]!] },
       // The same modules, with the entry importing another one: another release (D-63).
-      { ...bundle, entry: 'kind_graph/__init__.py' },
+      { ...bundle, entry: 'driver_graph/__init__.py' },
       // The same bytes split differently between two names.
       { entry: 'a', modules: [{ name: 'a', content: text('bc') }, { name: 'b', content: text('') }] },
     ];
@@ -256,7 +256,7 @@ describe('a store driver release is pinned by sha256 and source commit (D-63)', 
 
   it('refuses a release that names a module twice, or whose entry is not one of its modules', async () => {
     await expect(storeDriverReleaseDigest({ ...bundle, modules: [modules[0]!, modules[0]!] })).rejects.toThrow(/twice/);
-    await expect(storeDriverReleaseDigest({ ...bundle, entry: 'kind_graph/legacy.py' })).rejects.toThrow(/not one of its modules/);
+    await expect(storeDriverReleaseDigest({ ...bundle, entry: 'driver_graph/legacy.py' })).rejects.toThrow(/not one of its modules/);
   });
 
   it('refuses every name the framing cannot tell apart: NUL, a lone surrogate, non-ASCII, space, control, empty', async () => {
@@ -266,16 +266,16 @@ describe('a store driver release is pinned by sha256 and source commit (D-63)', 
       storeDriverReleaseDigest({ entry: 'x\0\0\0\0\0\0\0\0\0y', modules: [{ name: 'x\0\0\0\0\0\0\0\0\0y', content: text('code') }] }),
     ).rejects.toThrow(/printable ASCII/);
     // And a lone surrogate encodes to U+FFFD's bytes, so these two names were one.
-    for (const name of ['kind_a/\uD800.py', 'kind_a/�.py']) {
+    for (const name of ['driver_a/\uD800.py', 'driver_a/�.py']) {
       await expect(storeDriverReleaseDigest({ entry: name, modules: [{ name, content: text('') }] })).rejects.toThrow(/printable ASCII/);
     }
-    for (const name of ['kind_a/é.py', 'kind_a/a b.py', 'kind_a/a\tb.py', 'kind_a/\x7f.py', '']) {
+    for (const name of ['driver_a/é.py', 'driver_a/a b.py', 'driver_a/a\tb.py', 'driver_a/\x7f.py', '']) {
       await expect(storeDriverReleaseDigest({ entry: name, modules: [{ name, content: text('') }] }), JSON.stringify(name)).rejects.toThrow(
         /printable ASCII/,
       );
     }
     // The entry is held to the rule as well as the modules.
-    await expect(storeDriverReleaseDigest({ ...bundle, entry: 'kind_graph/store.py\0' })).rejects.toThrow(/printable ASCII/);
+    await expect(storeDriverReleaseDigest({ ...bundle, entry: 'driver_graph/store.py\0' })).rejects.toThrow(/printable ASCII/);
   });
 });
 
@@ -294,9 +294,9 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
     }
   });
 
-  it('holds a kind registration\'s catalog to the same rule', () => {
+  it('holds a driver registration\'s catalog to the same rule', () => {
     const registration = (operations: string[]) => ({
-      kind: 'graph',
+      driver: 'graph',
       releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
       className: 'GraphStore',
       operations,
@@ -308,10 +308,10 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
 });
 
 // #2242: subject erasure destroys the key once the stores answer, so "cannot tell" must
-// never read as "holds none". The gate is the registry: no registered kind, no store.
+// never read as "holds none". The gate is the registry: no registered driver, no store.
 describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
   const graph: StoreDriverRegistration = {
-    kind: 'graph',
+    driver: 'graph',
     releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
     operations: [],
@@ -326,7 +326,7 @@ describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
       digests: { manifest: 'm', permission: 'p', migration: 'g' },
       ...(scopeStores ? { scopeStores } : {}),
     });
-  const declaring = manifest([{ binding: 'GRAPH', kind: 'graph' }]);
+  const declaring = manifest([{ binding: 'GRAPH', driver: 'graph' }]);
 
   it('reads a manifest: declares, declares none, predates manifests, unreadable', () => {
     expect(scopeStoresDeclaredIn(declaring)).toBe(true);
@@ -336,14 +336,14 @@ describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
     expect(scopeStoresDeclaredIn(JSON.stringify({ version: 1 }))).toBeUndefined();
   });
 
-  it('with no kind registered nothing may hold a store, whatever the manifest says', () => {
+  it('with no driver registered nothing may hold a store, whatever the manifest says', () => {
     expect(STORE_DRIVERS).toEqual([]);
     for (const json of [declaring, manifest(), null, undefined, '{not json']) {
       expect(mayHoldScopeStores(json)).toBe(false);
     }
   });
 
-  it('with a kind registered, unknown and unreadable count as may, and only a known "none" does not', () => {
+  it('with a driver registered, unknown and unreadable count as may, and only a known "none" does not', () => {
     expect(mayHoldScopeStores(declaring, [graph])).toBe(true);
     expect(mayHoldScopeStores(undefined, [graph])).toBe(true);
     expect(mayHoldScopeStores('{not json', [graph])).toBe(true);
@@ -356,7 +356,7 @@ describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
 describe('reserved store results are additive (#2239)', () => {
   it('a later field on any reserved result still parses', () => {
     expect(storeWipeResult.safeParse({ ok: true }).success).toBe(true);
-    expect(storeSizeResult.safeParse({ bytes: 1, kind: 'graph' }).success).toBe(true);
+    expect(storeSizeResult.safeParse({ bytes: 1, driver: 'graph' }).success).toBe(true);
     expect(storeEraseResult.safeParse({ erased: 0, note: 'x' }).success).toBe(true);
     expect(storeImportResult.safeParse({ tables: 1, took: 3 }).success).toBe(true);
     expect(storeExportResult.safeParse({ tables: [], at: 'now' }).success).toBe(true);

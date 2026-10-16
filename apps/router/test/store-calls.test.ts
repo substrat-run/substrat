@@ -18,7 +18,7 @@ const KEY = vector.privateKeyPkcs8;
 
 describe('handleStoreCall', () => {
   it('refuses another scope, an undeclared binding, and a reserved operation', async () => {
-    const caller = { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', kind: 'graph' }] };
+    const caller = { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', driver: 'graph' }] };
     const other = await handleStoreCall({ STORE_CALLER_KEY: KEY, DISPATCH: { get: () => { throw new Error('not dispatched'); } } }, caller, {
       scopeId: OTHER,
       binding: 'GRAPH',
@@ -31,7 +31,7 @@ describe('handleStoreCall', () => {
     expect(reserved).toMatchObject({ ok: false, status: 403 });
   });
 
-  it('signs an envelope over the body it sends and dispatches that kind script', async () => {
+  it('signs an envelope over the body it sends and dispatches that driver script', async () => {
     const seen: { script?: string; header?: string; signature?: string; name?: string; raw?: string } = {};
     const outcome = await handleStoreCall(
       {
@@ -49,7 +49,7 @@ describe('handleStoreCall', () => {
           }),
         },
       },
-      { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', kind: 'graph' }] },
+      { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', driver: 'graph' }] },
       { scopeId: SCOPE, binding: 'GRAPH', operation: 'read' },
     );
     expect(outcome).toMatchObject({ ok: true });
@@ -69,7 +69,7 @@ describe('handleStoreCall', () => {
 });
 
 describe('handleStoreCall without a usable key (#2287)', () => {
-  const caller = { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', kind: 'graph' }] };
+  const caller = { vertical: 'docs', tenantId: TENANT, scopeId: SCOPE, stores: [{ binding: 'GRAPH', driver: 'graph' }] };
   const dispatch = { get: () => { throw new Error('not dispatched'); } };
   const request = { scopeId: SCOPE, binding: 'GRAPH', operation: 'read' };
 

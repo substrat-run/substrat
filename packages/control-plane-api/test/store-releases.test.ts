@@ -31,7 +31,7 @@ import {
 
 /**
  * A store driver's release flow (D-63, #2300): the canary on the platform's own object, the rollout
- * across every vertical that declared the kind, where a failure returns to, and the routes that
+ * across every vertical that declared the driver, where a failure returns to, and the routes that
  * admit a person and refuse the service token. The scripts are a fake fleet that records which
  * release each one runs; the directory is the real pure host.
  */
@@ -180,12 +180,12 @@ function fleet() {
   };
 }
 
-describe('a rollout canaries, then moves every vertical that declared the kind, and returns on failure', () => {
+describe('a rollout canaries, then moves every vertical that declared the driver, and returns on failure', () => {
   let dir: string;
   let host: SqliteScopeHost;
   const staff = platformActorId.parse(ulid());
   const registration: StoreDriverRegistration = {
-    kind: 'graph',
+    driver: 'graph',
     releases: [
       { sha256: sha('1'), sourceCommit: COMMIT, schema: 0 },
       { sha256: sha('2'), sourceCommit: COMMIT, schema: 0 },
@@ -200,7 +200,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     dir = mkdtempSync(join(tmpdir(), 'cp-store-rollout-'));
     clock = manualClock();
     host = new SqliteScopeHost({ dir, clock: clock.read });
-    for (const s of ['1', '2', '3']) await host.admin.recordStoreDriverRelease(staff, { kind: 'graph', sha256: sha(s), sourceCommit: COMMIT });
+    for (const s of ['1', '2', '3']) await host.admin.recordStoreDriverRelease(staff, { driver: 'graph', sha256: sha(s), sourceCommit: COMMIT });
     for (const slug of ['va', 'vb', 'vc']) await declare(slug);
   });
   const declare = async (slug: string) => {
@@ -214,7 +214,7 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
       permissionDigest: 'p',
       migrationDigest: 'g',
       deploymentRef: null,
-      manifestJson: JSON.stringify({ scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] }),
+      manifestJson: JSON.stringify({ scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] }),
     });
   };
   afterEach(async () => {
@@ -248,8 +248,8 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     expect(f.events).toEqual(['canary:1', 'va:1', 'vb:1', 'vc:1']);
     expect(result).toMatchObject({ complete: true, moved: ['va', 'vb', 'vc'], rollout: { state: 'good' } });
     expect(await current()).toBe(sha('1'));
-    // The hold is released: a push may hold the kind again.
-    expect(await host.admin.holdStoreDriver(staff, { kind: 'graph', holder: ulid(), mode: 'shared', ttlMs: 1000 })).toBe(true);
+    // The hold is released: a push may hold the driver again.
+    expect(await host.admin.holdStoreDriver(staff, { driver: 'graph', holder: ulid(), mode: 'shared', ttlMs: 1000 })).toBe(true);
   });
 
   it('moves no vertical when the canary fails, and the current release stays', async () => {
@@ -330,36 +330,36 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     expect([...f.runs]).toEqual([['va', sha('1')], ['vb', sha('1')], ['vc', sha('1')]]);
   });
 
-  it('stops at once, returning nothing, when its hold lapsed and another holder took the kind', async () => {
+  it('stops at once, returning nothing, when its hold lapsed and another holder took the driver', async () => {
     const f = fleet();
     await run(f, sha('1'));
     f.events.length = 0;
     const other = ulid();
-    // During vb's upload the lease runs out and another rollout takes the kind.
+    // During vb's upload the lease runs out and another rollout takes the driver.
     f.before.set('vb:2', async () => {
       clock.advance(ROLLOUT_HOLD_TTL_MS + 1);
-      expect(await host.admin.holdStoreDriver(staff, { kind: 'graph', holder: other, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS })).toBe(true);
+      expect(await host.admin.holdStoreDriver(staff, { driver: 'graph', holder: other, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS })).toBe(true);
     });
     expect(await refusal(run(f, sha('2')))).toMatchObject({ status: 409, message: expect.stringMatching(/lapsed or its rollout was ended by another.*Nothing was returned/) });
     // vc was never moved, and va and vb were not moved back under the other holder.
     expect(f.events).toEqual(['canary:2', 'va:2', 'vb:2']);
     // The stopped rollout reads as diverged, though nothing could write that.
     expect(await lastState()).toBe('diverged');
-    await host.admin.releaseStoreDriverHold(staff, { kind: 'graph', holder: other });
+    await host.admin.releaseStoreDriverHold(staff, { driver: 'graph', holder: other });
   });
 
-  it('does not take the kind back after its lease lapsed, even once the other holder is gone', async () => {
+  it('does not take the driver back after its lease lapsed, even once the other holder is gone', async () => {
     const f = fleet();
     await run(f, sha('1'));
     f.events.length = 0;
     const other = ulid();
-    // The lease runs out; another holder takes the kind, finishes, and lets it go again.
+    // The lease runs out; another holder takes the driver, finishes, and lets it go again.
     f.before.set('vb:2', async () => {
       clock.advance(ROLLOUT_HOLD_TTL_MS + 1);
-      expect(await host.admin.holdStoreDriver(staff, { kind: 'graph', holder: other, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS })).toBe(true);
-      const row = await host.admin.beginStoreDriverRollout(staff, { kind: 'graph', sha256: sha('1'), action: 'rollout', holder: other });
-      await host.admin.finishStoreDriverRollout(staff, { kind: 'graph', seq: row.seq, holder: other, state: 'good', detail: null });
-      await host.admin.releaseStoreDriverHold(staff, { kind: 'graph', holder: other });
+      expect(await host.admin.holdStoreDriver(staff, { driver: 'graph', holder: other, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS })).toBe(true);
+      const row = await host.admin.beginStoreDriverRollout(staff, { driver: 'graph', sha256: sha('1'), action: 'rollout', holder: other });
+      await host.admin.finishStoreDriverRollout(staff, { driver: 'graph', seq: row.seq, holder: other, state: 'good', detail: null });
+      await host.admin.releaseStoreDriverHold(staff, { driver: 'graph', holder: other });
     });
     expect(await refusal(run(f, sha('2')))).toMatchObject({ status: 409, message: expect.stringMatching(/lapsed or its rollout was ended by another/) });
     // vc is not moved to 2 while the state says 1 is current.
@@ -375,18 +375,18 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
     const other = ulid();
     f.before.set('va:1', async () => {
       clock.advance(ROLLOUT_HOLD_TTL_MS + 1);
-      await host.admin.holdStoreDriver(staff, { kind: 'graph', holder: other, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS });
+      await host.admin.holdStoreDriver(staff, { driver: 'graph', holder: other, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS });
     });
     expect(await refusal(run(f, sha('2')))).toMatchObject({ message: expect.stringMatching(/hold was lost while returning; vb, vc may run/) });
     // va went back; vb was not touched once the hold was gone.
     expect(f.events).toEqual(['canary:2', 'va:2', 'vb:2', 'vc:2', 'va:1']);
-    await host.admin.releaseStoreDriverHold(staff, { kind: 'graph', holder: other });
+    await host.admin.releaseStoreDriverHold(staff, { driver: 'graph', holder: other });
   });
 
-  it('refuses while another holder holds the kind, and begins nothing', async () => {
+  it('refuses while another holder holds the driver, and begins nothing', async () => {
     const f = fleet();
     const push = ulid();
-    expect(await host.admin.holdStoreDriver(staff, { kind: 'graph', holder: push, mode: 'shared', ttlMs: 60_000 })).toBe(true);
+    expect(await host.admin.holdStoreDriver(staff, { driver: 'graph', holder: push, mode: 'shared', ttlMs: 60_000 })).toBe(true);
     expect(await refusal(run(f, sha('1')))).toMatchObject({ status: 409, message: expect.stringMatching(/being rolled out or a vertical declaring it is being pushed/) });
     expect(f.events).toEqual([]);
     expect((await host.admin.storeDriverState(staff, 'graph')).rollouts).toEqual([]);
@@ -467,12 +467,12 @@ describe('a rollout canaries, then moves every vertical that declared the kind, 
         action: 'rollback', ensure: f.ensure, ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call, perRequest: 2,
       });
     expect((await rollback()).rollout.state).toBe('paused');
-    // The next post loses its lease while moving vc: another holder takes the kind and lets it go.
+    // The next post loses its lease while moving vc: another holder takes the driver and lets it go.
     f.before.set('vc:1', async () => {
       clock.advance(ROLLOUT_HOLD_TTL_MS + 1);
       const other = ulid();
-      expect(await host.admin.holdStoreDriver(staff, { kind: 'graph', holder: other, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS })).toBe(true);
-      await host.admin.releaseStoreDriverHold(staff, { kind: 'graph', holder: other });
+      expect(await host.admin.holdStoreDriver(staff, { driver: 'graph', holder: other, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS })).toBe(true);
+      await host.admin.releaseStoreDriverHold(staff, { driver: 'graph', holder: other });
     });
     expect(await refusal(rollback())).toMatchObject({ status: 409 });
     f.before.clear();
@@ -542,8 +542,8 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
   const text = (s: string) => new TextEncoder().encode(s);
   const bundle = (n: number) => ({
     sourceCommit: COMMIT,
-    entry: 'kind_graph/store.py',
-    modules: [{ name: 'kind_graph/store.py', content: text(`class Store:\n    v = ${n}\n`) }],
+    entry: 'driver_graph/store.py',
+    modules: [{ name: 'driver_graph/store.py', content: text(`class Store:\n    v = ${n}\n`) }],
   });
   const wire = (b: ReturnType<typeof bundle>) => ({
     sourceCommit: b.sourceCommit,
@@ -566,7 +566,7 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
       // The fleet: each move loads the release through the API's own loader, so the stored bytes
       // are what is checked against the sha256 asked for.
       ensureScopeStores: async ({ vertical, to, loadRelease }) => {
-        const release = await loadRelease({ kind: 'graph', vertical, ...(to ? { sha256: to } : {}) });
+        const release = await loadRelease({ driver: 'graph', vertical, ...(to ? { sha256: to } : {}) });
         if (!release || (await storeDriverReleaseDigest(release)) !== release.sha256) throw new Error('bytes are not the release');
         const move = `${vertical}:${shas.indexOf(release.sha256!) + 1}`;
         if (failMoves.has(move)) throw new Error(`upload of ${vertical} failed`);
@@ -594,7 +594,7 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     failMoves.clear();
     shas = [await storeDriverReleaseDigest(bundle(1)), await storeDriverReleaseDigest(bundle(2)), await storeDriverReleaseDigest(bundle(3))];
     registration = {
-      kind: 'graph',
+      driver: 'graph',
       // Three releases of different schema: 1 is schema 0, 2 and 3 are schema 1.
       releases: [
         { sha256: shas[0]!, sourceCommit: COMMIT, schema: 0 },
@@ -615,7 +615,7 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
       permissionDigest: 'p',
       migrationDigest: 'g',
       deploymentRef: null,
-      manifestJson: JSON.stringify({ scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] }),
+      manifestJson: JSON.stringify({ scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] }),
     });
   });
   afterEach(async () => {
@@ -644,7 +644,7 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     expect((await call(appWith(asPerson), 'GET', '/store-drivers/graph', service)).status).toBe(200);
   });
 
-  it('stores a bundle by its sha256, refuses one too big, malformed or for an unregistered kind', async () => {
+  it('stores a bundle by its sha256, refuses one too big, malformed or for an unregistered driver', async () => {
     const app = appWith(asPerson);
     const res = await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)));
     expect(res.status).toBe(201);
@@ -715,7 +715,7 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     const id = ulid();
     await host.admin.publishVersion(person, {
       id, verticalSlug: 'vb', version: '1.0.0', manifestDigest: `m-${id}`, permissionDigest: 'p', migrationDigest: 'g',
-      deploymentRef: null, manifestJson: JSON.stringify({ scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] }),
+      deploymentRef: null, manifestJson: JSON.stringify({ scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] }),
     });
     for (const n of [1, 2, 3]) await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(n)));
     expect((await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[1] })).status).toBe(200);
@@ -781,7 +781,7 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     );
     expect(streamed.status).toBe(413);
     // Under the request cap as base64, over the module cap once decoded.
-    const big = { ...wire(bundle(1)), modules: [{ name: 'kind_graph/store.py', contentBase64: btoa(' '.repeat(STORE_RELEASE_MAX_BYTES + 3)) }] };
+    const big = { ...wire(bundle(1)), modules: [{ name: 'driver_graph/store.py', contentBase64: btoa(' '.repeat(STORE_RELEASE_MAX_BYTES + 3)) }] };
     const decoded = await call(app, 'PUT', '/store-drivers/graph/releases', person, big);
     expect(decoded.status).toBe(413);
     expect(await decoded.text()).toMatch(/at most 10485760 module bytes/);
@@ -794,10 +794,10 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     for (const n of [2, 3]) expect((await call(app, 'POST', '/store-drivers/graph/rollouts', person, { sha256: shas[n - 1] })).status).toBe(200);
     // A rollback to 2 that paused part way (written directly: one batch here is 100 verticals).
     const holder = ulid();
-    expect(await host.admin.holdStoreDriver(person, { kind: 'graph', holder, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
-    const row = await host.admin.beginStoreDriverRollout(person, { kind: 'graph', sha256: shas[1]!, action: 'rollback', holder });
-    await host.admin.finishStoreDriverRollout(person, { kind: 'graph', seq: row.seq, holder, state: 'paused', detail: null });
-    await host.admin.releaseStoreDriverHold(person, { kind: 'graph', holder });
+    expect(await host.admin.holdStoreDriver(person, { driver: 'graph', holder, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
+    const row = await host.admin.beginStoreDriverRollout(person, { driver: 'graph', sha256: shas[1]!, action: 'rollback', holder });
+    await host.admin.finishStoreDriverRollout(person, { driver: 'graph', seq: row.seq, holder, state: 'paused', detail: null });
+    await host.admin.releaseStoreDriverHold(person, { driver: 'graph', holder });
     // A control plane whose registration no longer pins 2 (a pin is never removed, but say one was).
     const pinned = registration;
     registration = { ...pinned, releases: pinned.releases.filter((p) => p.sha256 !== shas[1]) };
@@ -828,8 +828,8 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
   const text = (s: string) => new TextEncoder().encode(s);
   const bundle = (n: number) => ({
     sourceCommit: COMMIT,
-    entry: 'kind_graph/store.py',
-    modules: [{ name: 'kind_graph/store.py', content: text(`class Store:\n    v = ${n}\n`) }],
+    entry: 'driver_graph/store.py',
+    modules: [{ name: 'driver_graph/store.py', content: text(`class Store:\n    v = ${n}\n`) }],
   });
   const wire = (b: ReturnType<typeof bundle>) => ({
     sourceCommit: b.sourceCommit,
@@ -869,7 +869,7 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
   it('refuses to undo a diverged schema raise by re-posting the lower release', async () => {
     const [s1, s2] = [await storeDriverReleaseDigest(bundle(1)), await storeDriverReleaseDigest(bundle(2))];
     const registration: StoreDriverRegistration = {
-      kind: 'graph',
+      driver: 'graph',
       releases: [
         { sha256: s1, sourceCommit: COMMIT, schema: 0 },
         { sha256: s2, sourceCommit: COMMIT, schema: 1 },
@@ -883,11 +883,11 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
       const id = ulid();
       await host.admin.publishVersion(person, {
         id, verticalSlug: slug, version: '1.0.0', manifestDigest: `m-${id}`, permissionDigest: 'p', migrationDigest: 'g',
-        deploymentRef: null, manifestJson: JSON.stringify({ scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] }),
+        deploymentRef: null, manifestJson: JSON.stringify({ scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] }),
       });
     }
     const keys = { caller: (await generateScopeStoreKeyPair()).publicKey, platform: (await generateScopeStoreKeyPair()).publicKey };
-    const ensurerOptions = { accountId: 'a', namespace: 'n', apiToken: 't', callerPublicKeys: [keys.caller], platformPublicKeys: [keys.platform], kinds: [registration] };
+    const ensurerOptions = { accountId: 'a', namespace: 'n', apiToken: 't', callerPublicKeys: [keys.caller], platformPublicKeys: [keys.platform], drivers: [registration] };
     const bytes = new Map<string, Uint8Array>();
     const app = createControlPlaneApi({
       host,
@@ -917,7 +917,7 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
     // A push of either vertical meanwhile rebuilds its script at the release it runs: va stays on
     // 2, vb on 1. The schema rule refuses moves, and a push makes none.
     const push = createScopeStoreEnsurer({ ...ensurerOptions, loadRelease: storedReleaseLoader({ admin: host.admin, actor: person, bytes: { get: async (k) => bytes.get(k), put: async () => undefined } }) });
-    for (const vertical of ['va', 'vb']) await push({ vertical, stores: [{ binding: 'GRAPH', kind: 'graph' }] });
+    for (const vertical of ['va', 'vb']) await push({ vertical, stores: [{ binding: 'GRAPH', driver: 'graph' }] });
     expect([release('substrat-store-graph-va'), release('substrat-store-graph-vb')]).toEqual([s2, s1]);
     // Re-posting the current release would move va from schema 1 back to 0: the ensurer refuses.
     const back = await call('POST', '/store-drivers/graph/rollouts', { sha256: s1 });

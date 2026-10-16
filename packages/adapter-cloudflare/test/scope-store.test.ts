@@ -142,7 +142,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
     }
     // Import of nothing is still nothing; a dump with a store is refused as unbound (L8).
     await expect(host.scopeStoreImportLocal(t, s, [])).resolves.toBeUndefined();
-    await expect(host.scopeStoreImportLocal(t, s, [{ binding: 'GRAPH', kind: 'counter', tables: [] }])).rejects.toThrow(/not bound/);
+    await expect(host.scopeStoreImportLocal(t, s, [{ binding: 'GRAPH', driver: 'counter', tables: [] }])).rejects.toThrow(/not bound/);
   });
 
   it('a host with a control plane and no transport takes the platform hop too (#2288)', async () => {
@@ -161,7 +161,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
   });
 
   it("refuses transport 'platform' beside runners, which would never be used (#2288)", () => {
-    const runner: ScopeStoreRunner = { kind: 'counter', async start() {}, async stop() {}, async invoke() { return { result: 0 }; } };
+    const runner: ScopeStoreRunner = { driver: 'counter', async start() {}, async stop() {}, async invoke() { return { result: 0 }; } };
     expect(
       () => new CloudflareScopeHost({ scope: env.SCOPE, scopeStores: { transport: 'platform', runners: [{ binding: 'GRAPH', runner }] } }),
     ).toThrow(/takes no runners/);
@@ -229,7 +229,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
 
   /** A runner that records each reserved call and answers it with an empty store. */
   const recordingRunner = (log: string[]): ScopeStoreRunner => ({
-    kind: 'counter',
+    driver: 'counter',
     async start() {},
     async stop() {},
     async invoke(address, request) {
@@ -250,8 +250,8 @@ describe('scope store door (cloudflare host, #2209)', () => {
     });
     const t = tenantId.parse(ulid());
     const s = scopeId.parse(ulid());
-    expect(await host.scopeStoreExportLocal(t, s)).toEqual([{ binding: 'GRAPH', kind: 'counter', tables: [] }]);
-    await host.scopeStoreImportLocal(t, s, [{ binding: 'GRAPH', kind: 'counter', tables: [] }]);
+    expect(await host.scopeStoreExportLocal(t, s)).toEqual([{ binding: 'GRAPH', driver: 'counter', tables: [] }]);
+    await host.scopeStoreImportLocal(t, s, [{ binding: 'GRAPH', driver: 'counter', tables: [] }]);
     await host.deleteScopeLocal(s, t);
     expect(log).toEqual([`substrat.export docs/${s}`, `substrat.import docs/${s}`, `substrat.wipe docs/${s}`]);
   });
@@ -272,8 +272,8 @@ describe('scope store door (cloudflare host, #2209)', () => {
       await host.setLifecycleLocal(s, { scope: status, tenant: 'active', at, revision: { epoch: 0, scope: 1, tenant: 1 } });
       // The door is refused on it, so the scope's lifecycle is the one delivered.
       await expect(host.getScopeStore(principal, t, s, 'GRAPH')).rejects.toThrow(`scope not active (status: ${status})`);
-      expect(await host.scopeStoreExportLocal(t, s)).toEqual([{ binding: 'GRAPH', kind: 'counter', tables: [] }]);
-      await host.scopeStoreImportLocal(t, s, [{ binding: 'GRAPH', kind: 'counter', tables: [] }]);
+      expect(await host.scopeStoreExportLocal(t, s)).toEqual([{ binding: 'GRAPH', driver: 'counter', tables: [] }]);
+      await host.scopeStoreImportLocal(t, s, [{ binding: 'GRAPH', driver: 'counter', tables: [] }]);
       await host.deleteScopeLocal(s, t);
       expect(log).toEqual([`substrat.export docs/${s}`, `substrat.import docs/${s}`, `substrat.wipe docs/${s}`]);
     },
@@ -297,7 +297,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
     await reader.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'other' });
     await reader.admin.activateScope(staff, t, s);
     const dump = await reader.admin.exportScope(staff, t, s);
-    expect(dump.stores).toEqual([{ binding: 'GRAPH', kind: 'counter', tables: [] }]);
+    expect(dump.stores).toEqual([{ binding: 'GRAPH', driver: 'counter', tables: [] }]);
     log.length = 0;
     const probe = { name: 'restore_probe', ddl: 'CREATE TABLE restore_probe (id TEXT)', columns: ['id'], rows: [['x']] };
 
@@ -327,7 +327,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
     const runner = (name: string, held?: Promise<void>): ScopeStoreRunner => ({
-      kind: 'counter',
+      driver: 'counter',
       async start() {
         log.push(`start ${name}`);
         await held;
@@ -357,7 +357,7 @@ describe('scope store door (cloudflare host, #2209)', () => {
     const log: string[] = [];
     let failStart = 1;
     const runner = (name: string, opts: { failStart?: boolean; failStop?: boolean } = {}): ScopeStoreRunner => ({
-      kind: 'counter',
+      driver: 'counter',
       async start() {
         log.push(`start ${name}`);
         if (opts.failStart && failStart-- > 0) throw new Error(`${name} start broke`);

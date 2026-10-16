@@ -36,7 +36,7 @@ export {
 } from './store-entry.generated.js';
 
 export interface StoreEntryOptions {
-  /** The kind class's export name. Replaces the placeholder in the entry. */
+  /** The driver class's export name. Replaces the placeholder in the entry. */
   readonly className: string;
   /**
    * This store script's name, as the signers write it into the envelope's `script` line
@@ -54,30 +54,30 @@ const MODULE_NAME = /^(?!.*\.\.)[A-Za-z0-9_][A-Za-z0-9_./-]*\.m?js$/;
 
 /**
  * The compatibility flag that empties `import { env } from 'cloudflare:workers'`. Without it a
- * kind module reads every binding of the script that way, the entry's own included, whatever
+ * driver module reads every binding of the script that way, the entry's own included, whatever
  * env its class is constructed with. The entry itself reads only the env its handlers are given.
  */
 export const STORE_DISALLOW_IMPORTABLE_ENV = 'disallow_importable_env';
 
 /**
  * The compatibility flag that keeps `ctx.exports` off. From compatibility date 2025-11-17 it is
- * on by default, and the kind, which is constructed with the object's `ctx`, would get a
+ * on by default, and the driver, which is constructed with the object's `ctx`, would get a
  * loopback to the entry's own object class and default export: the namespace its env was
  * stripped of, by another name. Every call through it would still meet the entry's checks, but
- * the kind has no use for it, so the upload turns it off.
+ * the driver has no use for it, so the upload turns it off.
  */
 export const STORE_DISABLE_CTX_EXPORTS = 'disable_ctx_exports';
 
-/** The flags a kind release may not set, because each would undo one of the two above. */
-const REFUSED_KIND_FLAGS = ['allow_importable_env', 'enable_ctx_exports'];
+/** The flags a driver release may not set, because each would undo one of the two above. */
+const REFUSED_DRIVER_FLAGS = ['allow_importable_env', 'enable_ctx_exports'];
 
 /** An inline config value. The shared binding schema does not carry `text`, so it is cast once here. */
 const plainText = (name: string, text: string) => ({ type: 'plain_text', name, text }) as DeclaredBinding;
 
 const encode = (text: string) => new TextEncoder().encode(text);
 
-/** A kind class name the entry can import: an identifier, and not the entry's own class. */
-function assertKindClass(className: string, identifier: RegExp): void {
+/** A driver class name the entry can import: an identifier, and not the entry's own class. */
+function assertDriverClass(className: string, identifier: RegExp): void {
   if (!identifier.test(className)) throw new Error(`store driver class '${className}' is not an identifier`);
   if (className === STORE_OBJECT_CLASS) {
     throw new Error(`store driver class '${className}' is the entry's own object class`);
@@ -107,9 +107,9 @@ function storeEntryBindings(options: StoreEntryOptions): DeclaredBinding[] {
 
 /**
  * The store script as uploaded (#2289). The entry becomes the main module and imports the
- * kind module that was the bundle's entry. The object class is added to the SQLite migration,
+ * driver module that was the bundle's entry. The object class is added to the SQLite migration,
  * and the script name and both audiences' public keys are bound for the entry, which checks
- * every call before the kind's class is constructed.
+ * every call before the driver's class is constructed.
  *
  * Refused, before anything is built: a class name that is not an identifier or is the entry's
  * own object class; a bundle entry that is not a plain module name; a bundle that ships a
@@ -119,14 +119,14 @@ function storeEntryBindings(options: StoreEntryOptions): DeclaredBinding[] {
  * name; a compatibility flag that would undo one of the upload's own (`allow_importable_env`,
  * `enable_ctx_exports`).
  *
- * The upload carries `disallow_importable_env` and `disable_ctx_exports`, so the kind reaches
+ * The upload carries `disallow_importable_env` and `disable_ctx_exports`, so the driver reaches
  * the entry's bindings neither through `cloudflare:workers` nor through `ctx.exports`.
  */
 export function withStoreEntry<
   B extends Pick<VerticalBundle, 'entry' | 'modules'> &
     Partial<Pick<VerticalBundle, 'doClasses' | 'bindings' | 'compatibilityFlags'>>,
 >(bundle: B, options: StoreEntryOptions): B {
-  assertKindClass(options.className, /^[A-Za-z_$][A-Za-z0-9_$]*$/);
+  assertDriverClass(options.className, /^[A-Za-z_$][A-Za-z0-9_$]*$/);
   if (!MODULE_NAME.test(bundle.entry) || STORE_RESERVED_MODULES.includes(bundle.entry)) {
     throw new Error(`store driver entry '${bundle.entry}' is not a module name the store entry can import`);
   }
@@ -141,7 +141,7 @@ export function withStoreEntry<
   if (reserved) {
     throw new Error(`a store driver release may not declare the binding '${reserved.name}'`);
   }
-  const refusedFlag = (bundle.compatibilityFlags ?? []).find((flag) => REFUSED_KIND_FLAGS.includes(flag));
+  const refusedFlag = (bundle.compatibilityFlags ?? []).find((flag) => REFUSED_DRIVER_FLAGS.includes(flag));
   if (refusedFlag) {
     throw new Error(`a store driver release may not set '${refusedFlag}'`);
   }
@@ -150,12 +150,12 @@ export function withStoreEntry<
     .join(`./${bundle.entry}`)
     .split(STORE_CLASS_PLACEHOLDER)
     .join(options.className);
-  const kind = 'application/javascript+module';
+  const driver = 'application/javascript+module';
   const bindings: DeclaredBinding[] = [...(bundle.bindings ?? []), ...entryBindings];
   return {
     ...bundle,
     entry: STORE_ENTRY_MODULE,
-    modules: [{ name: STORE_ENTRY_MODULE, content: encode(source), contentType: kind }, ...bundle.modules],
+    modules: [{ name: STORE_ENTRY_MODULE, content: encode(source), contentType: driver }, ...bundle.modules],
     doClasses: [...(bundle.doClasses ?? []), STORE_OBJECT_CLASS],
     compatibilityFlags: [
       ...new Set([...(bundle.compatibilityFlags ?? []), STORE_DISALLOW_IMPORTABLE_ENV, STORE_DISABLE_CTX_EXPORTS]),
@@ -164,14 +164,14 @@ export function withStoreEntry<
   };
 }
 
-/** One release of a Python kind, as the publish flow hands it to the upload. */
+/** One release of a Python driver, as the publish flow hands it to the upload. */
 export interface PythonStoreDriverRelease {
-  /** The module that exports the registered class, for example `kind_graph/store.py`. */
+  /** The module that exports the registered class, for example `driver_graph/store.py`. */
   readonly entry: string;
   readonly modules: readonly { readonly name: string; readonly content: Uint8Array }[];
 }
 
-/** The store script for a Python kind, ready to upload: the main module first. */
+/** The store script for a Python driver, ready to upload: the main module first. */
 export interface PythonStoreScript {
   readonly mainModule: string;
   readonly modules: readonly { readonly name: string; readonly content: Uint8Array; readonly contentType: string }[];
@@ -181,33 +181,33 @@ export interface PythonStoreScript {
 }
 
 /**
- * A Python kind module's path: one top-level package that starts with `kind_`, then
- * identifiers, ending in `.py`. The prefix keeps a kind's modules off every name the Python
+ * A Python driver module's path: one top-level package that starts with `driver_`, then
+ * identifiers, ending in `.py`. The prefix keeps a driver's modules off every name the Python
  * entry imports or the runtime provides (`workers`, `js`, `pyodide`, the entry, its verifier),
  * and off `metadata`, the upload's own form part.
  */
-const PYTHON_KIND_MODULE = /^(kind_[a-z0-9_]+)(?:\/[A-Za-z_][A-Za-z0-9_]*)*\/[A-Za-z_][A-Za-z0-9_]*\.py$/;
+const PYTHON_DRIVER_MODULE = /^(driver_[a-z0-9_]+)(?:\/[A-Za-z_][A-Za-z0-9_]*)*\/[A-Za-z_][A-Za-z0-9_]*\.py$/;
 
 /**
- * The store script as uploaded for a Python kind (#2290, #2210). The Python entry is the main
- * module, with the kind's module and class in place of its two placeholders, and the verifier
- * it imports is shipped beside it, so it runs the JavaScript entry's check. The kind's modules
+ * The store script as uploaded for a Python driver (#2290, #2210). The Python entry is the main
+ * module, with the driver's module and class in place of its two placeholders, and the verifier
+ * it imports is shipped beside it, so it runs the JavaScript entry's check. The driver's modules
  * follow, byte for byte. The bindings and the two flags are the JavaScript entry's
  * (`withStoreEntry`), with `python_workers`.
  *
  * Refused, before anything is built (D-63): a class name that is not a Python identifier or is
- * the entry's own class; a module that is not `kind_<package>/…/<module>.py`; modules under more
+ * the entry's own class; a module that is not `driver_<package>/…/<module>.py`; modules under more
  * than one package; a module named twice; an entry that is not one of the modules; and
  * whatever `withStoreEntry` refuses of the script name and the keys. A reserved module name
  * cannot pass the path rule, and is refused again by name.
  */
 export function withPythonStoreEntry(release: PythonStoreDriverRelease, options: StoreEntryOptions): PythonStoreScript {
-  assertKindClass(options.className, /^[A-Za-z_][A-Za-z0-9_]*$/);
-  assertPythonKindModules(release);
+  assertDriverClass(options.className, /^[A-Za-z_][A-Za-z0-9_]*$/);
+  assertPythonDriverModules(release);
   const bindings = storeEntryBindings(options);
-  const kindModule = release.entry.replace(/\.py$/, '').replaceAll('/', '.');
+  const driverModule = release.entry.replace(/\.py$/, '').replaceAll('/', '.');
   const source = STORE_ENTRY_PYTHON_SOURCE.split(STORE_DRIVER_PLACEHOLDER)
-    .join(kindModule)
+    .join(driverModule)
     .split(STORE_CLASS_PLACEHOLDER)
     .join(options.className);
   return {
@@ -228,17 +228,17 @@ export function withPythonStoreEntry(release: PythonStoreDriverRelease, options:
 }
 
 /**
- * The module rule of a Python kind's release (D-63): every module is `kind_<package>/…/<module>.py`
+ * The module rule of a Python driver's release (D-63): every module is `driver_<package>/…/<module>.py`
  * under one package, none twice, and the entry is one of them. The upload applies it when a
  * release arrives (#2300), and `withPythonStoreEntry` again before every script it builds.
  */
-export function assertPythonKindModules(release: PythonStoreDriverRelease): void {
+export function assertPythonDriverModules(release: PythonStoreDriverRelease): void {
   const packages = new Set<string>();
   const names = new Set<string>();
   for (const module of release.modules) {
-    const path = PYTHON_KIND_MODULE.exec(module.name);
+    const path = PYTHON_DRIVER_MODULE.exec(module.name);
     if (!path || STORE_RESERVED_MODULES.includes(module.name)) {
-      throw new Error(`a store driver release may not ship a module named '${module.name}': a kind module is kind_<package>/…/<module>.py`);
+      throw new Error(`a store driver release may not ship a module named '${module.name}': a driver module is driver_<package>/…/<module>.py`);
     }
     if (names.has(module.name)) throw new Error(`a store driver release ships '${module.name}' twice`);
     names.add(module.name);

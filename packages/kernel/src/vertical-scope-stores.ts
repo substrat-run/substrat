@@ -7,8 +7,8 @@
  * erasure, the meter) reaches the union of every binding any version declared, which this keeps as
  * a directory table, read by its keys, instead of reading every version's manifest per call.
  *
- * A binding keeps its kind for the life of its vertical. The kind names the store script, so a
- * re-kinded binding would point the same name at another script's object, and the union would have
+ * A binding keeps its driver for the life of its vertical. The driver names the store script, so a
+ * moved to another driver binding would point the same name at another script's object, and the union would have
  * to hold both. `publishVersion` refuses it instead (`conflict`), in the transaction that inserts
  * the version: one door, where the push can still be told to pick a new binding name. A manifest
  * that declares one binding twice is refused there too.
@@ -19,7 +19,7 @@
  * directory restore from an older dump, leaves its vertical unmarked. Whichever comes first, a read
  * or a publish, then indexes all of the vertical's versions, oldest first, in its own transaction:
  * nothing runs on a constructor's path, a restore needs no backfill of its own, and a publish judges
- * a re-kind against every older version, not only those indexed so far. A version whose manifest
+ * a driver change against every older version, not only those indexed so far. A version whose manifest
  * cannot be read is marked unreadable, and a read of its vertical refuses: it may declare a store
  * nobody can name.
  *
@@ -34,7 +34,7 @@ export const VERTICAL_SCOPE_STORES_DDL = `
   CREATE TABLE IF NOT EXISTS vertical_scope_stores (
     vertical_slug    TEXT NOT NULL,
     binding          TEXT NOT NULL,
-    kind             TEXT NOT NULL,
+    driver             TEXT NOT NULL,
     -- The version that declared the binding first.
     first_version_id TEXT NOT NULL,
     PRIMARY KEY (vertical_slug, binding)
@@ -56,14 +56,14 @@ export const VERTICAL_SCOPE_STORES_DDL = `
 /** One declared binding. */
 export interface VerticalScopeStore {
   readonly binding: string;
-  readonly kind: string;
+  readonly driver: string;
 }
 
 /**
  * The bindings a stored manifest declares, or null when the manifest cannot be read. No manifest
- * declares none. Read for its shape only, `{ binding, kind }` strings as the router reads them:
- * whether a kind is one the platform runs is the push's question, and a record that refused to
- * hold a kind it did not know could not refuse that kind's re-kind either.
+ * declares none. Read for its shape only, `{ binding, driver }` strings as the router reads them:
+ * whether a driver is one the platform runs is the push's question, and a record that refused to
+ * hold a driver it did not know could not refuse a move away from that driver either.
  */
 function declaredIn(manifestJson: string | null): VerticalScopeStore[] | null {
   if (manifestJson === null) return [];
@@ -79,9 +79,9 @@ function declaredIn(manifestJson: string | null): VerticalScopeStore[] | null {
   if (!Array.isArray(stores)) return null;
   const declared: VerticalScopeStore[] = [];
   for (const store of stores as unknown[]) {
-    const { binding, kind } = (store ?? {}) as { binding?: unknown; kind?: unknown };
-    if (typeof binding !== 'string' || typeof kind !== 'string') return null;
-    declared.push({ binding, kind });
+    const { binding, driver } = (store ?? {}) as { binding?: unknown; driver?: unknown };
+    if (typeof binding !== 'string' || typeof driver !== 'string') return null;
+    declared.push({ binding, driver });
   }
   return declared;
 }
@@ -93,29 +93,29 @@ function indexOne(db: SwitchSql, verticalSlug: string, versionId: string, manife
   // Every binding is judged before any is written, so a refusal writes nothing.
   const fresh: VerticalScopeStore[] = [];
   const seen = new Set<string>();
-  for (const { binding, kind } of declared ?? []) {
+  for (const { binding, driver } of declared ?? []) {
     if (seen.has(binding)) {
       throw substratError('conflict', `a version of '${verticalSlug}' declares scope store '${binding}' twice`);
     }
     seen.add(binding);
     const [held] = db.all(
-      'SELECT kind FROM vertical_scope_stores WHERE vertical_slug = ? AND binding = ?',
+      'SELECT driver FROM vertical_scope_stores WHERE vertical_slug = ? AND binding = ?',
       verticalSlug, binding,
-    ) as { kind: string }[];
-    if (held && held.kind !== kind) {
+    ) as { driver: string }[];
+    if (held && held.driver !== driver) {
       throw substratError(
         'conflict',
-        `scope store '${binding}' of '${verticalSlug}' is a '${held.kind}', and a binding keeps its kind for ` +
-          `the life of its vertical: objects of the old kind may still hold data under that name. ` +
-          `Declare the '${kind}' store under a new binding name`,
+        `scope store '${binding}' of '${verticalSlug}' is a '${held.driver}', and a binding keeps its driver for ` +
+          `the life of its vertical: objects of the old driver may still hold data under that name. ` +
+          `Declare the '${driver}' store under a new binding name`,
       );
     }
-    if (!held) fresh.push({ binding, kind });
+    if (!held) fresh.push({ binding, driver });
   }
-  for (const { binding, kind } of fresh) {
+  for (const { binding, driver } of fresh) {
     db.run(
-      'INSERT INTO vertical_scope_stores (vertical_slug, binding, kind, first_version_id) VALUES (?, ?, ?, ?)',
-      verticalSlug, binding, kind, versionId,
+      'INSERT INTO vertical_scope_stores (vertical_slug, binding, driver, first_version_id) VALUES (?, ?, ?, ?)',
+      verticalSlug, binding, driver, versionId,
     );
   }
   db.run(
@@ -140,9 +140,9 @@ function indexVertical(db: SwitchSql, verticalSlug: string): void {
 
 /**
  * Index a version `publishVersion` is inserting, in the insert's transaction, after its row. The
- * vertical's older versions are indexed first when it is not marked yet, so a re-kind is judged
+ * vertical's older versions are indexed first when it is not marked yet, so a driver change is judged
  * against every version, not only those a read reached. Refuses (`conflict`) a binding the vertical
- * already declared as another kind, or one declared twice, and then nothing is written.
+ * already declared as another driver, or one declared twice, and then nothing is written.
  */
 export function indexVersionScopeStores(
   db: SwitchSql,
@@ -157,7 +157,7 @@ export function indexVersionScopeStores(
 /**
  * Every binding any version of the vertical declared, in binding order. An unmarked vertical is
  * indexed first (the caller runs this in one transaction). Refuses (`unavailable`) when a version's
- * manifest cannot be read, or when versions stored before the record re-kinded a binding: the
+ * manifest cannot be read, or when versions stored before the record moved to another driver a binding: the
  * lifecycle cannot name every store the vertical may hold.
  */
 export function verticalScopeStoresOf(db: SwitchSql, verticalSlug: string): VerticalScopeStore[] {
@@ -170,25 +170,25 @@ export function verticalScopeStoresOf(db: SwitchSql, verticalSlug: string): Vert
     throw substratError('unavailable', `a version of '${verticalSlug}' has a manifest that cannot be read, so its scope stores cannot be named`);
   }
   return (db.all(
-    'SELECT binding, kind FROM vertical_scope_stores WHERE vertical_slug = ? ORDER BY binding',
+    'SELECT binding, driver FROM vertical_scope_stores WHERE vertical_slug = ? ORDER BY binding',
     verticalSlug,
-  ) as { binding: string; kind: string }[]).map(({ binding, kind }) => ({ binding, kind }));
+  ) as { binding: string; driver: string }[]).map(({ binding, driver }) => ({ binding, driver }));
 }
 
 /**
- * Every vertical whose any version declared a binding of `kind`, with those bindings (#2300): the
- * store scripts a release rollout of the kind reaches, including a vertical whose serving version
+ * Every vertical whose any version declared a binding of `driver`, with those bindings (#2300): the
+ * store scripts a release rollout of the driver reaches, including a vertical whose serving version
  * dropped the store while a pinned or preview scope still runs one that declares it. Every vertical
  * not indexed yet is indexed first (the caller runs this in one transaction).
  *
  * `unreadable` names the verticals that cannot say: a version whose manifest cannot be read, or
- * versions stored before the record that re-kinded a binding. Any of them may declare the kind, so
+ * versions stored before the record that moved to another driver a binding. Any of them may declare the driver, so
  * a caller that must reach every script (a rollout) refuses while the list is not empty, rather
  * than leave a script on another release without saying so.
  */
-export function kindDeclarationsOf(
+export function driverDeclarationsOf(
   db: SwitchSql,
-  kind: string,
+  driver: string,
 ): { verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] } {
   const slugs = db.all('SELECT DISTINCT vertical_slug FROM vertical_versions ORDER BY vertical_slug') as { vertical_slug: string }[];
   const unreadable = new Set<string>();
@@ -205,13 +205,13 @@ export function kindDeclarationsOf(
     unreadable.add(vertical_slug);
   }
   const rows = db.all(
-    'SELECT vertical_slug, binding FROM vertical_scope_stores WHERE kind = ? ORDER BY vertical_slug, binding',
-    kind,
+    'SELECT vertical_slug, binding FROM vertical_scope_stores WHERE driver = ? ORDER BY vertical_slug, binding',
+    driver,
   ) as { vertical_slug: string; binding: string }[];
   const byVertical = new Map<string, VerticalScopeStore[]>();
   for (const { vertical_slug, binding } of rows) {
     const stores = byVertical.get(vertical_slug) ?? [];
-    stores.push({ binding, kind });
+    stores.push({ binding, driver });
     byVertical.set(vertical_slug, stores);
   }
   return {

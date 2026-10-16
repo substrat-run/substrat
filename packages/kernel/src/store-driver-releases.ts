@@ -3,9 +3,9 @@
  * both adapters' directories.
  *
  * - `store_driver_releases`: a release's bytes were stored (the bytes themselves live outside the
- *   directory, keyed by kind and sha256). Insert-only: who uploaded a release, and from which
+ *   directory, keyed by driver and sha256). Insert-only: who uploaded a release, and from which
  *   commit, is never rewritten.
- * - `store_driver_rollouts`: one row per attempt to move every script of the kind to a release, in
+ * - `store_driver_rollouts`: one row per attempt to move every script of the driver to a release, in
  *   `seq` order. A row is `rolling` until its holder ends it `good`, `failed` or `diverged`.
  * - `store_driver_current`: the release the last `good` rollout moved every script to.
  *
@@ -17,7 +17,7 @@
  * A hold is a lease: `exclusive` for a rollout or a rollback, `shared` for a push or serve that
  * rebuilds a script at the release it runs, which a rollout must not interleave with (a rebuild
  * that read the old release and uploaded after the rollout moved the script would revert it).
- * A begin or finish is refused unless the caller still holds the kind exclusively, so a holder
+ * A begin or finish is refused unless the caller still holds the driver exclusively, so a holder
  * whose lease lapsed cannot write over the next one; its `rolling` row reads as `diverged` to the
  * next rollout, which converges every script again.
  */
@@ -27,15 +27,15 @@ import type { SwitchSql } from './system-switch.js';
 /** Interpolated into both adapters' directory DDL, so `lint:spine-ddl` sees one spelling on each side. */
 export const STORE_DRIVER_RELEASES_DDL = `
   CREATE TABLE IF NOT EXISTS store_driver_releases (
-    kind          TEXT NOT NULL,
+    driver          TEXT NOT NULL,
     sha256        TEXT NOT NULL,
     source_commit TEXT NOT NULL,
     uploaded_by   TEXT NOT NULL,
     uploaded_at   TEXT NOT NULL,
-    PRIMARY KEY (kind, sha256)
+    PRIMARY KEY (driver, sha256)
   );
   CREATE TABLE IF NOT EXISTS store_driver_rollouts (
-    kind                 TEXT NOT NULL,
+    driver                 TEXT NOT NULL,
     seq                  INTEGER NOT NULL,
     sha256               TEXT NOT NULL,
     action               TEXT NOT NULL,
@@ -48,25 +48,25 @@ export const STORE_DRIVER_RELEASES_DDL = `
     started_at           TEXT NOT NULL,
     ended_at             TEXT,
     detail               TEXT,
-    PRIMARY KEY (kind, seq)
+    PRIMARY KEY (driver, seq)
   );
   CREATE TABLE IF NOT EXISTS store_driver_current (
-    kind   TEXT PRIMARY KEY,
+    driver   TEXT PRIMARY KEY,
     sha256 TEXT NOT NULL,
     seq    INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS store_driver_holds (
-    kind       TEXT NOT NULL,
+    driver       TEXT NOT NULL,
     holder     TEXT NOT NULL,
     mode       TEXT NOT NULL,
     expires_at INTEGER NOT NULL,
-    PRIMARY KEY (kind, holder)
+    PRIMARY KEY (driver, holder)
   );
 `;
 
-/** A stored release: its bytes are kept elsewhere under `<kind>/<sha256>`. */
+/** A stored release: its bytes are kept elsewhere under `<driver>/<sha256>`. */
 export interface StoreDriverReleaseRecord {
-  readonly kind: string;
+  readonly driver: string;
   readonly sha256: string;
   readonly sourceCommit: string;
   readonly uploadedBy: string;
@@ -81,11 +81,11 @@ export type StoreDriverRolloutAction = 'rollout' | 'rollback';
 export type StoreDriverRolloutState = 'rolling' | 'good' | 'failed' | 'diverged' | 'paused';
 
 export interface StoreDriverRolloutRecord {
-  readonly kind: string;
+  readonly driver: string;
   readonly seq: number;
   readonly sha256: string;
   readonly action: StoreDriverRolloutAction;
-  /** The current good release when the rollout began; null for a kind's first. */
+  /** The current good release when the rollout began; null for a driver's first. */
   readonly fromSha256: string | null;
   /** Where a rollback from this release, once it is good, returns to; null when nowhere. */
   readonly previousGoodSha256: string | null;
@@ -110,7 +110,7 @@ export interface StoreDriverState {
 export type StoreDriverHoldMode = 'shared' | 'exclusive';
 
 interface RolloutRow {
-  kind: string;
+  driver: string;
   seq: number;
   sha256: string;
   action: StoreDriverRolloutAction;
@@ -124,7 +124,7 @@ interface RolloutRow {
 }
 
 const rolloutOf = (r: RolloutRow): StoreDriverRolloutRecord => ({
-  kind: r.kind,
+  driver: r.driver,
   seq: Number(r.seq),
   sha256: r.sha256,
   action: r.action,
@@ -138,21 +138,21 @@ const rolloutOf = (r: RolloutRow): StoreDriverRolloutRecord => ({
 });
 
 const ROLLOUT_COLUMNS =
-  'kind, seq, sha256, action, from_sha256, previous_good_sha256, state, actor, started_at, ended_at, detail';
+  'driver, seq, sha256, action, from_sha256, previous_good_sha256, state, actor, started_at, ended_at, detail';
 
-function rolloutAt(db: SwitchSql, kind: string, seq: number): StoreDriverRolloutRecord | undefined {
-  const [row] = db.all(`SELECT ${ROLLOUT_COLUMNS} FROM store_driver_rollouts WHERE kind = ? AND seq = ?`, kind, seq) as unknown as RolloutRow[];
+function rolloutAt(db: SwitchSql, driver: string, seq: number): StoreDriverRolloutRecord | undefined {
+  const [row] = db.all(`SELECT ${ROLLOUT_COLUMNS} FROM store_driver_rollouts WHERE driver = ? AND seq = ?`, driver, seq) as unknown as RolloutRow[];
   return row ? rolloutOf(row) : undefined;
 }
 
 /** A stored release, or undefined. */
-export function storeDriverReleaseIn(db: SwitchSql, kind: string, sha256: string): StoreDriverReleaseRecord | undefined {
+export function storeDriverReleaseIn(db: SwitchSql, driver: string, sha256: string): StoreDriverReleaseRecord | undefined {
   const [row] = db.all(
-    'SELECT kind, sha256, source_commit, uploaded_by, uploaded_at FROM store_driver_releases WHERE kind = ? AND sha256 = ?',
-    kind, sha256,
-  ) as { kind: string; sha256: string; source_commit: string; uploaded_by: string; uploaded_at: string }[];
+    'SELECT driver, sha256, source_commit, uploaded_by, uploaded_at FROM store_driver_releases WHERE driver = ? AND sha256 = ?',
+    driver, sha256,
+  ) as { driver: string; sha256: string; source_commit: string; uploaded_by: string; uploaded_at: string }[];
   return row
-    ? { kind: row.kind, sha256: row.sha256, sourceCommit: row.source_commit, uploadedBy: row.uploaded_by, uploadedAt: row.uploaded_at }
+    ? { driver: row.driver, sha256: row.sha256, sourceCommit: row.source_commit, uploadedBy: row.uploaded_by, uploadedAt: row.uploaded_at }
     : undefined;
 }
 
@@ -163,29 +163,29 @@ export function storeDriverReleaseIn(db: SwitchSql, kind: string, sha256: string
  */
 export function recordStoreDriverReleaseIn(
   db: SwitchSql,
-  input: { kind: string; sha256: string; sourceCommit: string; actor: string; at: string },
+  input: { driver: string; sha256: string; sourceCommit: string; actor: string; at: string },
 ): { record: StoreDriverReleaseRecord; created: boolean } {
-  const held = storeDriverReleaseIn(db, input.kind, input.sha256);
+  const held = storeDriverReleaseIn(db, input.driver, input.sha256);
   if (held) {
     if (held.sourceCommit !== input.sourceCommit) {
       throw substratError(
         'conflict',
-        `release ${input.sha256} of '${input.kind}' is stored as built from ${held.sourceCommit}, not ${input.sourceCommit}`,
+        `release ${input.sha256} of '${input.driver}' is stored as built from ${held.sourceCommit}, not ${input.sourceCommit}`,
       );
     }
     return { record: held, created: false };
   }
   db.run(
-    'INSERT INTO store_driver_releases (kind, sha256, source_commit, uploaded_by, uploaded_at) VALUES (?, ?, ?, ?, ?)',
-    input.kind, input.sha256, input.sourceCommit, input.actor, input.at,
+    'INSERT INTO store_driver_releases (driver, sha256, source_commit, uploaded_by, uploaded_at) VALUES (?, ?, ?, ?, ?)',
+    input.driver, input.sha256, input.sourceCommit, input.actor, input.at,
   );
-  return { record: storeDriverReleaseIn(db, input.kind, input.sha256)!, created: true };
+  return { record: storeDriverReleaseIn(db, input.driver, input.sha256)!, created: true };
 }
 
 /**
- * The kind's current release, every rollout, and where a rollback goes now.
+ * The driver's current release, every rollout, and where a rollback goes now.
  *
- * With `nowMs`, a `rolling` row whose holder no longer holds the kind exclusively is reported as
+ * With `nowMs`, a `rolling` row whose holder no longer holds the driver exclusively is reported as
  * `diverged` (read-time only, nothing is written): its holder stopped, and its scripts may be on
  * either release. The next rollout's begin writes that state.
  *
@@ -205,17 +205,17 @@ export function recordStoreDriverReleaseIn(
  * - otherwise the immediately previous good release.
  * An unfinished attempt never changes what "previous good" means.
  */
-export function storeDriverStateIn(db: SwitchSql, kind: string, nowMs?: number): StoreDriverState {
+export function storeDriverStateIn(db: SwitchSql, driver: string, nowMs?: number): StoreDriverState {
   const live = nowMs === undefined
     ? undefined
-    : new Set((db.all("SELECT holder FROM store_driver_holds WHERE kind = ? AND mode = 'exclusive' AND expires_at > ?", kind, nowMs) as { holder: string }[]).map((h) => h.holder));
-  const rows = db.all(`SELECT ${ROLLOUT_COLUMNS}, holder FROM store_driver_rollouts WHERE kind = ? ORDER BY seq`, kind) as unknown as (RolloutRow & { holder: string | null })[];
+    : new Set((db.all("SELECT holder FROM store_driver_holds WHERE driver = ? AND mode = 'exclusive' AND expires_at > ?", driver, nowMs) as { holder: string }[]).map((h) => h.holder));
+  const rows = db.all(`SELECT ${ROLLOUT_COLUMNS}, holder FROM store_driver_rollouts WHERE driver = ? ORDER BY seq`, driver) as unknown as (RolloutRow & { holder: string | null })[];
   const rollouts = rows.map((r) =>
     live && r.state === 'rolling' && !(r.holder && live.has(r.holder))
-      ? rolloutOf({ ...r, state: 'diverged', detail: 'its holder no longer holds the kind; the rollout stopped before it ended' })
+      ? rolloutOf({ ...r, state: 'diverged', detail: 'its holder no longer holds the driver; the rollout stopped before it ended' })
       : rolloutOf(r),
   );
-  const [current] = db.all('SELECT sha256, seq FROM store_driver_current WHERE kind = ?', kind) as { sha256: string; seq: number }[];
+  const [current] = db.all('SELECT sha256, seq FROM store_driver_current WHERE driver = ?', driver) as { sha256: string; seq: number }[];
   if (!current) return { current: null, rollouts, rollbackTarget: null, unfinishedRollback: null };
   const seq = Number(current.seq);
   const row = rollouts.find((r) => r.seq === seq);
@@ -234,48 +234,48 @@ export function storeDriverStateIn(db: SwitchSql, kind: string, nowMs?: number):
 }
 
 /**
- * Take, or renew, a hold on a kind. Answers false when another holder's live hold excludes it: an
+ * Take, or renew, a hold on a driver. Answers false when another holder's live hold excludes it: an
  * exclusive one for any request, or any one for an exclusive request. A lapsed hold is dropped
  * first. Asking in the other mode than the one held is refused.
  *
  * `renew` only extends a hold the holder still holds: a holder whose lease lapsed gets false, even
- * when nobody took the kind since, because a lapsed holder cannot know what happened meanwhile.
+ * when nobody took the driver since, because a lapsed holder cannot know what happened meanwhile.
  * With `rolloutSeq` it also answers false unless that rollout is still `rolling`, so a rollout
  * whose row another holder ended stops instead of moving scripts the state no longer describes.
  */
 export function holdStoreDriverIn(
   db: SwitchSql,
-  input: { kind: string; holder: string; mode: StoreDriverHoldMode; nowMs: number; ttlMs: number; renew?: boolean; rolloutSeq?: number },
+  input: { driver: string; holder: string; mode: StoreDriverHoldMode; nowMs: number; ttlMs: number; renew?: boolean; rolloutSeq?: number },
 ): boolean {
   if (!(input.ttlMs > 0)) throw substratError('validation_failed', 'a store-driver hold needs a positive lifetime');
-  db.run('DELETE FROM store_driver_holds WHERE kind = ? AND expires_at <= ?', input.kind, input.nowMs);
-  const live = db.all('SELECT holder, mode FROM store_driver_holds WHERE kind = ?', input.kind) as { holder: string; mode: StoreDriverHoldMode }[];
+  db.run('DELETE FROM store_driver_holds WHERE driver = ? AND expires_at <= ?', input.driver, input.nowMs);
+  const live = db.all('SELECT holder, mode FROM store_driver_holds WHERE driver = ?', input.driver) as { holder: string; mode: StoreDriverHoldMode }[];
   const own = live.find((h) => h.holder === input.holder);
   if (own && own.mode !== input.mode) {
-    throw substratError('conflict', `holder ${input.holder} holds '${input.kind}' ${own.mode}, not ${input.mode}`);
+    throw substratError('conflict', `holder ${input.holder} holds '${input.driver}' ${own.mode}, not ${input.mode}`);
   }
   if ((input.renew || input.rolloutSeq !== undefined) && !own) return false;
-  if (input.rolloutSeq !== undefined && rolloutAt(db, input.kind, input.rolloutSeq)?.state !== 'rolling') return false;
+  if (input.rolloutSeq !== undefined && rolloutAt(db, input.driver, input.rolloutSeq)?.state !== 'rolling') return false;
   const others = live.filter((h) => h.holder !== input.holder);
   if (input.mode === 'exclusive' ? others.length > 0 : others.some((h) => h.mode === 'exclusive')) return false;
   db.run(
-    `INSERT INTO store_driver_holds (kind, holder, mode, expires_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT (kind, holder) DO UPDATE SET expires_at = excluded.expires_at`,
-    input.kind, input.holder, input.mode, input.nowMs + input.ttlMs,
+    `INSERT INTO store_driver_holds (driver, holder, mode, expires_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT (driver, holder) DO UPDATE SET expires_at = excluded.expires_at`,
+    input.driver, input.holder, input.mode, input.nowMs + input.ttlMs,
   );
   return true;
 }
 /** Drop a hold. Dropping one already gone is not an error. */
-export function releaseStoreDriverHoldIn(db: SwitchSql, input: { kind: string; holder: string }): void {
-  db.run('DELETE FROM store_driver_holds WHERE kind = ? AND holder = ?', input.kind, input.holder);
+export function releaseStoreDriverHoldIn(db: SwitchSql, input: { driver: string; holder: string }): void {
+  db.run('DELETE FROM store_driver_holds WHERE driver = ? AND holder = ?', input.driver, input.holder);
 }
 
-function assertExclusive(db: SwitchSql, kind: string, holder: string, nowMs: number): void {
+function assertExclusive(db: SwitchSql, driver: string, holder: string, nowMs: number): void {
   const [row] = db.all(
-    "SELECT 1 AS held FROM store_driver_holds WHERE kind = ? AND holder = ? AND mode = 'exclusive' AND expires_at > ?",
-    kind, holder, nowMs,
+    "SELECT 1 AS held FROM store_driver_holds WHERE driver = ? AND holder = ? AND mode = 'exclusive' AND expires_at > ?",
+    driver, holder, nowMs,
   );
-  if (!row) throw substratError('conflict', `'${kind}' is not held exclusively by ${holder}`);
+  if (!row) throw substratError('conflict', `'${driver}' is not held exclusively by ${holder}`);
 }
 
 /**
@@ -285,32 +285,32 @@ function assertExclusive(db: SwitchSql, kind: string, holder: string, nowMs: num
  */
 export function beginStoreDriverRolloutIn(
   db: SwitchSql,
-  input: { kind: string; sha256: string; action: StoreDriverRolloutAction; holder: string; actor: string; at: string; nowMs: number },
+  input: { driver: string; sha256: string; action: StoreDriverRolloutAction; holder: string; actor: string; at: string; nowMs: number },
 ): StoreDriverRolloutRecord {
-  assertExclusive(db, input.kind, input.holder, input.nowMs);
-  if (!storeDriverReleaseIn(db, input.kind, input.sha256)) {
-    throw substratError('not_found', `release ${input.sha256} of '${input.kind}' is not stored`);
+  assertExclusive(db, input.driver, input.holder, input.nowMs);
+  if (!storeDriverReleaseIn(db, input.driver, input.sha256)) {
+    throw substratError('not_found', `release ${input.sha256} of '${input.driver}' is not stored`);
   }
   db.run(
     `UPDATE store_driver_rollouts SET state = 'diverged', ended_at = ?, detail = 'its holder stopped before the rollout ended'
-     WHERE kind = ? AND state = 'rolling'`,
-    input.at, input.kind,
+     WHERE driver = ? AND state = 'rolling'`,
+    input.at, input.driver,
   );
-  const { current, rollbackTarget, unfinishedRollback } = storeDriverStateIn(db, input.kind, input.nowMs);
+  const { current, rollbackTarget, unfinishedRollback } = storeDriverStateIn(db, input.driver, input.nowMs);
   // A rollback under way to an earlier release blocks every rollout until it ends good. One onto
   // the current release (undoing a diverged rollout) does not: if a script refuses to go below its
   // schema, that rollback can never finish, and going forward is the way out.
   if (input.action === 'rollout' && unfinishedRollback && unfinishedRollback !== current?.sha256) {
     throw substratError(
       'conflict',
-      `a rollback of '${input.kind}' to ${unfinishedRollback} is part way through; post the rollback again to finish it before any rollout`,
+      `a rollback of '${input.driver}' to ${unfinishedRollback} is part way through; post the rollback again to finish it before any rollout`,
     );
   }
   let previousGood: string | null;
   if (input.action === 'rollback') {
-    if (!current || !rollbackTarget) throw substratError('conflict', `'${input.kind}' has no previous good release to roll back to`);
+    if (!current || !rollbackTarget) throw substratError('conflict', `'${input.driver}' has no previous good release to roll back to`);
     if (rollbackTarget !== input.sha256) {
-      throw substratError('conflict', `a rollback of '${input.kind}' returns to ${rollbackTarget}, not ${input.sha256}`);
+      throw substratError('conflict', `a rollback of '${input.driver}' returns to ${rollbackTarget}, not ${input.sha256}`);
     }
     if (input.sha256 === current.sha256) {
       // Undoing a diverged rollout: back onto the current release, whose previous good stays.
@@ -318,8 +318,8 @@ export function beginStoreDriverRolloutIn(
     } else {
       const [made] = db.all(
         `SELECT previous_good_sha256 FROM store_driver_rollouts
-         WHERE kind = ? AND sha256 = ? AND state = 'good' ORDER BY seq DESC LIMIT 1`,
-        input.kind, input.sha256,
+         WHERE driver = ? AND sha256 = ? AND state = 'good' ORDER BY seq DESC LIMIT 1`,
+        input.driver, input.sha256,
       ) as { previous_good_sha256: string | null }[];
       previousGood = made?.previous_good_sha256 ?? null;
     }
@@ -327,33 +327,33 @@ export function beginStoreDriverRolloutIn(
     // Rolling out the current release again (a resume) keeps where a rollback from it returns to.
     previousGood = current ? (current.sha256 === input.sha256 ? current.previousGoodSha256 : current.sha256) : null;
   }
-  const next = Number((db.all('SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM store_driver_rollouts WHERE kind = ?', input.kind)[0] as { next: number }).next);
+  const next = Number((db.all('SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM store_driver_rollouts WHERE driver = ?', input.driver)[0] as { next: number }).next);
   db.run(
     `INSERT INTO store_driver_rollouts (${ROLLOUT_COLUMNS}, holder) VALUES (?, ?, ?, ?, ?, ?, 'rolling', ?, ?, NULL, NULL, ?)`,
-    input.kind, next, input.sha256, input.action, current?.sha256 ?? null, previousGood, input.actor, input.at, input.holder,
+    input.driver, next, input.sha256, input.action, current?.sha256 ?? null, previousGood, input.actor, input.at, input.holder,
   );
-  return rolloutAt(db, input.kind, next)!;
+  return rolloutAt(db, input.driver, next)!;
 }
 
 /** End a rollout the caller began, as the exclusive holder. A good one makes its release current. */
 export function finishStoreDriverRolloutIn(
   db: SwitchSql,
-  input: { kind: string; seq: number; holder: string; state: Exclude<StoreDriverRolloutState, 'rolling'>; detail: string | null; at: string; nowMs: number },
+  input: { driver: string; seq: number; holder: string; state: Exclude<StoreDriverRolloutState, 'rolling'>; detail: string | null; at: string; nowMs: number },
 ): StoreDriverRolloutRecord {
-  assertExclusive(db, input.kind, input.holder, input.nowMs);
-  const row = rolloutAt(db, input.kind, input.seq);
-  if (!row) throw substratError('not_found', `'${input.kind}' has no rollout ${input.seq}`);
-  if (row.state !== 'rolling') throw substratError('conflict', `rollout ${input.seq} of '${input.kind}' already ended ${row.state}`);
+  assertExclusive(db, input.driver, input.holder, input.nowMs);
+  const row = rolloutAt(db, input.driver, input.seq);
+  if (!row) throw substratError('not_found', `'${input.driver}' has no rollout ${input.seq}`);
+  if (row.state !== 'rolling') throw substratError('conflict', `rollout ${input.seq} of '${input.driver}' already ended ${row.state}`);
   db.run(
-    'UPDATE store_driver_rollouts SET state = ?, ended_at = ?, detail = ? WHERE kind = ? AND seq = ?',
-    input.state, input.at, input.detail, input.kind, input.seq,
+    'UPDATE store_driver_rollouts SET state = ?, ended_at = ?, detail = ? WHERE driver = ? AND seq = ?',
+    input.state, input.at, input.detail, input.driver, input.seq,
   );
   if (input.state === 'good') {
     db.run(
-      `INSERT INTO store_driver_current (kind, sha256, seq) VALUES (?, ?, ?)
-       ON CONFLICT (kind) DO UPDATE SET sha256 = excluded.sha256, seq = excluded.seq`,
-      input.kind, row.sha256, input.seq,
+      `INSERT INTO store_driver_current (driver, sha256, seq) VALUES (?, ?, ?)
+       ON CONFLICT (driver) DO UPDATE SET sha256 = excluded.sha256, seq = excluded.seq`,
+      input.driver, row.sha256, input.seq,
     );
   }
-  return rolloutAt(db, input.kind, input.seq)!;
+  return rolloutAt(db, input.driver, input.seq)!;
 }

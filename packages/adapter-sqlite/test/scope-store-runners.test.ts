@@ -7,46 +7,46 @@ import { counterScopeStoreRunner } from '@substrat-run/contract-tests';
 import { ulid, UNSAFE_allowAllChecker, type ScopeStoreRunner } from '@substrat-run/kernel';
 import { SqliteScopeHost, scopeStoreRunnersFor } from '../src/index.js';
 
-/** The counter under another kind id, the way a kind's runner would be named. */
-const runnerOfKind = (kind: string): ScopeStoreRunner => ({ ...counterScopeStoreRunner(), kind });
+/** The counter under another driver id, the way a driver's runner would be named. */
+const runnerOfDriver = (driver: string): ScopeStoreRunner => ({ ...counterScopeStoreRunner(), driver });
 
 describe('scopeStoreRunnersFor (#2213)', () => {
-  it('gives each declared binding the runner of its kind', () => {
-    const graph = runnerOfKind('graph');
-    const declared = [scopeStoreNeed.parse({ binding: 'GRAPH', kind: 'graph' })];
+  it('gives each declared binding the runner of its driver', () => {
+    const graph = runnerOfDriver('graph');
+    const declared = [scopeStoreNeed.parse({ binding: 'GRAPH', driver: 'graph' })];
     expect(scopeStoreRunnersFor(declared, { graph })).toEqual([{ binding: 'GRAPH', runner: graph }]);
   });
 
-  it('two bindings of one kind share its runner', () => {
-    const graph = runnerOfKind('graph');
+  it('two bindings of one driver share its runner', () => {
+    const graph = runnerOfDriver('graph');
     const runners = scopeStoreRunnersFor(
       [
-        { binding: 'A', kind: 'graph' },
-        { binding: 'B', kind: 'graph' },
+        { binding: 'A', driver: 'graph' },
+        { binding: 'B', driver: 'graph' },
       ],
       { graph },
     );
     expect(runners.map((one) => one.runner)).toEqual([graph, graph]);
   });
 
-  it('no declaration gives no runners, and a runner for an undeclared kind is unused', () => {
-    expect(scopeStoreRunnersFor([], { graph: runnerOfKind('graph') })).toEqual([]);
+  it('no declaration gives no runners, and a runner for an undeclared driver is unused', () => {
+    expect(scopeStoreRunnersFor([], { graph: runnerOfDriver('graph') })).toEqual([]);
   });
 
-  it('refuses a declared kind with no runner', () => {
-    expect(() => scopeStoreRunnersFor([{ binding: 'GRAPH', kind: 'graph' }], {})).toThrow(
-      /'GRAPH' is declared as kind 'graph', and no runner is given/,
+  it('refuses a declared driver with no runner', () => {
+    expect(() => scopeStoreRunnersFor([{ binding: 'GRAPH', driver: 'graph' }], {})).toThrow(
+      /'GRAPH' is declared as driver 'graph', and no runner is given/,
     );
   });
 
   it('refuses an inherited key as a runner', () => {
-    expect(() => scopeStoreRunnersFor([{ binding: 'GRAPH', kind: 'toString' }], {})).toThrow(/no runner is given/);
+    expect(() => scopeStoreRunnersFor([{ binding: 'GRAPH', driver: 'toString' }], {})).toThrow(/no runner is given/);
   });
 
-  it('refuses a runner given under a key that is not its kind', () => {
+  it('refuses a runner given under a key that is not its driver', () => {
     expect(() =>
-      scopeStoreRunnersFor([{ binding: 'GRAPH', kind: 'graph' }], { graph: runnerOfKind('counter') }),
-    ).toThrow(/kind 'graph' is kind 'counter'/);
+      scopeStoreRunnersFor([{ binding: 'GRAPH', driver: 'graph' }], { graph: runnerOfDriver('counter') }),
+    ).toThrow(/driver 'graph' is driver 'counter'/);
   });
 
   it('a host built from it answers each declared binding from its own object', async () => {
@@ -57,8 +57,8 @@ describe('scopeStoreRunnersFor (#2213)', () => {
       scopeStores: {
         runners: scopeStoreRunnersFor(
           [
-            { binding: 'A', kind: 'counter' },
-            { binding: 'B', kind: 'counter' },
+            { binding: 'A', driver: 'counter' },
+            { binding: 'B', driver: 'counter' },
           ],
           { counter: counterScopeStoreRunner() },
         ),

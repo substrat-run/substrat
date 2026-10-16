@@ -13,7 +13,7 @@ import { reapExpiredSnapshot } from '../src/worker.js';
 describe('the sweep unroutes an expired snapshot before its wipe, and only then (#2285)', () => {
   const staff = platformActorId.parse(ulid());
   const graph: StoreDriverRegistration = {
-    kind: 'graph',
+    driver: 'graph',
     releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
     operations: [],
@@ -39,7 +39,7 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
         version: '1.0.0', entry: 'index.js', compatibilityDate: '2026-07-01',
         registry: { permissions: [], roles: [], entityGrants: [] },
         digests: { manifest: 'm', permission: 'p', migration: 'g' },
-        scopeStores: [{ binding: 'GRAPH', kind: 'graph' }],
+        scopeStores: [{ binding: 'GRAPH', driver: 'graph' }],
       }),
     });
     await host.admin.admitVersion(staff, version);
@@ -74,7 +74,7 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
     const { t, fork, hostname } = await routedFork(host);
     const { stores, seen } = witness(host, () => hostname);
-    await reapExpiredSnapshot({ host, stores, issuerClient: async () => undefined, kinds: [graph] }, t, fork);
+    await reapExpiredSnapshot({ host, stores, issuerClient: async () => undefined, drivers: [graph] }, t, fork);
     expect(seen).toEqual(['unrouted']);
     expect(await host.admin.resolveHostname(hostname)).toBeUndefined();
     expect(await host.admin.getScopeRecord(staff, t, fork)).toBeUndefined();
@@ -114,13 +114,13 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     const { stores } = witness(host, () => hostname);
     const failed = await reapExpiredSnapshot({
       host: { admin: failingUnbind, deleteSnapshot: (a, tt, s) => host.deleteSnapshot(a, tt, s) },
-      stores, issuerClient, kinds: [],
+      stores, issuerClient, drivers: [],
     }, t, pr).then(() => undefined, (e: unknown) => e);
     expect(failed).toBeInstanceOf(Error);
     expect(retired).toEqual([]);
     expect((await host.admin.resolveHostname(hostname))?.scopeId).toBe(pr);
     // The twin: once the unroute succeeds, the clients go, and so does the preview.
-    await reapExpiredSnapshot({ host, stores, issuerClient, kinds: [] }, t, pr);
+    await reapExpiredSnapshot({ host, stores, issuerClient, drivers: [] }, t, pr);
     expect(retired).toEqual([pr]);
     expect(await host.admin.resolveHostname(hostname)).toBeUndefined();
   });
@@ -131,7 +131,7 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     await host.admin.recordScopeScriptCopy(staff, t, fork, `copy-${fork.toLowerCase()}`, ulid(), { role: 'destination' });
     const { stores, seen } = witness(host, () => hostname);
     const refused = await reapExpiredSnapshot({
-      host, stores, issuerClient: async () => undefined, kinds: [graph], resolveRef: async () => undefined,
+      host, stores, issuerClient: async () => undefined, drivers: [graph], resolveRef: async () => undefined,
     }, t, fork).then(() => undefined, (e: unknown) => e as { status?: number });
     expect(refused?.status).toBe(412);
     expect(seen).toEqual([]);

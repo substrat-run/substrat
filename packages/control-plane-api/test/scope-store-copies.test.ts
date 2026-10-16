@@ -39,7 +39,7 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
   const t = tenantId.parse(ulid());
   const auth = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
   const graph: StoreDriverRegistration = {
-    kind: 'graph',
+    driver: 'graph',
     releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
     operations: [],
@@ -161,7 +161,7 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
     expect(asked).toEqual([]);
   });
 
-  it('with a kind registered, a version that declares no store is not asked: every copy proceeds', async () => {
+  it('with a driver registered, a version that declares no store is not asked: every copy proceeds', async () => {
     const { caller, asked } = platform();
     await everyCopy(appWith(caller, [graph]), {});
     expect(asked).toEqual([]);
@@ -181,7 +181,7 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
   it('a version that declares a store, with no route to the store script, refuses the copy (503)', async () => {
     const { caller, asked } = platform();
     const api = appWith(caller, [graph]);
-    const s = await docsScope({ scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] });
+    const s = await docsScope({ scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] });
     const backup = await api.request(`/tenants/${t}/scopes/${s}/backups`, { method: 'POST', headers: auth });
     expect(backup.status).toBe(503);
     expect(asked).toEqual(['export']);
