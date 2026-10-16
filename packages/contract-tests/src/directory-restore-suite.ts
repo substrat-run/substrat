@@ -109,6 +109,9 @@ const oldScopes = (ids: string[]): ScopeDumpTable => ({
   rows: ids.map((id) => rowOf(OLDEST_SCOPES.columns, { ...LIVE_SCOPE, scope_id: id })),
 });
 
+/** The directory tables K-53's rename moved: the release tables, and the binding record's key. */
+const STORE_DRIVER_KEYED = ['store_driver_current', 'store_driver_holds', 'store_driver_releases', 'store_driver_rollouts', 'vertical_scope_stores'];
+
 type Refusal = [what: string, craft: (tables: ScopeDumpTable[]) => ScopeDumpTable[], message: RegExp];
 
 export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHarness): void {
@@ -235,6 +238,33 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
           expect(shapeOf(after)).toEqual(shapeOf(fresh));
           for (const [table, shape] of first) {
             expect(recordsOf(find(after, table))).toEqual([expect.objectContaining(expectedRow(shape, find(fresh, table).columns))]);
+          }
+        });
+      });
+
+      // K-53's rename: a copy taken before it names the release tables `store_kind_*` and keys
+      // them, and `vertical_scope_stores`, by `kind`. Its rows land in today's tables by name.
+      it('a directory from before the store driver rename', async () => {
+        await using(async (dir, fresh) => {
+          const legacy = fresh.map((t) => {
+            if (!STORE_DRIVER_KEYED.includes(t.name)) return t;
+            const columns = t.columns.map((c) => (c === 'driver' ? 'kind' : c));
+            return {
+              name: t.name.replace(/^store_driver_/, 'store_kind_'),
+              ddl: t.ddl.replace(/\bstore_driver_/g, 'store_kind_').replace(/\bdriver\b/g, 'kind'),
+              columns,
+              rows: [crafted(t.name, t.columns)],
+            };
+          });
+          expect(legacy.map((t) => t.name)).toEqual(expect.arrayContaining(['store_kind_releases', 'store_kind_holds']));
+          await dir.restore(legacy);
+          await dir.settle();
+          const after = await dir.snapshot();
+          expect(shapeOf(after)).toEqual(shapeOf(fresh));
+          expect(after.map((t) => t.name).filter((n) => n.startsWith('store_kind_'))).toEqual([]);
+          for (const table of STORE_DRIVER_KEYED) {
+            const t = find(after, table);
+            expect(recordsOf(t)).toEqual([Object.fromEntries(t.columns.map((c) => [c, valueFor(table, c)]))]);
           }
         });
       });
@@ -366,6 +396,16 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
             })),
           new RegExp(`named for SQLite's rowid: ${alias}`),
         ]),
+        [
+          // Loading both would merge two histories of one table into it.
+          'a table under both its pre-rename and its driver name',
+          (tables) => {
+            const t = find(tables, 'store_driver_releases');
+            const columns = t.columns.map((c) => (c === 'driver' ? 'kind' : c));
+            return [...tables, { name: 'store_kind_releases', ddl: t.ddl.replace(/\bstore_driver_/g, 'store_kind_').replace(/\bdriver\b/g, 'kind'), columns, rows: [] }];
+          },
+          /carries both store_kind_releases and store_driver_releases/,
+        ],
         [
           // A column added to one table, then a later table's row refused: the addition goes too.
           'a row that fails after a column was added',
