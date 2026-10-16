@@ -195,8 +195,9 @@ type, including a faithful widening (`5` becoming `5.0` when a column moves to `
 count cannot tell that from `5` becoming `0.05`: a widening you mean is declared with `discards`,
 naming the column and saying what changed. And it cannot see values rewritten in place at the same
 count and type, rows replaced by as many other rows, or a column dropped, re-added and refilled. Nor
-a table dropped and then made again under the same name with at least as many rows
-(`DROP TABLE a; CREATE TABLE a AS SELECT * FROM b`), which looks exactly like a rebuild, or which
+a table dropped and its name then taken by a new table holding at least as many rows, filled from
+somewhere else (`DROP TABLE a; CREATE TABLE a AS SELECT * FROM b`), even if that new table is
+renamed again afterwards: that looks exactly like a rebuild, or a rebuild and a rename. Nor which
 source a move's target gained from. In the other direction, data copied under another table's name
 is refused until `moves` declares it.
 
