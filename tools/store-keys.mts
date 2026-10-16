@@ -547,7 +547,7 @@ export async function main(argv: readonly string[], io: GenerateIo): Promise<num
         return args.command === undefined ? 0 : 1;
     }
   } catch (error) {
-    // Only this file's own messages are shown; anything else is reported by its kind alone.
+    // Only this file's own messages are shown; anything else is reported by its error name alone.
     io.stderr.write(`✗ ${error instanceof StoreKeysError ? error.message : `unexpected ${(error as Error)?.name ?? 'error'}`}\n`);
     return 1;
   }
