@@ -160,22 +160,40 @@ interface Renames {
   readonly tables: Map<string, string[]>;
   /** Original table → original column → current column name. */
   readonly columns: Map<string, Map<string, string>>;
+  /** Original tables a `DROP TABLE` removed, under whatever name they carried then. */
+  readonly dropped: ReadonlySet<string>;
 }
 
+/**
+ * Statement by statement, which original table holds each name right now. A name is held by at
+ * most one table — SQLite refuses a rename onto a name that exists — so a `DROP TABLE` releases it
+ * and a later rename onto it is that table's alone, whatever order the scope created them in.
+ */
 function followRenames(statements: readonly string[], before: Measure): Renames {
   const tables = new Map([...before.keys()].map((t) => [t, [t]]));
   const columns = new Map([...before].map(([t, c]) => [t, new Map([...c.columns.keys()].map((k) => [k, k]))]));
-  const holderOf = (current: string): string | undefined =>
-    [...tables].find(([, names]) => names[names.length - 1] === current)?.[0];
+  const holder = new Map([...before.keys()].map((t) => [t, t]));
+  const dropped = new Set<string>();
+  const nameAt = (w: { text: string }): string => lower(w.text.replace(/^main\./i, ''));
   for (const statement of statements) {
     const w = words(statement);
     const kw = (i: number): string | undefined => (w[i] && !w[i]!.quoted ? w[i]!.text : undefined);
+    if (kw(0) === 'drop' && kw(1) === 'table') {
+      const at = kw(2) === 'if' && kw(3) === 'exists' ? 4 : 2;
+      const original = w[at] ? holder.get(nameAt(w[at]!)) : undefined;
+      if (original === undefined) continue;
+      holder.delete(nameAt(w[at]!));
+      dropped.add(original);
+      continue;
+    }
     if (kw(0) !== 'alter' || kw(1) !== 'table' || kw(3) !== 'rename' || !w[2]) continue;
-    const table = lower(w[2].text.replace(/^main\./i, ''));
-    const original = holderOf(table);
+    const table = nameAt(w[2]);
+    const original = holder.get(table);
     if (!original) continue;
     if (kw(4) === 'to' && w[5]) {
-      tables.get(original)!.push(lower(w[5].text.replace(/^main\./i, '')));
+      holder.delete(table);
+      holder.set(nameAt(w[5]), original);
+      tables.get(original)!.push(nameAt(w[5]));
     } else {
       // RENAME [COLUMN] a TO b
       const k = kw(4) === 'column' ? 5 : 4;
@@ -185,12 +203,13 @@ function followRenames(statements: readonly string[], before: Measure): Renames 
       for (const [orig, current] of columns.get(original)!) if (current === from) columns.get(original)!.set(orig, to);
     }
   }
-  return { tables, columns };
+  return { tables, columns, dropped };
 }
 
 /**
  * Which table after the migration each table before it became, one to one. A table renamed onto a
- * name that exists afterwards claims it first; every other table falls back to its original name,
+ * name that exists afterwards, and not dropped since, claims it first; every other table falls
+ * back to its original name,
  * then to an earlier name it carried — never to a name another table already claimed. So
  * `DROP TABLE b; ALTER TABLE a RENAME TO b` leaves `b` to `a`, and the `b` that was dropped is
  * gone. Undefined: the table is gone.
@@ -200,7 +219,7 @@ function endsOf(before: Measure, after: Measure, renames: Renames): Map<string, 
   const claimed = new Set<string>();
   for (const [table, names] of renames.tables) {
     const last = names[names.length - 1]!;
-    if (names.length > 1 && after.has(last) && !claimed.has(last)) {
+    if (names.length > 1 && !renames.dropped.has(table) && after.has(last) && !claimed.has(last)) {
       ends.set(table, { end: last, followed: true });
       claimed.add(last);
     }

@@ -294,6 +294,56 @@ describe('the data-loss fence (#115)', () => {
     scope(setup).migrate({ sql: 'DROP TABLE b; ALTER TABLE a RENAME TO b;', discards: { b: 'b was a staging copy' } });
   });
 
+  describe.each([
+    ['b created first', 'CREATE TABLE b (id TEXT, x TEXT); CREATE TABLE a (id TEXT, x TEXT);'],
+    ['a created first', 'CREATE TABLE a (id TEXT, x TEXT); CREATE TABLE b (id TEXT, x TEXT);'],
+  ])('a dropped name, reused by a rename, then renamed again (%s) (#115 r2)', (_, create) => {
+    const setup = `${create} INSERT INTO a VALUES ('1', 'p'), ('2', 'q'); INSERT INTO b VALUES ('x', 'r');`;
+    const reused = 'DROP TABLE b; ALTER TABLE a RENAME TO b;';
+    const dropB = { discards: { b: 'b was a staging copy' } };
+
+    it('a column renamed on the reused name belongs to the table renamed onto it', () => {
+      scope(setup).migrate({ sql: `${reused} ALTER TABLE b RENAME COLUMN x TO y;`, ...dropB });
+    });
+
+    it('the reused name renamed again carries the renamed table, not the dropped one', () => {
+      const s = scope(setup);
+      s.migrate({ sql: `${reused} ALTER TABLE b RENAME TO c;`, ...dropB });
+      expect(s.rows('SELECT id FROM c ORDER BY id')).toEqual([{ id: '1' }, { id: '2' }]);
+    });
+
+    it('undeclared, the refusal names the dropped table only', () => {
+      const message = refusal(() => scope(setup).migrate({ sql: `${reused} ALTER TABLE b RENAME TO c;` }));
+      expect(message).toContain('table b held 1 row(s) and is gone');
+      expect(message).not.toContain('table a');
+    });
+
+    it('declaring the wrong table does not pass: the dropped rows are still named', () => {
+      expect(
+        refusal(() => scope(setup).migrate({ sql: `${reused} ALTER TABLE b RENAME TO c;`, discards: { a: 'mistaken remedy' } })),
+      ).toContain('table b held 1 row(s) and is gone');
+    });
+  });
+
+  describe('a table rebuilt back into place after a column rename (#115 r2)', () => {
+    const setup = `${NOTES} INSERT INTO notes VALUES ('a', 'hello', '1');`;
+    const aside = 'ALTER TABLE notes RENAME COLUMN body TO text; ALTER TABLE notes RENAME TO notes_old;';
+
+    it('keeps the original name when the rebuilt table does', () => {
+      scope(setup).migrate({
+        sql: `${aside} CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT, score TEXT);
+          INSERT INTO notes SELECT * FROM notes_old; DROP TABLE notes_old;`,
+      });
+    });
+
+    it('prefers the renamed name when the rebuilt table has both and only that one is filled', () => {
+      scope(setup).migrate({
+        sql: `${aside} CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT, text TEXT, score TEXT);
+          INSERT INTO notes (id, text, score) SELECT id, text, score FROM notes_old; DROP TABLE notes_old;`,
+      });
+    });
+  });
+
   it('measures a real table that only shares a prefix with a virtual one; skips the exact shadow tables (#115 r1)', () => {
     const setup = `CREATE VIRTUAL TABLE notes USING fts5(body);
       INSERT INTO notes (body) VALUES ('indexed');
