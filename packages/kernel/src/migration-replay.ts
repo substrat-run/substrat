@@ -12,7 +12,9 @@
  * and not in a tool: the CLI is Apache-2.0 and reaches it at run time, never as a dependency.
  *
  * The database is the caller's: an empty in-memory SQLite it hands in as a {@link ReplayDatabase}
- * (the kernel imports no driver). Nothing here reads a real scope, the network or the environment.
+ * (the kernel imports no driver). Nothing here reads a real scope, the network or the environment,
+ * and a migration cannot reach a file either: the fence refuses ATTACH before it runs, and
+ * `VACUUM INTO` cannot run inside the transaction each migration replays in.
  *
  * What a synthetic row cannot stand in for: foreign keys are off (a made-up value satisfies no
  * reference), and so are CHECK constraints, so a cascade's loss is the run-time fence's to catch.
@@ -46,7 +48,7 @@ export interface ReplayDatabase {
 export type ReplayModule = Parameters<typeof moduleMigrations>[0];
 
 /** The fence's own refusals, by the `reason` it throws them with: everything else is "could not check". */
-const FENCE_REASONS = new Set(['data_loss', 'migration_declaration', 'migration_temp']);
+const FENCE_REASONS = new Set(['data_loss', 'migration_declaration', 'migration_temp', 'migration_attach']);
 
 export interface ReplayOutcome {
   /** Authored migrations across the modules — the ones the fence judges. */
@@ -63,11 +65,21 @@ export interface ReplayOutcome {
 
 const quote = (n: string): string => `"${n.replace(/"/g, '""')}"`;
 
-/** A value of the column's affinity, unique per table, column and row so no UNIQUE collides. */
+const utf8 = new TextEncoder();
+
+/**
+ * A value of the column's type, unique per table, column and row so no UNIQUE collides. The
+ * declared type is read by SQLite's own affinity rules, in their order (INT, then CHAR/CLOB/TEXT,
+ * then BLOB, then REAL/FLOA/DOUB), so a STRICT table — which refuses a value of another type —
+ * gets one it stores: a BLOB column a blob, never text.
+ */
 function valueFor(type: string, table: string, column: string, n: number): SqlValue {
+  const text = `${table}.${column}#${n}`;
   if (/int/i.test(type)) return 1_000_000 + n;
+  if (/char|clob|text/i.test(type)) return text;
+  if (/blob/i.test(type)) return utf8.encode(text);
   if (/real|floa|doub/i.test(type)) return n + 0.5;
-  return `${table}.${column}#${n}`;
+  return text;
 }
 
 /**
@@ -104,7 +116,11 @@ function populate(db: ReplayDatabase, sql: ScopedSql, next: () => number): void 
 export function replayMigrations(
   db: ReplayDatabase,
   modules: readonly ReplayModule[],
-  opts: { readonly spineDdl?: string } = {},
+  opts: {
+    readonly spineDdl?: string;
+    /** Called before each migration runs — a caller bounding the replay's time reads progress here. */
+    readonly onMigration?: (key: string, authored: boolean) => void;
+  } = {},
 ): ReplayOutcome {
   db.exec('PRAGMA foreign_keys = OFF');
   db.exec('PRAGMA ignore_check_constraints = ON');
@@ -127,6 +143,7 @@ export function replayMigrations(
     for (const migration of moduleMigrations(mod)) {
       const key = `${mod.manifest.id}@${migration.version}`;
       const isAuthored = own.has(migration.version);
+      opts.onMigration?.(key, isAuthored);
       db.exec('BEGIN');
       try {
         if (isAuthored) populate(db, sql, () => ++n);

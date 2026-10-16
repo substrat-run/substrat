@@ -1,4 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
+import { existsSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { MIGRATION_REPLAY_API, replayMigrations, type ReplayDatabase, type SqlMigration, type SqlValue } from '../src/index.js';
 
@@ -103,6 +106,42 @@ describe('replayMigrations', () => {
     expect(out).toEqual({ authored: 2, passed: 2, declared: [] });
     // The derived DDL ran: the search index exists.
     expect(db.query<{ name: string }>("SELECT name FROM sqlite_master WHERE name LIKE '_substrat_search_%'").length).toBeGreaterThan(0);
+  });
+
+  it('gives each column a value its declared type stores, so a STRICT table with a BLOB column replays complete', () => {
+    const out = replay([
+      { version: '0001', sql: 'CREATE TABLE f (id TEXT PRIMARY KEY, data BLOB, n INTEGER, r REAL, x ANY) STRICT;' },
+      { version: '0002', sql: 'ALTER TABLE f ADD COLUMN note TEXT;' },
+      { version: '0003', sql: 'ALTER TABLE f DROP COLUMN data;' },
+    ]);
+    // The blob was held, so dropping it is a loss — refused, not a failure to populate.
+    expect(out.failed).toBeUndefined();
+    expect(out.refused).toMatchObject({ key: 'notes@0003', reason: 'data_loss' });
+    expect(out.refused!.message).toContain('column f.data held 1 value(s) and is gone');
+  });
+
+  it('refuses ATTACH, so the replay never creates a file — and an ATTACH smuggling a drop is refused too', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-replay-attach-'));
+    const file = join(dir, 'leak.db');
+    const out = replay([
+      INIT,
+      { version: '0002', sql: `ATTACH DATABASE '${file}' AS x; CREATE TABLE x.leak (a TEXT); INSERT INTO x.leak VALUES ('hi');` },
+    ]);
+    expect(out.refused).toMatchObject({ key: 'notes@0002', reason: 'migration_attach' });
+    expect(existsSync(file)).toBe(false);
+    const smuggled = replay([INIT, { version: '0002', sql: `ATTACH DATABASE ':memory:' AS x; DROP TABLE main.notes;` }]);
+    expect(smuggled.refused).toMatchObject({ key: 'notes@0002', reason: 'migration_attach' });
+  });
+
+  it('tells a caller which migration is about to run, so it can bound each one', () => {
+    const seen: [string, boolean][] = [];
+    const manifest = { id: 'helpdesk', lists: [{ entityType: 't', sortable: ['id'], filterable: [], table: 't', idColumn: 'id' }] };
+    replayMigrations(database(), [{ manifest, migrations: [{ version: '0001', sql: 'CREATE TABLE t (id TEXT);' }] }] as never, {
+      onMigration: (key, authored) => seen.push([key, authored]),
+    });
+    expect(seen[0]).toEqual(['helpdesk@0001', true]);
+    expect(seen.slice(1).every(([, authored]) => !authored)).toBe(true);
+    expect(seen.length).toBeGreaterThan(1);
   });
 
   it('replays modules in order, each judged under its own key', () => {
