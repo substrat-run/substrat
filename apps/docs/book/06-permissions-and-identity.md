@@ -205,6 +205,52 @@ is a known anti-pattern with an issue number attached to it.
 `demos/todo/src/module.ts` shows both in one line each, and is worth reading before you
 design any sharing feature.
 
+## Sharing by link: authority held by a secret
+
+Sharing with a named principal and sharing with whoever holds a link are different
+grants. A **capability** is the second: a secret names an entity subtree, a set of
+permissions and an expiry. The platform stores its hash. Exchanging the secret yields
+a capability session, and the checker records the capability as the actor.
+
+The minter's own access bounds the link on **every use**. If the minter loses access,
+the link loses it too. A sibling record, an undeclared key or a scope-wide check stays
+out of reach. Revocation is checked again on the next invocation, even for a session
+created before the revoke. Capability-backed attachment reads use the same entity check;
+uploads and removals through a share link are refused.
+
+The secret travels in the URL fragment. Fetching the page does not send that fragment
+to a server or spend the link, which matters when mail scanners fetch invitations.
+Use the capability surface rather than putting a privileged API token in a URL.
+
+An invite can use a **become** capability: its claim establishes the authenticated
+person's own membership or binds them to their own record. A binding invite is not
+delegation of the inviter's access to somebody else's record. The
+[permission reference](/concepts/permissions) covers the two modes and their limits.
+Where an email address decides identity or invite access, the issuer must assert
+`email_verified: true`; a valid sign-in without that claim does not prove ownership
+of the address.
+
+## Permission shapes evolve with existing users
+
+Consider a customer portal: every person gets a declared set of keys on their own
+customer record. Giving those keys only when the person joins leaves existing users
+behind when a later release adds one.
+
+An **entity-grant shape** records that the person is a holder of the declared set.
+Provision, reconcile and listed promote top up existing holders in bounded, resumable
+passes. An independently revoked key stays revoked: reconciliation does not overwrite
+its tombstone. Removing a key from the declaration leaves existing grants in place;
+explicitly **retiring** it removes it from holders. The permission diff shows that
+difference before deployment.
+
+A shape-protected key must reach its record through that record's grant. An ancestor's
+grant cannot accidentally carry it into every customer's record below. This closes the
+gap between “everyone has a customer record” and “everyone can read every customer.”
+
+App-to-app authority is a third case. A peer is an app identity, with the receiving
+app's declared grants; it does not inherit a person's session. Chapter 7 walks that
+boundary and its off switch.
+
 ## The permission checkpoint
 
 New permission keys and role definitions are one of the two things an agent may never

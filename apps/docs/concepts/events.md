@@ -142,6 +142,10 @@ moment the event happened — which is exactly what an invoice wants.
 
 ## Delivery semantics
 
+The following describes consumers **inside one scope**. Delivery into another app uses
+export/import declarations, the producing app's identity, and a consumer-owned watermark.
+See [Cross-vertical communication](/concepts/cross-vertical) for that path and its diagrams.
+
 - Consumers run as ordinary in-scope operations under a **system actor**
   (`{ system: '@substrat-run/engine-invoicing' }` — visible as such in the audit trail).
 - Delivery is **at-least-once**, tracked in a kernel delivery journal — consumers must

@@ -198,6 +198,22 @@ Here is what **is not built**, stated where you would otherwise assume it was:
 - **No lake retention policy** is configured. Snapshot expiry and compaction are the catalog's
   defaults.
 
+## Erasure reaches the module's own tables
+
+An audit envelope surviving erasure does not mean a person's details should survive
+in the vertical's rows. Entities now declare their subject mapping and erasure mode:
+blank the erasable fields, delete the row, or use the module's synchronous
+`onSubjectErased` hook for domain-specific cleanup. The hook can reach only that
+module's declared model tables. Registration refuses a missing erasure declaration,
+or custom erasure without a hook.
+
+Both adapters run this module cleanup and the spine redaction in one transaction.
+That closes the earlier gap where erasing a subject cleaned the kernel's records but
+left the vertical's customer row intact. Subject-linked pending mail is cancelled too.
+The declaration still needs to identify the subject correctly; it cannot discover
+personal data hidden in an unlinked free-text field or in another app's derived copy.
+The lake limitation above remains a separate boundary.
+
 ## Exports
 
 A tenant's data can be exported in full: every scope's dump, plus directory rows and, in

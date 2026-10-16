@@ -15,6 +15,7 @@ import { parseXml } from '@rgrove/parse-xml';
 import { buildEpub, figureRequests, readCover } from '../.vitepress/epub.mjs';
 import { componentOf, figureKey, renderFigures } from '../.vitepress/figures.mjs';
 import { bookChapters } from '../.vitepress/sidebar.mjs';
+import { bookHtml } from '../.vitepress/book.mjs';
 
 const SRC = resolve(fileURLToPath(import.meta.url), '../..');
 /**
@@ -24,7 +25,8 @@ const SRC = resolve(fileURLToPath(import.meta.url), '../..');
  * that turns a chapter into XML a reader refuses.
  */
 const requests = figureRequests(SRC);
-const epub = buildEpub(SRC, readCover(SRC), await renderFigures(SRC, requests));
+const rendered = await renderFigures(SRC, requests);
+const epub = buildEpub(SRC, readCover(SRC), rendered);
 const files = unzipSync(epub);
 const text = (path: string): string => strFromU8(files[path]!);
 
@@ -122,6 +124,10 @@ describe('the figures', () => {
       'ScopeDrain',
       'PermissionPipeline',
       'BlastRadius',
+      'CommunicationFlow',
+      'CommunicationFlow',
+      'CommunicationFlow',
+      'CommunicationFlow',
     ]);
   });
 
@@ -139,10 +145,28 @@ describe('the figures', () => {
     }
   });
 
+  it('keeps all four communication diagrams distinct in the EPUB and printable edition', () => {
+    const chapter = text('EPUB/text/07-engines-and-verticals.xhtml');
+    const printable = bookHtml(SRC, rendered);
+    for (const title of [
+      'One peer call · one tenant',
+      'One exported fact · two commits',
+      'One notification · three responsibilities',
+      'One assistant turn · an approved change',
+    ]) {
+      expect(chapter).toContain(title);
+      expect(printable).toContain(title);
+    }
+    expect(chapter.match(/class="figure figure--CommunicationFlow"/g)).toHaveLength(4);
+    expect(printable.match(/class="figure figure--CommunicationFlow"/g)).toHaveLength(4);
+    expect(printable).toContain('.figure--CommunicationFlow .card');
+    expect(printable).not.toContain('<script');
+  });
+
   /**
    * A prop value is `[^"]*`, so it may contain the characters a query string uses as
-   * separators. The book passes no props today; the key has to survive the first one
-   * that does, because the failure is silent — one render answering for two pictures.
+   * separators. Distinct prop sets must stay distinct, because the failure is
+   * silent — one render answering for two pictures.
    */
   it('keys two different prop sets apart when the values carry separators', () => {
     expect(figureKey('StateMachine', { x: 'a&y=b' })).not.toBe(

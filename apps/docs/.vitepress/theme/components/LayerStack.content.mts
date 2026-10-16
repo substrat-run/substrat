@@ -45,6 +45,8 @@ export const engines: Layer = {
     ['invoicing', 'consumes billable events · immutable once exported'],
     ['protocol', 'checklists + signed docs · freeze → immutable, hashed'],
     ['invites', 'hashed identifier · accept-required · non-enumerable'],
+    ['notifications', 'preferences + delivery records · email via platform intent'],
+    ['assistant', 'thread record + run lease + exact-input approval · host integration pending'],
   ],
 };
 
@@ -75,7 +77,7 @@ export const kernel = {
   owner: 'owns no domain entities',
   bits: [
     'Identity', 'Nested tenancy', 'Permissions + grants', 'Events / audit spine',
-    'Migrations', 'GDPR machinery', 'Notifications', 'Jobs',
+    'Migrations', 'GDPR machinery', 'Email intents', 'Jobs',
     'Billing entitlements', 'Module system', 'Attachment contracts', 'App shell',
   ],
   ctxLabel: 'Every operation runs inside',

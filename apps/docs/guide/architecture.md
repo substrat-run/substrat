@@ -109,6 +109,10 @@ names, or takes it away on a removal, only within the authority of whoever asked
 
 ## Calling another vertical: the peer door
 
+Start with [Cross-vertical communication](/concepts/cross-vertical) to choose between a
+synchronous call, a queued request and an event import. It diagrams the transaction and
+permission boundaries. The declarations and runnable local example follow here.
+
 Two verticals of one tenant sometimes need each other's operations. A board-room app reads
 customers from a CRM, for example. Neither call is a person acting, so there is no user token
 to carry, and an API key pasted into the other app's settings would be a second enforcement
@@ -393,12 +397,16 @@ per module. It then moves the watermark, last, in its own database. As a result:
   paused or unresolved. A paused or unresolved edge also writes a sweep-run record with the
   reason.
 
-Still to come:
-- The hosted transport: the control plane reaching both scopes, and delivery within seconds
-  of a commit rather than at the next sweep.
-- A way to replay from an earlier watermark.
-- An edge-health view.
-- A breaking-change check on exported event payloads.
+The hosted transport, router kick, replay/skip controls, edge-health view and exported-schema
+checks are implemented. A routed response can trigger delivery within seconds; events from
+schedules, peer calls and imports wait for the sweep. A replay deliberately runs handlers
+again. A promote dropping or re-versioning an export a running consumer uses requires
+acknowledgement. Individual `bindScopeVersion` changes do not yet have that export-break gate.
+
+The event resolver still requires unique primary instances at both ends. The caller-instance
+binding used by peer calls does not select an event-stream target. Chapter 7's
+[worked example](/book/07-engines-and-verticals#between-verticals-a-call-asks-an-event-announces)
+follows both paths, their permissions and their failure behavior with diagrams.
 
 ## Language: TypeScript end-to-end
 

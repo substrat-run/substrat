@@ -4,8 +4,8 @@
  * A table gives latency and consistency per path but not the thing that decides
  * between them: how far the data has travelled from the scope that owns it.
  * That distance IS the staleness, and it is why the default has none — the
- * projection commits in the same transaction as the write it derives from, so
- * there is no second store to fall behind.
+ * a successful projection consumer runs in the same serialized turn as the write
+ * it derives from, in a separate transaction. A failed consumer can leave it behind.
  *
  * Drawn as increasing distance from one boundary rather than three peer boxes:
  * three boxes side by side would restate the table, which is the failure mode
@@ -17,7 +17,7 @@
 
 export const aria =
   'Three read paths at increasing distance from the scope. An in-scope read is a local ' +
-  'indexed query with no staleness. An external read model is fed by events and is eventually ' +
+  'indexed query. An external read model is fed by events and is eventually ' +
   'consistent. The history tier is fed by export and is not a read tier for interactive use.';
 
 export interface Path {
@@ -37,7 +37,7 @@ export const paths: readonly Path[] = [
     latency: 'µs',
     consistency: 'serializable',
     use: 'everything interactive',
-    how: 'a projection table in the scope’s own database, committed with the write that caused it',
+    how: 'local tables; projection consumers run after commit in the same turn',
     inside: true,
   },
   {
@@ -66,9 +66,9 @@ export const boundary =
 export const order = 'Reach for them in this order.';
 
 export const caption =
-  'Distance from the boundary is the staleness. Path 1 has none — there is no second store, ' +
-  'because the projection commits with the write that caused it. Path 3 is not a read tier for ' +
-  'anything a person is waiting on.';
+  'An in-scope projection has no visible gap when its consumer succeeds; a failed consumer can leave it behind. ' +
+  'External projections have delivery lag. The history gateway is staff-only and requires configuration; ' +
+  'it is not an interactive read tier.';
 
 export function alt(): string {
   return [

@@ -63,6 +63,9 @@ Field by field:
 | `id`, `version`, `kernelContract` | identity + the kernel API range this module targets | host, tooling |
 | `permissions` | every key the module checks, with a description | permission review (the human-readable diff), admin UI, agents |
 | `events.emits` / `events.consumes` | the module's event contract, schema-versioned | host wiring, compatibility checks, agents |
+| `events.exports` / `events.consumes[].from` | which events may leave this app, and which other app an import comes from | [cross-vertical delivery](/concepts/cross-vertical) |
+| `peers` | calling apps, their allowed operations and granted permissions | the peer door and provisioning ([peer permissions](/concepts/permissions#another-app-of-the-same-tenant-peers)) |
+| `liveTargets` | entity types a change feed may announce, and the read key for each | permission-checked [live updates](/concepts/reads#live-updates) |
 | `migrations` | journal location and `compatibleFrom` — the oldest schema this code tolerates (the skew window) | migration runner |
 | `attachmentTargets` | entity types that accept attachments (documents, comments), and which permission gates reading them | kernel attachment services |
 | `entityRelations` | parent edges (`workorder → facility`) that permission flows along | the [permission evaluator](/concepts/permissions) |
