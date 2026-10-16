@@ -566,14 +566,14 @@ describe('the fleet rebuild (#2309)', () => {
       const app = appWith(keysB);
       const post = (actor: string, body: unknown) =>
         app.request('/store-drivers/graph/rebuild', { method: 'POST', headers: { [DEV_ACTOR_HEADER]: actor, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      // The scheduled pass begins a walk inside the window, and pauses.
-      expect(await pass(keysB, 2)).toMatchObject({ outcome: 'paused', walked: ['-canary', 'va'] });
       // A service token may not attest.
       expect((await post(platformActorId.parse(ulid()), { deployFinished: true })).status).toBe(403);
-      // Without the attestation a person's run finishes that walk as settling.
+      // Without the attestation, a person's run inside the window ends settling.
       const plain = (await (await post(person, {})).json()) as { pass: { walked: string[] }; rebuild: { current: boolean; settling?: string } };
       expect(plain.rebuild).toMatchObject({ current: false, settling: expect.any(String) });
-      // With it, the run starts the walk over from its first script, and once done that walk proves it.
+      // Another walk begins inside the window and pauses part way.
+      expect(await pass(keysB, 2, 'always')).toMatchObject({ outcome: 'paused', walked: ['-canary', 'va'] });
+      // An attested run does not adopt that walk: it starts over from its first script, and once done proves it.
       const attested = await post(person, { deployFinished: true });
       expect(attested.status).toBe(200);
       expect(await attested.json()).toMatchObject({ pass: { outcome: 'done', walked: ['-canary', 'va', 'vb'] }, rebuild: { current: true, walk: { attestedBy: person } } });
