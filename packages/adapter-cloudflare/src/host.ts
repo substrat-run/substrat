@@ -4034,9 +4034,7 @@ export class CloudflareScopeHost implements ScopeHost {
     } catch (err) {
       throw new Error(`${REWIND_REFUSED}${err instanceof Error ? err.message : String(err)}`);
     }
-    return this.rewindHolding(scopeId, () =>
-      this.scopeStub(scopeId).rewindToBookmark(bookmark, opts?.force === undefined ? undefined : { force: opts.force }),
-    );
+    return this.rewindHolding(scopeId, () => this.scopeStub(scopeId).rewindToBookmark(bookmark, { force: opts?.force }));
   }
 
   /**

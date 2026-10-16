@@ -14,7 +14,7 @@
  * 2. a file that replays dump rows (`dumpRowsInsert(`) must call `refuseCondemnedInDump(`.
  *
  * Shipped source only: tests write rows to set up what they assert, and `dumpRowsInsert`'s own
- * definition is not a load. Run with `--self-test`-free fixtures in `attachment-writers.test.mjs`.
+ * definition is not a load. Its fixtures are `attachment-writers.test.mjs`.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';

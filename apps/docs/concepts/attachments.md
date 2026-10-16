@@ -73,7 +73,7 @@ A scope that has neither is refused until it is reconciled.
 
 **What the sweep cannot protect.** A restore from a dump older than 35 days can bring back rows
 whose bytes were swept. A removed attachment has the same exposure today, since removing it
-deletes its bytes. Restore from a dump that recent, or accept that old files may be missing.
+deletes its bytes. Restore from a dump younger than that, or expect some of its files to be missing.
 
 ## Upload links
 
