@@ -127,9 +127,7 @@ export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
  */
 export function createStoreCanaryEnsurer(opts: ScopeStoreEnsurerOptions) {
   const ensure = scriptEnsurer(opts);
-  return async (
-    input: { driver: string; to: string } | { driver: string; existingOnly: true },
-  ): Promise<{ scriptName: string; uploaded: boolean }> => {
+  return async (input: StoreCanaryTarget): Promise<{ scriptName: string; uploaded: boolean }> => {
     const driver = (opts.drivers ?? STORE_DRIVERS).find((k) => k.driver === input.driver);
     if (!driver) throw new ControlPlaneError(403, `scope store driver '${input.driver}' is not registered`);
     const scriptName = scopeStoreCanaryScriptName(driver.driver);
@@ -141,6 +139,9 @@ export function createStoreCanaryEnsurer(opts: ScopeStoreEnsurerOptions) {
     return { scriptName, uploaded };
   };
 }
+
+/** Where the canary script goes: to a release (a rollout), or rebuilt where it is (the fleet rebuild). */
+export type StoreCanaryTarget = { driver: string; to: string } | { driver: string; existingOnly: true };
 
 interface EnsuredScript {
   readonly driver: string;

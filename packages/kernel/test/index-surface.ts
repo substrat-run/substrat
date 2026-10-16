@@ -406,7 +406,6 @@ export const INDEX_VALUE_EXPORTS = [
   'operationsFor',
   'orgChangeBound',
   'parseValidationRecords',
-  'storeDriverRebuildIn',
   // #2252: the peer rule the adapters' doors, the platform's resolvers and the dashboard share.
   'peerCallerAt',
   'peerGrantsStatus',
@@ -545,6 +544,7 @@ export const INDEX_VALUE_EXPORTS = [
   'startJobRun',
   'startPlatformSweeper',
   'statefulTablesOf',
+  'storeDriverRebuildIn',
   'storeDriverReleaseIn',
   'storeDriverStateIn',
   'strandJudgmentsOf',

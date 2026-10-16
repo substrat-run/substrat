@@ -148,13 +148,10 @@ export { createWfpUploader, createWfpModulesFetcher, createWfpBindingsPatcher } 
 export { createScopeStoreEnsurer, createStoreCanaryEnsurer, STORE_BUILD_VAR, STORE_RELEASE_VAR, storePlatformFingerprint } from './store-script.js';
 export {
   STORE_REBUILD_PASS_SUBREQUESTS,
-  STORE_REBUILD_REQUEST_SUBREQUESTS,
-  STORE_REBUILD_SUBREQUESTS_PER_SCRIPT,
   runStoreFleetRebuild,
   storeRebuildBudget,
   storeRebuildStatus,
   type StoreDriverRebuildPass,
-  type StoreFleetRebuildDeps,
 } from './store-rebuild.js';
 export {
   ROLLOUT_FLEET_MAX,
@@ -172,7 +169,7 @@ export {
   type StoreDriverRolloutResult,
   type StoreReleaseBytes,
 } from './store-releases.js';
-export type { ScopeStoreEnsurerOptions, StoreDriverReleaseArtifact } from './store-script.js';
+export type { ScopeStoreEnsurerOptions, StoreCanaryTarget, StoreDriverReleaseArtifact } from './store-script.js';
 export {
   withPlatformEntry,
   platformEntrySkipReason,

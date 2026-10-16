@@ -94,6 +94,7 @@ import {
   STORE_REBUILD_PASS_SUBREQUESTS,
   callPlatformScopeStoreAt,
   type ScopeStoreEnsurerOptions,
+  type StoreCanaryTarget,
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
   createCfObservabilityReader,
@@ -678,10 +679,7 @@ function storeReleasesFor(env: Env) {
         await bucket.put(key, bytes);
       },
     },
-    ensureCanary: async ({
-      loadRelease,
-      ...input
-    }: ({ driver: string; to: string } | { driver: string; existingOnly: true }) & { loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }) =>
+    ensureCanary: async ({ loadRelease, ...input }: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }) =>
       createStoreCanaryEnsurer({ ...(await options()), loadRelease })(input),
     // #2309: what every store script is built from now; the fleet rebuild converges on it.
     fingerprint: async () => storePlatformFingerprint(await options()),
@@ -710,12 +708,12 @@ async function rebuildStoreScripts(env: Env, admin: HostAdmin): Promise<void> {
     fingerprint: await flow.fingerprint(),
     bytes: flow.bytes,
     ensure,
-    ensureCanary: async (input) => ({ uploaded: (await flow.ensureCanary(input)).uploaded }),
+    ensureCanary: flow.ensureCanary,
     budget: storeRebuildBudget(subrequests),
   });
   const active = passes.filter((p) => p.outcome !== 'current');
   if (active.length > 0) {
-    console.log('store-rebuild', active.map(({ rebuild: _row, ...pass }) => ({ ...pass, failures: _row?.failures.length ?? 0 })));
+    console.log('store-rebuild', active.map(({ rebuild, ...pass }) => ({ ...pass, failures: rebuild?.failures.length ?? 0 })));
   }
 }
 

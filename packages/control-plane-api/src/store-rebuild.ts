@@ -43,7 +43,7 @@ type LoadRelease = ScopeStoreEnsurerOptions['loadRelease'];
  * the release's bytes (read once per release a pass meets, counted for every script to stay on the
  * safe side), at most one upload, and the progress write.
  */
-export const STORE_REBUILD_SUBREQUESTS_PER_SCRIPT = 5;
+const STORE_REBUILD_SUBREQUESTS_PER_SCRIPT = 5;
 /**
  * The subrequests a pass of the walk may spend by default. A Worker invocation gets 1000 on the
  * paid plan; the scheduled pass shares its invocation with every other phase, so it takes half.
@@ -55,12 +55,12 @@ export const STORE_REBUILD_REQUEST_SUBREQUESTS = 900;
 export const storeRebuildBudget = (subrequests: number): number =>
   Math.max(1, Math.floor(subrequests / STORE_REBUILD_SUBREQUESTS_PER_SCRIPT));
 /** How long a pass's lease on a driver's rebuild lives between progress writes. */
-export const STORE_REBUILD_LEASE_TTL_MS = 10 * 60_000;
+const STORE_REBUILD_LEASE_TTL_MS = 10 * 60_000;
 
 /** The cursor once the canary is walked: before every slug, after "not started" (null). */
 const CANARY_WALKED = '';
 
-export interface StoreFleetRebuildDeps {
+interface StoreFleetRebuildDeps {
   admin: HostAdmin;
   actor: PlatformActorId;
   drivers: readonly StoreDriverRegistration[];
@@ -133,13 +133,15 @@ async function rebuildDriver(
   const driver = registration.driver;
   const walked: string[] = [];
   const uploaded: string[] = [];
+  const result = (outcome: StoreDriverRebuildPass['outcome'], rebuild?: StoreDriverRebuildRecord): StoreDriverRebuildPass =>
+    ({ driver, outcome, walked, uploaded, ...(rebuild ? { rebuild } : {}) });
   const stood = await admin.storeDriverRebuild(actor, driver);
-  if (stood && stood.fingerprint === fingerprint && stood.state === 'done') return { driver, outcome: 'current', walked, uploaded, rebuild: stood };
-  if (budget <= 0) return { driver, outcome: 'paused', walked, uploaded, ...(stood ? { rebuild: stood } : {}) };
+  if (stood && stood.fingerprint === fingerprint && stood.state === 'done') return result('current', stood);
+  if (budget <= 0) return result('paused', stood);
 
   const holder = ulid();
   const claimed = await admin.claimStoreDriverRebuild(actor, { driver, fingerprint, holder, ttlMs: STORE_REBUILD_LEASE_TTL_MS });
-  if (!claimed) return { driver, outcome: 'busy', walked, uploaded, ...(stood ? { rebuild: stood } : {}) };
+  if (!claimed) return result('busy', stood);
   let rebuild = claimed;
   let cursor = claimed.cursor;
   const failures = new Map(claimed.failures.map((f) => [f.vertical, f.detail]));
@@ -147,15 +149,12 @@ async function rebuildDriver(
     const list: StoreDriverRebuildFailure[] = [...failures].map(([vertical, detail]) => ({ vertical, detail }));
     rebuild = await admin.advanceStoreDriverRebuild(actor, { driver, fingerprint, holder, cursor, failures: list, done, ttlMs: STORE_REBUILD_LEASE_TTL_MS, release });
   };
-  let released = false;
+  // The lease is dropped once, however the walk ends; the end of a whole walk drops it itself.
+  let leaseDropped = false;
   let held = false;
   try {
-    if (!(await admin.holdStoreDriver(actor, { driver, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS }))) {
-      await advance(false, true);
-      released = true;
-      return { driver, outcome: 'held', walked, uploaded, rebuild };
-    }
-    held = true;
+    held = await admin.holdStoreDriver(actor, { driver, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS });
+    if (!held) return result('held', rebuild);
     const declared = await admin.storeDriverDeclarations(actor, driver);
     const unreadable = new Set(declared.unreadable);
     for (const vertical of unreadable) {
@@ -166,27 +165,23 @@ async function rebuildDriver(
     for (const vertical of [...failures.keys()]) {
       if (vertical !== SCOPE_STORE_CANARY && !byVertical.has(vertical) && !unreadable.has(vertical)) failures.delete(vertical);
     }
-    const ahead = [...byVertical.keys()].filter((v) => cursor === null || v > cursor).sort();
+    const ahead = aheadOf(cursor, [...byVertical.keys()].sort());
+    const walking = new Set(ahead);
     const steps: { key: string; walk: boolean }[] = [
-      ...(cursor === null ? [{ key: SCOPE_STORE_CANARY, walk: true }] : []),
       ...ahead.map((key) => ({ key, walk: true })),
       // The retries: a failure behind the cursor that can be rebuilt now.
       ...[...failures.keys()]
-        .filter((key) => !ahead.includes(key) && (key === SCOPE_STORE_CANARY ? cursor !== null : byVertical.has(key)))
+        .filter((key) => !walking.has(key) && (key === SCOPE_STORE_CANARY || byVertical.has(key)))
         .map((key) => ({ key, walk: false })),
     ];
-    let left = steps.length;
     for (const step of steps) {
       if (walked.length >= budget) break;
       if (!(await admin.holdStoreDriver(actor, { driver, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS, renew: true }))) {
         // The hold lapsed, and a rollout may hold the driver now: walk nothing more. The lease may
         // have lapsed with it, and then another pass owns the row; what was walked is recorded.
-        await advance(false, true).catch(() => undefined);
-        released = true;
-        return { driver, outcome: 'held', walked, uploaded, rebuild };
+        return result('held', rebuild);
       }
       walked.push(step.key);
-      left--;
       try {
         const up = step.key === SCOPE_STORE_CANARY
           ? (await deps.ensureCanary({ driver, existingOnly: true, loadRelease })).uploaded
@@ -209,14 +204,20 @@ async function rebuildDriver(
       if (step.walk) cursor = step.key === SCOPE_STORE_CANARY ? CANARY_WALKED : step.key;
       await advance(false);
     }
+    const left = steps.length - walked.length;
     const done = left === 0 && failures.size === 0;
+    leaseDropped = true;
     await advance(done, true);
-    released = true;
-    return { driver, outcome: left > 0 ? 'paused' : done ? 'done' : 'failing', walked, uploaded, rebuild };
+    return result(left > 0 ? 'paused' : done ? 'done' : 'failing', rebuild);
   } finally {
     if (held) await admin.releaseStoreDriverHold(actor, { driver, holder }).catch(() => undefined);
-    if (!released) await advance(false, true).catch(() => undefined);
+    if (!leaseDropped) await advance(false, true).catch(() => undefined);
   }
+}
+
+/** The scripts ahead of a walk's cursor: the canary before any vertical, then each slug after it. */
+function aheadOf(cursor: string | null, verticals: readonly string[]): string[] {
+  return [...(cursor === null ? [SCOPE_STORE_CANARY] : []), ...verticals.filter((v) => cursor === null || v > cursor)];
 }
 
 /**
@@ -233,11 +234,6 @@ export function storeRebuildStatus(
 ): { current: boolean; pending: string[] } {
   if (!rebuild || rebuild.fingerprint !== fingerprint) return { current: false, pending: [SCOPE_STORE_CANARY, ...declared] };
   if (rebuild.state === 'done') return { current: true, pending: [] };
-  const cursor = rebuild.cursor;
-  const pending = new Set([
-    ...(cursor === null ? [SCOPE_STORE_CANARY] : []),
-    ...declared.filter((v) => cursor === null || v > cursor),
-    ...rebuild.failures.map((f) => f.vertical),
-  ]);
+  const pending = new Set([...aheadOf(rebuild.cursor, declared), ...rebuild.failures.map((f) => f.vertical)]);
   return { current: false, pending: [...pending] };
 }

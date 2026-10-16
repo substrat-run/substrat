@@ -175,7 +175,7 @@ import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
-import type { ScopeStoreEnsurerOptions } from './store-script.js';
+import type { ScopeStoreEnsurerOptions, StoreCanaryTarget } from './store-script.js';
 import { STORE_REBUILD_REQUEST_SUBREQUESTS, runStoreFleetRebuild, storeRebuildBudget, storeRebuildStatus, type StoreDriverRebuildPass } from './store-rebuild.js';
 import { PUSH_HOLD_TTL_MS, runStoreDriverRollout, storeDriverRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
 import { assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, listAllScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
@@ -442,9 +442,7 @@ export interface ControlPlaneApiOptions {
    */
   storeReleases?: {
     bytes: StoreReleaseBytes;
-    ensureCanary(
-      input: ({ driver: string; to: string } | { driver: string; existingOnly: true }) & { loadRelease: ScopeStoreEnsurerOptions['loadRelease'] },
-    ): Promise<{ scriptName: string; uploaded?: boolean }>;
+    ensureCanary(input: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }): Promise<{ scriptName: string; uploaded: boolean }>;
     callCanary: CanaryCall;
     /**
      * What the platform builds every store script from now (`storePlatformFingerprint`, #2309).
@@ -10463,11 +10461,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /** Where the platform's rebuild of every script of the driver stands (#2309), if it rebuilds them. */
-  const rebuildView = async (admin: HostAdmin, actor: PlatformActorId, driver: string) => {
-    const fingerprint = await options.storeReleases?.fingerprint?.();
+  const rebuildView = async (admin: HostAdmin, actor: PlatformActorId, driver: string, known?: string) => {
+    const fingerprint = known ?? (await options.storeReleases?.fingerprint?.());
     if (!fingerprint) return undefined;
-    const walk = await admin.storeDriverRebuild(actor, driver);
-    const declared = await admin.storeDriverDeclarations(actor, driver);
+    const [walk, declared] = await Promise.all([admin.storeDriverRebuild(actor, driver), admin.storeDriverDeclarations(actor, driver)]);
     const verticals = [...new Set([...declared.verticals.map((v) => v.vertical), ...declared.unreadable])].sort();
     return { fingerprint, ...storeRebuildStatus(walk, fingerprint, verticals), walk: walk ?? null };
   };
@@ -10524,16 +10521,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = await byAPerson(c);
     const { flow, ensureScopeStores } = releaseFlow();
     if (!flow.fingerprint) throw new ControlPlaneError(501, 'this control plane does not rebuild store scripts');
+    const fingerprint = await flow.fingerprint();
     let ran: Omit<StoreDriverRebuildPass, 'rebuild'> = { driver: registration.driver, outcome: 'error', walked: [], uploaded: [] };
     try {
       const [pass] = await runStoreFleetRebuild({
         admin: c.var.admin,
         actor,
         drivers: [registration],
-        fingerprint: await flow.fingerprint(),
+        fingerprint,
         bytes: flow.bytes,
         ensure: ensureScopeStores,
-        ensureCanary: async (input) => ({ uploaded: (await flow.ensureCanary(input)).uploaded ?? true }),
+        ensureCanary: flow.ensureCanary,
         budget: storeRebuildBudget(STORE_REBUILD_REQUEST_SUBREQUESTS),
       });
       const { rebuild: _row, ...result } = pass!;
@@ -10546,8 +10544,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await c.var.admin.recordStoreDriverRebuildRun(actor, ran);
     }
     if (ran.outcome === 'error') throw new ControlPlaneError(502, `the rebuild of '${registration.driver}' failed: ${ran.error}`);
-    const rebuild = (await rebuildView(c.var.admin, actor, registration.driver))!;
-    return c.json({ pass: ran, rebuild }, ran.outcome === 'paused' || ran.outcome === 'held' || ran.outcome === 'busy' ? 202 : 200);
+    const rebuild = (await rebuildView(c.var.admin, actor, registration.driver, fingerprint))!;
+    // Scripts remain, or another holder has the driver: post again.
+    const again = ran.outcome === 'paused' || ran.outcome === 'held' || ran.outcome === 'busy';
+    return c.json({ pass: ran, rebuild }, again ? 202 : 200);
   });
 
   return app;
