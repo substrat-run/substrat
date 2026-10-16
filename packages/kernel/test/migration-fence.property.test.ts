@@ -40,8 +40,11 @@ function raw(setup: string, statements: readonly string[]): Db | undefined {
   }
 }
 
-/** The fence's verdict on the same sequence, as both adapters run it: inside one transaction. */
-function fenced(setup: string, statements: readonly string[]): 'applied' | 'refused' {
+/**
+ * The fence's verdict on the same sequence, as both adapters run it: inside one transaction.
+ * `temp`: refused before running because it makes a TEMP object, which a Durable Object refuses.
+ */
+function fenced(setup: string, statements: readonly string[]): 'applied' | 'refused' | 'temp' {
   const db = new DatabaseSync(':memory:');
   db.exec(setup);
   db.exec('BEGIN');
@@ -54,6 +57,7 @@ function fenced(setup: string, statements: readonly string[]): 'applied' | 'refu
     return 'applied';
   } catch (err) {
     db.exec('ROLLBACK');
+    if (errorCodeOf(err) === 'validation_failed' && /creates a TEMP object/.test((err as Error).message)) return 'temp';
     if (errorCodeOf(err) !== 'forbidden') throw err;
     return 'refused';
   }
@@ -102,8 +106,13 @@ describe('the data-loss fence agrees with ground truth on every short migration 
         if (kinds.includes('rename')) statements.push(`ALTER TABLE ${x} RENAME TO ${y}`);
         if (kinds.includes('copy')) statements.push(`INSERT INTO ${x} SELECT * FROM ${y}`);
         if (kinds.includes('create-as')) statements.push(`CREATE TABLE ${x} AS SELECT * FROM ${y}`);
+        if (kinds.includes('qualified')) statements.push(`ALTER TABLE main.${x} RENAME TO "${y}"`);
       }
+      if (kinds.includes('qualified')) statements.push(`DROP TABLE "${x}"`, `DROP TABLE IF EXISTS "main"."${x}"`);
+      if (kinds.includes('temp')) statements.push(`CREATE TEMP TABLE ${x} (tag TEXT)`, `CREATE TABLE temp.${x} (tag TEXT)`);
     }
+    /** A statement's table name, as SQLite resolves it: unquoted, `main.` stripped. */
+    const nameOf = (word: string) => word.replace(/"/g, '').replace(/^main\./, '');
 
     let checked = 0;
     const unexplained: string[] = [];
@@ -115,19 +124,26 @@ describe('the data-loss fence agrees with ground truth on every short migration 
           continue;
         }
         checked += 1;
+        // A TEMP object is refused whatever else the migration does, so nothing extends it.
+        if (seq.some((s) => /^CREATE (TEMP |TABLE temp\.)/.test(s))) {
+          prune();
+          const verdict = fenced(setup, seq);
+          if (verdict !== 'temp') unexplained.push(`a TEMP object was ${verdict}, not refused: ${seq.join('; ')}`);
+          continue;
+        }
         // Which original table holds each name at the end, as SQLite resolves them in order.
         const holder = new Map(N.map((t) => [t, t]));
         const dropped = new Set<string>();
         for (const s of seq) {
-          const w = s.split(' ');
+          const w = s.replace('IF EXISTS ', '').split(' ');
           if (w[0] === 'DROP') {
-            const id = holder.get(w[2]!);
-            holder.delete(w[2]!);
+            const id = holder.get(nameOf(w[2]!));
+            holder.delete(nameOf(w[2]!));
             if (id && N.includes(id)) dropped.add(id);
           } else if (w[0] === 'CREATE') holder.set(w[2]!, `new:${w[2]}`);
           else if (w[0] === 'ALTER') {
-            holder.set(w[5]!, holder.get(w[2]!)!);
-            holder.delete(w[2]!);
+            holder.set(nameOf(w[5]!), holder.get(nameOf(w[2]!))!);
+            holder.delete(nameOf(w[2]!));
           }
         }
         const rowsOf = (t: string): string[] => (truth.prepare(`SELECT tag FROM ${t}`).all() as { tag: string }[]).map((r) => r.tag);
@@ -142,7 +158,8 @@ describe('the data-loss fence agrees with ground truth on every short migration 
         const explained = (t: string): 'in-place' | 'recreated' | undefined => {
           const at = identityOf(t);
           if (at !== undefined && !dropped.has(t) && rowsOf(at).length >= ROWS[t]!) return 'in-place';
-          if (dropped.has(t) && tablesOf(truth).includes(t) && rowsOf(t).length >= ROWS[t]!) return 'recreated';
+          // Made AGAIN: the name is held by a table a CREATE made, never by one renamed onto it.
+          if (dropped.has(t) && holder.get(t)?.startsWith('new:') && rowsOf(t).length >= ROWS[t]!) return 'recreated';
           return undefined;
         };
         const verdict = fenced(setup, seq);
@@ -170,24 +187,39 @@ describe('the data-loss fence agrees with ground truth on every short migration 
     expect(checked).toBeGreaterThan(1_000);
   }, WALK_TIMEOUT_MS);
 
-  it('column level: drops, adds and renames of columns, with the table moved aside and back', () => {
+  it('table level: the same through qualified and quoted names, and TEMP objects, which are refused', () => {
+    const { checked, unexplained } = tableLevel(['a', 'b', 'c', 'd'], ['qualified', 'temp', 'create-as'], 3);
+    expect(unexplained).toEqual([]);
+    expect(checked).toBeGreaterThan(1_000);
+  }, WALK_TIMEOUT_MS);
+
+  it('column level: drops, adds and renames of columns, with the table moved aside and back and rebuilt in place', () => {
     const setup = `CREATE TABLE a (id TEXT PRIMARY KEY, v TEXT, w TEXT);
       INSERT INTO a VALUES ('1', 'v1', 'w1'), ('2', 'v2', 'w2');`;
     const C = ['v', 'w', 'u'];
-    const steps: string[] = ['MOVE'];
+    const steps: string[] = ['MOVE', 'REBUILD'];
     for (const x of C) {
       steps.push(`DROP COLUMN ${x}`, `ADD COLUMN ${x} TEXT`);
       for (const y of C) if (x !== y) steps.push(`RENAME COLUMN ${x} TO ${y}`);
     }
-    /** The statements a step sequence is, with the table's current name filled in. */
+    /**
+     * The statements a step sequence is, with the table's current name filled in. `REBUILD` is the
+     * rebuild back into place — copy aside, drop, rename the copy onto the original name — which
+     * is where the column lookup falls back to original names; it is a rebuild only under the
+     * table's original name, so elsewhere it is made a statement SQLite refuses, and pruned.
+     */
     const toSql = (seq: readonly string[]): string[] => {
       let at = 'a';
-      return seq.map((step) => {
-        if (step !== 'MOVE') return `ALTER TABLE ${at} ${step}`;
+      return seq.flatMap((step) => {
+        if (step === 'REBUILD') {
+          if (at !== 'a') return ['SELECT * FROM not_a_rebuild'];
+          return ['CREATE TABLE n AS SELECT * FROM a', 'DROP TABLE a', 'ALTER TABLE n RENAME TO a'];
+        }
+        if (step !== 'MOVE') return [`ALTER TABLE ${at} ${step}`];
         const to = at === 'a' ? 'z' : 'a';
         const s = `ALTER TABLE ${at} RENAME TO ${to}`;
         at = to;
-        return s;
+        return [s];
       });
     };
 

@@ -115,7 +115,7 @@ const SHADOW_SUFFIXES: Readonly<Record<string, readonly string[]>> = {
  * Exported so a replay outside a host (`lint:migration-fence`) populates exactly what is measured.
  */
 export function fencedTables(sql: ScopedSql): string[] {
-  const rows = sql.query<{ name: string; sql: string | null }>("SELECT name, sql FROM sqlite_master WHERE type = 'table'");
+  const rows = sql.query<{ name: string; sql: string | null }>("SELECT name, sql FROM main.sqlite_master WHERE type = 'table'");
   const own = rows.filter((r) => {
     const n = lower(r.name);
     return !namesSpineTable(n) && !n.startsWith('sqlite_') && !n.startsWith('_cf_');
@@ -134,13 +134,14 @@ export function fencedTables(sql: ScopedSql): string[] {
 function measure(sql: ScopedSql): Measure {
   const out = new Map<string, TableCount>();
   for (const table of fencedTables(sql)) {
-    const names = sql.query<{ name: string }>('SELECT name FROM pragma_table_info(?)', [table]).map((c) => c.name);
-    const rows = Number(sql.query<{ n: number }>(`SELECT COUNT(*) AS n FROM ${quote(table)}`)[0]!.n);
+    // Qualified: a TEMP object of the same name would otherwise answer for the scope's table.
+    const names = sql.query<{ name: string }>("SELECT name FROM pragma_table_info(?, 'main')", [table]).map((c) => c.name);
+    const rows = Number(sql.query<{ n: number }>(`SELECT COUNT(*) AS n FROM main.${quote(table)}`)[0]!.n);
     const columns = new Map<string, Classes>();
     for (let at = 0; at < names.length && rows > 0; at += COLUMNS_PER_SCAN) {
       const chunk = names.slice(at, at + COLUMNS_PER_SCAN);
       const select = chunk.flatMap((c, i) => CLASSES.map((k) => `COALESCE(SUM(typeof(${quote(c)}) = '${k}'), 0) AS c${i}_${k}`));
-      const r = sql.query<Record<string, number>>(`SELECT ${select.join(', ')} FROM ${quote(table)}`)[0]!;
+      const r = sql.query<Record<string, number>>(`SELECT ${select.join(', ')} FROM main.${quote(table)}`)[0]!;
       chunk.forEach((c, i) => {
         columns.set(lower(c), Object.fromEntries(CLASSES.map((k) => [k, Number(r[`c${i}_${k}`])])) as Classes);
       });
@@ -171,38 +172,44 @@ interface Renames {
   readonly columns: Map<string, Map<string, string>>;
   /** Original tables a `DROP TABLE` removed, under whatever name they carried then. */
   readonly dropped: ReadonlySet<string>;
+  /** Dropped tables a rebuild continued under their original name (see `followRenames`). */
+  readonly rebuilt: ReadonlySet<string>;
 }
+
+/** What a column a `DROP COLUMN` removed maps to: a name no column after the migration has. */
+const DROPPED = '\u0000dropped';
 
 /**
  * Statement by statement, which original table holds each name right now. A name is held by at
  * most one table — SQLite refuses a rename onto a name that exists — so a `DROP TABLE` releases it
  * and a later rename onto it is that table's alone, whatever order the scope created them in.
+ *
+ * A table this migration made, renamed onto a dropped table's ORIGINAL name, continues the dropped
+ * one: that is the create-copy-drop-rename rebuild, which the counts then judge, and its later
+ * renames, of the table or its columns, are followed. A bare `CREATE TABLE` at that name is not a
+ * continuation: renames after it are not followed, which can only refuse.
  */
-/** What a column a `DROP COLUMN` removed maps to: a name no column after the migration has. */
-const DROPPED = '\u0000dropped';
-
 function followRenames(statements: readonly string[], before: Measure): Renames {
   const tables = new Map([...before.keys()].map((t) => [t, [t]]));
   const columns = new Map([...before].map(([t, c]) => [t, new Map([...c.columns.keys()].map((k) => [k, k]))]));
   const holder = new Map([...before.keys()].map((t) => [t, t]));
   const dropped = new Set<string>();
-  // A TEMP table this migration made shadows a main table of the same name: an unqualified
-  // `DROP`/`ALTER` reaches it first, so those statements are not the main table's.
-  const temps = new Set<string>();
   const nameAt = (w: { text: string }): string => lower(w.text.replace(/^main\./i, ''));
+  const rebuilt = new Set<string>();
+  const rebuiltAt = (name: string): void => {
+    if (!dropped.has(name) || holder.has(name)) return;
+    dropped.delete(name);
+    rebuilt.add(name);
+    holder.set(name, name);
+    tables.get(name)!.push(name);
+  };
   for (const statement of statements) {
     const w = words(statement);
     const kw = (i: number): string | undefined => (w[i] && !w[i]!.quoted ? w[i]!.text : undefined);
-    if (kw(0) === 'create' && (kw(1) === 'temp' || kw(1) === 'temporary') && kw(2) === 'table') {
-      const at = kw(3) === 'if' && kw(4) === 'not' && kw(5) === 'exists' ? 6 : 3;
-      if (w[at]) temps.add(lower(w[at]!.text.replace(/^temp\./i, '')));
-      continue;
-    }
     if (kw(0) === 'drop' && kw(1) === 'table') {
       const at = kw(2) === 'if' && kw(3) === 'exists' ? 4 : 2;
       if (!w[at]) continue;
       const name = nameAt(w[at]!);
-      if (temps.delete(name)) continue;
       const original = holder.get(name);
       if (original === undefined) continue;
       holder.delete(name);
@@ -211,15 +218,12 @@ function followRenames(statements: readonly string[], before: Measure): Renames 
     }
     if (kw(0) !== 'alter' || kw(1) !== 'table' || !w[2]) continue;
     const table = nameAt(w[2]);
-    if (temps.has(table)) {
-      if (kw(3) === 'rename' && kw(4) === 'to' && w[5]) {
-        temps.delete(table);
-        temps.add(nameAt(w[5]));
-      }
+    const original = holder.get(table);
+    if (!original) {
+      // A table this migration made, renamed onto a dropped table's original name: the rebuild.
+      if (kw(3) === 'rename' && kw(4) === 'to' && w[5]) rebuiltAt(nameAt(w[5]));
       continue;
     }
-    const original = holder.get(table);
-    if (!original) continue;
     const renamed = columns.get(original)!;
     if (kw(3) === 'drop') {
       // DROP [COLUMN] c: the column is gone, and its name is free for a later rename.
@@ -243,7 +247,7 @@ function followRenames(statements: readonly string[], before: Measure): Renames 
       for (const [orig, current] of renamed) if (current === from) renamed.set(orig, to);
     }
   }
-  return { tables, columns, dropped };
+  return { tables, columns, dropped, rebuilt };
 }
 
 /**
@@ -261,7 +265,8 @@ function endsOf(before: Measure, after: Measure, renames: Renames): Map<string, 
     const last = names[names.length - 1]!;
     // `holder` gave each name to one table at a time, so two undropped tables cannot end on one.
     if (names.length > 1 && !renames.dropped.has(table) && after.has(last)) {
-      ends.set(table, { end: last, followed: true });
+      // A rebuilt table may carry a column under its original name, so it is not followed strictly.
+      ends.set(table, { end: last, followed: !renames.rebuilt.has(table) });
       claimed.add(last);
     }
   }
@@ -333,8 +338,25 @@ function lossesOf(before: Measure, after: Measure, renames: Renames): Loss[] {
   return losses;
 }
 
-const declarationError = (key: string, message: string) =>
-  substratError('validation_failed', `migration ${key}: ${message} (#115)`, { reason: 'migration_declaration' });
+const declarationError = (key: string, message: string, reason = 'migration_declaration') =>
+  substratError('validation_failed', `migration ${key}: ${message} (#115)`, { reason });
+
+/**
+ * A statement that makes a TEMP object: `CREATE TEMP|TEMPORARY …`, or one named into the `temp`
+ * schema (`CREATE TABLE temp.x`, `"temp"."x"`), however the name is spelled.
+ */
+function createsTemp(statement: string): boolean {
+  const w = words(statement);
+  const kw = (i: number): string | undefined => (w[i] && !w[i]!.quoted ? w[i]!.text : undefined);
+  if (kw(0) !== 'create') return false;
+  if (kw(1) === 'temp' || kw(1) === 'temporary') return true;
+  let at = 1;
+  if (kw(at) === 'unique' || kw(at) === 'virtual') at += 1;
+  if (!['table', 'view', 'index', 'trigger'].includes(kw(at) ?? '')) return false;
+  at += 1;
+  if (kw(at) === 'if' && kw(at + 1) === 'not' && kw(at + 2) === 'exists') at += 3;
+  return w[at] !== undefined && lower(w[at]!.text).startsWith('temp.');
+}
 
 /**
  * What a declaration counts: a column's values per class, or a table's rows — carried in one
@@ -425,6 +447,16 @@ function moveFailures(
  */
 export function fenceMigration(sql: ScopedSql, migration: SqlMigration, key: string, run: () => void): void {
   const statements = executableSqlStatements(migration.sql);
+  const temp = statements.find(createsTemp);
+  if (temp !== undefined) {
+    throw declarationError(
+      key,
+      `it creates a TEMP object (\`${temp.slice(0, 80)}\`). A Durable Object refuses TEMP objects, so this migration ` +
+        'cannot run on the hosted adapter, and a TEMP table shadows the scope\'s own tables for every unqualified statement ' +
+        'after it. Use a regular table and DROP it before the migration ends',
+      'migration_temp',
+    );
+  }
   const moves = Object.entries(migration.moves ?? {});
   const discards = Object.entries(migration.discards ?? {});
   if (moves.length === 0 && discards.length === 0 && statements.every(additive)) {

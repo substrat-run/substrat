@@ -387,12 +387,42 @@ describe('the data-loss fence (#115)', () => {
     });
   });
 
-  it('a TEMP table shadowing a name takes the DROP, not the main table (#115 r3)', () => {
+  describe('TEMP objects (#115 r4)', () => {
     const setup = `CREATE TABLE a (id TEXT); INSERT INTO a VALUES ('1'), ('2'); CREATE TABLE b (id TEXT); INSERT INTO b VALUES ('x'), ('y'), ('z');`;
-    // The DROP removed the TEMP `a`; the main `a` then moved to `y`, rows and all.
-    const s = scope(setup);
-    s.migrate({ sql: 'CREATE TEMP TABLE a (id TEXT); DROP TABLE a; ALTER TABLE a RENAME TO y;' });
-    expect(s.rows('SELECT id FROM y ORDER BY id')).toEqual([{ id: '1' }, { id: '2' }]);
+    const invalid = (sql: string): string => {
+      const s = scope(setup);
+      try {
+        s.migrate({ sql });
+      } catch (err) {
+        expect(errorCodeOf(err)).toBe('validation_failed');
+        expect(s.rows('SELECT id FROM a')).toHaveLength(2);
+        return (err as Error).message;
+      }
+      throw new Error('expected the migration to be refused');
+    };
+
+    it.each([
+      ['CREATE TEMP TABLE x (id TEXT)'],
+      ['CREATE TEMPORARY TABLE IF NOT EXISTS x (id TEXT)'],
+      ['CREATE TABLE temp.x (id TEXT)'],
+      ['CREATE TABLE "temp"."x" (id TEXT)'],
+      ['CREATE TABLE TEMP . x (id TEXT)'],
+      ['CREATE TEMP VIEW v AS SELECT 1'],
+      ['CREATE TEMP TRIGGER t AFTER INSERT ON a BEGIN SELECT 1; END'],
+      ['CREATE INDEX temp.i ON a (id)'],
+    ])('an authored migration that makes one is refused before it runs: %s', (stmt) => {
+      expect(invalid(`${stmt}; DROP TABLE a;`)).toContain('creates a TEMP object');
+    });
+
+    it('a table merely named like the schema is not one', () => {
+      scope(setup).migrate({ sql: 'CREATE TABLE temporary_notes (id TEXT); CREATE TABLE "temp_x" (id TEXT);' });
+    });
+
+    it('a TEMP object already on the connection does not answer for the scope\'s table', () => {
+      const s = scope(setup);
+      s.db.exec('CREATE TEMP TABLE a AS SELECT * FROM b');
+      expect(refusal(() => s.migrate({ sql: 'DELETE FROM main.a;' }))).toContain('table a held 2 row(s), now 0');
+    });
   });
 
   it('a column renamed, then the table dropped and rebuilt in place, keeps its values under either name (#115 r3)', () => {
