@@ -480,7 +480,7 @@ export function storeKindRolloutPendingIn(
     `SELECT s.vertical_slug, s.binding, s.first_version_id, ${WALKED} AS walked
        FROM vertical_scope_stores AS s WHERE s.kind = ? ORDER BY s.vertical_slug, s.binding`,
     attempt, input.kind,
-  ) as (DeclarationRow & { walked: number })[];
+  ) as unknown as (DeclarationRow & { walked: number })[];
   const pending = targetsOf(rows.filter((r) => !r.walked));
   const walked = new Set(rows.filter((r) => r.walked).map((r) => r.vertical_slug)).size;
   return { verticals: pending.slice(0, input.limit), pending: pending.length, walked, unreadable };
@@ -503,6 +503,6 @@ export function storeKindRolloutWalkedIn(
     `SELECT s.vertical_slug, s.binding, s.first_version_id FROM vertical_scope_stores AS s
       WHERE s.kind = ? AND ${WALKED} ORDER BY s.vertical_slug, s.binding`,
     input.kind, attempt,
-  ) as DeclarationRow[]);
+  ) as unknown as DeclarationRow[]);
   return { verticals: walked.slice(0, input.limit), walked: walked.length };
 }

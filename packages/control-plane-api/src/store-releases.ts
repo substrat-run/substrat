@@ -390,7 +390,7 @@ async function restore(
       return { state: 'diverged', text: `The hold was lost while returning; ${back.slice(i).map((t) => t.vertical).join(', ')} may run ${deps.sha256}.` };
     }
     try {
-      await deps.ensure({ vertical: target.vertical, stores: target.stores.map((s) => ({ binding: s.binding, kind: row.kind })), to: from });
+      await deps.ensure({ vertical: target.vertical, stores: target.stores.map((s) => ({ binding: s.binding, kind: deps.registration.kind })), to: from });
     } catch (e) {
       stuck.push(`${target.vertical} (${message(e)})`);
     }
