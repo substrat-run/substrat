@@ -512,7 +512,7 @@ async function cmdPush(): Promise<void> {
     // does not scan the same tree twice.
     skipLint: argv.includes('--skip-lint'),
     linted,
-    // The data-loss replay (#2321) never skips silently; this makes a skip a refusal.
+    // A data-loss replay (#2321) that was skipped or incomplete is a loud warning; this makes it a refusal.
     requireDataLossCheck: dataLossCheckRequired(argv),
     envSpec: meta.envSpec,
     ownerGrants: meta.ownerGrants,
