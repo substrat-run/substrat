@@ -186,6 +186,9 @@ import {
  * the introspection + platform-request reads).
  */
 export interface VerticalScopeHost {
+  /** Delivered connector grants, read where the target scope is served. */
+  connectionGrantsInScope?(tenantId: TenantId, scopeId: ScopeId): Promise<ProjectedConnectionGrant[]>;
+
   /** Redact the scope-side data in this deployment before the coordinator destroys the key. */
   redactSubjectLocal?(scopeId: ScopeId, subjectId: string): Promise<SubjectRedactionCounts>;
   provisionScopeLocal(input: {
@@ -1718,6 +1721,13 @@ export function mountPlatformSurface<Env extends object>(
   // are checked against. Idempotent (INSERT OR REPLACE). No revoke mirror: every
   // delegated call re-passes the platform's live-connection gate first, so revoking
   // the connection closes the door even while the tuple remains.
+  app.post('/internal/connector-grants', async (c) => {
+    const body = z.object({ tenantId: tenantIdOf, scopeId: scopeIdOf }).strict().parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.connectionGrantsInScope) return c.json({ error: 'this deployment cannot read connector grants — redeploy it' }, 501);
+    return c.json(z.array(projectedConnectionGrant).parse(await host.connectionGrantsInScope(body.tenantId, body.scopeId)));
+  });
+
   app.post('/internal/connector-grant', async (c) => {
     const body = connectorGrantBody.parse(await c.req.json());
     await deps
@@ -2457,6 +2467,7 @@ export { externalInput, externalJson, externalResult } from './wire.js';
 export * from './public-surface.js';
 // #1672: the link-share exchange — a capability's secret traded for an HttpOnly session.
 export * from './capability-exchange.js';
+export * from './upload-link.js';
 // #1706: calling another vertical of the same tenant, from harness code.
 export * from './peer-client.js';
 // #1859: the live-read route — the Origin gate and the pure host's 501, once.

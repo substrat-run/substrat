@@ -49,6 +49,7 @@ import {
   modelUsageEntry,
   attachmentRecord,
   type AttachmentRecord,
+  type UploadLinkView,
   type BlobStoreHandle,
   createTenantInput,
   identityLink,
@@ -146,6 +147,7 @@ import {
   ownerTransferAudit,
   memberChangeAudit,
   peerBindingAudit,
+  connectionBindingAudit,
   copyMarkAudit,
   type EventEffectsInput,
   type EffectsTree,
@@ -279,6 +281,8 @@ import {
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
   attachmentBlobKey,
+  UPLOAD_LINK_WRONG_TARGET,
+  type UploadLinkRedeemInput,
   attachmentSha256,
   entitlementDenial,
   requiredEntitlementFor,
@@ -503,6 +507,14 @@ import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, ty
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
+import type {
+  StoreKindHoldMode,
+  StoreKindReleaseRecord,
+  StoreKindRolloutAction,
+  StoreKindRolloutRecord,
+  StoreKindRolloutState,
+  StoreKindState,
+} from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
   isUpgradeRequest,
@@ -670,6 +682,31 @@ interface ControlPlaneStub {
       created_at: string;
     }[]
   >;
+  recordStoreKindRelease(input: { kind: string; sha256: string; sourceCommit: string; actor: string; at: string }): Promise<{
+    record: StoreKindReleaseRecord;
+    created: boolean;
+  }>;
+  getStoreKindRelease(kind: string, sha256: string): Promise<StoreKindReleaseRecord | undefined>;
+  storeKindState(kind: string): Promise<StoreKindState>;
+  storeKindDeclarations(kind: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
+  holdStoreKind(input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): Promise<boolean>;
+  releaseStoreKindHold(input: { kind: string; holder: string }): Promise<void>;
+  beginStoreKindRollout(input: {
+    kind: string;
+    sha256: string;
+    action: StoreKindRolloutAction;
+    holder: string;
+    actor: string;
+    at: string;
+  }): Promise<StoreKindRolloutRecord>;
+  finishStoreKindRollout(input: {
+    kind: string;
+    seq: number;
+    holder: string;
+    state: Exclude<StoreKindRolloutState, 'rolling'>;
+    detail: string | null;
+    at: string;
+  }): Promise<StoreKindRolloutRecord>;
   getBlobStore(
     tenantId: string,
     vertical: string,
@@ -1588,6 +1625,20 @@ interface ScopeStubRpc {
     scopeId: ScopeId,
     connectionId?: string,
   ): Promise<DoReply<AttachmentRecord>>;
+  /** An upload-link redemption's metadata half: the add above, with the link spent in the same
+   *  transaction. Its own verb so a DO that predates links refuses rather than ignores the secret. */
+  attachmentRedeemUploadLinkReply(
+    record: AttachmentRecord,
+    secret: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<DoReply<AttachmentRecord>>;
+  /** Look an upload link up without spending it. */
+  uploadLinkInspectReply(
+    secret: string,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<DoReply<{ view: UploadLinkView; mintedBy: PrincipalId }>>;
   attachmentListReply(
     entity: EntityRef,
     principal: PrincipalId,
@@ -1877,6 +1928,9 @@ interface ScopeStubRpc {
  * platform cannot skip it any more than any other caller can.
  */
 export interface ConnectorDelegation {
+  /** Optional for older embedders; delegation configured without this fails closed. */
+  grants?(args: { tenantId: TenantId; scopeId: ScopeId }): Promise<ProjectedConnectionGrant[]>;
+
   /** Invoke one operation in the serving deployment, as the connection. */
   invoke(args: {
     connectionId: ConnectionId;
@@ -2482,6 +2536,25 @@ const unfencedMessage = (scopeId: ScopeId): string =>
   `the deployment serving scope ${scopeId} predates the switch fence (#2045): it cannot refuse an older ` +
   `switch call's OFF landing after this ON, so no switch is turned on there. Switching off still works. ` +
   `Redeploy the vertical, then retry.`;
+
+/**
+ * The attachment write's compensation, after its bytes are in the store (#2311). The object
+ * is deleted only when the ScopeDO ANSWERED a refusal: `replyOf` turns every DO-side throw
+ * into a `failure` value, and the DO does not let a post-commit drain fault become one, so an
+ * answered failure means the row did not commit. A rejected call is a transport failure with
+ * the commit unknown. A delete there could leave a committed row without its bytes, so the
+ * bytes are kept and the error rethrown. If nothing committed, the object is an orphan that
+ * no row points at, which the sweep of #2314 is for.
+ */
+async function compensatingRefusal<T>(
+  store: TenantBlobStore,
+  key: string,
+  call: () => Promise<DoReply<T>>,
+): Promise<DoReply<T>> {
+  const reply = await call();
+  if (reply.failure) await store.delete(key).catch(() => {});
+  return reply;
+}
 
 /** A tenant-held module's OFF answered without `deniesTenantGrants` (#1823). */
 const undeniedMessage = (scopeId: ScopeId, moduleId: string): string =>
@@ -4305,6 +4378,51 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.buildAttachmentSurface({ principal }, tenantId, scopeId, store);
   }
 
+  async inspectUploadLink(tenantId: TenantId, scopeId: ScopeId, secret: string): Promise<UploadLinkView> {
+    await this.assertLive(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    return unwrapReply(await this.scopeStub(scopeId).uploadLinkInspectReply(secret, tenantId, scopeId)).view;
+  }
+
+  async redeemUploadLink(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    input: UploadLinkRedeemInput,
+  ): Promise<AttachmentRecord> {
+    await this.assertLive(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    const stub = this.scopeStub(scopeId);
+    const { view, mintedBy } = unwrapReply(await stub.uploadLinkInspectReply(secret, tenantId, scopeId));
+    if (view.entity.entityType !== input.entity.entityType || view.entity.entityId !== input.entity.entityId) {
+      throw substratError('not_found', 'This upload link is not valid for that target.', {
+        reason: UPLOAD_LINK_WRONG_TARGET,
+      });
+    }
+    const store = await this.resolveAttachmentStore(tenantId);
+    const id = ulid();
+    const key = attachmentBlobKey(scopeId, id);
+    const filename = view.filename ?? input.filename;
+    const record = attachmentRecord.parse({
+      id,
+      entity: view.entity,
+      filename,
+      contentType: input.contentType,
+      size: input.body.byteLength,
+      sha256: await attachmentSha256(input.body),
+      visibility: view.visibility,
+      createdBy: mintedBy,
+      createdAt: new Date().toISOString(),
+    });
+    // Bytes first, row second, exactly as an upload: a refusal (size, type, a lost key, a link
+    // someone else spent first) compensates the object away, and the link is unspent with it.
+    // A lost reply keeps the bytes (`compensatingRefusal`); retrying the link is #2315.
+    await store.put(key, input.body, { contentType: input.contentType });
+    return unwrapReply(await compensatingRefusal(store, key, () =>
+      stub.attachmentRedeemUploadLinkReply(record, secret, tenantId, scopeId),
+    ));
+  }
+
   async getSystemAttachments(
     moduleId: ModuleId,
     tenantId: TenantId,
@@ -4486,15 +4604,12 @@ export class CloudflareScopeHost implements ScopeHost {
           createdBy,
           createdAt: new Date().toISOString(),
         });
-        // Bytes first, row second — a crash between the two leaves an orphaned object
-        // (harmless, GC-able), never a row without bytes; a refused gate compensates.
+        // Bytes first, row second — a crash between the two leaves an orphaned object (#2314);
+        // a refused gate compensates, and only an answered refusal does (`compensatingRefusal`).
         await store.put(key, input.body, { contentType: input.contentType });
-        try {
-          return unwrapReply(await stub.attachmentAddReply(record, asPrincipalId, tenantId, scopeId, connectionId));
-        } catch (err) {
-          await store.delete(key).catch(() => {});
-          throw err;
-        }
+        return unwrapReply(await compensatingRefusal(store, key, () =>
+          stub.attachmentAddReply(record, asPrincipalId, tenantId, scopeId, connectionId),
+        ));
       },
       list: async (entity) =>
         unwrapReply(await stub.attachmentListReply(entity, asPrincipalId, tenantId, scopeId, connectionId)),
@@ -8382,6 +8497,42 @@ export class CloudflareScopeHost implements ScopeHost {
           createdAt: r.created_at,
         }));
       },
+      // -- store-kind releases, rollouts and holds (D-63, #2300) -------------------
+      recordStoreKindRelease: async (actor, input) => {
+        const at = new Date().toISOString();
+        const { record, created } = await this.directory('recordStoreKindRelease', { ...input, actor, at });
+        if (created) await this.recordAdmin(actor, 'uploadStoreKindRelease', { tenantId: null }, null, record);
+        return record;
+      },
+      getStoreKindRelease: async (actor, kind, sha256) => {
+        const record = await this.cp.getStoreKindRelease(kind, sha256);
+        await this.recordAccess(actor, 'getStoreKindRelease', { tenantId: null }, { kind, sha256 }, record ? 1 : 0);
+        return record;
+      },
+      storeKindState: async (actor, kind) => {
+        const state = await this.cp.storeKindState(kind);
+        await this.recordAccess(actor, 'storeKindState', { tenantId: null }, { kind }, state.rollouts.length);
+        return state;
+      },
+      storeKindDeclarations: async (actor, kind) => {
+        const declared = await this.directory('storeKindDeclarations', kind);
+        await this.recordAccess(actor, 'storeKindDeclarations', { tenantId: null }, { kind }, declared.verticals.length);
+        return declared;
+      },
+      holdStoreKind: async (_actor, input) => this.directory('holdStoreKind', input),
+      releaseStoreKindHold: async (_actor, input) => {
+        await this.cp.releaseStoreKindHold(input);
+      },
+      beginStoreKindRollout: async (actor, input) => {
+        const row = await this.directory('beginStoreKindRollout', { ...input, actor, at: new Date().toISOString() });
+        await this.recordAdmin(actor, input.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row);
+        return row;
+      },
+      finishStoreKindRollout: async (actor, input) => {
+        const row = await this.directory('finishStoreKindRollout', { ...input, at: new Date().toISOString() });
+        await this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row);
+        return row;
+      },
       listScopeTables: async (actor, tenantId, scopeId): Promise<ScopeTable[]> => {
         // K-3 cross-check on the shared directory BEFORE reaching the scope DO: a pair
         // that does not resolve is unreachable, never another tenant's database.
@@ -9601,6 +9752,10 @@ export class CloudflareScopeHost implements ScopeHost {
         const { tenantId, scopeId, ...after } = memberChangeAudit.parse(entry);
         await this.recordAdmin(actor, 'manageScopeMember', { tenantId, scopeId }, null, after);
       },
+      recordConnectionBindingChange: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = connectionBindingAudit.parse(entry);
+        await this.recordAdmin(actor, 'bindConnectionScope', { tenantId, scopeId }, null, after);
+      },
       recordPeerBindingChange: async (actor, entry) => {
         const { tenantId, scopeId, ...after } = peerBindingAudit.parse(entry);
         await this.recordAdmin(actor, 'setPeerBinding', { tenantId, scopeId }, null, after);
@@ -10292,6 +10447,10 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
   ): Promise<ProjectedConnectionGrant[]> {
     await this.validateScopeAccess(tenantId, scopeId);
+    if (this.connectorDelegation) {
+      if (!this.connectorDelegation.grants) throw new Error('connector grant inspection is not configured for the serving deployment');
+      return this.connectorDelegation.grants({ tenantId, scopeId });
+    }
     await this.migrateAndRecord(scopeId);
     const now = new Date().toISOString();
     // Both stores again, but the CF split is not the pure adapter's. The DO holds the

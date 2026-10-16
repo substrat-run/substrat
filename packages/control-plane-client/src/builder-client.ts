@@ -1,6 +1,8 @@
 import type { Page } from '@substrat-run/contracts';
 
 import type {
+  ConnectionScopeBindingInput,
+  ConnectionScopeBinding,
   AdoptServingResult,
   AdoptVerticalResult,
   BindHostnameBody,
@@ -20,6 +22,9 @@ import type {
   ScopeHealthRecord,
   ScopeRecord,
   ScopeRow,
+  StoreKindReleaseView,
+  StoreKindRolloutResultView,
+  StoreKindView,
   VersionRow,
   Whoami,
 } from './builder-types.js';
@@ -84,6 +89,15 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
       headers: { ...JSON_TYPE },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     };
+  }
+
+  /** Staff/service-only on the server; no permission is granted by this call. */
+  bindConnectionScope(tenantId: string, connectionId: string, scopeId: string, input: ConnectionScopeBindingInput): Promise<ConnectionScopeBinding> {
+    return this.read(`/tenants/${seg(tenantId)}/connections/${seg(connectionId)}/bindings/${seg(scopeId)}`, this.write('PUT', input));
+  }
+
+  listConnectionBindings(tenantId: string, connectionId: string): Promise<ConnectionScopeBinding[]> {
+    return this.read(`/tenants/${seg(tenantId)}/connections/${seg(connectionId)}/bindings`);
   }
 
   // -- identity ---------------------------------------------------------------
@@ -216,5 +230,28 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
   rebindScopeVertical(tenantId: string, scopeId: string, body: RebindScopeBody): Promise<RebindVerticalResult> {
     const path = `${this.scopePath(tenantId, scopeId)}/rebind-vertical`;
     return this.read(path, this.write('POST', body));
+  }
+
+  // -- store kind releases (D-63, #2300). Staff only, and every write by a person's sign-in: the
+  // service token is refused. On this client beside `setListing`, the other staff-only write.
+
+  /** A kind's pins, its current good release and every rollout. */
+  getStoreKind(kind: string): Promise<StoreKindView> {
+    return this.read(`/store-kinds/${seg(kind)}`);
+  }
+
+  /** Store a release bundle (`storeKindReleaseUpload`); the control plane names it by its sha256. */
+  uploadStoreKindRelease(kind: string, body: unknown): Promise<{ release: StoreKindReleaseView; pinned: boolean }> {
+    return this.read(`/store-kinds/${seg(kind)}/releases`, this.write('PUT', body));
+  }
+
+  /** Roll a stored, pinned release out: canary first, then every vertical. Post again to resume. */
+  rollOutStoreKind(kind: string, sha256: string): Promise<StoreKindRolloutResultView> {
+    return this.read(`/store-kinds/${seg(kind)}/rollouts`, this.write('POST', { sha256 }));
+  }
+
+  /** Return the kind to the immediately previous good release. */
+  rollBackStoreKind(kind: string): Promise<StoreKindRolloutResultView> {
+    return this.read(`/store-kinds/${seg(kind)}/rollback`, this.write('POST'));
   }
 }

@@ -5,6 +5,7 @@ import {
   VERTICAL_SCOPE_STORES_DDL,
   forgetVerticalScopeStores,
   indexVersionScopeStores,
+  kindDeclarationsOf,
   verticalScopeStoresOf,
   type SwitchSql,
 } from '../src/index.js';
@@ -117,6 +118,24 @@ describe('a vertical\'s scope-store bindings, by any version (#2286)', () => {
     stored(other, 'a', manifest([{ binding: 'GRAPH', kind: 'graph' }]), '2026-01-01T00:00:00.000Z');
     stored(other, 'b', manifest([{ binding: 'GRAPH', kind: 'counter' }]), '2026-01-02T00:00:00.000Z');
     expect(refusal(() => verticalScopeStoresOf(other, 'acme'))).toBe('unavailable');
+  });
+
+  it('names the verticals that declare a kind, and as unreadable each that cannot say (#2300)', () => {
+    const sql = fresh();
+    const at = (vertical: string, id: string, json: string | null, when: string) =>
+      sql.run('INSERT INTO vertical_versions (id, vertical_slug, manifest_json, created_at) VALUES (?, ?, ?, ?)', id, vertical, json, when);
+    indexVersionScopeStores(sql, 'acme', 'a1', manifest([{ binding: 'GRAPH', kind: 'graph' }]));
+    at('acme', 'a1', manifest([{ binding: 'GRAPH', kind: 'graph' }]), '2026-01-01T00:00:00.000Z');
+    // Two versions stored before the record, the second re-kinding a binding: indexing throws.
+    at('legacy', 'l1', manifest([{ binding: 'GRAPH', kind: 'graph' }]), '2026-01-01T00:00:00.000Z');
+    at('legacy', 'l2', manifest([{ binding: 'GRAPH', kind: 'counter' }]), '2026-01-02T00:00:00.000Z');
+    // A manifest that does not parse.
+    at('broken', 'b1', '{nope', '2026-01-01T00:00:00.000Z');
+    const declared = kindDeclarationsOf(sql, 'graph');
+    expect(declared.unreadable).toEqual(['broken', 'legacy']);
+    // The legacy vertical's first version still names its GRAPH store, indexed before the throw.
+    expect(declared.verticals.find((v) => v.vertical === 'acme')).toEqual({ vertical: 'acme', stores: [{ binding: 'GRAPH', kind: 'graph' }] });
+    expect(kindDeclarationsOf(sql, 'counter').verticals).toEqual([]);
   });
 
   it('forgets a deleted vertical\'s bindings', () => {

@@ -19,6 +19,7 @@
  * SUBSTRAT_SERVICE_TOKEN. A push is not a deploy — the version lands PENDING; admission
  * (in the console) still gates serving.
  */
+import { bindConnectionScope, listConnectionBindings } from './connections.js';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { loadConfig, saveConfig, resolveAuth } from './config.js';
@@ -41,6 +42,7 @@ import { printVersions } from './versions.js';
 import { checkOutboundDeclared } from './outbound-scan.js';
 import { exportBreakLines, promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
+import { isReleaseSha, packedFilesOf, packStoreKindDir, rollBackStoreKind, sourceCommitOf, rollOutStoreKind, storeKindStatus, storeKindStatusLines, uploadStoreKindRelease } from './store-kind.js';
 import { fetchWhoami } from './whoami.js';
 import { planeFor } from './plane.js';
 import { cliVersion, warnIfDistStale } from './version.js';
@@ -148,6 +150,12 @@ Usage:
   substrat promote  <slug> --version <versionId>
                     [--ack-permissions] [--ack-migrations] [--ack-export-break]  (prod is the only channel)
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
+  substrat store-kind upload --kind <kind> --dir <dir> --entry <kind_x/…/module.py> [--commit <sha>]
+                                              store a release of a scope-store kind (staff, signed in)
+  substrat store-kind rollout --kind <kind> --sha256 <sha256>
+                                              canary a stored, pinned release, then roll it out
+  substrat store-kind rollback --kind <kind>  return to the previous good release
+  substrat store-kind status --kind <kind>    a kind's current release and rollouts
   substrat unpublish <slug>                   remove from the public marketplace (staff)
   substrat versions <slug>                    list a vertical's versions + channels
   substrat installs <slug>                    list this workspace's installs of a vertical
@@ -159,6 +167,12 @@ Usage:
                                               (pseudonymized by default; --full is
                                               break-glass, audited server-side;
                                               'global' scopes only)
+  substrat connection bind <id> --scope <id> --operation <module/operation> --permission <key>
+                                              bind a poll connector to a scope (staff/service).
+                                              Requires its existing scoped landing grant.
+                                              Planima: --organization-id <id|null>, --currency,
+                                              --horizon-years, --from-year and --to-year.
+  substrat connection bindings <id>          read the connection's configured landing targets
   substrat scope restore <scopeId> --file <backup>
                                               load a backup into an existing hosted scope,
                                               REPLACING its data (a pull's .sqlite, a local
@@ -609,6 +623,57 @@ function reportStoreBackfill(result: PromoteResult): void {
   }
 }
 
+const STORE_KIND_USAGE = [
+  'usage: substrat store-kind upload   --kind <kind> --dir <dir> --entry <kind_x/…/module.py> [--commit <sha>]',
+  '       substrat store-kind rollout  --kind <kind> --sha256 <sha256>',
+  '       substrat store-kind rollback --kind <kind>',
+  '       substrat store-kind status   --kind <kind>',
+];
+
+async function cmdStoreKind(): Promise<void> {
+  const sub = argv[1];
+  const kind = flag('kind');
+  if (!['upload', 'rollout', 'rollback', 'status'].includes(sub ?? '') || !kind) {
+    for (const line of STORE_KIND_USAGE) console.error(line);
+    process.exit(1);
+  }
+  const sha256 = flag('sha256');
+  if (sub === 'rollout' && !isReleaseSha(sha256)) {
+    console.error('a rollout names the release by --sha256 <64 lowercase hex>, as `store-kind upload` printed it');
+    for (const line of STORE_KIND_USAGE) console.error(line);
+    process.exit(1);
+  }
+  const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
+  console.log(`authenticating with ${as}`);
+  console.log(`control plane ${controlPlaneUrl}`);
+  const plane = { controlPlaneUrl, header, kind };
+  if (sub === 'status') {
+    const view = await storeKindStatus(plane);
+    for (const line of storeKindStatusLines(kind, view)) console.log(line);
+    return;
+  }
+  if (sub === 'upload') {
+    const dir = flag('dir');
+    const entry = flag('entry');
+    if (!dir || !entry) {
+      for (const line of STORE_KIND_USAGE) console.error(line);
+      process.exit(1);
+    }
+    const body = packStoreKindDir(dir, entry, flag('commit') ?? sourceCommitOf(dir, packedFilesOf(dir)));
+    const { release, pinned } = await uploadStoreKindRelease({ ...plane, body });
+    console.log(`✓ stored ${kind} ${release.sha256} (commit ${release.sourceCommit})`);
+    console.log(pinned ? '  pinned: roll it out with `substrat store-kind rollout`' : '  not pinned yet: it runs once a reviewed change pins this sha256 and commit');
+    return;
+  }
+  const result =
+    sub === 'rollback'
+      ? await rollBackStoreKind(plane)
+      : await rollOutStoreKind({ ...plane, sha256: sha256! });
+  console.log(`✓ ${kind} ${result.rollout.action} to ${result.rollout.sha256}: ${result.rollout.state} (${result.moved.length} vertical(s) this run)`);
+  if (!result.complete) console.log('  verticals remain: run the same command again to continue');
+}
+
+
 async function cmdPublish(): Promise<void> {
   const slug = argv[1];
   if (!slug || slug.startsWith('--')) {
@@ -631,6 +696,41 @@ async function cmdUnpublish(): Promise<void> {
   console.log(`authenticating with ${as}`);
   const r = await setListing({ controlPlaneUrl, header, slug, listed: false });
   console.log(`✓ ${r.slug} unpublished`);
+}
+
+async function cmdConnection(): Promise<void> {
+  const sub = argv[1];
+  const connectionId = argv[2];
+  if (!connectionId || connectionId.startsWith('--') || !['bind', 'bindings'].includes(sub ?? '')) {
+    throw new Error('usage: substrat connection bind <id> --scope <id> --operation <module/operation> --permission <key> [--organization-id <id|null>] [--currency SEK] [--horizon-years 50] [--from-year <year> --to-year <year>] [--tenant <id-or-slug>]\n       substrat connection bindings <id> [--tenant <id-or-slug>]');
+  }
+  const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
+  const tenantId = await resolveTenantId(controlPlaneUrl, header, flag('tenant') ?? process.env.SUBSTRAT_TENANT ?? loadConfig().defaultTenant);
+  const opts = { controlPlaneUrl, header, tenantId, connectionId };
+  if (sub === 'bindings') {
+    console.log(JSON.stringify(await listConnectionBindings(opts), null, 2));
+    return;
+  }
+  const scopeId = flag('scope'), operation = flag('operation'), permission = flag('permission');
+  if (!scopeId || !operation || !permission) throw new Error('connection bind requires --scope, --operation and --permission');
+  const numberFlag = (name: string): number | undefined => {
+    const raw = flag(name);
+    if (raw === undefined) return undefined;
+    const value = Number(raw);
+    if (!raw.trim() || !Number.isSafeInteger(value)) throw new Error(`--${name} must be an integer`);
+    return value;
+  };
+  const organization = flag('organization-id');
+  const fromYear = numberFlag('from-year'), toYear = numberFlag('to-year');
+  if ((fromYear === undefined) !== (toYear === undefined)) throw new Error('--from-year and --to-year must be supplied together');
+  const input = {
+    operation, permission,
+    ...(organization === undefined ? {} : { organizationId: organization === 'null' ? null : numberFlag('organization-id') }),
+    ...(flag('currency') === undefined ? {} : { currency: flag('currency') }),
+    ...(flag('horizon-years') === undefined ? {} : { horizonYears: numberFlag('horizon-years') }),
+    ...(fromYear === undefined || toYear === undefined ? {} : { window: { fromYear, toYear } }),
+  };
+  console.log(JSON.stringify(await bindConnectionScope({ ...opts, scopeId, input }), null, 2));
 }
 
 async function cmdScope(): Promise<void> {
@@ -1093,11 +1193,15 @@ async function main(): Promise<void> {
       return cmdPromote();
     case 'publish':
       return cmdPublish();
+    case 'store-kind':
+      return cmdStoreKind();
     case 'unpublish':
       return cmdUnpublish();
     case 'whoami':
     case 'workspaces':
       return cmdWhoami();
+    case 'connection':
+      return cmdConnection();
     case 'scope':
       return cmdScope();
     case 'hostnames':

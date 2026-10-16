@@ -5,6 +5,7 @@ import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
 import type { ScopeCopyBackfillResult, SubjectErasureFence } from './scope-copy-ledger.js';
 import type { VerticalScopeStore } from './vertical-scope-stores.js';
+import type { StoreKindHoldMode, StoreKindReleaseRecord, StoreKindRolloutAction, StoreKindRolloutRecord, StoreKindRolloutState, StoreKindState } from './store-kind-releases.js';
 import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
   OnBehalfOf,
@@ -45,6 +46,7 @@ import type {
   OwnerTransferAudit,
   MemberChangeAudit,
   PeerBindingAudit,
+  ConnectionBindingAudit,
   CopyMarkAudit,
   BindHostnameInput,
   AdminLogEntry,
@@ -145,6 +147,7 @@ import type {
   TenantRole,
   TenantStoreHandle,
   AttachmentRecord,
+  UploadLinkView,
   BlobStoreHandle,
   Visibility,
   Vertical,
@@ -186,6 +189,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { ConnectionUseOutcome } from './connector-calls.js';
 import type { CapabilityVerbs } from './capability.js';
+import type { AttachmentVerbs } from './upload-link.js';
 import type { AuditedOperationRef, AuditedOperationRow } from './audit-outcome.js';
 import { permissionKey, substratError, type EntityStateName } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
@@ -772,6 +776,14 @@ export interface OperationContext {
    * like `ctx.grant`.
    */
   readonly capabilities: CapabilityVerbs;
+  /**
+   * Attachment verbs an operation may use — today, minting a single-use URL through which a
+   * caller with no session uploads ONE file to an entity (`mintUploadUrl`). The bytes
+   * themselves never ride an operation: they go to the redemption route, which writes them
+   * through `ScopeHost.attachments`' own upload as the principal who minted the link.
+   * See {@link AttachmentVerbs}.
+   */
+  readonly attachments: AttachmentVerbs;
   /**
    * Run `fn` as a SUB-TRANSACTION of this operation (#770,
    * docs/architecture/sub-transactions.md) — the boundary that makes catching an
@@ -3057,6 +3069,54 @@ export interface HostAdmin {
     filter?: { tenantId?: TenantId; vertical?: string },
   ): Promise<BlobStoreRecord[]>;
   /**
+   * Record that a store kind's release bytes are stored, keyed by their sha256 (D-63, #2300).
+   * Insert-only: the same sha256 again answers the row as it stands, and from another source
+   * commit is refused (`conflict`). Audited `uploadStoreKindRelease` when it writes.
+   */
+  recordStoreKindRelease(
+    actor: PlatformActorId,
+    input: { kind: string; sha256: string; sourceCommit: string },
+  ): Promise<StoreKindReleaseRecord>;
+  /** One stored release, or undefined. */
+  getStoreKindRelease(actor: PlatformActorId, kind: string, sha256: string): Promise<StoreKindReleaseRecord | undefined>;
+  /**
+   * A kind's current good release, every rollout of it, oldest first, and where a rollback goes.
+   * A `rolling` row whose holder holds the kind no longer reads as `diverged`.
+   */
+  storeKindState(actor: PlatformActorId, kind: string): Promise<StoreKindState>;
+  /**
+   * Every vertical any version of which declared a store of `kind`, with those bindings: the
+   * scripts a rollout reaches, and in `unreadable` every vertical that cannot say (a manifest that
+   * does not parse, or versions from before the record that re-kinded a binding): the caller that
+   * must reach every script refuses while it is not empty.
+   */
+  storeKindDeclarations(actor: PlatformActorId, kind: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
+  /**
+   * Take or renew a lease on a kind (#2300): `exclusive` for a rollout or rollback, `shared` for
+   * a push or serve rebuilding a script. False when a live hold of another holder excludes it.
+   * `renew` extends only a hold the holder still holds (a lapsed one answers false, never a fresh
+   * hold), and `rolloutSeq` also needs that rollout to be `rolling` still.
+   */
+  holdStoreKind(
+    actor: PlatformActorId,
+    input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number },
+  ): Promise<boolean>;
+  releaseStoreKindHold(actor: PlatformActorId, input: { kind: string; holder: string }): Promise<void>;
+  /**
+   * Begin a rollout (or a rollback) of a stored release, as the kind's exclusive holder; refused
+   * (`conflict`) otherwise. A rollback must name `storeKindState`'s `rollbackTarget`. Audited
+   * under `rollOutStoreKind` / `rollBackStoreKind`.
+   */
+  beginStoreKindRollout(
+    actor: PlatformActorId,
+    input: { kind: string; sha256: string; action: StoreKindRolloutAction; holder: string },
+  ): Promise<StoreKindRolloutRecord>;
+  /** End a rollout as its exclusive holder; a `good` end makes its release current. Audited as its begin. */
+  finishStoreKindRollout(
+    actor: PlatformActorId,
+    input: { kind: string; seq: number; holder: string; state: Exclude<StoreKindRolloutState, 'rolling'>; detail: string | null },
+  ): Promise<StoreKindRolloutRecord>;
+  /**
    * One scope's directory record. Cross-checks the (tenantId, scopeId) pair and
    * returns undefined on a mismatch rather than another tenant's scope (K-3) —
    * the same fail-closed rule `ScopeHost.getScope` applies when minting a stub.
@@ -4357,6 +4417,8 @@ export interface HostAdmin {
   recordMemberChange(actor: PlatformActorId, entry: MemberChangeAudit): Promise<void>;
 
   /** One intent or outcome of a tenant's peer-instance binding change (#1720). */
+  recordConnectionBindingChange(actor: PlatformActorId, entry: ConnectionBindingAudit): Promise<void>;
+
   recordPeerBindingChange(actor: PlatformActorId, entry: PeerBindingAudit): Promise<void>;
 
   /**
@@ -4695,6 +4757,17 @@ export interface AttachmentUploadInput {
   filename: string;
   contentType: string;
   visibility: Visibility;
+  body: Uint8Array;
+}
+
+/**
+ * Input to `ScopeHost.redeemUploadLink`. No `visibility`: the link carries it, as it carries
+ * the author. `entity` is what the URL named, and must be the link's own.
+ */
+export interface UploadLinkRedeemInput {
+  entity: EntityRef;
+  filename: string;
+  contentType: string;
   body: Uint8Array;
 }
 
@@ -5323,6 +5396,33 @@ export interface ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<Pick<ScopeAttachments, 'open'>>;
+
+  /**
+   * Look an upload link up WITHOUT spending it, so the route can refuse an oversize body or a
+   * wrong type before it reads a byte. `not_found` for a secret that names nothing (and for
+   * one that cannot be ours); `conflict` with reason `upload_link_gone` for one that is used,
+   * expired or revoked. The mint is `ctx.attachments.mintUploadUrl`.
+   *
+   * Optional, like `getCapabilityAttachments`: a host that has not wired the link table says so
+   * by leaving it out, and `mountUploadLinkRedeem` refuses to mount over one.
+   */
+  inspectUploadLink?(tenantId: TenantId, scopeId: ScopeId, secret: string): Promise<UploadLinkView>;
+  /**
+   * Redeem an upload link: write the bytes as ONE attachment, AS the principal who minted the
+   * link — the target's `writePermission` is checked as them now, they are the author, and
+   * `attachment.added` is emitted exactly as for any upload. The link is spent in the same
+   * transaction as the attachment row, so a redemption that fails anywhere leaves it unspent;
+   * the size and the type are the LINK's to refuse (`validation_failed`, reasons
+   * `upload_link_too_large` / `upload_link_type_refused`) and a link used by another request
+   * first is `conflict` / `upload_link_gone`. The bytes are written to the blob store before
+   * the row, as an upload's are, and removed again if the row is refused.
+   */
+  redeemUploadLink?(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    input: UploadLinkRedeemInput,
+  ): Promise<AttachmentRecord>;
 
   /**
    * Provision a NEW scope and load a `ScopeDump` into it — the write side of

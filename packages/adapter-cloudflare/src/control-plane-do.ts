@@ -83,6 +83,21 @@ import {
   tenantHeldOf,
   VERSION_MIGRATIONS_DDL,
   VERTICAL_SCOPE_STORES_DDL,
+  STORE_KIND_RELEASES_DDL,
+  beginStoreKindRolloutIn,
+  finishStoreKindRolloutIn,
+  holdStoreKindIn,
+  kindDeclarationsOf,
+  recordStoreKindReleaseIn,
+  releaseStoreKindHoldIn,
+  storeKindReleaseIn,
+  storeKindStateIn,
+  type StoreKindHoldMode,
+  type StoreKindReleaseRecord,
+  type StoreKindRolloutAction,
+  type StoreKindRolloutRecord,
+  type StoreKindRolloutState,
+  type StoreKindState,
   forgetVerticalScopeStores,
   indexVersionScopeStores,
   verticalScopeStoresOf,
@@ -908,6 +923,8 @@ const DIRECTORY_DDL = `
     created_at TEXT NOT NULL,
     PRIMARY KEY (tenant_id, vertical, binding)
   );
+  -- A store kind's stored releases, rollouts and holds (D-63, #2300).
+  ${STORE_KIND_RELEASES_DDL}
   CREATE TABLE IF NOT EXISTS verticals (
     slug         TEXT PRIMARY KEY,
     name         TEXT NOT NULL,
@@ -1452,6 +1469,13 @@ export const REPLIED_METHODS = [
   // #2286: refuses a re-kinded scope-store binding with conflict, and an unreadable manifest with unavailable.
   'insertVersion',
   'verticalScopeStores',
+  // #2300: a store kind's release, rollout and hold writes refuse with conflict, not_found,
+  // validation_failed or unavailable.
+  'recordStoreKindRelease',
+  'storeKindDeclarations',
+  'holdStoreKind',
+  'beginStoreKindRollout',
+  'finishStoreKindRollout',
 ] as const;
 export type RepliedMethod = (typeof REPLIED_METHODS)[number];
 
@@ -2286,6 +2310,59 @@ export class ControlPlaneDO extends DurableObject {
       ref: string;
       created_at: string;
     }[];
+  }
+
+  // -- store-kind releases, rollouts and holds (D-63, #2300) ---------------------
+  // Kernel code over the directory (store-kind-releases.ts), shared with the SQLite host. Each
+  // call is one transaction, and the object runs one at a time, so a hold is taken atomically.
+
+  recordStoreKindRelease(input: { kind: string; sha256: string; sourceCommit: string; actor: string; at: string }): {
+    record: StoreKindReleaseRecord;
+    created: boolean;
+  } {
+    return this.ctx.storage.transactionSync(() => recordStoreKindReleaseIn(this.kernelSql, input));
+  }
+
+  getStoreKindRelease(kind: string, sha256: string): StoreKindReleaseRecord | undefined {
+    return storeKindReleaseIn(this.kernelSql, kind, sha256);
+  }
+
+  storeKindState(kind: string): StoreKindState {
+    return this.ctx.storage.transactionSync(() => storeKindStateIn(this.kernelSql, kind, Date.now()));
+  }
+
+  storeKindDeclarations(kind: string): { verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] } {
+    return this.ctx.storage.transactionSync(() => kindDeclarationsOf(this.kernelSql, kind));
+  }
+
+  holdStoreKind(input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): boolean {
+    return this.ctx.storage.transactionSync(() => holdStoreKindIn(this.kernelSql, { ...input, nowMs: Date.now() }));
+  }
+
+  releaseStoreKindHold(input: { kind: string; holder: string }): void {
+    releaseStoreKindHoldIn(this.kernelSql, input);
+  }
+
+  beginStoreKindRollout(input: {
+    kind: string;
+    sha256: string;
+    action: StoreKindRolloutAction;
+    holder: string;
+    actor: string;
+    at: string;
+  }): StoreKindRolloutRecord {
+    return this.ctx.storage.transactionSync(() => beginStoreKindRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() }));
+  }
+
+  finishStoreKindRollout(input: {
+    kind: string;
+    seq: number;
+    holder: string;
+    state: Exclude<StoreKindRolloutState, 'rolling'>;
+    detail: string | null;
+    at: string;
+  }): StoreKindRolloutRecord {
+    return this.ctx.storage.transactionSync(() => finishStoreKindRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() }));
   }
 
   // -- scope lifecycle (control-plane.md §4.1/§4.2) ---------------------------

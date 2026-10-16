@@ -2,6 +2,7 @@ export type {
   AccessLogFilter,
   AttachmentSearchOptions,
   AttachmentUploadInput,
+  UploadLinkRedeemInput,
   AuditLogFilter,
   BlobStoreProvisionInput,
   BlobStoreRecord,
@@ -230,6 +231,23 @@ export type {
   PermissionTupleRow,
   ScopeTupleReader,
 } from './permission-eval.js';
+export {
+  UPLOAD_LINK_DDL,
+  UPLOAD_LINK_GONE,
+  UPLOAD_LINK_TOO_LARGE,
+  UPLOAD_LINK_TYPE_REFUSED,
+  UPLOAD_LINK_WRONG_TARGET,
+  createAttachmentVerbs,
+  inspectUploadLink,
+  redeemUploadLinkInTransaction,
+  uploadContentTypeAllowed,
+} from './upload-link.js';
+export type {
+  AttachmentVerbDeps,
+  AttachmentVerbs,
+  UploadLinkInspection,
+  UploadTarget,
+} from './upload-link.js';
 export {
   CAPABILITY_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
@@ -624,9 +642,26 @@ export {
   VERTICAL_SCOPE_STORES_DDL,
   forgetVerticalScopeStores,
   indexVersionScopeStores,
+  kindDeclarationsOf,
   verticalScopeStoresOf,
   type VerticalScopeStore,
 } from './vertical-scope-stores.js';
+export {
+  STORE_KIND_RELEASES_DDL,
+  beginStoreKindRolloutIn,
+  finishStoreKindRolloutIn,
+  holdStoreKindIn,
+  recordStoreKindReleaseIn,
+  releaseStoreKindHoldIn,
+  storeKindReleaseIn,
+  storeKindStateIn,
+  type StoreKindHoldMode,
+  type StoreKindReleaseRecord,
+  type StoreKindRolloutAction,
+  type StoreKindRolloutRecord,
+  type StoreKindRolloutState,
+  type StoreKindState,
+} from './store-kind-releases.js';
 export type { SplitManifest } from './version-migrations.js';
 export {
   admitPeer,

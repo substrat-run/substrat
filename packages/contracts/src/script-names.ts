@@ -82,6 +82,24 @@ export function scopeStoreScriptName(vertical: string, kind: string): string {
 }
 
 /**
+ * The vertical segment of the platform's canary script and objects (D-63, #2300). It starts with
+ * `-`, which no vertical slug does, so no vertical's store script or store object is named with it.
+ */
+export const SCOPE_STORE_CANARY = '-canary';
+
+/**
+ * The script a kind's release is canaried in before any vertical runs it (D-63, #2300): the
+ * platform's own, `substrat-store-<kind>--canary`. {@link scopeStoreScriptName} cannot produce it,
+ * because the part after the kind would be a slug starting with `-`.
+ */
+export function scopeStoreCanaryScriptName(kind: string): string {
+  if (!STORE_KIND_ID.test(kind)) {
+    throw new Error(`not a scope-store kind id: '${kind}' (expected [a-z0-9]+)`);
+  }
+  return `${SCOPE_STORE_SCRIPT_PREFIX}${kind}-${SCOPE_STORE_CANARY}`;
+}
+
+/**
  * The platform script name a vertical with this slug would deploy under, or `null`. Checks the
  * stable script and its jurisdictional variants. A per-version script ends in a 26-character
  * ULID, which no platform name does. A stem inside the scope-store name space is returned as

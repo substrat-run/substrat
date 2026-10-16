@@ -61,6 +61,38 @@ the alternative is to write the binding, then discover at sweep time that the co
 invoke the operation — in a background timer nobody is watching, with a whole maintenance plan
 already fetched against a rate limit that only allows ten requests every ten seconds.
 
+## Bind a hosted connection
+
+A staff or service operator can bind an existing connection without handling its token:
+
+```sh
+substrat connection bind <connection-id> --tenant <tenant-id> --scope <scope-id> \
+  --operation maintenance/record-plan --permission plan:record \
+  --organization-id null --currency SEK --horizon-years 50
+substrat connection bindings <connection-id> --tenant <tenant-id>
+```
+
+The API is `PUT /tenants/:tenantId/connections/:id/bindings/:scopeId`; the body contains
+`operation`, `permission`, and optionally `organizationId`, `currency`, `window` and
+`horizonYears`. Omit `window` for a rolling horizon; the CLI's `--from-year` and `--to-year`
+set a fixed window. `GET /tenants/:tenantId/connections/:id/bindings` reads the targets and
+reports `permissionHeld` from each target scope's live grants. If a target cannot be inspected
+(for example, its scope is suspended or its deployment is unavailable), the stored binding
+remains in the response with `permissionInspectionError` and no `permissionHeld` value.
+
+This door does **not** grant permissions. The tenant's authorized connection flow must have
+granted the landing key first. A missing or undelivered grant returns 409 before a binding is
+written. The scope must be active, primary, and run the connection's vertical. Tenant-service
+and builder credentials cannot use this staff/service route. Binding changes are audited with
+the request actor and target scope.
+
+For hosted verticals, deploy a version of `@substrat-run/vertical-host` that serves
+`/internal/connector-grants` before binding: the platform reads permissions from the deployment
+serving the scope. An older deployment fails explicitly; the control plane's placeholder scope
+cannot stand in for it. This change adds no automatic binding at consent or reconcile and no
+cadence override. The existing quarter-hour sweep is the next opportunity after binding;
+verify the first landing in the consuming application's sync view.
+
 ## The credential
 
 **One static API token, and nothing else.** A person creates it in Planima under *account settings

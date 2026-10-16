@@ -251,13 +251,33 @@ export async function callPlatformScopeStore(
   operation: ReservedStoreOperation,
   input?: unknown,
 ): Promise<unknown> {
+  return callPlatformScopeStoreAt(
+    dispatch,
+    {
+      scriptName: scopeStoreScriptName(target.vertical, target.kind),
+      objectName: scopeStoreObjectName(target.tenantId, target.vertical, target.scopeId, target.binding),
+    },
+    operation,
+    input,
+  );
+}
+
+/**
+ * The same call at a named script and object: the platform's canary (#2300), which no
+ * (vertical, scope) names. Its answer is parsed as every reserved answer is.
+ */
+export async function callPlatformScopeStoreAt(
+  dispatch: PlatformScopeStoreDispatch,
+  target: { readonly scriptName: string; readonly objectName: string },
+  operation: ReservedStoreOperation,
+  input?: unknown,
+): Promise<unknown> {
   if (!dispatch.platformKey) {
     throw new ControlPlaneError(503, 'this control plane holds no scope-store key');
   }
+  const { scriptName, objectName } = target;
   try {
     return await callReservedStoreOperation(async (request) => {
-      const objectName = scopeStoreObjectName(target.tenantId, target.vertical, target.scopeId, target.binding);
-      const scriptName = scopeStoreScriptName(target.vertical, target.kind);
       const body = JSON.stringify({ ...request, objectName });
       let issued;
       try {

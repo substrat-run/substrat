@@ -37,6 +37,7 @@ import {
   connectorDispatchKind,
   STORE_KINDS,
   scopeStorePublicKeysFrom,
+  type ReservedStoreOperation,
   type ScopeStoreNeed,
   type StoreKindRegistration,
 } from '@substrat-run/contracts';
@@ -86,6 +87,9 @@ import {
   drainScopeScriptCopies,
   createWfpUploader,
   createScopeStoreEnsurer,
+  createStoreCanaryEnsurer,
+  callPlatformScopeStoreAt,
+  type ScopeStoreEnsurerOptions,
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
   createCfObservabilityReader,
@@ -261,6 +265,11 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * proceeding without one; a reap that does not ask still works.
    */
   SCOPE_BACKUPS?: R2Bucket;
+  /**
+   * A store kind's release bytes (#2300), content-addressed by kind and sha256. Bound in
+   * wrangler.jsonc. Absent ⇒ the release routes answer 501 and a push finds no release to upload.
+   */
+  STORE_RELEASES?: R2Bucket;
   /**
    * The platform's DIRECTORY-backup bucket (#40) — where the daily copy of the control
    * plane's own database lands. Bound in wrangler.jsonc. Absent (the workerd test, a
@@ -608,15 +617,22 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
 }
 
 /**
- * Puts a declared scope store's script in place before the vertical (#2210). The release
- * loader stays empty until a release can be published (#2297): a declared store then fails
- * closed (409) instead of serving a vertical with no store script.
+ * Puts a declared scope store's script in place before the vertical (#2210), or moves it to the
+ * release a rollout names (#2300). The loader is the API's, over the stored release bytes.
  */
 function ensureScopeStoresFor(env: Env) {
+  const options = storeEnsurerOptionsOf(env);
+  if (!options) return undefined;
+  return async (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to?: string; loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }) =>
+    createScopeStoreEnsurer({ ...(await options()), loadRelease: input.loadRelease })(input);
+}
+
+/** What every store script upload is built with, the key lists read when an upload runs. */
+function storeEnsurerOptionsOf(env: Env) {
   const accountId = env.CF_ACCOUNT_ID;
   const apiToken = env.CF_API_TOKEN;
   if (!apiToken || !accountId) return undefined;
-  return async (input: { vertical: string; stores: readonly ScopeStoreNeed[] }) => {
+  return async () => {
     let keys;
     try {
       keys = scopeStorePublicKeysFrom({
@@ -626,17 +642,42 @@ function ensureScopeStoresFor(env: Env) {
     } catch (e) {
       throw new ControlPlaneError(503, `a scope store is declared and the store public keys are not usable: ${(e as Error).message}`);
     }
-    await createScopeStoreEnsurer({
-      accountId,
-      namespace: dispatchNamespaceOf(env),
-      apiToken,
-      callerPublicKeys: keys.caller,
-      platformPublicKeys: keys.platform,
-      loadRelease: async () => undefined,
-    })(input);
+    return { accountId, namespace: dispatchNamespaceOf(env), apiToken, callerPublicKeys: keys.caller, platformPublicKeys: keys.platform };
   };
 }
 
+/**
+ * A store kind's release flow (#2300): the bytes in `STORE_RELEASES`, the kind's canary script
+ * uploaded like a vertical's, and the canary's reserved calls signed as every platform call is.
+ * Absent until the bucket, the upload credentials and the platform key are all configured.
+ */
+function storeReleasesFor(env: Env) {
+  const bucket = env.STORE_RELEASES;
+  const options = storeEnsurerOptionsOf(env);
+  const dispatch = env.DISPATCH;
+  const platformKey = env.STORE_PLATFORM_KEY;
+  if (!bucket || !options || !dispatch || !platformKey) return undefined;
+  return {
+    bytes: {
+      get: async (key: string) => {
+        const object = await bucket.get(key);
+        return object ? new Uint8Array(await object.arrayBuffer()) : undefined;
+      },
+      put: async (key: string, bytes: Uint8Array) => {
+        await bucket.put(key, bytes);
+      },
+    },
+    ensureCanary: async (input: { kind: string; to: string; loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }) =>
+      createStoreCanaryEnsurer({ ...(await options()), loadRelease: input.loadRelease })(input),
+    callCanary: (target: { scriptName: string; objectName: string }, operation: ReservedStoreOperation, input?: unknown) =>
+      callPlatformScopeStoreAt(
+        { platformKey, fetch: (scriptName, request) => dispatch.get(scriptName).fetch(request) },
+        target,
+        operation,
+        input,
+      ),
+  };
+}
 /** The list of base domains a PLATFORM hostname is minted under (#305), read once (#973). */
 function platformBaseDomains(env: Env): string[] {
   return parsePlatformBaseDomains(env.PLATFORM_BASE_DOMAINS);
@@ -936,6 +977,8 @@ function connectorDelegationFor(env: Env): ConnectorDelegation | undefined {
     return client;
   };
   return {
+    grants: async (a) =>
+      (await clientFor(a.tenantId, a.scopeId)).connectorGrants(a),
     invoke: async (a) =>
       (await clientFor(a.tenantId, a.scopeId)).connectorInvoke({
         connectionId: a.connectionId,
@@ -1958,19 +2001,34 @@ function memberEmail(v: unknown): string | null {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) ? e : null;
 }
 
+/**
+ * The readers of a PERSON's staff sign-in: an OIDC session (AuthHero), gated by the D1 roster.
+ * The roster is DATA, not config (#42): one actor per human, revocable by a timestamp rather than
+ * by editing a secret (migrations/0002_staff_roster.sql). A browser presents the session as the
+ * `sb_session` cookie; the CLI presents the SAME signed session as a bearer token (obtained via
+ * the login broker, cli-auth.ts). Both reduce to the same roster gate — the CLI is a staff human,
+ * not a shared actor.
+ */
+function humanStaffReaders(env: Env): PlatformActorAuth[] {
+  if (!env.AUTH_DB) return [];
+  const roster = d1StaffRoster(env.AUTH_DB);
+  return [sessionPlatformAuth(oidcStaffSessionReader(env), roster), sessionPlatformAuth(oidcStaffBearerReader(env), roster)];
+}
+
+/**
+ * Who a request's credential names when it is a person's staff sign-in, and null for anything
+ * else (D-63, #2300): never the service token, never the dev actor. A store kind release is
+ * published by a person.
+ */
+function humanStaffActorFor(env: Env): ((request: Request) => Promise<PlatformActorId | null>) | undefined {
+  const readers = humanStaffReaders(env);
+  if (readers.length === 0) return undefined;
+  const auth = firstPlatformActorAuth(...readers);
+  return async (request) => (await auth(request)) ?? null;
+}
+
 function authFor(env: Env): PlatformActorAuth {
-  const readers: PlatformActorAuth[] = [];
-  // Staff sign in: an OIDC session (AuthHero), gated by the D1 roster.
-  if (env.AUTH_DB) {
-    // The roster is DATA, not config (#42): one actor per human, revocable by a
-    // timestamp rather than by editing a secret. migrations/0002_staff_roster.sql.
-    const roster = d1StaffRoster(env.AUTH_DB);
-    // A browser presents the session as the `sb_session` cookie; the CLI presents the
-    // SAME signed session as a bearer token (obtained via the login broker, cli-auth.ts).
-    // Both reduce to the same roster gate — the CLI is a staff human, not a shared actor.
-    readers.push(sessionPlatformAuth(oidcStaffSessionReader(env), roster));
-    readers.push(sessionPlatformAuth(oidcStaffBearerReader(env), roster));
-  }
+  const readers: PlatformActorAuth[] = [...humanStaffReaders(env)];
   // A connected vertical registers as a service (shared token), not staff.
   if (env.SERVICE_TOKEN) readers.push(serviceTokenAuth(env.SERVICE_TOKEN, SERVICE_ACTOR));
   // Local dev / test only.
@@ -2792,6 +2850,8 @@ export default {
         platformScopeStores: platformStoresFor(env),
         deployVertical: deployVerticalFor(env),
         ensureScopeStores: ensureScopeStoresFor(env),
+        storeReleases: storeReleasesFor(env),
+        humanStaffActor: humanStaffActorFor(env),
         fetchVerticalModules: fetchVerticalModulesFor(env),
         fetchVerticalAsset: fetchVerticalAssetFor(env),
         patchScriptBindings: patchScriptBindingsFor(env),

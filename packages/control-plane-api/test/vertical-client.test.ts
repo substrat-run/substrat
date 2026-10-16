@@ -1688,3 +1688,19 @@ it('reconcileInstance reads back the types the scope has ever bound, and only a 
   // dropped: the platform then reads the scope's bound types as unknown.
   for (let i = 0; i < 5; i++) expect(await read()).toBeUndefined();
 });
+
+it('connectorGrants reads the serving deployment and refuses an old or malformed answer', async () => {
+  let path = '', body: unknown;
+  const client = new VerticalClient({ platformSecret: 'secret', fetch: (async (url, init) => {
+    path = String(url); body = JSON.parse(init!.body as string);
+    expect(new Headers(init!.headers).get(PLATFORM_SECRET_HEADER)).toBe('secret');
+    return new Response('[]', { headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch });
+  expect(await client.connectorGrants({ tenantId: t, scopeId: s })).toEqual([]);
+  expect(path).toContain('/internal/connector-grants');
+  expect(body).toEqual({ tenantId: t, scopeId: s });
+  for (const response of [new Response('{}', { headers: { 'content-type': 'application/json' } }), new Response('missing', { status: 404 })]) {
+    const old = new VerticalClient({ platformSecret: 'secret', fetch: (async () => response) as typeof fetch });
+    await expect(old.connectorGrants({ tenantId: t, scopeId: s })).rejects.toBeInstanceOf(ControlPlaneError);
+  }
+});

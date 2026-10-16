@@ -7,6 +7,8 @@ export { impersonationContractSuite } from './impersonation-suite.js';
 export { capabilityContractSuite } from './capability-suite.js';
 export { becomeMintContractSuite, type BecomeMintVerbs } from './become-mint-suite.js';
 export { bindingInviteContractSuite, type BindingVerbs } from './binding-invite-suite.js';
+export { UPL_CONTENT_TYPES, UPL_MAX_BYTES, UPL_READ, UPL_WRITE, uploadLinkMod } from './upload-link-module.js';
+export { uploadLinkContractSuite } from './upload-link-suite.js';
 export { BIND_INVITE, BIND_MEMBER, BIND_SHAPE, bindMod } from './bind-module.js';
 export { capabilityAttachmentContractSuite } from './capability-attachment-suite.js';
 export { attachmentRefusalContractSuite } from './attachment-refusal-suite.js';
@@ -73,6 +75,12 @@ export { spineGuardContractSuite } from './spine-guard-suite.js';
 export { scopeRepointContractSuite } from './scope-repoint-suite.js';
 export { sqlLimitsContractSuite } from './sql-limits-suite.js';
 export { grantExpiryContractSuite } from './grant-expiry-suite.js';
+export {
+  storeKindHoldExpiryContractSuite,
+  storeKindReleaseContractSuite,
+  type StoreKindHoldExpiryFixture,
+  type StoreKindReleaseFixture,
+} from './store-kind-release-suite.js';
 export { facetRecencyContractSuite, type FacetRecencyFixture } from './facet-recency-suite.js';
 export type { GrantExpiryFixture } from './grant-expiry-suite.js';
 export { entityCheckConformanceSuite, planEntityCheckCoverage } from './entity-check-suite.js';

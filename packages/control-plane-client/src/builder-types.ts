@@ -211,3 +211,67 @@ export interface ListingRecord {
   slug: string;
   listed: boolean;
 }
+
+/** A stored store-kind release (#2300): its bytes are named by their sha256. */
+export interface StoreKindReleaseView {
+  kind: string;
+  sha256: string;
+  sourceCommit: string;
+  uploadedBy: string;
+  uploadedAt: string;
+}
+
+/** One attempt to move every script of a kind to a release. */
+export interface StoreKindRolloutView {
+  kind: string;
+  seq: number;
+  sha256: string;
+  action: 'rollout' | 'rollback';
+  fromSha256: string | null;
+  previousGoodSha256: string | null;
+  state: 'rolling' | 'good' | 'failed' | 'diverged' | 'paused';
+  actor: string;
+  startedAt: string;
+  endedAt: string | null;
+  detail: string | null;
+}
+
+export interface StoreKindView {
+  kind: string;
+  pins: { sha256: string; sourceCommit: string; schema: number }[];
+  current: { sha256: string; seq: number; previousGoodSha256: string | null } | null;
+  rollouts: StoreKindRolloutView[];
+  /** Where a rollback goes now: the server decides, a client never derives it. */
+  rollbackTarget: string | null;
+  /** A rollback that stopped part way, until it ends good. Unless it targets the current release, no rollout begins meanwhile. */
+  unfinishedRollback: string | null;
+}
+
+export interface StoreKindRolloutResultView {
+  rollout: StoreKindRolloutView;
+  /** The verticals this request moved. */
+  moved: string[];
+  /** False when verticals remain: post the same rollout again. */
+  complete: boolean;
+}
+
+/** A poll connector's landing target. Binding never grants new authority. */
+export interface ConnectionScopeBindingInput {
+  operation: string;
+  permission: string;
+  organizationId?: number | null;
+  currency?: string;
+  window?: { fromYear: number; toYear: number } | null;
+  horizonYears?: number;
+}
+export interface ConnectionScopeBinding extends ConnectionScopeBindingInput {
+  /** Read from the target scope's live projection; omitted when inspection fails. */
+  permissionHeld?: boolean;
+  /** A failure to inspect this target, preserving the stored binding in list responses. */
+  permissionInspectionError?: string;
+  auditWarning?: string;
+  tenantId: string;
+  scopeId: string;
+  vertical: string;
+  boundAt: string;
+}

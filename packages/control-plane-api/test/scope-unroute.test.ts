@@ -36,7 +36,7 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
   const auth = { [DEV_ACTOR_HEADER]: staff };
   const graph: StoreKindRegistration = {
     kind: 'graph',
-    releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40) }],
+    releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
     operations: [],
     platformOperations: [...RESERVED_STORE_OPERATIONS],

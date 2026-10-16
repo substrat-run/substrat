@@ -203,23 +203,7 @@ const PYTHON_KIND_MODULE = /^(kind_[a-z0-9_]+)(?:\/[A-Za-z_][A-Za-z0-9_]*)*\/[A-
  */
 export function withPythonStoreEntry(release: PythonStoreKindRelease, options: StoreEntryOptions): PythonStoreScript {
   assertKindClass(options.className, /^[A-Za-z_][A-Za-z0-9_]*$/);
-  const packages = new Set<string>();
-  const names = new Set<string>();
-  for (const module of release.modules) {
-    const path = PYTHON_KIND_MODULE.exec(module.name);
-    if (!path || STORE_RESERVED_MODULES.includes(module.name)) {
-      throw new Error(`a store kind release may not ship a module named '${module.name}': a kind module is kind_<package>/…/<module>.py`);
-    }
-    if (names.has(module.name)) throw new Error(`a store kind release ships '${module.name}' twice`);
-    names.add(module.name);
-    packages.add(path[1]!);
-  }
-  if (packages.size > 1) {
-    throw new Error(`a store kind release ships more than one package (${[...packages].sort().join(', ')})`);
-  }
-  if (!names.has(release.entry)) {
-    throw new Error(`store kind entry '${release.entry}' is not one of the release's modules`);
-  }
+  assertPythonKindModules(release);
   const bindings = storeEntryBindings(options);
   const kindModule = release.entry.replace(/\.py$/, '').replaceAll('/', '.');
   const source = STORE_ENTRY_PYTHON_SOURCE.split(STORE_KIND_PLACEHOLDER)
@@ -241,4 +225,29 @@ export function withPythonStoreEntry(release: PythonStoreKindRelease, options: S
     compatibilityFlags: [...STORE_PYTHON_COMPATIBILITY_FLAGS, STORE_DISALLOW_IMPORTABLE_ENV, STORE_DISABLE_CTX_EXPORTS],
     bindings,
   };
+}
+
+/**
+ * The module rule of a Python kind's release (D-63): every module is `kind_<package>/…/<module>.py`
+ * under one package, none twice, and the entry is one of them. The upload applies it when a
+ * release arrives (#2300), and `withPythonStoreEntry` again before every script it builds.
+ */
+export function assertPythonKindModules(release: PythonStoreKindRelease): void {
+  const packages = new Set<string>();
+  const names = new Set<string>();
+  for (const module of release.modules) {
+    const path = PYTHON_KIND_MODULE.exec(module.name);
+    if (!path || STORE_RESERVED_MODULES.includes(module.name)) {
+      throw new Error(`a store kind release may not ship a module named '${module.name}': a kind module is kind_<package>/…/<module>.py`);
+    }
+    if (names.has(module.name)) throw new Error(`a store kind release ships '${module.name}' twice`);
+    names.add(module.name);
+    packages.add(path[1]!);
+  }
+  if (packages.size > 1) {
+    throw new Error(`a store kind release ships more than one package (${[...packages].sort().join(', ')})`);
+  }
+  if (!names.has(release.entry)) {
+    throw new Error(`store kind entry '${release.entry}' is not one of the release's modules`);
+  }
 }

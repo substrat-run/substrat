@@ -237,6 +237,13 @@ export const adminAction = z.enum([
   'manageScopeMember',
   // #1720 — a tenant admin chooses or clears the instance one calling app reaches.
   'setPeerBinding',
+  'bindConnectionScope',
+  // #2297/#2300 — a store kind's release: its bytes stored (by sha256, before or after the pin
+  // lands), rolled out across the verticals that declare the kind, or rolled back to the
+  // immediately previous good release. Each row names the kind, the sha256 and the rollout.
+  'uploadStoreKindRelease',
+  'rollOutStoreKind',
+  'rollBackStoreKind',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
 
@@ -692,6 +699,24 @@ export const peerBindingAudit = z.object({
   error: z.string().max(AUDIT_ERROR_MAX).optional(),
 }).strict();
 export type PeerBindingAudit = z.infer<typeof peerBindingAudit>;
+
+/** Intent and outcome of an explicit poll-connector landing binding. */
+export const connectionBindingAudit = z.object({
+  phase: z.enum(['intent', 'applied', 'refused', 'failed', 'unknown']),
+  tenantId,
+  scopeId,
+  operationId: auditOperationId,
+  connectionId,
+  provider: z.string().min(1),
+  operation: z.string().min(1),
+  permission: permissionKey,
+  organizationId: z.number().int().positive().nullable().optional(),
+  currency: z.string().regex(/^[A-Z]{3}$/).optional(),
+  window: z.object({ fromYear: z.number().int(), toYear: z.number().int() }).nullable().optional(),
+  horizonYears: z.number().int().min(0).optional(),
+  error: z.string().max(AUDIT_ERROR_MAX).optional(),
+}).strict();
+export type ConnectionBindingAudit = z.infer<typeof connectionBindingAudit>;
 
 /**
  * How an identity pool relates to tenants (K-23) — the fact that decides whether the

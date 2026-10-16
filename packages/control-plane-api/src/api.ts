@@ -1,7 +1,10 @@
+import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
+import type { ConnectionScopeBinding, ConnectionScopeBindingInput } from '@substrat-run/control-plane-client';
 import { resolveObservabilityWindow } from './observability-window.js';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import {
+  permissionKey,
   parseHostname,
   withLabel,
   RESERVED_LABEL_SEPARATOR,
@@ -14,6 +17,8 @@ import {
   type PrincipalId,
   ASSET_PART_PREFIX,
   assetHash,
+  STORE_KINDS,
+  STORE_RELEASE_MAX_BYTES,
   channelName,
   connectLinkId,
   connectionActivity,
@@ -170,6 +175,8 @@ import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
+import type { ScopeStoreEnsurerOptions } from './store-script.js';
+import { PUSH_HOLD_TTL_MS, runStoreKindRollout, storeKindRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
 import { assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, listAllScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
@@ -283,6 +290,10 @@ import {
  * callback capability token), and redaction has to be structural.
  */
 export interface ConnectionInspector {
+  /** Poll-only landing setup. The API checks tenant, vertical and the in-scope grant first. */
+  bindScope?: (host: ScopeHost, connection: Connection, target: ConnectionScopeBindingInput & { tenantId: string; scopeId: string; vertical: string }) => Promise<ConnectionScopeBinding>;
+  bindings?: (host: ScopeHost, connection: Connection) => Promise<ConnectionScopeBinding[]>;
+
   probe?: (host: ScopeHost, connection: Connection) => Promise<ConnectionProbe>;
   activity?: (
     host: ScopeHost,
@@ -413,7 +424,32 @@ export interface ControlPlaneApiOptions {
    * upload (#2210). Absent ⇒ a push that declares a store and has a registered kind is
    * refused, rather than serving a vertical whose store script was never uploaded.
    */
-  ensureScopeStores?: (input: { vertical: string; stores: readonly ScopeStoreNeed[] }) => Promise<void>;
+  ensureScopeStores?: (input: {
+    vertical: string;
+    stores: readonly ScopeStoreNeed[];
+    /** The release a rollout moves the scripts to; a push or serve passes none (#2300). */
+    to?: string;
+    loadRelease: ScopeStoreEnsurerOptions['loadRelease'];
+    /** How many scripts it uploaded; absent counts as some. */
+  }) => Promise<void | { uploaded: number }>;
+  /**
+   * A store kind's release flow (D-63, #2300): where release bytes are kept, how a release is put
+   * in the kind's canary script, and how the canary's reserved calls reach it. Absent ⇒ the
+   * release routes answer 501, and a push of a declared store finds no release (409).
+   */
+  storeReleases?: {
+    bytes: StoreReleaseBytes;
+    ensureCanary(input: { kind: string; to: string; loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }): Promise<{ scriptName: string }>;
+    callCanary: CanaryCall;
+  };
+  /**
+   * The actor a request's credential names when that credential is a person's staff session,
+   * else null (D-63: a release is published by a person). The host passes only the readers of a
+   * human sign-in, never a service token's, so the automation token, which resolves to a staff
+   * actor too, is refused here. That holds only while the staff roster lists people alone
+   * (docs/architecture/control-plane.md §4.4). Absent ⇒ no request publishes a release.
+   */
+  humanStaffActor?: (request: Request) => Promise<PlatformActorId | null>;
   /**
    * Reads a script's module contents back from the platform runtime (#286) — the
    * archive script is the bundle store the serving upload reads from. Host-injected
@@ -2720,6 +2756,73 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const rows = await c.var.admin.listConnections(c.get('actor'), { tenantId });
     return rows.find((r) => r.id === id);
   };
+
+  // Staff/service only: deliberately absent from BUILDER_ROUTES and TENANT_ROUTES.
+  // No generic connector-state write and no grant escalation: the connector verifies the
+  // scope's delivered permission again before writing its own binding record.
+  app.get('/tenants/:tenantId/connections/:id/bindings', async (c) => {
+    const row = await inspectableConnection(c);
+    if (!row) return refuse(c, 'not_found', 'unknown connection');
+    const read = options.connectionInspectors?.[row.provider]?.bindings;
+    if (!read) return refuseStatus(c, 501, `no scope binding registered for provider '${row.provider}'`);
+    const bindings = await read(c.var.host, row);
+    return c.json(await Promise.all(bindings.map(async (binding) => {
+      const scope = scopeIdSchema.parse(binding.scopeId);
+      try {
+        const grants = await c.var.host.connectionGrantsInScope(row.tenantId, scope);
+        return { ...binding, permissionHeld: grants.some((g) => g.connectionId === row.id && g.permission === binding.permission), permissionInspectionError: undefined };
+      } catch (error) {
+        // A stored target remains inspectable when its scope is inactive or its
+        // deployment is unavailable. Unknown authority must not read as a missing grant.
+        return { ...binding, permissionHeld: undefined, permissionInspectionError: error instanceof Error ? error.message : String(error) };
+      }
+    })));
+  });
+
+  app.put('/tenants/:tenantId/connections/:id/bindings/:scopeId', async (c) => {
+    const row = await inspectableConnection(c);
+    if (!row) return refuse(c, 'not_found', 'unknown connection');
+    const bind = options.connectionInspectors?.[row.provider]?.bindScope;
+    if (!bind) return refuseStatus(c, 501, `no scope binding registered for provider '${row.provider}'`);
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const target = await c.var.admin.getScopeRecord(c.get('actor'), row.tenantId, scopeId);
+    if (!target) return refuse(c, 'not_found', 'unknown scope');
+    if (!isPrimaryScope(target)) return refuseStatus(c, 403, PREVIEW_CONNECTIONS_REFUSAL);
+    if (target.status !== 'active' || !target.vertical || target.vertical !== row.vertical) {
+      return refuseStatus(c, 409, 'connection and target must share an active vertical scope');
+    }
+    const fields = {
+      operation: z.string().regex(/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/),
+      permission: permissionKey,
+    };
+    const schema = row.provider === 'planima'
+      ? z.object({ ...fields,
+          organizationId: z.number().int().positive().nullable().optional(),
+          currency: z.string().regex(/^[A-Z]{3}$/).optional(),
+          window: z.object({ fromYear: z.number().int(), toYear: z.number().int() })
+            .refine((w) => w.toYear >= w.fromYear, 'window ends before it starts').nullable().optional(),
+          horizonYears: z.number().int().min(0).optional(),
+        }).strict()
+      : z.object(fields).strict();
+    const input = schema.parse(await c.req.json());
+    const grants = await c.var.host.connectionGrantsInScope(row.tenantId, scopeId);
+    if (!grants.some((g) => g.connectionId === row.id && g.permission === input.permission)) {
+      return refuseStatus(c, 409, `connection does not hold '${input.permission}' on scope ${scopeId}; grant it through the tenant's authorized connection flow, then bind`);
+    }
+    const operationId = ulid();
+    const done = await auditedChange({
+      flow: 'connection-binding', operationId,
+      run: () => bind(c.var.host, row, { ...input, tenantId: row.tenantId, scopeId, vertical: target.vertical! }),
+      refused: () => false,
+      record: (phase) => c.var.admin.recordConnectionBindingChange(c.get('actor'), {
+        tenantId: row.tenantId, scopeId, connectionId: row.id, provider: row.provider,
+        ...input,
+        operationId, ...(phase.phase === 'applied' ? { phase: 'applied' } : phase),
+      }),
+    });
+    if ('error' in done) throw done.error;
+    return c.json({ ...done.result, permissionHeld: true, ...('unrecorded' in done ? { auditWarning: done.unrecorded } : {}) });
+  });
 
   /**
    * **Verify a credential against the provider** (#605) — the read that turns "stored"
@@ -7593,6 +7696,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     owner: () => Promise<TenantId | null>,
   ): Promise<void> => {
     if (stores.length === 0) return;
+    const holder = ulid();
+    const kinds = [...new Set(stores.map((store) => store.kind))].sort();
+    const held: string[] = [];
     try {
       if (!options.ensureScopeStores) {
         throw new ControlPlaneError(
@@ -7600,7 +7706,28 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           `${operation} refused: '${slug}' declares a scope store and this control plane uploads no store script`,
         );
       }
-      await options.ensureScopeStores({ vertical: slug, stores });
+      // A shared hold on each kind (#2300): a rollout holds it exclusively, and a rebuild that read
+      // a script's release before a rollout moved it would upload the old release back over it.
+      // Neither the refusal nor anything else here names another vertical: a push answers its own.
+      for (const kind of kinds) {
+        if (!(await host.admin.holdStoreKind(actor, { kind, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS }))) {
+          throw new ControlPlaneError(409, `${operation} refused: scope store kind '${kind}' is being rolled out; try again in a few minutes`);
+        }
+        held.push(kind);
+      }
+      const loadRelease = options.storeReleases
+        ? storedReleaseLoader({ admin: host.admin, actor, bytes: options.storeReleases.bytes })
+        : async () => undefined;
+      // One kind at a time, each renewing every hold first: a push whose uploads outlast a hold
+      // stops (409) rather than upload after a rollout could have taken the kind.
+      for (const kind of kinds) {
+        for (const each of held) {
+          if (!(await host.admin.holdStoreKind(actor, { kind: each, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS, renew: true }))) {
+            throw new ControlPlaneError(409, `${operation} refused: the hold on scope store kind '${each}' lapsed during the upload; try again`);
+          }
+        }
+        await options.ensureScopeStores({ vertical: slug, stores: stores.filter((store) => store.kind === kind), loadRelease });
+      }
     } catch (e) {
       recordFailure(
         {
@@ -7615,6 +7742,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         e,
       );
       throw e;
+    } finally {
+      for (const kind of held) await host.admin.releaseStoreKindHold(actor, { kind, holder }).catch(() => undefined);
     }
   };
 
@@ -10239,5 +10368,168 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json(summary);
   });
 
+  // -- store-kind releases (D-63, #2300) ----------------------------------------
+  // Staff only: none of these is on the builder or the tenant allowlist. A write is also made by a
+  // person: `humanStaffActor` must name the same actor from a human staff sign-in, so the
+  // automation token, which resolves to a staff actor as well, publishes nothing.
+  const registeredKind = (kind: string): StoreKindRegistration => {
+    const registration = (options.storeKinds ?? STORE_KINDS).find((k) => k.kind === kind);
+    if (!registration) throw new ControlPlaneError(403, `scope store kind '${kind}' is not registered`);
+    return registration;
+  };
+  const releaseFlow = () => {
+    if (!options.storeReleases || !options.ensureScopeStores) {
+      throw new ControlPlaneError(501, 'this control plane keeps no store kind releases');
+    }
+    return { flow: options.storeReleases, ensureScopeStores: options.ensureScopeStores };
+  };
+  /**
+   * A write made by a person, on purpose. The staff session also rides a cookie, which a browser
+   * sends on a same-site request a page fires, so these writes take JSON only (a form or a
+   * `text/plain` beacon cannot set it without a CORS preflight, 415) and refuse a request a
+   * browser marks as from another origin (403). A request with neither header is the CLI's.
+   */
+  const byAPerson = async (c: Context<{ Variables: Vars }>): Promise<PlatformActorId> => {
+    if (!/^application\/json\s*(;|$)/i.test(c.req.header('content-type') ?? '')) {
+      throw new ControlPlaneError(415, 'a store kind release write takes application/json');
+    }
+    const origin = c.req.header('origin');
+    const site = c.req.header('sec-fetch-site');
+    if ((origin && origin !== new URL(c.req.url).origin) || (site && site !== 'same-origin' && site !== 'none')) {
+      throw new ControlPlaneError(403, 'a store kind release write is not taken from another origin');
+    }
+    const actor = c.get('actor');
+    const person = options.humanStaffActor ? await options.humanStaffActor(c.req.raw) : null;
+    if (!person || person !== actor) {
+      throw new ControlPlaneError(403, 'a store kind release is published by a person: this takes a staff sign-in, not a service token');
+    }
+    return actor;
+  };
+  /** The pin a release is run under, or a refusal: the platform runs only what this repo pins. */
+  const pinOf = async (c: Context<{ Variables: Vars }>, registration: StoreKindRegistration, sha256: string) => {
+    const stored = await c.var.admin.getStoreKindRelease(c.get('actor'), registration.kind, sha256);
+    if (!stored) throw new ControlPlaneError(404, `release ${sha256} of '${registration.kind}' is not stored`);
+    const pin = registration.releases.find((p) => p.sha256 === sha256);
+    if (!pin) {
+      throw new ControlPlaneError(422, `release ${sha256} of '${registration.kind}' is not pinned in its registration; it runs once a reviewed change pins it and the control plane is deployed`);
+    }
+    if (pin.sourceCommit !== stored.sourceCommit) {
+      throw new ControlPlaneError(422, `release ${sha256} is pinned at ${pin.sourceCommit} and was stored as built from ${stored.sourceCommit}`);
+    }
+    return pin;
+  };
+  const rollOut = async (
+    c: Context<{ Variables: Vars }>,
+    registration: StoreKindRegistration,
+    sha256: string,
+    action: 'rollout' | 'rollback',
+  ) => {
+    const { flow, ensureScopeStores } = releaseFlow();
+    const actor = c.get('actor');
+    const loadRelease = storedReleaseLoader({ admin: c.var.admin, actor, bytes: flow.bytes });
+    const result = await runStoreKindRollout({
+      admin: c.var.admin,
+      actor,
+      registration,
+      sha256,
+      action,
+      ensure: async (input) => {
+        const result = await ensureScopeStores({ ...input, loadRelease });
+        return result ? result.uploaded > 0 : true;
+      },
+      ensureCanary: (to) => flow.ensureCanary({ kind: registration.kind, to, loadRelease }),
+      callCanary: flow.callCanary,
+    });
+    return c.json(result, result.complete ? 200 : 202);
+  };
+  /** Neither a rollout nor a rollback lowers the stored schema: a kind migrates forward only. */
+  const assertSchemaKept = (registration: StoreKindRegistration, from: string | null, to: { sha256: string; schema: number }) => {
+    if (from === null || from === to.sha256) return;
+    const leaving = registration.releases.find((p) => p.sha256 === from);
+    if (!leaving) throw new ControlPlaneError(409, `the current release ${from} of '${registration.kind}' is not pinned, so its schema cannot be judged`);
+    if (to.schema < leaving.schema) {
+      throw new ControlPlaneError(409, `release ${to.sha256} has schema ${to.schema}, below the current release's ${leaving.schema}: objects may already have migrated`);
+    }
+  };
+
+  app.get('/store-kinds/:kind', async (c) => {
+    const registration = registeredKind(c.req.param('kind'));
+    const state = await c.var.admin.storeKindState(c.get('actor'), registration.kind);
+    return c.json({ kind: registration.kind, pins: registration.releases, ...state });
+  });
+
+  // Store a release's bytes, before or after its pin lands (D-63). Idempotent per bundle.
+  app.put('/store-kinds/:kind/releases', async (c) => {
+    const registration = registeredKind(c.req.param('kind'));
+    const actor = await byAPerson(c);
+    const { flow } = releaseFlow();
+    const body = await readCappedJson(c.req.raw, STORE_RELEASE_REQUEST_MAX_BYTES);
+    const release = await storeKindRelease({ admin: c.var.admin, actor, bytes: flow.bytes, kind: registration.kind, body });
+    return c.json({ release, pinned: registration.releases.some((p) => p.sha256 === release.sha256 && p.sourceCommit === release.sourceCommit) }, 201);
+  });
+
+  // Roll a stored, pinned release out: the canary, then every vertical that ever declared the
+  // kind. Posting the same release again converges a rollout that stopped.
+  app.post('/store-kinds/:kind/rollouts', async (c) => {
+    const registration = registeredKind(c.req.param('kind'));
+    await byAPerson(c);
+    const { sha256 } = z.object({ sha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict().parse(await c.req.json());
+    const pin = await pinOf(c, registration, sha256);
+    const { current } = await c.var.admin.storeKindState(c.get('actor'), registration.kind);
+    assertSchemaKept(registration, current?.sha256 ?? null, pin);
+    return rollOut(c, registration, sha256, 'rollout');
+  });
+
+  // Return to the immediately previous good release (D-63), never further and never a guess. After
+  // a rollout that ended diverged, that is the current good release itself: undoing the bad
+  // rollout converges every script back on the release the fleet was healthy on (kernel
+  // `storeKindStateIn`, `rollbackTarget`).
+  app.post('/store-kinds/:kind/rollback', async (c) => {
+    const registration = registeredKind(c.req.param('kind'));
+    await byAPerson(c);
+    const { current, rollbackTarget } = await c.var.admin.storeKindState(c.get('actor'), registration.kind);
+    if (!current || !rollbackTarget) throw new ControlPlaneError(409, `kind '${registration.kind}' has no previous good release to roll back to`);
+    const pin = await pinOf(c, registration, rollbackTarget);
+    assertSchemaKept(registration, current.sha256, pin);
+    return rollOut(c, registration, rollbackTarget, 'rollback');
+  });
+
   return app;
+}
+
+/**
+ * The most a release upload's body may be: the decoded cap, as base64 (4 bytes per 3), plus room
+ * for the JSON around it. A bigger body is refused (413) before it is read whole.
+ */
+const STORE_RELEASE_REQUEST_MAX_BYTES = Math.ceil((STORE_RELEASE_MAX_BYTES * 4) / 3) + 1024 * 1024;
+
+/** A JSON body read to at most `max` bytes: a declared length over it, or a stream past it, is 413. */
+async function readCappedJson(request: Request, max: number): Promise<unknown> {
+  const declared = Number(request.headers.get('content-length') ?? NaN);
+  if (Number.isFinite(declared) && declared > max) throw new ControlPlaneError(413, `the body is over ${max} bytes`);
+  if (!request.body) throw new ControlPlaneError(422, 'the body is empty');
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => undefined);
+      throw new ControlPlaneError(413, `the body is over ${max} bytes`);
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new ControlPlaneError(422, 'the body is not JSON');
+  }
 }
