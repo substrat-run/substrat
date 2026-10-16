@@ -506,10 +506,10 @@ describe('attachmentTextJob', () => {
   });
 
   it('records bytes that are gone, or not the recorded ones, as failed — retrying cannot fix either', async () => {
-    expect((await run({ bytes: async () => null })).written[0]).toMatchObject({ status: 'failed', detail: /missing/ });
+    expect((await run({ bytes: async () => null })).written[0]).toMatchObject({ status: 'failed', detail: expect.stringMatching(/missing/) });
     expect((await run({ bytes: async () => enc('different bytes!!') })).written[0]).toMatchObject({
       status: 'failed',
-      detail: /sha256/,
+      detail: expect.stringMatching(/sha256/),
     });
   });
 
