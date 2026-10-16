@@ -9,11 +9,18 @@
  * a row commit whose bytes a pass is deleting, and every suite would stay green, because none of
  * them drives the new writer against a pass. So this reads the source:
  *
- * 1. an `INSERT` / `REPLACE` into `_substrat_attachments` needs its OWN
+ * 1. an `INSERT`, `REPLACE` or `UPDATE` of `_substrat_attachments` needs its OWN
  *    `refuseCondemnedAttachment(` call: before it, in its function or a function enclosing it,
- *    and not already claimed by another insert. A guard in a sibling function does not count.
- * 2. a dump replay (`dumpRowsInsert(`) needs a `refuseCondemnedInDump(` call before it, in its
- *    function or a function enclosing it.
+ *    and not already claimed by another writer. A guard in a sibling function does not count.
+ *    The table is matched however it is spelled: quoted (`"x"`, `` `x` ``, `[x]`) and schema
+ *    qualified (`main.x`, `"main"."x"`).
+ * 2. a dump replay (`dumpRowsInsert(`, or any name it is imported or bound as) needs a
+ *    `refuseCondemnedInDump(` call before it, in its function or a function enclosing it.
+ * 3. an `INSERT` / `REPLACE` whose table is COMPUTED (interpolated, `INTO ${t}`, or concatenated,
+ *    `'INSERT INTO ' + t`) could name the attachments table and no text match would see it. It is
+ *    refused unless a `refuseCondemnedInDump(` guard covers it the same way, or its file is in
+ *    `COMPUTED_TARGETS` with the reason it never writes a scope's attachment rows. An entry whose
+ *    file no longer computes a target is refused too, so the list cannot rot.
  *
  * "Function" is read off the tokens (`bare-regexp.mjs`'s lexer, so strings, templates, comments
  * and regex literals are skipped): a `{` after `=>`, or after a parameter list that is not an
@@ -28,13 +35,45 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { lex } from './bare-regexp.mjs';
 
-const INSERT = /\b(?:INSERT|REPLACE)\s+(?:OR\s+\w+\s+)?INTO\s+["`]?_substrat_attachments\b(?!_)/gi;
+/** One identifier, as SQLite reads it: bare, or quoted with `"`, `` ` `` or `[]`. */
+const IDENT = String.raw`(?:"[^"\n]+"|\[[^\]\n]+\]|\x60[^\x60\n]+\x60|\w+)`;
+/** The attachments table, quoted or not, optionally schema qualified. */
+const ATTACHMENTS = String.raw`(?:${IDENT}\s*\.\s*)?(?:"_substrat_attachments"|\[_substrat_attachments\]|\x60_substrat_attachments\x60|_substrat_attachments(?![\w]))`;
+const VERB = String.raw`(?:(?:INSERT|REPLACE)\s+(?:OR\s+\w+\s+)?INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?)`;
+const WRITER = new RegExp(String.raw`\b${VERB}\s+${ATTACHMENTS}`, 'gi');
+/** An INSERT/REPLACE whose target is interpolated (`INTO ${t}`, `INTO "${t}"`, `INTO main.${t}`). */
+const INTERPOLATED = new RegExp(String.raw`\b(?:INSERT|REPLACE)\s+(?:OR\s+\w+\s+)?INTO\s+(?:${IDENT}\s*\.\s*)?["\x60\[]?\$\{`, 'gi');
+/** An INSERT/REPLACE whose string ends at INTO and is concatenated (`'INSERT INTO ' + t`). */
+const CONCATENATED = /\b(?:INSERT|REPLACE)\s+(?:OR\s+\w+\s+)?INTO\s*['"`]\s*\+/gi;
+
+/**
+ * Files that build an INSERT whose table is computed, each with why it never writes a scope's
+ * attachment rows. Adding one is a reviewed act; an entry whose file stops computing a target is
+ * refused (`stale`).
+ */
+export const COMPUTED_TARGETS = {
+  'packages/kernel/src/spine-restore.ts':
+    'builds the dump replay (dumpRowsInsert, held to refuseCondemnedInDump at every caller) and the control-plane directory load, which is no scope',
+  'packages/cli/src/scope.ts': 'writes a pulled scope into a local file the developer owns, not a scope store',
+  'packages/kernel/src/migration-replay.ts': 'replays migrations into a throwaway in-memory database to judge data loss',
+  'packages/kernel/src/derived-handlers.ts': "writes a module's own declared table through ctx.sql, which refuses every _substrat_* target (#954)",
+  'packages/kernel/src/entity-state.ts': "a constant naming the kernel's entity-state moves table",
+  'packages/kernel/src/table-ownership.ts': "a constant naming the kernel's table-ownership table",
+  'packages/kernel/src/system-switch-record.ts': "the kill switch's own record tables",
+  'packages/kernel/src/module-erasure.ts': "an FTS5 'secure-delete' control row on a search index",
+  'packages/kernel/src/search-index.ts': 'FTS5 index control rows and the triggers that keep a search index in step',
+  'scripts/lake-provision.mjs': 'an R2 SQL pipeline statement for the lake, not SQLite',
+  'packages/contract-tests/src/entity-state-module.ts': "a test fixture module writing its own tables",
+  'packages/contract-tests/src/entity-state-suite.ts': 'a test suite writing a fixture table through an operation',
+  'packages/contract-tests/src/shape-backfill-ties.ts': 'a test fixture writing its own tables',
+  'packages/contract-tests/src/shape-reconcile-plan.ts': 'a test fixture writing its own tables',
+};
 const DEFINES_DUMP_ROWS = 'packages/kernel/src/spine-restore.ts';
 const CONTROL_HEADS = new Set(['if', 'for', 'while', 'switch', 'catch', 'with']);
 
 /** Is this a shipped source file the rule reads? */
 export function inScope(path) {
-  if (!/\.(?:m?ts|m?js)$/.test(path)) return false;
+  if (!/\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/.test(path) || /\.d\.[mc]?ts$/.test(path)) return false;
   if (/(?:^|\/)(?:test|tests|__tests__|dist|node_modules)\//.test(path)) return false;
   if (/\.(?:test|spec)\.[mc]?[jt]s$/.test(path)) return false;
   if (path.startsWith('tools/')) return false;
@@ -117,23 +156,39 @@ const covers = (chains, g, w) => {
   return wChain.includes(inner);
 };
 
+/** Every name the dump replayer is reached by: its own, and each alias or binding of it. */
+function replayerNames(files) {
+  const names = new Set(['dumpRowsInsert']);
+  for (const { text } of files) {
+    for (const m of text.matchAll(/\bdumpRowsInsert\s+as\s+([A-Za-z_$][\w$]*)/g)) names.add(m[1]);
+    for (const m of text.matchAll(/\b([A-Za-z_$][\w$]*)\s*[:=]\s*dumpRowsInsert\b(?!\s*\()/g)) names.add(m[1]);
+  }
+  return names;
+}
+
+const lineOf = (text, index) => text.slice(0, index).split('\n').length;
+
 /** The offences in `files` ([{ path, text }]), as `path:line: why` strings. */
-export function findBypasses(files) {
+export function findBypasses(files, computedTargets = COMPUTED_TARGETS) {
   const out = [];
+  const replayers = replayerNames(files);
+  const computing = new Set();
   for (const { path, text } of files) {
     if (!inScope(path)) continue;
-    const inserts = [...text.matchAll(INSERT)];
-    const replays = path !== DEFINES_DUMP_ROWS && text.includes('dumpRowsInsert(');
-    if (inserts.length === 0 && !replays) continue;
+    const writers = [...text.matchAll(WRITER)];
+    const computed = [...text.matchAll(INTERPOLATED), ...text.matchAll(CONCATENATED)];
+    if (computed.length > 0) computing.add(path);
+    const replayCalls = path === DEFINES_DUMP_ROWS ? [] : [...replayers].filter((n) => new RegExp(`\\b${n.replace(/\$/g, '\\$')}\\s*\\(`).test(text));
+    if (writers.length === 0 && computed.length === 0 && replayCalls.length === 0) continue;
     const t = lex(text);
     const chains = functionChains(t);
 
     const guards = callsOf(t, 'refuseCondemnedAttachment');
     const claimed = new Set();
-    for (const match of inserts) {
-      const line = text.slice(0, match.index).split('\n').length;
+    for (const match of writers) {
+      const line = lineOf(text, match.index);
       const w = stringTokenAt(t, line);
-      // The nearest unclaimed guard that covers this insert.
+      // The nearest unclaimed guard that covers this writer.
       const g = w < 0 ? undefined : guards.filter((k) => !claimed.has(k) && covers(chains, k, w)).at(-1);
       if (g === undefined) {
         out.push(`${path}:${line}: an attachment row is written without its own refuseCondemnedAttachment() before it, in its function`);
@@ -142,13 +197,31 @@ export function findBypasses(files) {
       }
     }
 
-    if (replays) {
-      const dumpGuards = callsOf(t, 'refuseCondemnedInDump');
-      for (const r of callsOf(t, 'dumpRowsInsert')) {
+    const dumpGuards = callsOf(t, 'refuseCondemnedInDump');
+    for (const name of replayers) {
+      for (const r of callsOf(t, name)) {
+        if (path === DEFINES_DUMP_ROWS) continue;
         if (!dumpGuards.some((g) => covers(chains, g, r))) {
           out.push(`${path}:${t[r].line}: a dump load replays rows without refuseCondemnedInDump() before them, in its function`);
         }
       }
+    }
+
+    if (!(path in computedTargets)) {
+      for (const match of computed) {
+        const line = lineOf(text, match.index);
+        const w = stringTokenAt(t, line);
+        if (w >= 0 && dumpGuards.some((g) => covers(chains, g, w))) continue;
+        out.push(
+          `${path}:${line}: an INSERT whose table is computed could write attachment rows unseen; ` +
+            'guard it with refuseCondemnedInDump() or name the file in COMPUTED_TARGETS with its reason',
+        );
+      }
+    }
+  }
+  for (const path of Object.keys(computedTargets)) {
+    if (files.some((f) => f.path === path) && !computing.has(path)) {
+      out.push(`${path}: is in COMPUTED_TARGETS but computes no INSERT target any more; remove the entry`);
     }
   }
   return out;
