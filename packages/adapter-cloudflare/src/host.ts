@@ -503,7 +503,7 @@ import {
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
-import { fenceAttachmentSweep, sweepOrphanAttachments, type OrphanSweepOptions, type OrphanSweepReport } from '@substrat-run/kernel';
+import { UNSETTLED_COPY_STATES, fenceAttachmentSweep, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
@@ -2294,6 +2294,13 @@ export interface CloudflareScopeHostOptions {
    */
   attachmentBuckets?: (tenantId: string) => unknown | null | Promise<unknown | null>;
   /**
+   * The clock the orphan sweep (#2314) judges the age floor and its restore fence against, and
+   * stamps a fence with. Omitted, the wall clock. It is a construction-time seam, for a test that
+   * must step past seven days, and never a per-call option: a caller that could hand a pass its
+   * own instant could step past the fence. The rest of this host takes no clock (#956).
+   */
+  orphanSweepClock?: () => string;
+  /**
    * The live D1 client for per-tenant relational stores (#301) —
    * `createD1TenantStores` with the platform's Cloudflare credential. Lives on the
    * COORDINATOR like `secretBox`: the ControlPlaneDO keeps the ledger and has never
@@ -2783,6 +2790,7 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly blobStores?: R2BlobStores;
   /** Worker-side attachment-bucket resolver (#473); the ambient per-tenant binding unless overridden (#1995). */
   private readonly attachmentBuckets: (tenantId: string) => unknown | null | Promise<unknown | null>;
+  private readonly orphanSweepClock: () => string;
   /** The parsers attachment text is extracted with (K-43); the host's own, never imported here. */
   private readonly attachmentExtractors: readonly AttachmentExtractor[];
   private readonly attachmentTextBounds: AttachmentTextBounds;
@@ -2853,6 +2861,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.tenantStores = options.tenantStores;
     this.blobStores = options.blobStores;
     this.attachmentBuckets = options.attachmentBuckets ?? ambientAttachmentBucket;
+    this.orphanSweepClock = options.orphanSweepClock ?? (() => new Date().toISOString());
     assertAttachmentExtractors(options.attachmentExtractors ?? []);
     this.attachmentExtractors = options.attachmentExtractors ?? [];
     this.attachmentTextBounds = resolveAttachmentTextBounds(options.attachmentTextBounds);
@@ -4064,7 +4073,7 @@ export class CloudflareScopeHost implements ScopeHost {
     const bucket = await this.attachmentBuckets(tenantId);
     if (!bucket) return;
     try {
-      await fenceAttachmentSweep(r2TenantBlobStore(bucket), scopeId, new Date().toISOString());
+      await fenceAttachmentSweep(r2TenantBlobStore(bucket), scopeId, this.orphanSweepClock());
     } catch (err) {
       throw new Error(
         `the orphan-attachment sweep's restore fence (#2314) could not be written for scope ${scopeId}: ` +
@@ -4083,27 +4092,48 @@ export class CloudflareScopeHost implements ScopeHost {
   async sweepOrphanAttachments(
     tenantId: TenantId,
     scopeId: ScopeId,
-    opts: OrphanSweepOptions,
+    request: OrphanSweepRequest = {},
   ): Promise<OrphanSweepReport> {
-    // With a directory, it is the word on the scope: this tenant's, and a primary. A CP-less
-    // deployment has none, and its scope's own provision receipt is the word instead (in the DO).
+    // With a directory, it is the word on the scope, and it is read BEFORE the object is addressed,
+    // since addressing a reaped or never-held object would wake an empty one: this tenant's, active,
+    // a primary, and with no other script's copy that may hold rows this one lacks. A CP-less
+    // deployment has none: its scope's own storage is the word (receipt, lifecycle, copy markers,
+    // in the DO), and the copy ledger is the caller's to have read.
     let vouched = false;
     if (!this.cpLess) {
       const record = await this.cp.getScopeRecord(tenantId, scopeId);
       if (!record) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+      if (record.status !== 'active') {
+        throw substratError('conflict', `refused: scope ${scopeId} is ${record.status}, and only an active scope's bytes are swept`);
+      }
       if (!isPrimaryScopeRow(record)) {
         throw substratError('conflict', `refused: scope ${scopeId} is a copy, and a copy may not judge orphan attachments`);
       }
+      // One read per unsettled state, so no page of settled entries can hide one.
+      const copies = await Promise.all(
+        UNSETTLED_COPY_STATES.map((state) => this.cp.listScopeScriptCopies({ tenantId, scopeId, state, limit: 1 })),
+      );
+      const unsettled = unsettledCopyRefusal(scopeId, copies.flat().map(scopeScriptCopyOf));
+      if (unsettled) throw unsettled;
+      // The tenant's status too, as every door into a scope asks.
+      await this.assertLive(tenantId, scopeId);
       vouched = true;
+    } else if (request.copiesSettled !== true) {
+      throw substratError(
+        'conflict',
+        `refused: this deployment cannot read the copy ledger, so a pass over scope ${scopeId} needs its caller ` +
+          'to have found no unsettled copy of it (copiesSettled)',
+      );
     }
     const store = await this.resolveAttachmentStore(tenantId);
     const stub = this.scopeStub(scopeId);
-    const judge = (condemn: boolean) => async (ids: readonly string[], now: string) =>
-      unwrapReply(await stub.orphanAttachmentsReply([...ids], now, tenantId, condemn, vouched));
+    const now = this.orphanSweepClock();
+    const judge = (condemn: boolean) => async (ids: readonly string[], at: string) =>
+      unwrapReply(await stub.orphanAttachmentsReply([...ids], at, tenantId, condemn, vouched));
     return sweepOrphanAttachments(store, scopeId, {
-      rowless: (ids) => judge(false)(ids, opts.now),
+      rowless: (ids) => judge(false)(ids, now),
       condemn: judge(true),
-    }, opts);
+    }, { now, ...(request.dryRun ? { dryRun: true } : {}), ...(request.limit !== undefined ? { limit: request.limit } : {}) });
   }
 
   registerModule(registration: ModuleRegistration): void {

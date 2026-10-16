@@ -642,8 +642,10 @@ import {
   refuseCondemnedInDump,
   rowlessAttachmentIds,
   sweepOrphanAttachments,
-  type OrphanSweepOptions,
+  UNSETTLED_COPY_STATES,
+  unsettledCopyRefusal,
   type OrphanSweepReport,
+  type OrphanSweepRequest,
   assertAttachmentExtractors,
   resolveAttachmentTextBounds,
   assertJobRegistrable,
@@ -3649,7 +3651,7 @@ export class SqliteScopeHost implements ScopeHost {
   async sweepOrphanAttachments(
     tenantId: TenantId,
     scopeId: ScopeId,
-    opts: OrphanSweepOptions,
+    request: OrphanSweepRequest = {},
   ): Promise<OrphanSweepReport> {
     const row = this.directory
       .prepare('SELECT vertical, kind, forked_from FROM scopes WHERE scope_id = ? AND tenant_id = ?')
@@ -3657,13 +3659,27 @@ export class SqliteScopeHost implements ScopeHost {
     if (row && !isPrimaryScopeRow(row)) {
       throw substratError('conflict', `refused: scope ${scopeId} is a copy, and a copy may not judge orphan attachments`);
     }
+    const copies = this.directory
+      .prepare(
+        `SELECT script_ref AS scriptRef, state FROM scope_script_copies
+          WHERE tenant_id = ? AND scope_id = ? AND state IN (${UNSETTLED_COPY_STATES.map(() => '?').join(', ')})`,
+      )
+      .all(tenantId, scopeId, ...UNSETTLED_COPY_STATES) as { scriptRef: string; state: string }[];
+    const unsettled = unsettledCopyRefusal(scopeId, copies);
+    if (unsettled) throw unsettled;
+    // Only an active scope: an archived or reaped one is not this pass's to judge.
     const rt = await this.openActiveScope(tenantId, scopeId);
     const store = this.attachmentStore(tenantId, row?.vertical ?? null);
     return sweepOrphanAttachments(store, scopeId, {
       rowless: async (ids) => rt.actor.enqueue(() => rowlessAttachmentIds(spineSql(rt.db), ids)),
       condemn: async (ids, now) =>
         rt.actor.enqueue(() => rt.db.transaction(() => condemnOrphanAttachments(spineSql(rt.db), ids, now))()),
-    }, opts);
+    }, {
+      // The host's own clock, never a caller's: no request can step past the floor or the fence.
+      now: this.clock(),
+      ...(request.dryRun ? { dryRun: true } : {}),
+      ...(request.limit !== undefined ? { limit: request.limit } : {}),
+    });
   }
 
   /**

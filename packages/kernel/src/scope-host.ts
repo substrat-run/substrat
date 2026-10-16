@@ -1,4 +1,4 @@
-import type { OrphanSweepOptions, OrphanSweepReport } from './attachment-sweep.js';
+import type { OrphanSweepReport, OrphanSweepRequest } from './attachment-sweep.js';
 import type { ScopeStoreStubOptions, StoreErasureReplay, StoreStub } from './scope-store.js';
 import type { ModuleLog } from './module-log.js';
 import type { BoundOperations } from './module-operations.js';
@@ -5452,11 +5452,13 @@ export interface ScopeHost {
    * that commits never loses its bytes (`sweepOrphanAttachments`, attachment-sweep.ts).
    *
    * Platform-only, and judged by THIS host's copy of the scope: only an active primary of
-   * `tenantId` is swept, and a copy that is not one refuses (`conflict`). On a host whose scopes
-   * live in several deployments, the caller asks only the deployment serving the scope.
+   * `tenantId` that this host holds is swept, and anything else refuses (`conflict`), as does a
+   * scope with an unsettled copy in another script. On a host whose scopes live in several
+   * deployments, the caller asks only the deployment serving the scope. The age floor and the
+   * fence are judged against the host's own clock, never the caller's.
    * Optional: a host that has not wired the sweep leaves it out.
    */
-  sweepOrphanAttachments?(tenantId: TenantId, scopeId: ScopeId, opts: OrphanSweepOptions): Promise<OrphanSweepReport>;
+  sweepOrphanAttachments?(tenantId: TenantId, scopeId: ScopeId, request?: OrphanSweepRequest): Promise<OrphanSweepReport>;
 
   /**
    * Provision a NEW scope and load a `ScopeDump` into it — the write side of

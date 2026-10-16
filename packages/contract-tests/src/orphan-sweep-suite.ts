@@ -18,15 +18,19 @@
  *    is never condemned, and the upload commits with its bytes.
  * 3. **The restore fence.** A restore takes a committed row away; a pass inside the fence deletes
  *    nothing, and restoring the row back finds its bytes. Past the fence the orphan is swept.
- * 4. **The copy.** A pass asked of a fork, or for a tenant the scope was not provisioned for, is
- *    refused and deletes nothing, though every object there looks rowless to it.
+ * 4. **The copy, live.** A pass asked of a fork, or for a tenant the scope was not provisioned for,
+ *    of an archived or reaped scope, of a suspended tenant's scope, or of a scope with a pending,
+ *    kept or retained copy in another script, is refused and deletes nothing.
+ *
+ * And no caller can hand a pass a later instant: a `now` in the request is not read.
  *
  * Plus what every pass must also hold: only this scope's attachment keys are judged (other
  * scopes' keys, other features' keys and malformed keys in the same bucket are untouched), and a
  * dry run deletes and condemns nothing.
  *
- * Time: a pass takes its instant as an argument, so "eight days later" is a pass whose `now` is
- * eight days ahead of the ids the uploads minted. Nothing sleeps.
+ * Time: a pass reads the host's clock, which the fixture sets ahead (`clockAhead`) for the length
+ * of one pass, so "eight days later" is the host's clock eight days past the ids the uploads
+ * minted. Nothing sleeps.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
@@ -63,13 +67,20 @@ export interface OrphanSweepFixture extends ScopeHostFixture {
    * host, so a test can hold an upload between its bytes and its row. `null` removes it.
    */
   afterPut(hook: ((key: string) => Promise<void>) | null): void;
+  /**
+   * Set how far ahead of the wall clock the HOST's clock reads, in ms (0: the wall clock). A pass
+   * takes no instant from its caller, so this construction-time seam is how a case steps past the
+   * age floor or the fence.
+   */
+  clockAhead(ms: number): void;
+  /** Record another script's copy of the scope in the host's copy ledger (#1722), in `state`. */
+  recordCopy(tenant: TenantId, scope: ScopeId, state: 'pending' | 'eligible' | 'retained' | 'kept' | 'done'): Promise<void>;
 }
 
 const DAY = 86_400_000;
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 const text = (b: Uint8Array): string => new TextDecoder().decode(b);
-const at = (ms: number): string => new Date(ms).toISOString();
 
 /** A ULID minted at `ms`, as an upload at that instant would have minted it. */
 const idAt = (ms: number): string => {
@@ -109,12 +120,18 @@ export function orphanSweepContractSuite(adapterName: string, makeFixture: () =>
     const files = async (scope: ScopeId) => host.attachments(alice, t1, scope);
     const upload = async (entity: EntityRef, body: string, scope: ScopeId = s1): Promise<AttachmentRecord> =>
       (await files(scope)).upload({ entity, filename: 'a.txt', contentType: 'text/plain', visibility: 'internal', body: bytes(body) });
-    const sweep = (now: number, opts: { dryRun?: boolean; tenant?: TenantId; scope?: ScopeId } = {}) => {
+    /** A pass with the host's clock at `now`, put back to the wall clock afterwards. */
+    const sweep = async (now: number, opts: { dryRun?: boolean; tenant?: TenantId; scope?: ScopeId } = {}) => {
       if (!host.sweepOrphanAttachments) throw new Error('host has no sweepOrphanAttachments');
-      return host.sweepOrphanAttachments(opts.tenant ?? t1, opts.scope ?? s1, {
-        now: at(now),
-        ...(opts.dryRun ? { dryRun: true } : {}),
-      });
+      fixture.clockAhead(now - Date.now());
+      try {
+        return await host.sweepOrphanAttachments(opts.tenant ?? t1, opts.scope ?? s1, {
+          copiesSettled: true,
+          ...(opts.dryRun ? { dryRun: true } : {}),
+        });
+      } finally {
+        fixture.clockAhead(0);
+      }
     };
     /** Plant an object no row names, minted at `ms`. */
     const plant = async (ms: number, scope: ScopeId = s1): Promise<string> => {
@@ -332,6 +349,98 @@ export function orphanSweepContractSuite(adapterName: string, makeFixture: () =>
         const mine = await plant(now);
         const report = await sweep(now + ORPHAN_SWEEP_GRACE_MS + DAY);
         expect(report.keys).toContain(attachmentBlobKey(s1, mine));
+      });
+    });
+
+    describe('only an active scope is judged, and only against the host\'s clock', () => {
+      it('a pass cannot be handed a later instant: a caller\'s `now` is not read, and the fence holds', async () => {
+        const s5 = await freshScope();
+        const before = await host.admin.exportScope(staff, t1, s5);
+        const record = await upload(udoc(), 'fenced', s5);
+        await host.restoreScope(staff, t1, s5, before);
+        const key = attachmentBlobKey(s5, record.id);
+        // Past the age floor by the host's clock, and a caller asking for a time past the fence.
+        fixture.clockAhead(ORPHAN_SWEEP_GRACE_MS + DAY);
+        try {
+          const report = await host.sweepOrphanAttachments!(t1, s5, {
+            copiesSettled: true,
+            now: new Date(Date.now() + 400 * DAY).toISOString(),
+          } as never);
+          expect(report.deleted).toBe(0);
+          expect(report.fencedUntil).toEqual(expect.any(String));
+        } finally {
+          fixture.clockAhead(0);
+        }
+        expect(await present(key)).toBe(true);
+      });
+
+      it('an archived scope is refused, and the same scope unarchived sweeps', async () => {
+        const s6 = await freshScope();
+        const now = Date.now();
+        const orphan = await plant(now, s6);
+        await host.admin.archiveScope(staff, t1, s6);
+        const err = await refusal(sweep(now + ORPHAN_SWEEP_GRACE_MS + DAY, { scope: s6 }));
+        expect(errorCodeOf(err)).toBe('conflict');
+        expect(await present(attachmentBlobKey(s6, orphan))).toBe(true);
+        await host.admin.unarchiveScope(staff, t1, s6);
+        const report = await sweep(now + ORPHAN_SWEEP_GRACE_MS + DAY, { scope: s6 });
+        expect(report.keys).toEqual([attachmentBlobKey(s6, orphan)]);
+      });
+
+      it('a scope of a suspended tenant is refused, and sweeps once the tenant is active again', async () => {
+        const tenant = tenantId.parse(ulid());
+        await host.admin.createTenant(staff, { id: tenant, slug: `osw-${tenant.toLowerCase()}`, name: 'Suspended' });
+        await host.admin.grantEntitlement(staff, tenant, 'upl');
+        const s = scopeId.parse(ulid());
+        await host.provisionScope(staff, { tenantId: tenant, scopeId: s, vertical: 'osw-vertical' });
+        await host.admin.activateScope(staff, tenant, s);
+        await host.provisionBlobStore(staff, { tenantId: tenant, vertical: 'osw-vertical', binding: 'ATTACHMENTS' });
+        // Opening the attachment surface opens the tenant's store, as in the suite's setup.
+        await host.attachments(alice, tenant, s);
+        const theirs = await fixture.blobs(tenant);
+        const now = Date.now();
+        const orphan = idAt(now);
+        const key = attachmentBlobKey(s, orphan);
+        await theirs.put(key, bytes('orphan'), { contentType: 'text/plain' });
+        await host.admin.setTenantStatus(staff, tenant, 'suspended');
+        const err = await refusal(sweep(now + ORPHAN_SWEEP_GRACE_MS + DAY, { tenant, scope: s }));
+        expect(errorCodeOf(err)).toBe('conflict');
+        expect((await theirs.get(key)) !== null).toBe(true);
+        await host.admin.setTenantStatus(staff, tenant, 'active');
+        const report = await sweep(now + ORPHAN_SWEEP_GRACE_MS + DAY, { tenant, scope: s });
+        expect(report.keys).toEqual([attachmentBlobKey(s, orphan)]);
+      });
+
+      it('a reaped scope is refused, and its committed file keeps its bytes for the backup', async () => {
+        const s7 = await freshScope();
+        const record = await upload(udoc(), 'backed up', s7);
+        await host.admin.archiveScope(staff, t1, s7);
+        await host.admin.reapScope(staff, t1, s7, { force: true, backupRef: `/backups/${s7}` });
+        const err = await refusal(sweep(Date.now() + ORPHAN_SWEEP_GRACE_MS + DAY, { scope: s7 }));
+        expect(err).toBeInstanceOf(Error);
+        expect(await present(attachmentBlobKey(s7, record.id))).toBe(true);
+      });
+    });
+
+    describe('a copy of the scope in another script, still unsettled, holds the pass', () => {
+      it.each(['pending', 'kept', 'retained'] as const)('a %s copy refuses the pass and deletes nothing', async (state) => {
+        const s8 = await freshScope();
+        const now = Date.now();
+        const orphan = await plant(now, s8);
+        await fixture.recordCopy(t1, s8, state);
+        const err = await refusal(sweep(now + ORPHAN_SWEEP_GRACE_MS + DAY, { scope: s8 }));
+        expect(errorCodeOf(err)).toBe('conflict');
+        expect((err as Error).message).toContain(state);
+        expect(await present(attachmentBlobKey(s8, orphan))).toBe(true);
+      });
+
+      it.each(['eligible', 'done'] as const)('the twin: a %s copy holds nothing more, and the pass sweeps', async (state) => {
+        const s9 = await freshScope();
+        const now = Date.now();
+        const orphan = await plant(now, s9);
+        await fixture.recordCopy(t1, s9, state);
+        const report = await sweep(now + ORPHAN_SWEEP_GRACE_MS + DAY, { scope: s9 });
+        expect(report.keys).toEqual([attachmentBlobKey(s9, orphan)]);
       });
     });
   });

@@ -35,10 +35,15 @@ declare const TextDecoder: new () => { decode(input: Uint8Array): string };
  *    store, never in the scope, because the rewind it records would erase it there. It is read
  *    before the pass and again after the condemnation, immediately before the first delete, so a
  *    rewind that lands mid-pass stops the deletes. A fence that cannot be read is a fence.
- * 4. **The serving copy only.** The judgement is only as good as the copy that makes it, so the
- *    condemnation is a WRITE: a copy a carry wiped refuses every write (#1722), and a scope that
- *    was never provisioned for the tenant refuses the pair check. Which copy is asked is the
- *    driver's business: the platform asks the deployment serving the scope, and only a primary.
+ * 4. **The serving copy only, and only while it is live.** The judgement is only as good as the
+ *    copy that makes it. A host refuses a scope that is not active, a store that holds nothing, a
+ *    copy a carry wiped or kept, a fork, and a scope not provisioned for the tenant. It also
+ *    refuses while another script's copy of the scope is unsettled in the copy ledger
+ *    (`UNSETTLED_COPY_STATES`), because that copy may hold rows the serving one lacks. Which
+ *    deployment is asked is the driver's business: the platform asks the one serving the scope.
+ *
+ * The instant a pass judges age and the fence against is the HOST's clock, never a caller's
+ * (`OrphanSweepRequest` carries none), so no caller can step past guard 2 or guard 3.
  *
  * A dry run condemns nothing and deletes nothing: it reports what a pass would condemn.
  */
@@ -153,7 +158,10 @@ export function rowlessAttachmentIds(sql: ScopedSql, ids: readonly string[]): st
  * Condemn the ids in `ids` that no row names, inside the caller's scope transaction (guard 1),
  * and return every id that is condemned and rowless now: the ones condemned here and the ones an
  * earlier pass condemned but did not get to delete. Only those may be deleted. Idempotent.
- * Tombstones past `ORPHAN_TOMBSTONE_RETENTION_MS` are pruned on the way.
+ *
+ * Each returned id's tombstone is stamped `now`, re-stamped if an earlier pass condemned it, so
+ * the prune of tombstones past `ORPHAN_TOMBSTONE_RETENTION_MS` that follows can never take the
+ * tombstone of an id this pass is about to delete.
  */
 export function condemnOrphanAttachments(sql: ScopedSql, ids: readonly string[], now: string): string[] {
   if (ids.length > ORPHAN_CONDEMN_BATCH) {
@@ -161,11 +169,34 @@ export function condemnOrphanAttachments(sql: ScopedSql, ids: readonly string[],
   }
   const rowless = rowlessAttachmentIds(sql, ids);
   for (const id of rowless) {
-    sql.exec('INSERT OR IGNORE INTO _substrat_attachment_condemned (id, condemned_at) VALUES (?, ?)', [id, now]);
+    sql.exec(
+      `INSERT INTO _substrat_attachment_condemned (id, condemned_at) VALUES (?, ?)
+         ON CONFLICT (id) DO UPDATE SET condemned_at = excluded.condemned_at`,
+      [id, now],
+    );
   }
   const horizon = new Date(Date.parse(now) - ORPHAN_TOMBSTONE_RETENTION_MS).toISOString();
   sql.exec('DELETE FROM _substrat_attachment_condemned WHERE condemned_at < ?', [horizon]);
   return rowless;
+}
+
+/**
+ * The copy-ledger states (#1722) of another script's copy of a scope that may hold rows the
+ * serving copy lacks: a move still in flight, a copy kept because it took writes after its export,
+ * and a copy recorded before the ledger, whose contents nobody checked. Their bytes share the
+ * scope's attachment prefix, so a pass is refused while any of them stands.
+ */
+export const UNSETTLED_COPY_STATES: readonly string[] = ['pending', 'kept', 'retained'];
+
+/** The refusal of a pass over a scope with an unsettled copy, or null when there is none. */
+export function unsettledCopyRefusal(scopeId: string, copies: readonly { state: string; scriptRef: string }[]): Error | null {
+  const unsettled = copies.filter((c) => UNSETTLED_COPY_STATES.includes(c.state));
+  if (unsettled.length === 0) return null;
+  return substratError(
+    'conflict',
+    `refused: scope ${scopeId} has a copy in another script that may hold rows this copy lacks ` +
+      `(${unsettled.map((c) => `${c.scriptRef}: ${c.state}`).join(', ')}). Settle it (#1722) before its bytes are swept`,
+  );
 }
 
 /** The blob key of a scope's restore fence (guard 3). Outside `att/`, so no pass ever lists it. */
@@ -195,8 +226,27 @@ async function fencedUntil(store: TenantBlobStore, scopeId: string, fenceMs: num
   return at + fenceMs;
 }
 
+/**
+ * What a caller asks of a host's pass (`ScopeHost.sweepOrphanAttachments`). No instant: the
+ * host judges the age floor and the fence against its OWN clock, so no caller can step past
+ * either by handing in a later time.
+ */
+export interface OrphanSweepRequest {
+  /** Report what a pass would condemn and delete, and change nothing. */
+  dryRun?: boolean;
+  /** The most objects deleted in one pass. Default `ORPHAN_SWEEP_LIMIT`. */
+  limit?: number;
+  /**
+   * A host with no directory (a CP-less deployment) cannot read the copy ledger, so it cannot see
+   * a kept or pending copy of the scope in another version's script, whose rows the serving copy
+   * lacks. It refuses unless its caller says it checked the ledger and found no such copy.
+   */
+  copiesSettled?: boolean;
+}
+
+/** The options the kernel's pass takes from its host: the request, and the host's clock. */
 export interface OrphanSweepOptions {
-  /** The instant the pass judges age against. */
+  /** The instant the pass judges age and the fence against: the HOST's clock, never a caller's. */
   now: string;
   /** Report what a pass would condemn and delete, and change nothing. */
   dryRun?: boolean;

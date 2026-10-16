@@ -352,6 +352,7 @@ export {
   ATTACHMENT_CONDEMNED_DDL,
   ORPHAN_SWEEP_FENCE_MS,
   ORPHAN_SWEEP_GRACE_MS,
+  UNSETTLED_COPY_STATES,
   attachmentSweepFenceKey,
   condemnOrphanAttachments,
   fenceAttachmentSweep,
@@ -359,8 +360,9 @@ export {
   refuseCondemnedInDump,
   rowlessAttachmentIds,
   sweepOrphanAttachments,
+  unsettledCopyRefusal,
 } from './attachment-sweep.js';
-export type { OrphanSweepOptions, OrphanSweepReport, OrphanSweepScope } from './attachment-sweep.js';
+export type { OrphanSweepOptions, OrphanSweepReport, OrphanSweepRequest, OrphanSweepScope } from './attachment-sweep.js';
 export {
   ATTACHMENT_SEARCH_OWNER_MAX,
   ATTACHMENT_SEARCH_OWNERS_SQL,

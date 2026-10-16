@@ -6,14 +6,18 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  ATTACHMENT_CONDEMNED_DDL,
   ORPHAN_SWEEP_FENCE_MS,
   ORPHAN_SWEEP_GRACE_MS,
+  ORPHAN_TOMBSTONE_RETENTION_MS,
   attachmentSweepFenceKey,
+  condemnOrphanAttachments,
+  refuseCondemnedAttachment,
   fenceAttachmentSweep,
   sweepOrphanAttachments,
   type OrphanSweepScope,
 } from '../src/attachment-sweep.js';
-import { attachmentBlobKey, type TenantBlobStore } from '../src/scope-host.js';
+import { attachmentBlobKey, type ScopedSql, type SqlValue, type TenantBlobStore } from '../src/scope-host.js';
 import { ulidFloor } from '../src/ulid.js';
 
 const DAY = 86_400_000;
@@ -231,5 +235,52 @@ describe('sweepOrphanAttachments (#2314)', () => {
     store.failDelete = undefined;
     const retry = await sweepOrphanAttachments(store, S, scopeOf(new Set()), { now: at(NOW) });
     expect(retry.deleted).toBe(2);
+  });
+});
+
+/**
+ * The tombstone half on a real SQLite (node's own), so the statements are the ones both adapters
+ * run: a condemnation answers only rowless ids, and re-condemning an id re-stamps its tombstone,
+ * so the prune in the same transaction never takes the tombstone of an id it returns (#2314 r1).
+ */
+describe('condemnOrphanAttachments on SQLite (#2314)', () => {
+  const sqlOf = async (): Promise<ScopedSql & { db: { exec(sql: string): void } }> => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    db.exec('CREATE TABLE _substrat_attachments (id TEXT PRIMARY KEY)');
+    db.exec(ATTACHMENT_CONDEMNED_DDL);
+    return {
+      db,
+      query: <T>(sql: string, params: readonly SqlValue[] = []) => db.prepare(sql).all(...(params as never[])) as T[],
+      exec: (sql: string, params: readonly SqlValue[] = []) => ({ changes: Number(db.prepare(sql).run(...(params as never[])).changes) }),
+    };
+  };
+  const tombstones = (sql: ScopedSql) =>
+    sql.query<{ id: string; condemned_at: string }>('SELECT id, condemned_at FROM _substrat_attachment_condemned ORDER BY id');
+
+  it('condemns only the ids no row names, and the insert check then refuses them', async () => {
+    const sql = await sqlOf();
+    sql.exec("INSERT INTO _substrat_attachments (id) VALUES ('A')");
+    expect(condemnOrphanAttachments(sql, ['A', 'B'], at(NOW))).toEqual(['B']);
+    expect(tombstones(sql)).toEqual([{ id: 'B', condemned_at: at(NOW) }]);
+    expect(() => refuseCondemnedAttachment(sql, 'B')).toThrow(/swept as an orphan/);
+    expect(() => refuseCondemnedAttachment(sql, 'C')).not.toThrow();
+  });
+
+  it('re-condemning an id past the tombstone retention re-stamps it, so the prune keeps it', async () => {
+    const sql = await sqlOf();
+    const long = NOW - ORPHAN_TOMBSTONE_RETENTION_MS - DAY;
+    expect(condemnOrphanAttachments(sql, ['B'], at(long))).toEqual(['B']);
+    // A later pass (a backlog past `limit`, a failed delete) returns it again for deletion.
+    expect(condemnOrphanAttachments(sql, ['B'], at(NOW))).toEqual(['B']);
+    expect(tombstones(sql)).toEqual([{ id: 'B', condemned_at: at(NOW) }]);
+    expect(() => refuseCondemnedAttachment(sql, 'B')).toThrow();
+  });
+
+  it('the twin: a tombstone past retention that no pass returns is pruned', async () => {
+    const sql = await sqlOf();
+    condemnOrphanAttachments(sql, ['OLD'], at(NOW - ORPHAN_TOMBSTONE_RETENTION_MS - DAY));
+    condemnOrphanAttachments(sql, ['NEW'], at(NOW));
+    expect(tombstones(sql).map((r) => r.id)).toEqual(['NEW']);
   });
 });

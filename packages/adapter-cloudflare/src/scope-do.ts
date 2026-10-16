@@ -3871,8 +3871,10 @@ export function defineScopeDO(
      * and only they may be deleted; without it (a dry run), they are only read.
      *
      * Only the copy that holds the scope's rows may judge them, so this refuses, before anything
-     * is migrated: a scope not provisioned here for `tenantId`, a copy a carry wiped or kept, and
-     * a fork or snapshot. Each of those would read every object as an orphan.
+     * is migrated: a reaped store, a scope whose delivered lifecycle is not active, a scope not
+     * provisioned here for `tenantId`, a store that holds nothing (an object this namespace never
+     * held, woken by this call), a copy a carry wiped or kept, and a fork or snapshot. Each of
+     * those would read every object as an orphan. Any doubt refuses.
      */
     orphanAttachmentsReply(
       ids: string[],
@@ -3884,10 +3886,10 @@ export function defineScopeDO(
       vouched = false,
     ): Promise<DoReply<string[]>> {
       return replyOf(async () => {
-        this.refuseOrphanJudgement(tenantId, vouched);
+        await this.refuseOrphanJudgement(tenantId, vouched);
         await this.ensureMigrations();
         return this.queue.enqueue(async () => {
-          this.refuseOrphanJudgement(tenantId, vouched);
+          await this.refuseOrphanJudgement(tenantId, vouched);
           if (!condemn) return rowlessAttachmentIds(doSpineSql(this.sql), ids);
           return this.revision.transaction(async () => condemnOrphanAttachments(doSpineSql(this.sql), ids, now));
         });
@@ -3908,12 +3910,20 @@ export function defineScopeDO(
     }
 
     /** #2314: why this copy may not judge which attachment bytes are orphans, as a refusal. */
-    private refuseOrphanJudgement(tenantId: TenantId, vouched: boolean): void {
+    private async refuseOrphanJudgement(tenantId: TenantId, vouched: boolean): Promise<void> {
+      // First, and before any table is read: a reaped store holds none.
+      if (await this.isReaped()) {
+        throw substratError('conflict', 'refused: this scope copy may not judge orphan attachments, because its storage was reaped');
+      }
       const { verdict } = this.tenantVerdict(tenantId);
-      const why =
-        verdict === 'foreign' || (verdict !== 'recorded' && !vouched)
-          ? `it holds no provision receipt for tenant ${tenantId} (${verdict})`
-          : this.carriedAwayCopy
+      const lifecycle = readLifecycle(this.switchSql());
+      const why = lifecycle && (lifecycle.scope !== 'active' || lifecycle.tenant !== 'active')
+          ? `its lifecycle is not active (scope ${lifecycle.scope}, tenant ${lifecycle.tenant})`
+          : verdict === 'foreign' || (verdict !== 'recorded' && !vouched)
+            ? `it holds no provision receipt for tenant ${tenantId} (${verdict})`
+            : verdict === 'unknown' && !this.holdsData()
+              ? 'it holds nothing: this namespace does not hold the scope'
+              : this.carriedAwayCopy
             ? 'it is a copy a carry wiped'
             : this.hasTable('_substrat_meta') && this.metaValue(KEPT_DIVERGENT_KEY)
               ? 'it is a kept copy'

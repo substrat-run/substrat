@@ -48,7 +48,8 @@ alone stops a row that committed from losing its bytes:
   restore whose dump would bring back a row for a condemned id is refused the same way.
 - **An age floor.** Only an object whose id was minted more than seven days ago is judged. The id
   is a ULID minted just before the bytes are written, so an upload still in flight is never
-  condemned in the first place.
+  condemned in the first place. The age, and the fence below, are judged against the host's own
+  clock. A pass takes no instant from its caller, so no caller can step past either one.
 - **A restore fence.** A Durable Object keeps 30 days of point-in-time history, so a row that a
   rewind or a restore took away can be brought back for that long. Every rewind and every restore
   of a scope first writes a fence object into the tenant's blob store, and the sweep deletes
@@ -56,9 +57,23 @@ alone stops a row that committed from losing its bytes:
   the scope, because the rewind it records would erase it there. The sweep reads the fence before a
   pass and again after the condemnation, just before the first delete, so a rewind that lands
   mid-pass stops the deletes. A fence it cannot read counts as a fence.
-- **The scope itself judges.** Only the copy that holds the scope's rows may say which objects are
-  orphans. A copy that a carry wiped or kept, a fork, a snapshot, and a scope with no record that
-  it was provisioned for the tenant all refuse. Any of those would read every object as an orphan.
+- **The scope itself judges, and only while it is live.** Only the copy that holds the scope's
+  rows may say which objects are orphans. These all refuse, because any of them would read every
+  object as an orphan:
+  - a scope that is not active (archived, reaped, or under a suspended tenant);
+  - a store that holds nothing, such as a scope whose data lives in another deployment;
+  - a copy that a carry wiped or kept, a fork, or a snapshot;
+  - a scope with no record that it was provisioned for the tenant.
+
+  A host with a directory reads the scope's record before it addresses the scope's storage, so a
+  reaped scope is never woken.
+- **No unsettled copy elsewhere.** After a carry, another version's script can keep a copy of the
+  scope that took writes the serving copy lacks, uploads among them. Its bytes share the scope's
+  prefix. While the copy ledger holds such a copy (a move still pending, a copy kept as
+  divergent, or a copy recorded before the ledger), the pass is refused. Settle the copy first. A
+  deployment with no directory cannot read the ledger, so a pass there needs its caller to have
+  checked it (`copiesSettled`). The platform's driver does that, and it reports a scope held this
+  way rather than skipping it silently.
 
 A pass lists only the scope's own attachment keys (`scope/<scopeId>/att/<ulid>`). Other scopes'
 keys, other features' keys and anything malformed in the same bucket are never judged. A dry run

@@ -541,6 +541,7 @@ uploadLinkContractSuite('adapter-cloudflare', attachmentHostFixture);
 orphanSweepContractSuite('adapter-cloudflare', async () => {
   const objs = new Map<string, { body: Uint8Array; contentType?: string }>();
   let hook: ((key: string) => Promise<void>) | null = null;
+  let ahead = 0;
   const raw = {
     put: async (key: string, value: Uint8Array, options?: { httpMetadata?: { contentType?: string } }) => {
       objs.set(key, { body: new Uint8Array(value), contentType: options?.httpMetadata?.contentType });
@@ -570,6 +571,7 @@ orphanSweepContractSuite('adapter-cloudflare', async () => {
     controlPlane: env.CONTROL_PLANE,
     blobStores: { create: async (name) => name, remove: async () => {} },
     attachmentBuckets: () => held,
+    orphanSweepClock: () => new Date(Date.now() + ahead).toISOString(),
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
   return {
@@ -577,6 +579,21 @@ orphanSweepContractSuite('adapter-cloudflare', async () => {
     blobs: async () => r2TenantBlobStore(raw),
     afterPut: (next) => {
       hook = next;
+    },
+    clockAhead: (ms) => {
+      ahead = ms;
+    },
+    // The ledger is the directory's; no public door writes an entry without a move behind it.
+    recordCopy: async (tenant, scope, state) => {
+      await runInDurableObject(env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')), (_, state_) => {
+        state_.storage.sql.exec(
+          `INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state) VALUES (?, ?, 'old-script', ?, ?)`,
+          tenant,
+          scope,
+          ulid(),
+          state,
+        );
+      });
     },
     cleanup: async () => host.close(),
   };
@@ -6470,10 +6487,13 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     },
     list: async () => ({ objects: [...objs.keys()].map((key) => ({ key })), truncated: false as const }),
   };
+  const later = () => new Date(Date.now() + ORPHAN_SWEEP_GRACE_MS + DAY).toISOString();
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     attachmentBuckets: () => bucket,
+    // Every pass here runs eight days ahead, past the age floor; the fence is stamped the same way.
+    orphanSweepClock: later,
   });
   host.registerModule(uploadLinkMod);
   afterAll(async () => host.close());
@@ -6489,8 +6509,7 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     objs.set(key, new Uint8Array([1]));
     return key;
   };
-  const later = () => new Date(Date.now() + ORPHAN_SWEEP_GRACE_MS + DAY).toISOString();
-  const sweep = (s: ScopeId, tenant: TenantId = t) => host.sweepOrphanAttachments(tenant, s, { now: later() });
+  const sweep = (s: ScopeId, tenant: TenantId = t) => host.sweepOrphanAttachments(tenant, s, { copiesSettled: true });
   const raw = (s: ScopeId, run: (sql: SqlStorage) => void) =>
     runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_, state) => run(state.storage.sql));
 
@@ -6501,6 +6520,39 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     expect(objs.has(orphan)).toBe(true);
     expect((await sweep(s)).keys).toEqual([orphan]);
     expect(objs.has(orphan)).toBe(false);
+  });
+
+  it('with no directory, a pass needs its caller to have read the copy ledger', async () => {
+    const s = await newScope();
+    const orphan = plant(s);
+    await expect(host.sweepOrphanAttachments(t, s)).rejects.toThrow(/cannot read the copy ledger/);
+    expect(objs.has(orphan)).toBe(true);
+    expect((await sweep(s)).keys).toEqual([orphan]);
+  });
+
+  it('a scope whose delivered lifecycle is not active is refused, and the same scope active again sweeps', async () => {
+    const s = await newScope();
+    const orphan = plant(s);
+    const deliver = (scope: 'suspended' | 'active', rev: number) =>
+      host.setLifecycleLocal(s, {
+        scope,
+        tenant: 'active',
+        at: '2026-10-01T00:00:00.000Z' as never,
+        revision: { epoch: 0, scope: rev, tenant: 0 },
+      });
+    await deliver('suspended', 1);
+    await expect(sweep(s)).rejects.toThrow(/lifecycle is not active/);
+    expect(objs.has(orphan)).toBe(true);
+    await deliver('active', 2);
+    expect((await sweep(s)).keys).toEqual([orphan]);
+  });
+
+  it('a reaped scope is refused, and its bytes stay for its backup', async () => {
+    const s = await newScope();
+    const orphan = plant(s);
+    await host.deleteScopeLocal(s, t);
+    await expect(sweep(s)).rejects.toThrow(/reaped/);
+    expect(objs.has(orphan)).toBe(true);
   });
 
   it('a scope with no receipt is refused, since nothing vouches for it', async () => {
@@ -6606,5 +6658,104 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     const tables = await host.exportScopeLocal(s);
     await host.restoreScopeLocal(s, tables, { tenantId: t });
     expect(objs.has(attachmentSweepFenceKey(s))).toBe(true);
+  });
+});
+
+/**
+ * #2314 review r1 — a host WITH a directory judged an object it does not hold. The record vouched
+ * for the scope (still primary), the object was empty (reaped, or never held: the scope's data is
+ * a vertical deployment's), and every file read as an orphan. These are the reviewer's case and
+ * its neighbours, kept as regressions.
+ */
+describe('#2314 r1 — a co-located host judges only a scope it holds, live', { timeout: 20_000 }, () => {
+  const t = tenantId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const alice = principalId.parse(ulid());
+  const DAY = 86_400_000;
+  const objs = new Map<string, Uint8Array>();
+  const bucket = {
+    put: async (key: string, value: Uint8Array) => {
+      objs.set(key, new Uint8Array(value));
+    },
+    get: async (key: string) => {
+      const body = objs.get(key);
+      return body ? { arrayBuffer: async () => body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) } : null;
+    },
+    delete: async (key: string) => {
+      objs.delete(key);
+    },
+    list: async () => ({ objects: [...objs.keys()].map((key) => ({ key })), truncated: false as const }),
+  };
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    attachmentBuckets: () => bucket,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    orphanSweepClock: () => new Date(Date.now() + ORPHAN_SWEEP_GRACE_MS + DAY).toISOString(),
+  });
+  host.registerModule(uploadLinkMod);
+  afterAll(async () => host.close());
+
+  beforeAll(async () => {
+    await host.admin.createTenant(staff, { id: t, slug: `osw-r1-${t.toLowerCase()}`, name: 'Orphan sweep r1' });
+    await host.admin.grantEntitlement(staff, t, 'upl');
+    await host.admin.defineRole(staff, t, { key: 'owner', permissions: [UPL_READ, UPL_WRITE], source: 'vertical' });
+    await host.admin.assignRole(staff, { principalId: alice, roleKey: 'owner', node: { tenantId: t, scopeId: null } });
+  });
+  const newScope = async (): Promise<ScopeId> => {
+    const s = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'osw-vertical' });
+    await host.admin.activateScope(staff, t, s);
+    return s;
+  };
+  const upload = async (s: ScopeId) =>
+    (await host.attachments(alice, t, s)).upload({
+      entity: { entityType: 'udoc', entityId: 'doc-1' },
+      filename: 'a.txt',
+      contentType: 'text/plain',
+      visibility: 'internal',
+      body: new TextEncoder().encode('committed'),
+    });
+  const sweep = (s: ScopeId) => host.sweepOrphanAttachments(t, s);
+
+  it('the reviewer\'s case: archived, reaped with a backup, evicted, then a pass: refused, and the file keeps its bytes', async () => {
+    const s = await newScope();
+    const record = await upload(s);
+    await host.admin.archiveScope(staff, t, s);
+    await host.admin.reapScope(staff, t, s, { force: true, backupRef: `/backups/${s}` });
+    await restartNow(env.SCOPE, s);
+    await expect(sweep(s)).rejects.toThrow(/reaped/);
+    expect(objs.has(attachmentBlobKey(s, record.id))).toBe(true);
+  });
+
+  it('an archived scope is refused before its object is addressed', async () => {
+    const s = await newScope();
+    const record = await upload(s);
+    await host.admin.archiveScope(staff, t, s);
+    await expect(sweep(s)).rejects.toThrow(/is archived/);
+    expect(objs.has(attachmentBlobKey(s, record.id))).toBe(true);
+  });
+
+  it('a scope this namespace never held (its data is a vertical deployment\'s) is refused: the object holds nothing', async () => {
+    const s = await newScope();
+    // Stand in for a scope served elsewhere: this namespace's object holds nothing at all.
+    await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), async (_, state) => {
+      await state.storage.deleteAll();
+    });
+    await restartNow(env.SCOPE, s);
+    const key = attachmentBlobKey(s, ulid(Date.now() - DAY));
+    objs.set(key, new Uint8Array([1]));
+    await expect(sweep(s)).rejects.toThrow(/holds nothing/);
+    expect(objs.has(key)).toBe(true);
+  });
+
+  it('the twin: an evicted object that holds the scope wakes and is judged, keeping the file and sweeping the orphan', async () => {
+    const s = await newScope();
+    const record = await upload(s);
+    const orphan = attachmentBlobKey(s, ulid(Date.now() - DAY));
+    objs.set(orphan, new Uint8Array([1]));
+    await restartNow(env.SCOPE, s);
+    expect((await sweep(s)).keys).toEqual([orphan]);
+    expect(objs.has(attachmentBlobKey(s, record.id))).toBe(true);
   });
 });

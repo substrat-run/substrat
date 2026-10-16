@@ -60,7 +60,7 @@ import {
   spineGuardContractSuite,
   sqlLimitsContractSuite,
 } from '@substrat-run/contract-tests';
-import { errorCodeOf, moduleId, platformActorId } from '@substrat-run/contracts';
+import { errorCodeOf, instant, moduleId, platformActorId } from '@substrat-run/contracts';
 import { SqliteScopeHost } from '../src/index.js';
 
 scopeHostContractSuite('adapter-sqlite', async () => {
@@ -460,10 +460,12 @@ uploadLinkContractSuite('adapter-sqlite', attachmentHostFixture);
 orphanSweepContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-orphan-sweep-'));
   let hook: ((key: string) => Promise<void>) | null = null;
+  let ahead = 0;
   const raw = new Map<string, TenantBlobStore>();
   const host = new SqliteScopeHost({
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    clock: () => instant.parse(new Date(Date.now() + ahead).toISOString()),
     wrapBlobStore: (store, ref) => {
       raw.set(ref, store);
       return {
@@ -477,14 +479,32 @@ orphanSweepContractSuite('adapter-sqlite', async () => {
   });
   return {
     host,
-    // One tenant holds a store in this suite, so the one store opened is the tenant's.
-    blobs: async () => {
-      const [store] = [...raw.values()];
-      if (!store) throw new Error('no attachment store opened yet: open the attachment surface first');
-      return store;
+    // A store's ref names its tenant (`blob__<tenant>__…`). It is opened by the first call that
+    // reaches it, so a store is looked up lazily, at each call.
+    blobs: async (tenant) => {
+      const of = (): TenantBlobStore => {
+        const found = [...raw.entries()].find(([ref]) => ref.startsWith(`blob__${tenant}__`));
+        if (!found) throw new Error(`no attachment store opened yet for ${tenant}`);
+        return found[1];
+      };
+      return {
+        put: (key, body, opts) => of().put(key, body, opts),
+        get: (key) => of().get(key),
+        delete: (key) => of().delete(key),
+        list: (prefix) => of().list(prefix),
+      };
     },
     afterPut: (next) => {
       hook = next;
+    },
+    clockAhead: (ms) => {
+      ahead = ms;
+    },
+    // The ledger is the directory's; no public door writes an entry without a move behind it.
+    recordCopy: async (tenant, scope, state) => {
+      (host as unknown as { directory: Database.Database }).directory
+        .prepare(`INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state) VALUES (?, ?, 'old-script', ?, ?)`)
+        .run(tenant, scope, ulid(), state);
     },
     cleanup: async () => {
       await host.close();
