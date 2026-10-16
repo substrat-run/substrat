@@ -12,9 +12,18 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { platformActorId, principalId, scopeId, tenantId, type ScopeDump } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
-import { FENCE_DECLARED, FENCE_UNDECLARED, fenceDeclaredMod, fenceUndeclaredMod } from './migration-fence.js';
+import {
+  FENCE_DECLARED,
+  FENCE_UNDECLARED,
+  FENCE_WIDE,
+  FENCE_WIDE_COLUMNS,
+  fenceDeclaredMod,
+  fenceUndeclaredMod,
+  fenceWideDdl,
+  fenceWideMod,
+} from './migration-fence.js';
 
-type Fixture = typeof FENCE_DECLARED | typeof FENCE_UNDECLARED;
+type Fixture = typeof FENCE_DECLARED | typeof FENCE_UNDECLARED | typeof FENCE_WIDE;
 
 export function migrationFenceContractSuite(adapterName: string, makeFixture: () => Promise<ScopeHostFixture>): void {
   describe(`the migration data-loss fence (#115): ${adapterName}`, () => {
@@ -29,9 +38,11 @@ export function migrationFenceContractSuite(adapterName: string, makeFixture: ()
       host = fixture.host;
       host.registerModule(fenceUndeclaredMod);
       host.registerModule(fenceDeclaredMod);
+      host.registerModule(fenceWideMod);
       await host.admin.createTenant(staff, { id: t, slug: `fence-${t.toLowerCase()}`, name: 'Fence' });
       await host.admin.grantEntitlement(staff, t, FENCE_UNDECLARED.key);
       await host.admin.grantEntitlement(staff, t, FENCE_DECLARED.key);
+      await host.admin.grantEntitlement(staff, t, FENCE_WIDE.key);
     });
     afterAll(async () => {
       await fixture?.cleanup();
@@ -45,6 +56,7 @@ export function migrationFenceContractSuite(adapterName: string, makeFixture: ()
     };
     const tables = async (s: ReturnType<typeof scopeId.parse>, m: Fixture) =>
       (await host.getScope(anyone, t, s)).invoke<string[]>(`${m.key}/tables`, undefined);
+    const wideTables = (s: ReturnType<typeof scopeId.parse>) => tables(s, FENCE_WIDE);
     const journalOf = (dump: ScopeDump, m: Fixture) => {
       const table = dump.tables.find((x) => x.name === '_substrat_migrations')!;
       const [mod, version] = [table.columns.indexOf('module_id'), table.columns.indexOf('version')];
@@ -108,6 +120,33 @@ export function migrationFenceContractSuite(adapterName: string, makeFixture: ()
       const after = await host.admin.exportScope(staff, t, s);
       expect(after.tables.some((x) => x.name === FENCE_DECLARED.table)).toBe(false);
       expect(journalOf(after, FENCE_DECLARED)).toEqual(['0001-create', '0002-drop']);
+    });
+
+    it('measures a populated 100-column table inside the DO result limit: a lossless migration applies, a loss past the first scan is refused', async () => {
+      const s = await provision();
+      const dump = await host.admin.exportScope(staff, t, s);
+      const tables = dump.tables
+        .filter((x) => x.name !== FENCE_WIDE.table)
+        .map((x) => {
+          if (x.name !== '_substrat_migrations') return x;
+          const [mod, version] = [x.columns.indexOf('module_id'), x.columns.indexOf('version')];
+          return { ...x, rows: x.rows.filter((r) => !(r[mod] === FENCE_WIDE.id && r[version] !== '0001-create')) };
+        });
+      tables.push({
+        name: FENCE_WIDE.table,
+        ddl: fenceWideDdl,
+        columns: FENCE_WIDE_COLUMNS,
+        rows: [FENCE_WIDE_COLUMNS.map((c) => `${c}-value`)],
+      } as (typeof tables)[number]);
+      await host.restoreScope(staff, t, s, { ...dump, tables });
+      const last = `c${FENCE_WIDE.columns - 1}`;
+      await expect(wideTables(s)).rejects.toThrow(
+        new RegExp(`migration failed for ${FENCE_WIDE.id}@0003-drop-last — scope fails closed: .*column ${FENCE_WIDE.table}\\.${last} held 1 value\\(s\\) and is gone`),
+      );
+      const after = await host.admin.exportScope(staff, t, s);
+      // 0002 ran (its measuring did not trip the DO's result limit); 0003 did not.
+      expect(journalOf(after, FENCE_WIDE)).toEqual(['0001-create', '0002-touch']);
+      expect(after.tables.find((x) => x.name === FENCE_WIDE.table)?.columns).toContain(last);
     });
   });
 }

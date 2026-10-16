@@ -144,6 +144,6 @@ export { SPLIT_CASES } from './split-cases.js';
 export { migrationCommentsContractSuite } from './migration-comments-suite.js';
 export { commentedDdlMod } from './migration-comments.js';
 export { migrationFenceContractSuite } from './migration-fence-suite.js';
-export { fenceDeclaredMod, fenceUndeclaredMod } from './migration-fence.js';
+export { fenceDeclaredMod, fenceUndeclaredMod, fenceWideMod } from './migration-fence.js';
 export { shapeBackfillTies } from './shape-backfill-ties.js';
 export { shapeReconcilePlans } from './shape-reconcile-plan.js';

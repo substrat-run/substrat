@@ -8,7 +8,7 @@ import { moduleManifest } from '@substrat-run/contracts';
 import type { ModuleRegistration, OperationHandler, SqlMigration } from '@substrat-run/kernel';
 import { testOperations } from './test-operations.js';
 
-const fenceModule = (id: string, key: string, table: string, drop: Omit<SqlMigration, 'version' | 'sql'>): ModuleRegistration => ({
+const fenceModule = (id: string, key: string, table: string, migrations: SqlMigration[]): ModuleRegistration => ({
   manifest: moduleManifest.parse({
     id,
     version: '1.0.0',
@@ -19,10 +19,7 @@ const fenceModule = (id: string, key: string, table: string, drop: Omit<SqlMigra
     attachmentTargets: [],
     entitlementKey: key,
   }),
-  migrations: [
-    { version: '0001-create', sql: `CREATE TABLE ${table} (id TEXT PRIMARY KEY, body TEXT NOT NULL);` },
-    { version: '0002-drop', sql: `DROP TABLE ${table};`, ...drop },
-  ],
+  migrations,
   ...testOperations({
     [`${key}/tables`]: ((ctx) =>
       ctx.sql.query<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = '${table}'`).map((r) => r.name)) as OperationHandler<
@@ -35,7 +32,31 @@ const fenceModule = (id: string, key: string, table: string, drop: Omit<SqlMigra
 export const FENCE_UNDECLARED = { id: '@test/fence-undeclared', key: 'fence-undeclared', table: 'fu_notes' } as const;
 export const FENCE_DECLARED = { id: '@test/fence-declared', key: 'fence-declared', table: 'fd_notes' } as const;
 
-export const fenceUndeclaredMod = fenceModule(FENCE_UNDECLARED.id, FENCE_UNDECLARED.key, FENCE_UNDECLARED.table, {});
-export const fenceDeclaredMod = fenceModule(FENCE_DECLARED.id, FENCE_DECLARED.key, FENCE_DECLARED.table, {
-  discards: { [FENCE_DECLARED.table]: 'contract fixture: the notes this table held are retired' },
-});
+const createAndDrop = (table: string, drop: Omit<SqlMigration, 'version' | 'sql'>): SqlMigration[] => [
+  { version: '0001-create', sql: `CREATE TABLE ${table} (id TEXT PRIMARY KEY, body TEXT NOT NULL);` },
+  { version: '0002-drop', sql: `DROP TABLE ${table};`, ...drop },
+];
+
+export const fenceUndeclaredMod = fenceModule(FENCE_UNDECLARED.id, FENCE_UNDECLARED.key, FENCE_UNDECLARED.table, createAndDrop(FENCE_UNDECLARED.table, {}));
+export const fenceDeclaredMod = fenceModule(
+  FENCE_DECLARED.id,
+  FENCE_DECLARED.key,
+  FENCE_DECLARED.table,
+  createAndDrop(FENCE_DECLARED.table, { discards: { [FENCE_DECLARED.table]: 'contract fixture: the notes this table held are retired' } }),
+);
+
+/**
+ * #115 r1: a table as wide as a Durable Object allows (100 columns), so the fence's measuring query
+ * meets the DO's 100-column result limit on the host that enforces it. `0002` loses nothing and
+ * must apply; `0003` drops the last column, past the first measuring scan.
+ */
+export const FENCE_WIDE = { id: '@test/fence-wide', key: 'fence-wide', table: 'fw_wide', columns: 100 } as const;
+export const FENCE_WIDE_COLUMNS = ['id', ...Array.from({ length: FENCE_WIDE.columns - 1 }, (_, i) => `c${i + 1}`)];
+export const fenceWideDdl = `CREATE TABLE ${FENCE_WIDE.table} (id TEXT PRIMARY KEY, ${FENCE_WIDE_COLUMNS.slice(1)
+  .map((c) => `${c} TEXT`)
+  .join(', ')})`;
+export const fenceWideMod = fenceModule(FENCE_WIDE.id, FENCE_WIDE.key, FENCE_WIDE.table, [
+  { version: '0001-create', sql: `${fenceWideDdl};` },
+  { version: '0002-touch', sql: `UPDATE ${FENCE_WIDE.table} SET c1 = c1;` },
+  { version: '0003-drop-last', sql: `ALTER TABLE ${FENCE_WIDE.table} DROP COLUMN c${FENCE_WIDE.columns - 1};` },
+]);

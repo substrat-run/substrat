@@ -37,7 +37,7 @@ import { erasureMod, erasureOtherMod } from './erasure-module.js';
 import { bindMod } from './bind-module.js';
 import { uploadLinkMod } from './upload-link-module.js';
 import { commentedDdlMod } from './migration-comments.js';
-import { fenceDeclaredMod, fenceUndeclaredMod } from './migration-fence.js';
+import { fenceDeclaredMod, fenceUndeclaredMod, fenceWideMod } from './migration-fence.js';
 import {
   assertAllowed,
   readAttachmentText,
@@ -3068,6 +3068,7 @@ export const contractTestModules: ModuleRegistration[] = [
   // which also proves the fence lets an empty table go, everywhere.
   fenceUndeclaredMod,
   fenceDeclaredMod,
+  fenceWideMod,
   // #2090: the authored-rebuild suite's module. Inert for every other suite — its rebuilds run
   // before the derived state migrations on a fresh scope, and nothing else reads `rb_*`. AFTER the
   // erasure modules: a dump wipe drops tables and not views, so a wiped scope still holds `er_view`
