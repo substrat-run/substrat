@@ -5,7 +5,7 @@ import { api, type AppDeployments, type AppRow } from '../src/lib/api';
 import { MOCK_APP_PERMISSIONS } from '../src/lib/mock';
 import { MOCK_APP_DEPLOYMENTS, MOCK_APP_MODEL_UPDATE, MOCK_APP_RELEASES, MOCK_PROD_HISTORY } from '../src/lib/mock-deployments';
 import { diffRegistries } from '../src/lib/registry-diff';
-import { instant, ledgerRows, permissionDiffItems, registryLedgerRows, schemaDiffItems } from '../src/lib/release-ledger';
+import { instant, ledgerRows, migrationDiffItems, permissionDiffItems, registryLedgerRows, schemaDiffItems } from '../src/lib/release-ledger';
 import { liveCell, ReleaseComparisonCard, ReleasesCard, type Ledger } from '../src/views/ReleaseCards';
 
 const byVersion = (rows: ReturnType<typeof ledgerRows>, v: string) => rows.find((r) => r.version === v)!;
@@ -147,5 +147,27 @@ describe('Deployments cards', () => {
     const installs = [...container.querySelectorAll('[data-installs]')].map((e) => e.textContent);
     expect(installs.every((t) => t === '—')).toBe(true);
     expect(container.textContent).toContain('publishing team’s record');
+  });
+});
+
+describe('migrationDiffItems: declared discards on the row (#2322)', () => {
+  it('says a migration deliberately discards data, and a declarations-only edit as such', () => {
+    const items = migrationDiffItems({
+      baseline: 'version',
+      added: [
+        { moduleId: 'desk', version: '0002', sql: 's', discards: { a: 'why', b: 'why' } },
+        { moduleId: 'desk', version: '0003', sql: 's', moves: { a: 'b' } },
+        { moduleId: 'desk', version: '0004', sql: null, declarationsLeftOut: true },
+      ],
+      changed: [{ moduleId: 'desk', version: '0001', sql: 's', edited: 'declarations', discards: { t: 'why' } }],
+      total: 4,
+      truncated: true,
+    });
+    expect(items.map((i) => i.note)).toEqual([
+      'desk · runs on update · deliberately discards data (2)',
+      'desk · runs on update',
+      'desk · runs on update · declares moves or discards not shown here',
+      'desk · declarations edited after it shipped · deliberately discards data (1)',
+    ]);
   });
 });
