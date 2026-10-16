@@ -37,7 +37,7 @@ export function PromoteMigrations({ section }: { section: MigrationSection }) {
         </div>
       ) : (
         <>
-          {discardCount(sql) > 0 && <DiscardCallout count={discardCount(sql)} />}
+          <DiscardCallout count={discardCount(sql)} />
           {sql.baseline === 'unavailable' && (
             <div style={muted}>
               The version prod serves was pushed before versions carried their migrations, so every migration this version ships is
@@ -88,6 +88,7 @@ const muted: CSSProperties = { fontSize: 12.5, color: 'var(--text-secondary)', l
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 12 };
 
 function DiscardCallout({ count }: { count: number }) {
+  if (count === 0) return null;
   return (
     <div
       role="note"
@@ -104,7 +105,7 @@ function DiscardCallout({ count }: { count: number }) {
  * text (never markup), with bidi controls made visible (`reviewText`), and a long reason cut
  * with an expander so it cannot push the rest of the review out of sight.
  */
-export function MigrationDeclarations({ entry }: { entry: MigrationEntry }) {
+function MigrationDeclarations({ entry }: { entry: MigrationEntry }) {
   if (entry.declarationsLeftOut) {
     return (
       <div style={{ ...muted, fontSize: 12 }}>

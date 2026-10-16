@@ -1763,6 +1763,8 @@ export const declaredMigration = z.object({
   ).optional(),
 });
 export type DeclaredMigration = z.infer<typeof declaredMigration>;
+/** A migration's `moves` and `discards` alone (#2322): what a push carries and a store keeps beside the SQL. */
+export const declaredMigrationDeclarations = declaredMigration.pick({ moves: true, discards: true });
 
 const utf8 = new TextEncoder();
 

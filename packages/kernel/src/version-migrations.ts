@@ -23,7 +23,7 @@
  *   is split on the way in.
  */
 import {
-  declaredMigration,
+  declaredMigrationDeclarations,
   deployManifest,
   storedDeployManifest,
   type DeclaredMigration,
@@ -109,8 +109,8 @@ function declarationsJson(m: DeclaredMigration): string | null {
   return JSON.stringify({ ...(m.moves ? { moves: m.moves } : {}), ...(m.discards ? { discards: m.discards } : {}) });
 }
 
-/** What a stored `declarations` column must parse as: the push boundary's own schema. */
-const storedDeclarations = declaredMigration.pick({ moves: true, discards: true }).strict();
+/** What a stored `declarations` column must parse as: the push boundary's own schema, and nothing else. */
+const storedDeclarations = declaredMigrationDeclarations.strict();
 
 /**
  * One row's declarations as a `DeclaredMigration`'s spread, or null when the column holds

@@ -18,7 +18,7 @@ import {
   DEPLOY_MANIFEST_BYTES_SAFE,
   deployManifest,
   emittedModel,
-  declaredMigration,
+  declaredMigrationDeclarations,
   sqlBytes,
   utf8Length,
   type DeclaredMigration,
@@ -203,8 +203,10 @@ export type ModuleMigrationsFn = (registration: PermissionsInput['modules'][numb
  * resolvable) a module declaring either cannot be carried completely, so the field is left
  * off rather than carried short; one declaring neither has only its authored set.
  *
+ * Each migration's declared `moves` and `discards` (#2322) are carried beside its SQL.
+ *
  * `migrations` is undefined (and `omitted` says why) when the set is over the manifest's caps,
- * or incomplete as above. The field is then left off, which the promote dialog reads as "SQL
+ * incomplete as above, or declares something the manifest cannot carry. The field is then left off, which the promote dialog reads as "SQL
  * not available" and still asks for the acknowledgement: metadata must never fail a push.
  * `digestMigrations` retains the complete SQL set even when the manifest omits it, so the
  * promotion gate still sees a change. Without a kernel, `unresolvedIndexes` records the
@@ -249,7 +251,7 @@ export function flattenDeclaredMigrations(
         'to derive their index migrations with (upgrade the kernel)',
     };
   }
-  const malformed = migrations.find((m) => !migrationDeclarations.safeParse(m).success);
+  const malformed = migrations.find((m) => !declaredMigrationDeclarations.safeParse(m).success);
   if (malformed) {
     return {
       digestMigrations: migrations,
@@ -274,13 +276,10 @@ export function flattenDeclaredMigrations(
   return { migrations, digestMigrations: migrations };
 }
 
-/** What `flattenDeclaredMigrations` holds each migration's declarations to: the push boundary's own schema. */
-const migrationDeclarations = declaredMigration.pick({ moves: true, discards: true });
-
 /**
  * A migration's `moves` or `discards`, as the spread of a `DeclaredMigration`: absent when the
  * migration declares none (undefined, or an empty record). Anything else is carried as written,
- * and `migrationDeclarations` decides whether the manifest can carry it.
+ * and `declaredMigrationDeclarations` decides whether the manifest can carry it.
  */
 function declarationsOf(key: 'moves' | 'discards', value: unknown): Partial<Pick<DeclaredMigration, 'moves' | 'discards'>> {
   if (value === undefined || value === null) return {};
