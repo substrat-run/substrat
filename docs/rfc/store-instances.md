@@ -1,23 +1,24 @@
 ---
-status: proposed
+status: accepted
 layer: kernel
-description: A tenant-level store instance that several verticals of one tenant connect to, weighed against the per-scope store of K-49/K-50. Four options, three authorization shapes, the lifecycle a shared object needs, and what it does to the open scope-store stack. Records the maintainer's direction of 2026-10-15: named tenant-level instances with explicit connections and platform-addressed partitions (B), a script per partition as the upgrade for stronger separation (B′), and per-scope stores kept for scope-grain kinds. Still proposed; its 22 open questions are unanswered.
+description: A tenant-level store instance that several verticals of one tenant connect to, weighed against the per-scope store of K-49/K-50. Four options, three authorization shapes, the lifecycle a shared object needs, and what it does to the open scope-store stack. Records the maintainer's direction of 2026-10-15: named tenant-level instances with explicit connections and platform-addressed partitions (B), a script per partition as the upgrade for stronger separation (B′), and per-scope stores kept for scope-grain kinds. Accepted: its 22 questions were answered on 2026-10-15 and the direction is K-53.
 ---
 
 # RFC: store instances
 
-**Status: proposed.** It weighs an alternative to the per-scope store of
+**Status: accepted** (the 22 questions of §12 answered 2026-10-15, §12.1; the direction
+recorded as [K-53](../decisions/K-053-a-tenant-level-store-is-a-named-instance-that-a-tenant-s-verticals-connect-to-explicitly.md);
+open: the background-write record of Q14, the quota numbers, and the isolation requirements
+of §11.1). It weighs an alternative to the per-scope store of
 [scope-stores.md](scope-stores.md) (K-49, K-50, D-63) for one requirement that the per-scope
-store cannot meet. The maintainer has set a direction (below). The decisions it asks for are
-§12, and every one of them is still open.
+store cannot meet.
 
 > **Maintainer direction (2026-10-15).** The first kind's requirement is accepted: a
 > tenant-wide store shared by the verticals of one tenant. Option B is the direction: named
 > tenant-level instances, explicit connections, and platform-addressed partitions (§4, §5,
 > §6 (ii)). B′, a script per partition, is the upgrade when stronger separation is wanted.
-> A stays for scope-grain kinds, and the kind declares its grain (§9). This document stays
-> `proposed` until it is merged and until the 22 open questions of §12 have been answered
-> one by one. The structural isolation requirements the maintainer wants pursued before any
+> A stays for scope-grain kinds, and the kind declares its grain (§9). The 22 open questions
+> of §12 were answered one by one on 2026-10-15 (§12.1). The structural isolation requirements the maintainer wants pursued before any
 > third-party kind is allowed are §11.1.
 
 Written against `origin/main` at `02a72f0e8`. References are to sections and symbols, not
@@ -1028,6 +1029,47 @@ Each one is for the maintainer. The lean is stated so it can be rejected cleanly
     to everyone, or its grants lapse with the connection? *Lean:* the last recorded list stands,
     narrowable. The data is unchanged, so the producer's last declaration about it is still the
     right bound, and a reconnect replaces it with the producer's current declaration.
+
+### 12.1 The maintainer's answers (2026-10-15)
+
+All 22 questions were answered on 2026-10-15. The load-bearing ones are recorded as
+[K-53](../decisions/K-053-a-tenant-level-store-is-a-named-instance-that-a-tenant-s-verticals-connect-to-explicitly.md).
+The answers use the maintainer's new word **driver** for what this RFC calls a kind: the
+platform-registered, pinned code that backs a store. The code, this RFC's body and the
+ratified K-49, K-50, K-52 and D-63 text still say "kind" until a separate rename lands.
+
+| Q | Topic | Answer |
+|---|---|---|
+| Q1 | Granularity | The lean: named instances, several per tenant |
+| Q2 | The connection permission | A new connection permission key, held by owner and admin |
+| Q3 | Cross-vertical reads | Shape (ii), with reads **opt-in**: a connection reads nothing from another partition until a tenant admin enables reads for that connection, and then only over the read operations the producer declared shareable. Limited to non-personal shapes, permanently |
+| Q4 | Ingestion-only first slice (D) | The lean: no |
+| Q5 | Residency | The lean: fixed at creation, and a connect across jurisdictions is refused |
+| Q6 | Who creates instances | The lean: a tenant admin only, never a vertical's provisioning |
+| Q7 | Quotas | The lean: a ceiling on instances per tenant and on connections per instance, bytes metered per partition, numbers from a real account |
+| Q8 | Naming | The lean: a ULID in every name, the display name in the directory only, script names held injective against L20 |
+| Q9 | How grain is declared | The driver declares it in its registration, `grain: 'scope' \| 'tenant'`, decided for the first driver before it is registered |
+| Q10 | Disconnect | The lean: keep the partition, unwritable, readable only through existing grants; a reconnect revives it; deletion is an explicit step |
+| Q11 | A deleted scope's rows | The lean: removed for a reaped scope, kept for an archived one |
+| Q12 | Preview, fork and snapshot reach | The lean: none in v1 |
+| Q13 | The door's name | The lean: `getScopeStore` for both grains |
+| Q14 | Background writes | Decided in a **separate record**, which must be settled before a tenant-grain driver's first tenant. Deferred, not open-ended |
+| Q15 | One instance mechanism or two | Share the tenant-facing half with auth-server-style instances (one directory of tenant-level instances, one connection permission, one dashboard door). The transports stay separate: OIDC verification and the platform-routed envelope do not become one protocol |
+| Q16 | The connection's grain | The lean: per installation scope |
+| Q17 | Per-call audit of `reader` calls | The lean: the log line plus a per-connection read counter |
+| Q18 | Who sees the connection graph | The lean: tenant admins, a read-only view for `dashboard:read`, and a vertical sees only its own bindings' state |
+| Q19 | Deleting an instance with live connections | The lean: refused, naming the live connections |
+| Q20 | Noisy neighbours within a tenant | Option B: accepted for the first driver, and measured |
+| Q21 | The script grain inside a tenant | Option B: one script per (driver, tenant), with separation inside a tenant held by review. B′ (a script per partition) is **required** before any driver written outside this repo is registered at tenant grain, the same condition #2302 sets for scope-stores Q3 |
+| Q22 | The shareable list after a connection ends | The lean: the last recorded list stands, and the admin may only narrow it |
+
+**Still open after these answers:**
+
+- the separate record on background writes (Q14);
+- the quota numbers (Q7) and the Workers for Platforms limits behind them (§13);
+- the isolation requirements of §11.1, which gate any driver written outside this repo,
+  B′ among them;
+- the rename of "kind" to "driver" in the code and the ratified records.
 
 ## 13. Unverified
 
