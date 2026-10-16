@@ -120,8 +120,9 @@ these steps with the current one marked. It refuses when the set fails `doctor`.
    `store-driver status` reads `scripts: current` for every driver **and** no control-plane deploy is
    still rolling out: until then a script listed as pending or settling, or one a control plane still
    serving the older lists uploads, accepts the old key. Once the deploy serves only the new version,
-   force a walk of every script with `substrat store-driver rebuild --driver <driver>` for each
-   driver, repeated until each reads `scripts: current`.
+   force a walk of every script with
+   `substrat store-driver rebuild --driver <driver> --deploy-finished` for each driver, repeated
+   until each reads `scripts: current`.
 
 ### The fleet rebuild
 
@@ -171,16 +172,26 @@ rollout upload the scripts they reach. The rest are rebuilt by the control plane
     with the failure line and the driver. Until it is cleared, treat the old key as still accepted
     by that one script. If the key leaked, that script's vertical is exposed.
 - **During a deploy.** While two control-plane versions run side by side with different lists, a push
-  served by the older one uploads its script with the older lists, even after the walk is done. So a
-  walk that finished within an hour of its lists first appearing does not count: status reads
-  `scripts: settling` with the time it is walked again, and the scheduled pass walks it again then
-  (reading each script, uploading only one that is not current). A `done` walk is also walked again
-  a day after it finished, and `store-driver rebuild` always walks again. The window is
-  `STORE_REBUILD_SETTLE_MINUTES` on the control plane (60 by default): set it to how long a deploy of
-  the control plane takes to serve only the new version. A deploy that takes longer than the window
-  is followed by `store-driver rebuild` for every driver. `store-driver status` prints when the
-  current lists were first walked towards and when the next automatic re-walk is, so a `settling`
-  line says why it is not `current` yet.
+  served by the older one uploads its script with the older lists, even after the walk is done. So
+  only a walk that **began** at least the settle window after its lists first appeared proves every
+  script current: a walk that spans passes reads its first scripts when it begins. A done walk that
+  began inside the window reads `scripts: settling` with the time it is walked again, and the
+  scheduled pass walks it again from its first script then (reading each script, uploading only one
+  that is not current). The window is `STORE_REBUILD_SETTLE_MINUTES` on the control plane (60 by
+  default): set it to how long a deploy of the control plane takes to serve only the new version.
+  `store-driver status` prints when the lists were first walked towards and when the next automatic
+  walk is, so a `settling` line says why it is not `current` yet.
+- **Attesting the deploy finished.** `substrat store-driver rebuild --driver <driver> --deploy-finished`
+  is a person saying no control-plane deploy is rolling out. That run starts the walk over from its
+  first script, and once that walk is done it proves every script current without waiting out the
+  window. It is recorded in the admin log with the person, and status names who attested. Use it
+  only when the deploy that changed the lists serves the new version alone (the deploy is finished,
+  not part way through a gradual rollout); otherwise wait for the window, or run `store-driver
+  rebuild` without it and let the window run.
+- **Re-verifying.** A `done` walk is walked again a day after it finished, and `store-driver rebuild`
+  always walks again. While such a re-walk at lists an earlier walk already proved is under way,
+  status reads `scripts: current (re-verifying …)`; it reads `NOT current` only once a script that
+  walk reaches fails, or the lists change.
 
 ## A leaked private key
 
@@ -189,14 +200,14 @@ The order is the reverse of a planned rotation, because the old key must stop si
 1. Generate a new pair (step 1) and list the new public key (step 2).
 2. Switch the signer to it at once (step 4), without waiting for step 3. Calls for that audience
    fail at any store script that does not yet carry the new list. That is the cost of revoking.
-   Once the control-plane deploy serves only the new version, run
-   `substrat store-driver rebuild --driver <driver>` for every driver until it reads
-   `scripts: current`, so the new list reaches every script without waiting for the scheduled pass.
+   Run `substrat store-driver rebuild --driver <driver>` for every driver at once, so the new list
+   reaches every script without waiting for the scheduled pass.
 3. Revoke the old private key at the secrets manager: replace it in the password-manager copy,
    and make sure no other copy of the old line survives (files, shell history, scrollback).
 4. Drop the old public key (step 5) and deploy the control plane.
-5. Once that deploy serves only the new version, run `substrat store-driver rebuild --driver <driver>`
-   for every driver again until each reads `scripts: current`. The old key is revoked only when status
+5. Once that deploy serves only the new version, run
+   `substrat store-driver rebuild --driver <driver> --deploy-finished` for every driver until each
+   reads `scripts: current`. The old key is revoked only when status
    reads `scripts: current` **and** no control-plane deploy is still rolling out: a script listed as
    pending or settling still accepts it.
 
