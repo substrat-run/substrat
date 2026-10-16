@@ -75,3 +75,106 @@ describe('deployManifest.migrations', () => {
     expect(storedDeployManifest.parse(over).migrations).toHaveLength(2);
   });
 });
+
+describe('migrationsOnTop carries the declared moves and discards (#2322)', () => {
+  const declared = (version: string, extra: { moves?: Record<string, string>; discards?: Record<string, string> }, sql = `-- ${version}`) => ({
+    ...m(version, sql),
+    ...extra,
+  });
+
+  it('lists a declared migration with its moves and discards, and an undeclared one with neither key', () => {
+    const d = declared('0002', { moves: { legacy: 'orders' }, discards: { 'orders.note': 'free text nobody reads' } });
+    const diff = migrationsOnTop([m('0001'), d], []);
+    expect(diff.added[0]).toEqual(m('0001'));
+    expect(diff.added[1]).toEqual(d);
+    expect(diff.truncated).toBe(false);
+  });
+
+  it('lists a shipped migration whose declarations alone changed, as `edited: declarations`', () => {
+    const was = declared('0002', { discards: { 'orders.note': 'unused' } });
+    const now = declared('0002', { discards: { 'orders.note': 'unused since 2024' } });
+    const diff = migrationsOnTop([now], [was]);
+    expect(diff.changed).toEqual([{ ...now, edited: 'declarations' }]);
+    expect(diff.total).toBe(1);
+    // A declaration added to, or removed from, a shipped migration is an edit too.
+    expect(migrationsOnTop([now], [m('0002')]).changed[0]?.edited).toBe('declarations');
+    expect(migrationsOnTop([m('0002')], [now]).changed[0]).toEqual({ ...m('0002'), edited: 'declarations' });
+  });
+
+  it('marks a SQL edit `edited: sql`, and reads key order as no edit at all', () => {
+    expect(migrationsOnTop([m('0001', 'new')], [m('0001', 'old')]).changed[0]?.edited).toBe('sql');
+    const a = declared('0001', { discards: { a: 'x', b: 'y' } });
+    const b = declared('0001', { discards: { b: 'y', a: 'x' } });
+    expect(migrationsOnTop([a], [b]).total).toBe(0);
+  });
+
+  it('charges the declarations before the SQL, and flags them left out rather than dropping them silently', () => {
+    const big = 'x'.repeat(MIGRATION_READ_SQL_BYTES_MAX);
+    const reason = 'r'.repeat(100);
+    // The first entry's SQL fills the budget once its declaration is paid for.
+    const first = declared('0001', { discards: { t: reason } }, 'x'.repeat(MIGRATION_READ_SQL_BYTES_MAX - 101));
+    const second = declared('0002', { discards: { u: reason } }, 'small');
+    const diff = migrationsOnTop([first, second], []);
+    expect(diff.added[0]).toMatchObject({ discards: { t: reason } });
+    expect(diff.added[0]?.sql).not.toBeNull();
+    expect(diff.added[1]).toEqual({ moduleId: 'helpdesk', version: '0002', sql: null, declarationsLeftOut: true });
+    expect(diff.truncated).toBe(true);
+    // Declarations still fit when the SQL does not.
+    const third = migrationsOnTop([declared('0003', { moves: { a: 'b' } }, big + 'x')], []);
+    expect(third.added[0]).toEqual({ moduleId: 'helpdesk', version: '0003', sql: null, moves: { a: 'b' } });
+  });
+
+  it('shows what was stored, whatever digest the pusher sent: the diff never reads `digests`', () => {
+    // The diff's inputs are the stored migrations alone; a manifest whose client-computed
+    // digest left the declarations out still has them in its stored list, and so in the answer.
+    const stored = deployManifest.parse({
+      version: '1.0.0',
+      entry: 'index.js',
+      compatibilityDate: '2026-07-01',
+      registry: { permissions: [], roles: [], entityGrants: [] },
+      digests: { manifest: 'm', permission: 'p', migration: 'digest-of-a-declaration-free-set' },
+      migrations: [declared('0001', { discards: { orders: 'replaced by invoices' } })],
+    });
+    expect(migrationsOnTop(stored.migrations ?? [], [m('0001')]).changed[0]?.discards).toEqual({ orders: 'replaced by invoices' });
+  });
+});
+
+describe('deployManifest.migrations declarations (#2322)', () => {
+  const base = {
+    version: '1.0.0',
+    entry: 'index.js',
+    compatibilityDate: '2026-07-01',
+    registry: { permissions: [], roles: [], entityGrants: [] },
+    digests: { manifest: 'm', permission: 'p', migration: 'g' },
+  };
+  const ok = (extra: Record<string, unknown>) =>
+    deployManifest.safeParse({ ...base, migrations: [{ ...m('0001'), ...extra }] }).success;
+
+  it('accepts moves and discards spelled as SqlMigration spells them', () => {
+    expect(ok({ moves: { 'a.b': 'c.d' }, discards: { e: 'why' } })).toBe(true);
+  });
+
+  it('refuses a discard with no reason, or a blank one', () => {
+    expect(ok({ discards: { e: '' } })).toBe(false);
+    expect(ok({ discards: { e: '  \n' } })).toBe(false);
+  });
+
+  it('refuses an empty record: no declarations is an absent field', () => {
+    expect(ok({ moves: {} })).toBe(false);
+    expect(ok({ discards: {} })).toBe(false);
+  });
+
+  it('bounds the entries, the targets and the reason', () => {
+    const many = Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`t${i}`, 'why']));
+    expect(ok({ discards: many })).toBe(false);
+    expect(ok({ discards: { ['t'.repeat(201)]: 'why' } })).toBe(false);
+    expect(ok({ discards: { t: 'w'.repeat(2001) } })).toBe(false);
+    expect(ok({ moves: { a: '' } })).toBe(false);
+  });
+
+  it('counts declarations toward the byte cap', () => {
+    const sql = 'x'.repeat(DECLARED_MIGRATIONS_SQL_BYTES_MAX - 4);
+    expect(ok({ sql, discards: { t: 'why' } })).toBe(true);
+    expect(ok({ sql, discards: { t: 'why?' } })).toBe(false);
+  });
+});

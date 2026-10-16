@@ -1719,6 +1719,23 @@ export const DECLARED_MIGRATIONS_SQL_BYTES_MAX = 512 * 1024;
  */
 export const DEPLOY_MANIFEST_BYTES_SAFE = 1.5 * 1024 * 1024;
 
+/** How many `moves` or `discards` entries one migration carries at most (#2322). */
+export const MIGRATION_DECLARATIONS_MAX = 64;
+/** How long a declared `table` or `table.column` is at most. */
+export const MIGRATION_DECLARATION_TARGET_MAX = 200;
+/** How long a discard's reason is at most, in characters. */
+export const MIGRATION_DISCARD_REASON_MAX = 2000;
+
+/** A `moves` or `discards` record: bounded, keyed by `table` or `table.column`, and never empty. */
+function migrationDeclarations(value: z.ZodType<string>) {
+  return z
+    .record(z.string().min(1).max(MIGRATION_DECLARATION_TARGET_MAX), value)
+    .refine((r) => Object.keys(r).length > 0, { message: 'an empty declaration is left off' })
+    .refine((r) => Object.keys(r).length <= MIGRATION_DECLARATIONS_MAX, {
+      message: `at most ${MIGRATION_DECLARATIONS_MAX} entries`,
+    });
+}
+
 /**
  * One SQL migration a module ships (#1677): the `(module, version)` pair the kernel journals
  * it under, and its SQL verbatim. Carried so a promote can show WHICH migrations it would run
@@ -1729,6 +1746,21 @@ export const declaredMigration = z.object({
   /** The module's `SqlMigration.version`, e.g. `0001-init`. Unique per module. */
   version: z.string().min(1).max(200),
   sql: z.string(),
+  /**
+   * The migration's declared data losses (#2322), exactly as `SqlMigration.moves` and
+   * `SqlMigration.discards` spell them (#115): `moves` is `{ source: target }`, `discards` is
+   * `{ target: reason }`. Not part of the SQL, so not part of the scope journal's digest
+   * (#2066), but part of `digests.migration`, and shown by the promote review beside the SQL.
+   * ABSENT means the migration declares none (or was pushed before the field); never empty.
+   */
+  moves: migrationDeclarations(z.string().min(1).max(MIGRATION_DECLARATION_TARGET_MAX)).optional(),
+  discards: migrationDeclarations(
+    z
+      .string()
+      .max(MIGRATION_DISCARD_REASON_MAX)
+      // The fence refuses a discard with no reason at apply; the trust boundary refuses it too.
+      .refine((why) => why.trim() !== '', { message: 'a discard gives a reason' }),
+  ).optional(),
 });
 export type DeclaredMigration = z.infer<typeof declaredMigration>;
 
@@ -1739,9 +1771,21 @@ export function utf8Length(text: string): number {
   return utf8.encode(text).length;
 }
 
-/** The UTF-8 size of every migration's SQL, summed — what the byte cap is measured in. */
-export function sqlBytes(migrations: readonly { sql: string }[]): number {
-  return migrations.reduce((n, m) => n + utf8Length(m.sql), 0);
+/** The UTF-8 size of one migration's declarations: every target, source and reason. */
+export function declarationBytes(m: { moves?: Readonly<Record<string, string>>; discards?: Readonly<Record<string, string>> }): number {
+  let n = 0;
+  for (const record of [m.moves, m.discards]) {
+    for (const [k, v] of Object.entries(record ?? {})) n += utf8Length(k) + utf8Length(v);
+  }
+  return n;
+}
+
+/**
+ * The UTF-8 size of every migration's SQL and declarations, summed — what the byte cap is
+ * measured in. The declarations count because they are stored and read beside the SQL.
+ */
+export function sqlBytes(migrations: readonly { sql: string; moves?: Readonly<Record<string, string>>; discards?: Readonly<Record<string, string>> }[]): number {
+  return migrations.reduce((n, m) => n + utf8Length(m.sql) + declarationBytes(m), 0);
 }
 
 export const deployManifest = z.object({
