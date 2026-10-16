@@ -30,7 +30,7 @@ const scope = () => {
   /** Apply one migration the way an adapter does: guard, statement by statement, record, journal. */
   const migrate = (moduleId: string, version: string, text: string) => {
     assertMigrationLeavesLedgerAlone(text, `migration ${moduleId}@${version}`);
-    const steps = runMigrationStatements(sql, text, (st) => db.exec(st));
+    const steps = runMigrationStatements(sql, { version, sql: text }, (st) => db.exec(st), { key: `${moduleId}@${version}`, authored: true });
     recordOwnershipSteps(sql, moduleId, steps, 'now');
     db.prepare('INSERT INTO _substrat_migrations VALUES (?, ?, ?)').run(moduleId, version, 'now');
     texts.set(`${moduleId}@${version}`, text);
