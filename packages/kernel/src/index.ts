@@ -241,6 +241,7 @@ export {
   createAttachmentVerbs,
   inspectUploadLink,
   isActiveContentType,
+  isMediaTypeEssence,
   normalizeUploadMediaType,
   redeemUploadLinkInTransaction,
   uploadContentTypeAllowed,

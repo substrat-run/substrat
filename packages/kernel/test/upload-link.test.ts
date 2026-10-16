@@ -8,6 +8,7 @@ import { UPLOAD_LINK_SECRET_PREFIX, isUploadLinkSecretShape } from '@substrat-ru
 import {
   ACTIVE_CONTENT_TYPES,
   isActiveContentType,
+  isMediaTypeEssence,
   normalizeUploadMediaType,
   uploadContentTypeAllowed,
 } from '../src/index.js';
@@ -94,6 +95,53 @@ describe('uploadContentTypeAllowed', () => {
     // A type that merely mentions xml is not one.
     expect(isActiveContentType('application/vnd.openxmlformats-officedocument.wordprocessingml.document')).toBe(false);
     expect(isActiveContentType('application/xml-dtd')).toBe(false);
+  });
+});
+
+describe('a type that is not exactly one essence is admitted by nothing', () => {
+  /** A list, a control character, a missing or extra part: none is one `type/subtype`. */
+  const MALFORMED = [
+  'a/b,c/d',
+  'image/png,application/xhtml+xml,*/*',
+  'image/png, text/html',
+  'image/svg+xml,*/*',
+  'image/png\0',
+  'image/svg+xml\0',
+  'image/png\rx',
+  'image/png\nx',
+  'image/svg+xml\r\nx: y',
+  'image/',
+  '/png',
+  'image/png/extra',
+  'image png',
+  'image',
+  '',
+];
+
+  it('refuses each under every family, under an exact entry it resembles, and under an absent allowlist', () => {
+    for (const t of MALFORMED) {
+      const label = JSON.stringify(t);
+      expect(isMediaTypeEssence(normalizeUploadMediaType(t)), label).toBe(false);
+      expect(uploadContentTypeAllowed(['image/*', 'text/*', 'application/*', '*/*'], t), label).toBe(false);
+      expect(uploadContentTypeAllowed(['image/png', 'image/svg+xml', 'a/b'], t), label).toBe(false);
+      expect(uploadContentTypeAllowed(null, t), label).toBe(false);
+    }
+  });
+
+  it('its twin: a well-formed essence, RFC 9110 token characters included, is judged as before', () => {
+    for (const t of ['image/png', 'application/vnd.ms-excel', 'application/x-www-form-urlencoded', "a!#$%&'*+.^_`|~-/b0"]) {
+      expect(isMediaTypeEssence(t), t).toBe(true);
+      expect(uploadContentTypeAllowed(null, t), t).toBe(true);
+    }
+    expect(uploadContentTypeAllowed(['image/*'], 'image/png')).toBe(true);
+    // A trailing line break is whitespace, trimmed like any other — the essence left is clean.
+    expect(uploadContentTypeAllowed(['image/*'], 'image/png\r\n')).toBe(true);
+    expect(normalizeUploadMediaType('image/png\r\n')).toBe('image/png');
+  });
+
+  it('image/jpg is judged as image/jpeg, so an exact entry spelled image/jpg can never match', () => {
+    expect(uploadContentTypeAllowed(['image/jpeg'], 'image/jpg')).toBe(true);
+    expect(uploadContentTypeAllowed(['image/jpg'], 'image/jpg')).toBe(false);
   });
 });
 

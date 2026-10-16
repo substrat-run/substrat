@@ -328,6 +328,7 @@ export const INDEX_VALUE_EXPORTS = [
   'isDeliveryRefusal',
   'isExportBreakRefusal',
   'isLifecycleWrite',
+  'isMediaTypeEssence',
   'isModuleErasureCounts',
   'isPeerInstanceOf',
   'isPrimaryScope',

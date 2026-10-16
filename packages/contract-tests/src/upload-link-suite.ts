@@ -432,6 +432,27 @@ export function uploadLinkContractSuite(
         }
         expect(await filesOf(target)).toEqual([]);
         expect((await linkOf(minted.id)).state).toBe('pending');
+        // Not one essence — a list a browser would read as its LAST type, a control character, a
+        // missing or extra part — is refused, so nothing is stored that a page could serve as XHTML.
+        for (const contentType of [
+          'a/b,c/d',
+          'image/png,application/xhtml+xml,*/*',
+          'image/png, text/html',
+          'image/png\0',
+          'image/png\rx',
+          'image/png\nx',
+          'image/',
+          '/png',
+          'image/png/extra',
+        ]) {
+          const refused = await refusal(redeem(minted, target, { contentType, filename: 'a.png' }));
+          expect(reasonOf(refused), JSON.stringify(contentType)).toBe(UPLOAD_LINK_TYPE_REFUSED);
+        }
+        expect(await filesOf(target)).toEqual([]);
+        expect((await linkOf(minted.id)).state).toBe('pending');
+        // image/jpg is judged, and recorded, as image/jpeg.
+        const jpg = await mint(alice, { entity: target });
+        expect((await redeem(jpg, target, { contentType: 'image/jpg', filename: 'a.jpg' })).contentType).toBe('image/jpeg');
         // An ordinary image spelled loosely is admitted, and recorded as its essence.
         expect((await redeem(minted, target, { contentType: ' Image/PNG; q=1', filename: 'a.png' })).contentType).toBe(
           'image/png',

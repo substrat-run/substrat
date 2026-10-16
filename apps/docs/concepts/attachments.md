@@ -62,14 +62,17 @@ every XML type (`text/xml`, `application/xml` and any subtype ending in `+xml`, 
 type the WHATWG MIME Sniffing standard lists (`text/javascript`, `application/javascript`,
 `application/x-javascript`, `text/ecmascript` and the rest). A browser runs these instead of
 showing them, and the person holding the link chooses the bytes. The type is judged as its
-essence, without parameters, spaces or capitals, so `image/svg+xml; charset=utf-8` is still SVG.
-To take one, name it exactly:
+essence, without parameters, spaces or capitals, so `image/svg+xml; charset=utf-8` is still SVG,
+and `image/jpg` is judged and recorded as `image/jpeg` (so an allowlist entry spelled `image/jpg`
+never matches; write `image/jpeg`). A type that is not exactly one `type/subtype` (a list such as
+`image/png,text/html`, which a browser reads as its last type, or one with a control character) is
+refused by every allowlist, including an absent one. To take an active type, name it exactly:
 
 ```ts
 uploadLinks: { maxBytes: 2 * 1024 * 1024, contentTypes: ['image/*', 'image/svg+xml'] },
 ```
 
-::: warning Leaving `contentTypes` out admits every type, active ones included
+::: warning Leaving `contentTypes` out admits every well-formed type, active ones included
 An SVG or an HTML file uploaded through such a link is stored as what it says it is. If your own
 download route serves attachments, answer `Content-Disposition: attachment` and a sandboxing
 `Content-Security-Policy` (`sandbox`), as the platform's link-share download does, so a stored

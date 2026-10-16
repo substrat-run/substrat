@@ -320,6 +320,11 @@ describe('mountUploadLinkRedeem — an upload link, over HTTP', () => {
     const xhtml = '<a:script xmlns:a="http://www.w3.org/1999/xhtml"/>'; // under the link's 64 bytes
     expect((await put(`${minted.path}?filename=a.xml`, xhtml, { 'content-type': 'image/x+xml' })).status).toBe(415);
     expect((await put(`${minted.path}?filename=a.svg`, svg, { 'content-type': 'Image/SVG+XML; charset=utf-8' })).status).toBe(415);
+    // A header listing several types: a browser keeps the LAST it can parse, so it is not one type to judge.
+    // The body is not sniffable, so the claim alone decides — as for an XHTML page under it.
+    for (const listed of ['image/x-icon,application/xhtml+xml,*/*', 'text/plain, text/html']) {
+      expect((await put(`${minted.path}?filename=a.bin`, 'x', { 'content-type': listed })).status, listed).toBe(415);
+    }
     expect(await filesOf(entity)).toEqual([]);
     expect(await stateOf(minted.id)).toBe('pending');
     expect((await put(`${minted.path}?filename=a.png`, PNG, { 'content-type': 'image/png' })).status).toBe(201);

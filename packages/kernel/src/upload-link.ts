@@ -180,14 +180,26 @@ export const ACTIVE_CONTENT_TYPES: ReadonlySet<string> = new Set([
 export const isActiveContentType = (type: string): boolean => ACTIVE_CONTENT_TYPES.has(type) || type.endsWith('+xml');
 
 /**
- * Is `type` admitted by `allowed`? It is normalized first (`normalizeUploadMediaType`). `null`
- * admits anything. A family (`image/*`) admits its members except an active type
+ * One media type essence, exactly: `type/subtype`, each an RFC 9110 token (lowercase, since it is
+ * judged normalized). No comma, so a header listing several types is not one; no space, NUL, CR
+ * or LF; one slash with something on both sides. A browser reading `image/png,text/html` keeps
+ * the LAST type it can parse, so a list would let a family judge one type and a page serve another.
+ */
+const MEDIA_TYPE_ESSENCE = /^[a-z0-9!#$%&'*+.^_`|~-]+\/[a-z0-9!#$%&'*+.^_`|~-]+$/;
+export const isMediaTypeEssence = (type: string): boolean => MEDIA_TYPE_ESSENCE.test(type);
+
+/**
+ * Is `type` admitted by `allowed`? It is normalized first (`normalizeUploadMediaType`), and a
+ * result that is not exactly one essence (`isMediaTypeEssence`) is admitted by nothing, not even
+ * an absent allowlist: it could not be judged, and it could not be served as a header. `null`
+ * admits any well-formed type. A family (`image/*`) admits its members except an active type
  * (`isActiveContentType`): the person holding a link chooses the bytes. An exact entry admits
  * itself, active or not, so admitting SVG or HTML is a line a reviewer reads in `PERMISSIONS.md`.
  */
 export function uploadContentTypeAllowed(allowed: readonly string[] | null, type: string): boolean {
-  if (allowed === null) return true;
   const t = normalizeUploadMediaType(type);
+  if (!isMediaTypeEssence(t)) return false;
+  if (allowed === null) return true;
   return allowed.some((a) => (a.endsWith('/*') ? t.startsWith(a.slice(0, -1)) && !isActiveContentType(t) : a === t));
 }
 
