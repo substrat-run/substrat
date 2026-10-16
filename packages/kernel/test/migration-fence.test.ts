@@ -325,6 +325,14 @@ describe('the data-loss fence (#115)', () => {
     });
   });
 
+  it('a table renamed, then dropped, does not live on in a new table created under that name (#115 r2)', () => {
+    const setup = `CREATE TABLE a (id TEXT, x TEXT); INSERT INTO a VALUES ('1', 'p'), ('2', 'q');`;
+    const sql = `ALTER TABLE a RENAME TO y; DROP TABLE y;
+      CREATE TABLE y (id TEXT, x TEXT); INSERT INTO y VALUES ('n1', 'new'), ('n2', 'new'), ('n3', 'new');`;
+    expect(refusal(() => scope(setup).migrate({ sql }))).toContain('table a held 2 row(s) and is gone');
+    scope(setup).migrate({ sql, discards: { a: 'replaced by a fresh y' } });
+  });
+
   describe('a table rebuilt back into place after a column rename (#115 r2)', () => {
     const setup = `${NOTES} INSERT INTO notes VALUES ('a', 'hello', '1');`;
     const aside = 'ALTER TABLE notes RENAME COLUMN body TO text; ALTER TABLE notes RENAME TO notes_old;';

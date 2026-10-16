@@ -209,8 +209,8 @@ function followRenames(statements: readonly string[], before: Measure): Renames 
 /**
  * Which table after the migration each table before it became, one to one. A table renamed onto a
  * name that exists afterwards, and not dropped since, claims it first; every other table falls
- * back to its original name,
- * then to an earlier name it carried — never to a name another table already claimed. So
+ * back to its original name, then (unless it was dropped) to an earlier name it carried — never
+ * to a name another table already claimed. So
  * `DROP TABLE b; ALTER TABLE a RENAME TO b` leaves `b` to `a`, and the `b` that was dropped is
  * gone. Undefined: the table is gone.
  */
@@ -226,7 +226,10 @@ function endsOf(before: Measure, after: Measure, renames: Renames): Map<string, 
   }
   for (const [table, names] of renames.tables) {
     if (ends.has(table) || !before.has(table)) continue;
-    const end = [table, ...[...names].reverse()].find((n) => after.has(n) && !claimed.has(n));
+    // A dropped table may come back only under its original name — a rebuild back into place. A
+    // name it carried before the drop now belongs to whatever was created there afterwards.
+    const candidates = renames.dropped.has(table) ? [table] : [table, ...[...names].reverse()];
+    const end = candidates.find((n) => after.has(n) && !claimed.has(n));
     if (end !== undefined) claimed.add(end);
     ends.set(table, end === undefined ? undefined : { end, followed: names.length === 1 });
   }
