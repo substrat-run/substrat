@@ -11,13 +11,13 @@ The later ratification of [D-63](../decisions/D-063-a-store-kind-is-platform-cod
 in #2306 explicitly rejected that proposal. This branch follows D-63 and retains
 main's release upload, canary, rollout, rollback and schema checks unchanged.
 
-Graph is **not registered**. `STORE_KINDS` stays empty and a hosted push declaring
-`kind: 'graph'` is refused. This document preserves the proposed registration for
+Graph is **not registered**. `STORE_DRIVERS` stays empty and a hosted push declaring
+`driver: 'graph'` is refused. This document preserves the proposed registration for
 review; it does not authorize running a release.
 
 ## Proposed identity and catalog
 
-The proposed kind id is `graph`, implemented in Python by class `Store` from the
+The proposed driver id is `graph`, implemented in Python by class `Store` from the
 ontomate workspace. The class and catalog still need review against an actual
 source commit. Administration operations are excluded from the vertical catalog.
 The platform's `RESERVED_STORE_OPERATIONS`, including `substrat.erase`, are required
@@ -60,18 +60,18 @@ resolveHistoryRevision
   `releases` list; do not substitute placeholder pins or an empty list.
 - Review the exact class and operation catalog, the envelope, every reserved
   operation, and the absence of per-object state at module level. D-63's
-  ratified text defers registering an external kind until stronger isolation
+  ratified text defers registering an external driver until stronger isolation
   exists; confirm that requirement is satisfied before enabling this one.
-- Check that the release fits the current Python module rules: one `kind_`
+- Check that the release fits the current Python module rules: one `driver_`
   package, no vendored dependencies or reserved platform module names. The
   original proposal does not establish compatibility with these rules.
 - Exercise the real dispatch upload and reserved-operation canary, and verify
   schema compatibility for rollout and rollback. Local entry tests alone do
   not establish a production dispatch upload.
 
-Use the existing `substrat store-kind upload`, `rollout`, `rollback` and `status`
+Use the existing `substrat store-driver upload`, `rollout`, `rollback` and `status`
 flow, with a human staff sign-in for writes. Uploading bytes can precede the pin;
 running them requires the reviewed pin and a control-plane deployment containing
-it. The former `store-kind publish --entry <file.py>` proposal is not the current
-interface. See [the CLI implementation](../../packages/cli/src/store-kind.ts)
+it. The former `store-driver publish --entry <file.py>` proposal is not the current
+interface. See [the CLI implementation](../../packages/cli/src/store-driver.ts)
 and [scope stores](../../apps/docs/concepts/scope-stores.md).

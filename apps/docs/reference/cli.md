@@ -429,7 +429,7 @@ A full pull of a scope **with** scope stores writes no `.sqlite`: a SQLite file 
 scope's tables, so the pull is written as `.substrat/<tenant>__<scope>.dump.json`, and a
 `.sqlite` an earlier pull left for the same scope is removed. `substrat scope restore` restores
 that file, stores included. A local harness loads it with `adapter-sqlite`'s `importScope`, on a
-host whose `scopeStores` binds a runner of the same kind for each store the dump names; a store
+host whose `scopeStores` binds a runner of the same driver for each store the dump names; a store
 the host does not bind is refused before anything is written.
 
 The pull crosses the platform's trust boundary on purpose, so the server side is the gate:

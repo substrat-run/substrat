@@ -1,27 +1,27 @@
 /**
- * `substrat store-kind upload | rollout | rollback | status --kind <kind>` (D-63, #2300). Staff
+ * `substrat store-driver upload | rollout | rollback | status --driver <driver>` (D-63, #2300). Staff
  * only, and a write must be made from a person's sign-in (`substrat login`): the control plane
  * refuses the service token.
  *
- * - `upload` packs the kind's package from `--dir` and stores it. The control plane names the
+ * - `upload` packs the driver's package from `--dir` and stores it. The control plane names the
  *   release by its sha256 and says whether this repo pins it yet; bytes may go up first.
  * - `rollout --sha256` moves every vertical to a stored, pinned release, after a canary. A big
  *   fleet takes more than one request: the command says so, and running it again continues.
- * - `rollback` returns the kind to the immediately previous good release.
+ * - `rollback` returns the driver to the immediately previous good release.
  *
- * What is packed is the kind's own package only: every `kind_<name>/…/*.py` under `--dir`, by
+ * What is packed is the driver's own package only: every `driver_<name>/…/*.py` under `--dir`, by
  * its path relative to it. `__pycache__` is skipped. Anything else is refused by name, vendored
- * packages included: a release is one `kind_` package (the platform's module rule), so a kind
+ * packages included: a release is one `driver_` package (the platform's module rule), so a driver
  * that needs a third-party package cannot be published yet.
  */
 import { spawnSync } from 'node:child_process';
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { STORE_RELEASE_MAX_BYTES, type StoreKindReleaseUpload } from '@substrat-run/contracts';
-import type { StoreKindView } from '@substrat-run/control-plane-client';
+import { STORE_RELEASE_MAX_BYTES, type StoreDriverReleaseUpload } from '@substrat-run/contracts';
+import type { StoreDriverView } from '@substrat-run/control-plane-client';
 import { planeFor } from './plane.js';
 
-const KIND_MODULE = /^kind_[a-z0-9_]+\/(?:[A-Za-z_][A-Za-z0-9_]*\/)*[A-Za-z_][A-Za-z0-9_]*\.py$/;
+const DRIVER_MODULE = /^driver_[a-z0-9_]+\/(?:[A-Za-z_][A-Za-z0-9_]*\/)*[A-Za-z_][A-Za-z0-9_]*\.py$/;
 
 function base64(bytes: Uint8Array): string {
   let text = '';
@@ -29,7 +29,7 @@ function base64(bytes: Uint8Array): string {
   return btoa(text);
 }
 
-/** How deep, and how many files, a kind's package may go: past either it is not one package. */
+/** How deep, and how many files, a driver's package may go: past either it is not one package. */
 const MAX_DEPTH = 16;
 const MAX_FILES = 2000;
 
@@ -80,18 +80,18 @@ export function sourceCommitOf(dir: string, files: readonly string[]): string {
   return head.stdout.trim();
 }
 
-/** The kind's package under `dir`, as the upload body. `entry` is the module with the class. */
-export function packStoreKindDir(dir: string, entry: string, sourceCommit: string): StoreKindReleaseUpload {
+/** The driver's package under `dir`, as the upload body. `entry` is the module with the class. */
+export function packStoreDriverDir(dir: string, entry: string, sourceCommit: string): StoreDriverReleaseUpload {
   const files = packedFilesOf(dir);
-  const refused = files.filter((path) => !KIND_MODULE.test(path));
+  const refused = files.filter((path) => !DRIVER_MODULE.test(path));
   if (refused.length > 0) {
     throw new Error(
-      `only the kind's own package is published (kind_<name>/…/*.py); refused: ${refused.join(', ')}. ` +
-        'Vendored packages are not supported: a release is one kind_ package.',
+      `only the driver's own package is published (driver_<name>/…/*.py); refused: ${refused.join(', ')}. ` +
+        'Vendored packages are not supported: a release is one driver_ package.',
     );
   }
   const packages = new Set(files.map((path) => path.split('/')[0]));
-  if (packages.size !== 1) throw new Error(`'${dir}' must hold exactly one kind_ package, not ${[...packages].join(', ') || 'none'}`);
+  if (packages.size !== 1) throw new Error(`'${dir}' must hold exactly one driver_ package, not ${[...packages].join(', ') || 'none'}`);
   if (!files.includes(entry)) throw new Error(`'${dir}' has no ${entry}`);
   let total = 0;
   const modules = files.map((name) => {
@@ -108,28 +108,28 @@ export const isReleaseSha = (value: string | undefined): value is string => valu
 
 type Plane = { controlPlaneUrl: string; header: Record<string, string> };
 
-export const uploadStoreKindRelease = (input: Plane & { kind: string; body: StoreKindReleaseUpload }) =>
-  planeFor(input.controlPlaneUrl, input.header).uploadStoreKindRelease(input.kind, input.body);
+export const uploadStoreDriverRelease = (input: Plane & { driver: string; body: StoreDriverReleaseUpload }) =>
+  planeFor(input.controlPlaneUrl, input.header).uploadStoreDriverRelease(input.driver, input.body);
 
-export const rollOutStoreKind = (input: Plane & { kind: string; sha256: string }) =>
-  planeFor(input.controlPlaneUrl, input.header).rollOutStoreKind(input.kind, input.sha256);
+export const rollOutStoreDriver = (input: Plane & { driver: string; sha256: string }) =>
+  planeFor(input.controlPlaneUrl, input.header).rollOutStoreDriver(input.driver, input.sha256);
 
-export const rollBackStoreKind = (input: Plane & { kind: string }) =>
-  planeFor(input.controlPlaneUrl, input.header).rollBackStoreKind(input.kind);
+export const rollBackStoreDriver = (input: Plane & { driver: string }) =>
+  planeFor(input.controlPlaneUrl, input.header).rollBackStoreDriver(input.driver);
 
-export const storeKindStatus = (input: Plane & { kind: string }) =>
-  planeFor(input.controlPlaneUrl, input.header).getStoreKind(input.kind);
+export const storeDriverStatus = (input: Plane & { driver: string }) =>
+  planeFor(input.controlPlaneUrl, input.header).getStoreDriver(input.driver);
 
 /**
- * What `store-kind status` prints. "Rolls back to" is the server's `rollbackTarget`, never the
+ * What `store-driver status` prints. "Rolls back to" is the server's `rollbackTarget`, never the
  * current release's previous good one: after a diverged or paused rollout it is the current
  * release, and a rollback still under way continues to its own target.
  */
-export function storeKindStatusLines(kind: string, view: StoreKindView): string[] {
+export function storeDriverStatusLines(driver: string, view: StoreDriverView): string[] {
   return [
-    `${kind}: current ${view.current?.sha256 ?? 'none'}, rolls back to ${view.rollbackTarget ?? 'nothing'}`,
+    `${driver}: current ${view.current?.sha256 ?? 'none'}, rolls back to ${view.rollbackTarget ?? 'nothing'}`,
     ...(view.unfinishedRollback
-      ? [`  a rollback to ${view.unfinishedRollback} stopped part way: run \`substrat store-kind rollback\` again to finish it`]
+      ? [`  a rollback to ${view.unfinishedRollback} stopped part way: run \`substrat store-driver rollback\` again to finish it`]
       : []),
     ...view.rollouts.slice(-10).map((r) => `  #${r.seq} ${r.action} ${r.sha256} ${r.state}${r.detail ? ` — ${r.detail}` : ''}`),
   ];

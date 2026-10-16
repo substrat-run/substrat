@@ -11,7 +11,7 @@ import {
   tenantId,
   type ScopeBackup,
   type ScopeDump,
-  type StoreKindRegistration,
+  type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
@@ -27,7 +27,7 @@ import {
  * The platform's copies of a scope (backup, full pull, snapshot, and the reap that wipes
  * first) reach its stores through the platform (#2207), never through the vertical: a
  * deployment built before stores, or one that serves no store route, changes nothing
- * (#2243). What decides is the version the scope runs. With no store kind registered no
+ * (#2243). What decides is the version the scope runs. With no store driver registered no
  * store is asked, and the copies run as they did before stores. With one registered, a
  * version that declares none is not asked either, and a version that cannot be named
  * refuses the copy rather than dropping a store it may hold.
@@ -38,8 +38,8 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
   const staff = platformActorId.parse(ulid());
   const t = tenantId.parse(ulid());
   const auth = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
-  const graph: StoreKindRegistration = {
-    kind: 'graph',
+  const graph: StoreDriverRegistration = {
+    driver: 'graph',
     releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
     operations: [],
@@ -128,14 +128,14 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
     return { caller, asked };
   };
 
-  const appWith = (platformScopeStores: PlatformScopeStores, storeKinds?: readonly StoreKindRegistration[]) =>
+  const appWith = (platformScopeStores: PlatformScopeStores, storeDrivers?: readonly StoreDriverRegistration[]) =>
     createControlPlaneApi({
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       scopeBackups: backups,
       verticals: { docs: deployment },
       platformScopeStores,
-      ...(storeKinds ? { storeKinds } : {}),
+      ...(storeDrivers ? { storeDrivers } : {}),
     });
 
   /** Each copy the platform takes, through `api`. Every one must succeed with no store. */
@@ -155,13 +155,13 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
     expect(((await reap.json()) as { status: string }).status).toBe('reaped');
   };
 
-  it('with no store kind registered, no store is asked: the copies run as before stores', async () => {
+  it('with no store driver registered, no store is asked: the copies run as before stores', async () => {
     const { caller, asked } = platform();
     await everyCopy(appWith(caller));
     expect(asked).toEqual([]);
   });
 
-  it('with a kind registered, a version that declares no store is not asked: every copy proceeds', async () => {
+  it('with a driver registered, a version that declares no store is not asked: every copy proceeds', async () => {
     const { caller, asked } = platform();
     await everyCopy(appWith(caller, [graph]), {});
     expect(asked).toEqual([]);
@@ -181,7 +181,7 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
   it('a version that declares a store, with no route to the store script, refuses the copy (503)', async () => {
     const { caller, asked } = platform();
     const api = appWith(caller, [graph]);
-    const s = await docsScope({ scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] });
+    const s = await docsScope({ scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] });
     const backup = await api.request(`/tenants/${t}/scopes/${s}/backups`, { method: 'POST', headers: auth });
     expect(backup.status).toBe(503);
     expect(asked).toEqual(['export']);

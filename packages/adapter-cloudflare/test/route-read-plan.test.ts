@@ -48,7 +48,7 @@ describe('#2207: the route read takes a scope\'s stores from the version its scr
       await (instance as unknown as { readRoute(h: string): unknown }).readRoute('warm.example.com');
       const sql = state.storage.sql;
       const at = '2026-10-13T00:00:00.000Z';
-      const manifest = (binding: string) => JSON.stringify({ scopeStores: [{ binding, kind: 'graph' }] });
+      const manifest = (binding: string) => JSON.stringify({ scopeStores: [{ binding, driver: 'graph' }] });
       const tenant = ulid();
       sql.exec(`INSERT INTO tenants (tenant_id, slug, name, created_at) VALUES (?, ?, 'T', ?)`, tenant, `t-${tenant.toLowerCase()}`, at);
       sql.exec(`INSERT INTO verticals (slug, name, source, created_at) VALUES ('graphy', 'graphy', 'cli', ?)`, at);
@@ -79,8 +79,8 @@ describe('#2207: the route read takes a scope\'s stores from the version its scr
       };
       return { pinned: read('graphy-stable'), unpinned: read(null), elsewhere: read('graphy-older') };
     });
-    expect(rows.pinned).toBe(JSON.stringify([{ binding: 'SERVED', kind: 'graph' }]));
-    expect(rows.unpinned).toBe(JSON.stringify([{ binding: 'BOUND', kind: 'graph' }]));
+    expect(rows.pinned).toBe(JSON.stringify([{ binding: 'SERVED', driver: 'graph' }]));
+    expect(rows.unpinned).toBe(JSON.stringify([{ binding: 'BOUND', driver: 'graph' }]));
     expect(rows.elsewhere).toBeNull();
   });
 });

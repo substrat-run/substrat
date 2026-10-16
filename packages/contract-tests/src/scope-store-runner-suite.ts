@@ -9,15 +9,15 @@ import {
 } from '@substrat-run/kernel';
 
 /**
- * What a kind hands the runner suite. The suite knows nothing about the kind beyond
+ * What a driver hands the runner suite. The suite knows nothing about the driver beyond
  * two calls of its own catalog.
  */
 export interface ScopeStoreRunnerFixture {
   /** A runner nobody has started. Called once per check. */
   makeRunner(): ScopeStoreRunner | Promise<ScopeStoreRunner>;
-  /** A kind operation that changes the object. Each call must change what `read` answers. */
+  /** A driver operation that changes the object. Each call must change what `read` answers. */
   readonly write: StoreRequest;
-  /** A kind operation that reads the object back. Equal answers mean equal objects. */
+  /** A driver operation that reads the object back. Equal answers mean equal objects. */
   readonly read: StoreRequest;
 }
 
@@ -32,7 +32,7 @@ function freshAddress(): ScopeStoreAddress {
   return { tenantId: ulid(), vertical: 'conformance', scopeId: ulid(), binding: 'STORE' };
 }
 
-/** An operation name no kind declares, and still a valid label. */
+/** An operation name no driver declares, and still a valid label. */
 const UNKNOWN_OPERATION = 'conformance-unknown-operation';
 
 /**
@@ -44,7 +44,7 @@ const UNKNOWN_OPERATION = 'conformance-unknown-operation';
  * schema a host would hold it to.
  *
  * A restart is `stop()` then `start()` on the same runner instance: what a host does
- * between a `close` and the next first store call. A kind's repositories must survive
+ * between a `close` and the next first store call. A driver's repositories must survive
  * it. Blob cells in an export are not asserted (their spelling over JSON is not settled).
  */
 export function scopeStoreRunnerChecks(fixture: ScopeStoreRunnerFixture): ScopeStoreRunnerCheck[] {
@@ -78,7 +78,7 @@ export function scopeStoreRunnerChecks(fixture: ScopeStoreRunnerFixture): ScopeS
       },
     },
     {
-      name: 'a kind call answers the envelope, and an unknown operation answers its error',
+      name: 'a driver call answers the envelope, and an unknown operation answers its error',
       async run() {
         await withRunner(async (runner) => {
           const address = freshAddress();
@@ -201,8 +201,8 @@ export function scopeStoreRunnerChecks(fixture: ScopeStoreRunnerFixture): ScopeS
 }
 
 /**
- * The runner contract a scope-store kind's runner passes (#2213). A kind runs it in its
- * own repository, against its own runner: the platform runs only the trivial kind.
+ * The runner contract a scope-store driver's runner passes (#2213). A driver runs it in its
+ * own repository, against its own runner: the platform runs only the trivial driver.
  *
  * ```ts
  * scopeStoreRunnerContractSuite('graph', {
@@ -212,8 +212,8 @@ export function scopeStoreRunnerChecks(fixture: ScopeStoreRunnerFixture): ScopeS
  * });
  * ```
  */
-export function scopeStoreRunnerContractSuite(kind: string, fixture: ScopeStoreRunnerFixture): void {
-  describe(`scope-store runner (#2213): ${kind}`, () => {
+export function scopeStoreRunnerContractSuite(driver: string, fixture: ScopeStoreRunnerFixture): void {
+  describe(`scope-store runner (#2213): ${driver}`, () => {
     for (const check of scopeStoreRunnerChecks(fixture)) {
       it(check.name, () => check.run());
     }

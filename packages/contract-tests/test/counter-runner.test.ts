@@ -1,5 +1,5 @@
 /**
- * #2213: the trivial kind is the runner a kind's author reads first, so its answers are
+ * #2213: the trivial driver is the runner a driver's author reads first, so its answers are
  * pinned here as well as by the suite: a size is always a valid `{ bytes }`, an erase
  * counts only what a subject actually had, and nothing about a subject outlives a wipe
  * or an import.

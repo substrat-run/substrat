@@ -27,7 +27,7 @@ describe('scope store door (pure adapter, #2209)', () => {
   it('refuses a size read of one tenant’s scope asked under another tenant', async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
     const runner: ScopeStoreRunner = {
-      kind: 'counter',
+      driver: 'counter',
       async start() {},
       async stop() {},
       async invoke() {
@@ -87,7 +87,7 @@ describe('scope store door (pure adapter, #2209)', () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
     const log: string[] = [];
     const runner: ScopeStoreRunner = {
-      kind: 'counter',
+      driver: 'counter',
       async start() {},
       async stop() {},
       async invoke(_address, request) {
@@ -114,7 +114,7 @@ describe('scope store door (pure adapter, #2209)', () => {
     await reader.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'other' });
     await reader.admin.activateScope(staff, t, s);
     const dump = await reader.admin.exportScope(staff, t, s);
-    expect(dump.stores).toEqual([{ binding: 'GRAPH', kind: 'counter', tables: [] }]);
+    expect(dump.stores).toEqual([{ binding: 'GRAPH', driver: 'counter', tables: [] }]);
     await reader.close();
     log.length = 0;
 
@@ -148,7 +148,7 @@ describe('scope store door (pure adapter, #2209)', () => {
   it('refuses a scope whose vertical this host does not serve', async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
     const runner: ScopeStoreRunner = {
-      kind: 'counter',
+      driver: 'counter',
       async start() {},
       async stop() {},
       async invoke() {
@@ -192,7 +192,7 @@ describe('scope store door (pure adapter, #2209)', () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
     const runner = (name: string, held?: Promise<void>): ScopeStoreRunner => ({
-      kind: 'counter',
+      driver: 'counter',
       async start() {
         log.push(`start ${name}`);
         await held;
@@ -231,7 +231,7 @@ describe('scope store door (pure adapter, #2209)', () => {
     const log: string[] = [];
     let failStart = 1;
     const runner = (name: string, opts: { failStart?: boolean; failStop?: boolean } = {}): ScopeStoreRunner => ({
-      kind: 'counter',
+      driver: 'counter',
       async start() {
         log.push(`start ${name}`);
         if (opts.failStart && failStart-- > 0) throw new Error(`${name} start broke`);
@@ -286,7 +286,7 @@ describe('scope store door (pure adapter, #2209)', () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
     let fail = true;
     const runner: ScopeStoreRunner = {
-      kind: 'counter',
+      driver: 'counter',
       async start() {},
       async stop() {},
       async invoke(_address, request) {
@@ -337,7 +337,7 @@ describe('scope store door (pure adapter, #2209)', () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
     const asked: string[] = [];
     const runner: ScopeStoreRunner = {
-      kind: 'counter',
+      driver: 'counter',
       async start() {},
       async stop() {},
       async invoke(address, request) {
@@ -379,7 +379,7 @@ describe('scope store door (pure adapter, #2209)', () => {
     let failSecond = true;
     const held = new Map<string, Set<string>>();
     const runner = (binding: string): ScopeStoreRunner => ({
-      kind: 'counter',
+      driver: 'counter',
       async start() {},
       async stop() {},
       async invoke(_address, request) {
@@ -424,7 +424,7 @@ describe('scope store door (pure adapter, #2209)', () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-scope-store-'));
     let asked = false;
     const runner: ScopeStoreRunner = {
-      kind: 'counter',
+      driver: 'counter',
       async start() {},
       async stop() {},
       async invoke() {
@@ -457,7 +457,7 @@ describe('scope store door (pure adapter, #2209)', () => {
     const held = new Set<string>();
     let fail = false;
     const runner: ScopeStoreRunner = {
-      kind: 'counter',
+      driver: 'counter',
       async start() {},
       async stop() {},
       async invoke(_address, request) {

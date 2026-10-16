@@ -412,19 +412,19 @@ caller, no record — is a v0 stopgap the code comment already admits.
 
 **The staff roster holds people only.** A staff sign-in (the session cookie or the CLI's bearer
 session, both gated by the D1 roster) is how the control plane tells a person from the
-automation token, which also acts as staff. D-63 relies on that: a store kind release is stored,
+automation token, which also acts as staff. D-63 relies on that: a store driver release is stored,
 rolled out and rolled back only by an actor whose credential is a rostered sign-in (#2300). So
 no roster entry may be an automation identity, a shared mailbox, or anything else that can
 finish the login without a person. Such an entry would publish releases as if it were one.
 
-**A store kind release reaches at most 300 verticals** (#2300). A rollout or rollback walks every
-vertical any version ever declared the kind in, uploading at most 100 scripts per request; posting
-it again continues. A kind declared by more than 300 verticals cannot be rolled out **or rolled
-back** (409) until the rollout row carries a cursor (#2312). Watch that count before a kind grows
+**A store driver release reaches at most 300 verticals** (#2300). A rollout or rollback walks every
+vertical any version ever declared the driver in, uploading at most 100 scripts per request; posting
+it again continues. A driver declared by more than 300 verticals cannot be rolled out **or rolled
+back** (409) until the rollout row carries a cursor (#2312). Watch that count before a driver grows
 towards it: past it, the emergency path is closed too.
 
-**Which rollback, and what blocks a rollout** (#2300). `GET /store-kinds/:kind` answers `rollbackTarget`,
-and `POST /store-kinds/:kind/rollback` always goes there:
+**Which rollback, and what blocks a rollout** (#2300). `GET /store-drivers/:driver` answers `rollbackTarget`,
+and `POST /store-drivers/:driver/rollback` always goes there:
 
 - A request that runs out of its 100 uploads ends `paused`. It is not a fault: post the same rollout,
   or the same rollback, again.
@@ -439,6 +439,19 @@ and `POST /store-kinds/:kind/rollback` always goes there:
 - If the target of an unfinished rollback is no longer pinned, the rollback answers 422 and every
   rollout 409 until a control plane that pins it again is deployed. Pins take effect at
   control-plane deploy (D-63), and a pin is never meant to be removed.
+
+**A rollback across the store driver rename** (K-53, #2324). The release tables were named
+`store_kind_*`, keyed by `kind`, before the rename, and each start of the control plane moves a
+directory that still has them onto `store_driver_*`, rows kept. Code from before the rename, run
+again (a rollback), recreates its `store_kind_*` tables beside the moved ones. On the next start
+of later code, an empty one is dropped, and one holding rows over an empty `store_driver_*` table
+takes its place. A table holding rows under **both** names cannot be resolved by the start: it
+logs `the directory holds rows under both …`, keeps both, and every directory dump of it is
+refused at restore until one is cleared. The remedy is to restore a directory dump taken before
+the pre-rename code ran again (a restore replaces every table), or to export the `store_kind_*`
+rows, carry over any still wanted, and drop the `store_kind_*` tables by hand. Today this cannot
+arise: no driver has been registered, so no pre-rename build could write a release, rollout or
+hold.
 
 One invariant this log carries alone, worth naming: grant tuples persist no `grantedBy` —
 the tuple table stores `(subject, relation, object, expires_at, revoked_at)` and nothing

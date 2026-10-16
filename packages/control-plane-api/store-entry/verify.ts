@@ -1,5 +1,5 @@
 /**
- * The check every store entry makes on a call before any kind code runs (#2289, #2290). The
+ * The check every store entry makes on a call before any driver code runs (#2289, #2290). The
  * TypeScript entry imports it, and the Python entry imports the same function bundled as
  * `STORE_VERIFIER_MODULE`, so the two entries share one verifier and no parser of their own.
  *
@@ -23,7 +23,7 @@ export type StoreCallVerdict =
 
 /**
  * The verdict on one call. `body` is the request body, read once by the entry, and the same
- * string the kind is handed. A store this upload did not configure refuses everything with
+ * string the driver is handed. A store this upload did not configure refuses everything with
  * 503, so it never reads as the caller's fault.
  */
 export async function storeCallVerdict(

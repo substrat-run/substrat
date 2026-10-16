@@ -160,7 +160,7 @@ interface OutboundPolicy {
    * Scope stores the dispatched version declares (#2207). The egress worker
    * judges a store call against this list. `null` is a version that predates it.
    */
-  stores: { binding: string; kind: string }[] | null;
+  stores: { binding: string; driver: string }[] | null;
   depth: number;
   /**
    * #2005: whether that scope is the real install. False for a fork, a snapshot or a
