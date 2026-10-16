@@ -3,7 +3,7 @@ id: K-54
 date: 2026-10-16
 layer: kernel
 title: "A mutation can mint a single-use upload link that takes a file with no session"
-status: proposed
+status: accepted
 aliases: []
 amends: []
 tracking: ["#2311", "#2323", "#2314", "#2315"]
@@ -11,7 +11,7 @@ tracking: ["#2311", "#2323", "#2314", "#2315"]
 
 # K-54 — A mutation can mint a single-use upload link that takes a file with no session
 
-> Proposed, not ratified. It records the write path that [#2311](https://github.com/substrat-run/substrat/pull/2311) shipped and that no earlier record covers. Deciding it is the maintainer's.
+> Accepted 2026-10-16, ratified by the maintainer. It records the write path that [#2311](https://github.com/substrat-run/substrat/pull/2311) shipped and that no earlier record covers, and it decides that the secret stays in the URL path.
 
 **An attachment target opts in, and its declaration is the policy.** A module's `attachmentTargets[]` entry may declare `uploadLinks: { maxBytes, contentTypes? }`. Without it, `ctx.attachments.mintUploadUrl` refuses that target. `maxBytes` is required and held under the platform ceiling of 25 MiB. `contentTypes` is an allowlist of exact media types and families (`image/*`), and when it is absent the link admits any well-formed type. A family never admits an active type, one a browser runs rather than shows: HTML, `text/xsl`, `multipart/x-mixed-replace`, the types a browser sniffs for HTML (`application/unknown`, `unknown/unknown`), every XML type (`text/xml`, `application/xml` and any `+xml` subtype, SVG and XHTML among them) and every WHATWG JavaScript MIME type. The type is judged as its essence, without parameters, whitespace or case, and anything that is not exactly one `type/subtype` (a comma-separated list, a control character, a wildcard) is refused by every allowlist. Only an exact entry admits an active type. A mint may narrow the size, never widen it, and it cannot change the types. The declaration is rendered into the vertical's `PERMISSIONS.md` under *Upload links*: the entity type, the key the minter must hold, the ceiling, the types and the declaring module. So a widening is a reviewed diff, under the permission checkpoint, like a widened role.
 
