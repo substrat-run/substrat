@@ -21,7 +21,8 @@ export type Visibility = z.infer<typeof visibility>;
  * `sha256` is the integrity witness across that split: bytes are hashed at upload and
  * written once under a fresh ULID key, so a row can never point at bytes other than the
  * ones it was born with — after a PITR rewind the worst case is an orphaned object
- * (harmless, GC-able), never a row silently re-pointed at different content.
+ * (harmless, and collected by the orphan sweep, #2314), never a row silently re-pointed at
+ * different content.
  */
 export const attachmentRecord = z.object({
   /** ULID — also the tail of the platform-derived blob key. */

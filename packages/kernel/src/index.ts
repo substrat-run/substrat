@@ -348,6 +348,20 @@ export type {
   SearchableDeclaration,
 } from './search-index.js';
 export {
+  ATTACHMENT_CONDEMNED,
+  ATTACHMENT_CONDEMNED_DDL,
+  ORPHAN_SWEEP_FENCE_MS,
+  ORPHAN_SWEEP_GRACE_MS,
+  attachmentSweepFenceKey,
+  condemnOrphanAttachments,
+  fenceAttachmentSweep,
+  refuseCondemnedAttachment,
+  refuseCondemnedInDump,
+  rowlessAttachmentIds,
+  sweepOrphanAttachments,
+} from './attachment-sweep.js';
+export type { OrphanSweepOptions, OrphanSweepReport, OrphanSweepScope } from './attachment-sweep.js';
+export {
   ATTACHMENT_SEARCH_OWNER_MAX,
   ATTACHMENT_SEARCH_OWNERS_SQL,
   ATTACHMENT_SEARCH_SQL,

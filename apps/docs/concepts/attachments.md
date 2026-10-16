@@ -30,6 +30,51 @@ That leaves one gap. An [MCP](./mcp.md) client calling an operation has no cooki
 bearer for the vertical's own route, and a file of any real size cannot go through a tool call
 as base64. Upload links close it.
 
+## Bytes that no row points at
+
+The bytes go to the store before the row is written, so a few paths leave an object that no row
+names: a crash between the two, a call to the scope that fails in transport (the platform cannot
+tell whether the row committed, so it keeps the bytes rather than risk a row without its file),
+and a point-in-time rewind past a row. Nothing reads such an object, but it costs storage and the
+storage meter counts it. The platform's **orphan sweep** deletes it, under four guards. Each one
+alone stops a row that committed from losing its bytes:
+
+- **A tombstone first.** The scope never deletes. It records each candidate that no row names as
+  condemned, in one transaction, and an attachment insert refuses a condemned id in its own
+  transaction. The scope serializes the two, so either the row commits first and the sweep sees
+  it, or the tombstone commits first and the upload fails with `conflict`
+  (`attachment_condemned`). Only a condemned object is deleted. No clock is involved, so a slow
+  upload, a retried call or a skewed clock cannot turn a committed row into a deleted object. A
+  restore whose dump would bring back a row for a condemned id is refused the same way.
+- **An age floor.** Only an object whose id was minted more than seven days ago is judged. The id
+  is a ULID minted just before the bytes are written, so an upload still in flight is never
+  condemned in the first place.
+- **A restore fence.** A Durable Object keeps 30 days of point-in-time history, so a row that a
+  rewind or a restore took away can be brought back for that long. Every rewind and every restore
+  of a scope first writes a fence object into the tenant's blob store, and the sweep deletes
+  nothing of that scope until the fence is 35 days old. The fence lives in the blob store, not in
+  the scope, because the rewind it records would erase it there. The sweep reads the fence before a
+  pass and again after the condemnation, just before the first delete, so a rewind that lands
+  mid-pass stops the deletes. A fence it cannot read counts as a fence.
+- **The scope itself judges.** Only the copy that holds the scope's rows may say which objects are
+  orphans. A copy that a carry wiped or kept, a fork, a snapshot, and a scope with no record that
+  it was provisioned for the tenant all refuse. Any of those would read every object as an orphan.
+
+A pass lists only the scope's own attachment keys (`scope/<scopeId>/att/<ulid>`). Other scopes'
+keys, other features' keys and anything malformed in the same bucket are never judged. A dry run
+condemns and deletes nothing and reports the keys a pass would delete.
+
+**A restore refuses when its fence cannot be written.** This is a deliberate trade of
+availability for safety: a rewind or a restore whose fence did not land could hand the sweep a
+state that lacks rows a later restore brings back. The refusal says so, and nothing has been
+replaced, so retry once the attachment store answers. A rewind also needs to know whose bucket to
+fence. The control plane names the tenant, and otherwise the scope's own provision receipt does.
+A scope that has neither is refused until it is reconciled.
+
+**What the sweep cannot protect.** A restore from a dump older than 35 days can bring back rows
+whose bytes were swept. A removed attachment has the same exposure today, since removing it
+deletes its bytes. Restore from a dump that recent, or accept that old files may be missing.
+
 ## Upload links
 
 An operation mints a **single-use, short-lived URL that admits one file to one entity**. The caller

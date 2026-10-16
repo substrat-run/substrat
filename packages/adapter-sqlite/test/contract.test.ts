@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { ATTACHMENT_TEXT_JOB, ATTACHMENT_TEXT_MODULE, UNSAFE_allowAllChecker, manualClock, ulid, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine } from '@substrat-run/kernel';
+import { ATTACHMENT_TEXT_JOB, ATTACHMENT_TEXT_MODULE, UNSAFE_allowAllChecker, manualClock, ulid, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type TenantBlobStore } from '@substrat-run/kernel';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import {
   atomicContractSuite,
@@ -19,6 +19,7 @@ import {
   findingsAtomicContractSuite,
   capabilityAttachmentContractSuite,
   uploadLinkContractSuite,
+  orphanSweepContractSuite,
   attachmentRefusalContractSuite,
   attachmentTextContractSuite,
   capabilityContractSuite,
@@ -453,6 +454,44 @@ capabilityAttachmentContractSuite('adapter-sqlite', attachmentHostFixture);
 
 // Upload links: a single-use URL minted in an operation, redeemed through the attachment write.
 uploadLinkContractSuite('adapter-sqlite', attachmentHostFixture);
+
+// #2314: the orphan-byte sweep over the per-tenant directory, with each put observable so a test
+// can hold an upload between its bytes and its row.
+orphanSweepContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-orphan-sweep-'));
+  let hook: ((key: string) => Promise<void>) | null = null;
+  const raw = new Map<string, TenantBlobStore>();
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    wrapBlobStore: (store, ref) => {
+      raw.set(ref, store);
+      return {
+        ...store,
+        put: async (key, body, opts) => {
+          await store.put(key, body, opts);
+          if (hook) await hook(key);
+        },
+      };
+    },
+  });
+  return {
+    host,
+    // One tenant holds a store in this suite, so the one store opened is the tenant's.
+    blobs: async () => {
+      const [store] = [...raw.values()];
+      if (!store) throw new Error('no attachment store opened yet: open the attachment surface first');
+      return store;
+    },
+    afterPut: (next) => {
+      hook = next;
+    },
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
 
 // #113: an attachment refusal reaches the caller typed — the pure adapter's half of the parity.
 attachmentRefusalContractSuite('adapter-sqlite', attachmentHostFixture);
