@@ -14,29 +14,40 @@
  * foreign-key cascade that reaches another table is seen too. Measured, per table: the rows, and
  * per column the values in each storage class (`typeof`). Once before the first statement and
  * once after the last, inside the migration's transaction, so the intermediate states of a rebuild
- * do not matter and a refusal rolls the whole migration back.
+ * do not matter and a refusal rolls the whole migration back. Every measuring query stays inside a
+ * Durable Object's own limits (`DO_SQL_LIMITS`), or the fence would close a scope for a reason of
+ * its own.
  *
  * **Production data is rows that exist.** A table with no rows may be dropped or rebuilt freely,
  * whatever else is true of the scope; the same migration is refused in a scope where it would
  * lose something. There is no phase flag to forget to flip.
  *
- * **What counts as a loss**, for a table that held rows: it is gone (under its own name, every
- * name `ALTER TABLE … RENAME TO` gave it, and its original name, so a rebuild back into place
- * keeps it); it has fewer rows; one of its columns that held values is gone (`RENAME COLUMN` is
- * followed) or holds fewer of them in some storage class — which is how a narrowing retype shows,
- * `'1.50'` turning into `1`. `NOT NULL` without a default needs no rule: SQLite refuses it itself.
- * What this does not see: values rewritten in place at the same count and class.
+ * **What counts as a loss**, for a table that held rows: it is gone (under the name `ALTER TABLE …
+ * RENAME TO` last gave it, or under its original name, so a rebuild back into place keeps it —
+ * each table after the migration is claimed by one table before it, a rename first); it has fewer
+ * rows; one of its columns that held values is gone (`RENAME COLUMN` is followed) or holds fewer
+ * of them in some storage class — which is how a retype shows, `'1.50'` turning into `1`. Counts
+ * cannot tell a faithful widening (`5` → `5.0`) from a rewrite (`5` → `0.05`), so any change of
+ * storage class is reported, and one made on purpose is declared with `discards`. `NOT NULL`
+ * without a default needs no rule: SQLite refuses it itself.
+ *
+ * **What it does not see**, because it counts: values rewritten in place at the same count and
+ * class; rows replaced by as many other rows; and which source a move's target gained from — a
+ * target is credited with everything it gained.
  *
  * **Declared losses pass.** `SqlMigration.moves` names data that went elsewhere, and is verified:
- * the target must GAIN at least what its sources held, per class. `SqlMigration.discards` names
- * data deliberately given up, with the reason a reviewer reads. A declaration naming a table or
- * column the scope does not hold before the migration (a move's target excepted, which the
- * migration may create) is an authoring error and refuses the migration too.
+ * the target must GAIN at least what its sources held, per class — and for a table moved whole,
+ * every source column that held values must arrive in a target column of the same name, unless
+ * that column is moved or discarded by name itself. `SqlMigration.discards` names data
+ * deliberately given up, with the reason a reviewer reads. A declaration naming a table or column
+ * the scope does not hold before the migration (a move's target excepted, which the migration may
+ * create) is an authoring error and refuses the migration too.
  *
  * Kernel-derived DDL is exempt: its tables are indexes, rebuilt from the data this protects.
  */
 import { namesSpineTable, substratError, tokenizeSql } from '@substrat-run/contracts';
 import type { ScopedSql, SqlMigration } from './scope-host.js';
+import { DO_SQL_LIMITS } from './sql-limits.js';
 import { executableSqlStatements } from './sql-statements.js';
 
 /** The storage classes a value can have; NULL is not a value. */
@@ -50,8 +61,11 @@ interface TableCount {
 }
 type Measure = ReadonlyMap<string, TableCount>;
 
-/** Columns measured per query, so a wide table stays far under SQLite's result-column limit. */
-const COLUMNS_PER_SCAN = 64;
+/**
+ * Columns measured per query: each one is a result column per storage class, and a Durable
+ * Object refuses a result set wider than `DO_SQL_LIMITS.columns`.
+ */
+const COLUMNS_PER_SCAN = Math.floor(DO_SQL_LIMITS.columns / CLASSES.length);
 
 const lower = (s: string): string => s.toLowerCase();
 const quote = (name: string): string => `"${name.replace(/"/g, '""')}"`;
@@ -73,24 +87,44 @@ function additive(statement: string): boolean {
 }
 
 /**
- * The tables this fence measures: the scope's own, without the spine, SQLite's and workerd's
- * internals, and virtual tables with their shadows — an FTS index holds no data of its own.
+ * The tables a virtual-table module keeps behind each virtual table, by suffix. Only these exact
+ * names are left out: a real table that merely starts with a virtual table's name is measured. A
+ * module not listed here has its shadow tables measured too, which can refuse a migration that
+ * only reshaped an index — the conservative answer.
  */
-function measuredTables(sql: ScopedSql): string[] {
+const SHADOW_SUFFIXES: Readonly<Record<string, readonly string[]>> = {
+  fts5: ['data', 'idx', 'content', 'docsize', 'config'],
+  fts4: ['content', 'segments', 'segdir', 'docsize', 'stat'],
+  fts3: ['content', 'segments', 'segdir', 'docsize', 'stat'],
+  rtree: ['node', 'parent', 'rowid'],
+};
+
+/**
+ * The tables the fence measures, as SQLite names them: the scope's own, without the spine,
+ * SQLite's and workerd's internals, virtual tables (an index over data held elsewhere, or a
+ * module's own store the fence cannot count without its content table) and their shadow tables.
+ * Exported so a replay outside a host (`lint:migration-fence`) populates exactly what is measured.
+ */
+export function fencedTables(sql: ScopedSql): string[] {
   const rows = sql.query<{ name: string; sql: string | null }>("SELECT name, sql FROM sqlite_master WHERE type = 'table'");
   const own = rows.filter((r) => {
     const n = lower(r.name);
     return !namesSpineTable(n) && !n.startsWith('sqlite_') && !n.startsWith('_cf_');
   });
-  const virtual = own.filter((r) => /^\s*create\s+virtual\b/i.test(r.sql ?? '')).map((r) => lower(r.name));
-  return own
-    .map((r) => r.name)
-    .filter((name) => !virtual.some((v) => lower(name) === v || lower(name).startsWith(`${v}_`)));
+  const skip = new Set<string>();
+  for (const r of own) {
+    const m = /^\s*create\s+virtual\s+table\s+.*?\busing\s+(\w+)/is.exec(r.sql ?? '');
+    if (!m) continue;
+    const name = lower(r.name);
+    skip.add(name);
+    for (const suffix of SHADOW_SUFFIXES[lower(m[1]!)] ?? []) skip.add(`${name}_${suffix}`);
+  }
+  return own.map((r) => r.name).filter((name) => !skip.has(lower(name)));
 }
 
 function measure(sql: ScopedSql): Measure {
   const out = new Map<string, TableCount>();
-  for (const table of measuredTables(sql)) {
+  for (const table of fencedTables(sql)) {
     const names = sql.query<{ name: string }>('SELECT name FROM pragma_table_info(?)', [table]).map((c) => c.name);
     const rows = Number(sql.query<{ n: number }>(`SELECT COUNT(*) AS n FROM ${quote(table)}`)[0]!.n);
     const columns = new Map<string, Classes>();
@@ -154,6 +188,32 @@ function followRenames(statements: readonly string[], before: Measure): Renames 
   return { tables, columns };
 }
 
+/**
+ * Which table after the migration each table before it became, one to one. A table renamed onto a
+ * name that exists afterwards claims it first; every other table falls back to its original name,
+ * then to an earlier name it carried — never to a name another table already claimed. So
+ * `DROP TABLE b; ALTER TABLE a RENAME TO b` leaves `b` to `a`, and the `b` that was dropped is
+ * gone. Undefined: the table is gone.
+ */
+function endsOf(before: Measure, after: Measure, renames: Renames): Map<string, { end: string; followed: boolean } | undefined> {
+  const ends = new Map<string, { end: string; followed: boolean } | undefined>();
+  const claimed = new Set<string>();
+  for (const [table, names] of renames.tables) {
+    const last = names[names.length - 1]!;
+    if (names.length > 1 && after.has(last) && !claimed.has(last)) {
+      ends.set(table, { end: last, followed: true });
+      claimed.add(last);
+    }
+  }
+  for (const [table, names] of renames.tables) {
+    if (ends.has(table) || !before.has(table)) continue;
+    const end = [table, ...[...names].reverse()].find((n) => after.has(n) && !claimed.has(n));
+    if (end !== undefined) claimed.add(end);
+    ends.set(table, end === undefined ? undefined : { end, followed: names.length === 1 });
+  }
+  return ends;
+}
+
 /** One loss the fence found, and the declaration that would excuse it. */
 interface Loss {
   readonly target: Target;
@@ -166,27 +226,28 @@ interface Loss {
  */
 function lossesOf(before: Measure, after: Measure, renames: Renames): Loss[] {
   const losses: Loss[] = [];
+  const ends = endsOf(before, after, renames);
   for (const [table, b] of before) {
     if (b.rows === 0) continue;
-    const names = renames.tables.get(table)!;
-    // The chain's end, then the original name (a rebuild back into place), then any earlier name.
-    const end = [names[names.length - 1]!, table, ...[...names].reverse()].find((n) => after.has(n));
-    if (end === undefined) {
+    const resolved = ends.get(table);
+    if (resolved === undefined) {
       losses.push({ target: { table }, what: `table ${table} held ${b.rows} row(s) and is gone` });
       continue;
     }
-    const a = after.get(end)!;
+    const a = after.get(resolved.end)!;
     if (a.rows < b.rows) losses.push({ target: { table }, what: `table ${table} held ${b.rows} row(s), now ${a.rows}` });
-    const followed = end === names[names.length - 1];
+    const renamed = renames.columns.get(table)!;
     for (const [column, held] of b.columns) {
       if (total(held) === 0) continue;
-      const now = followed ? renames.columns.get(table)!.get(column)! : column;
-      const kept = a.columns.get(now);
-      const target = { table, column };
+      // Followed through its renames; on a table rebuilt back into place, the rename the old table
+      // took before it moved aside still names the column, and its original name is the fallback.
+      const mapped = renamed.get(column)!;
+      const kept = a.columns.get(mapped) ?? (resolved.followed ? undefined : a.columns.get(column));
       // A kernel-derived column (`_substrat_archived_at`, …) leaving is the kernel's own check's to
       // refuse, right after this one in the same transaction (#2090), with the remedy that fits:
       // no declaration can excuse it. Its VALUES are still held here.
       if (kept === undefined && namesSpineTable(column)) continue;
+      const target = { table, column };
       if (kept === undefined) {
         losses.push({ target, what: `column ${table}.${column} held ${total(held)} value(s) and is gone` });
         continue;
@@ -217,6 +278,78 @@ function countOf(m: Measure, t: Target): Classes | undefined {
   if (!table) return undefined;
   if (!t.column) return { ...NONE, integer: table.rows };
   return table.columns.get(t.column);
+}
+
+const covers = (declared: Target, lost: Target) =>
+  declared.table === lost.table && (declared.column === undefined || declared.column === lost.column);
+
+/** Each class `got` falls short of `need`, as `<class> <need> → <got>`. */
+const shortfall = (need: Classes, got: Classes): string[] =>
+  CLASSES.filter((k) => got[k] < need[k]).map((k) => `${k} ${need[k]} → ${got[k]}`);
+const plus = (a: Classes, b: Classes): Classes => Object.fromEntries(CLASSES.map((k) => [k, a[k] + b[k]])) as Classes;
+const gain = (before: Classes | undefined, after: Classes | undefined): Classes =>
+  Object.fromEntries(CLASSES.map((k) => [k, (after?.[k] ?? 0) - (before?.[k] ?? 0)])) as Classes;
+
+/**
+ * Verify the declared moves: each target gained, per class, what its sources held; and a table
+ * moved whole brought every column that held values into a target column of the same name, unless
+ * that column is declared by name itself.
+ */
+function moveFailures(
+  before: Measure,
+  after: Measure,
+  moves: readonly { source: Target; target: Target }[],
+  discards: readonly Target[],
+): string[] {
+  const failures: string[] = [];
+  const byTarget = new Map<string, { target: Target; sources: Target[] }>();
+  for (const m of moves) {
+    const entry = byTarget.get(show(m.target)) ?? { target: m.target, sources: [] };
+    entry.sources.push(m.source);
+    byTarget.set(show(m.target), entry);
+  }
+  for (const { target, sources } of byTarget.values()) {
+    if (!countOf(after, target)) {
+      failures.push(`moves names ${show(target)} as a target, which does not exist after the migration`);
+      continue;
+    }
+    const need = sources.reduce((n, s) => plus(n, countOf(before, s)!), NONE);
+    const gained = gain(countOf(before, target), countOf(after, target));
+    const short = shortfall(need, gained);
+    if (short.length > 0) {
+      const from = `moves into ${show(target)} from ${sources.map(show).join(', ')}`;
+      failures.push(
+        target.column
+          ? `${from}: the sources' values did not all arrive (${short.join(', ')})`
+          : `${from}: the sources held ${need.integer} row(s), the target gained ${gained.integer}`,
+      );
+    }
+    if (target.column) continue;
+    // A table moved whole: its columns arrive by name, unless declared by name.
+    const byColumn = new Map<string, { need: Classes; from: string[] }>();
+    for (const source of sources) {
+      for (const [column, held] of before.get(source.table)!.columns) {
+        const named = { table: source.table, column };
+        if (total(held) === 0 || namesSpineTable(column)) continue;
+        if (moves.some((m) => m.source.column === column && m.source.table === source.table)) continue;
+        if (discards.some((d) => covers(d, named))) continue;
+        const entry = byColumn.get(column) ?? { need: NONE, from: [] };
+        byColumn.set(column, { need: plus(entry.need, held), from: [...entry.from, show(named)] });
+      }
+    }
+    for (const [column, { need: held, from }] of byColumn) {
+      const into = { table: target.table, column };
+      const now = countOf(after, into);
+      const missing = now === undefined ? [] : shortfall(held, gain(countOf(before, into), now));
+      if (now === undefined || missing.length > 0) {
+        failures.push(
+          `moves ${from.join(', ')} into ${target.table}, but ${now === undefined ? `${show(into)} does not exist` : `${show(into)} did not gain them (${missing.join(', ')})`} — ` +
+            `move the column by name (moves: { '${from[0]}': '<table.column>' }) or discard it`,
+        );
+      }
+    }
+  }
+  return failures;
 }
 
 /**
@@ -253,37 +386,8 @@ export function fenceMigration(sql: ScopedSql, migration: SqlMigration, key: str
   run();
 
   const after = measure(sql);
-  const renames = followRenames(statements, before);
-  const covers = (declared: Target, lost: Target) =>
-    declared.table === lost.table && (declared.column === undefined || declared.column === lost.column);
-
-  // A move is verified: what its target gained covers what its sources held, per class.
-  const failures: string[] = [];
-  const byTarget = new Map<string, { target: Target; sources: Target[] }>();
-  for (const m of parsedMoves) {
-    const entry = byTarget.get(show(m.target)) ?? { target: m.target, sources: [] };
-    entry.sources.push(m.source);
-    byTarget.set(show(m.target), entry);
-  }
-  for (const { target, sources } of byTarget.values()) {
-    const now = countOf(after, target);
-    if (!now) {
-      failures.push(`moves names ${show(target)} as a target, which does not exist after the migration`);
-      continue;
-    }
-    const had = countOf(before, target) ?? NONE;
-    for (const k of CLASSES) {
-      const need = sources.reduce((n, s) => n + countOf(before, s)![k], 0);
-      const gained = now[k] - had[k];
-      if (gained < need) {
-        const unit = target.column ? `${k} value(s)` : 'row(s)';
-        failures.push(
-          `moves into ${show(target)} from ${sources.map(show).join(', ')}: the sources held ${need} ${unit}, the target gained ${gained}`,
-        );
-      }
-    }
-  }
-  const unexcused = lossesOf(before, after, renames).filter(
+  const failures = moveFailures(before, after, parsedMoves, parsedDiscards);
+  const unexcused = lossesOf(before, after, followRenames(statements, before)).filter(
     (l) => !parsedDiscards.some((d) => covers(d, l.target)) && !parsedMoves.some((m) => covers(m.source, l.target)),
   );
   if (failures.length === 0 && unexcused.length === 0) return;

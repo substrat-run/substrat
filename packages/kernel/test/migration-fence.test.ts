@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { errorCodeOf } from '@substrat-run/contracts';
 import { runMigrationStatements, type ScopedSql, type SqlMigration, type SqlValue } from '../src/index.js';
+import { assertWithinSqlLimits } from '../src/sql-limits.js';
 
 /**
  * #115 — the data-loss fence, on a real SQLite, through `runMigrationStatements` as both adapters
@@ -11,8 +12,13 @@ import { runMigrationStatements, type ScopedSql, type SqlMigration, type SqlValu
 const scope = (setup: string) => {
   const db = new DatabaseSync(':memory:');
   db.exec(setup);
+  // Every query the fence issues is held to a Durable Object's limits, which node's SQLite does
+  // not enforce: a measuring query wider than the DO allows would close a scope on its own (#115 r1).
   const sql: ScopedSql = {
-    query: <T>(q: string, p: readonly SqlValue[] = []) => db.prepare(q).all(...(p as never[])) as T[],
+    query: <T>(q: string, p: readonly SqlValue[] = []) => {
+      assertWithinSqlLimits(q);
+      return db.prepare(q).all(...(p as never[])) as T[];
+    },
     exec: (q: string, p: readonly SqlValue[] = []) => ({ changes: Number(db.prepare(q).run(...(p as never[])).changes) }),
   };
   /** Run one migration in a transaction, as an adapter does: a throw rolls all of it back. */
@@ -245,5 +251,86 @@ describe('the data-loss fence (#115)', () => {
       expect(message).not.toContain('notes.body');
       s.migrate({ sql: 'DROP TABLE notes;', discards: { notes: 'the feature is retired' } });
     });
+  });
+
+  describe('a wide table is measured inside the Durable Object limits (#115 r1)', () => {
+    /** A populated table of `n` columns: `id` and `c1` … `c{n-1}`, every one holding a value. */
+    const wide = (n: number) => {
+      const cols = Array.from({ length: n - 1 }, (_, i) => `c${i + 1}`);
+      return scope(
+        `CREATE TABLE w (id TEXT PRIMARY KEY, ${cols.map((c) => `${c} TEXT`).join(', ')});
+         INSERT INTO w VALUES ('a', ${cols.map((c) => `'${c}'`).join(', ')});`,
+      );
+    };
+
+    it.each([26, 30, 100])('a %i-column table: a migration that loses nothing applies', (n) => {
+      wide(n).migrate({ sql: "UPDATE w SET c1 = c1 WHERE id = 'a';" });
+    });
+
+    it.each([30, 100])('a %i-column table: a loss in its last column, past the first scan, is refused', (n) => {
+      expect(refusal(() => wide(n).migrate({ sql: `ALTER TABLE w DROP COLUMN c${n - 1};` }))).toContain(
+        `column w.c${n - 1} held 1 value(s) and is gone`,
+      );
+    });
+  });
+
+  it('two tables before cannot both become one after: a rename onto a dropped name loses the dropped rows (#115 r1)', () => {
+    const setup = `CREATE TABLE a (id TEXT); CREATE TABLE b (id TEXT);
+      INSERT INTO a VALUES ('1'), ('2'), ('3'); INSERT INTO b VALUES ('x');`;
+    expect(refusal(() => scope(setup).migrate({ sql: 'DROP TABLE b; ALTER TABLE a RENAME TO b;' }))).toContain(
+      'table b held 1 row(s) and is gone',
+    );
+    // Its twin: declared, the same replacement applies.
+    scope(setup).migrate({ sql: 'DROP TABLE b; ALTER TABLE a RENAME TO b;', discards: { b: 'b was a staging copy' } });
+  });
+
+  it('measures a real table that only shares a prefix with a virtual one; skips the exact shadow tables (#115 r1)', () => {
+    const setup = `CREATE VIRTUAL TABLE notes USING fts5(body);
+      INSERT INTO notes (body) VALUES ('indexed');
+      CREATE TABLE notes_archive (id TEXT); INSERT INTO notes_archive VALUES ('kept');`;
+    expect(refusal(() => scope(setup).migrate({ sql: 'DROP TABLE notes_archive;' }))).toContain(
+      'table notes_archive held 1 row(s) and is gone',
+    );
+    // The FTS index and its shadow tables are not measured: clearing the index is not a refusal.
+    scope(setup).migrate({ sql: "DELETE FROM notes;" });
+  });
+
+  describe('a table moved whole brings its columns (#115 r1)', () => {
+    const setup = `CREATE TABLE drafts (id TEXT PRIMARY KEY, body TEXT, author TEXT);
+      CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT);
+      INSERT INTO drafts VALUES ('d', 'text', 'ann');`;
+    const sql = 'INSERT INTO notes (id, body) SELECT id, body FROM drafts; DROP TABLE drafts;';
+
+    it('a column left behind is refused, even though every row arrived', () => {
+      expect(refusal(() => scope(setup).migrate({ sql, moves: { drafts: 'notes' } }))).toContain(
+        "moves drafts.author into notes, but notes.author does not exist — move the column by name (moves: { 'drafts.author': '<table.column>' }) or discard it",
+      );
+    });
+
+    it('the column discarded by name, or moved by name, passes', () => {
+      scope(setup).migrate({ sql, moves: { drafts: 'notes' }, discards: { 'drafts.author': 'authors are not kept on notes' } });
+      scope(`${setup} ALTER TABLE notes ADD COLUMN by_whom TEXT;`).migrate({
+        sql: 'INSERT INTO notes (id, body, by_whom) SELECT id, body, author FROM drafts; DROP TABLE drafts;',
+        moves: { drafts: 'notes', 'drafts.author': 'notes.by_whom' },
+      });
+    });
+  });
+
+  it('follows a column renamed before its table moved aside and was rebuilt back into place (#115 r1)', () => {
+    scope(`${NOTES} INSERT INTO notes VALUES ('a', 'hello', '1');`).migrate({
+      sql: `ALTER TABLE notes RENAME COLUMN body TO text;
+        ALTER TABLE notes RENAME TO notes_old;
+        CREATE TABLE notes (id TEXT PRIMARY KEY, text TEXT, score TEXT);
+        INSERT INTO notes SELECT * FROM notes_old;
+        DROP TABLE notes_old;`,
+    });
+  });
+
+  it('reports an integer widening as a retype, which only a discard excuses (counts cannot tell 5 → 5.0 from 5 → 0.05)', () => {
+    const setup = 'CREATE TABLE m (id TEXT PRIMARY KEY, amt INTEGER); INSERT INTO m VALUES (\'a\', 5);';
+    const sql = `CREATE TABLE m_new (id TEXT PRIMARY KEY, amt REAL); INSERT INTO m_new SELECT * FROM m;
+      DROP TABLE m; ALTER TABLE m_new RENAME TO m;`;
+    expect(refusal(() => scope(setup).migrate({ sql }))).toContain('column m.amt held 1 value(s), now 1 (integer 1 → 0: retyped)');
+    scope(setup).migrate({ sql, discards: { 'm.amt': 'amounts widen to REAL; the integer form is not kept' } });
   });
 });
