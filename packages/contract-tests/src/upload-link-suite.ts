@@ -424,8 +424,18 @@ export function uploadLinkContractSuite(
         const svg = await refusal(redeem(minted, target, { contentType: 'image/svg+xml', filename: 'a.svg', body: bytes(SVG) }));
         expect(errorCodeOf(svg)).toBe('validation_failed');
         expect(reasonOf(svg)).toBe(UPLOAD_LINK_TYPE_REFUSED);
+        // By rule, not by list: any `+xml` subtype is XML, and a parameter or a stray space in a
+        // host caller's type is not a way past it — the kernel judges the normalized essence.
+        for (const contentType of ['image/x+xml', 'image/svg+xml; charset=utf-8', 'Image/SVG+XML ']) {
+          const refused = await refusal(redeem(minted, target, { contentType, filename: 'a.svg', body: bytes(SVG) }));
+          expect(reasonOf(refused), contentType).toBe(UPLOAD_LINK_TYPE_REFUSED);
+        }
         expect(await filesOf(target)).toEqual([]);
         expect((await linkOf(minted.id)).state).toBe('pending');
+        // An ordinary image spelled loosely is admitted, and recorded as its essence.
+        expect((await redeem(minted, target, { contentType: ' Image/PNG; q=1', filename: 'a.png' })).contentType).toBe(
+          'image/png',
+        );
 
         // The twin: `upic` names `image/svg+xml` exactly, and takes it.
         const pic: EntityRef = { entityType: 'upic', entityId: target.entityId };

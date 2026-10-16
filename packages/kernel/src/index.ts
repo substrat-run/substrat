@@ -240,6 +240,8 @@ export {
   UPLOAD_LINK_WRONG_TARGET,
   createAttachmentVerbs,
   inspectUploadLink,
+  isActiveContentType,
+  normalizeUploadMediaType,
   redeemUploadLinkInTransaction,
   uploadContentTypeAllowed,
 } from './upload-link.js';

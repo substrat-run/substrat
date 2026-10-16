@@ -131,31 +131,64 @@ export function mintUploadLinkSecret(): string {
 }
 
 /**
- * Types a browser runs rather than shows: a page that serves one inline executes what the
- * uploader wrote, as the vertical's origin. A FAMILY entry (`image/*`, `text/*`) never admits
- * one; only an exact entry naming it does, so admitting SVG or HTML through a link is a line a
- * reviewer reads in `PERMISSIONS.md`. An absent allowlist still admits every type, these too.
+ * A media type as the platform judges and records it: the essence only — parameters dropped,
+ * whitespace trimmed, lowercased — and `image/jpg` spelled `image/jpeg`. The route and the
+ * kernel's redemption both judge through this, so a host that calls `redeemUploadLink` with
+ * `'image/svg+xml; charset=utf-8'` meets the same rule a `curl` does.
+ */
+export function normalizeUploadMediaType(raw: string): string {
+  const t = raw.split(';')[0]!.trim().toLowerCase();
+  return t === 'image/jpg' ? 'image/jpeg' : t;
+}
+
+/**
+ * Types a browser runs rather than shows, named one by one: HTML, and the JavaScript MIME type
+ * essences of the WHATWG MIME Sniffing standard. With them, by rule rather than by list, is
+ * every XML type (`isActiveContentType`): a top-level navigation renders XML as a document,
+ * where an XHTML-namespace `<script>` runs.
  */
 export const ACTIVE_CONTENT_TYPES: ReadonlySet<string> = new Set([
-  'image/svg+xml',
   'text/html',
   'application/xhtml+xml',
-  'text/javascript',
-  'application/javascript',
+  'image/svg+xml',
   'text/xml',
   'application/xml',
+  // WHATWG MIME Sniffing §4.6, "JavaScript MIME type".
+  'application/ecmascript',
+  'application/javascript',
+  'application/x-ecmascript',
+  'application/x-javascript',
+  'text/ecmascript',
+  'text/javascript',
+  'text/javascript1.0',
+  'text/javascript1.1',
+  'text/javascript1.2',
+  'text/javascript1.3',
+  'text/javascript1.4',
+  'text/javascript1.5',
+  'text/jscript',
+  'text/livescript',
+  'text/x-ecmascript',
+  'text/x-javascript',
 ]);
 
 /**
- * Is `type` (already stripped of parameters) admitted by `allowed`? `null` admits anything; a
- * family admits its members except `ACTIVE_CONTENT_TYPES`; an exact entry admits itself.
+ * Would a browser run `type` (normalized) instead of showing it, when served inline as the
+ * vertical's origin? The named set, and every XML type: `+xml` structured syntax
+ * (`image/foo+xml`, `application/rss+xml`) as well as `text/xml` and `application/xml`.
+ */
+export const isActiveContentType = (type: string): boolean => ACTIVE_CONTENT_TYPES.has(type) || type.endsWith('+xml');
+
+/**
+ * Is `type` admitted by `allowed`? It is normalized first (`normalizeUploadMediaType`). `null`
+ * admits anything. A family (`image/*`) admits its members except an active type
+ * (`isActiveContentType`): the person holding a link chooses the bytes. An exact entry admits
+ * itself, active or not, so admitting SVG or HTML is a line a reviewer reads in `PERMISSIONS.md`.
  */
 export function uploadContentTypeAllowed(allowed: readonly string[] | null, type: string): boolean {
   if (allowed === null) return true;
-  const t = type.toLowerCase();
-  return allowed.some((a) =>
-    a.endsWith('/*') ? t.startsWith(a.slice(0, -1)) && !ACTIVE_CONTENT_TYPES.has(t) : a === t,
-  );
+  const t = normalizeUploadMediaType(type);
+  return allowed.some((a) => (a.endsWith('/*') ? t.startsWith(a.slice(0, -1)) && !isActiveContentType(t) : a === t));
 }
 
 const stateOf = (row: UploadLinkRow, now: Instant): UploadLinkRecord['state'] =>

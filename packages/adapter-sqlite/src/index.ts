@@ -787,7 +787,7 @@ import {
   type AuditedOperationSqlRow,
   type SettleIntentRow,
 } from '@substrat-run/kernel';
-import { INERT_SCOPE_REASON, isPrimaryScopeRow, type UploadLinkRedeemInput, type UploadTarget } from '@substrat-run/kernel';
+import { INERT_SCOPE_REASON, isPrimaryScopeRow, normalizeUploadMediaType, type UploadLinkRedeemInput, type UploadTarget } from '@substrat-run/kernel';
 import {
   COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
@@ -3626,7 +3626,8 @@ export class SqliteScopeHost implements ScopeHost {
     return files.upload({
       entity: view.entity,
       filename: view.filename ?? input.filename,
-      contentType: input.contentType,
+      // Recorded as it is judged: the essence, never a parameter or a stray space.
+      contentType: normalizeUploadMediaType(input.contentType),
       visibility: view.visibility,
       body: input.body,
     });

@@ -56,6 +56,7 @@ import {
   UPLOAD_LINK_TOO_LARGE,
   UPLOAD_LINK_TYPE_REFUSED,
   UPLOAD_LINK_WRONG_TARGET,
+  normalizeUploadMediaType,
   uploadContentTypeAllowed,
   type ScopeHost,
 } from '@substrat-run/kernel';
@@ -114,10 +115,6 @@ export function sniffMediaType(bytes: Uint8Array): string | null {
 }
 const SNIFFABLE = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/gif']);
 
-const normalizeType = (raw: string): string => {
-  const t = raw.split(';')[0]!.trim().toLowerCase();
-  return t === 'image/jpg' ? 'image/jpeg' : t;
-};
 
 /**
  * The type the platform will record. Order: the request's own `Content-Type` unless it is
@@ -131,7 +128,7 @@ export function resolveUploadMediaType(
   filename: string,
   bytes: Uint8Array,
 ): string | null {
-  const fromHeader = header ? normalizeType(header) : '';
+  const fromHeader = header ? normalizeUploadMediaType(header) : '';
   const ext = filename.includes('.') ? filename.slice(filename.lastIndexOf('.') + 1).toLowerCase() : '';
   const claimed = fromHeader && !GENERIC_TYPES.has(fromHeader) ? fromHeader : (EXTENSION_TYPES[ext] ?? null);
   const sniffed = sniffMediaType(bytes);

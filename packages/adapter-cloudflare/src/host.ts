@@ -281,6 +281,7 @@ import {
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
   attachmentBlobKey,
+  normalizeUploadMediaType,
   type UploadLinkRedeemInput,
   attachmentSha256,
   entitlementDenial,
@@ -4399,11 +4400,13 @@ export class CloudflareScopeHost implements ScopeHost {
     const id = ulid();
     const key = attachmentBlobKey(scopeId, id);
     const filename = view.filename ?? input.filename;
+    // Recorded as it is judged: the essence, never a parameter or a stray space.
+    const contentType = normalizeUploadMediaType(input.contentType);
     const record = attachmentRecord.parse({
       id,
       entity: view.entity,
       filename,
-      contentType: input.contentType,
+      contentType,
       size: input.body.byteLength,
       sha256: await attachmentSha256(input.body),
       visibility: view.visibility,
@@ -4413,7 +4416,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // Bytes first, row second, exactly as an upload: a refusal (size, type, a lost key, a link
     // someone else spent first) compensates the object away, and the link is unspent with it.
     // A lost reply keeps the bytes (`compensatingRefusal`); retrying the link is #2315.
-    await store.put(key, input.body, { contentType: input.contentType });
+    await store.put(key, input.body, { contentType });
     return unwrapReply(await compensatingRefusal(store, key, () =>
       stub.attachmentRedeemUploadLinkReply(record, secret, tenantId, scopeId),
     ));

@@ -316,6 +316,10 @@ describe('mountUploadLinkRedeem — an upload link, over HTTP', () => {
     const res = await put(`${minted.path}?filename=a.svg`, svg, { 'content-type': 'image/svg+xml' });
     expect(res.status).toBe(415);
     expect(((await res.json()) as { reason?: string }).reason).toBe('upload_link_type_refused');
+    // Any `+xml` claim is XML by rule, and an XHTML body under it would run as this origin.
+    const xhtml = '<a:script xmlns:a="http://www.w3.org/1999/xhtml"/>'; // under the link's 64 bytes
+    expect((await put(`${minted.path}?filename=a.xml`, xhtml, { 'content-type': 'image/x+xml' })).status).toBe(415);
+    expect((await put(`${minted.path}?filename=a.svg`, svg, { 'content-type': 'Image/SVG+XML; charset=utf-8' })).status).toBe(415);
     expect(await filesOf(entity)).toEqual([]);
     expect(await stateOf(minted.id)).toBe('pending');
     expect((await put(`${minted.path}?filename=a.png`, PNG, { 'content-type': 'image/png' })).status).toBe(201);

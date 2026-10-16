@@ -56,10 +56,14 @@ narrow the size, and the declaration appears in the vertical's `PERMISSIONS.md` 
 links*, so widening it is a reviewed diff.
 
 **A family never admits an active type.** `image/*` admits PNG, JPEG and the rest, but not
-`image/svg+xml`. `text/*` admits plain text and CSV, but not `text/html`. The same goes for
-`application/xhtml+xml`, `text/javascript`, `application/javascript`, `text/xml` and
-`application/xml`. A browser runs these instead of showing them, and the person holding the link
-chooses the bytes. To take one, name it exactly:
+`image/svg+xml`. `text/*` admits plain text and CSV, but not `text/html`. Active means HTML,
+every XML type (`text/xml`, `application/xml` and any subtype ending in `+xml`, such as
+`image/svg+xml`, `application/xhtml+xml` or `application/rss+xml`), and every JavaScript MIME
+type the WHATWG MIME Sniffing standard lists (`text/javascript`, `application/javascript`,
+`application/x-javascript`, `text/ecmascript` and the rest). A browser runs these instead of
+showing them, and the person holding the link chooses the bytes. The type is judged as its
+essence, without parameters, spaces or capitals, so `image/svg+xml; charset=utf-8` is still SVG.
+To take one, name it exactly:
 
 ```ts
 uploadLinks: { maxBytes: 2 * 1024 * 1024, contentTypes: ['image/*', 'image/svg+xml'] },

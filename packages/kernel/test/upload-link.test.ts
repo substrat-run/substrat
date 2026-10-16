@@ -5,7 +5,12 @@
  */
 import { describe, expect, it } from 'vitest';
 import { UPLOAD_LINK_SECRET_PREFIX, isUploadLinkSecretShape } from '@substrat-run/contracts';
-import { ACTIVE_CONTENT_TYPES, uploadContentTypeAllowed } from '../src/index.js';
+import {
+  ACTIVE_CONTENT_TYPES,
+  isActiveContentType,
+  normalizeUploadMediaType,
+  uploadContentTypeAllowed,
+} from '../src/index.js';
 import { mintUploadLinkSecret } from '../src/upload-link.js';
 
 describe('uploadContentTypeAllowed', () => {
@@ -41,6 +46,82 @@ describe('uploadContentTypeAllowed', () => {
       expect.arrayContaining(['image/svg+xml', 'text/html', 'application/xhtml+xml', 'text/javascript', 'text/xml']),
     );
     for (const t of ACTIVE_CONTENT_TYPES) expect(t).toBe(t.toLowerCase());
+  });
+
+  /** WHATWG MIME Sniffing §4.6: every JavaScript MIME type essence. */
+  const JAVASCRIPT_ESSENCES = [
+    'application/ecmascript',
+    'application/javascript',
+    'application/x-ecmascript',
+    'application/x-javascript',
+    'text/ecmascript',
+    'text/javascript',
+    'text/javascript1.0',
+    'text/javascript1.1',
+    'text/javascript1.2',
+    'text/javascript1.3',
+    'text/javascript1.4',
+    'text/javascript1.5',
+    'text/jscript',
+    'text/livescript',
+    'text/x-ecmascript',
+    'text/x-javascript',
+  ];
+  const families = ['image/*', 'text/*', 'application/*'];
+
+  it('every JavaScript MIME essence is active, and no family admits one; an exact entry does', () => {
+    for (const js of JAVASCRIPT_ESSENCES) {
+      expect(isActiveContentType(js), js).toBe(true);
+      expect(uploadContentTypeAllowed(families, js), js).toBe(false);
+      expect(uploadContentTypeAllowed([...families, js], js), js).toBe(true);
+    }
+  });
+
+  it('every XML type is active by rule, not by list — any +xml subtype, under any family; an exact entry admits it', () => {
+    for (const xml of ['image/foo+xml', 'text/foo+xml', 'application/rss+xml', 'application/atom+xml', 'application/vnd.wap.xhtml+xml']) {
+      expect(ACTIVE_CONTENT_TYPES.has(xml), xml).toBe(false); // held by the rule, not the list
+      expect(isActiveContentType(xml), xml).toBe(true);
+      expect(uploadContentTypeAllowed(families, xml), xml).toBe(false);
+      expect(uploadContentTypeAllowed([...families, xml], xml), xml).toBe(true);
+    }
+  });
+
+  it('its twin: ordinary members of every family stay admitted — the rule is not "refuse everything"', () => {
+    for (const ok of ['image/png', 'image/jpeg', 'text/plain', 'text/csv', 'application/json', 'application/zip', 'application/pdf']) {
+      expect(isActiveContentType(ok), ok).toBe(false);
+      expect(uploadContentTypeAllowed(families, ok), ok).toBe(true);
+    }
+    // A type that merely mentions xml is not one.
+    expect(isActiveContentType('application/vnd.openxmlformats-officedocument.wordprocessingml.document')).toBe(false);
+    expect(isActiveContentType('application/xml-dtd')).toBe(false);
+  });
+});
+
+describe('normalizeUploadMediaType — the one spelling both halves judge', () => {
+  it('keeps the essence: parameters dropped, whitespace trimmed, lowercased, image/jpg as image/jpeg', () => {
+    expect(normalizeUploadMediaType('image/svg+xml; charset=utf-8')).toBe('image/svg+xml');
+    expect(normalizeUploadMediaType('image/svg+xml ')).toBe('image/svg+xml');
+    expect(normalizeUploadMediaType('  Image/SVG+XML ;x=1')).toBe('image/svg+xml');
+    expect(normalizeUploadMediaType('image/jpg')).toBe('image/jpeg');
+    expect(normalizeUploadMediaType('text/plain')).toBe('text/plain');
+  });
+
+  it('a type is judged normalized, so a parameter, a space or a capital never slips an active type past a family', () => {
+    for (const spelled of [
+      'image/svg+xml; charset=utf-8',
+      'image/svg+xml ',
+      ' image/svg+xml',
+      'IMAGE/SVG+XML',
+      'Text/HTML; charset=utf-8',
+      'text/javascript;x=1',
+      'image/foo+xml ; a=b',
+    ]) {
+      expect(uploadContentTypeAllowed(['image/*', 'text/*'], spelled), JSON.stringify(spelled)).toBe(false);
+    }
+    // The twins: an exact entry matches its own essence however it is spelled, and an ordinary type passes.
+    expect(uploadContentTypeAllowed(['image/svg+xml'], 'Image/SVG+XML; charset=utf-8')).toBe(true);
+    expect(uploadContentTypeAllowed(['image/*'], 'image/png; q=1 ')).toBe(true);
+    expect(uploadContentTypeAllowed(['application/pdf'], ' Application/PDF ')).toBe(true);
   });
 });
 
