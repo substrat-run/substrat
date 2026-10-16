@@ -78,10 +78,12 @@ alone stops a row that committed from losing its bytes:
   - a copy kept as divergent;
   - a copy retained unchecked.
 
-  Settle the copy first. A
-  deployment with no directory cannot read the ledger, so a pass there needs its caller to have
-  checked it (`copiesSettled`). The platform's driver does that, and it reports a scope held this
-  way rather than skipping it silently.
+  Settle the copy first. A deployment with no directory cannot read the ledger, so a pass there
+  needs its caller to have checked it (`copiesSettled`).
+
+Nothing runs the sweep on a schedule yet. A platform pass that calls it is planned. That pass
+will check the ledger itself, and it will report a scope held this way rather than skip it
+silently. Until then, a pass is run by calling `sweepOrphanAttachments` on a host.
 
 A pass lists only the scope's own attachment keys (`scope/<scopeId>/att/<ulid>`). Other scopes'
 keys, other features' keys and anything malformed in the same bucket are never judged. A dry run
