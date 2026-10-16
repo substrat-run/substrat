@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
+import { errorCodeOf } from '@substrat-run/contracts';
 import {
   STORE_DRIVER_RELEASES_DDL,
   beginStoreDriverRolloutIn,
@@ -39,7 +40,18 @@ describe('the rollback target while a rollout is paged (#2312)', () => {
       finishStoreDriverRolloutIn(sql, { driver: 'graph', seq: row.seq, holder: 'h', state, detail: null, at, nowMs, ...(state === 'paused' ? { walked: [] } : {}) });
     };
     const target = () => storeDriverStateIn(sql, 'graph', nowMs).rollbackTarget;
-    return { attempt, target };
+    const previousGood = () => storeDriverStateIn(sql, 'graph', nowMs).current?.previousGoodSha256;
+    /** The error code a begin is refused with, or null when it begins (the row is then ended failed). */
+    const refusedBegin = (sha256: string, action: StoreDriverRolloutAction = 'rollout') => {
+      try {
+        const row = beginStoreDriverRolloutIn(sql, { driver: 'graph', sha256, action, holder: 'h', actor: 'staff', at, nowMs });
+        finishStoreDriverRolloutIn(sql, { driver: 'graph', seq: row.seq, holder: 'h', state: 'failed', detail: null, at, nowMs });
+        return null;
+      } catch (e) {
+        return errorCodeOf(e);
+      }
+    };
+    return { attempt, target, previousGood, refusedBegin };
   };
 
   it('stays on the previous good release while the current release is re-posted, whatever the re-post ends', () => {
@@ -61,5 +73,87 @@ describe('the rollback target while a rollout is paged (#2312)', () => {
     expect(target()).toBe(sha('2'));
     attempt(sha('2'), 'paused');
     expect(target()).toBe(sha('2'));
+  });
+
+  // The sequences the round-2 review probed, pinned (#2338). A, B, C are releases 1, 2, 3; B is
+  // current after `base`.
+  const [A, B, C] = [sha('1'), sha('2'), sha('3')];
+  const base = () => {
+    const t = fresh();
+    t.attempt(A, 'good');
+    t.attempt(B, 'good');
+    return t;
+  };
+
+  it('keeps the target on the current release through a rollback onto it and a re-post of it, after another release diverged', () => {
+    for (const ends of ['paused', 'diverged'] as const) {
+      const { attempt, target } = base();
+      attempt(C, 'diverged');
+      attempt(B, ends, 'rollback');
+      expect(target(), ends).toBe(B);
+      attempt(B, 'paused');
+      expect(target(), ends).toBe(B);
+    }
+  });
+
+  it('goes back to the previous good release once a rollback onto the current one ends good', () => {
+    const { attempt, target, previousGood } = base();
+    attempt(C, 'diverged');
+    attempt(B, 'good', 'rollback');
+    expect(previousGood()).toBe(A);
+    expect(target()).toBe(A);
+  });
+
+  it('keeps an unfinished rollback to the previous good release blocking, through a re-post before it and a failed post after it', () => {
+    const { attempt, target, refusedBegin } = base();
+    attempt(B, 'paused');
+    expect(target()).toBe(A);
+    attempt(A, 'paused', 'rollback');
+    expect(target()).toBe(A);
+    attempt(A, 'failed', 'rollback');
+    expect(target()).toBe(A);
+    expect(refusedBegin(C)).toBe('conflict');
+    expect(refusedBegin(B)).toBe('conflict');
+    expect(target()).toBe(A);
+  });
+
+  it('never moves the target on a failed row, of any release or action', () => {
+    const { attempt, target } = base();
+    attempt(C, 'failed');
+    attempt(B, 'failed');
+    attempt(A, 'failed', 'rollback');
+    expect(target()).toBe(A);
+    attempt(C, 'diverged');
+    expect(target()).toBe(B);
+    attempt(B, 'failed', 'rollback');
+    attempt(C, 'failed');
+    expect(target()).toBe(B);
+  });
+
+  it('keeps the previous good release across a re-post of the current one that ends good', () => {
+    const { attempt, target, previousGood } = base();
+    attempt(B, 'paused');
+    attempt(B, 'good');
+    expect(previousGood()).toBe(A);
+    expect(target()).toBe(A);
+  });
+
+  it('reads only the rows since the newest good one: a pause before it no longer counts', () => {
+    const { attempt, target, previousGood } = base();
+    attempt(C, 'paused');
+    expect(target()).toBe(B);
+    attempt(C, 'good');
+    expect(previousGood()).toBe(B);
+    expect(target()).toBe(B);
+    attempt(C, 'paused');
+    expect(target()).toBe(B);
+  });
+
+  it('keeps the target on the current release when another release is re-posted after an unfinished rollback onto it', () => {
+    const { attempt, target } = base();
+    attempt(C, 'diverged');
+    attempt(B, 'diverged', 'rollback');
+    attempt(C, 'paused');
+    expect(target()).toBe(B);
   });
 });
