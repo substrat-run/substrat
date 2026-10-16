@@ -571,7 +571,7 @@ shared across a tenant's verticals is §13 question 21.
   leaving is #2090's check to refuse. Not seen, because it counts: in-place replacement (values
   rewritten at the same count and storage class, rows replaced by as many other rows, a column
   dropped, re-added and refilled); a dropped table whose name is continued by a table the
-  migration created from another table, holding at least as many rows, even renamed away again
+  migration created, filled from somewhere else, holding at least as many rows, even renamed away again
   (`DROP TABLE a; CREATE TABLE a AS SELECT * FROM b`, or the same through `CREATE TABLE n …;
   ALTER TABLE n RENAME TO a; ALTER TABLE a RENAME TO d`), which counts cannot tell from the rebuild
   idiom and a rename after it; and which source a move's target gained from. Refused by design: data copied under

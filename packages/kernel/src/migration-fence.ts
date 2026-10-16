@@ -36,11 +36,11 @@
  * test (`migration-fence.property.test.ts`) that holds the rest to ground truth:
  * - in-place replacement: values rewritten at the same count and class (`UPDATE`), rows replaced
  *   by as many other rows (`DELETE` + `INSERT`), or a column dropped, re-added and refilled;
- * - a dropped table whose name is continued by a table the migration created from another table,
- *   holding at least as many rows, even renamed away again (`DROP TABLE a; CREATE TABLE a AS SELECT
- *   * FROM b`, or `…; CREATE TABLE n AS SELECT * FROM b; ALTER TABLE n RENAME TO a; ALTER TABLE a
- *   RENAME TO d`): counts cannot tell it from the create-copy-drop-rename rebuild, or a rename
- *   after it, which the fence must accept;
+ * - a dropped table whose name is continued by a table the migration created, filled from
+ *   somewhere else, holding at least as many rows, even renamed away again (`DROP TABLE a; CREATE
+ *   TABLE a AS SELECT * FROM b`, or `…; CREATE TABLE n AS SELECT * FROM b; ALTER TABLE n RENAME TO
+ *   a; ALTER TABLE a RENAME TO d`): counts cannot tell it from the create-copy-drop-rename
+ *   rebuild, or a rename after it, which the fence must accept;
  * - which source a move's target gained from: a target is credited with everything it gained.
  * And one refusal by design: data copied under another table's name is refused until `moves`
  * declares it.
