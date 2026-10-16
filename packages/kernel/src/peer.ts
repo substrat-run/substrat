@@ -180,7 +180,7 @@ export function boundToPeerDeclarations(
       const answer = await inner.covers(subject, asked, node);
       const innerMissing = new Set<string>(answer.covered ? [] : answer.missing);
       const missing = required.filter((p) => !keys.has(p) || innerMissing.has(p));
-      return missing.length === 0 ? { covered: true, missing: [] } : { covered: false, missing: [missing[0]!, ...missing.slice(1)] };
+      return missing.length === 0 ? { covered: true, missing: [] } : { covered: false, missing };
     },
   };
   if (inner.holdings) {
