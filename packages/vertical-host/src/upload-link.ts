@@ -267,7 +267,6 @@ const unknownLink = () => substratError('not_found', 'This upload link is not va
  * header for the answers and the hygiene.
  */
 export function mountUploadLinkRedeem<E extends Env>(app: Hono<E>, options: UploadLinkRedeemOptions<E>): void {
-  const path = UPLOAD_LINK_REDEEM_PATH;
   const handler = async (c: Context<E>): Promise<Response> => {
     // Before anything can fail: nothing here may be cached or handed onwards, and an outer
     // blanket CORS layer must not make the answer readable by a page that learned the link.
@@ -337,6 +336,6 @@ export function mountUploadLinkRedeem<E extends Env>(app: Hono<E>, options: Uplo
       return refuse(c, err);
     }
   };
-  app.put(path, handler);
-  app.post(path, handler);
+  app.put(UPLOAD_LINK_REDEEM_PATH, handler);
+  app.post(UPLOAD_LINK_REDEEM_PATH, handler);
 }

@@ -310,7 +310,7 @@ function versionIdOf(env: unknown): string | null {
 export const UPLOAD_LINK_LOG_PREFIX = '/api/attachment-uploads';
 export const UPLOAD_LINK_LOG_SECRET_PREFIX = 'sbup_';
 const UPLOAD_LINK_SECRET_SEGMENT = /^(\/api\/attachment-uploads\/[^/]+\/[^/]+\/)[^/]+/;
-const SECRET_SHAPED_SEGMENT = /(^|\/)sbup_[^/]*/g;
+const SECRET_SHAPED_SEGMENT = new RegExp(`(^|/)${UPLOAD_LINK_LOG_SECRET_PREFIX}[^/]*`, 'g');
 export const redactUploadLinkSecret = (pathname: string): string =>
   pathname.replace(UPLOAD_LINK_SECRET_SEGMENT, '$1[redacted]').replace(SECRET_SHAPED_SEGMENT, '$1[redacted]');
 
