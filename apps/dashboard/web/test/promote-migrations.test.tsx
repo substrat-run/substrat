@@ -1,0 +1,94 @@
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { REVIEW_TEXT_SHOWN_MAX, type MigrationDiff, type MigrationEntry } from '@substrat-run/contracts';
+import { PromoteMigrations } from '../src/components/PromoteMigrations';
+
+/** #2322: the promote dialog shows each migration's declared moves and discards, as text. */
+describe('PromoteMigrations: declared moves and discards', () => {
+  let container: HTMLElement;
+  let root: Root;
+
+  beforeEach(() => {
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  const diff = (added: MigrationEntry[], changed: MigrationEntry[] = []): MigrationDiff => ({
+    baseline: 'version',
+    added,
+    changed,
+    total: added.length + changed.length,
+    truncated: false,
+  });
+  const show = (sql: MigrationDiff) => act(() => root.render(<PromoteMigrations section={{ digests: null, sql, enforced: false }} />));
+  const text = () => container.textContent ?? '';
+
+  it('lists a discard with its reason and a move with its target; a migration declaring none shows neither', () => {
+    show(
+      diff([
+        { moduleId: 'desk', version: '0001', sql: 'SELECT 1;' },
+        { moduleId: 'desk', version: '0002', sql: 'DROP TABLE legacy;', discards: { legacy: 'unused since 2024' }, moves: { 'a.b': 'c.d' } },
+      ]),
+    );
+    expect(text()).toContain('This promote deliberately discards data in 1 place.');
+    expect(text()).toContain('Discardslegacy— unused since 2024');
+    expect(text()).toContain('Movesa.b → c.dverified when it runs');
+    // The undeclared entry carries no declaration rows: exactly one of each kind on the page.
+    expect(text().match(/Discardslegacy/g)).toHaveLength(1);
+    expect(text().match(/Moves/g)).toHaveLength(1);
+    // Visible without opening the collapsed SQL.
+    const declared = [...container.querySelectorAll('details')][1]!;
+    expect(declared.open).toBe(false);
+    expect(declared.nextElementSibling?.textContent).toContain('unused since 2024');
+  });
+
+  it('shows no callout and no declaration rows for a set that declares nothing', () => {
+    show(diff([{ moduleId: 'desk', version: '0001', sql: 'SELECT 1;' }]));
+    expect(text()).not.toMatch(/discards data|Discards|Moves/);
+  });
+
+  it('renders a reason as text, never markup, with bidi controls made visible', () => {
+    show(diff([{ moduleId: 'desk', version: '0002', sql: 's', discards: { 'a‮b': '<img src=x onerror=alert(1)><b>bold</b>⁦x' } }]));
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('b')).toBeNull();
+    expect(text()).toContain('a<U+202E>b');
+    expect(text()).toContain('<img src=x onerror=alert(1)><b>bold</b><U+2066>x');
+    expect(text()).not.toMatch(/[‪-‮⁦-⁩]/);
+  });
+
+  it('cuts a long reason with an expander, and shows it whole on request', () => {
+    const reason = 'r'.repeat(REVIEW_TEXT_SHOWN_MAX) + 'TAIL';
+    show(diff([{ moduleId: 'desk', version: '0002', sql: 's', discards: { t: reason } }]));
+    expect(text()).not.toContain('TAIL');
+    const button = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Show all')!;
+    act(() => button.click());
+    expect(text()).toContain(`${reason}Show less`);
+  });
+
+  it('groups a declarations-only edit apart from a SQL edit, and says what each means', () => {
+    show(
+      diff(
+        [],
+        [
+          { moduleId: 'desk', version: '0001', sql: 'SELECT 0;', edited: 'sql' },
+          { moduleId: 'desk', version: '0002', sql: 'SELECT 1;', edited: 'declarations', discards: { t: 'why' } },
+        ],
+      ),
+    );
+    expect(text()).toContain('Edited after shipping');
+    expect(text()).toContain('Declarations edited after shipping');
+    expect(text()).toContain('A scope that already ran it is unaffected; one that has not is held to these.');
+  });
+
+  it('says declarations were left out rather than showing none', () => {
+    show({ ...diff([{ moduleId: 'desk', version: '0002', sql: null, declarationsLeftOut: true }]), truncated: true });
+    expect(text()).toContain('Declares moves or discards that are left out');
+  });
+});

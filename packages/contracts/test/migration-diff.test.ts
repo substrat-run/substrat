@@ -4,6 +4,8 @@ import {
   storedDeployManifest,
   migrationsOnTop,
   reviewText,
+  clipReviewText,
+  REVIEW_TEXT_SHOWN_MAX,
   discardCount,
   DECLARED_MIGRATIONS_SQL_BYTES_MAX,
   MIGRATION_READ_MAX,
@@ -198,5 +200,19 @@ describe('reviewText and discardCount (#2322)', () => {
       [{ moduleId: 'a', version: '3', sql: 'old' }],
     );
     expect(discardCount(diff)).toBe(3);
+  });
+});
+
+describe('clipReviewText (#2322)', () => {
+  it('shows a short reason whole, and cuts a long one at the bound without splitting a character', () => {
+    expect(clipReviewText('why')).toEqual({ full: 'why', shown: 'why', clipped: false });
+    const at = 'a'.repeat(REVIEW_TEXT_SHOWN_MAX);
+    expect(clipReviewText(at).clipped).toBe(false);
+    const long = '😀'.repeat(REVIEW_TEXT_SHOWN_MAX + 1);
+    const r = clipReviewText(long);
+    expect(r.clipped).toBe(true);
+    expect(Array.from(r.shown)).toHaveLength(REVIEW_TEXT_SHOWN_MAX);
+    expect(r.full).toBe(long);
+    expect(clipReviewText('a‮b').full).toBe('a<U+202E>b');
   });
 });

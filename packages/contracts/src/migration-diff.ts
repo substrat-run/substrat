@@ -172,3 +172,18 @@ export function reviewText(text: string): string {
 export function discardCount(diff: Pick<MigrationDiff, 'added' | 'changed'>): number {
   return [...diff.changed, ...diff.added].reduce((n, e) => n + Object.keys(e.discards ?? {}).length, 0);
 }
+
+/** How much of a discard's reason a review shows before it asks to be expanded (#2322). */
+export const REVIEW_TEXT_SHOWN_MAX = 280;
+
+/**
+ * A reason as a review first shows it: `reviewText`, cut at {@link REVIEW_TEXT_SHOWN_MAX}
+ * characters (never inside a surrogate pair) with `clipped` set, so a long reason cannot push
+ * the rest of the review out of sight. The full text is shown on request.
+ */
+export function clipReviewText(text: string): { full: string; shown: string; clipped: boolean } {
+  const full = reviewText(text);
+  const chars = Array.from(full);
+  if (chars.length <= REVIEW_TEXT_SHOWN_MAX) return { full, shown: full, clipped: false };
+  return { full, shown: chars.slice(0, REVIEW_TEXT_SHOWN_MAX).join(''), clipped: true };
+}

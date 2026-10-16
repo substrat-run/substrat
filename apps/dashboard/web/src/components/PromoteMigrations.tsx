@@ -1,11 +1,13 @@
-import type { CSSProperties } from 'react';
-import type { MigrationEntry } from '@substrat-run/contracts';
+import { useState, type CSSProperties } from 'react';
+import { clipReviewText, discardCount, reviewText, type MigrationEntry } from '@substrat-run/contracts';
 import type { MigrationSection } from '../lib/promote-review';
 import { Pill } from './ui';
 
 /**
  * The schema half of the promote dialog (#1677): each migration the promotion would run,
- * with its id and SQL, one collapsible entry each so a long set stays readable.
+ * with its id and SQL, one collapsible entry each so a long set stays readable. What a
+ * migration declares it moves or discards (#2322) is shown under its id, outside the
+ * collapsed SQL, because it is what a person approving a promote against live data most needs.
  *
  * Draws a `MigrationSection` and nothing else. The acknowledgement box stays in
  * `PromoteDialog`, beside the permission one, so there is still exactly one control per kind.
@@ -35,6 +37,7 @@ export function PromoteMigrations({ section }: { section: MigrationSection }) {
         </div>
       ) : (
         <>
+          {discardCount(sql) > 0 && <DiscardCallout count={discardCount(sql)} />}
           {sql.baseline === 'unavailable' && (
             <div style={muted}>
               The version prod serves was pushed before versions carried their migrations, so every migration this version ships is
@@ -47,12 +50,20 @@ export function PromoteMigrations({ section }: { section: MigrationSection }) {
               moved.
             </div>
           )}
-          {sql.changed.length > 0 && (
+          {sql.changed.some((e) => e.edited !== 'declarations') && (
             <MigrationGroup
               label="Edited after shipping"
               kind="danger"
               note="Same id as a migration the serving version already has, different SQL. A scope that already ran it will not run it again."
-              entries={sql.changed}
+              entries={sql.changed.filter((e) => e.edited !== 'declarations')}
+            />
+          )}
+          {sql.changed.some((e) => e.edited === 'declarations') && (
+            <MigrationGroup
+              label="Declarations edited after shipping"
+              kind="warning"
+              note="Same SQL as the serving version’s migration, with other moves or discards. A scope that already ran it is unaffected; one that has not is held to these."
+              entries={sql.changed.filter((e) => e.edited === 'declarations')}
             />
           )}
           {sql.added.length > 0 && <MigrationGroup label="New migrations, in the order they run" kind="info" entries={sql.added} />}
@@ -76,6 +87,75 @@ export function PromoteMigrations({ section }: { section: MigrationSection }) {
 const muted: CSSProperties = { fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.5 };
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 12 };
 
+function DiscardCallout({ count }: { count: number }) {
+  return (
+    <div
+      role="note"
+      style={{ ...muted, color: 'var(--text-primary)', padding: '8px 10px', borderRadius: 6, background: 'var(--surface-inset)' }}
+    >
+      <Pill kind="danger">Discards data</Pill> This promote deliberately discards data in {count} place{count === 1 ? '' : 's'}. Each reason
+      below is the migration author’s own; read it before you acknowledge.
+    </div>
+  );
+}
+
+/**
+ * What one migration declares (#2322). Every string here is the pusher's: rendered as React
+ * text (never markup), with bidi controls made visible (`reviewText`), and a long reason cut
+ * with an expander so it cannot push the rest of the review out of sight.
+ */
+export function MigrationDeclarations({ entry }: { entry: MigrationEntry }) {
+  if (entry.declarationsLeftOut) {
+    return (
+      <div style={{ ...muted, fontSize: 12 }}>
+        Declares moves or discards that are left out: past the size bound of this answer. Read them in the repository before you acknowledge.
+      </div>
+    );
+  }
+  const discards = Object.entries(entry.discards ?? {});
+  const moves = Object.entries(entry.moves ?? {});
+  if (discards.length === 0 && moves.length === 0) return null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '4px 0 2px 2px' }}>
+      {discards.map(([target, why]) => (
+        <div key={`d${target}`} style={{ ...muted, display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
+          <Pill kind="danger">Discards</Pill>
+          <span style={mono}>{reviewText(target)}</span>
+          <Reason text={why} />
+        </div>
+      ))}
+      {moves.map(([from, to]) => (
+        <div key={`m${from}`} style={{ ...muted, display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
+          <Pill kind="info">Moves</Pill>
+          <span style={mono}>
+            {reviewText(from)} → {reviewText(to)}
+          </span>
+          <span>verified when it runs</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Reason({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const { full, shown, clipped } = clipReviewText(text);
+  return (
+    <span style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+      — {open || !clipped ? full : `${shown}…`}
+      {clipped && (
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          style={{ marginLeft: 6, border: 'none', background: 'none', padding: 0, color: 'var(--text-link)', cursor: 'pointer', font: 'inherit' }}
+        >
+          {open ? 'Show less' : 'Show all'}
+        </button>
+      )}
+    </span>
+  );
+}
+
 function MigrationGroup({
   label,
   kind,
@@ -83,7 +163,7 @@ function MigrationGroup({
   entries,
 }: {
   label: string;
-  kind: 'info' | 'danger';
+  kind: 'info' | 'danger' | 'warning';
   note?: string;
   entries: MigrationEntry[];
 }) {
@@ -95,29 +175,33 @@ function MigrationGroup({
       {note && <div style={muted}>{note}</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4, paddingLeft: 4 }}>
         {entries.map((e) => (
-          <details key={`${e.moduleId}\u001f${e.version}`}>
-            <summary style={{ ...mono, cursor: 'pointer' }}>
-              {e.moduleId} · {e.version}
-            </summary>
-            {e.sql === null ? (
-              <div style={{ ...muted, fontSize: 12, padding: '6px 0' }}>SQL left out: past the size bound of this answer.</div>
-            ) : (
-              <pre
-                style={{
-                  ...mono,
-                  margin: '6px 0',
-                  padding: 8,
-                  maxHeight: 240,
-                  overflow: 'auto',
-                  whiteSpace: 'pre-wrap',
-                  background: 'var(--surface-inset)',
-                  borderRadius: 6,
-                }}
-              >
-                {e.sql}
-              </pre>
-            )}
-          </details>
+          // The declarations sit outside the collapsed SQL, so they are read without opening it.
+          <div key={`${e.moduleId}\u001f${e.version}`}>
+            <details>
+              <summary style={{ ...mono, cursor: 'pointer' }}>
+                {e.moduleId} · {e.version}
+              </summary>
+              {e.sql === null ? (
+                <div style={{ ...muted, fontSize: 12, padding: '6px 0' }}>SQL left out: past the size bound of this answer.</div>
+              ) : (
+                <pre
+                  style={{
+                    ...mono,
+                    margin: '6px 0',
+                    padding: 8,
+                    maxHeight: 240,
+                    overflow: 'auto',
+                    whiteSpace: 'pre-wrap',
+                    background: 'var(--surface-inset)',
+                    borderRadius: 6,
+                  }}
+                >
+                  {e.sql}
+                </pre>
+              )}
+            </details>
+            <MigrationDeclarations entry={e} />
+          </div>
         ))}
       </div>
     </div>
