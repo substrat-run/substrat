@@ -6853,6 +6853,19 @@ export function scopeHostContractSuite(
       const junk = await publish('not json');
       expect(await host.admin.versionManifest(staff, 'migrationsapart', junk)).toBe('not json');
       expect(await host.admin.versionMigrations(staff, 'migrationsapart', junk)).toBeNull();
+
+      // #2322: each migration's declared moves and discards are stored beside its SQL and read
+      // back as published, whatever digest the publisher claimed; one declaring none has neither.
+      const declared = [
+        { ...migrations[0]!, moves: { legacy_a: 'a' } },
+        { ...migrations[1]! },
+        { ...migrations[2]!, discards: { 'b.c': 'replaced by d; see "0003"' } },
+      ];
+      const withDeclarations = await publish({ ...base, migrations: declared });
+      expect(await host.admin.versionMigrations(staff, 'migrationsapart', withDeclarations)).toEqual(declared);
+      // A declaration the push boundary refuses (a discard with no reason) carries no SQL at all.
+      const reasonless = await publish({ ...base, migrations: [{ ...migrations[0]!, discards: { a: '' } }] });
+      expect(await host.admin.versionMigrations(staff, 'migrationsapart', reasonless)).toBeNull();
     });
 
     it('an archived scope blocks the delete naming the reap step; a reaped tombstone never blocks', async () => {
