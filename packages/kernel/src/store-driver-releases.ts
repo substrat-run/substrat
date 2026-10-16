@@ -69,13 +69,13 @@ export const STORE_DRIVER_RELEASES_DDL = `
  * release tables were `store_kind_*`, and they and `vertical_scope_stores` keyed by a `kind`
  * column. The values are the same ids, so only names move.
  */
-const LEGACY_STORE_DRIVER_TABLES: Readonly<Record<string, string>> = {
-  store_kind_releases: 'store_driver_releases',
-  store_kind_rollouts: 'store_driver_rollouts',
-  store_kind_current: 'store_driver_current',
-  store_kind_holds: 'store_driver_holds',
-};
-const DRIVER_KEYED_TABLES = [...Object.values(LEGACY_STORE_DRIVER_TABLES), 'vertical_scope_stores'];
+const LEGACY_STORE_DRIVER_TABLES: ReadonlyMap<string, string> = new Map([
+  ['store_kind_releases', 'store_driver_releases'],
+  ['store_kind_rollouts', 'store_driver_rollouts'],
+  ['store_kind_current', 'store_driver_current'],
+  ['store_kind_holds', 'store_driver_holds'],
+]);
+const DRIVER_KEYED_TABLES = [...LEGACY_STORE_DRIVER_TABLES.values(), 'vertical_scope_stores'];
 
 /**
  * The statements that move a directory built before the rename onto its names, to run before
@@ -93,7 +93,7 @@ export function legacyStoreDriverRenames(
   const held = new Set(tables.map((t) => t.toLowerCase()));
   const statements: string[] = [];
   const renamed = new Set<string>();
-  for (const [from, to] of Object.entries(LEGACY_STORE_DRIVER_TABLES)) {
+  for (const [from, to] of LEGACY_STORE_DRIVER_TABLES) {
     if (held.has(from) && !held.has(to)) {
       statements.push(`ALTER TABLE ${from} RENAME TO ${to}`);
       renamed.add(to);
@@ -121,7 +121,7 @@ export function mapLegacyStoreDriverDump<T extends { readonly name: string; read
   const names = new Set(tables.map((t) => t.name.toLowerCase()));
   return tables.map((t) => {
     const lower = t.name.toLowerCase();
-    const to = LEGACY_STORE_DRIVER_TABLES[lower];
+    const to = LEGACY_STORE_DRIVER_TABLES.get(lower);
     if (to !== undefined && names.has(to)) {
       throw substratError(
         'validation_failed',

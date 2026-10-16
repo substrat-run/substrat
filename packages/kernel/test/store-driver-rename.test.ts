@@ -59,6 +59,11 @@ describe('mapLegacyStoreDriverDump', () => {
     expect(mapped[2]).toBe(tenants);
   });
 
+  it('reads the map by its own keys: a table named for a prototype member is passed on untouched', () => {
+    const odd = [{ name: 'constructor', columns: ['kind'] }, { name: '__proto__', columns: ['kind'] }];
+    expect(mapLegacyStoreDriverDump(odd)).toEqual(odd);
+  });
+
   it('refuses a dump that carries a table under both names', () => {
     expect(() =>
       mapLegacyStoreDriverDump([
