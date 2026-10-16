@@ -28,9 +28,9 @@ const scope = () => {
   };
   const texts = new Map<string, string>();
   /** Apply one migration the way an adapter does: guard, statement by statement, record, journal. */
-  const migrate = (moduleId: string, version: string, text: string) => {
+  const migrate = (moduleId: string, version: string, text: string, authored = true) => {
     assertMigrationLeavesLedgerAlone(text, `migration ${moduleId}@${version}`);
-    const steps = runMigrationStatements(sql, { version, sql: text }, (st) => db.exec(st), { key: `${moduleId}@${version}`, authored: true });
+    const steps = runMigrationStatements(sql, { version, sql: text }, (st) => db.exec(st), { key: `${moduleId}@${version}`, authored });
     recordOwnershipSteps(sql, moduleId, steps, 'now');
     db.prepare('INSERT INTO _substrat_migrations VALUES (?, ?, ?)').run(moduleId, version, 'now');
     texts.set(`${moduleId}@${version}`, text);
@@ -100,8 +100,11 @@ describe('the ownership record, statement by statement (#2068)', () => {
 
   it('ignores views, TEMP tables and the spine', () => {
     const s = scope();
-    s.migrate('a', '1', 'CREATE TABLE t (id TEXT); CREATE VIEW v AS SELECT id FROM t; CREATE TEMP TABLE tmp (x TEXT)');
+    s.migrate('a', '1', 'CREATE TABLE t (id TEXT); CREATE VIEW v AS SELECT id FROM t');
+    // An authored migration can no longer make a TEMP table (#115); kernel-derived DDL still could.
+    s.migrate('a', '2', 'CREATE TEMP TABLE tmp (x TEXT)', false);
     expect(s.owners()).toEqual({ t: 'a' });
+    expect(() => s.migrate('a', '3', 'CREATE TEMP TABLE tmp2 (x TEXT)')).toThrow(/creates a TEMP object/);
   });
 
   it('refuses a migration that names the ledger — in any statement, read or write — before it runs', () => {
