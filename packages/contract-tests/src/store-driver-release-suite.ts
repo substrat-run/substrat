@@ -238,6 +238,27 @@ export function storeDriverReleaseContractSuite(adapterName: string, makeFixture
       await expectRefusal(host.admin.beginStoreDriverRollout(staff, { driver, sha256: sha('9'), action: 'rollout', holder }), 'not_found');
     });
 
+    it('keeps the rollback on the previous good release while the current one is re-posted part way (#2312)', async () => {
+      const driver = freshDriver();
+      const holder = ulid();
+      await rollOut(driver, holder, sha('1'), sha('2'));
+      const target = async () => (await host.admin.storeDriverState(staff, driver)).rollbackTarget;
+      // Re-posting the current release, paged: each request that pauses or diverges leaves every
+      // script on 2, so a rollback still escapes to 1.
+      for (const state of ['paused', 'diverged'] as const) {
+        const repost = await host.admin.beginStoreDriverRollout(staff, { driver, sha256: sha('2'), action: 'rollout', holder });
+        await host.admin.finishStoreDriverRollout(staff, { driver, seq: repost.seq, holder, state, detail: null, ...(state === 'paused' ? { walked: [] } : {}) });
+        expect(await target(), state).toBe(sha('1'));
+      }
+      // Its twin: a rollout of ANOTHER release that pauses leaves the fleet mixed, and undoing it
+      // converges on the current release.
+      await host.admin.recordStoreDriverRelease(staff, { driver, sha256: sha('3'), sourceCommit: commit('c') });
+      const other = await host.admin.beginStoreDriverRollout(staff, { driver, sha256: sha('3'), action: 'rollout', holder });
+      await host.admin.finishStoreDriverRollout(staff, { driver, seq: other.seq, holder, state: 'paused', detail: null, walked: [] });
+      expect(await target()).toBe(sha('2'));
+      await host.admin.releaseStoreDriverHold(staff, { driver, holder });
+    });
+
     it('excludes a shared hold during an exclusive one, and an exclusive one while any hold lives', async () => {
       const driver = freshDriver();
       const [push, rollout, push2] = [ulid(), ulid(), ulid()];

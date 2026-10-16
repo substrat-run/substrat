@@ -324,16 +324,23 @@ export function recordStoreDriverReleaseIn(
  * `rollbackTarget` is, in order:
  * - the target of a rollback that is the newest attempt since the current release, a `failed` one
  *   aside, and ended `paused` or `diverged` (`unfinishedRollback`): posting the rollback again
- *   continues it, and never turns it around onto the release it is leaving. A failed attempt moved
- *   nothing, or returned what it moved, so it changes nothing here. No rollout may begin while a
+ *   continues it, and never turns it around onto the release it is leaving. A `failed` request
+ *   changes nothing here: it moved nothing, or returned what its attempt moved, or (a later page's
+ *   canary) moved nothing in its own request while earlier pages' verticals stay on the new
+ *   release; those pages' `paused` rows are still since the current release, so the fleet still
+ *   reads as mixed below. No rollout may begin while a
  *   rollback to an earlier release is unfinished, `paused` or `diverged` (`beginStoreDriverRolloutIn`):
  *   it is finished first, by posting it again. A rollback onto the current release (undoing a
  *   diverged rollout) does not block a rollout. A rollback to an earlier release cannot meet the
  *   schema rule (the route refuses one below the current schema), but one onto the current release
  *   can, and then it never finishes, so going forward must stay open;
- * - the current release itself, when a rollout since it ended `diverged` or `paused`: the fleet may
- *   be mixed, and undoing that rollout means converging every script back on the release it was
- *   healthy on, never going past it;
+ * - the current release itself, when a rollout since it ended `diverged` or `paused` on ANOTHER
+ *   release: the fleet may be mixed, and undoing that rollout means converging every script back
+ *   on the release it was healthy on, never going past it. A row that moves scripts to the current
+ *   release itself (a re-post of it, paged over several requests, or a rollback onto it) leaves
+ *   every script on the current release whatever it ended, so it never makes the fleet mixed:
+ *   otherwise re-posting the current release past one request's walk would turn the rollback
+ *   onto the release being escaped (#2312);
  * - otherwise the immediately previous good release.
  * An unfinished attempt never changes what "previous good" means.
  */
@@ -353,10 +360,10 @@ export function storeDriverStateIn(db: SwitchSql, driver: string, nowMs?: number
   const row = rollouts.find((r) => r.seq === seq);
   const previousGoodSha256 = row?.previousGoodSha256 ?? null;
   const since = rollouts.filter((r) => r.seq > seq);
-  // A failed attempt moved nothing, or returned what it moved, so it never decides what comes next.
+  // A failed request never decides what comes next (see above).
   const newest = since.filter((r) => r.state !== 'failed').at(-1);
   const unfinishedRollback = newest?.action === 'rollback' && (newest.state === 'paused' || newest.state === 'diverged') ? newest.sha256 : null;
-  const mixed = since.some((r) => r.state === 'diverged' || r.state === 'paused');
+  const mixed = since.some((r) => (r.state === 'diverged' || r.state === 'paused') && r.sha256 !== current.sha256);
   return {
     current: { sha256: current.sha256, seq, previousGoodSha256 },
     rollouts,

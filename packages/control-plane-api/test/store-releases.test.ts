@@ -558,6 +558,27 @@ describe('a rollout canaries, then moves every vertical that declared the driver
     expect(new Set(f.runs.values())).toEqual(new Set([sha('1')]));
   });
 
+  it('rolls back to the previous good release after a re-post of the current one paused past the walk cap (#2312)', async () => {
+    const f = fleet();
+    await run(f, sha('1'));
+    await run(f, sha('2'));
+    f.walks.length = 0;
+    // Re-posting the current release over a fleet bigger than one request walks: nothing moves,
+    // and the request pauses.
+    expect(await run(f, sha('2'), { perRequestWalks: 2 })).toMatchObject({ complete: false, moved: [], rollout: { state: 'paused' } });
+    // The emergency rollback still escapes 2, onto 1, and never converges onto 2 first.
+    expect((await host.admin.storeDriverState(staff, 'graph')).rollbackTarget).toBe(sha('1'));
+    const rollback = () =>
+      runStoreDriverRollout({
+        admin: host.admin, actor: staff, registration, sha256: sha('1'), action: 'rollback', ensure: f.ensure,
+        ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call, perRequestWalks: 2,
+      });
+    expect(await rollback()).toMatchObject({ complete: false, moved: ['va', 'vb'] });
+    expect(await rollback()).toMatchObject({ complete: true, moved: ['vc'], rollout: { state: 'good' } });
+    expect(await current()).toBe(sha('1'));
+    expect(f.walks).toEqual(['va:2', 'vb:2', 'va:1', 'vb:1', 'vc:1']);
+  });
+
   it('walks again, never skips, the verticals a post uploaded before it could record them (#2312)', async () => {
     const f = fleet();
     await run(f, sha('1'));

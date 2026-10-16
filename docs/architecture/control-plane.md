@@ -447,7 +447,13 @@ and `POST /store-drivers/:driver/rollback` always goes there:
 
 - A request that runs out of its 100 uploads or its 300 walks ends `paused`. It is not a fault: post
   the same rollout, or the same rollback, again.
-- A `failed` attempt moved nothing or returned what it moved. It never decides where a rollback goes.
+- A `failed` request never decides where a rollback goes. It moved nothing, or returned what its
+  attempt moved. The exception is a canary that fails on a later page: that request moves and
+  returns nothing, so the verticals earlier pages moved stay on the new release. Their `paused`
+  rows still count, so `rollbackTarget` is the current release and a rollback converges them.
+- A rollout of the **current** release (a re-post, paged past one request) never moves the
+  rollback target, whatever it ends: every script it touches stays on the current release, so a
+  rollback still goes to the previous good one.
 - A rollback that has not finished (`paused`, or `diverged` because an upload failed or a request
   lost its hold) is continued: posting the rollback again goes to its target, never back.
 - While a rollback to an **earlier** release is unfinished, **every rollout is refused** (409). The
