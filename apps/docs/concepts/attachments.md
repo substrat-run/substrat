@@ -69,7 +69,7 @@ availability for safety: a rewind or a restore whose fence did not land could ha
 state that lacks rows a later restore brings back. The refusal says so, and nothing has been
 replaced, so retry once the attachment store answers. A rewind also needs to know whose bucket to
 fence. The control plane names the tenant, and otherwise the scope's own provision receipt does.
-A scope that has neither is refused until it is reconciled.
+A scope that has neither and holds files is refused until it is reconciled. One that holds no file has nothing to lose and is not fenced.
 
 **What the sweep cannot protect.** A restore from a dump older than 35 days can bring back rows
 whose bytes were swept. A removed attachment has the same exposure today, since removing it
