@@ -6,12 +6,12 @@ title: "A mutation can mint a single-use upload link that takes a file with no s
 status: proposed
 aliases: []
 amends: []
-tracking: ["#2311", "#2314", "#2315"]
+tracking: ["#2311", "#2323", "#2314", "#2315"]
 ---
 
 # K-54 — A mutation can mint a single-use upload link that takes a file with no session
 
-> Proposed, not ratified. It records the write path that [#2311](https://github.com/substrat-run/substrat/pull/2311) shipped and that no earlier record covers. Deciding it is the maintainer's. One question below is left open on purpose.
+> Proposed, not ratified. It records the write path that [#2311](https://github.com/substrat-run/substrat/pull/2311) shipped and that no earlier record covers. Deciding it is the maintainer's.
 
 **An attachment target opts in, and its declaration is the policy.** A module's `attachmentTargets[]` entry may declare `uploadLinks: { maxBytes, contentTypes? }`. Without it, `ctx.attachments.mintUploadUrl` refuses that target. `maxBytes` is required and held under the platform ceiling of 25 MiB. `contentTypes` is an allowlist of exact media types and families (`image/*`), and when it is absent the link admits any well-formed type. A family never admits an active type, one a browser runs rather than shows: HTML, `text/xsl`, `multipart/x-mixed-replace`, the types a browser sniffs for HTML (`application/unknown`, `unknown/unknown`), every XML type (`text/xml`, `application/xml` and any `+xml` subtype, SVG and XHTML among them) and every WHATWG JavaScript MIME type. The type is judged as its essence, without parameters, whitespace or case, and anything that is not exactly one `type/subtype` (a comma-separated list, a control character, a wildcard) is refused by every allowlist. Only an exact entry admits an active type. A mint may narrow the size, never widen it, and it cannot change the types. The declaration is rendered into the vertical's `PERMISSIONS.md` under *Upload links*: the entity type, the key the minter must hold, the ceiling, the types and the declaring module. So a widening is a reviewed diff, under the permission checkpoint, like a widened role.
 
@@ -23,7 +23,7 @@ tracking: ["#2311", "#2314", "#2315"]
 
 **The vertical's own guards run at the mint only.** An entity lock or a state check is decided in the operation, before it mints. The platform cannot know it and does not run it again at redemption. That is why the time box is short and a link can be revoked: a vertical that locks an entity after minting a link for it revokes the link.
 
-**The secret is in the URL path.** A secret carried only in a header could not be used with `curl --upload-file URL` alone, and that one-line upload is the reason the path exists. The vertical's `invocationLog` writes any `sbup_` segment, and the secret segment of the redemption path, as `[redacted]`. *Open question, for the maintainer:* request logs of the hosting platform may retain the URL for the link's lifetime. The maintainer decides whether to accept that, to move the secret out of the path, or to have those logs redact it.
+**The secret is in the URL path.** A secret carried only in a header could not be used with `curl --upload-file URL` alone, and that one-line upload is the reason the path exists. The vertical's `invocationLog` writes any `sbup_` segment, and the secret segment of the redemption path, as `[redacted]`.
 
 **Compensation: a failure after the commit never rejects, and bytes are kept on doubt.** The bytes go to the blob store before the row, as for any upload. They are deleted again only when the scope answered a refusal, which means the row did not commit. A failure in post-commit work is not turned into a refusal. When the transport fails and the commit is unknown, the bytes are kept, because deleting them could leave a committed row without its file. The cost is an object that no row points at, and a sweep for those is [#2314](https://github.com/substrat-run/substrat/issues/2314). A caller whose reply was lost cannot yet retry the same link, and idempotent redemption is [#2315](https://github.com/substrat-run/substrat/issues/2315).
 
@@ -31,7 +31,7 @@ tracking: ["#2311", "#2314", "#2315"]
 
 - **Implemented and tested** on both adapters, the hosted one included: `uploadLinkContractSuite` (`packages/contract-tests/src/upload-link-suite.ts`) and the HTTP route (`packages/vertical-host/test/upload-link-redeem.test.ts`). The review of #2311 and its follow-up added the cases for the principal-only mint, scope and tenant isolation, the active-type rule, the target-before-state answer, the malformed-secret short circuit and the streaming size cap. Each guard was mutation-checked.
 - **The `PERMISSIONS.md` rendering** is held by `tools/permission-diff.test.mts` on fixture verticals. No vertical in the repo declares `uploadLinks` yet.
-- **Not decided here:** the open question on platform request logs above, and #2314 and #2315.
+- **Not decided here:** the orphan sweep ([#2314](https://github.com/substrat-run/substrat/issues/2314)) and idempotent redemption ([#2315](https://github.com/substrat-run/substrat/issues/2315)).
 
 ## Why
 
