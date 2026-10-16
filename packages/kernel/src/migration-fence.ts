@@ -183,6 +183,10 @@ function lossesOf(before: Measure, after: Measure, renames: Renames): Loss[] {
       const now = followed ? renames.columns.get(table)!.get(column)! : column;
       const kept = a.columns.get(now);
       const target = { table, column };
+      // A kernel-derived column (`_substrat_archived_at`, …) leaving is the kernel's own check's to
+      // refuse, right after this one in the same transaction (#2090), with the remedy that fits:
+      // no declaration can excuse it. Its VALUES are still held here.
+      if (kept === undefined && namesSpineTable(column)) continue;
       if (kept === undefined) {
         losses.push({ target, what: `column ${table}.${column} held ${total(held)} value(s) and is gone` });
         continue;

@@ -153,6 +153,17 @@ describe('the data-loss fence (#115)', () => {
     expect(refusal(() => s.migrate({ sql: "INSERT INTO notes VALUES ('c', 'new', NULL);" }))).toContain('table log held 1 row(s), now 0');
   });
 
+  it("leaves a kernel column's leaving to the kernel's own check, but still holds its values", () => {
+    const setup = `CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT, _substrat_trashed_at TEXT);
+      INSERT INTO notes VALUES ('a', 'x', '2026-01-01T00:00:00Z');`;
+    // Gone: #2090's check refuses that, with its own remedy, right after this one.
+    scope(setup).migrate({ sql: 'ALTER TABLE notes DROP COLUMN _substrat_trashed_at;' });
+    // Kept but emptied: a binned row would come back, and nobody declared that.
+    expect(refusal(() => scope(setup).migrate({ sql: 'UPDATE notes SET _substrat_trashed_at = NULL;' }))).toContain(
+      'column notes._substrat_trashed_at held 1 value(s), now 0',
+    );
+  });
+
   it('does not measure an additive migration, and does not hold kernel-derived DDL to the fence', () => {
     const s = populated();
     s.migrate({ sql: 'ALTER TABLE notes ADD COLUMN tag TEXT; CREATE INDEX notes_tag ON notes (tag); CREATE VIEW v AS SELECT id FROM notes;' });
