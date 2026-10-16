@@ -16,9 +16,9 @@ one of them a question only another can answer:
 | **Traffic** | one datapoint per request, at the router | sampled | how much, how fast, how many errors |
 | **Invocation logs** | one line per request, written by the vertical | exact while retained | what this request did, and what it printed |
 | **Traces** | spans the runtime produces | sampled, opt-in | where outbound time went |
-| **The spine** | one row per mutation, per delivery, per denial | exact, forever | what happened to the data, who did it, and what it set off |
+| **The spine** | one row per mutation, per delivery, per denial | exact; retention depends on the record | what happened to the data, who did it, and what it set off |
 
-The first three are about *requests*. The fourth is about *meaning*, and it is the one that
+The first three describe *execution*, including background work. The fourth is about *meaning*, and it is the one that
 cannot be rebuilt from anything else.
 
 ## Traffic: the router counts
@@ -206,6 +206,18 @@ types, event types to the outside world, and anything declared but never observe
 dashed. Next to it, per-operation health joins emitted events with the denial log, grouped by
 operation. That is where a role missing a permission key shows up before a user reports it.
 
+Refused lifecycle transitions also have records. The process map can show where a
+transition stopped and which guard refused it. Audit can include permission denials
+beside allowed activity, with a link to the refused invocation. A failure to read
+refusals is shown as missing evidence, never as proof that everything was allowed.
+
+The platform can also sample which **declared output fields** a response actually
+returned: present, null or absent. This is off unless the platform enables it. It
+records declared field names rather than values, and the read aggregates by operation
+and field. That helps distinguish an API field nobody receives from one merely present
+in its schema; sampled coverage is not proof that a field is unused. HTTP and MCP use
+the same observation surface.
+
 ## Absence is a signal too
 
 Everything above records things that happened. The hardest failure to see is a job that never
@@ -222,13 +234,27 @@ Two mechanisms produce the row:
   Module code cannot forge these rows: `ctx.requestPlatform` refuses the kind the platform uses
   to write them.
 
+## Findings: from an occurrence to something to resolve
+
+A log line answers what happened once. **Observability → Findings** keeps track of
+problems that deserve follow-up: recurring operational failures, failed schedule
+invariants and stale freshness expectations. They are detected when the evidence is
+written, rather than by a separate periodic scan.
+
+Each finding has severity, first and last seen times, evidence references and a
+lifecycle. A team can acknowledge, resolve or reopen it; a recurring problem can name
+the version under which it regressed. Suppress rules have a scope and an expiry, and
+changes are audited. Retention resolves quiet findings as stale rather than deleting
+their history. This is the useful next stop after “the logs show it failed”: who has
+seen the problem, and whether it has been dealt with.
+
 ## Where each one surfaces
 
 For a customer's admin, in the **Dashboard**:
 
-- **Observability** (a team page, filtered by app): *Traffic* (the router's data), *Health*
-  (worst first), *Logs* (invocation lines), *Events* (facets), *Schedules* (sweep runs), and
-  *Flow* (declared versus observed, plus per-operation health).
+- **Observability** (a team page, filtered by app): *Pulse* for traffic, health and
+  schedules; *Processes* for declared versus observed flow; *Logs* for lines, requests,
+  patterns and event facets; and *Findings* for problems with a lifecycle.
 - An app's **Data** tab: a record's history, with *Why?*, *What did it do?* and *Same call* on
   each event.
 - An app's **Settings → Integrations**: the platform-request journal, meaning what the platform

@@ -8,9 +8,8 @@
  * Second, the kick NAMES a scope and carries no data — the control plane reads the rows
  * itself — which is why a flag any vertical can set is safe to act on.
  *
- * It is drawn as built, not as planned. Events have no kick yet: they leave only through
- * the sweep. When the event kick lands, `kick.sub`, `events.sub` and the caption change
- * here and the drawing does not.
+ * This figure follows platform intents and lake shipping. Exported events have their
+ * own kicked pull, shown separately by CommunicationFlow in chapter 7.
  *
  * Same contract as the sibling content modules: a fact typed into the template renders on
  * the page and vanishes from llms.txt. Put it here.
@@ -41,7 +40,7 @@ export const toKick = 'response flagged';
 export const kick: Box = {
   tag: 'latency · seconds',
   title: 'The router kicks',
-  sub: ['returns the response to the user first', 'then asks for a drain · intents only, today'],
+  sub: ['returns the response to the user first', 'then asks for a drain · intents and exports'],
 };
 
 /** The reliability path. Nothing flows INTO it: it runs on a clock, not a signal. */
@@ -80,7 +79,8 @@ export const events: Box = {
 export const caption =
   'The kick and the sweep are not alternatives. The kick makes it fast; the sweep makes it ' +
   'certain — a lost kick costs a wait, never a missed intent or event. Neither carries data: ' +
-  'the control plane always reads the scope itself.';
+  'the control plane always reads the scope itself. This figure follows intents and lake ' +
+  'shipping; chapter 7 shows the separate kicked pull for exported events.';
 
 export function alt(): string {
   const line = (b: Box) => `**${b.title}** (${b.tag}) — ${b.sub.join('; ')}.`;

@@ -62,6 +62,12 @@ does not cache routes and `getScope` re-checks the directory. When a customer mu
 served *now*, this is the lever, and its immediacy is paid for with a directory read per
 request.
 
+Suspension also holds scheduled and background work. A router lifecycle declaration
+can make that traffic gate platform-owned. For narrower intervention, staff can stop
+one module's system work on one scope (chapter 9), while the tenant can switch off
+one peer's access between its own apps (chapter 7). Those levers have different owners
+and different reach; choose the one matching the work you need to stop.
+
 **`archived` is not `deleted`.** The bytes are still there and cost money. Moving to `reaped`
 is what frees them, it is irreversible, and — per chapter 9 — nothing does it automatically
 unless a retention window has been configured. If your mental model is "archiving cleans up",
@@ -200,20 +206,22 @@ edges.
   not there yet, which is why provisioning gates them. `global` is what every scope is today.
 - **In-scope consumers do not retry.** Deliberate for v0, and worth re-deciding as verticals
   grow consumers that fail for transient reasons.
-- **Dual-emit across a schema version is not available.** Postponed with a design, not
+- **In-scope dual-emit across a schema version is not available.** Postponed with a design, not
   abandoned — but no plan should promise a deprecation window until it exists.
 - **Cross-scope reads are a fold, not a join.** Fleet-wide questions cost a read per scope.
   Projections and per-tenant D1 are the current answers, and the many-scope fan-out cost of
   permission projection for a very large tenant is an explicit open question.
-- **The lake has no query gateway, no tenant scoping and no erasure.** Tier 2 is filled and
-  queried by operators. A subject erased in Tier 1 still has payloads in Tier 2 until lake
-  erasure is built (chapter 11).
-- **Storage is not metered, and quotas are not enforced.** The platform counts installations,
-  engine licences and model calls. It cannot yet say how many bytes a tenant holds, and an
-  entitlement's quota is information a module may act on, not a limit the platform applies
-  (chapter 12).
-- **Denials and deliveries carry no invocation id**, so "same call" reaches a request's events
-  but not its refusals.
+- **The lake gateway is implemented but off until configured.** It is staff-only,
+  tenant-scoped and envelope-only, and has not been exercised against the real lake.
+  The console and dashboard do not use it yet. Lake erasure remains unfinished
+  (chapter 11).
+- **Storage is measured but not priced, and quotas are not enforced.** Daily samples and
+  on-demand readings report bytes with coverage and freshness. They are not yet a
+  storage invoice, and an entitlement's quota is still information a module may act
+  on rather than a platform-enforced limit (chapter 12).
+- **The assistant engine is only the first part.** Its record, lease and approval
+  contract exist; a host runner and a vertical composing it still need to arrive
+  (chapter 7).
 - **Executors hold the scope's turn on the local SQLite adapter** and not on Durable Objects.
   The two hosts differ only under a slow connector, but they do differ.
 - **Grant expiry transitions and facet recency are contract-tested on SQLite only**, because

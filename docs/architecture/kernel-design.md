@@ -541,6 +541,43 @@ shared across a tenant's verticals is §13 question 21.
   not to its digest — the kernel may respell the same declaration between releases, and
   holding those rows to a digest would fail every scope closed on that upgrade. Their
   digest is still recorded, as the fact of what ran.
+- **An authored migration may not lose data the scope holds unless it declares it** (#115,
+  `migration-fence.ts`). The planner refuses destructive diffs when it writes a migration;
+  this is the half that judges what any authored SQL *does*, at apply. It measures rather
+  than parses: unless every statement is provably additive (`CREATE …`, `ALTER TABLE … ADD`),
+  every module table's rows and every column's values per storage class are counted before
+  the first statement and after the last, inside the migration's transaction, and a table
+  that held rows and is gone or shorter, or a column that held values and is gone, emptier or
+  retyped, refuses the migration — following `RENAME TO`/`RENAME COLUMN` and judging a rebuild
+  by its end name. "Production data" is therefore rows that exist, per scope and per table:
+  there is no phase flag, and a table nobody has written to may be dropped or reshaped
+  freely. Each table after the migration is claimed by one table before it, a rename first, so
+  `DROP TABLE b; ALTER TABLE a RENAME TO b` loses `b`'s rows visibly; a `DROP TABLE` releases the
+  name, so a later rename or `RENAME COLUMN` on it is the renamed table's, whatever order the scope
+  created them in, and a dropped table comes back only under its original name — continued, and
+  followed through later renames, when a table the migration made is renamed onto that name (the
+  create-copy-drop-rename rebuild). An authored migration that makes a TEMP object is refused
+  before it runs: a Durable Object refuses TEMP objects, and one would shadow the scope's tables
+  for every unqualified statement; the measuring reads name `main` for the same reason. Every measuring query stays
+  inside `DO_SQL_LIMITS` (a column per storage class, so 25 table columns per scan). The
+  override is reviewed in the migration diff, on `SqlMigration`, outside the SQL and its digest:
+  `moves` (verified — the target must gain what its sources held, and a table moved whole must
+  bring each of its columns under the same name unless the column is declared by name) and
+  `discards` (with a required reason; also how a deliberate retype, a widening included, is
+  declared — counts cannot tell `5 → 5.0` from `5 → 0.05`). A refusal fails the scope closed like any failed
+  migration, with the data intact; `pnpm lint:migration-fence` replays every migration in the
+  repo against populated scopes through the same function, so an in-repo refusal is red in
+  its pull request first. Kernel-derived DDL is exempt, and a kernel column (`_substrat_*`)
+  leaving is #2090's check to refuse. Not seen, because it counts: in-place replacement (values
+  rewritten at the same count and storage class, rows replaced by as many other rows, a column
+  dropped, re-added and refilled); a dropped table whose name is continued by a table the
+  migration created, filled from somewhere else, holding at least as many rows, even renamed away again
+  (`DROP TABLE a; CREATE TABLE a AS SELECT * FROM b`, or the same through `CREATE TABLE n …;
+  ALTER TABLE n RENAME TO a; ALTER TABLE a RENAME TO d`), which counts cannot tell from the rebuild
+  idiom and a rename after it; and which source a move's target gained from. Refused by design: data copied under
+  another table's name, until `moves` declares it. A bounded property test
+  (`migration-fence.property.test.ts`) replays every short migration of a small grammar against
+  ground truth and allows exactly these classes.
 - **Large backfills are jobs, not migrations.** The migration adds the shape; a chunked
   job (alarm-driven) backfills and marks completion in the journal separately. Backfill
   writes are flagged so they don't pollute the event spine as fake user activity.

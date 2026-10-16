@@ -3,7 +3,7 @@
 We left the last chapter one step from the handler. This chapter is that step: what an
 operation is handed, what it is denied, and why each denial is worth its inconvenience.
 
-## The whole surface
+## The core surface
 
 An operation handler receives exactly one thing.
 
@@ -48,8 +48,10 @@ That is representative, not simplified. `ctx` is the entire capability surface:
 | `ctx.platformRequests(filter)` | read back what the platform did with those |
 | `ctx.sealToConnection(provider, value)` | encrypt a value so only that connector can open it |
 
-**Nothing on `ctx` checks a permission except `ctx.check`.** `page`, `search` and `versionOf`
-read data, and the operation's own `assertAllowed` comes first, as always.
+**An ordinary read still needs the operation's permission check.** `page`, `search` and
+`versionOf` do not supply it. Some narrower helpers now enforce checks of their own:
+sharing re-checks delegation, archive/trash moves check their declared keys, and bin reads
+check authority per row. Those checks supplement the operation's declared authorization.
 
 A connector's handler gets a *different* context with a scoped `connection(provider)` handle.
 That handle is host code's, not an operation's, and it appears later in this chapter.
@@ -95,6 +97,12 @@ operation and the version the emitting code was deployed as. On most of those a 
 a *fact* — the payload was erased, nobody was impersonating, a consumer emitted it — which
 a hand-rolled `SELECT` would read as missing data instead. Neither helper checks a
 permission; the caller does that first, as always.
+
+For an activity feed or projection over a whole scope, `readScopeTimeline` and
+`readScopeHistory` walk all events after an exclusive event-id watermark. Check a
+scope-wide permission before exposing that whole walk. A durable reader stores the
+**last applied event id**, not `nextCursor`: the latter becomes null when caught up,
+and storing it would restart the next pass from the beginning.
 
 ## SQL strings, and why there is no query builder
 
@@ -357,6 +365,64 @@ The other option is to make the slow part an effect: emit an event, and let a co
 with retries (chapter 5). Pick by one question: does the vertical need the result *inside*
 its own logic (bracket it), or is the result a side effect in someone else's system (emit
 it)?
+
+## More behavior comes from the declaration
+
+A growing part of an operation no longer needs a hand-written handler. A complete
+create declaration can say `derive: 'create'`: the host checks its declared permission,
+fills the columns from input, defaults, a minted id and declared stamps, links the new
+entity to its parent, and emits the event. If the generic behavior is wrong for this
+operation, `authored` states why. The model also derives archive, unarchive, trash,
+restore and bin-list operations. [The model reference](/concepts/model) gives the exact
+eligible shapes; this is not a promise to infer arbitrary business logic.
+
+**Stamps** name columns such as `createdAt`, `createdBy`, `updatedAt` and `updatedBy`.
+The updated pair is enforced on each row a call emits about, inside that call's
+transaction, including consumers and imports. A handler that emits a change but leaves
+the declared update stamps wrong rolls back. The declaration becomes an invariant.
+
+### Archive and trash belong to the kernel
+
+An entity opts in with separate archive and trash permission keys. Archiving removes it
+from active views while keeping it readable. Trashing puts it in a bin, and the host
+refuses ordinary entity-addressed operations before their handlers run. Permission is
+checked first, so the refusal does not reveal a binned record to someone without access.
+
+Restoring an archived record from the bin brings it back **archived**. The kernel owns
+the state columns and refuses direct module writes to them. Its composed reads default
+to active rows; authored SQL still needs to select the intended view. Kernel state moves
+preserve the entity version, so a held ETag survives a trip to the bin and back.
+
+Purging is separate from trashing. A declared retention horizon derives a bounded
+schedule, with one entity per transaction and the cutoff re-checked inside it.
+`purgeEarly: false` also holds manual purge operations to that horizon. See
+[archive and trash](/concepts/archive-and-trash) for the state model. These are entity
+states inside a live scope; archiving the entire scope is the lifecycle from chapter 2.
+
+### Searchable attachments and live screens
+
+Attachment text is extracted by a background job and indexed inside the scope. An
+upload can succeed while extraction is pending, unsupported or failed. The host supplies
+parsers from `@substrat-run/attachment-extractors`, now including PDF; a host with no
+extractors records unsupported rather than pretending to have indexed the file.
+The kernel bounds input, time and output, and the parsers also bound memory use.
+
+Search checks access **before** matching and limiting results. It returns neither
+snippets nor relevance scores that could disclose hidden documents. Extracted text
+stays out of dumps and snapshots and is rebuilt from available attachment bytes after
+a restore. [Attachments](/concepts/attachments) describes the setup and result states.
+
+Live reads are the other half of a responsive screen. A declared subscription sends
+permission-checked invalidations: “something you may read changed.” The client then
+re-reads through an ordinary operation. The frame does not carry a replacement for
+the API response, and the check runs for every frame. Where live reads are unavailable,
+including the Node dev host, the client falls back to polling. See
+[reads](/concepts/reads) for subscriptions and paging.
+
+Paged reads honor their declared sort and order. A cursor belongs to that walk; changing
+the order or sort requires restarting it. For row-filtered reads, continuation tokens
+are sealed so a caller cannot inspect the position of a hidden row. Treat cursors as
+opaque tokens, never as an id your client can construct.
 
 ## Parse, don't trust — and the host is what parses
 

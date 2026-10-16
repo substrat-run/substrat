@@ -171,6 +171,7 @@ export function guideSidebar() {
         { text: 'Permissions', link: '/concepts/permissions' },
         { text: 'Authentication & identity', link: '/concepts/identity' },
         { text: 'Events & audit', link: '/concepts/events' },
+        { text: 'Cross-vertical communication', link: '/concepts/cross-vertical' },
         { text: 'Snapshots & test copies', link: '/concepts/snapshots' },
         { text: 'The deploy model', link: '/concepts/deploying' },
         { text: 'Reads & scaling', link: '/concepts/reads' },

@@ -20,6 +20,8 @@ exact input the person saw.
 
 ## How it is used
 
+<CommunicationFlow kind="assistant" />
+
 The engine never calls a model. A host runs the loop and writes the result through the engine:
 
 1. A person says something: `sendMessage` appends their message and begins a turn.
@@ -38,9 +40,9 @@ The engine never calls a model. A host runs the loop and writes the result throu
 - **The record is append-only and numbered.** The number is the cursor a client resumes after,
   so a dropped connection picks up exactly where it stopped.
 - **One run writes at a time.** A run replaced while still running cannot write.
-- **A change runs once, with the input the person approved.** The model cannot alter the
-  arguments or the operation after the person agreed, an approval not used before it expires
-  runs nothing, and a restarted loop cannot run the change twice.
+- **An approved call can be claimed once, with the exact approved input.** Changing the
+  arguments, operation or deployed version makes the claim fail. An expired approval cannot
+  be claimed, and a restarted loop cannot claim the same call again.
 - **The assistant's side and the person's side are written by different keys.** A person cannot
   write an event that says the assistant said it. The assistant's key belongs to a system
   principal, never to a person's role, and writes only while a turn the person started is open.
@@ -51,5 +53,9 @@ The engine never calls a model. A host runs the loop and writes the result throu
 
 ## What it will not do
 
+- It cannot make a tool's external effect atomic with the execution claim. If the host stops
+  after claiming but before recording the result, the record alone does not prove whether
+  the tool ran. The host integration must handle that recovery boundary, and the target
+  operation still checks its own permissions. Approval is not a grant of target authority.
 - It does not talk to a model or a network.
 - It has no message branches, human participants, support handoff or memory yet.

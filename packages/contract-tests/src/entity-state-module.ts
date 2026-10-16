@@ -255,6 +255,9 @@ export const rebuildMod: ModuleRegistration = {
       version: '0006-split-copy',
       sql: `INSERT INTO rb_split SELECT * FROM rb_split_old;
             DROP TABLE rb_split_old;`,
+      // #115: across two migrations the fence cannot see that the rows are the same rows, so the
+      // move is declared — and verified: `rb_split` must gain every row `rb_split_old` held.
+      moves: { rb_split_old: 'rb_split' },
     },
     {
       version: '0007-rebuild-search',

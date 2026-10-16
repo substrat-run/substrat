@@ -48,8 +48,12 @@ consumer, pass the event's id. The engine registers as one frozen constant, like
 
 ## What it guarantees
 
-- **Nobody is mailed twice for one occasion.** A delivery is unique on (dedupe key, topic,
-  person, channel), and a redelivered event finds its row.
+<CommunicationFlow kind="notifications" />
+
+- **One delivery record per occasion and recipient.** A delivery is unique on (dedupe key,
+  topic, person, channel), and a redelivered event finds its row instead of creating another
+  send intent. Provider delivery is still at-least-once: if the provider accepts a message
+  but recording the outcome fails, a retry can send the message again.
 - **A mail is never sent blank.** A placeholder with no variable makes `notify` throw, which
   rolls back your transaction. From a consumer, the event dead-letters with the reason.
 - **A value cannot be turned against the reader.** Variables are HTML-escaped in the HTML part

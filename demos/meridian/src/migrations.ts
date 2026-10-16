@@ -155,6 +155,15 @@ export const meridianMigrations = [
     DROP TABLE hr_leave_requests;
     DROP TABLE hr_absence_ledger;
   `,
+    // #115: the rows move into the engine's tables, which the kernel verifies before it lets the
+    // two tables go: each target gains what its source held, and every column arrives under its
+    // own name — but `employee_id`, which the engine calls `subject_id`, so it is moved by name.
+    moves: {
+      hr_leave_requests: 'absence_requests',
+      'hr_leave_requests.employee_id': 'absence_requests.subject_id',
+      hr_absence_ledger: 'absence_ledger',
+      'hr_absence_ledger.employee_id': 'absence_ledger.subject_id',
+    },
   },
   // boundary-lint-end R5
 ];

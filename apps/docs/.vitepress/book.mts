@@ -25,7 +25,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import MarkdownIt from 'markdown-it';
 import { bookChapters, fileForLink } from './sidebar.mjs';
-import { SITE, toTwin, type Artifact, type ComponentTwin } from './llms.mjs';
+import { SITE, toTwin, altTwin, type Artifact, type ComponentTwin } from './llms.mjs';
+import { componentOf, figureCss, figureKey, type FigureSet } from './figures.mjs';
 
 /** The book's own title, used for the `<title>` and the markdown H1. */
 const TITLE = 'Substrat, end to end';
@@ -117,12 +118,12 @@ export function bookPages(srcDir: string, component?: ComponentTwin): BookPage[]
  * single `h1` is written here instead. Otherwise the title would appear twice, once
  * as the document and once as its own first section.
  */
-export function bookMarkdown(srcDir: string): string {
+export function bookMarkdown(srcDir: string, component?: ComponentTwin): string {
   const [frontLink, ...chapterLinks] = bookChapters();
   // The front matter keeps its own heading levels: it sits directly under the
   // document title with no chapter wrapper, so demoting it would open at `h3`.
-  const front = chapterMarkdown(srcDir, frontLink!.link, false);
-  const chapters = chapterLinks.map((c) => chapterMarkdown(srcDir, c.link));
+  const front = chapterMarkdown(srcDir, frontLink!.link, false, component);
+  const chapters = chapterLinks.map((c) => chapterMarkdown(srcDir, c.link, true, component));
   return [
     `# ${TITLE}`,
     '',
@@ -143,11 +144,13 @@ export function bookMarkdown(srcDir: string): string {
  * one column, a print stylesheet. Its whole job is to be the thing you hit ⌘P on
  * or save as a PDF, which the chapter pages are bad at and this is good at.
  */
-export function bookHtml(srcDir: string): string {
+export function bookHtml(srcDir: string, figures: FigureSet = new Map()): string {
   // `linkify: false` — see epub.mts: it turns a bare `PERMISSIONS.md` into a link to
   // Moldova. Every link in the book is explicit markdown, so it can only invent.
   const md = new MarkdownIt({ html: true, linkify: false, typographer: false });
-  const body = md.render(bookMarkdown(srcDir));
+  const body = md.render(bookMarkdown(srcDir, (name, props) =>
+    figures.get(figureKey(name, props)) ?? altTwin(name, props),
+  ));
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -196,6 +199,9 @@ export function bookHtml(srcDir: string): string {
     pre, blockquote, table { break-inside: avoid; }
   }
 </style>
+<style>
+${figureCss(srcDir, [...figures.keys()].map(componentOf))}
+</style>
 </head>
 <body>
 ${body}
@@ -204,9 +210,9 @@ ${body}
 `;
 }
 
-export function bookArtifacts(srcDir: string): Artifact[] {
+export function bookArtifacts(srcDir: string, figures: FigureSet = new Map()): Artifact[] {
   return [
     { path: 'book.txt', contents: bookMarkdown(srcDir) },
-    { path: 'book/read.html', contents: bookHtml(srcDir) },
+    { path: 'book/read.html', contents: bookHtml(srcDir, figures) },
   ];
 }

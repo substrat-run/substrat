@@ -79,10 +79,11 @@ export const fsmModule: ModuleRegistration = {
 };
 ```
 
-The read is then one indexed scan of one flat table. There is **no staleness a reader can
-see**, because there is no second store. The consumer runs right after the write commits, in
-its own transaction, inside the same serialized turn and before the call returns. So neither
-the caller nor any other operation on the scope can read the gap between them. If the scope
+The read is then one indexed scan of one flat table. The consumer runs right after the write
+commits, in its own transaction, inside the same serialized turn and before the call returns.
+When it succeeds, neither the caller nor another operation can read a gap between the write
+and its projection. A failed consumer can leave the projection behind: its transaction rolls
+back while the original write stays committed, and its delivery record is where to investigate. If the scope
 is interrupted inside that gap, the delivery journal hands the event over again. That is why
 consumers are written to be idempotent ([Events & audit](/concepts/events#delivery-semantics)).
 This is the same [side-table pattern](/concepts/modules) verticals already use to extend
@@ -114,10 +115,11 @@ Read-your-writes isn't a problem you have; it's a problem you'd **acquire** by l
 
 ### 3. History tier — not a read tier
 
-Domain events flow to Iceberg on R2, queried through a tenant-scoping gateway. That tier is
-columnar and seconds-scale by construction: it is for **reporting, reconciliation, audit,
-and cross-scope history**. It is not a UI list view, and treating it as one is a category
-error.
+Domain events can flow to Iceberg on R2. The history tier is intended for **reporting,
+reconciliation, audit and cross-scope history**. Its tenant-scoping query gateway is
+implemented, staff-only and disabled until configured; the R2 SQL transport has not yet
+been verified against the real lake. See [lake reads](/reference/control-plane-api).
+It is not an interactive list-view backend.
 
 <ReadPaths />
 
@@ -168,7 +170,7 @@ Three things worth knowing before you design a screen around it:
   honest cursor either — paging a ranked result set reorders rows, and rows go missing or
   double. Ask for the top N and tell the user to narrow the term. Deep, ordered paging is
   what a declared sort on a list read is for.
-- **It does not check permission.** Nothing on `ctx` does. Your `assertAllowed` comes
+- **`ctx.search` does not check permission.** Your `assertAllowed` comes
   first, and if your entity uses narrowed grants, filter the hits you hydrate — a ranked
   top-N filtered afterwards returns *fewer* than N, so over-fetch deliberately.
 - **Give it its own route.** `GET /customers/search` beside `GET /customers`, not a `q`
@@ -228,6 +230,39 @@ capped at 2,000 owners. Past the cap, the search is refused with a `forbidden` e
 `reason` is `attachment_search_too_many_owners`, whatever the term, so a screen can explain
 that this kind of search is not available to that caller.
 
+## Live updates {#live-updates}
+
+A screen can hear that something changed and re-read through its ordinary operation.
+The hosted adapter provides a WebSocket change feed; a module declares the entity types
+and read permissions under `liveTargets`. The scope checks access before sending a frame,
+and the frame carries no row content. Subscribing grants no new authority.
+
+<CommunicationFlow kind="live" />
+
+This keeps the read operation as the source of both data and permission decisions. Keep
+polling and focus revalidation as a recovery path: a socket can disconnect, a feed can be
+bounded, and a frame is a hint rather than a durable consumer delivery. The pure SQLite
+host has no live surface; the shared route answers `501` with `x-substrat-live: poll`.
+
+Three feed shapes serve different audiences:
+
+| Subscription | What the scope checks | What the browser receives |
+|---|---|---|
+| Ordinary feed, optionally narrowed with `within: entity` | The subscriber's declared read key on each changed entity | A change hint naming the entity |
+| `checkedWithin(entity, permission)` | The principal's key on the root, checked again during delivery | A bare nudge, with no entity or event type |
+| `vouchedWithin(entity, { because })` | The host proves access before subscribing; the feed does not recheck that proof | A bare nudge; every read it triggers must still be authorized |
+
+Use `checkedWithin` when there is a grant to check. A vouched socket can keep receiving
+nudges after its token is revoked until it closes. Pass the session's `expiresAt` to bound
+the socket's lifetime, close it on sign-out, and replace displayed content when a re-read
+is refused. A permission change racing an in-flight check can allow one stale hint;
+the ensuing operation checks access again.
+
+The [mounting reference](/reference/vertical-host#mountlivereads-app-options) covers origin
+checks, session expiry, narrowing and socket limits. The ticket0 inbox and conversation
+views are the working example. Presence, collaborative editing and offline synchronization
+are separate capabilities; a change feed does not provide them.
+
 ## Two more surfaces, and neither is a read tier
 
 Distinct from the three read paths, a vertical's manifest can declare stores the platform
@@ -253,9 +288,9 @@ three paths above.
 
 Because the operational record shouldn't leave, for three reasons:
 
-- **Residency.** A scope's `jurisdiction` is fixed at provisioning and its execution domain
-  can never relocate. Replicating an `eu` scope's data to other regions contradicts that
-  guarantee — and D1 offers location *hints*, not jurisdiction guarantees.
+- **Residency.** Replicating operational data adds another place whose location must meet
+  the product's residency requirements. A declared scope `jurisdiction` is not yet a hosted
+  placement guarantee: per-jurisdiction DO IDs remain [unimplemented](/reference/adapter-cloudflare#status).
 - **Consistency.** Read-your-writes does not cross the outbox, per above. Bookmarks cannot
   repair a boundary they cannot see.
 - **The workload doesn't want it.** A scope maps to *one business*, whose users cluster
@@ -274,10 +309,10 @@ outgrow its execution domain. The answer is never "shard the scope":
 - **Split it.** A scope that's too hot is usually a consistency domain drawn too large. This
   is the same move as the [granularity rule](/concepts/tenancy) — and it's the right answer
   more often than it looks.
-- **Migrate it to storage shape B**, where the execution domain becomes a control plane
+- **A future option is storage shape B**, where the execution domain becomes a control plane
   (hot state, locks) fronting a separate database for bulk storage and read replicas. The
   choice is per scope, and **invisible to module code**.
 
-Both remain available for the same reason everything else here does: module code reaches
-data through `ctx.sql` and nothing else, so what sits underneath can change without a single
-operation being rewritten.
+Shape B is not implemented by the current adapters. Splitting the consistency domain is
+the available route today; moving storage behind the same `ctx.sql` contract is a future
+adapter design, not a migration command a builder can run.

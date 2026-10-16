@@ -153,6 +153,12 @@ jobs:
       # above, same reason lint:permissions does.
       - run: pnpm test:schedule-sweeper
       - run: pnpm lint:schedule-sweeper
+      # Every migration in the repo replayed against a scope that holds data, through the
+      # kernel's own data-loss fence (#115): an authored migration that would lose rows or
+      # values and does not declare it (`moves` / `discards`) is red here, in its own PR,
+      # instead of closing a populated scope after a promote. Loads the same registrations
+      # lint:permissions does, so it needs the build above for the same reason.
+      - run: pnpm lint:migration-fence
       # The API-surface checkpoint (design/api-surface.md §2.4): re-emit each
       # opted-in vertical's OpenAPI document from its operation catalog and fail
       # on drift — a surface change must appear in the PR diff.

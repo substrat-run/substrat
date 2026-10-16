@@ -284,6 +284,7 @@ export const INDEX_VALUE_EXPORTS = [
   'exportReadQuery',
   'exportedSinceQuery',
   'facetEvents',
+  'fencedTables',
   'findingOfOpsFailure',
   'findingOfSweepRun',
   'finishStoreDriverRolloutIn',

@@ -178,6 +178,18 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   (resolve, ignore, reopen — `regressed` is ingest's word and is refused). Staff-only: an
   issue is a fleet-scoped aggregate with no tenant column, so the forced-filter posture
   cannot narrow it. No cursor, by design — the grouping is the compression.
+- **Findings** — `GET /findings`, filtered by `status` and `kind`, with `limit` and `cursor`
+  paging. Staff can select a tenant; a tenant credential is confined to its own tenant.
+  `PUT /tenants/:t/findings/:id/status` acknowledges, resolves or reopens one.
+  `GET` / `POST /tenants/:t/finding-rules` list or create suppress rules, and
+  `DELETE /tenants/:t/finding-rules/:ruleId` revokes one. Builders have no access to these
+  routes. The dashboard checks its member's findings permissions before making the
+  tenant-scoped call; see [the Findings inbox](/platform/dashboard#findings).
+- **Lake reads** — `GET /tenants/:t/lake/events`: an audited, staff-only read of one tenant's
+  event envelopes, with no event payload. It returns `501` unless the host supplies
+  `lakeQuery`. The gateway forces the tenant and refuses a result containing another
+  tenant's row. The R2 SQL transport is implemented but remains unverified against the
+  real lake; this is not yet a tenant-facing history browser.
 - **Capabilities** — `/tenants/:t/scopes/:s/capabilities` (#1686): the operator's read of the
   directory behind link shares and claim links — what each may do (mode, entity, keys, operation
   allowlist, or the principal a claim link yields), who minted and revoked it, its expiry, use
@@ -226,5 +238,5 @@ surface; the audit property is built into it. See
 
 ## Versioning
 
-`0.91.1`, AGPL-3.0. Pre-release (0.x): the surface changes without notice until the
+AGPL-3.0-only. Pre-release (0.x): the surface changes without notice until the
 platform GAs.

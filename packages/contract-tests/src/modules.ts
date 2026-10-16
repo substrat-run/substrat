@@ -37,6 +37,7 @@ import { erasureMod, erasureOtherMod } from './erasure-module.js';
 import { bindMod } from './bind-module.js';
 import { uploadLinkMod } from './upload-link-module.js';
 import { commentedDdlMod } from './migration-comments.js';
+import { fenceDeclaredMod, fenceReusedRightMod, fenceReusedWrongMod, fenceUndeclaredMod, fenceWideMod } from './migration-fence.js';
 import {
   assertAllowed,
   readAttachmentText,
@@ -3062,6 +3063,14 @@ export const contractTestModules: ModuleRegistration[] = [
   // #2068 r5: a module whose migrations comment their DDL and then drop the last column. Every
   // scope in the kit migrates it, so a regression fails loudly everywhere.
   commentedDdlMod,
+  // #115: the data-loss fence suite's modules. Every scope in the kit migrates them, and on every
+  // scope but the fence suite's their table is empty when its drop arrives, so the drop is free —
+  // which also proves the fence lets an empty table go, everywhere.
+  fenceUndeclaredMod,
+  fenceDeclaredMod,
+  fenceWideMod,
+  fenceReusedRightMod,
+  fenceReusedWrongMod,
   // #2090: the authored-rebuild suite's module. Inert for every other suite — its rebuilds run
   // before the derived state migrations on a fresh scope, and nothing else reads `rb_*`. AFTER the
   // erasure modules: a dump wipe drops tables and not views, so a wiped scope still holds `er_view`

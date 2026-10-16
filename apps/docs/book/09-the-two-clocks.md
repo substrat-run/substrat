@@ -66,11 +66,25 @@ properties make that safe to run unattended:
 - **`ctx.check` is still the only gate.** A schedule's declared permissions are granted to
   the module's system principal at provision, so the operation's own `assertAllowed` resolves
   the same way it does for any caller. A schedule can do exactly what it declared and no
-  more — and revoking that grant for one tenant turns the schedule off for them, with no
-  special "disabled" flag, because the operation simply fails its own check closed.
+  more. The staff-operated module kill switch is the durable way to stop its background
+  work on one scope: schedules report skipped, and system-authority checks refuse. A
+  reconcile, promote, re-grant or point-in-time rewind cannot undo the switch. Restoring
+  it restores only the authority it removed, preserving earlier independent revocations.
 
 `cadence` is a **floor, not a promise**: a schedule fires no more often than `everyMinutes`,
 and the sweep is what actually runs it, so sub-sweep cadences round up.
+
+### The platform can supply the sweeper
+
+For a hosted version declaring schedules, the uploader supplies a sweeper when the
+worker exports none. It adds the class, binding and migration, and runs the pass on the
+vertical's registered host, with that host's own options and connectors. The decision
+is stored with the version; promote and rollback use that recorded wiring.
+
+A vertical exporting its own sweeper keeps it, and a missing binding is refused at
+push. The supplied path is for **declared schedules**. A vertical relying only on
+executor retries or resumable jobs still needs its own sweeper. A missing supplied
+sweeper feature on an older platform is reported by the CLI before upload.
 
 ### The roster is maintained by the routes, not a directory
 
@@ -92,8 +106,8 @@ for a deployment that wants one. The hosted control plane instead points its `sc
 handler straight at the pass, on a fifteen-minute cron.
 **What it holds:** nothing — it reads the directory.
 
-This is the fleet-wide maintenance pass. One pass, in this order, each phase recording
-per-unit outcomes and **stepping over** failures rather than letting one sink the pass. Every
+This is the fleet-wide maintenance pass. The main phases below each record
+per-unit outcomes and **step over** failures rather than letting one sink the pass. Every
 unit of work also leaves a durable **sweep run** record, which is how "this schedule never ran"
 becomes a visible verdict rather than an absence (chapter 10):
 
@@ -138,6 +152,17 @@ outbox.
 drained, then prune what was shipped. The sink must be **durable before it resolves** —
 everything downstream treats a resolved ship as proof the evidence survives outside the
 directory, so a sink that buffers and returns early turns a retention policy into data loss.
+
+Two newer phases matter to this book. **Cross-vertical event delivery** reads imports
+and their consumer-held watermarks, resolves both apps, and transfers permitted exports
+(chapter 7). Its state is visible per edge. A router kick runs a narrowed pass sooner;
+an absent kick leaves this sweep responsible for progress.
+
+The **storage gauge** runs just after the drains, sampling eligible scope databases
+already reached in that pass and retained non-serving scopes, within its budget. It
+keeps dated measurements and their coverage, rather than presenting a partial sum as
+a total (chapter 12). Maintenance also prunes bounded telemetry and resolves quiet
+Findings as stale. These phases are separate from the vertical's business schedules.
 
 ## Reaping: the part that is not automatic
 
