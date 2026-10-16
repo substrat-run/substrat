@@ -232,6 +232,7 @@ export type {
   ScopeTupleReader,
 } from './permission-eval.js';
 export {
+  ACTIVE_CONTENT_TYPES,
   UPLOAD_LINK_DDL,
   UPLOAD_LINK_GONE,
   UPLOAD_LINK_TOO_LARGE,
@@ -239,6 +240,9 @@ export {
   UPLOAD_LINK_WRONG_TARGET,
   createAttachmentVerbs,
   inspectUploadLink,
+  isActiveContentType,
+  isMediaTypeEssence,
+  normalizeUploadMediaType,
   redeemUploadLinkInTransaction,
   uploadContentTypeAllowed,
 } from './upload-link.js';

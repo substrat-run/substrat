@@ -65,6 +65,15 @@ export const ATTACHMENT_REMOVED = 'attachment.removed';
 
 /** What every upload-link secret starts with — so a secret scanner can recognise a leaked one. */
 export const UPLOAD_LINK_SECRET_PREFIX = 'sbup_';
+/**
+ * The whole shape of a secret the kernel mints: the prefix, then 32 random bytes as unpadded
+ * base64url (43 characters). Anything else cannot be one of ours, so the route answers it with
+ * the same 404 an unknown secret gets, without asking the scope.
+ */
+export const UPLOAD_LINK_SECRET_SHAPE = /^sbup_[A-Za-z0-9_-]{43}$/;
+/** Could `secret` be one the kernel minted? Says nothing about whether it names a link. */
+export const isUploadLinkSecretShape = (secret: unknown): secret is string =>
+  typeof secret === 'string' && UPLOAD_LINK_SECRET_SHAPE.test(secret);
 /** A link lives ten minutes unless the mint says otherwise. */
 export const UPLOAD_LINK_DEFAULT_TTL_SECONDS = 600;
 /** ... and never more than an hour, whatever the mint says. */

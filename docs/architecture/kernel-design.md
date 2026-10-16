@@ -857,6 +857,21 @@ parses no file format. Parsers sit behind an `AttachmentExtractor` seam, in a ho
 package that the host passes in and that neither the kernel nor an adapter imports. A type
 with no extractor records `unsupported`, with the reason.
 
+**Upload links are the one attachment write that arrives with no session (#2311).** A target
+that declares `uploadLinks: { maxBytes, contentTypes? }` lets an operation mint, through
+`ctx.attachments.mintUploadUrl`, a single-use URL that admits one file to one entity. The
+directory row lives in the scope's own spine table, **`_substrat_upload_links`**
+(`UPLOAD_LINK_DDL` in `packages/kernel/src/upload-link.ts`). It holds the SHA-256 of the
+secret (never the secret), the target, the size and type policy, the visibility, who minted
+it and when it expires, and then when it was redeemed and which attachment it produced, or
+the tombstone of a revoke. Like `_substrat_capabilities`, it is left out of a copy, so a fork
+never honours its source's links. Redemption is `ScopeHost.redeemUploadLink`: the same
+attachment write as above, authored by the minter, with the target's `writePermission`
+checked as them again. The link is spent in the transaction that inserts the attachment row.
+The secret is in the request path, and the target in the path is judged before the link's
+state. Families in the allowlist never admit an active type such as SVG or HTML. The full
+behaviour is in `apps/docs/concepts/attachments.md`.
+
 ### 7.3 Module storage model
 
 Engines own **tables and migrations, never databases**. The decisive reason is

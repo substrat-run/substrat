@@ -5417,13 +5417,15 @@ export interface ScopeHost {
   /**
    * Look an upload link up WITHOUT spending it, so the route can refuse an oversize body or a
    * wrong type before it reads a byte. `not_found` for a secret that names nothing (and for
-   * one that cannot be ours); `conflict` with reason `upload_link_gone` for one that is used,
-   * expired or revoked. The mint is `ctx.attachments.mintUploadUrl`.
+   * one that cannot be ours); `not_found` with reason `upload_link_wrong_target` when `target`
+   * is given and the link was minted for another, judged before its state, so a wrong path is
+   * the same 404 for a pending link and a spent one; `conflict` with reason `upload_link_gone`
+   * for one that is used, expired or revoked. The mint is `ctx.attachments.mintUploadUrl`.
    *
    * Optional, like `getCapabilityAttachments`: a host that has not wired the link table says so
    * by leaving it out, and `mountUploadLinkRedeem` refuses to mount over one.
    */
-  inspectUploadLink?(tenantId: TenantId, scopeId: ScopeId, secret: string): Promise<UploadLinkView>;
+  inspectUploadLink?(tenantId: TenantId, scopeId: ScopeId, secret: string, target?: EntityRef): Promise<UploadLinkView>;
   /**
    * Redeem an upload link: write the bytes as ONE attachment, AS the principal who minted the
    * link — the target's `writePermission` is checked as them now, they are the author, and

@@ -7,6 +7,7 @@
  * should promise. Types are not listed; they are erased at run time and stay nameable.
  */
 export const INDEX_VALUE_EXPORTS = [
+  'ACTIVE_CONTENT_TYPES',
   'ADMIN_LOG_INDEXES_SQL',
   'ADMIN_LOG_INDEX_DDL',
   'ASYNC_LINES_PER_PASS',
@@ -320,6 +321,7 @@ export const INDEX_VALUE_EXPORTS = [
   'installsReconciledOf',
   'intentPayloadCarriesSubject',
   'invocationLine',
+  'isActiveContentType',
   'isBindExportBreakRefusal',
   'isCheckedWithin',
   'isCopyLoad',
@@ -327,6 +329,7 @@ export const INDEX_VALUE_EXPORTS = [
   'isDeliveryRefusal',
   'isExportBreakRefusal',
   'isLifecycleWrite',
+  'isMediaTypeEssence',
   'isModuleErasureCounts',
   'isPeerInstanceOf',
   'isPrimaryScope',
@@ -388,6 +391,7 @@ export const INDEX_VALUE_EXPORTS = [
   'newImpersonationSession',
   'noSealingKeyMessage',
   'noopConnectorCallRecorder',
+  'normalizeUploadMediaType',
   'observeFinding',
   'observeStoreCall',
   'openSealed',
