@@ -149,3 +149,26 @@ export function migrationsOnTop(
     truncated: kept.length < total || kept.some((e) => e.sql === null || e.declarationsLeftOut === true),
   };
 }
+
+/**
+ * The Unicode bidirectional controls: embeddings and overrides (U+202A–U+202E), isolates
+ * (U+2066–U+2069), and the marks (U+200E, U+200F, U+061C). Invisible, and able to make text
+ * read in an order other than the one it is stored in.
+ */
+const BIDI_CONTROLS = /[‪-‮⁦-⁩‎‏؜]/g;
+
+/**
+ * Pusher-supplied text (a discard's reason, a declared target) as a review shows it (#2322):
+ * every bidirectional control replaced by a visible `<U+XXXX>`, so a reason cannot reorder
+ * what a reviewer reads — say, make "keeps" display where "drops" is stored. The rest is kept
+ * verbatim; each surface still escapes for its own medium (React's text node, the CLI's
+ * `JSON.stringify`).
+ */
+export function reviewText(text: string): string {
+  return text.replace(BIDI_CONTROLS, (c) => `<U+${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}>`);
+}
+
+/** How many places a diff's shown entries declare they deliberately discard data. */
+export function discardCount(diff: Pick<MigrationDiff, 'added' | 'changed'>): number {
+  return [...diff.changed, ...diff.added].reduce((n, e) => n + Object.keys(e.discards ?? {}).length, 0);
+}

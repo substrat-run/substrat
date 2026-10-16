@@ -3,6 +3,8 @@ import {
   deployManifest,
   storedDeployManifest,
   migrationsOnTop,
+  reviewText,
+  discardCount,
   DECLARED_MIGRATIONS_SQL_BYTES_MAX,
   MIGRATION_READ_MAX,
   MIGRATION_READ_SQL_BYTES_MAX,
@@ -176,5 +178,25 @@ describe('deployManifest.migrations declarations (#2322)', () => {
     const sql = 'x'.repeat(DECLARED_MIGRATIONS_SQL_BYTES_MAX - 4);
     expect(ok({ sql, discards: { t: 'why' } })).toBe(true);
     expect(ok({ sql, discards: { t: 'why?' } })).toBe(false);
+  });
+});
+
+describe('reviewText and discardCount (#2322)', () => {
+  it('makes every bidi control visible and keeps the rest verbatim', () => {
+    expect(reviewText('keeps‮sdrop')).toBe('keeps<U+202E>sdrop');
+    expect(reviewText('⁦a⁩‎‏؜‪')).toBe('<U+2066>a<U+2069><U+200E><U+200F><U+061C><U+202A>');
+    expect(reviewText('<b>"x"</b>\né')).toBe('<b>"x"</b>\né');
+  });
+
+  it('counts the shown discards, edited and added', () => {
+    const diff = migrationsOnTop(
+      [
+        { moduleId: 'a', version: '1', sql: 's', discards: { t: 'why', u: 'why' } },
+        { moduleId: 'a', version: '2', sql: 's', moves: { x: 'y' } },
+        { moduleId: 'a', version: '3', sql: 'new', discards: { v: 'why' } },
+      ],
+      [{ moduleId: 'a', version: '3', sql: 'old' }],
+    );
+    expect(discardCount(diff)).toBe(3);
   });
 });

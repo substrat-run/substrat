@@ -210,4 +210,33 @@ describe('the diff formatters', () => {
     expect(out.at(-1)).toBe('(2 of 9 shown; read the rest in the repository)');
     expect(formatMigrationDiff(diff({ added: [], total: 0 }), false)).toEqual(['no SQL migration added or edited']);
   });
+
+  it('formatMigrationDiff: each declared move and discard under its migration, counted first, every pusher string quoted (#2322)', () => {
+    const out = formatMigrationDiff(
+      diff({
+        added: [
+          { moduleId: 'desk', version: '0002', sql: 'DROP TABLE legacy;', discards: { legacy: 'unused since 2024\n+ desk 0003\u001b[2J\u202Ekeep' }, moves: { 'a.b': 'c.d' } },
+          { moduleId: 'desk', version: '0003', sql: 'SELECT 1;' },
+        ],
+        changed: [{ moduleId: 'desk', version: '0001', sql: 'SELECT 0;', edited: 'declarations', discards: { t: 'why' } }],
+        total: 3,
+      }),
+      false,
+    );
+    expect(out[0]).toBe("! this promote deliberately discards data in 2 places; each reason is the migration author's own");
+    expect(out[1]).toMatch(/^~ \(declarations edited after shipping; .*\) desk 0001$/);
+    expect(out[2]).toBe('    discards "t": "why"');
+    const i = out.indexOf('+ desk 0002');
+    // The newline, the ESC and the override are escapes on ONE line: nothing forges "+ desk 0003".
+    expect(out[i + 1]).toBe('    discards "legacy": "unused since 2024\\n+ desk 0003\\u001b[2J<U+202E>keep"');
+    expect(out[i + 2]).toBe('    moves "a.b" → "c.d" (verified at apply)');
+    expect(out[i + 3]).toBe('    DROP TABLE legacy;');
+    expect(out.filter((l) => l === '+ desk 0003')).toHaveLength(1);
+    // A migration declaring nothing prints no declaration line, and a set with no discard no count.
+    expect(out[out.indexOf('+ desk 0003') + 1]).toBe('    SELECT 1;');
+    expect(formatMigrationDiff(diff({ added: [{ moduleId: 'd', version: '1', sql: 's', moves: { a: 'b' } }], total: 1 }), false)[0]).toBe('+ d 1');
+    expect(
+      formatMigrationDiff(diff({ added: [{ moduleId: 'd', version: '1', sql: null, declarationsLeftOut: true }], total: 1, truncated: true }), false)[1],
+    ).toMatch(/declares moves or discards, left out/);
+  });
 });

@@ -16,6 +16,8 @@
 import {
   diffRegistries,
   grantShapeHolderNotes,
+  discardCount,
+  reviewText,
   unitemisedRegistryChanges,
   type ExportBreak,
   type MigrationDiff,
@@ -177,6 +179,22 @@ export function formatRegistryDiff(from: PermissionRegistry | null, to: Permissi
     : ['none'];
 }
 
+/** Pusher-supplied text on one terminal line: bidi controls made visible, then quoted and escaped. */
+const quoted = (text: string): string => JSON.stringify(reviewText(text));
+
+/**
+ * What one migration declares it moves and discards (#2322), one line each under its id.
+ * Every target and reason is the pusher's text, so each is quoted: a newline, an ESC or a
+ * bidi control in it prints as an escape, never as a terminal command or a forged line.
+ */
+function declarationLines(m: MigrationEntry): string[] {
+  if (m.declarationsLeftOut) return ['    (declares moves or discards, left out: past the size bound of this answer; read them in the repository)'];
+  return [
+    ...Object.entries(m.discards ?? {}).map(([target, why]) => `    discards ${quoted(target)}: ${quoted(why)}`),
+    ...Object.entries(m.moves ?? {}).map(([from, to]) => `    moves ${quoted(from)} → ${quoted(to)} (verified at apply)`),
+  ];
+}
+
 /**
  * The migrations a promote adds, each with its SQL. `null` is a version whose manifest carries
  * none. `digestMoved` is whether the gate refused on the migration digest.
@@ -190,13 +208,25 @@ export function formatMigrationDiff(diff: MigrationDiff | null, digestMoved: boo
   }
   const entry = (mark: string, m: MigrationEntry) => [
     `${mark} ${m.moduleId} ${m.version}`,
+    ...declarationLines(m),
     ...(m.sql === null ? ['    (SQL left out: past the size bound of this answer)'] : m.sql.split('\n').map((l) => `    ${l}`)),
   ];
+  const discards = discardCount(diff);
   const lines = [
+    ...(discards > 0
+      ? [`! this promote deliberately discards data in ${discards} place${discards === 1 ? '' : 's'}; each reason is the migration author's own`]
+      : []),
     ...(diff.baseline === 'unavailable'
       ? ['(the serving version predates carried migrations, so every migration this version ships is listed)']
       : []),
-    ...diff.changed.flatMap((m) => entry('~ (edited after shipping; a scope that already ran it will not run it again)', m)),
+    ...diff.changed.flatMap((m) =>
+      entry(
+        m.edited === 'declarations'
+          ? '~ (declarations edited after shipping; a scope that already ran it is unaffected, one that has not is held to these)'
+          : '~ (edited after shipping; a scope that already ran it will not run it again)',
+        m,
+      ),
+    ),
     ...diff.added.flatMap((m) => entry('+', m)),
   ];
   if (diff.total === 0) {
