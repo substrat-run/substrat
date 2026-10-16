@@ -413,14 +413,22 @@ describe('the data-loss fence (#115)', () => {
       ['CREATE VIRTUAL TABLE temp.f USING fts5(x)'],
       ['CREATE TABLE IF NOT EXISTS temp.x (id TEXT)'],
       ['CREATE TABLE "temp"."x" ("temp.y" TEXT)'],
+      ['CREATE TABLE [temp].[x] (id TEXT)'],
+      ['CREATE TABLE `temp`.x (id TEXT)'],
     ])('an authored migration that makes one is refused before it runs: %s', (stmt) => {
       expect(invalid(`${stmt}; DROP TABLE a;`)).toContain('creates a TEMP object');
     });
 
     it('a table merely named like the schema is not one, a dot in a quoted name included', () => {
       const s = scope(setup);
-      s.migrate({ sql: 'CREATE TABLE temporary_notes (id TEXT); CREATE TABLE "temp_x" (id TEXT); CREATE TABLE "temp.x" (id TEXT);' });
-      expect(s.rows(`SELECT name FROM main.sqlite_master WHERE name = 'temp.x'`)).toHaveLength(1);
+      s.migrate({
+        sql: 'CREATE TABLE temporary_notes (id TEXT); CREATE TABLE "temp_x" (id TEXT); CREATE TABLE "temp.x" (id TEXT); CREATE TABLE [temp.y] (id TEXT); CREATE TABLE `temp.z` (id TEXT);',
+      });
+      expect(s.rows(`SELECT name FROM main.sqlite_master WHERE name LIKE 'temp._' ORDER BY name`)).toEqual([
+        { name: 'temp.x' },
+        { name: 'temp.y' },
+        { name: 'temp.z' },
+      ]);
     });
 
     it('a TEMP object already on the connection does not answer for the scope\'s table', () => {
@@ -433,6 +441,24 @@ describe('the data-loss fence (#115)', () => {
       const s = scope(`CREATE TABLE a (id TEXT, v TEXT); INSERT INTO a VALUES ('1', 'p'), ('2', 'q');`);
       s.db.exec("CREATE TEMP TABLE a (id TEXT); INSERT INTO temp.a VALUES ('x')");
       expect(refusal(() => s.migrate({ sql: 'ALTER TABLE main.a DROP COLUMN v;' }))).toContain('column a.v held 2 value(s) and is gone');
+    });
+  });
+
+  describe('a quoted name holding a dot is one name, not a schema and a name (#115 r6)', () => {
+    const setup = `CREATE TABLE a (id TEXT); INSERT INTO a VALUES ('1'), ('2');
+      CREATE TABLE b (id TEXT); INSERT INTO b VALUES ('x'), ('y'); CREATE TABLE n (id TEXT);`;
+
+    it.each([['"main.n"'], ['[main.n]'], ['`main.n`']])('a table renamed to %s is followed there, not to n', (q) => {
+      expect(
+        refusal(() => scope(setup).migrate({ sql: `ALTER TABLE a RENAME TO ${q}; INSERT INTO n SELECT * FROM b; DELETE FROM ${q};` })),
+      ).toContain('table a held 2 row(s), now 0');
+    });
+
+    it.each([['"main.n"'], ['[main.n]'], ['`main.n`']])('renamed to %s and back, nothing is lost; dropped there, it is gone', (q) => {
+      scope(setup).migrate({ sql: `ALTER TABLE a RENAME TO ${q}; ALTER TABLE ${q} RENAME TO a;` });
+      expect(refusal(() => scope(setup).migrate({ sql: `ALTER TABLE a RENAME TO ${q}; DROP TABLE ${q};` }))).toContain(
+        'table a held 2 row(s) and is gone',
+      );
     });
   });
 

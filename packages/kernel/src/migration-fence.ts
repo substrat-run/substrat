@@ -88,9 +88,31 @@ const quote = (name: string): string => `"${name.replace(/"/g, '""')}"`;
 const total = (c: Classes): number => CLASSES.reduce((n, k) => n + c[k], 0);
 const NONE: Classes = { integer: 0, real: 0, text: 0, blob: 0 };
 
+interface Word {
+  readonly text: string;
+  readonly quoted: boolean;
+  readonly parts?: readonly string[];
+}
+
 /** The words of one statement, keywords lowercased; quoted names are kept apart from keywords. */
-function words(statement: string): { text: string; quoted: boolean }[] {
-  return tokenizeSql(statement).map((t) => ({ text: t.quoted ? t.text : lower(t.text), quoted: t.quoted }));
+function words(statement: string): Word[] {
+  return tokenizeSql(statement).map((t) => ({ text: t.quoted ? t.text : lower(t.text), quoted: t.quoted, parts: t.parts }));
+}
+
+/**
+ * The schema a name token names, and the name in it, as SQLite reads them: `main.n` and
+ * `"main"."n"` are `main` and `n`; `"main.n"` is ONE identifier, a name with a dot in it and no
+ * schema. The one reading of a qualifier, for the `temp` check and for following `main` names.
+ */
+function schemaAndName(w: Word): { schema?: string; name: string } {
+  const parts = w.parts ?? [w.text];
+  return parts.length === 2 ? { schema: lower(parts[0]!), name: parts[1]! } : { name: parts.join('.') };
+}
+
+/** A table name as the main schema holds it, or a name no main table has if another schema is named. */
+function mainName(w: Word): string {
+  const { schema, name } = schemaAndName(w);
+  return schema === undefined || schema === 'main' ? lower(name) : `\u0000${schema}.${lower(name)}`;
 }
 
 /** A statement that can only define something: it fires nothing and removes nothing. */
@@ -201,7 +223,6 @@ function followRenames(statements: readonly string[], before: Measure): Renames 
   const columns = new Map([...before].map(([t, c]) => [t, new Map([...c.columns.keys()].map((k) => [k, k]))]));
   const holder = new Map([...before.keys()].map((t) => [t, t]));
   const dropped = new Set<string>();
-  const nameAt = (w: { text: string }): string => lower(w.text.replace(/^main\./i, ''));
   const rebuilt = new Set<string>();
   const rebuiltAt = (name: string): void => {
     if (!dropped.has(name) || holder.has(name)) return;
@@ -216,7 +237,7 @@ function followRenames(statements: readonly string[], before: Measure): Renames 
     if (kw(0) === 'drop' && kw(1) === 'table') {
       const at = kw(2) === 'if' && kw(3) === 'exists' ? 4 : 2;
       if (!w[at]) continue;
-      const name = nameAt(w[at]!);
+      const name = mainName(w[at]!);
       const original = holder.get(name);
       if (original === undefined) continue;
       holder.delete(name);
@@ -224,11 +245,11 @@ function followRenames(statements: readonly string[], before: Measure): Renames 
       continue;
     }
     if (kw(0) !== 'alter' || kw(1) !== 'table' || !w[2]) continue;
-    const table = nameAt(w[2]);
+    const table = mainName(w[2]);
     const original = holder.get(table);
     if (!original) {
       // A table this migration made, renamed onto a dropped table's original name: the rebuild.
-      if (kw(3) === 'rename' && kw(4) === 'to' && w[5]) rebuiltAt(nameAt(w[5]));
+      if (kw(3) === 'rename' && kw(4) === 'to' && w[5]) rebuiltAt(mainName(w[5]));
       continue;
     }
     const renamed = columns.get(original)!;
@@ -243,8 +264,8 @@ function followRenames(statements: readonly string[], before: Measure): Renames 
     if (kw(3) !== 'rename') continue;
     if (kw(4) === 'to' && w[5]) {
       holder.delete(table);
-      holder.set(nameAt(w[5]), original);
-      tables.get(original)!.push(nameAt(w[5]));
+      holder.set(mainName(w[5]), original);
+      tables.get(original)!.push(mainName(w[5]));
     } else {
       // RENAME [COLUMN] a TO b
       const k = kw(4) === 'column' ? 5 : 4;
@@ -362,15 +383,9 @@ function createsTemp(statement: string): boolean {
   if (!['table', 'view', 'index', 'trigger'].includes(kw(at) ?? '')) return false;
   at += 1;
   if (kw(at) === 'if' && kw(at + 1) === 'not' && kw(at + 2) === 'exists') at += 3;
-  if (w[at] === undefined || !lower(w[at]!.text).startsWith('temp.')) return false;
-  // The tokenizer folds `"temp"."x"` and `"temp.x"` alike; the second is ONE identifier, a main
-  // table whose name holds a dot. Read the name where the statement writes it.
-  return !LITERAL_DOTTED_NAME.test(statement);
+  // `"temp.x"` is one identifier, a main table whose name holds a dot; `temp.x` is the schema.
+  return w[at] !== undefined && schemaAndName(w[at]!).schema === 'temp';
 }
-
-/** A CREATE whose object name is a single quoted identifier beginning `temp.` (not a schema). */
-const LITERAL_DOTTED_NAME =
-  /^\s*create\s+(?:(?:unique|virtual)\s+)?(?:table|view|index|trigger)\s+(?:if\s+not\s+exists\s+)?(?:"temp\.[^"]*"|`temp\.[^`]*`|\[temp\.[^\]]*\])/i;
 
 /**
  * What a declaration counts: a column's values per class, or a table's rows — carried in one

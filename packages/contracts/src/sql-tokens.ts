@@ -25,6 +25,13 @@ export interface SqlToken {
   /** A quoted identifier or string literal — never read as a keyword. */
   readonly quoted: boolean;
   /**
+   * The name's parts as SQLite reads them, each unquoted: `main.n` and `"main"."n"` are
+   * `['main', 'n']`, a schema and a name; `"main.n"` is `['main.n']`, ONE identifier that holds a
+   * dot. `text` joins them and cannot tell the two apart, so a reader deciding which schema a name
+   * is in reads this. Absent on punctuation.
+   */
+  readonly parts?: readonly string[];
+  /**
    * One of `( ) , = ;`, present only when asked for (`{ punctuation: true }`). A reader that
    * has to know WHERE in a statement a name sits — an assignment target, a column list — needs
    * these; one that only looks for table names does not, and gets the same tokens it always did.
@@ -45,9 +52,9 @@ export function tokenizeSql(sql: string, options?: { readonly punctuation?: bool
   const push = (text: string, quoted: boolean): void => {
     const prev = tokens[tokens.length - 1];
     if (continues && prev) {
-      tokens[tokens.length - 1] = { text: `${prev.text}.${text}`, quoted: prev.quoted || quoted };
+      tokens[tokens.length - 1] = { text: `${prev.text}.${text}`, quoted: prev.quoted || quoted, parts: [...(prev.parts ?? [prev.text]), text] };
     } else {
-      tokens.push({ text, quoted });
+      tokens.push({ text, quoted, parts: [text] });
     }
     // Look ahead for the dot that joins this name to the next part. SQLite treats a
     // COMMENT as whitespace, so `main /* … */ . _substrat_tuples` is one qualified
