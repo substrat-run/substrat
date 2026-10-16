@@ -432,6 +432,15 @@ describe('the data-loss fence (#115)', () => {
     });
   });
 
+  it('a table rebuilt in place is followed through a later rename, of itself or its columns (#115 r4)', () => {
+    const s = scope(`CREATE TABLE a (id TEXT PRIMARY KEY, v TEXT); INSERT INTO a VALUES ('1', 'p'), ('2', 'q');`);
+    s.migrate({
+      sql: `CREATE TABLE n AS SELECT * FROM a; DROP TABLE a; ALTER TABLE n RENAME TO a;
+        ALTER TABLE a RENAME COLUMN v TO w; ALTER TABLE a RENAME TO z;`,
+    });
+    expect(s.rows('SELECT w FROM z ORDER BY id')).toEqual([{ w: 'p' }, { w: 'q' }]);
+  });
+
   it('folds ASCII only, as SQLite does: "ä" and "Ä" are two tables (#115 r3)', () => {
     const s = scope(`CREATE TABLE "ä" (id TEXT); CREATE TABLE "Ä" (id TEXT); INSERT INTO "ä" VALUES ('1'); INSERT INTO "Ä" VALUES ('2');`);
     expect(refusal(() => s.migrate({ sql: 'DROP TABLE "ä";' }))).toContain('table ä held 1 row(s) and is gone');
