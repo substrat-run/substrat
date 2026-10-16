@@ -13,7 +13,7 @@ tracking: ["#2207", "#2303"]
 
 > Accepted 2026-10-15, from the maintainer's answers to the 22 questions of [the store-instances RFC](../rfc/store-instances.md) §12 (recorded in its §12.1). It amends [K-49](./K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md): K-49 covers scope-grain stores, and this record covers tenant-grain ones.
 
-**A store is backed by a driver.** A driver is the platform-registered, pinned code that backs a store. It is what the code, the ratified text of K-49, K-50 and D-63, and the proposed K-52 call a *kind*. They keep saying "kind" until a separate rename lands. This record uses the new word and changes nothing else.
+**A store is backed by a driver.** A driver is the platform-registered, pinned code that backs a store. It is what the code, the ratified text of K-49, K-50 and D-63, and the proposed K-52 call a *kind*. The code and docs were renamed in #RENAME_PR; those records keep the word. This record uses the new word and changes nothing else.
 
 **This records a direction. Nothing in it is built yet.** No instance, connection, connection permission or driver grain exists in code today.
 
@@ -63,7 +63,7 @@ K-52 (proposed, not ratified) defines one envelope version and only the audience
 - D-63's pin has a proposed `schema` integer (#2300), which this record does not state as decided.
 - The quota numbers wait for a real Workers for Platforms account (RFC §13).
 - The isolation requirements of RFC §11.1 gate any driver written outside this repo.
-- The rename of "kind" to "driver" in the code and the ratified records is a separate pull request.
+- The rename of "kind" to "driver" in the code landed in #RENAME_PR. The ratified records keep "kind".
 
 ## Why
 

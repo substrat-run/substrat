@@ -50,7 +50,7 @@ contract-tested against a fixture provider.
 
 Scope stores ([scope-stores.md](scope-stores.md)) were checked as a home for a mirrored tree and
 are not one: a store call works only during a request, `getConnectorScope` deliberately has no
-store door (that RFC's Q6), and a kind is a service, not bytes.
+store door (that RFC's Q6), and a driver is a service, not bytes.
 
 ## 3. Three things that break if a file source is treated as a record source
 

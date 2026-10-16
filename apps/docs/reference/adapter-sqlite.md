@@ -113,8 +113,8 @@ The prefix exists so a store file can never collide with a scope database.
 
 ### Scope stores
 
-A [scope store](/concepts/scope-stores) is answered here by a runner, one per kind, which the
-kind ships. `scopeStoreRunnersFor` reads the bindings from the vertical's own declaration, so
+A [scope store](/concepts/scope-stores) is answered here by a runner, one per driver, which the
+driver ships. `scopeStoreRunnersFor` reads the bindings from the vertical's own declaration, so
 the bindings a dev host answers are the ones a push declares:
 
 ```ts
@@ -123,7 +123,7 @@ import { SqliteScopeHost, scopeStoreRunnersFor } from '@substrat-run/adapter-sql
 const host = new SqliteScopeHost({
   dir: './data',
   scopeStores: {
-    // `graphRunner` is the kind's own factory; the map takes the runner it returns.
+    // `graphRunner` is the driver's own factory; the map takes the runner it returns.
     runners: scopeStoreRunnersFor(manifest.runtimeNeeds.scopeStores, {
       graph: graphRunner({ dir: './data/graph' }),
     }),
@@ -131,8 +131,8 @@ const host = new SqliteScopeHost({
 });
 ```
 
-Two bindings of one kind share its runner. A declared kind with no runner is refused, and so
-is a runner given under a key that is not its `kind`.
+Two bindings of one driver share its runner. A declared driver with no runner is refused, and so
+is a runner given under a key that is not its `driver`.
 
 ## Debugging is opening a file
 

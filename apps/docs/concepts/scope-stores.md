@@ -1,21 +1,21 @@
 ---
-description: "A platform-run object per scope. The vertical declares a binding and a kind and calls it through getScopeStore. No kind is registered yet, so nothing is live for a vertical today."
+description: "A platform-run object per scope. The vertical declares a binding and a driver and calls it through getScopeStore. No driver is registered yet, so nothing is live for a vertical today."
 ---
 
 # Scope stores
 
-A scope store is one platform-run object for one scope. The vertical names a binding and a kind. The platform mints the object and is the only thing that knows which object that binding reaches. The vertical never holds the store itself: its calls go through the platform.
+A scope store is one platform-run object for one scope. The vertical names a binding and a driver. The platform mints the object and is the only thing that knows which object that binding reaches. The vertical never holds the store itself: its calls go through the platform.
 
 This sits below the [per-tenant stores](./tenancy.md). A tenant store is one database or bucket for the whole tenant. A scope store is one object for one scope, and two scopes keep their own.
 
 ## What you can use today
 
-Nothing here is live for a vertical yet. No store driver is registered, and a push that declares a scope store is refused. Everything below is what the platform does once a kind is registered and its store script is deployed.
+Nothing here is live for a vertical yet. No store driver is registered, and a push that declares a scope store is refused. Everything below is what the platform does once a driver is registered and its store script is deployed.
 
 Today a vertical author can:
 
 - read the declaration and the call shape below, and write code against `getScopeStore` and `StoreStub`;
-- run a store locally, on the pure adapter, with a `ScopeStoreRunner` a kind supplies (see the end of this page).
+- run a store locally, on the pure adapter, with a `ScopeStoreRunner` a driver supplies (see the end of this page).
 
 A vertical author cannot yet:
 
@@ -24,15 +24,15 @@ A vertical author cannot yet:
 
 ## Declaring it
 
-`runtimeNeeds.scopeStores` is a list of `{ binding, kind }`. `binding` is a screaming-snake name. `kind` has no default. The only kind named so far is `graph`.
+`runtimeNeeds.scopeStores` is a list of `{ binding, driver }`. `binding` is a screaming-snake name. `driver` has no default. The only driver named so far is `graph`.
 
 ```ts
-scopeStores: [{ binding: 'GRAPH', kind: 'graph' }]
+scopeStores: [{ binding: 'GRAPH', driver: 'graph' }]
 ```
 
 A hosted vertical's upload carries no store binding. The vertical is given neither the store's namespace nor anything that opens it. A binding already used by another store is refused, and so is the name `ATTACHMENTS`. The vertical's own Durable Object bindings count as stores for that check. A name in the `SUBSTRAT_` namespace is the platform's and is refused. The push and the control plane apply the same checks, so a manifest that did not come through `substrat push` is refused the same way.
 
-A kind is registered before a push that names it can succeed. There is one store script per kind and vertical, and a later release replaces that script in place. The objects stay where they are. Uploading that script is [#2210](https://github.com/substrat-run/substrat/issues/2210).
+A driver is registered before a push that names it can succeed. There is one store script per driver and vertical, and a later release replaces that script in place. The objects stay where they are. Uploading that script is [#2210](https://github.com/substrat-run/substrat/issues/2210).
 
 ## Calling it
 
@@ -51,7 +51,7 @@ The call on the wire is `{ operation, input }`. The answer is `{ result }`, or `
 
 A direct binding exists for local development and for tests, and only when the host is created with `transport: 'binding'`. An ambient `SUBSTRAT_STORE_*` namespace is not used otherwise. The binding is not an isolation boundary.
 
-On the platform path the store script's main module is the platform's store entry, not the kind. It checks every call before the kind's class is constructed: the signature, the key, the audience against the operation, the time, the store script, and that the object being asked is the one the signed name addresses. It hands the kind the exact body it checked, and its own bindings only. The entry's `SUBSTRAT_STORE*` bindings are not in the environment the kind is constructed with, not in an `env` it imports from `cloudflare:workers`, and not reachable through `ctx.exports` (the upload sets `disallow_importable_env` and `disable_ctx_exports`). The kind does keep its object's `ctx`, storage included. The entry is not a boundary against the kind itself: the kind's code runs in the same isolate, so a kind that set out to interfere with the checks could. What stands between a kind and every tenant it serves is the review of each release the platform pins.
+On the platform path the store script's main module is the platform's store entry, not the driver. It checks every call before the driver's class is constructed: the signature, the key, the audience against the operation, the time, the store script, and that the object being asked is the one the signed name addresses. It hands the driver the exact body it checked, and its own bindings only. The entry's `SUBSTRAT_STORE*` bindings are not in the environment the driver is constructed with, not in an `env` it imports from `cloudflare:workers`, and not reachable through `ctx.exports` (the upload sets `disallow_importable_env` and `disable_ctx_exports`). The driver does keep its object's `ctx`, storage included. The entry is not a boundary against the driver itself: the driver's code runs in the same isolate, so a driver that set out to interfere with the checks could. What stands between a driver and every tenant it serves is the review of each release the platform pins.
 
 ## The invocation line
 
@@ -73,17 +73,17 @@ Erasure reaches the live store. It does not reach a copy already in a backup. Se
 
 ## Snapshot, restore, export and backup
 
-A scope dump carries `stores`: one entry per binding, with the kind and the tables `substrat.export` returned. An old dump has no list, and loads as a scope that had none. On the hosted plane the control plane reads those tables from the store script. A store it cannot name or reach fails the backup, the pull or the export, instead of leaving the store out.
+A scope dump carries `stores`: one entry per binding, with the driver and the tables `substrat.export` returned. An old dump has no list, and loads as a scope that had none. On the hosted plane the control plane reads those tables from the store script. A store it cannot name or reach fails the backup, the pull or the export, instead of leaving the store out.
 
 **A store's tables in a backup are not sealed per subject.** The platform cannot see inside them, so it cannot seal a subject's data in them the way it seals the scope's own classified fields. Erasing a subject reaches the live store and never the backup file at rest. The restore replay below is what removes that subject again when the backup comes back.
 
-**A binding a later version dropped.** Export, wipe, erasure and the meter reach every binding any version of the vertical has declared, so an object under a dropped binding is still wiped, erased and measured, whatever moved the scope off the version that declared it: a bind, a promote, a rollback or a serving re-upload. A restore imports only the bindings the scope's version declares, so a dump leaves a dropped binding out when its export is empty. One that still holds data refuses the backup, the pull or the export (409), naming the binding: declare it again, with its kind, in a version the scope runs, or reap the scope without a backup, which wipes it. A reap without a backup, erasure and wipe never export, so they reach the store either way.
+**A binding a later version dropped.** Export, wipe, erasure and the meter reach every binding any version of the vertical has declared, so an object under a dropped binding is still wiped, erased and measured, whatever moved the scope off the version that declared it: a bind, a promote, a rollback or a serving re-upload. A restore imports only the bindings the scope's version declares, so a dump leaves a dropped binding out when its export is empty. One that still holds data refuses the backup, the pull or the export (409), naming the binding: declare it again, with its driver, in a version the scope runs, or reap the scope without a backup, which wipes it. A reap without a backup, erasure and wipe never export, so they reach the store either way.
 
-A binding keeps its kind for the life of its vertical. A push that declares an existing binding as another kind is refused (409); give the new store a new binding name.
+A binding keeps its driver for the life of its vertical. A push that declares an existing binding as another driver is refused (409); give the new store a new binding name.
 
 A masked export carries no stores. The masker cannot see inside them, so they are left out rather than shipped unmasked. The full tenant export carries them.
 
-Restore and import call `substrat.import`, which replaces the object. A dump store whose binding the destination's version does not declare, or declares as another kind, refuses the restore before anything is written.
+Restore and import call `substrat.import`, which replaces the object. A dump store whose binding the destination's version does not declare, or declares as another driver, refuses the restore before anything is written.
 
 After a restore, and after a snapshot copy, the platform runs `substrat.erase` again on every store of the destination, for every subject erased in the destination or in the dump's source. Each subject is erased once. The restore's answer reports it, and only when there is something to report:
 
@@ -109,16 +109,16 @@ The storage gauge samples each scope's stores in the same pass as the scope data
 
 ## Known limits
 
-These are open, and are tracked in the [scope-stores RFC](https://github.com/substrat-run/substrat/blob/main/docs/rfc/scope-stores.md) (§10.8). The first group is to be closed before the first kind is registered. The second can follow.
+These are open, and are tracked in the [scope-stores RFC](https://github.com/substrat-run/substrat/blob/main/docs/rfc/scope-stores.md) (§10.8). The first group is to be closed before the first driver is registered. The second can follow.
 
-Before the first kind:
+Before the first driver:
 
-- **No store script is uploaded yet.** The entry that checks each call exists and is tested in front of a test kind. Uploading a registered kind behind it is the next step.
+- **No store script is uploaded yet.** The entry that checks each call exists and is tested in front of a test driver. Uploading a registered driver behind it is the next step.
 - **Unroute is not a drain.** Deleting a scope unbinds its hostnames before the wipe. That is the fast path. The durable fence, a scope state the store door itself checks, is still to come.
 
 Later:
 
-- **Retiring a binding.** A binding no version still declares stays in the vertical's record, so export, wipe, erasure and the meter keep asking its store, which answers empty once wiped, and its name cannot be declared again as another kind. The explicit retire step is still to come.
+- **Retiring a binding.** A binding no version still declares stays in the vertical's record, so export, wipe, erasure and the meter keep asking its store, which answers empty once wiped, and its name cannot be declared again as another driver. The explicit retire step is still to come.
 - **Replay budget.** The restore's erasure replay runs inside one request and starts again from the first subject on a retry. It converges only while it fits one request.
 - **Audited receipt.** On the path where the control plane erases a scope its own host holds, the audited receipt lacks the platform's store erasures. The answer carries them.
 - **Versions without a kept manifest.** Replay and wipe skip a destination whose version predates kept manifests. Such a version holds no store, and a test that says so is still to come.
@@ -126,22 +126,22 @@ Later:
 - **Peer calls.** A vertical serving a [peer call](../guide/architecture.md#calling-another-vertical-the-peer-door) has its store calls refused.
 - **Only during a request.** A call from a Durable Object, including a scheduled job, does not pass egress and is refused. The platform's own jobs are not affected.
 
-## Writing a kind for the pure adapter
+## Writing a driver for the pure adapter
 
-A kind that runs on the pure adapter ships a `ScopeStoreRunner`: `kind`, `start`, `stop`, and `invoke(address, request)`. The address is `{ tenantId, vertical, scopeId, binding }`. A host starts each runner once, on the first store call. If one runner's `start` throws, the next call starts only the runners that have not started. `close` waits for a start in flight, starts no runner after that, and then calls `stop` on every runner. A `stop` that throws does not keep the others from being called. One failure is rethrown as it is, and several as an `AggregateError`.
+A driver that runs on the pure adapter ships a `ScopeStoreRunner`: `driver`, `start`, `stop`, and `invoke(address, request)`. The address is `{ tenantId, vertical, scopeId, binding }`. A host starts each runner once, on the first store call. If one runner's `start` throws, the next call starts only the runners that have not started. `close` waits for a start in flight, starts no runner after that, and then calls `stop` on every runner. A `stop` that throws does not keep the others from being called. One failure is rethrown as it is, and several as an `AggregateError`.
 
 What a runner answers:
 
 - One object per whole address. Two addresses that differ in any one field never share an object.
 - `stop` without `start` resolves. A `stop` and then a `start` serve the same objects: they outlive the process, not the runner.
-- Every answer is the envelope, `{ result }` or `{ error: { code, status, body? } }`. An operation the kind does not know is an error answer, not a throw.
+- Every answer is the envelope, `{ result }` or `{ error: { code, status, body? } }`. An operation the driver does not know is an error answer, not a throw.
 - `substrat.size` answers `{ bytes }`.
 - `substrat.export` answers `{ tables }`, each in the scope-dump table shape.
 - `substrat.import` takes `{ tables }`, replaces the whole object, and answers `{ tables }` as the count it wrote.
 - `substrat.wipe` answers `{}` and leaves an empty object, also for an address nothing was written to.
 - `substrat.erase` takes `{ subjectId }` and answers `{ erased }`, counting what it removed. A subject with nothing on the object, a repeat included, answers `{ erased: 0 }`.
 
-`scopeStoreRunnerContractSuite` in [`@substrat-run/contract-tests`](../reference/contract-tests.md) holds a runner to each of these. A kind runs it in its own repository, with one write and one read of its own catalog:
+`scopeStoreRunnerContractSuite` in [`@substrat-run/contract-tests`](../reference/contract-tests.md) holds a runner to each of these. A driver runs it in its own repository, with one write and one read of its own catalog:
 
 ```ts
 import { scopeStoreRunnerContractSuite } from '@substrat-run/contract-tests';

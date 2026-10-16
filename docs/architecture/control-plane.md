@@ -418,13 +418,13 @@ no roster entry may be an automation identity, a shared mailbox, or anything els
 finish the login without a person. Such an entry would publish releases as if it were one.
 
 **A store driver release reaches at most 300 verticals** (#2300). A rollout or rollback walks every
-vertical any version ever declared the kind in, uploading at most 100 scripts per request; posting
-it again continues. A kind declared by more than 300 verticals cannot be rolled out **or rolled
-back** (409) until the rollout row carries a cursor (#2312). Watch that count before a kind grows
+vertical any version ever declared the driver in, uploading at most 100 scripts per request; posting
+it again continues. A driver declared by more than 300 verticals cannot be rolled out **or rolled
+back** (409) until the rollout row carries a cursor (#2312). Watch that count before a driver grows
 towards it: past it, the emergency path is closed too.
 
-**Which rollback, and what blocks a rollout** (#2300). `GET /store-drivers/:kind` answers `rollbackTarget`,
-and `POST /store-drivers/:kind/rollback` always goes there:
+**Which rollback, and what blocks a rollout** (#2300). `GET /store-drivers/:driver` answers `rollbackTarget`,
+and `POST /store-drivers/:driver/rollback` always goes there:
 
 - A request that runs out of its 100 uploads ends `paused`. It is not a fault: post the same rollout,
   or the same rollback, again.

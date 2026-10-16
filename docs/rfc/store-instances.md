@@ -1,7 +1,7 @@
 ---
 status: accepted
 layer: kernel
-description: A tenant-level store instance that several verticals of one tenant connect to, weighed against the per-scope store of K-49/K-50. Four options, three authorization shapes, the lifecycle a shared object needs, and what it does to the open scope-store stack. Records the maintainer's direction of 2026-10-15: named tenant-level instances with explicit connections and platform-addressed partitions (B), a script per partition as the upgrade for stronger separation (B′), and per-scope stores kept for scope-grain kinds. Accepted: its 22 questions were answered on 2026-10-15 and the direction is K-53.
+description: A tenant-level store instance that several verticals of one tenant connect to, weighed against the per-scope store of K-49/K-50. Four options, three authorization shapes, the lifecycle a shared object needs, and what it does to the open scope-store stack. Records the maintainer's direction of 2026-10-15: named tenant-level instances with explicit connections and platform-addressed partitions (B), a script per partition as the upgrade for stronger separation (B′), and per-scope stores kept for scope-grain drivers. Accepted: its 22 questions were answered on 2026-10-15 and the direction is K-53.
 ---
 
 # RFC: store instances
@@ -9,18 +9,18 @@ description: A tenant-level store instance that several verticals of one tenant 
 **Status: accepted** (the 22 questions of §12 answered 2026-10-15, §12.1; the direction
 recorded as [K-53](../decisions/K-053-a-tenant-level-store-is-a-named-instance-that-a-tenant-s-verticals-connect-to-explicitly.md);
 open: the background-write record of Q14, the K-52 amendment for tenant-grain envelopes and
-the `reader` audience, the quota numbers, the isolation requirements of §11.1, and the rename
-of "kind" to "driver" in the code and the ratified records). It weighs an alternative to the per-scope store of
+the `reader` audience, the quota numbers, and the isolation requirements of §11.1; the rename
+of "kind" to "driver" in the code landed in #RENAME_PR). It weighs an alternative to the per-scope store of
 [scope-stores.md](scope-stores.md) (K-49, K-50, D-63) for one requirement that the per-scope
 store cannot meet.
 
-> **Maintainer direction (2026-10-15).** The first kind's requirement is accepted: a
+> **Maintainer direction (2026-10-15).** The first driver's requirement is accepted: a
 > tenant-wide store shared by the verticals of one tenant. Option B is the direction: named
 > tenant-level instances, explicit connections, and platform-addressed partitions (§4, §5,
 > §6 (ii)). B′, a script per partition, is the upgrade when stronger separation is wanted.
-> A stays for scope-grain kinds, and the kind declares its grain (§9). The 22 open questions
+> A stays for scope-grain drivers, and the driver declares its grain (§9). The 22 open questions
 > of §12 were answered one by one on 2026-10-15 (§12.1). The structural isolation requirements the maintainer wants pursued before any
-> third-party kind is allowed are §11.1.
+> third-party driver is allowed are §11.1.
 
 Written against `origin/main` at `02a72f0e8`. References are to sections and symbols, not
 lines. Issues and PRs are cited by number only.
@@ -29,20 +29,20 @@ lines. Issues and PRs are cited by number only.
 
 ## 1. The requirement
 
-The first kind's consumer is **a tenant-wide data layer over the verticals**: one store that
+The first driver's consumer is **a tenant-wide data layer over the verticals**: one store that
 the verticals of **one** tenant all reach, so that what one vertical writes another can read,
-and that no other tenant can reach at all. It is the first kind of scope-stores.md, a
+and that no other tenant can reach at all. It is the first driver of scope-stores.md, a
 graph-shaped store with its own runtime, called synchronously from the operation a user is
 waiting on.
 
 A store per (tenant, vertical, scope, binding) cannot be that. Two verticals of one tenant
 never name the same object: the vertical slug is in the object name (K-49), and the script
-is per (kind, vertical), so even the same name in two scripts is two objects
+is per (driver, vertical), so even the same name in two scripts is two objects
 (spike finding 5, `spikes/scope-store-binding/FINDINGS.md`).
 
 The maintainer's proposal is the subject of this RFC:
 
-- The unit of ownership becomes a tenant-level **store instance**, identified by a kind and
+- The unit of ownership becomes a tenant-level **store instance**, identified by a driver and
   a name, and created by the tenant.
 - A vertical **connects** its declared binding to an instance explicitly, the way a
   connection is made for a connector.
@@ -60,11 +60,11 @@ isolate runs it. Review is named where review is the only control.
   option here reads two tenants' data in one call.
 - Replacing the scope's own database or the event spine. The scope stays the unit of
   consistency, permission and audit (kernel-design §3, §4).
-- A general shared database for vertical authors. An instance is a registered kind
+- A general shared database for vertical authors. An instance is a registered driver
   (D-63), not a SQL handle.
 - Read-your-writes across verticals. Within one call, the store answers as it answers.
   Across verticals, nothing here promises an order.
-- Deciding the first kind's schema or its operation catalog.
+- Deciding the first driver's schema or its operation catalog.
 
 ## 2. What exists, and why none of it is this
 
@@ -73,7 +73,7 @@ are per vertical.
 
 | Mechanism | Unit | Shared across a tenant's verticals? |
 |---|---|---|
-| Scope store (K-49, K-50) | (tenant, vertical, scope, binding); one script per (kind, vertical) (D-63) | No. The router refuses a store call addressed to any scope other than the dispatch's own (`handleStoreCall`), and the name carries the vertical |
+| Scope store (K-49, K-50) | (tenant, vertical, scope, binding); one script per (driver, vertical) (D-63) | No. The router refuses a store call addressed to any scope other than the dispatch's own (`handleStoreCall`), and the name carries the vertical |
 | `tenantStores` / `blobStores` | (tenant, vertical, binding): the ledger's key is `(tenant_id, vertical, binding)`, and the D1 and bucket names are built from all three (`tenantStoreDatabaseName`, `blobStoreBucketName`) | No. Each tenant's store is bound to the one vertical's serving script as `<BINDING>__<TENANTID>` |
 | Connections (`_substrat_connections`) | (tenant, vertical, provider, account); authority is grants on `connection:<id>`, scope-level or tenant-level | No. `getConnectorScope` refuses a scope whose vertical is not the connection's |
 | Peer calls (#1706) | Directional and same-tenant. The caller declares `calls`; the target declares `peers` and seats `vertical:<slug>` at provisioning; `admitPeer` runs in the target scope | Reaches another vertical's *operations*, with the vertical's authority. It is not shared storage |
@@ -116,7 +116,7 @@ the auth-server (`demos/auth-server`) in hosted mode.
 **Where they differ:**
 
 - **Whose code it is.** The auth-server is code in this repo, reviewed as a vertical. A store
-  kind is code the platform runs for a party it did not write (D-63), and that is why the
+  driver is code the platform runs for a party it did not write (D-63), and that is why the
   checks in front of it must be platform code (§3).
 - **What the connection is.** An auth connection is configuration plus standard OIDC: the
   relying party verifies the issuer's tokens against its published keys, and nothing routes
@@ -153,15 +153,15 @@ differ in which layers they keep, so they are named first.
    and its memory (#2210; not exercised, §13). Objects in different scripts never do.
 
 **An isolation property of today's design, stated neutrally.** A store script runs the
-kind's code. The entry module checks every envelope before the kind's class is constructed,
-but it runs in the same interpreter as that class. Within its object, the kind's code is
+driver's code. The entry module checks every envelope before the driver's class is constructed,
+but it runs in the same interpreter as that class. Within its object, the driver's code is
 trusted by review alone (D-63; scope-stores Q3, ratified in #2302). The open stack
-has one script per (kind, vertical). So the code of one kind release runs, in one script,
-for **every tenant that installed that vertical**. If the kind misbehaves, through a defect
+has one script per (driver, vertical). So the code of one driver release runs, in one script,
+for **every tenant that installed that vertical**. If the driver misbehaves, through a defect
 or otherwise, the reach is everything in that script and isolate: every tenant of the
 vertical. The envelope keeps one *object* from opening another's name, and that check runs
-in platform code. What the kind's code does inside its isolate is not held by a platform
-mechanism. D-63 accepts this for the first kind on the reasoning that *"a tenant that exhausts
+in platform code. What the driver's code does inside its isolate is not held by a platform
+mechanism. D-63 accepts this for the first driver on the reasoning that *"a tenant that exhausts
 an isolate should restart that vertical's objects only"*. That bounds the blast radius by
 vertical. It does not bound it by tenant.
 
@@ -173,11 +173,11 @@ the registration review. So **the envelope makes addressing mechanical, and only
 script makes the data of two objects mechanically separate.** Everything this RFC says
 about partitions (§6) is bounded by that.
 
-**A requirement of every option.** The environment the platform hands the kind's class
+**A requirement of every option.** The environment the platform hands the driver's class
 leaves out the store's own Durable Object namespace binding and the envelope's
-verification-key bindings. The entry module holds them, and the kind receives only what its
-operations need. This narrows what the kind's code can address without relying on review.
-Whether it can be guaranteed for every runtime a kind uses, including any route the runtime
+verification-key bindings. The entry module holds them, and the driver receives only what its
+operations need. This narrows what the driver's code can address without relying on review.
+Whether it can be guaranteed for every runtime a driver uses, including any route the runtime
 offers module code to reach the script's bindings, is unverified (§13).
 
 Each option in §4 is graded on these four layers and on that exposure.
@@ -186,25 +186,25 @@ Each option in §4 is graded on these four layers and on that exposure.
 
 ### A. Keep per-scope stores (the status quo)
 
-One object per (tenant, vertical, scope, binding), one script per (kind, vertical), built by
+One object per (tenant, vertical, scope, binding), one script per (driver, vertical), built by
 #2207's stack.
 
-- **Isolation.** All four layers, with the §3 exposure: the kind's code spans every tenant of
+- **Isolation.** All four layers, with the §3 exposure: the driver's code spans every tenant of
   the vertical.
 - **Meets the requirement?** No. Two verticals never name one object, and one vertical's
   scopes never share one either. A tenant-wide layer built on A would be a fan-out over N
   objects by each reader, and a write by vertical X would never be visible to vertical Y.
-- **Cost.** The scripts number (kinds × verticals that declare a kind). One release fans out to
+- **Cost.** The scripts number (drivers × verticals that declare a driver). One release fans out to
   that many uploads.
-- **When A is right.** For a kind whose data really is per scope: a scope's working copy, a
-  scope-local index. Nothing in this RFC argues against A for such a kind. §9 and §12 Q9 are how a
-  kind says which grain it is.
+- **When A is right.** For a driver whose data really is per scope: a scope's working copy, a
+  scope-local index. Nothing in this RFC argues against A for such a driver. §9 and §12 Q9 are how a
+  driver says which grain it is.
 
-### B. A tenant-level instance, explicit connections, one script per (kind, tenant)
+### B. A tenant-level instance, explicit connections, one script per (driver, tenant)
 
-The tenant creates an instance of a kind. A tenant admin connects a vertical's declared
+The tenant creates an instance of a driver. A tenant admin connects a vertical's declared
 binding to it. The router resolves the binding to the instance through the directory, builds
-the instance's object name, signs it, and addresses the store script of that (kind, tenant).
+the instance's object name, signs it, and addresses the store script of that (driver, tenant).
 This is the auth-server's shape (§2.1): an instance with a recorded identity, several per
 tenant, connected to explicitly. Here the connection is a binding the platform routes and
 signs, rather than configuration the relying party verifies.
@@ -216,14 +216,14 @@ signs, rather than configuration the relying party verifies.
   - Layer 3: the script is the tenant's, and the entry module's own-vertical check becomes an
     own-tenant check.
   - Layer 4: the isolate holds one tenant's objects only. Inside the tenant, every instance
-    and every partition of that kind shares the script and may share the isolate.
-- **The §3 exposure.** A kind's code can reach only objects in its own script, and in B that
-  is one tenant's instances. A misbehaving kind affects one tenant's layer, which is the data
+    and every partition of that driver shares the script and may share the isolate.
+- **The §3 exposure.** A driver's code can reach only objects in its own script, and in B that
+  is one tenant's instances. A misbehaving driver affects one tenant's layer, which is the data
   that tenant chose to share across its verticals anyway. That is strictly narrower than A. It
   is the strongest argument for a script per tenant, and it holds whichever authorization shape
   §6 settles on. **Within the tenant, separation between partitions and between instances is
   held by review**, for the reason §3 gives, unless the variant below is chosen.
-- **Variant B′: a script per (kind, tenant, partition).** Each partition (§6 (ii)) is its own
+- **Variant B′: a script per (driver, tenant, partition).** Each partition (§6 (ii)) is its own
   script, so two partitions never share an isolate, and moving data between them takes a
   platform-signed call. This is the only form in which separation inside a tenant does not rest
   on review. It costs a script per partition, and with partitions keyed by (instance,
@@ -243,19 +243,19 @@ signs, rather than configuration the relying party verifies.
 - **Meets the requirement?** Yes: one object (or one object per partition, §6) per instance,
   reached by every connected vertical.
 - **Cost (§10).**
-  - Store scripts number (kinds × tenants that hold an instance). That is a different curve:
+  - Store scripts number (drivers × tenants that hold an instance). That is a different curve:
     it grows with the customer base, where A grows with the catalogue.
-  - A kind release fans out to every tenant script. The release model (D-63's pin, §8.2)
+  - A driver release fans out to every tenant script. The release model (D-63's pin, §8.2)
     carries over, with its canary and rollback, but the set they walk is tenants.
   - Each new script has its own first-deploy window. K-28 records one of about 15 seconds
     during which a new script can answer `Worker not found.` in colos it has not reached.
     That window opens at instance creation as well as on every release.
-  - Cold starts: fewer objects share an isolate, so more isolates are cold. The kind's
-    cold start is the kind's latency (scope-stores §9) and is paid more often.
+  - Cold starts: fewer objects share an isolate, so more isolates are cold. The driver's
+    cold start is the driver's latency (scope-stores §9) and is paid more often.
   - Workers for Platforms limits on scripts per namespace and on uploads are not recorded in
     this repo (§13).
 
-### C. A tenant-level instance on the per-(kind, vertical) scripts
+### C. A tenant-level instance on the per-(driver, vertical) scripts
 
 The instance is a tenant-level record, but the object lives in the existing store script of
 one vertical.
@@ -270,10 +270,10 @@ C is listed because it is the obvious first try. It does not stand on its own:
   and it now also serves the other verticals' data for this tenant. The §3 exposure covers
   all of them.
 - The instance's home depends on one vertical staying installed. Uninstalling that vertical,
-  or retiring its kind binding, strands an instance the other verticals still use.
-- The only other way to share one script across verticals is one script per kind for the
+  or retiring its driver binding, strands an instance the other verticals still use.
+- The only other way to share one script across verticals is one script per driver for the
   whole fleet. D-63 rejects that already ("a script shared by every vertical is also
-  rejected for the first hosted kind").
+  rejected for the first hosted driver").
 
 So C collapses into B (if the instance gets its own script) or into the rejected
 fleet-wide script. It is not recommended, and §10 grades it only for completeness.
@@ -285,7 +285,7 @@ already emit, and a separate read surface serves it.
 
 - **Writes.** A platform job, the platform sweep's shape (`packages/control-plane-api/src/cross-vertical.ts`
   already walks one tenant's producers), reads each connected vertical's exported events
-  since a watermark and calls the kind's ingest operation with audience `platform`. What a
+  since a watermark and calls the driver's ingest operation with audience `platform`. What a
   vertical contributes is exactly what it declared as exported, so the producer's own
   declaration is the write authorization.
 - **Reads.** These come from a read surface the platform serves, with each vertical reading
@@ -293,8 +293,8 @@ already emit, and a separate read surface serves it.
   dashboard or an agent tool.
 - **Isolation.** Layer 1 is the control plane's own record, as K-50 has it for reserved
   operations. Layers 3 and 4 depend on the script grain, which is B's question again: D on a
-  per-(kind, vertical) script has the same problem as C. D therefore implies B's script per
-  (kind, tenant) as well.
+  per-(driver, vertical) script has the same problem as C. D therefore implies B's script per
+  (driver, tenant) as well.
 - **Meets the requirement?** Partly. It gives a tenant-wide layer without any vertical
   writing into it, and its write authorization is the platform's. It gives up the synchronous
   write from the user's operation, because ingestion is after the fact, at the sweep's
@@ -312,8 +312,8 @@ already emit, and a separate read surface serves it.
 - **B now, with D added later.** Verticals write synchronously to their own partition, and a
   platform job later adds derived, cross-vertical views. The recommendation (§11) is close to
   this.
-- **A and B side by side.** Grain is a property of the kind (§9 and §12 Q9). A scope-grain kind keeps
-  A unchanged, and a tenant-grain kind takes B. Nothing in B removes A.
+- **A and B side by side.** Grain is a property of the driver (§9 and §12 Q9). A scope-grain driver keeps
+  A unchanged, and a tenant-grain driver takes B. Nothing in B removes A.
 
 ## 5. The connection model (B, and D's read side)
 
@@ -322,7 +322,7 @@ already emit, and a separate read surface serves it.
 Both records live in the directory, where the tenant, scope, connection and peer-binding
 rows already are. The names are illustrative.
 
-- **An instance:** `(id ULID, tenant_id, kind, display_name, jurisdiction, status, created_by,
+- **An instance:** `(id ULID, tenant_id, driver, display_name, jurisdiction, status, created_by,
   created_at)`. `status` follows the scope's vocabulary: `active`, `deleting`, `reaped`.
 - **A store connection:** `(id, tenant_id, instance_id, scope_id, vertical, binding,
   created_by, created_at, ended_at)`.
@@ -359,7 +359,7 @@ rows already are. The names are illustrative.
 
 - **Creating an instance** is a tenant-admin act on the dashboard. It is audited as
   `recordAdmin(…, 'createStoreInstance', …)`, the way `provisionTenantStore` and
-  `createConnection` are. The kind must be registered with grain `tenant` (§9 and §12 Q9). Whether a
+  `createConnection` are. The driver must be registered with grain `tenant` (§9 and §12 Q9). Whether a
   vertical's provisioning may also create one is §12 Q6.
 - **Connecting** a vertical's binding is a tenant-admin act behind a dashboard permission
   key. Today `dashboard:manage-integrations` (owner, admin) gates connections, and
@@ -370,15 +370,15 @@ rows already are. The names are illustrative.
 - **Every connect, disconnect and change to `reads`** writes an admin-log row naming the
   instance, the vertical and the binding.
 - **A connect is refused** when:
-  - the binding's declared kind is not the instance's kind;
+  - the binding's declared driver is not the instance's driver;
   - the scope is non-primary (§7.3);
   - the vertical is not installed in the tenant;
   - the instance is not `active`.
 
 ### 5.3 What the vertical declares and sees
 
-- **The declaration does not change shape.** `runtimeNeeds.scopeStores: [{ binding, kind }]`.
-  Whether a binding is per scope or per instance is the kind's registered grain, not the
+- **The declaration does not change shape.** `runtimeNeeds.scopeStores: [{ binding, driver }]`.
+  Whether a binding is per scope or per instance is the driver's registered grain, not the
   vertical's choice (§9 and §12 Q9). A vertical cannot name an instance, a tenant, or another
   vertical's binding.
 - **The door does not change shape either.** The call is still made from an operation in a
@@ -387,7 +387,7 @@ rows already are. The names are illustrative.
   §12 Q13.
 - **A source is named by an alias the reading vertical declares.** A binding that may read
   other partitions declares its aliases beside it, in the same SCREAMING_SNAKE grammar, for
-  example `{ binding: 'GRAPH', kind: 'graph', sources: ['PEOPLE'] }`. The call names the alias
+  example `{ binding: 'GRAPH', driver: 'graph', sources: ['PEOPLE'] }`. The call names the alias
   on the stub it already holds (`store.source('PEOPLE').invoke(op, input)`; the spelling is
   illustrative). When a tenant admin grants a read, they map an alias to a partition. The
   vertical never sees the partition, the instance or the other installation. An alias with no
@@ -403,9 +403,9 @@ The router already reads, per dispatch, the scope's stores from the version reco
 (`READ_ROUTE_SQL`, column `scope_stores_json`) and hands them to egress in
 `OUTBOUND_POLICY.stores`. Under B the same read gains a join:
 
-1. The scope's version declares `(binding, kind)`, exactly as today (L14).
-2. For a tenant-grain kind, the live store connection for `(tenant, scope, binding)` names
-   the instance, which must be `active` and of the same kind. Its `vertical` must be the
+1. The scope's version declares `(binding, driver)`, exactly as today (L14).
+2. For a tenant-grain driver, the live store connection for `(tenant, scope, binding)` names
+   the instance, which must be `active` and of the same driver. Its `vertical` must be the
    scope record's.
 3. The caller's own partition is `(instance, scope, binding)` from that same row.
 4. For each alias the binding declares, the live read grant on that connection names a
@@ -418,7 +418,7 @@ The router already reads, per dispatch, the scope's stores from the version reco
 
 Every step fails closed:
 
-- no connection, an ended connection, an instance that is not `active`, or a kind mismatch
+- no connection, an ended connection, an instance that is not `active`, or a driver mismatch
   means the binding is absent and the call is refused;
 - a non-primary scope resolves no connection at all (§7.3).
 
@@ -432,11 +432,11 @@ A disconnect takes effect on the next dispatch, because the policy is set per di
   binding)`, so two bindings or two installations never resolve to one object, and a
   reconnect of the same pair revives the same object (§5.1). The display name
   never appears in the name.
-- **The script name** is a new reserved form, `substrat-store-<kind>-t-<tenantId>`. It must
-  be injective against the per-(kind, vertical) names of L20, with a prefix no vertical slug
+- **The script name** is a new reserved form, `substrat-store-<driver>-t-<tenantId>`. It must
+  be injective against the per-(driver, vertical) names of L20, with a prefix no vertical slug
   can produce.
 - **The envelope** keeps every field of scope-stores §10.3. It adds, inside the signature, the
-  caller's vertical, scope and connection id, under a new `v`, so the kind can attribute a
+  caller's vertical, scope and connection id, under a new `v`, so the driver can attribute a
   write and the entry module can check that the partition in the name is the caller's own
   (§6). The rollout order is what makes it safe: every store script accepts the new `v`
   before any signer sends it (scope-stores §10.10, "a store script newer than the signer").
@@ -477,22 +477,22 @@ two things have to be kept apart when grading them:
 
 - **Addressing.** Which object a *caller* can name. The router and the envelope can make this
   mechanical.
-- **Data separation against the kind's own code.** Whether the kind, running inside a
+- **Data separation against the driver's own code.** Whether the driver, running inside a
   partition, can move data into another partition. §3 shows this is mechanical only across
   scripts.
 
-### (i) Kind-enforced partitions
+### (i) Driver-enforced partitions
 
 - **How it works.** One object per instance. The envelope carries the caller's vertical. The
-  kind tags every row with it and applies the connection's `reads` itself.
-- **What holds it.** The kind's code alone. The entry module verifies the envelope and can
-  pass the caller's vertical along, but it runs in the same interpreter as the kind's class
-  (§3). Whether the kind honours `reads` is a review question under D-63 and nothing else.
+  driver tags every row with it and applies the connection's `reads` itself.
+- **What holds it.** The driver's code alone. The entry module verifies the envelope and can
+  pass the caller's vertical along, but it runs in the same interpreter as the driver's class
+  (§3). Whether the driver honours `reads` is a review question under D-63 and nothing else.
 - **For it.** Cross-vertical queries are native: a traversal or a join across what X and Y
   wrote is one call to one object. For a graph-shaped layer, those relationships are much of
   the point.
 - **Against it.** The tenant's admin grants a read list that no platform mechanism enforces.
-  A defect in the kind leaks across verticals inside the tenant without any signal.
+  A defect in the driver leaks across verticals inside the tenant without any signal.
 
 ### (ii) Platform-addressed partitions
 
@@ -503,10 +503,10 @@ two things have to be kept apart when grading them:
 - **Reading another partition** takes an explicit read grant (`reads`, §5.1). The vertical
   names a declared alias (§5.3). The call takes the same hop, is signed with audience
   `reader` for the other partition's name, and only for an operation that is both listed
-  read-only in the kind's registration and in the producer's recorded `shareable` list. The
+  read-only in the driver's registration and in the producer's recorded `shareable` list. The
   router refuses an unknown alias, an unlisted operation and an ungranted partition before it
   signs. The entry module in the target object refuses a `reader` envelope for a non-read
-  operation before the kind runs.
+  operation before the driver runs.
 - **A read grant cannot leave the reader's tenant or instance.** This is the isolation edge of
   `reads`, and it is held twice:
   - **At grant.** The control plane refuses a grant whose target partition does not have the
@@ -521,27 +521,27 @@ two things have to be kept apart when grading them:
     that instance.
 - **What holds it: addressing, mechanically.** A caller cannot name another partition, and
   cannot run a non-read operation on one. Router and envelope enforce both, in platform code,
-  before any kind code runs. A store script holds no key that mints an envelope
+  before any driver code runs. A store script holds no key that mints an envelope
   (#2293).
-- **What does not hold mechanically: data separation against the kind.** Every partition of
-  every instance of the tenant is an object of one class in the one (kind, tenant) script.
-  The objects may share an isolate, and the kind's code can carry data between them through
+- **What does not hold mechanically: data separation against the driver.** Every partition of
+  every instance of the tenant is an object of one class in the one (driver, tenant) script.
+  The objects may share an isolate, and the driver's code can carry data between them through
   isolate memory with no envelope at all (§3). Storage being per object does not stop that.
-  **Within a tenant, partition separation against the kind's own code is review-only**, as it
-  is under (i). That holds unless the variant B′ cost is paid: a script per (kind, tenant,
+  **Within a tenant, partition separation against the driver's own code is review-only**, as it
+  is under (i). That holds unless the variant B′ cost is paid: a script per (driver, tenant,
   partition), where partitions never share an isolate (§4).
 - **What also rests on review.** That a `reader` operation the registration calls read-only
-  really does not write. Inside the read partition's object, the kind runs, so a misbehaving
+  really does not write. Inside the read partition's object, the driver runs, so a misbehaving
   read operation can change the partition it reads. That stays within one tenant's instance.
 - **What (ii) still buys over (i), even on one script.**
-  - Caller addressing does not depend on the kind being correct.
+  - Caller addressing does not depend on the driver being correct.
   - The partition is the platform's unit of wipe, export, size and erasure (§7), so those
-    never depend on the kind filtering its own rows.
-  - The read list is checked by the router rather than by the kind.
+    never depend on the driver filtering its own rows.
+  - The read list is checked by the router rather than by the driver.
 - **Against it.**
   - Every cross-vertical query is a fan-out by the caller: the calling vertical, or a
     platform read surface, reads N partitions and combines them.
-  - The kind cannot traverse across partitions in one call.
+  - The driver cannot traverse across partitions in one call.
   - Partitions multiply objects: one per connected (scope, binding).
   - A shared, vertical-neutral partition (tenant reference data every vertical writes) needs
     its own rule. Either it is a partition with several writers, which is (i) inside that
@@ -554,7 +554,7 @@ two things have to be kept apart when grading them:
 - **What holds it.** Platform code on both sides, and the producer's export declaration,
   which already carries a `readPermission` (#1705).
 - **For it.** No vertical-written data enters without the producer's declaration, and no
-  read is decided by kind code.
+  read is decided by driver code.
 - **Against it.**
   - The layer is eventually consistent.
   - The synchronous write is gone.
@@ -589,7 +589,7 @@ two things have to be kept apart when grading them:
   #1705). The second limits what crosses to `piiClass: 'none'`, and the bounds above take the
   same line.
 - **Classification and PII.**
-  - The kind's data is opaque to the platform. A masked export carries no instance, as it
+  - The driver's data is opaque to the platform. A masked export carries no instance, as it
     carries no store today (L15).
   - A partition may hold personal data written by its own installation, because the fan-in
     of §7.1 reaches it. What is *read across* partitions is limited to non-personal shapes,
@@ -600,9 +600,9 @@ two things have to be kept apart when grading them:
   - which partitions a caller reads, and with which operations, under shape (ii) only and by
     operation name;
   - who connected what, with the audit trail, in every shape;
-  - data separation between partitions against the kind's own code, only under B′.
+  - data separation between partitions against the driver's own code, only under B′.
 - **What the platform cannot enforce:**
-  - what the kind does inside an object or, on one script, across the objects of its isolate;
+  - what the driver does inside an object or, on one script, across the objects of its isolate;
   - what a reading vertical does with data after it has read it, including copying it into
     its own partition or its own scope;
   - whether person P in vertical Y "should" see a row written in vertical X.
@@ -639,7 +639,7 @@ These are requirements. They hold for B under either authorization shape, and fo
   limit:** it reaches the partitions the erased scope wrote, never what others derived from
   them. Lifting it would need a subject identity shared across verticals, which no part of
   the platform has. So reads across partitions stay limited to non-personal shapes (§6,
-  §12 Q3). Under (i), a kind that derives rows across verticals *inside the store* must
+  §12 Q3). Under (i), a driver that derives rows across verticals *inside the store* must
   record where they came from, so that an erase reaches the derivations. That is a
   registration requirement, and it is reviewed.
 - **The fence (L19's counterpart).** A connect or reconnect that races a shred either sees it
@@ -686,30 +686,30 @@ restoring a scope nor forking one touches an instance.
   (self-serve-deploy.md calls store deletion at tenant reap a tracked follow-up), so an
   instance cannot inherit a teardown that does not exist.
 - **The full tenant export** gains an `instances` section beside `data`: each instance's
-  kind, its connections, and one dump per partition (shape ii) or one for the instance
+  driver, its connections, and one dump per partition (shape ii) or one for the instance
   (shape i). It uses `substrat.export` through the platform, as K-50 has it for scopes. A
   masked export carries none.
 - **The scope dump format is unchanged.** `scopeDump.stores` stays per scope and carries
   scope-grain stores only. An instance is never in a scope dump, because it is not the
   scope's.
 - **Restore of an instance** is a tenant-level operation of its own. It imports only
-  partitions that have a connection row (live or ended) of the same kind on the instance (the
+  partitions that have a connection row (live or ended) of the same driver on the instance (the
   L8 counterpart). It then runs the replay of §7.1.
 
 ### 7.5 Metering and attribution
 
 `substrat.size` is called per instance object. Under (ii) that is per partition, so a
 tenant's store bytes are attributable to the installation that wrote them, because each
-partition's object is one (scope, binding)'s. Under (i) attribution is only what the kind reports
+partition's object is one (scope, binding)'s. Under (i) attribution is only what the driver reports
 about itself. The gauge table (`_substrat_scope_store_storage`, #2212) is keyed by scope and
 binding today, so instances need their own key. L13 carries over: a size that cannot be read
 is never recorded as `0`.
 
-### 7.6 The kind's schema and versions
+### 7.6 The driver's schema and versions
 
 - **Schema.** Each object migrates when it wakes (D-63). That is unchanged.
 - **Releases.** With a script per tenant, a release reaches tenants one script at a time
-  (D-63's canary, §8.2), so two tenants may run different kind releases during a
+  (D-63's canary, §8.2), so two tenants may run different driver releases during a
   rollout. Within one tenant, every connected vertical meets the same release, whatever
   version each vertical runs.
 - **The operation catalogue** therefore evolves additively, the engine rule from CLAUDE.md:
@@ -747,13 +747,13 @@ is never recorded as `0`.
 - The local runner and its contract suite (#2213). The runner's `address` gains the instance
   form.
 
-**Superseded for a tenant-grain kind (and kept for a scope-grain kind):**
+**Superseded for a tenant-grain driver (and kept for a scope-grain driver):**
 
 - The object name `<tenantId>/<vertical>/<scopeId>/<binding>`.
 - Resolution of a store from the version manifest alone (L14), which is joined to the
   connection directory instead.
 - The scope as the unit of wipe, export and import of the store.
-- The script per (kind, vertical), and the upload of a store script at the vertical's push
+- The script per (driver, vertical), and the upload of a store script at the vertical's push
   (#2299). Under B it happens at instance creation.
 
 ### 8.1 The open PRs (since merged)
@@ -761,18 +761,18 @@ is never recorded as `0`.
 *As of 2026-10-16 every PR in this table has merged; #2298 merged as K-52, without D-64.*
 They were open when this RFC was written. This RFC proposed nothing to change on them. The table says only what each would mean if B were chosen.
 
-| PR | Issue | Under B (tenant-grain kind) | Under A (scope-grain kind) |
+| PR | Issue | Under B (tenant-grain driver) | Under A (scope-grain driver) |
 |---|---|---|---|
 | #2291 unroute before wipe; erasure fenced against a bind | #2285 | Kept. Its counterpart is disconnect before wipe, and a fence against connect | Unchanged |
-| #2292 the union of every declared (binding, kind) | #2286 | Kept. A connection-history union is added beside it | Unchanged |
+| #2292 the union of every declared (binding, driver) | #2286 | Kept. A connection-history union is added beside it | Unchanged |
 | #2293 Ed25519 envelope | #2287 | Kept. A new `v` with caller vertical, scope, connection and the `reader` audience | Unchanged |
 | #2294 the platform hop as the default | #2288 | Unchanged | Unchanged |
 | #2295 platform entry module | #2289 | Kept. The own-vertical check becomes own-tenant, plus the partition check | Unchanged |
 | #2296 Python entry | #2290 | As #2295 | Unchanged |
 | #2298 D-64: published releases | #2297 | D-64 is not accepted as written (§8.2). The rollout set of whatever release model is ratified is tenants | Unchanged |
-| #2299 upload the store script before the vertical | #2210 | Retargeted: upload at instance creation, per (kind, tenant), and not on a vertical's push | Unchanged |
+| #2299 upload the store script before the vertical | #2210 | Retargeted: upload at instance creation, per (driver, tenant), and not on a vertical's push | Unchanged |
 | #2300 publish, canary, rollback | #2297 | Kept. The canary is one tenant | Unchanged |
-| #2301 register the first kind | #2210 | Gains a grain field. The first kind registers as `tenant` | `scope` |
+| #2301 register the first driver | #2210 | Gains a grain field. The first driver registers as `tenant` | `scope` |
 
 ### 8.2 Statements that would change
 
@@ -781,13 +781,13 @@ D-63 `proposed`), and as #2302 would ratify them (K-49 and K-50 `accepted`, with
 answered). #2302 has since merged, and so has D-63's pin (#2306).
 
 - **K-49, "one per (tenant, vertical, scope, binding)", and the object name.** Under B these
-  become true of a scope-grain kind only. A tenant-grain kind is one object per instance, or
+  become true of a scope-grain driver only. A tenant-grain driver is one object per instance, or
   per (instance, partition). The rest of K-49 (the door, the envelope, the reserved names,
   the router as signer, the log line) stands.
 - **K-49, "the door checks the (tenant, scope) pair … and that the binding is declared."**
-  For a tenant-grain kind it also requires a live connection.
+  For a tenant-grain driver it also requires a live connection.
 - **K-50, "the bindings and kinds come from that version's reviewed manifest record."** For a
-  tenant-grain kind they come from the manifest *and* the connection directory. The vertical
+  tenant-grain driver they come from the manifest *and* the connection directory. The vertical
   still comes from the scope record.
 - **K-50's fail-closed list**, in the counterpart form of §7.7:
   - unroute-then-wipe becomes disconnect-then-wipe;
@@ -796,14 +796,14 @@ answered). #2302 has since merged, and so has D-63's pin (#2306).
     instance, which is never in a scope dump;
   - erasure of a scope fans in to every partition its connections name or named.
 - **#2302's Q3 answer** (a platform-emitted entry module; registration review holds the
-  remembered name) stands in B and D. Under B on one (kind, tenant) script, the separation
+  remembered name) stands in B and D. Under B on one (driver, tenant) script, the separation
   between partitions is held by the same review (§6 (ii)). Only under B′ does an object
   boundary that is also a script boundary carry it.
 - **#2302's Q5 answer** (the vertical-wide union; a push never shrinks it) stands for
-  scope-grain kinds. A tenant-grain kind needs the connection-history counterpart.
+  scope-grain drivers. A tenant-grain driver needs the connection-history counterpart.
 - **D-63, "one script per (kind, vertical)"**, and its reason ("a tenant that exhausts an
-  isolate should restart that vertical's objects only"). Under B, for a tenant-grain kind,
-  this becomes one script per (kind, tenant), and an exhausted isolate restarts one tenant's
+  isolate should restart that vertical's objects only"). Under B, for a tenant-grain driver,
+  this becomes one script per (driver, tenant), and an exhausted isolate restarts one tenant's
   objects only.
 - **D-63's release pin, as it is being ratified.** D-63 is being ratified with a
   hash-and-commit pin, in a separate docs PR (#2306, since merged). The parts:
@@ -813,17 +813,17 @@ answered). #2302 has since merged, and so has D-63's pin (#2306).
   - the canary asserts every reserved operation, `substrat.erase` included;
   - rollback returns to the previous good release.
 
-  Under B the pin is unchanged. A tenant-grain kind adds its grain to the registration, and
+  Under B the pin is unchanged. A tenant-grain driver adds its grain to the registration, and
   the canary and the rollout walk tenants (B) or partitions (B′) instead of verticals.
 - **D-64 (#2298, unpinned releases) is not accepted as written.** The statements this RFC
   makes about releases therefore rest on D-63 with the pin above, not on D-64.
-- **Under D**, K-49's door is not used for a tenant-grain kind's writes. K-50's
+- **Under D**, K-49's door is not used for a tenant-grain driver's writes. K-50's
   platform-driven lifecycle extends to the ingestion job.
 
 ### 8.3 If per-scope objects ship first
 
-Grain is per kind, so A and B coexist, and nothing in B requires removing A. The hard case
-is the first kind shipping as scope-grain, holding tenant data, and then being wanted at
+Grain is per driver, so A and B coexist, and nothing in B requires removing A. The hard case
+is the first driver shipping as scope-grain, holding tenant data, and then being wanted at
 tenant grain. There is no platform migration between the two today:
 
 - `substrat.import` replaces a whole object (scope-stores §4);
@@ -831,33 +831,33 @@ tenant grain. There is no platform migration between the two today:
 - the data's identifiers are scope-local.
 
 A move would be an explicit tenant-admin job: export each scope's store, import it into that
-scope's partition with a merge-capable import the kind would have to add, replay erasures
+scope's partition with a merge-capable import the driver would have to add, replay erasures
 (§7.1), then retire the scope-grain binding by the L17 order. That is possible, but it is a
 second import contract and a per-tenant migration run.
 
 D-63 already says the isolate default "is decided before any tenant data is stored". The
-same holds for grain: **decide the first kind's grain before #2210 registers it** (§12 Q9).
+same holds for grain: **decide the first driver's grain before #2210 registers it** (§12 Q9).
 
-## 9. How a kind declares its grain
+## 9. How a driver declares its grain
 
-The grain is the kind's, recorded in its registration (`STORE_DRIVERS`, #2301), and
+The grain is the driver's, recorded in its registration (`STORE_DRIVERS`, #2301), and
 reviewed with it: `grain: 'scope' | 'tenant'`. The vertical's declaration does not change.
 
 A vertical cannot choose the grain, because that would let a vertical decide that its data
-lives in a store other verticals reach. A kind cannot be both, because its envelope, script
-and lifecycle differ. A kind that wants both registers twice, under two kind ids.
+lives in a store other verticals reach. A driver cannot be both, because its envelope, script
+and lifecycle differ. A driver that wants both registers twice, under two driver ids.
 
 ## 10. Cost and complexity
 
-| | A per scope | B instance, script per (kind, tenant) | B′ script per (kind, tenant, partition) | C instance on per-(kind, vertical) scripts | D platform ingestion |
+| | A per scope | B instance, script per (driver, tenant) | B′ script per (driver, tenant, partition) | C instance on per-(driver, vertical) scripts | D platform ingestion |
 |---|---|---|---|---|---|
 | Meets the requirement | No | Yes | Yes | Only by becoming B or a fleet-wide script | Reads yes; synchronous writes no |
-| Store scripts | kinds × verticals | kinds × tenants with an instance | kinds × partitions (scope × binding) | kinds × verticals | kinds × tenants (as B) |
+| Store scripts | drivers × verticals | drivers × tenants with an instance | drivers × partitions (scope × binding) | drivers × verticals | drivers × tenants (as B) |
 | Release fan-out | per vertical | per tenant | per partition | per vertical | per tenant |
-| Kind-code exposure (§3) | every tenant of the vertical | one tenant | one partition | every tenant of the hosting vertical, plus others' data | one tenant |
+| Driver-code exposure (§3) | every tenant of the vertical | one tenant | one partition | every tenant of the hosting vertical, plus others' data | one tenant |
 | Isolate shared with | other tenants of the vertical | the tenant's other partitions | nothing else | other tenants and verticals | the tenant's other partitions |
-| Caller addressing of a partition | n/a | (i) kind; (ii) router | router | kind | platform |
-| Data separation between partitions, against kind code | n/a | review | script boundary | review | review for the kind; ingestion is platform code |
+| Caller addressing of a partition | n/a | (i) driver; (ii) router | router | driver | platform |
+| Data separation between partitions, against driver code | n/a | review | script boundary | review | review for the driver; ingestion is platform code |
 | Synchronous write | yes | yes | yes | yes | no |
 | Cross-partition traversal in one call | n/a | (i) yes; (ii) no | no | yes | in the platform's read model |
 | New directory records | none | instances, connections | as B | instances, connections, a placement | instances, connections, watermarks |
@@ -868,15 +868,15 @@ and lifecycle differ. A kind that wants both registers twice, under two kind ids
 
 ## 11. Recommendation
 
-**B, with named instances and a script per (kind, tenant), and shape (ii) for the partition
-between verticals.** Keep A for any kind registered at scope grain.
+**B, with named instances and a script per (driver, tenant), and shape (ii) for the partition
+between verticals.** Keep A for any driver registered at scope grain.
 
 - **B is the only option that meets the requirement with synchronous writes.** Its script
-  grain is also what makes strict tenant isolation hold below the envelope: a kind's code
+  grain is also what makes strict tenant isolation hold below the envelope: a driver's code
   never runs where another tenant's objects are. That is a stronger isolation property than
   the status quo, at the price of a script count that grows with tenants.
-- **Within a tenant, partition separation is review-only on one (kind, tenant) script.**
-  That holds for (i) and (ii) alike (§3, §6). (ii) does not make the kind unable to move data
+- **Within a tenant, partition separation is review-only on one (driver, tenant) script.**
+  That holds for (i) and (ii) alike (§3, §6). (ii) does not make the driver unable to move data
   between partitions. What it makes mechanical is caller addressing: which partition a call
   names, and which reads the router signs. It also makes the partition the platform's unit of
   wipe, export, size and erasure. That is why it is still the lean over (i). The gap between
@@ -890,17 +890,17 @@ between verticals.** Keep A for any kind registered at scope grain.
     only (§6, §7.1).
 - **Cross-partition traversal** is the main cost of (ii). If it proves necessary, add it as a
   platform-fed view, the D side of the hybrid, before considering (i).
-- **Every option** hands the kind an environment without the store namespace and the
+- **Every option** hands the driver an environment without the store namespace and the
   verification keys (§3).
 
 **Choose otherwise when:**
 
-- **A**: the first kind's data turns out to be per scope after all, and the tenant-wide layer
-  is a later, separate kind.
+- **A**: the first driver's data turns out to be per scope after all, and the tenant-wide layer
+  is a later, separate driver.
 - **D, or the D+B hybrid**: no screen needs a synchronous write into the layer, or B's script
   count fails on a real Workers for Platforms account (§13). D then still needs B's script
   grain for its instance.
-- **(i) over (ii)**: cross-vertical traversal in one call is the kind's core value, and the
+- **(i) over (ii)**: cross-vertical traversal in one call is the driver's core value, and the
   maintainer accepts registration review as the control for caller addressing too, as well as
   for data separation, which is review-held in both shapes. That should be written down as a
   standing condition, the way #2302 records Q3.
@@ -910,27 +910,27 @@ between verticals.** Keep A for any kind registered at scope grain.
   cold isolates, and cross-script reads.
 - **Not C** in any case (§4).
 
-### 11.1 Isolation requirements before third-party kinds
+### 11.1 Isolation requirements before third-party drivers
 
-The maintainer wants these pursued under B and B′ before any kind written outside this repo
+The maintainer wants these pursued under B and B′ before any driver written outside this repo
 is registered. They are requirements, not designs. Each is marked where the repo cannot show
 that Workers for Platforms supports it.
 
-1. **A script per tenant.** A kind's code never runs in a script that holds another tenant's
-   objects: one script per (kind, tenant) under B, and one per (kind, tenant, partition)
+1. **A script per tenant.** A driver's code never runs in a script that holds another tenant's
+   objects: one script per (driver, tenant) under B, and one per (driver, tenant, partition)
    under B′ (§4). The script-count limits are unverified (§13).
-2. **No outbound access from a kind script.** A store script reaches nothing outside itself:
+2. **No outbound access from a driver script.** A store script reaches nothing outside itself:
    no network, and no binding beyond what its own operations need. *Unverified.* A store
    object is a Durable Object. D-58 and D-61 record that the dispatch namespace's outbound
    worker (`apps/vertical-egress`) does not see Durable-Object-originated egress, so the
    mechanism verticals rely on cannot be shown to hold here. Whether a store script can be
    uploaded with outbound access denied at the platform level is not established in the repo.
-3. **Verification outside the kind's reach.** The envelope and the remembered name are
-   checked where the kind's code cannot alter them. Today the entry module runs in the kind's
+3. **Verification outside the driver's reach.** The envelope and the remembered name are
+   checked where the driver's code cannot alter them. Today the entry module runs in the driver's
    own interpreter (§3; #2302's Q3 answer holds it by review). The requirement is a check the
-   kind cannot reach, for example in a separate script in front of the store's. *Unverified*,
+   driver cannot reach, for example in a separate script in front of the store's. *Unverified*,
    including what each extra hop costs.
-4. **No platform bindings handed to the kind.** The environment the kind receives leaves out
+4. **No platform bindings handed to the driver.** The environment the driver receives leaves out
    the store namespace and the verification keys (§3). *Unverified* for both runtimes.
 
 ## 12. Questions (answered 2026-10-15)
@@ -939,7 +939,7 @@ These were the open questions for the maintainer, each with a lean stated so it 
 rejected cleanly. All 22 are answered; the answers, and what stays open after them, are
 §12.1.
 
-1. **Granularity.** One instance per tenant (per kind), or named instances, several per
+1. **Granularity.** One instance per tenant (per driver), or named instances, several per
    tenant? *Lean:* named instances. The maintainer's proposal asks for more than one, and a
    single implicit instance is the special case.
 2. **The connection permission.** Reuse `dashboard:manage-integrations` (owner, admin), reuse
@@ -972,9 +972,9 @@ rejected cleanly. All 22 are answered; the answers, and what stays open after th
    Bytes are metered per partition (§7.5). The numbers come from a real account.
 8. **Naming.** *Lean:*
    - a ULID id in every name, and the display name in the directory only;
-   - script names `substrat-store-<kind>-t-<tenantId>`, held injective against L20's form.
-9. **How a kind declares its grain.** *Lean:* `grain: 'scope' | 'tenant'` in the
-   registration (§9), decided for the first kind before #2210 registers it.
+   - script names `substrat-store-<driver>-t-<tenantId>`, held injective against L20's form.
+9. **How a driver declares its grain.** *Lean:* `grain: 'scope' | 'tenant'` in the
+   registration (§9), decided for the first driver before #2210 registers it.
 10. **What disconnect does to the data.** Keep the partition, or wipe it? *Lean:* keep it,
     unwritable and readable only through existing grants. A reconnect of the same
     `(scope, binding)` to the same instance revives it (§5.1). Deleting it is an explicit
@@ -987,8 +987,8 @@ rejected cleanly. All 22 are answered; the answers, and what stays open after th
     instance per preview? *Lean:* none in v1, matching `PREVIEW_CONNECTIONS_REFUSAL` and #2005.
 13. **The door's name.** Keep `getScopeStore` for both grains, or add a door for a
     tenant-grain binding? *Lean:* keep it. The call is still made from a scope, and the grain
-    is the kind's fact, not the caller's.
-14. **Background writes.** Does a tenant-grain kind need a door for consumers and schedules
+    is the driver's fact, not the caller's.
+14. **Background writes.** Does a tenant-grain driver need a door for consumers and schedules
     (scope-stores Q6, item (u)) before its first tenant? *Lean:* it is likely needed, and it
     is a separate decision. The platform would sign it with audience `caller` for the scope
     the job runs in.
@@ -1019,13 +1019,13 @@ rejected cleanly. All 22 are answered; the answers, and what stays open after th
     ended, or end them as the first step of the delete? *Lean:* refuse, and name the live
     connections in the refusal. Deletion then runs in the disconnect, wipe, drop order (§7.4),
     so a vertical never meets an instance vanishing under a live connection.
-20. **Noisy neighbours within a tenant.** On one (kind, tenant) script, one installation's load
+20. **Noisy neighbours within a tenant.** On one (driver, tenant) script, one installation's load
     or memory can restart every partition of the tenant. Accept it, add per-partition limits in
-    the entry module, or take B′? *Lean:* accept it for the first kind and measure it. The
+    the entry module, or take B′? *Lean:* accept it for the first driver and measure it. The
     isolate is the tenant's own, and B′ is the remedy if it bites.
-21. **The script grain inside a tenant.** B (per kind and tenant) or B′ (per kind, tenant and
+21. **The script grain inside a tenant.** B (per driver and tenant) or B′ (per driver, tenant and
     partition)? *Lean:* B, with separation inside the tenant written down as review-held. B′ is
-    to be revisited before a kind written outside this repo is registered at tenant grain,
+    to be revisited before a driver written outside this repo is registered at tenant grain,
     which is the same condition #2302 sets for Q3.
 22. **The shareable list after the producer's connection ends.** The last recorded list
     stands, and the admin may only narrow it (§5.1). Or the ended partition becomes unreadable
@@ -1037,9 +1037,9 @@ rejected cleanly. All 22 are answered; the answers, and what stays open after th
 
 All 22 questions were answered on 2026-10-15. The load-bearing ones are recorded as
 [K-53](../decisions/K-053-a-tenant-level-store-is-a-named-instance-that-a-tenant-s-verticals-connect-to-explicitly.md).
-The answers use the maintainer's new word **driver** for what this RFC calls a kind: the
-platform-registered, pinned code that backs a store. The code, this RFC's body, the ratified
-K-49, K-50 and D-63 text and the proposed K-52 still say "kind" until a separate rename lands.
+The answers use the maintainer's new word **driver** for what this RFC first called a kind: the
+platform-registered, pinned code that backs a store. The code and this RFC's body say driver
+since #RENAME_PR; the ratified K-49, K-50 and D-63 text and the proposed K-52 keep the word kind.
 Nothing these answers decide is built yet.
 
 | Q | Topic | Answer |
@@ -1075,8 +1075,7 @@ Nothing these answers decide is built yet.
   and the `reader` audience (§5.5);
 - the quota numbers (Q7) and the Workers for Platforms limits behind them (§13);
 - the isolation requirements of §11.1, which gate any driver written outside this repo,
-  B′ among them;
-- the rename of "kind" to "driver" in the code and the ratified records.
+  B′ among them.
 
 ## 13. Unverified
 
@@ -1085,14 +1084,14 @@ Not in this repository, or not shown by anything in it:
 - **Workers for Platforms limits.** No figure for scripts per dispatch namespace, upload rate
   or script size is recorded in the repo. K-28 says a script-cap lift exists, gives no
   number, and records the first-deploy window of about 15 seconds. B's script count (one per
-  kind and tenant) has to be checked against a real account before it is chosen. So does B′'s
-  count (one per kind and partition, that is per installation scope × binding), together with
+  driver and tenant) has to be checked against a real account before it is chosen. So does B′'s
+  count (one per driver and partition, that is per installation scope × binding), together with
   the window it opens on every first connect.
 - **A real dispatch-namespace upload of a store script, Python or JS.** It has not been run.
   #2299, #2300 and #2301 (now merged) say the same.
 - **Isolate sharing between objects of one script.** It has not been exercised (spike
   FINDINGS, "Not shown"). The §3 exposure is argued from the design, not measured.
-- **A filtered environment for the kind (§3).** Whether the entry module can hand the kind's
+- **A filtered environment for the driver (§3).** Whether the entry module can hand the driver's
   class an environment without the namespace and verification-key bindings, with no other
   route left to them, has not been shown for either runtime (JS, or Python through its FFI).
 - **Script isolation as the boundary for B′.** B′ rests on objects in different scripts never
@@ -1105,7 +1104,7 @@ Not in this repository, or not shown by anything in it:
   merged as K-52 without it. D-63's hash-and-commit pin merged in #2306.
 - **The ratification of K-49 and K-50, and the Q3 and Q5 answers.** *Resolved since writing:*
   #2302 merged on 2026-10-15.
-- **Cold-start cost per tenant script for the first kind's runtime**, and the bundle size it
+- **Cold-start cost per tenant script for the first driver's runtime**, and the bundle size it
   uploads per script. No measurement exists.
 
 ## Alternatives rejected
@@ -1117,4 +1116,4 @@ Not in this repository, or not shown by anything in it:
   injective.
 - **Folding instances into `tenantStores`.** Those are per (tenant, vertical, binding) and
   bound to the vertical's own serving script. They share nothing across verticals, and they
-  are SQL handles, not a registered kind.
+  are SQL handles, not a registered driver.
