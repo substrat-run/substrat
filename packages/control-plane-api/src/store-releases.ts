@@ -290,10 +290,8 @@ export async function runStoreKindRollout(deps: StoreKindRolloutDeps): Promise<S
       );
     }
     const row = await admin.beginStoreKindRollout(actor, { kind, sha256, action: deps.action, holder });
-    // What this request walked: recorded in the attempt's ledger by a paused end, and only then.
-    const walked: StoreKindRolloutTarget[] = [];
-    const end = (state: 'good' | 'failed' | 'diverged' | 'paused', detail: string | null) =>
-      admin.finishStoreKindRollout(actor, { kind, seq: row.seq, holder, state, detail, ...(state === 'paused' ? { walked } : {}) });
+    const end = (state: 'good' | 'failed' | 'diverged', detail: string | null) =>
+      admin.finishStoreKindRollout(actor, { kind, seq: row.seq, holder, state, detail });
     const renew = async () => {
       const held = await admin.holdStoreKind(actor, { kind, holder, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS, renew: true, rolloutSeq: row.seq });
       if (!held) throw new HoldLost(kind);
@@ -310,7 +308,8 @@ export async function runStoreKindRollout(deps: StoreKindRolloutDeps): Promise<S
 
     const budget = deps.perRequest ?? ROLLOUT_VERTICALS_PER_REQUEST;
     const moved: string[] = [];
-    // Every vertical this request reached: the ones walked, and the one it stopped at.
+    // Every vertical this request reached. A request that pauses stopped at none, so a paused end
+    // records exactly the verticals whose ensure answered.
     const reached: StoreKindRolloutTarget[] = [];
     for (const target of page.verticals) {
       if (moved.length >= budget) break;
@@ -319,7 +318,6 @@ export async function runStoreKindRollout(deps: StoreKindRolloutDeps): Promise<S
         reached.push(target);
         const stores = target.stores.map((s) => ({ binding: s.binding, kind }));
         if (await deps.ensure({ vertical: target.vertical, stores, to: sha256 })) moved.push(target.vertical);
-        walked.push(target);
       } catch (e) {
         const detail = e instanceof HoldLost
           ? { state: 'diverged' as const, text: `Nothing was returned: ${reachedText(page.walked, reached)} may run ${sha256}.` }
@@ -328,9 +326,16 @@ export async function runStoreKindRollout(deps: StoreKindRolloutDeps): Promise<S
         throw new ControlPlaneError(e instanceof ControlPlaneError ? e.status : 502, `${deps.action} of '${kind}' to ${sha256} stopped at ${target.vertical} (${message(e)}). ${detail.text}`);
       }
     }
-    const remaining = page.pending - walked.length;
+    const remaining = page.pending - reached.length;
     if (remaining > 0) {
-      const rollout = await end('paused', `this request walked ${walked.length} and moved ${moved.length}; ${remaining} vertical(s) not walked yet: post the same ${deps.action} again`);
+      const rollout = await admin.finishStoreKindRollout(actor, {
+        kind,
+        seq: row.seq,
+        holder,
+        state: 'paused',
+        detail: `this request walked ${reached.length} and moved ${moved.length}; ${remaining} vertical(s) not walked yet: post the same ${deps.action} again`,
+        walked: reached,
+      });
       return { rollout, moved, complete: false, remaining };
     }
     return { rollout: await end('good', null), moved, complete: true, remaining: 0 };
@@ -343,7 +348,7 @@ export async function runStoreKindRollout(deps: StoreKindRolloutDeps): Promise<S
 const reachedText = (before: number, reached: readonly StoreKindRolloutTarget[]) => {
   const names = reached.map((t) => t.vertical).join(', ');
   if (before === 0) return names || 'no vertical';
-  return `${before} vertical(s) earlier requests of this attempt walked${names ? `, and ${names}` : ''},`;
+  return `${before} vertical(s) earlier requests of this attempt walked${names ? ` and ${names}` : ''}`;
 };
 
 /**

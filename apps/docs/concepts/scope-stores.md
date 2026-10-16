@@ -44,7 +44,8 @@ its entry or rotates verification keys. Release bytes are identified by a digest
 match a release pinned in the kind registration before upload.
 
 An explicit rollout first runs the reserved operations against a fresh canary object, then
-moves the verticals' scripts in bounded batches. A paused rollout resumes when posted again.
+moves the verticals' scripts in bounded batches. A paused rollout resumes when posted again,
+from the verticals it has not reached yet, however many verticals declare the kind.
 A rollback also names a pinned release; it cannot lower the stored schema version. A failure
 can leave the fleet diverged when returning a script would lower its schema or the return
 itself fails. The rollout records that state so an operator can finish recovery rather than

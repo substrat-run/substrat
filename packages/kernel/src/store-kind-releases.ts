@@ -355,8 +355,9 @@ export function beginStoreKindRolloutIn(
  * `walked` is what this request walked, and only a `paused` end takes it (#2312): it joins the
  * attempt's ledger in the transaction that writes the state, so a request that stops before its
  * end leaves no ledger rows, and the next attempt walks those verticals again rather than skip
- * them. Any end drops the kind's ledger of every other attempt, and any end but `paused` drops this
- * attempt's too: only a paused attempt is continued.
+ * them. What keeps a dead ledger unread is the attempt key (`attemptOf`); the deletes here keep the
+ * table to the one attempt a kind can continue: any end drops every other attempt's rows, and any
+ * end but `paused` this attempt's too.
  */
 export function finishStoreKindRolloutIn(
   db: SwitchSql,
