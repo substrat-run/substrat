@@ -333,6 +333,12 @@ describe('the data-loss fence (#115)', () => {
     scope(setup).migrate({ sql, discards: { a: 'replaced by a fresh y' } });
   });
 
+  it('a new table created under a name another table moved away from owns its own renames (#115 r2)', () => {
+    const s = scope(`CREATE TABLE a (id TEXT, x TEXT); INSERT INTO a VALUES ('1', 'p');`);
+    s.migrate({ sql: 'ALTER TABLE a RENAME TO b; CREATE TABLE a (id TEXT, x TEXT); ALTER TABLE a RENAME COLUMN x TO y;' });
+    expect(s.rows('SELECT x FROM b')).toEqual([{ x: 'p' }]);
+  });
+
   describe('a table rebuilt back into place after a column rename (#115 r2)', () => {
     const setup = `${NOTES} INSERT INTO notes VALUES ('a', 'hello', '1');`;
     const aside = 'ALTER TABLE notes RENAME COLUMN body TO text; ALTER TABLE notes RENAME TO notes_old;';
