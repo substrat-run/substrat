@@ -74,7 +74,7 @@ export async function promoteReviewDigest(base: ReviewedVersion | null, incoming
 }
 
 /** The first CLI release whose `substrat promote` sends the binding. */
-export const PROMOTE_REVIEW_CLI = '@substrat-run/cli 0.45.0';
+const PROMOTE_REVIEW_CLI = '@substrat-run/cli 0.45.0';
 
 /** Whether a throw is one of the refusals below, and which. */
 export function promoteReviewRefusalOf(err: unknown): 'stale' | 'unbound' | null {

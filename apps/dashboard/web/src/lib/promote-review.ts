@@ -283,9 +283,10 @@ export async function promoteWithCheckpoint(deps: PromoteDeps): Promise<PromoteO
   }
 
   // Three kinds exist, so a fourth refusal is not a next step but a loop; and prod moving under
-  // the review twice in a row is reported rather than chased.
+  // the review a third time is reported rather than chased. A move starts a new review, so it
+  // does not count as one of the kinds' rounds.
   let moves = 0;
-  for (let round = 0; round < 4; round++) {
+  for (let round = 0; round < 4; ) {
     const sent: SentAcks = { ...checkpoint.acknowledged, ...(review.review ? { review: review.review } : {}) };
     try {
       await deps.promote(sent.permissionChange || sent.migrationChange || sent.exportBreak || sent.review ? sent : undefined);
@@ -300,7 +301,6 @@ export async function promoteWithCheckpoint(deps: PromoteDeps): Promise<PromoteO
         review = await deps.review();
         checkpoint = { ...planOf(review), reviewMoved: true };
         if (asks(checkpoint) && !(await confirm())) return 'cancelled';
-        round--;
         continue;
       }
       if (refusal.kind === 'export-break') {
@@ -315,6 +315,7 @@ export async function promoteWithCheckpoint(deps: PromoteDeps): Promise<PromoteO
             : { ...checkpoint, migration: { digests: refusal.digests, sql: review.migrations, enforced: true } };
       }
       if (!(await confirm())) return 'cancelled';
+      round++;
     }
   }
   throw new Error('The registry kept refusing the promotion — reload and try again.');
