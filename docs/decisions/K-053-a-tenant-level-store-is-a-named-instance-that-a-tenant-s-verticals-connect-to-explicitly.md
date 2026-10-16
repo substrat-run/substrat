@@ -13,7 +13,7 @@ tracking: ["#2207", "#2303"]
 
 > Accepted 2026-10-15, from the maintainer's answers to the 22 questions of [the store-instances RFC](../rfc/store-instances.md) §12 (recorded in its §12.1). It amends [K-49](./K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md): K-49 covers scope-grain stores, and this record covers tenant-grain ones.
 
-**A store is backed by a driver.** A driver is the platform-registered, pinned code that backs a store. It is what the ratified text of K-49, K-50 and D-63, and the proposed K-52, call a *kind*, and what the code called one until it was renamed in #2324; those records keep the word. Where this record still quotes the old spelling, `scopeStores: [{ binding, kind }]` and the per-(kind, vertical) script, the code now says `driver`, and the manifest parser refuses `kind` with the rename named. This record uses the new word and changes nothing else.
+**A store is backed by a driver.** A driver is the platform-registered, pinned code that backs a store. It is what the ratified text of K-49, K-50 and D-63, and K-52, call a *kind*, and what the code called one until it was renamed in #2324; those records keep the word. Where this record still quotes the old spelling, `scopeStores: [{ binding, kind }]` and the per-(kind, vertical) script, the code now says `driver`, and the manifest parser refuses `kind` with the rename named. This record uses the new word and changes nothing else.
 
 **This records a direction. Nothing in it is built yet.** No instance, connection, connection permission or driver grain exists in code today.
 
@@ -40,7 +40,7 @@ When a call reaches an unconnected binding, it gets a named refusal before anyth
 - **Every** tenant-grain call, writes included, carries the caller's vertical, scope and connection inside the signature, under a new envelope version. That lets the driver attribute a write, and lets the entry module check that the partition in the name is the caller's own.
 - A read of another partition is signed with a third audience, which the RFC calls `reader`.
 
-K-52 (proposed, not ratified) defines one envelope version and only the audiences `caller` and `platform`. Both changes therefore **require a K-52 amendment**, to be recorded with the instance implementation. Nothing here assumes them before that.
+K-52 (ratified 2026-10-16) defines one envelope version and only the audiences `caller` and `platform`. Both changes therefore **require a K-52 amendment**, to be recorded with the instance implementation. Nothing here assumes them before that.
 
 **One store script per (driver, tenant), and strictly within a tenant.** A tenant-grain driver's code never runs in a script that holds another tenant's objects. That is what keeps tenant isolation below the envelope. The script name is a reserved form, held injective against the per-(kind, vertical) names. Separation inside a tenant, between partitions and between instances, is **held by review**: they share the script and may share an isolate. The noisy-neighbour risk inside a tenant is accepted for the first driver, and measured. **B′, a script per partition, is required before any driver written outside this repo is registered at tenant grain.** That is the same condition #2302 sets for scope-stores Q3.
 
@@ -59,7 +59,7 @@ K-52 (proposed, not ratified) defines one envelope version and only the audience
 
 ## Not decided here
 
-- K-52 is not ratified by this record.
+- K-52 was ratified separately, on 2026-10-16; this record does not change it.
 - D-63's pin has a proposed `schema` integer (#2300), which this record does not state as decided.
 - The quota numbers wait for a real Workers for Platforms account (RFC §13).
 - The isolation requirements of RFC §11.1 gate any driver written outside this repo.

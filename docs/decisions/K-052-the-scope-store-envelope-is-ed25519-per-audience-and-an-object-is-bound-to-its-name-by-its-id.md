@@ -3,7 +3,7 @@ id: K-52
 date: 2026-10-15
 layer: kernel
 title: "The scope-store envelope is Ed25519 per audience, a store script holds public keys only, and an object is bound to its name by its id"
-status: proposed
+status: accepted
 aliases: []
 amends: ["K-49", "K-50"]
 tracking: ["#2287", "#2289", "#2290"]
@@ -11,7 +11,7 @@ tracking: ["#2287", "#2289", "#2290"]
 
 # K-52 — The scope-store envelope is Ed25519 per audience, a store script holds public keys only, and an object is bound to its name by its id
 
-> Proposed, not ratified. It amends [K-49](./K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md) and [K-50](./K-050-a-hosted-scope-store-s-lifecycle-is-driven-by-the-platform-from-its-own-record.md), and it is the envelope's own record that [D-63](./D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md) defers to. D-63 stands as ratified, its pin included.
+> **Ratified 2026-10-16.** It amends [K-49](./K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md) and [K-50](./K-050-a-hosted-scope-store-s-lifecycle-is-driven-by-the-platform-from-its-own-record.md), and it is the envelope's own record that [D-63](./D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md) defers to. D-63 stands as ratified, its pin included.
 
 **Every call to a scope store carries one signed envelope, and the envelope is Ed25519.** The canonical form is nine lines joined by `\n`, with no trailing newline: the version (`1`), the audience (`caller` or `platform`), the key id, the store script's name, the object name, the operation, the SHA-256 hex of the exact request body, the issue time in Unix seconds, and a nonce. The key id is base64url of the first 8 bytes of SHA-256 over the raw public key. The nonce is 16 bytes. Both are in canonical base64url, and the issue time is at most 15 digits with no sign and no leading zero. The signature is base64url over those exact UTF-8 bytes. An envelope is fresh for 60 seconds on either side of the store's clock, and a store remembers no nonces. Which operations an audience may send is a closed table per version: `platform` sends exactly the reserved `substrat.*` operations, and `caller` sends anything else. The envelope checks run in one fixed order in one function, `verifyScopeStoreCall` (`@substrat-run/contracts/scope-store-envelope`): signature before digest before the body is parsed, and the body must name the signed operation and the signed object. Two checks sit outside it, in the entry. Before it, the entry reads the configured key lists through `scopeStorePublicKeysFrom` and the script name, and refuses everything (503) when they are unusable. After it, the object checks its own id (below).
 
@@ -27,15 +27,15 @@ tracking: ["#2287", "#2289", "#2290"]
 
 ## Evidence and limits
 
-This record describes code that is written and tested but not yet live.
+This record describes code that is on `main`. No store script runs behind it in production yet.
 
 - **Implemented and tested.**
-  - The envelope, its signer and its verifier are on `main` (#2293, `packages/contracts/src/scope-store-envelope.ts`, with shared vectors in `packages/contracts/test/vectors/scope-store-envelope.json`). The router hop that signs `caller` is also on `main` (#2294).
-  - The TypeScript entry and `withStoreEntry` are on #2295 (`packages/control-plane-api/store-entry/`). That PR shows the id binding, the stripped env and both flags on workerd (`apps/vertical-egress/test/store-entry.workerd.test.ts`).
-  - The Python entry, with the shared verifier, is on #2296 (`packages/store-entry-python/`). Its probe shows the same checks on local workerd under `pywrangler dev`.
-- **Not wired yet.** No store script is uploaded behind either entry. Outside tests, nothing calls `withStoreEntry` or the Python upload. The upload is #2299 (#2210), and the release it uploads is published by #2297.
+  - The envelope, its signer and its verifier (#2293, `packages/contracts/src/scope-store-envelope.ts`, with shared vectors in `packages/contracts/test/vectors/scope-store-envelope.json`), the router hop that signs `caller` (#2294), the TypeScript entry and `withStoreEntry` (#2295) and the Python entry with the shared verifier (#2296, `packages/store-entry-python/`) are all merged.
+  - #2295 shows the id binding, the stripped env and both flags on workerd (`apps/vertical-egress/test/store-entry.workerd.test.ts`). #2296's probe shows the same checks on local workerd under `pywrangler dev`.
+  - The upload of a store script behind the entry and the pinned-release flow that feeds it are merged (#2299, #2297), and the control plane worker wires the store and canary ensurers. Generating, checking and rotating the envelope keys is merged (#2328).
+- **Not live.** `STORE_DRIVERS` is empty: no driver release is registered, so no store script is uploaded behind either entry in a deployed environment.
 - **Not shown.** A store script that mixes a Python main module with an ES module (the shared verifier) has not been uploaded through the dispatch-namespace API in production.
-- **Ratify after the envelope pull requests are final.** D-63 makes this record conditional on #2293, #2294 and #2295 being final, and the Python half depends on #2296. #2293 and #2294 are merged; #2295 and #2296 are not. This record should be ratified only after both have merged.
+- **Ratification conditions met.** D-63 made this record conditional on #2293, #2294 and #2295 being final, and the Python half on #2296. All four are merged.
 
 ## Why
 
