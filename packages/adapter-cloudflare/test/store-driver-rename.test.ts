@@ -1,6 +1,7 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { ulid } from '@substrat-run/kernel';
+import { STORE_KIND_RELEASES_DDL_BEFORE_RENAME } from '@substrat-run/contract-tests';
+import { executableSqlStatements, ulid } from '@substrat-run/kernel';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -86,5 +87,34 @@ describe('K-53: a directory DO built before the store driver rename', () => {
       }
       expect(s.bindings).toEqual([{ vertical_slug: 'docs', binding: 'GRAPH', driver: 'graph' }]);
     }
+  });
+
+  // A rollback across the rename and forward again (see the pure host's twin): the code before it
+  // creates its tables, empty, beside the moved ones, and `exportDump` dumps every table, so
+  // without the cleanup every later directory backup carries both names and restores refused.
+  it('after a rollback, drops the empty old tables on construction, keeps rows, and its dump restores', async () => {
+    const stub = await legacyDirectory();
+    const seen = await runInDurableObject(stub, async (_instance, state) => {
+      new ControlPlaneDO(state, env);
+      // What the pre-rename code's start does over a moved directory.
+      for (const stmt of executableSqlStatements(STORE_KIND_RELEASES_DDL_BEFORE_RENAME)) state.storage.sql.exec(stmt);
+      state.storage.sql.exec("INSERT INTO store_kind_holds (kind, holder, mode, expires_at) VALUES ('graph', 'h1', 'shared', 1)");
+      const staged = tableNames(state);
+      const cp = new ControlPlaneDO(state, env);
+      const dump = cp.exportDump();
+      await cp.importDump(dump);
+      return {
+        staged,
+        after: tableNames(state),
+        dumped: dump.map((t) => t.name),
+        release: cp.getStoreDriverRelease('graph', SHA),
+        holds: state.storage.sql.exec('SELECT driver, holder FROM store_driver_holds').toArray(),
+      };
+    });
+    expect(seen.staged).toEqual(expect.arrayContaining(['store_kind_releases', 'store_driver_releases']));
+    expect(seen.dumped.filter((n) => n.startsWith('store_kind_'))).toEqual([]);
+    expect(seen.after.filter((n) => n.startsWith('store_kind_'))).toEqual([]);
+    expect(seen.release).toMatchObject({ driver: 'graph', sha256: SHA });
+    expect(seen.holds).toEqual([{ driver: 'graph', holder: 'h1' }]);
   });
 });
