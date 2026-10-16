@@ -142,6 +142,10 @@ jobs:
       # widened a role must show it in the PR diff, not in a console nobody opens.
       # Needs the build above: it imports the engines' manifests.
       - run: pnpm test:reserved-keys
+      # The scope-store envelope keys (K-52): generate, doctor and rotate, held on fixed
+      # vectors, plus the store-key half of lint:secrets-coverage. Includes the test that
+      # no command echoes a private value on any path.
+      - run: pnpm test:store-keys
       - run: pnpm test:permission-diff
       - run: pnpm lint:permissions --check
       # A deployable vertical that declares schedules wires `defineScopeSweeperDO`, or

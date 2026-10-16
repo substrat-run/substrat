@@ -500,6 +500,8 @@ spellings: its holder could otherwise sign `platform` envelopes from the `caller
 The envelope, the keys and the id binding are recorded as
 [K-52](../decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md),
 which amends the MAC, per-script-key and first-name wording of K-49 and K-50.
+Generating, provisioning, checking and rotating these keys is
+[secrets/store-keys.md](../../secrets/store-keys.md) (`pnpm store-keys`).
 
 ### 10.4 What moves and what stays
 
