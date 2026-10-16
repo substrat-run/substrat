@@ -17,7 +17,7 @@ import { storeScriptAsUploaded } from '../../../tools/workerd-as-uploaded.mjs';
  * holds neither the namespace nor the key.
  *
  * The store script is the one that ships: the platform's store entry in front of
- * the counter test kind, uploaded as the platform uploads it (#2289), so the
+ * the counter test driver, uploaded as the platform uploads it (#2289), so the
  * router's signature meets the entry's check. The workers vitest pool cannot start
  * a Durable Object on a second script, so this suite starts workerd through
  * Miniflare. Miniflare's local dispatch namespace does not host a user worker, so
@@ -67,7 +67,7 @@ beforeAll(async () => {
   const platform = await generateScopeStoreKeyPair();
   callerKey = caller.privateKey;
   const store = await storeScriptAsUploaded(fileURLToPath(new URL('../../../packages/control-plane-api/', import.meta.url)), {
-    kindMain: 'store-entry/counter.ts',
+    driverMain: 'store-entry/counter.ts',
     className: 'CounterStore',
     script: SCRIPT,
     callerPublicKeys: [caller.publicKey],
@@ -91,7 +91,7 @@ beforeAll(async () => {
             slug: 'docs',
             tenant: TENANT,
             scope: SCOPE,
-            stores: [{ binding: 'GRAPH', kind: 'graph' }],
+            stores: [{ binding: 'GRAPH', driver: 'graph' }],
           },
         },
         serviceBindings: {
@@ -162,7 +162,7 @@ describe('a vertical reaches only its own scope store (#2207)', () => {
     expect(await direct(scopeStoreObjectName(TENANT, 'docs', SCOPE, 'GRAPH'), 'read')).toBe('200 {"result":2}');
   }, 20_000);
 
-  it("an envelope signed for another kind's script, or out of the window, is refused at this one (#2287)", async () => {
+  it("an envelope signed for another driver's script, or out of the window, is refused at this one (#2287)", async () => {
     const name = scopeStoreObjectName(TENANT, 'docs', SCOPE, 'GRAPH');
     expect(await direct(name, 'read')).toMatch(/^200 /);
     expect(await direct(name, 'read', { script: scopeStoreScriptName('docs', 'blobs') })).toBe('401 unauthorized: script');

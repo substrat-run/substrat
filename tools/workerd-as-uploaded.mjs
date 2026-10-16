@@ -133,22 +133,22 @@ export async function asUploaded(dir, derived) {
 }
 
 /**
- * A store script as the platform uploads it (#2289): the entry in front of the kind,
- * the object class migrated, and the script name and public keys bound. The kind's source
+ * A store script as the platform uploads it (#2289): the entry in front of the driver,
+ * the object class migrated, and the script name and public keys bound. The driver's source
  * is bundled the way a push bundles an entry. The caller starts workerd from `main` and
  * `modules`.
  *
  * @param {string} dir
- * @param {{ kindMain: string, className: string, script: string, callerPublicKeys: string[], platformPublicKeys: string[] }} options
+ * @param {{ driverMain: string, className: string, script: string, callerPublicKeys: string[], platformPublicKeys: string[] }} options
  */
 export async function storeScriptAsUploaded(dir, options) {
   const cacheDir = join(dir, '.workerd-uploaded', 'store');
   mkdirSync(cacheDir, { recursive: true });
-  const kindMain = resolve(dir, options.kindMain);
+  const driverMain = resolve(dir, options.driverMain);
   const uploaded = withStoreEntry(
     {
-      entry: 'kind.js',
-      modules: [{ name: 'kind.js', content: await bundledEntry(kindMain), contentType: 'application/javascript+module' }],
+      entry: 'driver.js',
+      modules: [{ name: 'driver.js', content: await bundledEntry(driverMain), contentType: 'application/javascript+module' }],
       doClasses: [],
       bindings: [],
     },

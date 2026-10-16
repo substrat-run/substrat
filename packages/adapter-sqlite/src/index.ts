@@ -108,7 +108,7 @@ import {
   scope as scopeSchema,
   tenant as tenantSchema,
   tenantRole,
-  type AdminAction,
+  type WrittenAdminAction,
   type AccessLogEntry,
   type CheckSubject,
   type BecomeCapabilityInput,
@@ -501,16 +501,18 @@ import {
   VERTICAL_SCOPE_STORES_DDL,
   forgetVerticalScopeStores,
   indexVersionScopeStores,
-  kindDeclarationsOf,
+  driverDeclarationsOf,
   verticalScopeStoresOf,
-  STORE_KIND_RELEASES_DDL,
-  beginStoreKindRolloutIn,
-  finishStoreKindRolloutIn,
-  holdStoreKindIn,
-  recordStoreKindReleaseIn,
-  releaseStoreKindHoldIn,
-  storeKindReleaseIn,
-  storeKindStateIn,
+  STORE_DRIVER_RELEASES_DDL,
+  legacyStoreDriverConflict,
+  legacyStoreDriverRenames,
+  beginStoreDriverRolloutIn,
+  finishStoreDriverRolloutIn,
+  holdStoreDriverIn,
+  recordStoreDriverReleaseIn,
+  releaseStoreDriverHoldIn,
+  storeDriverReleaseIn,
+  storeDriverStateIn,
   splitManifestMigrations,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
@@ -2262,8 +2264,8 @@ export class SqliteScopeHost implements ScopeHost {
         created_at TEXT NOT NULL,
         PRIMARY KEY (tenant_id, vertical, binding)
       );
-      -- A store kind's stored releases, rollouts and holds (D-63, #2300).
-      ${STORE_KIND_RELEASES_DDL}
+      -- A store driver's stored releases, rollouts and holds (D-63, #2300).
+      ${STORE_DRIVER_RELEASES_DDL}
       -- The vertical + version registry (#31). A scope binds to a VERSION, so
       -- dev/staging/prod are the same vertical pinned differently, and a preview
       -- deployment is a version nothing has been promoted to yet.
@@ -2735,6 +2737,15 @@ export class SqliteScopeHost implements ScopeHost {
    * it inside its transaction onto an emptied directory, before loading any row.
    */
   private buildDirectorySchema(): void {
+    // A directory built before the store driver rename keeps its rows under the old names (and one
+    // that ran pre-rename code again, a rollback, holds both names), and
+    // `applyDirectorySchema` would only create empty tables beside them.
+    const tables = (this.directory.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as { name: string }[]).map((t) => t.name);
+    const hasRows = (table: string) => this.directory.prepare(`SELECT 1 FROM "${table}" LIMIT 1`).get() !== undefined;
+    // Asked before the moves below, which drop a name with no rows.
+    const bothNames = legacyStoreDriverConflict(tables, hasRows);
+    if (bothNames) console.error(bothNames);
+    for (const stmt of legacyStoreDriverRenames(tables, (table) => builtColumnsOf(this.directory, table), hasRows)) this.directory.exec(stmt);
     // #1764: `VERSION_MIGRATIONS_DDL` indexes these two columns, so a directory created
     // before them needs them before `applyDirectorySchema` reaches that statement.
     if (this.directory.prepare('PRAGMA table_info(vertical_versions)').all().length > 0) {
@@ -3312,7 +3323,7 @@ export class SqliteScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     opts?: SystemSwitchReassertOptions,
-    audit: (action: AdminAction, after: Record<string, unknown>) => void = (action, after) =>
+    audit: (action: WrittenAdminAction, after: Record<string, unknown>) => void = (action, after) =>
       this.recordAdmin(actor, action, { tenantId, scopeId }, null, after),
   ): SystemSwitchReassert[] {
     const at = new Date().toISOString();
@@ -4140,7 +4151,7 @@ export class SqliteScopeHost implements ScopeHost {
     // the directory's recorded-off modules go back off in the load's own turn, as a
     // provision's seat does — no schedule pass can run in between.
     // The re-assert's audit rows are written only once the load has committed.
-    const rows: [AdminAction, Record<string, unknown>][] = [];
+    const rows: [WrittenAdminAction, Record<string, unknown>][] = [];
     // #1869: the re-point's source is the separate hint when given; the dump is otherwise as sent.
     const source = { tables: dump.tables, scopeId: opts?.sourceScopeId ?? dump.scopeId };
     await this.loadDump(tenantId, scopeId, source, (rt) =>
@@ -4442,13 +4453,13 @@ export class SqliteScopeHost implements ScopeHost {
 
   /**
    * A dump's stores this host cannot load are refused before any write (#2211, L8): a
-   * binding that is not bound, a store with no kind or a kind other than the bound runner's,
+   * binding that is not bound, a store with no driver or a driver other than the bound runner's,
    * any store at all for a destination with no vertical (no store object can be named for
    * it, so loading would drop them), or a destination on a vertical other than the one this
    * host is pinned to.
    */
   private refuseUnusableScopeStores(
-    stores: readonly { binding: string; kind?: string }[] | undefined,
+    stores: readonly { binding: string; driver?: string }[] | undefined,
     vertical: string | null,
   ): void {
     const listed = stores ?? [];
@@ -4467,13 +4478,13 @@ export class SqliteScopeHost implements ScopeHost {
       if (!runner) {
         throw substratError('not_found', `dump names scope store '${store.binding}', which is not bound`);
       }
-      if (!store.kind) {
-        throw substratError('validation_failed', `dump's scope store '${store.binding}' names no kind`);
+      if (!store.driver) {
+        throw substratError('validation_failed', `dump's scope store '${store.binding}' names no driver`);
       }
-      if (store.kind !== runner.kind) {
+      if (store.driver !== runner.driver) {
         throw substratError(
           'conflict',
-          `dump's scope store '${store.binding}' is kind '${store.kind}', and this host binds kind '${runner.kind}'`,
+          `dump's scope store '${store.binding}' is driver '${store.driver}', and this host binds driver '${runner.driver}'`,
         );
       }
     }
@@ -4482,17 +4493,17 @@ export class SqliteScopeHost implements ScopeHost {
   private async exportScopeStores(
     tenantId: TenantId,
     scopeId: ScopeId,
-  ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
+  ): Promise<{ binding: string; driver: string; tables: ScopeDumpTable[] }[]> {
     const bindings = [...this.scopeStoreRunners.keys()];
     if (bindings.length === 0) return [];
     const vertical = this.scopeStoreVerticalIfPresent(scopeId);
     if (!vertical) return [];
-    const stores: { binding: string; kind: string; tables: ScopeDumpTable[] }[] = [];
+    const stores: { binding: string; driver: string; tables: ScopeDumpTable[] }[] = [];
     for (const binding of bindings) {
       const runner = this.scopeStoreRunners.get(binding);
       if (!runner) throw substratError('not_found', `no scope store is bound for '${binding}'`);
       const exported = await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.export');
-      stores.push({ binding, kind: runner.kind, tables: exported.tables });
+      stores.push({ binding, driver: runner.driver, tables: exported.tables });
     }
     return stores;
   }
@@ -7580,7 +7591,7 @@ export class SqliteScopeHost implements ScopeHost {
 
   private recordAdmin(
     actor: PlatformActorId,
-    action: AdminAction,
+    action: WrittenAdminAction,
     target: { tenantId: TenantId | null; scopeId?: ScopeId | null; vertical?: string | null },
     before: unknown,
     after: unknown,
@@ -7846,7 +7857,7 @@ export class SqliteScopeHost implements ScopeHost {
     // — an explicit, audited restore, never a silent flag flip.
     const transitionScope = (
       actor: PlatformActorId,
-      action: AdminAction,
+      action: WrittenAdminAction,
       tenantId: TenantId,
       scopeId: ScopeId,
       from: ScopeStatus[],
@@ -9184,7 +9195,7 @@ export class SqliteScopeHost implements ScopeHost {
               new Date().toISOString(),
             );
           writeVersionMigrations(switchSqlOf(this.directory), audited.id, split.migrations);
-          // #2286: the version's scope-store bindings, refusing one re-kinded, in the insert's transaction.
+          // #2286: the version's scope-store bindings, refusing one moved to another driver, in the insert's transaction.
           indexVersionScopeStores(switchSqlOf(this.directory), audited.verticalSlug, audited.id, split.manifestJson);
         })();
         this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
@@ -10523,54 +10534,54 @@ export class SqliteScopeHost implements ScopeHost {
           createdAt: r.created_at,
         }));
       },
-      // -- store-kind releases, rollouts and holds (D-63, #2300) -------------------
-      // The state is kernel code over the directory (store-kind-releases.ts), shared with the
+      // -- store-driver releases, rollouts and holds (D-63, #2300) -------------------
+      // The state is kernel code over the directory (store-driver-releases.ts), shared with the
       // Cloudflare control plane; each call is one transaction. A hold's expiry is judged against
       // this host's clock, so a test can let a lease lapse without waiting.
-      recordStoreKindRelease: async (actor, input) => {
+      recordStoreDriverRelease: async (actor, input) => {
         const at: string = this.clock();
         const { record, created } = this.directory.transaction(() =>
-          recordStoreKindReleaseIn(switchSqlOf(this.directory), { ...input, actor, at }),
+          recordStoreDriverReleaseIn(switchSqlOf(this.directory), { ...input, actor, at }),
         )();
-        if (created) this.recordAdmin(actor, 'uploadStoreKindRelease', { tenantId: null }, null, record, at);
+        if (created) this.recordAdmin(actor, 'uploadStoreDriverRelease', { tenantId: null }, null, record, at);
         return record;
       },
-      getStoreKindRelease: async (actor, kind, sha256) => {
-        const record = storeKindReleaseIn(switchSqlOf(this.directory), kind, sha256);
-        this.recordAccess(actor, 'getStoreKindRelease', { tenantId: null }, { kind, sha256 }, record ? 1 : 0);
+      getStoreDriverRelease: async (actor, driver, sha256) => {
+        const record = storeDriverReleaseIn(switchSqlOf(this.directory), driver, sha256);
+        this.recordAccess(actor, 'getStoreDriverRelease', { tenantId: null }, { driver, sha256 }, record ? 1 : 0);
         return record;
       },
-      storeKindState: async (actor, kind) => {
-        const state = storeKindStateIn(switchSqlOf(this.directory), kind, Date.parse(this.clock()));
-        this.recordAccess(actor, 'storeKindState', { tenantId: null }, { kind }, state.rollouts.length);
+      storeDriverState: async (actor, driver) => {
+        const state = storeDriverStateIn(switchSqlOf(this.directory), driver, Date.parse(this.clock()));
+        this.recordAccess(actor, 'storeDriverState', { tenantId: null }, { driver }, state.rollouts.length);
         return state;
       },
-      storeKindDeclarations: async (actor, kind) => {
-        const declared = this.directory.transaction(() => kindDeclarationsOf(switchSqlOf(this.directory), kind))();
-        this.recordAccess(actor, 'storeKindDeclarations', { tenantId: null }, { kind }, declared.verticals.length);
+      storeDriverDeclarations: async (actor, driver) => {
+        const declared = this.directory.transaction(() => driverDeclarationsOf(switchSqlOf(this.directory), driver))();
+        this.recordAccess(actor, 'storeDriverDeclarations', { tenantId: null }, { driver }, declared.verticals.length);
         return declared;
       },
-      holdStoreKind: async (_actor, input) =>
+      holdStoreDriver: async (_actor, input) =>
         this.directory.transaction(() =>
-          holdStoreKindIn(switchSqlOf(this.directory), { ...input, nowMs: Date.parse(this.clock()) }),
+          holdStoreDriverIn(switchSqlOf(this.directory), { ...input, nowMs: Date.parse(this.clock()) }),
         )(),
-      releaseStoreKindHold: async (_actor, input) => {
-        releaseStoreKindHoldIn(switchSqlOf(this.directory), input);
+      releaseStoreDriverHold: async (_actor, input) => {
+        releaseStoreDriverHoldIn(switchSqlOf(this.directory), input);
       },
-      beginStoreKindRollout: async (actor, input) => {
+      beginStoreDriverRollout: async (actor, input) => {
         const at: string = this.clock();
         const row = this.directory.transaction(() =>
-          beginStoreKindRolloutIn(switchSqlOf(this.directory), { ...input, actor, at, nowMs: Date.parse(at) }),
+          beginStoreDriverRolloutIn(switchSqlOf(this.directory), { ...input, actor, at, nowMs: Date.parse(at) }),
         )();
-        this.recordAdmin(actor, input.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row, at);
+        this.recordAdmin(actor, input.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, row, at);
         return row;
       },
-      finishStoreKindRollout: async (actor, input) => {
+      finishStoreDriverRollout: async (actor, input) => {
         const at: string = this.clock();
         const row = this.directory.transaction(() =>
-          finishStoreKindRolloutIn(switchSqlOf(this.directory), { ...input, at, nowMs: Date.parse(at) }),
+          finishStoreDriverRolloutIn(switchSqlOf(this.directory), { ...input, at, nowMs: Date.parse(at) }),
         )();
-        this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row, at);
+        this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, row, at);
         return row;
       },
       getScopeRecord: async (actor, tenantId: TenantId, scopeId: ScopeId): Promise<Scope | undefined> => {

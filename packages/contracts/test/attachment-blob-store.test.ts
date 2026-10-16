@@ -12,7 +12,7 @@ const A = '01JTESTATTACHTENANT000000A';
 const B = '01JTESTATTACHTENANT000000B';
 
 describe('per-tenant binding names — one encoding, and it names one tenant only (#1995)', () => {
-  it('names a tenant’s binding as <BINDING>__<ULID>, the same for both store kinds', () => {
+  it('names a tenant’s binding as <BINDING>__<ULID>, the same for both store drivers', () => {
     expect(blobStoreBindingName(ATTACHMENT_BLOB_BINDING, A)).toBe(`ATTACHMENTS__${A}`);
     expect(tenantStoreBindingName('DB', A)).toBe(`DB__${A}`);
   });

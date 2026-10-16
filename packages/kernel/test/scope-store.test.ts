@@ -89,7 +89,7 @@ describe('callScopeStore (#2209)', () => {
 
 describe('scopeStoreLifecycleOf (#2213)', () => {
   const runner = (name: string, log: string[], fail: { start?: number; stop?: boolean } = {}): ScopeStoreRunner => ({
-    kind: 'counter',
+    driver: 'counter',
     async start() {
       log.push(`start ${name}`);
       if ((fail.start ?? 0) > 0) {
@@ -149,7 +149,7 @@ describe('scopeStoreLifecycleOf, stopping (#2266)', () => {
     const log: string[] = [];
     const a = held();
     const runner = (name: string, gate?: Promise<void>): ScopeStoreRunner => ({
-      kind: 'counter',
+      driver: 'counter',
       async start() {
         log.push(`start ${name}`);
         await gate;
@@ -172,7 +172,7 @@ describe('scopeStoreLifecycleOf, stopping (#2266)', () => {
 
   it('several failed stops are all reported', async () => {
     const failing = (name: string): ScopeStoreRunner => ({
-      kind: 'counter',
+      driver: 'counter',
       async start() {},
       async stop() {
         throw new Error(`${name} stop broke`);

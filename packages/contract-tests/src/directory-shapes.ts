@@ -242,3 +242,46 @@ export const ALTERED_SHAPES: readonly DirectoryShape[] = [
     columns: ["id", "vertical_slug", "version", "manifest_digest", "permission_digest", "migration_digest", "deployment_ref", "admission", "admission_note", "created_at", "manifest_json", "origin_json", "migration_count", "migrations_split"],
   },
 ];
+
+/**
+ * The release tables as the code before K-53's rename built them (`STORE_KIND_RELEASES_DDL` on
+ * origin/main at fa16005d6, comments dropped). Run over a moved directory, it is what that code
+ * does on a rollback across the rename: it creates its tables, empty, beside the moved ones.
+ */
+export const STORE_KIND_RELEASES_DDL_BEFORE_RENAME = `
+  CREATE TABLE IF NOT EXISTS store_kind_releases (
+    kind          TEXT NOT NULL,
+    sha256        TEXT NOT NULL,
+    source_commit TEXT NOT NULL,
+    uploaded_by   TEXT NOT NULL,
+    uploaded_at   TEXT NOT NULL,
+    PRIMARY KEY (kind, sha256)
+  );
+  CREATE TABLE IF NOT EXISTS store_kind_rollouts (
+    kind                 TEXT NOT NULL,
+    seq                  INTEGER NOT NULL,
+    sha256               TEXT NOT NULL,
+    action               TEXT NOT NULL,
+    from_sha256          TEXT,
+    previous_good_sha256 TEXT,
+    state                TEXT NOT NULL,
+    actor                TEXT NOT NULL,
+    holder               TEXT NOT NULL,
+    started_at           TEXT NOT NULL,
+    ended_at             TEXT,
+    detail               TEXT,
+    PRIMARY KEY (kind, seq)
+  );
+  CREATE TABLE IF NOT EXISTS store_kind_current (
+    kind   TEXT PRIMARY KEY,
+    sha256 TEXT NOT NULL,
+    seq    INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS store_kind_holds (
+    kind       TEXT NOT NULL,
+    holder     TEXT NOT NULL,
+    mode       TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (kind, holder)
+  );
+`;

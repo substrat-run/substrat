@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest';
-import { RESERVED_STORE_OPERATIONS, storeKindReleaseDigest, type StoreKindRegistration } from '@substrat-run/contracts';
+import { RESERVED_STORE_OPERATIONS, storeDriverReleaseDigest, type StoreDriverRegistration } from '@substrat-run/contracts';
 import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
 import { createScopeStoreEnsurer, createStoreCanaryEnsurer, STORE_BUILD_VAR, STORE_RELEASE_VAR } from '../src/store-script.js';
 import {
@@ -34,24 +34,24 @@ async function refusal(p: Promise<unknown>): Promise<{ status?: number; message:
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 const artifact = (source: string) => ({
-  entry: 'kind_counter/store.py',
+  entry: 'driver_counter/store.py',
   sourceCommit: 'f'.repeat(40),
   modules: [
-    { name: 'kind_counter/store.py', content: bytes(source) },
+    { name: 'driver_counter/store.py', content: bytes(source) },
     // Not UTF-8: a module goes up as the bytes it is.
-    { name: 'kind_counter/blob.py', content: new Uint8Array([0x23, 0xff, 0xfe, 0x0a]) },
+    { name: 'driver_counter/blob.py', content: new Uint8Array([0x23, 0xff, 0xfe, 0x0a]) },
   ],
 });
 const v1 = artifact('class Store:\n    pass\n');
 const v2 = artifact('class Store:\n    version = 2\n');
 
-let pins: StoreKindRegistration['releases'];
+let pins: StoreDriverRegistration['releases'];
 let caller: string;
 let platform: string;
 beforeAll(async () => {
   pins = [
-    { sha256: await storeKindReleaseDigest(v1), sourceCommit: v1.sourceCommit, schema: 0 },
-    { sha256: await storeKindReleaseDigest(v2), sourceCommit: v2.sourceCommit, schema: 0 },
+    { sha256: await storeDriverReleaseDigest(v1), sourceCommit: v1.sourceCommit, schema: 0 },
+    { sha256: await storeDriverReleaseDigest(v2), sourceCommit: v2.sourceCommit, schema: 0 },
   ];
   caller = (await generateScopeStoreKeyPair()).publicKey;
   platform = (await generateScopeStoreKeyPair()).publicKey;
@@ -95,7 +95,7 @@ function ensurer(input: {
   rolledOut?: ReturnType<typeof artifact> | undefined;
   stored?: ReturnType<typeof artifact>[];
   callerKeys?: string[];
-  releases?: StoreKindRegistration['releases'];
+  releases?: StoreDriverRegistration['releases'];
   asked?: { sha256?: string }[];
 }) {
   return createScopeStoreEnsurer({
@@ -104,9 +104,9 @@ function ensurer(input: {
     apiToken: 'tok',
     callerPublicKeys: input.callerKeys ?? [caller],
     platformPublicKeys: [platform],
-    kinds: [
+    drivers: [
       {
-        kind: 'graph',
+        driver: 'graph',
         releases: input.releases ?? pins,
         className: 'Store',
         operations: ['read'],
@@ -117,14 +117,14 @@ function ensurer(input: {
       input.asked?.push({ ...(sha256 ? { sha256 } : {}) });
       if (sha256 === undefined) return 'rolledOut' in input ? input.rolledOut : v1;
       for (const candidate of input.stored ?? [v1, v2]) {
-        if ((await storeKindReleaseDigest(candidate)) === sha256) return candidate;
+        if ((await storeDriverReleaseDigest(candidate)) === sha256) return candidate;
       }
       return undefined;
     },
   });
 }
 
-const need = { vertical: 'acme/crm', stores: [{ binding: 'GRAPH', kind: 'graph' as const }] };
+const need = { vertical: 'acme/crm', stores: [{ binding: 'GRAPH', driver: 'graph' as const }] };
 const SCRIPT = 'substrat-store-graph-acme_crm';
 const text = (put: Put, name: string) => (put.meta.bindings as { name: string; text?: string }[]).find((b) => b.name === name)?.text;
 
@@ -153,14 +153,14 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
     ]);
     expect(text(put, 'SUBSTRAT_STORE_SCRIPT')).toBe(SCRIPT);
     expect(text(put, STORE_RELEASE_VAR)).toBe(pins[0]!.sha256);
-    expect([...put.parts.keys()]).toEqual([STORE_ENTRY_PYTHON_MODULE, STORE_VERIFIER_MODULE, 'kind_counter/store.py', 'kind_counter/blob.py']);
+    expect([...put.parts.keys()]).toEqual([STORE_ENTRY_PYTHON_MODULE, STORE_VERIFIER_MODULE, 'driver_counter/store.py', 'driver_counter/blob.py']);
     const entry = new TextDecoder().decode(put.parts.get(STORE_ENTRY_PYTHON_MODULE)!.bytes);
-    expect(entry).toContain('from kind_counter.store import Store as StoreKind');
+    expect(entry).toContain('from driver_counter.store import Store as StoreDriver');
     expect(put.parts.get(STORE_VERIFIER_MODULE)).toEqual({
       type: 'application/javascript+module',
       bytes: bytes(STORE_ENTRY_PYTHON_VERIFIER_SOURCE),
     });
-    expect(put.parts.get('kind_counter/blob.py')).toEqual({ type: 'text/x-python', bytes: v1.modules[1]!.content });
+    expect(put.parts.get('driver_counter/blob.py')).toEqual({ type: 'text/x-python', bytes: v1.modules[1]!.content });
   });
 
   it('a script built from the same inputs is left alone, and a push never moves its release', async () => {
@@ -215,7 +215,7 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
       apiToken: 'tok',
       callerPublicKeys: [caller],
       platformPublicKeys: [platform],
-      kinds: [{ kind: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      drivers: [{ driver: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
       loadRelease: async () => v2,
     });
     expect(await refusal(swapped(need))).toMatchObject({ status: 422, message: expect.stringMatching(/loaded as other bytes/) });
@@ -225,7 +225,7 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
   it('refuses (422) the pinned modules under another entry: the entry is part of the pin', async () => {
     const cf = cloudflare();
     // The same bytes, with the entry importing another of them: not the release that was pinned.
-    const moved = { ...v1, entry: 'kind_counter/blob.py' };
+    const moved = { ...v1, entry: 'driver_counter/blob.py' };
     expect(await refusal(ensurer({ rolledOut: moved })(need))).toMatchObject({ status: 422, message: expect.stringMatching(/is not pinned/) });
     // And a script that runs v1 is not rebuilt onto the other entry under v1's sha256, even by a
     // loader that hands back v1's bytes with it.
@@ -238,7 +238,7 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
       apiToken: 'tok',
       callerPublicKeys: [caller],
       platformPublicKeys: [platform],
-      kinds: [{ kind: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      drivers: [{ driver: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
       loadRelease: async () => moved,
     });
     expect(await refusal(entryMoved(need))).toMatchObject({ status: 422, message: expect.stringMatching(/loaded as other bytes/) });
@@ -260,13 +260,13 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
     } finally {
       vi.restoreAllMocks();
     }
-    expect(cf.puts[0]!.parts.get('kind_counter/store.py')!.bytes).toEqual(original);
+    expect(cf.puts[0]!.parts.get('driver_counter/store.py')!.bytes).toEqual(original);
   });
 
   it('refuses (422) a release whose modules break the module rule', async () => {
     const cf = cloudflare();
     const bad = { ...v1, modules: [...v1.modules, { name: 'workers.py', content: bytes('') }] };
-    const releases = [{ sha256: await storeKindReleaseDigest(bad), sourceCommit: v1.sourceCommit, schema: 0 }];
+    const releases = [{ sha256: await storeDriverReleaseDigest(bad), sourceCommit: v1.sourceCommit, schema: 0 }];
     expect(await refusal(ensurer({ rolledOut: bad, releases })(need))).toMatchObject({ status: 422, message: expect.stringMatching(/workers\.py/) });
     expect(cf.puts).toEqual([]);
   });
@@ -320,7 +320,7 @@ describe('a rollout moves a store script with `to`, and canaries in the platform
       apiToken: 'tok',
       callerPublicKeys: [caller],
       platformPublicKeys: [platform],
-      kinds: [{ kind: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      drivers: [{ driver: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
       loadRelease: async () => v2,
     });
     expect(await refusal(swapped({ ...need, to: pins[0]!.sha256 }))).toMatchObject({ status: 422, message: expect.stringMatching(/loaded as other bytes/) });
@@ -331,7 +331,7 @@ describe('a rollout moves a store script with `to`, and canaries in the platform
       apiToken: 'tok',
       callerPublicKeys: [caller],
       platformPublicKeys: [platform],
-      kinds: [{ kind: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      drivers: [{ driver: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
       loadRelease: async () => ({ ...v2, sha256: pins[0]!.sha256 }),
     });
     expect(await refusal(claimed(need))).toMatchObject({ status: 422, message: expect.stringMatching(/loaded as other bytes/) });
@@ -347,15 +347,15 @@ describe('a rollout moves a store script with `to`, and canaries in the platform
       apiToken: 'tok',
       callerPublicKeys: [caller],
       platformPublicKeys: [platform],
-      kinds: [{ kind: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      drivers: [{ driver: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
       loadRelease: async ({ sha256 }) => (sha256 === pins[1]!.sha256 ? v2 : undefined),
     });
-    expect(await canary({ kind: 'graph', to: pins[1]!.sha256 })).toEqual({ scriptName: 'substrat-store-graph--canary' });
+    expect(await canary({ driver: 'graph', to: pins[1]!.sha256 })).toEqual({ scriptName: 'substrat-store-graph--canary' });
     expect(cf.puts.map((p) => p.script)).toEqual(['substrat-store-graph--canary']);
     expect(text(cf.puts[0]!, 'SUBSTRAT_STORE_SCRIPT')).toBe('substrat-store-graph--canary');
     expect(text(cf.puts[0]!, STORE_RELEASE_VAR)).toBe(pins[1]!.sha256);
-    expect(await refusal(canary({ kind: 'graph', to: 'a'.repeat(64) }))).toMatchObject({ status: 409 });
-    expect(await refusal(canary({ kind: 'nokind', to: pins[1]!.sha256 }))).toMatchObject({ status: 403 });
+    expect(await refusal(canary({ driver: 'graph', to: 'a'.repeat(64) }))).toMatchObject({ status: 409 });
+    expect(await refusal(canary({ driver: 'nodriver', to: pins[1]!.sha256 }))).toMatchObject({ status: 403 });
   });
 });
 
@@ -395,11 +395,11 @@ describe('a script never moves to a release with a lower schema than the one it 
       apiToken: 'tok',
       callerPublicKeys: [caller],
       platformPublicKeys: [platform],
-      kinds: [{ kind: 'graph', releases: ranked, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
+      drivers: [{ driver: 'graph', releases: ranked, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
       loadRelease: async ({ sha256 }) => (sha256 === pins[0]!.sha256 ? v1 : v2),
     });
-    await canary({ kind: 'graph', to: pins[0]!.sha256 });
-    await canary({ kind: 'graph', to: pins[1]!.sha256 });
+    await canary({ driver: 'graph', to: pins[0]!.sha256 });
+    await canary({ driver: 'graph', to: pins[1]!.sha256 });
     expect(cf.puts.map((p) => text(p, STORE_RELEASE_VAR))).toEqual([pins[0]!.sha256, pins[1]!.sha256]);
   });
 

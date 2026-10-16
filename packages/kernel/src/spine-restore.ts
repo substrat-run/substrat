@@ -4,6 +4,7 @@ import { SCHEDULE_STATE_KIND_OF_OP } from './schedule-state.js';
 import { isSearchIndexTable } from './search-index.js';
 import { SWITCH_KINDS, dumpCarriesSwitches, switchesBackfillSqlOf } from './system-switch-record.js';
 import { dumpCarriesMembershipFences, membershipFencesBackfillSql } from './membership-fence.js';
+import { mapLegacyStoreDriverDump } from './store-driver-releases.js';
 
 /**
  * How a restore, fork or carry loads a dump's `_substrat_*` spine tables (#1883). One
@@ -242,6 +243,8 @@ function assertWithinColumnCap(
  * (#1912): the one sequence both adapters' directory restores run, inside their transaction,
  * after dropping the old directory and running the schema pass.
  *
+ * 0. map a pre-rename copy's `store_kind_*` tables and `kind` columns onto the driver names
+ *    (`mapLegacyStoreDriverDump`);
  * 1. refuse a table the directory does not build (`assertDirectoryTablesBuilt`), and one that
  *    would pass `maxColumns` once the dump's unknown columns join this code's own;
  * 2. add each column the dump carries and this code does not know, bare and lowercased, and
@@ -273,6 +276,8 @@ export function loadDirectoryDump(
     now: () => string;
   },
 ): void {
+  // A copy from before the store driver rename names its tables and key column the old way.
+  tables = mapLegacyStoreDriverDump(tables);
   assertDirectoryTablesBuilt(tables.map((t) => t.name), host.columnsOf);
   if (host.maxColumns !== undefined) assertWithinColumnCap(tables, host.columnsOf, host.maxColumns);
   for (const t of tables) for (const alter of spineColumnAdditions(t, host.columnsOf(t.name))) host.exec(alter);

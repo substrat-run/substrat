@@ -8,7 +8,7 @@ import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
 import { scopeDumpTable } from './introspection.js';
 import { substratError } from './errors.js';
-import { SCOPE_STORE_CANARY, STORE_KIND_ID } from './script-names.js';
+import { SCOPE_STORE_CANARY, STORE_DRIVER_ID } from './script-names.js';
 import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
 
 // The deploy manifest is the JSON part a `substrat push` sends alongside the
@@ -340,68 +340,68 @@ const storeCatalogOperation = storeOperationName.refine((name) => !name.startsWi
     message: 'a catalog operation cannot use the substrat. prefix — those names are the platform’s',
   });
 
-/** A store kind id: `[a-z0-9]+` (RFC scope-stores §10.7, L20). Part of every store script name. */
-export const storeKindId = z.string().regex(STORE_KIND_ID, { message: 'a store kind id is [a-z0-9]+' });
+/** A store driver id: `[a-z0-9]+` (RFC scope-stores §10.7, L20). Part of every store script name. */
+export const storeDriverId = z.string().regex(STORE_DRIVER_ID, { message: 'a store driver id is [a-z0-9]+' });
 
 /**
- * One pinned release of a store kind (D-63): the sha256 of the release bundle, which the
+ * One pinned release of a store driver (D-63): the sha256 of the release bundle, which the
  * platform checks at every upload, and the source commit the bundle was built from, which a
- * reviewer reads. The digest is {@link storeKindReleaseDigest} over the bundle's modules and the
+ * reviewer reads. The digest is {@link storeDriverReleaseDigest} over the bundle's modules and the
  * module the entry imports.
  *
  * `schema` is the version of the stored data the release migrates an object to when it wakes
  * (D-63, "Rollback against a migrated schema"; proposed in #2300, for the maintainer to confirm).
  * The platform never moves a script to a release with a lower `schema` than the one it leaves:
- * not by a rollout, a rollback, or the restore after a failed rollout. A kind's migrations are
+ * not by a rollout, a rollback, or the restore after a failed rollout. A driver's migrations are
  * forward-only, so a release that changes the stored shape raises it.
  */
-export const storeKindRelease = z
+export const storeDriverRelease = z
   .object({
     sha256: z.string().regex(/^[0-9a-f]{64}$/, { message: 'a release sha256 is 64 lowercase hex' }),
     sourceCommit: z.string().regex(/^[0-9a-f]{40}$/, { message: 'a release source commit is 40 lowercase hex' }),
     schema: z.number().int({ message: 'a release schema is an integer' }).nonnegative({ message: 'a release schema is not negative' }),
   })
   .strict();
-export type StoreKindRelease = z.infer<typeof storeKindRelease>;
+export type StoreDriverRelease = z.infer<typeof storeDriverRelease>;
 
 /**
- * A store kind, registered in this repo and pinned (D-63): every release the platform may run,
+ * A store driver, registered in this repo and pinned (D-63): every release the platform may run,
  * the class it runs, the catalog a vertical may call, and every reserved operation. A release is
  * pinned by a reviewed change to this list, and a pin is never removed, a superseded release
- * included. The list itself is {@link STORE_KINDS}. Empty until a kind is reviewed in.
+ * included. The list itself is {@link STORE_DRIVERS}. Empty until a driver is reviewed in.
  */
-export const storeKindRegistration = z.object({
-  // Held to the kind-id grammar first (L20), so a second kind cannot be added outside it.
-  kind: storeKindId.pipe(z.literal('graph')),
+export const storeDriverRegistration = z.object({
+  // Held to the driver-id grammar first (L20), so a second driver cannot be added outside it.
+  driver: storeDriverId.pipe(z.literal('graph')),
   releases: z
-    .array(storeKindRelease)
+    .array(storeDriverRelease)
     .min(1)
     .refine((releases) => new Set(releases.map((r) => r.sha256)).size === releases.length, {
       message: 'a release is pinned once',
     }),
-  // No script name: the platform names the upload `scopeStoreScriptName(vertical, kind)`.
+  // No script name: the platform names the upload `scopeStoreScriptName(vertical, driver)`.
   className: z.string().min(1),
   operations: z.array(storeCatalogOperation),
   platformOperations: z.array(z.enum(RESERVED_STORE_OPERATIONS)).refine(
     (ops) => RESERVED_STORE_OPERATIONS.every((op) => ops.includes(op)),
-    { message: 'a store kind answers every reserved operation, including substrat.erase' },
+    { message: 'a store driver answers every reserved operation, including substrat.erase' },
   ),
 });
-export type StoreKindRegistration = z.infer<typeof storeKindRegistration>;
+export type StoreDriverRegistration = z.infer<typeof storeDriverRegistration>;
 
-/** Registered store kinds. None, until a reviewed registration lands (#2210). */
-export const STORE_KINDS: readonly StoreKindRegistration[] = [];
+/** Registered store drivers. None, until a reviewed registration lands (#2210). */
+export const STORE_DRIVERS: readonly StoreDriverRegistration[] = [];
 
 /** The most module bytes one release bundle may carry (#2300), decoded. A bigger upload is 413. */
 export const STORE_RELEASE_MAX_BYTES = 10 * 1024 * 1024;
 
 /**
- * A release bundle as `substrat store-kind upload` sends it (#2300): the commit it was built from,
+ * A release bundle as `substrat store-driver upload` sends it (#2300): the commit it was built from,
  * the module the platform's entry imports, and every module, base64. The control plane stores it
- * keyed by its {@link storeKindReleaseDigest}, which it computes itself. Module names are judged
+ * keyed by its {@link storeDriverReleaseDigest}, which it computes itself. Module names are judged
  * by the Python entry's package rule when the bundle arrives, the same rule its upload applies.
  */
-export const storeKindReleaseUpload = z
+export const storeDriverReleaseUpload = z
   .object({
     sourceCommit: z.string().regex(/^[0-9a-f]{40}$/, { message: 'a release source commit is 40 lowercase hex' }),
     entry: z.string().min(1),
@@ -411,7 +411,7 @@ export const storeKindReleaseUpload = z
       .max(1000),
   })
   .strict();
-export type StoreKindReleaseUpload = z.infer<typeof storeKindReleaseUpload>;
+export type StoreDriverReleaseUpload = z.infer<typeof storeDriverReleaseUpload>;
 
 /** The domain tag a release digest starts with. Another framing is another tag, and a pin migration. */
 export const STORE_RELEASE_DIGEST_TAG = 'substrat.store-release/v1';
@@ -420,7 +420,7 @@ export const STORE_RELEASE_DIGEST_TAG = 'substrat.store-release/v1';
 const RELEASE_DIGEST_NAME = /^[\x21-\x7e]+$/;
 
 /**
- * The sha256 that pins a store kind's release (D-63), as lowercase hex. It covers everything that
+ * The sha256 that pins a store driver's release (D-63), as lowercase hex. It covers everything that
  * decides what runs, apart from the class the registration names: the module the platform's
  * entry imports, and every module's name and bytes. Framed as {@link STORE_RELEASE_DIGEST_TAG}
  * and one zero byte, the entry's name and one zero byte, then each module in name order: its
@@ -433,7 +433,7 @@ const RELEASE_DIGEST_NAME = /^[\x21-\x7e]+$/;
  * the sort below (UTF-16 code units) the byte order, so a pin computed outside JavaScript agrees.
  * A module named twice is refused, and so is an entry that is not one of the modules.
  */
-export async function storeKindReleaseDigest(release: {
+export async function storeDriverReleaseDigest(release: {
   readonly entry: string;
   readonly modules: readonly { readonly name: string; readonly content: Uint8Array }[];
 }): Promise<string> {
@@ -486,8 +486,8 @@ export function scopeStoresDeclaredIn(manifestJson: string | null): boolean | un
 
 /**
  * Whether the deployment running a version may hold a scope store — the gate subject
- * erasure fails closed on (#2242). A push declaring an unregistered kind is refused, so
- * with no kind in `kinds` nothing can hold one: false, and erasure proceeds as it did
+ * erasure fails closed on (#2242). A push declaring an unregistered driver is refused, so
+ * with no driver in `drivers` nothing can hold one: false, and erasure proceeds as it did
  * before stores existed. Otherwise true when the manifest declares a store, or when it
  * is unknown (`undefined`: no version can be named, or it could not be read) or cannot
  * be parsed. False for a manifest that declares none, and for `null`, a version pushed
@@ -495,21 +495,27 @@ export function scopeStoresDeclaredIn(manifestJson: string | null): boolean | un
  */
 export function mayHoldScopeStores(
   manifestJson: string | null | undefined,
-  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+  drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS,
 ): boolean {
-  if (kinds.length === 0) return false;
+  if (drivers.length === 0) return false;
   if (manifestJson === undefined) return true;
   return scopeStoresDeclaredIn(manifestJson) ?? true;
 }
 
 /**
  * A platform-run object, one per scope (#2207). The builder names the binding and the
- * kind. The kind has no default. A scope store adds no binding to the vertical's upload
+ * driver. The driver has no default. A scope store adds no binding to the vertical's upload
  * (RFC scope-stores §10.7, L1): the vertical reaches it only through the platform's hop.
+ *
+ * The field was `kind` until K-53's rename, with no alias: no vertical ever stored a scope
+ * store, since none could be registered. A declaration still spelling `kind` is refused
+ * with that rename named, rather than as a missing `driver` beside a silently dropped key.
  */
+export const SCOPE_STORE_KIND_RENAMED = 'scopeStores[].kind was renamed driver: declare { binding, driver }';
 export const scopeStoreNeed = z.object({
   binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
-  kind: z.literal('graph'),
+  driver: z.literal('graph'),
+  kind: z.never({ message: SCOPE_STORE_KIND_RENAMED }).optional(),
 });
 export type ScopeStoreNeed = z.infer<typeof scopeStoreNeed>;
 
@@ -532,7 +538,7 @@ export function scopeStoreObjectName(tenantId: string, vertical: string, scopeId
 }
 
 /**
- * The object a release is canaried on (D-63, #2300), in the kind's canary script. Its vertical
+ * The object a release is canaried on (D-63, #2300), in the driver's canary script. Its vertical
  * segment is {@link SCOPE_STORE_CANARY}, which no vertical slug is, so no route a tenant reaches
  * names it; the tenant and scope ids are fresh for each canary and never in the directory.
  */
@@ -547,7 +553,7 @@ export const storeRequest = z.object({
 });
 export type StoreRequest = z.infer<typeof storeRequest>;
 
-/** What a store answers when it refuses. `code` is the kind's, `status` is an HTTP
+/** What a store answers when it refuses. `code` is the driver's, `status` is an HTTP
  *  error status: anything outside 400–599 is not a refusal, and not this envelope. */
 export const storeErrorEnvelope = z.object({
   code: z.string().min(1),
@@ -621,9 +627,9 @@ export const runtimeNeeds = z.object({
   /** Command to run before bundling (SPA build, asset generation). Runs in the vertical root. */
   build: z.string().min(1).optional(),
   stores: z.array(storeNeed).default([]),
-  /** One platform-run object per scope (#2207). `kind` has no default: it is the
-   *  choice, and the only kind until a second one asks to widen the literal. A push
-   *  of a kind with no registration is refused ({@link assertDeclaredScopeStores}). */
+  /** One platform-run object per scope (#2207). `driver` has no default: it is the
+   *  choice, and the only driver until a second one asks to widen the literal. A push
+   *  of a driver with no registration is refused ({@link assertDeclaredScopeStores}). */
   scopeStores: z.array(scopeStoreNeed).default([]),
   /** Per-tenant stores the platform provisions (#301, #473). `kind` defaults to
    *  `relational`. `blob` is the same declaration as an entry in `blobStores`.
@@ -726,7 +732,7 @@ export function assertStoreBindingsDistinct(input: {
   readonly own?: readonly { binding: string }[];
   readonly tenantStores?: readonly { binding: string; kind?: string }[];
   readonly blobStores?: readonly { binding: string; kind?: string }[];
-  readonly scopeStores?: readonly { binding: string; kind?: string }[];
+  readonly scopeStores?: readonly { binding: string; driver?: string }[];
   readonly bindingNames?: readonly string[];
 }): void {
   const seen = new Map<string, string>();
@@ -801,17 +807,17 @@ export function storeNamesOfBindings(
 }
 
 /**
- * A scope store whose kind has no registration is refused (#2207). The declaration
- * parses — `graph` is the kind — and still cannot be stored as if the platform
- * could run it. {@link STORE_KINDS} is what "registered" means.
+ * A scope store whose driver has no registration is refused (#2207). The declaration
+ * parses — `graph` is the driver — and still cannot be stored as if the platform
+ * could run it. {@link STORE_DRIVERS} is what "registered" means.
  */
 export function assertScopeStoresRegistered(stores: readonly ScopeStoreNeed[]): void {
   for (const store of stores) {
-    if (!STORE_KINDS.some((kind) => kind.kind === store.kind)) {
+    if (!STORE_DRIVERS.some((driver) => driver.driver === store.driver)) {
       throw substratError(
         'forbidden',
-        `deploy refused: scope store '${store.binding}' declares kind '${store.kind}', which is not registered. ` +
-          `A store kind is platform code, registered in this repo.`,
+        `deploy refused: scope store '${store.binding}' declares driver '${store.driver}', which is not registered. ` +
+          `A store driver is platform code, registered in this repo.`,
       );
     }
   }
@@ -1763,7 +1769,7 @@ export const deployManifest = z.object({
    *  never a static binding; the platform mints one bucket per tenant and injects it. */
   blobStores: z.array(blobStoreNeed).default([]),
   /** Platform-run objects, one per scope (#2207). Never a binding on the vertical's upload
-   *  (L1): the vertical reaches one only through the platform's hop. An unregistered kind is
+   *  (L1): the vertical reaches one only through the platform's hop. An unregistered driver is
    *  refused. */
   scopeStores: z.array(scopeStoreNeed).default([]),
   /** The vertical's static files (#340): routing config + the full path/hash/size/type

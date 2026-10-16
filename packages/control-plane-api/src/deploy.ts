@@ -3,13 +3,13 @@ import {
   assertDeclaredScopeStores,
   PLATFORM_BINDING_PREFIX,
   scopeStoreScriptName,
-  STORE_KINDS,
+  STORE_DRIVERS,
   storeNamesOfBindings,
   substratError,
   verticalScriptStem,
   type ScopeStoreNeed,
-  type StoreKindRegistration,
-  type StoreKindRelease,
+  type StoreDriverRegistration,
+  type StoreDriverRelease,
 } from '@substrat-run/contracts';
 import type { AssetRouting, DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 
@@ -191,9 +191,9 @@ export { scopeStoreScriptName };
 /** One store script to upload. The serving script is not given the namespace or the key. */
 export interface ScopeStoreUploadPlan {
   readonly scripts: readonly {
-    readonly kind: string;
-    /** Every pinned release of the kind (D-63). Which one a script runs is not the plan's. */
-    readonly releases: readonly StoreKindRelease[];
+    readonly driver: string;
+    /** Every pinned release of the driver (D-63). Which one a script runs is not the plan's. */
+    readonly releases: readonly StoreDriverRelease[];
     readonly vertical: string;
     readonly scriptName: string;
     readonly className: string;
@@ -203,36 +203,36 @@ export interface ScopeStoreUploadPlan {
 }
 
 /**
- * Which store scripts a vertical's stores need (#2210). One script per (kind, vertical), shared
- * by every binding of that kind, named by {@link scopeStoreScriptName}, which carries no release:
- * a new release of the kind is uploaded into the same name. A kind that is not in `kinds` is
+ * Which store scripts a vertical's stores need (#2210). One script per (driver, vertical), shared
+ * by every binding of that driver, named by {@link scopeStoreScriptName}, which carries no release:
+ * a new release of the driver is uploaded into the same name. A driver that is not in `drivers` is
  * refused. The default registry is empty. The upload itself is `createScopeStoreEnsurer`.
  */
 export function scopeStoreUploadPlan(input: {
   readonly vertical: string;
   readonly stores: readonly ScopeStoreNeed[];
-  readonly kinds?: readonly StoreKindRegistration[];
+  readonly drivers?: readonly StoreDriverRegistration[];
 }): ScopeStoreUploadPlan {
-  const kinds = input.kinds ?? STORE_KINDS;
+  const drivers = input.drivers ?? STORE_DRIVERS;
   const scripts: ScopeStoreUploadPlan['scripts'][number][] = [];
   const seen = new Set<string>();
   for (const store of input.stores) {
-    const kind = kinds.find((candidate) => candidate.kind === store.kind);
-    if (!kind) {
+    const driver = drivers.find((candidate) => candidate.driver === store.driver);
+    if (!driver) {
       throw substratError(
         'forbidden',
-        `deploy refused: scope store '${store.binding}' declares kind '${store.kind}', which is not registered. ` +
-          `A store kind is platform code, registered in this repo.`,
+        `deploy refused: scope store '${store.binding}' declares driver '${store.driver}', which is not registered. ` +
+          `A store driver is platform code, registered in this repo.`,
       );
     }
-    if (seen.has(kind.kind)) continue;
-    seen.add(kind.kind);
+    if (seen.has(driver.driver)) continue;
+    seen.add(driver.driver);
     scripts.push({
-      kind: kind.kind,
-      releases: kind.releases,
+      driver: driver.driver,
+      releases: driver.releases,
       vertical: input.vertical,
-      scriptName: scopeStoreScriptName(input.vertical, kind.kind),
-      className: kind.className,
+      scriptName: scopeStoreScriptName(input.vertical, driver.driver),
+      className: driver.className,
     });
   }
   return { scripts, bindings: [] };
@@ -242,16 +242,16 @@ export function scopeStoreUploadPlan(input: {
  * The bindings a vertical's upload carries (#2210), the per-version push and the serving upload
  * alike: the version's own declared bindings, then the platform's (the serving upload's
  * ledger-derived stores; none on a push). A declared scope store adds none (RFC scope-stores §10.2, L1):
- * its kind is still checked against `kinds`, so a version whose kind is not registered is
+ * its driver is still checked against `drivers`, so a version whose driver is not registered is
  * refused here as at push.
  */
 export function verticalUploadBindings<B>(input: {
   readonly vertical: string;
   readonly manifest: { readonly bindings: readonly DeclaredBinding[]; readonly scopeStores: readonly ScopeStoreNeed[] };
   readonly platformBindings: readonly B[];
-  readonly kinds?: readonly StoreKindRegistration[];
+  readonly drivers?: readonly StoreDriverRegistration[];
 }): (DeclaredBinding | B)[] {
-  const plan = scopeStoreUploadPlan({ vertical: input.vertical, stores: input.manifest.scopeStores, kinds: input.kinds });
+  const plan = scopeStoreUploadPlan({ vertical: input.vertical, stores: input.manifest.scopeStores, drivers: input.drivers });
   return [...input.manifest.bindings, ...input.platformBindings, ...plan.bindings];
 }
 

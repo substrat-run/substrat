@@ -55,7 +55,7 @@ describe('scope restore backup provenance (#1880)', () => {
 
   it('a full pull that carries scope stores restores them: it is written as the JSON dump, not .sqlite', async () => {
     const stores = [
-      { binding: 'GRAPH', kind: 'graph', tables: [{ name: 'nodes', ddl: 'CREATE TABLE nodes (id TEXT PRIMARY KEY)', columns: ['id'], rows: [['g1']] }] },
+      { binding: 'GRAPH', driver: 'graph', tables: [{ name: 'nodes', ddl: 'CREATE TABLE nodes (id TEXT PRIMARY KEY)', columns: ['id'], rows: [['g1']] }] },
     ];
     globalThis.fetch = (async () =>
       new Response(

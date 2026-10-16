@@ -125,7 +125,7 @@ describe('platform script names (#1923)', () => {
 });
 
 describe('scope-store script names (RFC scope-stores §10.7, L20)', () => {
-  const KINDS = ['graph', 'g2', 'graphx'];
+  const DRIVERS = ['graph', 'g2', 'graphx'];
   const VERTICALS = [
     'crm',
     'acme-crm',
@@ -139,15 +139,15 @@ describe('scope-store script names (RFC scope-stores §10.7, L20)', () => {
     't-0wv2mwk4j5/crm',
   ];
 
-  it('gives distinct (kind, vertical) pairs distinct names, and the same pair the same name', () => {
+  it('gives distinct (driver, vertical) pairs distinct names, and the same pair the same name', () => {
     const seen = new Map<string, string>();
-    for (const kind of KINDS) {
+    for (const driver of DRIVERS) {
       for (const vertical of VERTICALS) {
-        const name = scopeStoreScriptName(vertical, kind);
-        const pair = `${kind} ${vertical}`;
+        const name = scopeStoreScriptName(vertical, driver);
+        const pair = `${driver} ${vertical}`;
         expect(seen.get(name), `${pair} and ${seen.get(name)} share ${name}`).toBeUndefined();
         seen.set(name, pair);
-        expect(scopeStoreScriptName(vertical, kind)).toBe(name);
+        expect(scopeStoreScriptName(vertical, driver)).toBe(name);
         expect(name.startsWith('substrat-store-')).toBe(true);
       }
     }
@@ -164,12 +164,12 @@ describe('scope-store script names (RFC scope-stores §10.7, L20)', () => {
 
   it("names the platform's canary script and object outside every vertical's (D-63, #2300)", () => {
     expect(scopeStoreCanaryScriptName('graph')).toBe('substrat-store-graph--canary');
-    // A vertical's store script is `substrat-store-<kind>-<encoded slug>`. The canary's encoded slug
+    // A vertical's store script is `substrat-store-<driver>-<encoded slug>`. The canary's encoded slug
     // would be `-canary`: no slug decodes to it, and the builder refuses it outright.
     expect(verticalSlug.safeParse(SCOPE_STORE_CANARY).success).toBe(false);
     expect(() => scopeStoreScriptName(SCOPE_STORE_CANARY, 'graph')).toThrow(/vertical slug/);
-    for (const kind of KINDS) {
-      for (const vertical of VERTICALS) expect(scopeStoreScriptName(vertical, kind)).not.toBe(scopeStoreCanaryScriptName(kind));
+    for (const driver of DRIVERS) {
+      for (const vertical of VERTICALS) expect(scopeStoreScriptName(vertical, driver)).not.toBe(scopeStoreCanaryScriptName(driver));
     }
 
     // The router builds an object name from a directory tenant id, the vertical's slug, the scope
@@ -189,9 +189,9 @@ describe('scope-store script names (RFC scope-stores §10.7, L20)', () => {
     expect(verticalSlug.safeParse(routed.slice(1, -2).join('/')).success).toBe(true);
   });
 
-  it('refuses a kind id or a vertical outside its grammar instead of flattening it', () => {
-    for (const kind of ['graph-x', 'graph_x', 'Graph', '']) {
-      expect(() => scopeStoreScriptName('acme/crm', kind), kind).toThrow(/kind id/);
+  it('refuses a driver id or a vertical outside its grammar instead of flattening it', () => {
+    for (const driver of ['graph-x', 'graph_x', 'Graph', '']) {
+      expect(() => scopeStoreScriptName('acme/crm', driver), driver).toThrow(/driver id/);
     }
     for (const vertical of ['Acme/crm', 'acme_crm', 'a/b/c', '/crm', 'acme/', '']) {
       expect(() => scopeStoreScriptName(vertical, 'graph'), vertical).toThrow(/vertical slug/);
