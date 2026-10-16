@@ -5,6 +5,7 @@ import {
   UPLOAD_LINK_DEFAULT_TTL_SECONDS,
   UPLOAD_LINK_MAX_BYTES_CEILING,
   UPLOAD_LINK_SECRET_PREFIX,
+  isUploadLinkSecretShape,
   principalId as principalIdSchema,
   substratError,
   uploadLinkMintInput,
@@ -129,15 +130,32 @@ export function mintUploadLinkSecret(): string {
   return UPLOAD_LINK_SECRET_PREFIX + toBase64url(crypto.getRandomValues(new Uint8Array(32)));
 }
 
-/** A secret that cannot be one of ours is refused before it is hashed. */
-const plausibleSecret = (secret: unknown): secret is string =>
-  typeof secret === 'string' && secret.startsWith(UPLOAD_LINK_SECRET_PREFIX) && secret.length <= 128;
+/**
+ * Types a browser runs rather than shows: a page that serves one inline executes what the
+ * uploader wrote, as the vertical's origin. A FAMILY entry (`image/*`, `text/*`) never admits
+ * one; only an exact entry naming it does, so admitting SVG or HTML through a link is a line a
+ * reviewer reads in `PERMISSIONS.md`. An absent allowlist still admits every type, these too.
+ */
+export const ACTIVE_CONTENT_TYPES: ReadonlySet<string> = new Set([
+  'image/svg+xml',
+  'text/html',
+  'application/xhtml+xml',
+  'text/javascript',
+  'application/javascript',
+  'text/xml',
+  'application/xml',
+]);
 
-/** Is `type` (already stripped of parameters, lowercase) admitted by `allowed`? `null` admits anything. */
+/**
+ * Is `type` (already stripped of parameters) admitted by `allowed`? `null` admits anything; a
+ * family admits its members except `ACTIVE_CONTENT_TYPES`; an exact entry admits itself.
+ */
 export function uploadContentTypeAllowed(allowed: readonly string[] | null, type: string): boolean {
   if (allowed === null) return true;
   const t = type.toLowerCase();
-  return allowed.some((a) => (a.endsWith('/*') ? t.startsWith(a.slice(0, -1)) : a === t));
+  return allowed.some((a) =>
+    a.endsWith('/*') ? t.startsWith(a.slice(0, -1)) && !ACTIVE_CONTENT_TYPES.has(t) : a === t,
+  );
 }
 
 const stateOf = (row: UploadLinkRow, now: Instant): UploadLinkRecord['state'] =>
@@ -370,13 +388,23 @@ const unknownLink = () => substratError('not_found', 'This upload link is not va
 const goneLink = () =>
   substratError('conflict', 'This upload link has been used, has expired or was revoked.', { reason: UPLOAD_LINK_GONE });
 
-async function liveRow(sql: ScopedSql, now: Instant, secret: unknown): Promise<UploadLinkRow> {
-  if (!plausibleSecret(secret)) throw unknownLink();
+/** The 404 for a link that exists but was minted for another target than the one the request names. */
+const wrongTarget = () =>
+  substratError('not_found', 'This upload link is not valid for that target.', { reason: UPLOAD_LINK_WRONG_TARGET });
+
+/**
+ * The link a secret names, if it is still usable for `target`. The target is judged BEFORE the
+ * state, so a request naming another entity is the same 404 whether the link is pending, used,
+ * expired or revoked: the path decides, never the link's history. Nothing here spends it.
+ */
+async function liveRow(sql: ScopedSql, now: Instant, secret: unknown, target?: EntityRef): Promise<UploadLinkRow> {
+  if (!isUploadLinkSecretShape(secret)) throw unknownLink();
   const row = sql.query<UploadLinkRow>(
     `SELECT ${COLUMNS} FROM _substrat_upload_links WHERE token_hash = ?`,
     [await capabilityTokenHash(secret)],
   )[0];
   if (!row) throw unknownLink();
+  if (target && (row.entity_type !== target.entityType || row.entity_id !== target.entityId)) throw wrongTarget();
   if (stateOf(row, now) !== 'pending') throw goneLink();
   return row;
 }
@@ -388,14 +416,17 @@ export interface UploadLinkInspection {
 }
 
 /**
- * Look a secret up without spending it: `not_found` for one that names nothing, `conflict`
- * with reason `upload_link_gone` for one that is used, expired or revoked.
+ * Look a secret up without spending it: `not_found` for one that names nothing, `not_found`
+ * with reason `upload_link_wrong_target` for one minted for another target than `target`
+ * (whatever its state), `conflict` with reason `upload_link_gone` for one that is used,
+ * expired or revoked.
  */
 export async function inspectUploadLink(
   deps: { sql: ScopedSql; now: Instant },
   secret: unknown,
+  target?: EntityRef,
 ): Promise<UploadLinkInspection> {
-  const row = await liveRow(deps.sql, deps.now, secret);
+  const row = await liveRow(deps.sql, deps.now, secret, target);
   const r = recordOf(row, deps.now);
   return {
     view: {
@@ -423,13 +454,8 @@ export async function redeemUploadLinkInTransaction(
   secret: unknown,
   record: AttachmentRecord,
 ): Promise<void> {
-  const row = await liveRow(deps.sql, deps.now, secret);
-  if (row.entity_type !== record.entity.entityType || row.entity_id !== record.entity.entityId) {
-    // The path named another entity than the link was minted for: nothing is spent.
-    throw substratError('not_found', 'This upload link is not valid for that target.', {
-      reason: UPLOAD_LINK_WRONG_TARGET,
-    });
-  }
+  // The path named another entity than the link was minted for: nothing is spent.
+  const row = await liveRow(deps.sql, deps.now, secret, record.entity);
   if (record.createdBy !== row.minted_by) {
     throw substratError('internal', 'an upload link was redeemed as someone other than its minter');
   }

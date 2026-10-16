@@ -300,11 +300,19 @@ function versionIdOf(env: unknown): string | null {
  * prefix is spelled here rather than imported: this module is bundled into every vertical's
  * upload and takes only the zero-import contract subpaths (a test holds it equal to
  * `UPLOAD_LINK_PATH_PREFIX`).
+ *
+ * Two rules, so neither is the only thing standing between a secret and the log: the last
+ * segment under the prefix, whatever it holds, and ANY segment that starts with the secret's
+ * own prefix, wherever the path puts it — a vertical that hands the bytes on from a route of
+ * its own is covered too (a test holds `UPLOAD_LINK_LOG_SECRET_PREFIX` equal to
+ * `UPLOAD_LINK_SECRET_PREFIX`).
  */
 export const UPLOAD_LINK_LOG_PREFIX = '/api/attachment-uploads';
+export const UPLOAD_LINK_LOG_SECRET_PREFIX = 'sbup_';
 const UPLOAD_LINK_SECRET_SEGMENT = /^(\/api\/attachment-uploads\/[^/]+\/[^/]+\/)[^/]+/;
+const SECRET_SHAPED_SEGMENT = /(^|\/)sbup_[^/]*/g;
 export const redactUploadLinkSecret = (pathname: string): string =>
-  pathname.replace(UPLOAD_LINK_SECRET_SEGMENT, '$1[redacted]');
+  pathname.replace(UPLOAD_LINK_SECRET_SEGMENT, '$1[redacted]').replace(SECRET_SHAPED_SEGMENT, '$1[redacted]');
 
 /**
  * The path, with the query string DISCARDED.

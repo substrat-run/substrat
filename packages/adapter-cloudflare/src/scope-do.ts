@@ -3862,11 +3862,12 @@ export function defineScopeDO(
       secret: string,
       _tenantId: TenantId,
       _scopeId: ScopeId,
+      target?: EntityRef,
     ): Promise<DoReply<{ view: UploadLinkView; mintedBy: PrincipalId }>> {
       return replyOf(async () => {
         await this.ensureMigrations();
         return await this.queue.enqueue(() =>
-          inspectUploadLink({ sql: doSpineSql(this.sql), now: instant.parse(new Date().toISOString()) }, secret),
+          inspectUploadLink({ sql: doSpineSql(this.sql), now: instant.parse(new Date().toISOString()) }, secret, target),
         );
       });
     }

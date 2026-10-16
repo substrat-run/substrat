@@ -13,16 +13,20 @@
  * 1. **The mint.** A caller with the write key mints; one without is refused and no row exists.
  *    A target that declares no `uploadLinks`, an undeclared type, a size above the target's,
  *    and a TTL past the hour are refused. An operation's own lock, decided before the mint,
- *    stops it. Defaults: ten minutes.
+ *    stops it. Defaults: ten minutes. Only a principal mints or revokes: a consumer, which runs
+ *    as the system actor, is refused both and writes nothing.
  * 2. **The redemption.** The file lands as an ordinary attachment — bytes intact, `createdBy`
  *    the minter, listed and opened by the minter, `attachment.added` on the spine — and the
  *    link records the attachment it produced.
  * 3. **Single use.** The second redemption is `upload_link_gone` and adds nothing.
  * 4. **Expiry and revocation.** A link past its time, and a revoked one, are `upload_link_gone`.
- * 5. **One target.** A redemption naming another entity — or another type — than the link was
- *    minted for is refused WITHOUT spending the link.
+ * 5. **One target, one scope.** A redemption naming another entity — or another type — than
+ *    the link was minted for is refused WITHOUT spending the link, with the same answer whether
+ *    the link is pending or spent. A redemption at another scope of the tenant, or at a scope of
+ *    another tenant, finds no link at all, stores nothing there, and leaves it usable at home.
  * 6. **The policy.** Oversize and a disallowed type are refused without spending the link, and
- *    the same link then takes a conforming file. A fixed file name overrides the uploader's.
+ *    the same link then takes a conforming file. A family (`image/*`) admits no active type
+ *    (SVG); an exact entry does. A fixed file name overrides the uploader's.
  * 7. **The minter, now.** Taking the minter's write key away after the mint refuses the
  *    redemption and leaves the link unspent; giving it back allows it.
  * 8. **The audit trail and the secret.** Minted, added and redeemed are on the spine in that
@@ -61,6 +65,8 @@ import {
 import type { ScopeHostFixture } from './scope-host-suite.js';
 import { UPL_MAX_BYTES, UPL_READ, UPL_WRITE, uploadLinkMod } from './upload-link-module.js';
 
+const SVG = '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>';
+
 const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 const text = (b: Uint8Array): string => new TextDecoder().decode(b);
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -92,6 +98,10 @@ export function uploadLinkContractSuite(
     let host: ScopeHost;
     const t1 = tenantId.parse(ulid());
     const s1 = scopeId.parse(ulid());
+    // Isolation: a second scope of the same tenant, and a scope of another tenant.
+    const s2 = scopeId.parse(ulid());
+    const t2 = tenantId.parse(ulid());
+    const s3 = scopeId.parse(ulid());
     const alice: PrincipalId = principalId.parse(ulid()); // owner: read + write, tenant-wide
     const bob: PrincipalId = principalId.parse(ulid()); // reader: read only
     const staff = platformActorId.parse(ulid());
@@ -139,6 +149,17 @@ export function uploadLinkContractSuite(
       await host.admin.defineRole(staff, t1, { key: 'reader', permissions: [UPL_READ], source: 'vertical' });
       await host.admin.assignRole(staff, { principalId: alice, roleKey: 'owner', node: { tenantId: t1, scopeId: null } });
       await host.admin.assignRole(staff, { principalId: bob, roleKey: 'reader', node: { tenantId: t1, scopeId: null } });
+
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s2, vertical: 'upl-vertical' });
+      await host.admin.activateScope(staff, t1, s2);
+      await host.admin.createTenant(staff, { id: t2, slug: `upl-${t2.toLowerCase()}`, name: 'Upload links, elsewhere' });
+      await host.admin.grantEntitlement(staff, t2, 'upl');
+      await host.provisionScope(staff, { tenantId: t2, scopeId: s3, vertical: 'upl-vertical' });
+      await host.admin.activateScope(staff, t2, s3);
+      await host.provisionBlobStore(staff, { tenantId: t2, vertical: 'upl-vertical', binding: 'ATTACHMENTS' });
+      await host.admin.defineRole(staff, t2, { key: 'owner', permissions: [UPL_READ, UPL_WRITE], source: 'vertical' });
+      // The same principal holds the write key in both tenants, so a refusal there is the link's, not a permission's.
+      await host.admin.assignRole(staff, { principalId: alice, roleKey: 'owner', node: { tenantId: t2, scopeId: null } });
     });
 
     afterAll(async () => {
@@ -192,6 +213,24 @@ export function uploadLinkContractSuite(
         expect(errorCodeOf(await refusal(mint(alice, { entity: locked }, 'upl/mint-locked')))).toBe('conflict');
         expect(await links(locked)).toEqual([]);
         expect((await mint(alice, { entity: free }, 'upl/mint-locked')).id).toBeTruthy();
+      });
+
+      it('only a principal mints or revokes: a consumer — the system actor — is refused both, and writes no link', async () => {
+        const target = udoc();
+        const existing = await mint(alice, { entity: target });
+        const poked = udoc();
+        await (await as(alice)).invoke('upl/poke', { entity: poked, linkId: existing.id });
+        const attempts = await (await as(alice)).invoke<{ verb: string; outcome: string }[]>('upl/consumer-attempts');
+        expect(attempts).toEqual([
+          { verb: 'mint', outcome: 'forbidden:upload_link_delegation' },
+          { verb: 'revoke', outcome: 'forbidden:upload_link_delegation' },
+        ]);
+        expect(await links(poked)).toEqual([]);
+        expect((await linkOf(existing.id)).state).toBe('pending');
+        // The twin: the same mint and revoke, made by a principal, go through.
+        expect((await mint(alice, { entity: poked })).id).toBeTruthy();
+        await (await as(alice)).invoke('upl/revoke', { id: existing.id });
+        expect((await linkOf(existing.id)).state).toBe('revoked');
       });
     });
 
@@ -294,6 +333,58 @@ export function uploadLinkContractSuite(
         // The twin: the link's own target takes it.
         expect((await redeem(minted, target)).entity).toEqual(target);
       });
+
+      it('the target is judged before the state: a wrong path is the same not_found for a spent link as for a pending one', async () => {
+        const target = udoc();
+        const other = udoc();
+        const used = await mint(alice, { entity: target });
+        await redeem(used, target);
+        const revoked = await mint(alice, { entity: target });
+        await (await as(alice)).invoke('upl/revoke', { id: revoked.id });
+        for (const m of [used, revoked]) {
+          const viaRedeem = await refusal(redeem(m, other));
+          expect(errorCodeOf(viaRedeem)).toBe('not_found');
+          expect(reasonOf(viaRedeem)).toBe(UPLOAD_LINK_WRONG_TARGET);
+          const viaInspect = await refusal(host.inspectUploadLink!(t1, s1, m.secret, other));
+          expect(errorCodeOf(viaInspect)).toBe('not_found');
+          expect(reasonOf(viaInspect)).toBe(UPLOAD_LINK_WRONG_TARGET);
+          // The twin: at its own target the spent link is gone.
+          expect(reasonOf(await refusal(redeem(m, target)))).toBe(UPLOAD_LINK_GONE);
+          expect(reasonOf(await refusal(host.inspectUploadLink!(t1, s1, m.secret, target)))).toBe(UPLOAD_LINK_GONE);
+        }
+        expect(await filesOf(other)).toEqual([]);
+      });
+
+      it('a link is its scope’s alone: another scope of the tenant and a scope of another tenant find nothing, store nothing, and leave it usable at home', async () => {
+        const target = udoc();
+        const minted = await mint(alice, { entity: target });
+        const elsewhere = [
+          [t1, s2],
+          [t2, s3],
+          [t2, s1],
+          [t1, s3],
+        ] as const;
+        for (const [t, s] of elsewhere) {
+          const where = `(${t === t1 ? 't1' : 't2'}, ${s === s1 ? 's1' : s === s2 ? 's2' : 's3'})`;
+          expect(errorCodeOf(await refusal(host.inspectUploadLink!(t, s, minted.secret, target))), where).toBe('not_found');
+          const redeemed = await refusal(
+            host.redeemUploadLink!(t, s, minted.secret, {
+              entity: target,
+              filename: 'a.txt',
+              contentType: 'text/plain',
+              body: bytes('elsewhere'),
+            }),
+          );
+          expect(errorCodeOf(redeemed), where).toBe('not_found');
+        }
+        // Nothing landed in either real scope away from home.
+        expect(await (await host.attachments(alice, t1, s2)).list(target)).toEqual([]);
+        expect(await (await host.attachments(alice, t2, s3)).list(target)).toEqual([]);
+        // At home it is untouched and still takes its one file.
+        expect((await linkOf(minted.id)).state).toBe('pending');
+        expect((await redeem(minted, target)).entity).toEqual(target);
+        expect(await filesOf(target)).toHaveLength(1);
+      });
     });
 
     describe('the policy', () => {
@@ -325,6 +416,22 @@ export function uploadLinkContractSuite(
         expect((await redeem(pdf, target, { contentType: 'application/pdf', filename: 'a.pdf' })).contentType).toBe(
           'application/pdf',
         );
+      });
+
+      it('a family admits no active type — SVG under `image/*` is refused, spending nothing — and an exact entry admits it', async () => {
+        const target = udoc();
+        const minted = await mint(alice, { entity: target });
+        const svg = await refusal(redeem(minted, target, { contentType: 'image/svg+xml', filename: 'a.svg', body: bytes(SVG) }));
+        expect(errorCodeOf(svg)).toBe('validation_failed');
+        expect(reasonOf(svg)).toBe(UPLOAD_LINK_TYPE_REFUSED);
+        expect(await filesOf(target)).toEqual([]);
+        expect((await linkOf(minted.id)).state).toBe('pending');
+
+        // The twin: `upic` names `image/svg+xml` exactly, and takes it.
+        const pic: EntityRef = { entityType: 'upic', entityId: target.entityId };
+        const named = await mint(alice, { entity: pic });
+        const stored = await redeem(named, pic, { contentType: 'image/svg+xml', filename: 'a.svg', body: bytes(SVG) });
+        expect(stored.contentType).toBe('image/svg+xml');
       });
 
       it('a fixed file name overrides the uploader’s; without one the uploader’s is kept', async () => {

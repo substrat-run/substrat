@@ -7,6 +7,7 @@
  * should promise. Types are not listed; they are erased at run time and stay nameable.
  */
 export const INDEX_VALUE_EXPORTS = [
+  'ACTIVE_CONTENT_TYPES',
   'ADMIN_LOG_INDEXES_SQL',
   'ADMIN_LOG_INDEX_DDL',
   'ASYNC_LINES_PER_PASS',

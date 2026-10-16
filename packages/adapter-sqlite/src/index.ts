@@ -787,7 +787,7 @@ import {
   type AuditedOperationSqlRow,
   type SettleIntentRow,
 } from '@substrat-run/kernel';
-import { INERT_SCOPE_REASON, isPrimaryScopeRow, UPLOAD_LINK_WRONG_TARGET, type UploadLinkRedeemInput, type UploadTarget } from '@substrat-run/kernel';
+import { INERT_SCOPE_REASON, isPrimaryScopeRow, type UploadLinkRedeemInput, type UploadTarget } from '@substrat-run/kernel';
 import {
   COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
@@ -3594,10 +3594,10 @@ export class SqliteScopeHost implements ScopeHost {
     return uploadLinks ? { write: gate.write, uploadLinks } : { write: gate.write };
   }
 
-  async inspectUploadLink(tenantId: TenantId, scopeId: ScopeId, secret: string): Promise<UploadLinkView> {
+  async inspectUploadLink(tenantId: TenantId, scopeId: ScopeId, secret: string, target?: EntityRef): Promise<UploadLinkView> {
     const rt = await this.openActiveScope(tenantId, scopeId);
     return rt.actor.enqueue(
-      async () => (await inspectUploadLink({ sql: spineSql(rt.db), now: this.clock() }, secret)).view,
+      async () => (await inspectUploadLink({ sql: spineSql(rt.db), now: this.clock() }, secret, target)).view,
     );
   }
 
@@ -3608,14 +3608,10 @@ export class SqliteScopeHost implements ScopeHost {
     input: UploadLinkRedeemInput,
   ): Promise<AttachmentRecord> {
     const rt = await this.openActiveScope(tenantId, scopeId);
+    // The target first (the kernel judges it before the state), so a wrong path never reads as gone.
     const { view, mintedBy } = await rt.actor.enqueue(() =>
-      inspectUploadLink({ sql: spineSql(rt.db), now: this.clock() }, secret),
+      inspectUploadLink({ sql: spineSql(rt.db), now: this.clock() }, secret, input.entity),
     );
-    if (view.entity.entityType !== input.entity.entityType || view.entity.entityId !== input.entity.entityId) {
-      throw substratError('not_found', 'This upload link is not valid for that target.', {
-        reason: UPLOAD_LINK_WRONG_TARGET,
-      });
-    }
     // The write is made AS the minter: the same gates `attachments()` puts in front of a person.
     await this.getScope(mintedBy, tenantId, scopeId);
     const scopeRow = this.directory

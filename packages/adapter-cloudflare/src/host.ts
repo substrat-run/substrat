@@ -281,7 +281,6 @@ import {
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
   attachmentBlobKey,
-  UPLOAD_LINK_WRONG_TARGET,
   type UploadLinkRedeemInput,
   attachmentSha256,
   entitlementDenial,
@@ -1633,11 +1632,12 @@ interface ScopeStubRpc {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<DoReply<AttachmentRecord>>;
-  /** Look an upload link up without spending it. */
+  /** Look an upload link up without spending it; `target` is judged before its state. */
   uploadLinkInspectReply(
     secret: string,
     tenantId: TenantId,
     scopeId: ScopeId,
+    target?: EntityRef,
   ): Promise<DoReply<{ view: UploadLinkView; mintedBy: PrincipalId }>>;
   attachmentListReply(
     entity: EntityRef,
@@ -4378,10 +4378,10 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.buildAttachmentSurface({ principal }, tenantId, scopeId, store);
   }
 
-  async inspectUploadLink(tenantId: TenantId, scopeId: ScopeId, secret: string): Promise<UploadLinkView> {
+  async inspectUploadLink(tenantId: TenantId, scopeId: ScopeId, secret: string, target?: EntityRef): Promise<UploadLinkView> {
     await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
-    return unwrapReply(await this.scopeStub(scopeId).uploadLinkInspectReply(secret, tenantId, scopeId)).view;
+    return unwrapReply(await this.scopeStub(scopeId).uploadLinkInspectReply(secret, tenantId, scopeId, target)).view;
   }
 
   async redeemUploadLink(
@@ -4393,12 +4393,8 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     const stub = this.scopeStub(scopeId);
-    const { view, mintedBy } = unwrapReply(await stub.uploadLinkInspectReply(secret, tenantId, scopeId));
-    if (view.entity.entityType !== input.entity.entityType || view.entity.entityId !== input.entity.entityId) {
-      throw substratError('not_found', 'This upload link is not valid for that target.', {
-        reason: UPLOAD_LINK_WRONG_TARGET,
-      });
-    }
+    // The target first (the kernel judges it before the state), so a wrong path never reads as gone.
+    const { view, mintedBy } = unwrapReply(await stub.uploadLinkInspectReply(secret, tenantId, scopeId, input.entity));
     const store = await this.resolveAttachmentStore(tenantId);
     const id = ulid();
     const key = attachmentBlobKey(scopeId, id);
