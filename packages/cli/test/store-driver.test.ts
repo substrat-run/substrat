@@ -143,7 +143,7 @@ describe('store-driver rollout and status, before and after a request (#2300)', 
   it('says whether every script carries what the control plane builds from now, which may not, and when it is walked again (#2309)', () => {
     const base = { driver: 'graph', pins: [], current: null, rollouts: [], rollbackTarget: null, unfinishedRollback: null };
     const fp = 'f'.repeat(64);
-    const walk = { fingerprint: fp, fingerprintSince: '2026-10-16T00:00:00.000Z', cursor: 'va', failures: [{ vertical: 'vb', detail: 'upload failed (500)' }], state: 'running' as const, startedAt: 't', updatedAt: 't', finishedAt: null };
+    const walk = { fingerprint: fp, fingerprintSince: '2026-10-16T00:00:00.000Z', attestedBy: null, verifiedAt: null, cursor: 'va', failures: [{ vertical: 'vb', detail: 'upload failed (500)' }], state: 'running' as const, startedAt: 't', updatedAt: 't', finishedAt: null };
     const behind = storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: fp, current: false, pending: ['vb', 'vc'], walk } });
     expect(behind.slice(1)).toEqual([
       `  scripts: NOT current: 2 may still be built from older keys or code (target ${'f'.repeat(12)})`,
@@ -162,8 +162,15 @@ describe('store-driver rollout and status, before and after a request (#2300)', 
     const settling = storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: fp, current: false, pending: [], settling: '2026-10-16T01:00:00.000Z', nextWalk: '2026-10-16T01:00:00.000Z', walk: early } });
     expect(settling[1]).toMatch(/^ {2}scripts: settling: every script was current when walked \(2026-10-16T00:10:00\.000Z\)/);
     expect(settling[2]).toContain('walked again from 2026-10-16T01:00:00.000Z');
-    expect(settling[2]).toContain('`substrat store-driver rebuild` walks it at once');
-    expect(settling[3]).toBe('    first walked towards 2026-10-16T00:00:00.000Z; next automatic re-walk 2026-10-16T01:00:00.000Z');
+    expect(settling[3]).toBe('    `substrat store-driver rebuild --driver <driver> --deploy-finished` walks it at once and attests that.');
+    expect(settling[4]).toBe('    first walked towards 2026-10-16T00:00:00.000Z; next automatic re-walk 2026-10-16T01:00:00.000Z');
+    // A re-walk of a fleet already proved current reads as current, re-verifying.
+    const rewalk = { ...walk, failures: [], startedAt: '2026-10-17T01:10:00.000Z', verifiedAt: '2026-10-16T01:10:00.000Z' };
+    expect(storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: fp, current: true, reverifying: true, pending: [], walk: rewalk } })[1]).toBe(
+      '  scripts: current (re-verifying: a walk since 2026-10-17T01:10:00.000Z re-checks every script; last proved 2026-10-16T01:10:00.000Z)',
+    );
+    // An attested walk says who attested.
+    expect(storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: fp, current: true, pending: [], walk: { ...done, attestedBy: 'staff-1' } } })[1]).toContain(', deploy attested finished by staff-1');
     // A walk towards older lists says nothing about these lists' timing.
     expect(storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: fp, current: false, pending: ['va'], walk: { ...walk, failures: [], fingerprint: 'e'.repeat(64) } } }).at(-1)).toBe('    pending: va');
     // A control plane that does not rebuild says nothing about it.

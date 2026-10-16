@@ -10521,10 +10521,28 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   app.post('/store-drivers/:driver/rebuild', async (c) => {
     const registration = registeredDriver(c.req.param('driver'));
     const actor = await byAPerson(c);
+    // `deployFinished`: the person attests that no control-plane deploy is rolling out, so the walk
+    // this run starts proves every script current once done, without waiting out the settle window.
+    const text = await c.req.text();
+    let raw: unknown = {};
+    if (text.trim() !== '') {
+      try {
+        raw = JSON.parse(text);
+      } catch {
+        throw new ControlPlaneError(422, 'the body is not JSON');
+      }
+    }
+    const body = z.object({ deployFinished: z.boolean().optional() }).strict().parse(raw);
     const { flow, ensureScopeStores } = releaseFlow();
     if (!flow.fingerprint) throw new ControlPlaneError(501, 'this control plane does not rebuild store scripts');
     let fingerprint: string | undefined;
-    let ran: Omit<StoreDriverRebuildPass, 'rebuild'> = { driver: registration.driver, outcome: 'error', walked: [], uploaded: [] };
+    let ran: Omit<StoreDriverRebuildPass, 'rebuild'> & { deployFinished?: true } = {
+      driver: registration.driver,
+      outcome: 'error',
+      walked: [],
+      uploaded: [],
+      ...(body.deployFinished ? { deployFinished: true as const } : {}),
+    };
     try {
       // Inside the audited path: lists that cannot be read refuse the run, and that refusal is audited too.
       fingerprint = await flow.fingerprint();
@@ -10541,9 +10559,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // rolling out, that walk is the proof no script kept the older lists.
         reverify: 'always',
         ...(flow.settleMs === undefined ? {} : { settleMs: flow.settleMs }),
+        ...(body.deployFinished ? { attestedBy: actor } : {}),
       });
       const { rebuild: _row, ...result } = pass!;
-      ran = result;
+      ran = { ...ran, ...result };
     } catch (e) {
       ran = { ...ran, error: e instanceof Error ? e.message : String(e) };
       throw e;

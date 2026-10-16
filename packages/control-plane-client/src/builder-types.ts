@@ -272,6 +272,8 @@ export interface StoreDriverRebuildView {
   settling?: string;
   /** When the scheduled pass walks a done rebuild again (after the settle window, then daily). */
   nextWalk?: string;
+  /** A walk is re-checking a fleet already proved current at these lists; `current` meanwhile. */
+  reverifying?: boolean;
   /** The walk's row: absent before its first pass. Its fingerprint may be an older one. */
   walk: {
     fingerprint: string;
@@ -280,6 +282,10 @@ export interface StoreDriverRebuildView {
     failures: StoreDriverRebuildFailureView[];
     state: 'running' | 'done';
     startedAt: string;
+    /** The person who attested, when this walk began, that no control-plane deploy was rolling out. */
+    attestedBy: string | null;
+    /** When a walk at these lists last proved every script current. */
+    verifiedAt: string | null;
     updatedAt: string;
     finishedAt: string | null;
   } | null;

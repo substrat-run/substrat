@@ -120,8 +120,8 @@ export const rollBackStoreDriver = (input: Plane & { driver: string }) =>
 export const storeDriverStatus = (input: Plane & { driver: string }) =>
   planeFor(input.controlPlaneUrl, input.header).getStoreDriver(input.driver);
 
-export const rebuildStoreDriver = (input: Plane & { driver: string }) =>
-  planeFor(input.controlPlaneUrl, input.header).rebuildStoreDriver(input.driver);
+export const rebuildStoreDriver = (input: Plane & { driver: string; deployFinished?: boolean }) =>
+  planeFor(input.controlPlaneUrl, input.header).rebuildStoreDriver(input.driver, { deployFinished: input.deployFinished === true });
 
 /**
  * Whether every script of the driver is built from what the control plane builds from now (#2309).
@@ -134,11 +134,18 @@ export function storeDriverRebuildLines(rebuild: StoreDriverRebuildView): string
   const timing = walk && walk.fingerprint === rebuild.fingerprint
     ? [`    first walked towards ${walk.fingerprintSince}${rebuild.nextWalk ? `; next automatic re-walk ${rebuild.nextWalk}` : ''}`]
     : [];
-  if (rebuild.current) return [`  scripts: current (every script is built from ${rebuild.fingerprint.slice(0, 12)}, walk finished ${walk?.finishedAt})`, ...timing];
+  if (rebuild.current && rebuild.reverifying) {
+    return [`  scripts: current (re-verifying: a walk since ${walk?.startedAt} re-checks every script; last proved ${walk?.verifiedAt})`, ...timing];
+  }
+  if (rebuild.current) {
+    const by = walk?.attestedBy ? `, deploy attested finished by ${walk.attestedBy}` : '';
+    return [`  scripts: current (every script is built from ${rebuild.fingerprint.slice(0, 12)}, walk finished ${walk?.finishedAt}${by})`, ...timing];
+  }
   if (rebuild.settling) {
     return [
       `  scripts: settling: every script was current when walked (${walk?.finishedAt ?? 'just now'}), but the control plane's deploy may still`,
-      `    have been rolling out then. It is walked again from ${rebuild.settling}; once the deploy serves only the new version, \`substrat store-driver rebuild\` walks it at once.`,
+      `    have been rolling out then. It is walked again from ${rebuild.settling}; once the deploy serves only the new version,`,
+      `    \`substrat store-driver rebuild --driver <driver> --deploy-finished\` walks it at once and attests that.`,
       ...timing,
     ];
   }

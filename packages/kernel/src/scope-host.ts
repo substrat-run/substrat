@@ -3138,11 +3138,12 @@ export interface HostAdmin {
   /**
    * Take the lease on a driver's fleet rebuild towards `fingerprint` (#2309): the rebuild as it
    * stands, started over when it was towards another fingerprint (or, with `restart`, when it is
-   * done), or null while another holder's lease is live.
+   * done; with `attestedBy`, always, carrying that attestation), or null while another holder's
+   * lease is live.
    */
   claimStoreDriverRebuild(
     actor: PlatformActorId,
-    input: { driver: string; fingerprint: string; holder: string; ttlMs: number; restart?: boolean },
+    input: { driver: string; fingerprint: string; holder: string; ttlMs: number; restart?: boolean; attestedBy?: string },
   ): Promise<StoreDriverRebuildRecord | null>;
   /**
    * Record the lease holder's progress and renew its lease (or drop it with `release`); refused
@@ -3157,18 +3158,21 @@ export interface HostAdmin {
       cursor: string | null;
       failures: readonly StoreDriverRebuildFailure[];
       done: boolean;
+      /** With `done`: the walk proved every script current. */
+      verified?: boolean;
       ttlMs: number;
       release?: boolean;
     },
   ): Promise<StoreDriverRebuildRecord>;
   /**
    * Audit a staff-run pass of a driver's fleet rebuild (#2309) as `rebuildStoreDriver`: the driver,
-   * how the pass ended and what it walked. The scheduled pass writes no admin row; its failures are
+   * how the pass ended and what it walked, and `deployFinished` when the person attested that no
+   * control-plane deploy was rolling out. The scheduled pass writes no admin row; its failures are
    * ops-failure rows.
    */
   recordStoreDriverRebuildRun(
     actor: PlatformActorId,
-    entry: { driver: string; outcome: string; walked: readonly string[]; uploaded: readonly string[]; error?: string },
+    entry: { driver: string; outcome: string; walked: readonly string[]; uploaded: readonly string[]; error?: string; deployFinished?: true },
   ): Promise<void>;
   /**
    * One scope's directory record. Cross-checks the (tenantId, scopeId) pair and

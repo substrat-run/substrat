@@ -62,17 +62,22 @@ export const storeRebuildBudget = (subrequests: number): number =>
  */
 export const STORE_REBUILD_REVERIFY_MS = 24 * 60 * 60_000;
 /**
- * How long after a fingerprint first appears a finished walk is not yet proof (#2309 review). While a
+ * How long after a fingerprint first appears a walk is not yet proof (#2309 review). While a
  * control-plane deploy rolls out, the version still building from the older inputs can push a
- * script after the walk read it. A walk that finished within this window of its fingerprint first
- * being walked towards reads as settling, and the scheduled pass walks it again once the window has
- * passed. A deploy that takes longer to roll out is followed by `store-driver rebuild`. The default;
- * the control plane reads `STORE_REBUILD_SETTLE_MINUTES`.
+ * script after the walk read it. Only a walk that STARTED this long after its fingerprint was first
+ * walked towards proves every script current: a walk that spans passes reads its first scripts when
+ * it starts, so when it finishes says nothing about them. A done walk that started inside the window
+ * reads as settling, and the scheduled pass walks it again once the window has passed. A deploy that
+ * takes longer to roll out is followed by `store-driver rebuild`, or by a person's attestation that
+ * it has finished. The default; the control plane reads `STORE_REBUILD_SETTLE_MINUTES`.
  */
 export const STORE_REBUILD_SETTLE_MS = 60 * 60_000;
-/** Whether a done walk finished long enough after its fingerprint appeared to prove every script current. */
+/**
+ * Whether a walk proves every script current once done: it started after the settle window, or a
+ * person attested, when it started, that no control-plane deploy was rolling out.
+ */
 const settled = (rebuild: StoreDriverRebuildRecord, settleMs: number) =>
-  Date.parse(rebuild.finishedAt ?? rebuild.updatedAt) - Date.parse(rebuild.fingerprintSince) >= settleMs;
+  rebuild.attestedBy !== null || Date.parse(rebuild.startedAt) - Date.parse(rebuild.fingerprintSince) >= settleMs;
 const finishedMs = (rebuild: StoreDriverRebuildRecord) => Date.parse(rebuild.finishedAt ?? rebuild.updatedAt);
 /** How long a pass's lease on a driver's rebuild lives between progress writes. */
 const STORE_REBUILD_LEASE_TTL_MS = 10 * 60_000;
@@ -113,6 +118,12 @@ interface StoreFleetRebuildDeps {
   now?: () => number;
   /** The settle window; {@link STORE_REBUILD_SETTLE_MS} by default. */
   settleMs?: number;
+  /**
+   * A person's attestation that no control-plane deploy is rolling out: the walk starts over from
+   * its first script, and once done proves every script current whatever the settle window says.
+   * The actor attesting. Only for one driver at a time, from a staff request.
+   */
+  attestedBy?: string;
 }
 
 export interface StoreDriverRebuildPass {
@@ -173,21 +184,29 @@ async function rebuildDriver(
   const stood = await admin.storeDriverRebuild(actor, driver);
   const doneHere = stood?.fingerprint === fingerprint && stood.state === 'done';
   const now = (deps.now ?? Date.now)();
-  const restart =
-    doneHere &&
-    (deps.reverify === 'always' || now >= nextAutomaticWalk(stood, deps.settleMs ?? STORE_REBUILD_SETTLE_MS));
-  if (doneHere && !restart) return result('current', stood);
+  const settleMs = deps.settleMs ?? STORE_REBUILD_SETTLE_MS;
+  const restart = doneHere && (deps.reverify === 'always' || now >= nextAutomaticWalk(stood, settleMs));
+  if (doneHere && !restart && deps.attestedBy === undefined) return result('current', stood);
   if (budget <= 0) return result('paused', stood);
 
   const holder = ulid();
-  const claimed = await admin.claimStoreDriverRebuild(actor, { driver, fingerprint, holder, ttlMs: STORE_REBUILD_LEASE_TTL_MS, restart });
+  const claimed = await admin.claimStoreDriverRebuild(actor, {
+    driver,
+    fingerprint,
+    holder,
+    ttlMs: STORE_REBUILD_LEASE_TTL_MS,
+    restart,
+    ...(deps.attestedBy !== undefined ? { attestedBy: deps.attestedBy } : {}),
+  });
   if (!claimed) return result('busy', stood);
   let rebuild = claimed;
   let cursor = claimed.cursor;
   const failures = new Map(claimed.failures.map((f) => [f.vertical, f.detail]));
   const advance = async (done: boolean, release = false) => {
     const list: StoreDriverRebuildFailure[] = [...failures].map(([vertical, detail]) => ({ vertical, detail }));
-    rebuild = await admin.advanceStoreDriverRebuild(actor, { driver, fingerprint, holder, cursor, failures: list, done, ttlMs: STORE_REBUILD_LEASE_TTL_MS, release });
+    // A done walk that started after the settle window (or was attested) proves every script current.
+    const verified = done && settled(rebuild, settleMs);
+    rebuild = await admin.advanceStoreDriverRebuild(actor, { driver, fingerprint, holder, cursor, failures: list, done, verified, ttlMs: STORE_REBUILD_LEASE_TTL_MS, release });
   };
   // The lease is dropped once, however the walk ends; the end of a whole walk drops it itself.
   let leaseDropped = false;
@@ -277,19 +296,23 @@ function nextAutomaticWalk(rebuild: StoreDriverRebuildRecord, settleMs: number):
  * failed. A push or serve may have rebuilt some of them since, and the walk then finds them
  * current, so `pending` may over-count, never under-count. A walk that is done but not settled (see
  * {@link STORE_REBUILD_SETTLE_MS}) is not current: `settling` says when it is walked again. `nextWalk`
- * is when the scheduled pass walks a done rebuild again.
+ * is when the scheduled pass walks a done rebuild again. A walk under way at lists an earlier walk
+ * already proved is `current` and `reverifying` until a script it reaches fails.
  */
 export function storeRebuildStatus(
   rebuild: StoreDriverRebuildRecord | undefined,
   fingerprint: string,
   declared: readonly string[],
   settleMs: number = STORE_REBUILD_SETTLE_MS,
-): { current: boolean; pending: string[]; settling?: string; nextWalk?: string } {
+): { current: boolean; pending: string[]; settling?: string; nextWalk?: string; reverifying?: boolean } {
   if (!rebuild || rebuild.fingerprint !== fingerprint) return { current: false, pending: [SCOPE_STORE_CANARY, ...declared] };
   if (rebuild.state === 'done') {
     const nextWalk = new Date(nextAutomaticWalk(rebuild, settleMs)).toISOString();
     return settled(rebuild, settleMs) ? { current: true, pending: [], nextWalk } : { current: false, pending: [], settling: nextWalk, nextWalk };
   }
+  // A walk under way that re-checks a fleet a walk at these lists already proved current: still
+  // current, unless a script it reached is known to have failed.
+  if (rebuild.verifiedAt !== null && rebuild.failures.length === 0) return { current: true, pending: [], reverifying: true };
   const pending = new Set([...aheadOf(rebuild.cursor, declared), ...rebuild.failures.map((f) => f.vertical)]);
   return { current: false, pending: [...pending] };
 }

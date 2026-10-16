@@ -260,8 +260,12 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
   /**
    * Run one pass of the platform's rebuild of every script of the driver now (#2309), rather than
    * waiting for the scheduled pass: after a key is revoked. Post again while it answers `paused`.
+   * `deployFinished`: the caller attests that no control-plane deploy is rolling out.
    */
-  rebuildStoreDriver(driver: string): Promise<{ pass: StoreDriverRebuildPassView; rebuild: StoreDriverRebuildView }> {
-    return this.read(`/store-drivers/${seg(driver)}/rebuild`, this.write('POST'));
+  rebuildStoreDriver(
+    driver: string,
+    options: { deployFinished?: boolean } = {},
+  ): Promise<{ pass: StoreDriverRebuildPassView; rebuild: StoreDriverRebuildView }> {
+    return this.read(`/store-drivers/${seg(driver)}/rebuild`, this.write('POST', options.deployFinished ? { deployFinished: true } : undefined));
   }
 }

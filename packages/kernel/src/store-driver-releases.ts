@@ -79,7 +79,14 @@ export const STORE_DRIVER_RELEASES_DDL = `
     state            TEXT NOT NULL,
     holder           TEXT,
     lease_expires_at INTEGER NOT NULL,
+    -- When this walk began from its first script: a restart or a new fingerprint sets it, a pass
+    -- that continues the walk keeps it.
     started_at       TEXT NOT NULL,
+    -- The person who attested, when this walk began, that no control-plane deploy was rolling out.
+    attested_by      TEXT,
+    -- When a walk towards this fingerprint last proved every script current; kept across a
+    -- restart at the same fingerprint, cleared by a new one.
+    verified_at      TEXT,
     updated_at       TEXT NOT NULL,
     finished_at      TEXT
   );
@@ -516,7 +523,12 @@ export interface StoreDriverRebuildRecord {
   readonly failures: readonly StoreDriverRebuildFailure[];
   /** `done`: every vertical was walked and none failed. */
   readonly state: 'running' | 'done';
+  /** When this walk began from its first script. */
   readonly startedAt: string;
+  /** The person who attested, when this walk began, that no control-plane deploy was rolling out. */
+  readonly attestedBy: string | null;
+  /** When a walk towards this fingerprint last proved every script current; null before any. */
+  readonly verifiedAt: string | null;
   readonly updatedAt: string;
   readonly finishedAt: string | null;
 }
@@ -531,13 +543,15 @@ interface RebuildRow {
   holder: string | null;
   lease_expires_at: number;
   started_at: string;
+  attested_by: string | null;
+  verified_at: string | null;
   updated_at: string;
   finished_at: string | null;
 }
 
 const rebuildRowOf = (db: SwitchSql, driver: string): RebuildRow | undefined =>
   (db.all(
-    'SELECT driver, fingerprint, fingerprint_since, cursor, failures, state, holder, lease_expires_at, started_at, updated_at, finished_at FROM store_driver_rebuilds WHERE driver = ?',
+    'SELECT driver, fingerprint, fingerprint_since, cursor, failures, state, holder, lease_expires_at, started_at, attested_by, verified_at, updated_at, finished_at FROM store_driver_rebuilds WHERE driver = ?',
     driver,
   ) as unknown as RebuildRow[])[0];
 
@@ -549,6 +563,8 @@ const rebuildOf = (r: RebuildRow): StoreDriverRebuildRecord => ({
   failures: JSON.parse(r.failures) as StoreDriverRebuildFailure[],
   state: r.state,
   startedAt: r.started_at,
+  attestedBy: r.attested_by,
+  verifiedAt: r.verified_at,
   updatedAt: r.updated_at,
   finishedAt: r.finished_at,
 });
@@ -566,25 +582,29 @@ export function storeDriverRebuildIn(db: SwitchSql, driver: string): StoreDriver
  * script may have been built from something else than what the platform builds from now. With
  * `restart`, a rebuild already `done` at this fingerprint starts over too (a re-verification: a
  * script uploaded since by a control plane still building from older inputs is found and rebuilt).
+ * With `attestedBy` (a person attesting no control-plane deploy is rolling out), the rebuild starts
+ * over whatever its state, and the new walk carries the attestation; any other start clears it.
  */
 export function claimStoreDriverRebuildIn(
   db: SwitchSql,
-  input: { driver: string; fingerprint: string; holder: string; nowMs: number; ttlMs: number; at: string; restart?: boolean },
+  input: { driver: string; fingerprint: string; holder: string; nowMs: number; ttlMs: number; at: string; restart?: boolean; attestedBy?: string },
 ): StoreDriverRebuildRecord | null {
   if (!(input.ttlMs > 0)) throw substratError('validation_failed', 'a store-driver rebuild lease needs a positive lifetime');
   const row = rebuildRowOf(db, input.driver);
   if (row && row.holder !== null && row.holder !== input.holder && Number(row.lease_expires_at) > input.nowMs) return null;
   const lease = input.nowMs + input.ttlMs;
-  if (!row || row.fingerprint !== input.fingerprint || (input.restart && row.state === 'done')) {
+  if (!row || row.fingerprint !== input.fingerprint || (input.restart && row.state === 'done') || input.attestedBy !== undefined) {
     db.run(
-      `INSERT INTO store_driver_rebuilds (driver, fingerprint, fingerprint_since, cursor, failures, state, holder, lease_expires_at, started_at, updated_at, finished_at)
-       VALUES (?, ?, ?, NULL, '[]', 'running', ?, ?, ?, ?, NULL)
+      `INSERT INTO store_driver_rebuilds (driver, fingerprint, fingerprint_since, cursor, failures, state, holder, lease_expires_at, started_at, attested_by, verified_at, updated_at, finished_at)
+       VALUES (?, ?, ?, NULL, '[]', 'running', ?, ?, ?, ?, NULL, ?, NULL)
        ON CONFLICT (driver) DO UPDATE SET fingerprint = excluded.fingerprint, cursor = NULL, failures = '[]', state = 'running',
          fingerprint_since = CASE WHEN store_driver_rebuilds.fingerprint = excluded.fingerprint
            THEN store_driver_rebuilds.fingerprint_since ELSE excluded.fingerprint_since END,
+         verified_at = CASE WHEN store_driver_rebuilds.fingerprint = excluded.fingerprint
+           THEN store_driver_rebuilds.verified_at ELSE NULL END,
          holder = excluded.holder, lease_expires_at = excluded.lease_expires_at, started_at = excluded.started_at,
-         updated_at = excluded.updated_at, finished_at = NULL`,
-      input.driver, input.fingerprint, input.at, input.holder, lease, input.at, input.at,
+         attested_by = excluded.attested_by, updated_at = excluded.updated_at, finished_at = NULL`,
+      input.driver, input.fingerprint, input.at, input.holder, lease, input.at, input.attestedBy ?? null, input.at,
     );
   } else {
     db.run('UPDATE store_driver_rebuilds SET holder = ?, lease_expires_at = ? WHERE driver = ?', input.holder, lease, input.driver);
@@ -597,7 +617,8 @@ export function claimStoreDriverRebuildIn(
  * dropping it. `done` ends the rebuild; it needs no failure left. Refused (`conflict`) unless the
  * caller is still the row's holder, towards `fingerprint`: once another pass claimed the row (a
  * lapsed lease) or restarted it (a new fingerprint), the old holder writes nothing. A holder whose
- * lease lapsed while nobody claimed the row still records what it did, which is then true.
+ * lease lapsed while nobody claimed the row still records what it did, which is then true. With
+ * `verified` (only with `done`), the walk proved every script current, and `verifiedAt` is set.
  */
 export function advanceStoreDriverRebuildIn(
   db: SwitchSql,
@@ -608,6 +629,7 @@ export function advanceStoreDriverRebuildIn(
     cursor: string | null;
     failures: readonly StoreDriverRebuildFailure[];
     done: boolean;
+    verified?: boolean;
     nowMs: number;
     ttlMs: number;
     release?: boolean;
@@ -621,8 +643,12 @@ export function advanceStoreDriverRebuildIn(
   if (input.done && input.failures.length > 0) {
     throw substratError('validation_failed', `the rebuild of '${input.driver}' is not done while a vertical failed`);
   }
+  if (input.verified && !input.done) {
+    throw substratError('validation_failed', `the rebuild of '${input.driver}' proves nothing before it is done`);
+  }
   db.run(
-    `UPDATE store_driver_rebuilds SET cursor = ?, failures = ?, state = ?, holder = ?, lease_expires_at = ?, updated_at = ?, finished_at = ?
+    `UPDATE store_driver_rebuilds SET cursor = ?, failures = ?, state = ?, holder = ?, lease_expires_at = ?, updated_at = ?, finished_at = ?,
+       verified_at = COALESCE(?, verified_at)
      WHERE driver = ?`,
     input.cursor,
     JSON.stringify(input.failures),
@@ -631,6 +657,7 @@ export function advanceStoreDriverRebuildIn(
     input.release ? 0 : input.nowMs + input.ttlMs,
     input.at,
     input.done ? input.at : null,
+    input.verified ? input.at : null,
     input.driver,
   );
   return rebuildOf(rebuildRowOf(db, input.driver)!);

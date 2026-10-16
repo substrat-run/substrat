@@ -2391,7 +2391,7 @@ export class ControlPlaneDO extends DurableObject {
     return storeDriverRebuildIn(this.kernelSql, driver);
   }
 
-  claimStoreDriverRebuild(input: { driver: string; fingerprint: string; holder: string; ttlMs: number; at: string; restart?: boolean }): StoreDriverRebuildRecord | null {
+  claimStoreDriverRebuild(input: { driver: string; fingerprint: string; holder: string; ttlMs: number; at: string; restart?: boolean; attestedBy?: string }): StoreDriverRebuildRecord | null {
     return this.ctx.storage.transactionSync(() => claimStoreDriverRebuildIn(this.kernelSql, { ...input, nowMs: Date.now() }));
   }
 
@@ -2402,6 +2402,7 @@ export class ControlPlaneDO extends DurableObject {
     cursor: string | null;
     failures: readonly StoreDriverRebuildFailure[];
     done: boolean;
+    verified?: boolean;
     ttlMs: number;
     release?: boolean;
     at: string;

@@ -710,7 +710,7 @@ interface ControlPlaneStub {
     at: string;
   }): Promise<StoreDriverRolloutRecord>;
   storeDriverRebuild(driver: string): Promise<StoreDriverRebuildRecord | undefined>;
-  claimStoreDriverRebuild(input: { driver: string; fingerprint: string; holder: string; ttlMs: number; at: string; restart?: boolean }): Promise<StoreDriverRebuildRecord | null>;
+  claimStoreDriverRebuild(input: { driver: string; fingerprint: string; holder: string; ttlMs: number; at: string; restart?: boolean; attestedBy?: string }): Promise<StoreDriverRebuildRecord | null>;
   advanceStoreDriverRebuild(input: {
     driver: string;
     fingerprint: string;
@@ -718,6 +718,7 @@ interface ControlPlaneStub {
     cursor: string | null;
     failures: readonly StoreDriverRebuildFailure[];
     done: boolean;
+    verified?: boolean;
     ttlMs: number;
     release?: boolean;
     at: string;

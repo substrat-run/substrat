@@ -397,6 +397,35 @@ export function storeDriverReleaseContractSuite(adapterName: string, makeFixture
       await expectRefusal(host.admin.claimStoreDriverRebuild(staff, { driver: freshDriver(), fingerprint: 'f', holder: a, ttlMs: 0 }), 'validation_failed');
     });
 
+    it('keeps a fleet rebuild\'s proof across a restart at the same lists, and carries a person\'s attestation only on the walk it starts (#2309)', async () => {
+      const driver = freshDriver();
+      const [a, b] = [ulid(), ulid()];
+      const first = await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: a, ttlMs: 60_000 });
+      expect(first).toMatchObject({ attestedBy: null, verifiedAt: null });
+      // Proof is recorded only with done.
+      await expectRefusal(
+        host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: a, cursor: 'm', failures: [], done: false, verified: true, ttlMs: 60_000 }),
+        'validation_failed',
+      );
+      const proved = await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: a, cursor: 'z', failures: [], done: true, verified: true, ttlMs: 60_000, release: true });
+      expect(proved.verifiedAt).toBe(proved.finishedAt);
+      // A restart at the same lists keeps the proof; the walk it starts is not attested.
+      const again = await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: b, ttlMs: 60_000, restart: true });
+      expect(again).toMatchObject({ state: 'running', cursor: null, verifiedAt: proved.verifiedAt, attestedBy: null });
+      // An attestation starts the walk over even while one runs, and carries the person.
+      await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: b, cursor: 'm', failures: [], done: false, ttlMs: 60_000, release: true });
+      const attested = await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: a, ttlMs: 60_000, attestedBy: staff });
+      expect(attested).toMatchObject({ cursor: null, attestedBy: staff, verifiedAt: proved.verifiedAt });
+      // A pass that continues it keeps the attestation; a walk started without one clears it.
+      await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: a, cursor: 'q', failures: [], done: false, ttlMs: 60_000, release: true });
+      expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: b, ttlMs: 60_000 })).toMatchObject({ cursor: 'q', attestedBy: staff });
+      await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: b, cursor: 'z', failures: [], done: true, ttlMs: 60_000, release: true });
+      expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: a, ttlMs: 60_000, restart: true })).toMatchObject({ attestedBy: null });
+      // New lists clear the proof: nothing at them is proved.
+      await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: a, cursor: 'z', failures: [], done: true, ttlMs: 60_000, release: true });
+      expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'g', holder: b, ttlMs: 60_000 })).toMatchObject({ verifiedAt: null, attestedBy: null });
+    });
+
     it('audits a staff-run rebuild pass as rebuildStoreDriver (#2309)', async () => {
       const driver = freshDriver();
       await host.admin.recordStoreDriverRebuildRun(staff, { driver, outcome: 'paused', walked: ['acme'], uploaded: [] });

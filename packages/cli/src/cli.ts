@@ -170,8 +170,11 @@ Usage:
                                               canary a stored, pinned release, then roll it out
   substrat store-driver rollback --driver <driver>  return to the previous good release
   substrat store-driver status --driver <driver>    a driver's current release and rollouts
-  substrat store-driver rebuild --driver <driver>   rebuild every script of the driver now, at
-                                              the release it runs (after a key is revoked)
+  substrat store-driver rebuild --driver <driver> [--deploy-finished]
+                                              rebuild every script of the driver now, at
+                                              the release it runs (after a key is revoked);
+                                              --deploy-finished attests no control-plane
+                                              deploy is rolling out
   substrat unpublish <slug>                   remove from the public marketplace (staff)
   substrat versions <slug>                    list a vertical's versions + channels
   substrat installs <slug>                    list this workspace's installs of a vertical
@@ -651,7 +654,7 @@ const STORE_DRIVER_USAGE = [
   '       substrat store-driver rollout  --driver <driver> --sha256 <sha256>',
   '       substrat store-driver rollback --driver <driver>',
   '       substrat store-driver status   --driver <driver>',
-  '       substrat store-driver rebuild  --driver <driver>',
+  '       substrat store-driver rebuild  --driver <driver> [--deploy-finished]',
 ];
 
 async function cmdStoreDriver(): Promise<void> {
@@ -681,7 +684,7 @@ async function cmdStoreDriver(): Promise<void> {
     return;
   }
   if (sub === 'rebuild') {
-    const { pass, rebuild } = await rebuildStoreDriver(plane);
+    const { pass, rebuild } = await rebuildStoreDriver({ ...plane, deployFinished: argv.includes('--deploy-finished') });
     console.log(`✓ ${driver} rebuild: ${pass.outcome}, ${pass.walked.length} script(s) walked, ${pass.uploaded.length} uploaded this run`);
     for (const line of storeDriverRebuildLines(rebuild)) console.log(line);
     if (pass.outcome === 'paused') console.log('  scripts remain: run the same command again to continue');
