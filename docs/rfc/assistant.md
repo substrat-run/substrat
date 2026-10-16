@@ -341,8 +341,8 @@ derivation from operations; context assembly (§7); and the handoff.
 2. **A Durable Object per thread** holding the WebSocket (hibernating) and the in-flight run,
    with the engine still the record. This is a platform-run object per scope, which is exactly
    what [scope-stores.md](scope-stores.md) and [K-49](../decisions/K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md)
-   (proposed) describe as a *kind*. I have not checked whether the assistant fits that
-   mechanism; it looks like a natural first non-trivial kind.
+   (proposed) describe as a *driver*. I have not checked whether the assistant fits that
+   mechanism; it looks like a natural first non-trivial driver.
 3. **Cloudflare's `AIChatAgent` in the vertical's worker.** Rejected in §3.1.
 
 **P0 ran both** ([spikes/assistant-thread/FINDINGS.md](../../spikes/assistant-thread/FINDINGS.md),
