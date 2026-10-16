@@ -347,6 +347,7 @@ export function storeDriverReleaseContractSuite(adapterName: string, makeFixture
       expect(await host.admin.storeDriverRebuild(staff, driver)).toBeUndefined();
       const first = await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f1', holder: a, ttlMs: 60_000 });
       expect(first).toMatchObject({ driver, fingerprint: 'f1', cursor: null, failures: [], state: 'running', finishedAt: null });
+      expect(first!.fingerprintSince).toBe(first!.startedAt);
       // While A's lease lives, B gets nothing, and cannot write.
       expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f1', holder: b, ttlMs: 60_000 })).toBeNull();
       const failed = [{ vertical: 'acme', detail: 'upload failed (500)' }];
@@ -385,7 +386,10 @@ export function storeDriverReleaseContractSuite(adapterName: string, makeFixture
       expect(await host.admin.storeDriverRebuild(staff, driver)).toEqual(restarted);
       // A restart starts a done rebuild over at the same fingerprint, and leaves a running one where it is.
       await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f2', holder: a, cursor: 'q', failures: [], done: true, ttlMs: 60_000, release: true });
-      expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f2', holder: b, ttlMs: 60_000, restart: true })).toMatchObject({ cursor: null, state: 'running', finishedAt: null });
+      const reverified = await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f2', holder: b, ttlMs: 60_000, restart: true });
+      expect(reverified).toMatchObject({ cursor: null, state: 'running', finishedAt: null });
+      // A restart keeps when the fingerprint first appeared; only a new fingerprint moves it.
+      expect(reverified!.fingerprintSince).toBe(restarted!.fingerprintSince);
       await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f2', holder: b, cursor: 'm', failures: [], done: false, ttlMs: 60_000, release: true });
       expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f2', holder: a, ttlMs: 60_000, restart: true })).toMatchObject({ cursor: 'm', state: 'running' });
       // Another driver's rebuild is its own row.

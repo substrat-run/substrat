@@ -142,7 +142,7 @@ describe('store-driver rollout and status, before and after a request (#2300)', 
 
   it('says whether every script carries what the control plane builds from now, and which may not (#2309)', () => {
     const base = { driver: 'graph', pins: [], current: null, rollouts: [], rollbackTarget: null, unfinishedRollback: null };
-    const walk = { fingerprint: 'f'.repeat(64), cursor: 'va', failures: [{ vertical: 'vb', detail: 'upload failed (500)' }], state: 'running' as const, startedAt: 't', updatedAt: 't', finishedAt: null };
+    const walk = { fingerprint: 'f'.repeat(64), fingerprintSince: 't', cursor: 'va', failures: [{ vertical: 'vb', detail: 'upload failed (500)' }], state: 'running' as const, startedAt: 't', updatedAt: 't', finishedAt: null };
     const behind = storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: 'f'.repeat(64), current: false, pending: ['vb', 'vc'], walk } });
     expect(behind.slice(1)).toEqual([
       `  scripts: NOT current: 2 may still be built from older keys or code (target ${'f'.repeat(12)})`,
@@ -151,6 +151,10 @@ describe('store-driver rollout and status, before and after a request (#2300)', 
     ]);
     const current = storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: 'f'.repeat(64), current: true, pending: [], walk: { ...walk, failures: [], state: 'done' } } });
     expect(current.slice(1)).toEqual([`  scripts: current (every script is built from ${'f'.repeat(12)})`]);
+    // Done, but too soon after the new lists appeared to prove it: settling, with when it is walked again.
+    const settling = storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: 'f'.repeat(64), current: false, pending: [], settling: '2026-10-16T01:00:00.000Z', walk: { ...walk, failures: [], state: 'done', finishedAt: '2026-10-16T00:10:00.000Z' } } });
+    expect(settling[1]).toMatch(/^ {2}scripts: settling: every script was current when walked \(2026-10-16T00:10:00\.000Z\)/);
+    expect(settling[2]).toContain('walked again from 2026-10-16T01:00:00.000Z');
     // A control plane that does not rebuild says nothing about it.
     expect(storeDriverStatusLines('graph', base)).toHaveLength(1);
   });

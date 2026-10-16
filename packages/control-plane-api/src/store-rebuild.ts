@@ -61,6 +61,17 @@ export const storeRebuildBudget = (subrequests: number): number =>
  * script's settings and uploads only a script that is not current.
  */
 export const STORE_REBUILD_REVERIFY_MS = 24 * 60 * 60_000;
+/**
+ * How long after a fingerprint first appears a finished walk is not yet proof (#2309 review). While a
+ * control-plane deploy rolls out, the version still building from the older inputs can push a
+ * script after the walk read it. A walk that finished within this window of its fingerprint first
+ * being walked towards reads as settling, and the scheduled pass walks it again once the window has
+ * passed. A deploy that takes longer to roll out is followed by `store-driver rebuild`.
+ */
+export const STORE_REBUILD_SETTLE_MS = 60 * 60_000;
+/** Whether a done walk finished long enough after its fingerprint appeared to prove every script current. */
+const settled = (rebuild: StoreDriverRebuildRecord) =>
+  Date.parse(rebuild.finishedAt ?? rebuild.updatedAt) - Date.parse(rebuild.fingerprintSince) >= STORE_REBUILD_SETTLE_MS;
 /** How long a pass's lease on a driver's rebuild lives between progress writes. */
 const STORE_REBUILD_LEASE_TTL_MS = 10 * 60_000;
 
@@ -151,9 +162,12 @@ async function rebuildDriver(
     ({ driver, outcome, walked, uploaded, ...(rebuild ? { rebuild } : {}) });
   const stood = await admin.storeDriverRebuild(actor, driver);
   const doneHere = stood?.fingerprint === fingerprint && stood.state === 'done';
+  const now = (deps.now ?? Date.now)();
   const restart =
     doneHere &&
-    (deps.reverify === 'always' || (deps.now ?? Date.now)() - Date.parse(stood.finishedAt ?? stood.updatedAt) >= STORE_REBUILD_REVERIFY_MS);
+    (deps.reverify === 'always' ||
+      now - Date.parse(stood.finishedAt ?? stood.updatedAt) >= STORE_REBUILD_REVERIFY_MS ||
+      (!settled(stood) && now - Date.parse(stood.fingerprintSince) >= STORE_REBUILD_SETTLE_MS));
   if (doneHere && !restart) return result('current', stood);
   if (budget <= 0) return result('paused', stood);
 
@@ -243,15 +257,20 @@ function aheadOf(cursor: string | null, verticals: readonly string[]): string[] 
  * not be: while the rebuild is towards another fingerprint (or none ran yet), the canary and every
  * vertical that declared the driver; while it runs, the ones ahead of its cursor and the ones that
  * failed. A push or serve may have rebuilt some of them since, and the walk then finds them
- * current, so `pending` may over-count, never under-count.
+ * current, so `pending` may over-count, never under-count. A walk that is done but not settled (see
+ * {@link STORE_REBUILD_SETTLE_MS}) is not current: `settling` says when it is walked again.
  */
 export function storeRebuildStatus(
   rebuild: StoreDriverRebuildRecord | undefined,
   fingerprint: string,
   declared: readonly string[],
-): { current: boolean; pending: string[] } {
+): { current: boolean; pending: string[]; settling?: string } {
   if (!rebuild || rebuild.fingerprint !== fingerprint) return { current: false, pending: [SCOPE_STORE_CANARY, ...declared] };
-  if (rebuild.state === 'done') return { current: true, pending: [] };
+  if (rebuild.state === 'done') {
+    return settled(rebuild)
+      ? { current: true, pending: [] }
+      : { current: false, pending: [], settling: new Date(Date.parse(rebuild.fingerprintSince) + STORE_REBUILD_SETTLE_MS).toISOString() };
+  }
   const pending = new Set([...aheadOf(rebuild.cursor, declared), ...rebuild.failures.map((f) => f.vertical)]);
   return { current: false, pending: [...pending] };
 }

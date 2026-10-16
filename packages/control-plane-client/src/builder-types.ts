@@ -265,9 +265,15 @@ export interface StoreDriverRebuildView {
   fingerprint: string;
   current: boolean;
   pending: string[];
+  /**
+   * Set when the walk is done but finished within an hour of its fingerprint appearing, while the
+   * deploy may still have been rolling out: when it is walked again. Not current until then.
+   */
+  settling?: string;
   /** The walk's row: absent before its first pass. Its fingerprint may be an older one. */
   walk: {
     fingerprint: string;
+    fingerprintSince: string;
     cursor: string | null;
     failures: StoreDriverRebuildFailureView[];
     state: 'running' | 'done';

@@ -28,7 +28,7 @@ import {
   type CanaryCall,
 } from '../src/index.js';
 import { PUSH_HOLD_TTL_MS } from '../src/store-releases.js';
-import { STORE_REBUILD_REVERIFY_MS } from '../src/store-rebuild.js';
+import { STORE_REBUILD_REVERIFY_MS, STORE_REBUILD_SETTLE_MS } from '../src/store-rebuild.js';
 
 /**
  * The platform's rebuild of every store script (#2309): a key list or the entry changes, no
@@ -315,26 +315,37 @@ describe('the fleet rebuild (#2309)', () => {
     expect(await pass(keysB)).toMatchObject({ outcome: 'done', walked: ['vb'] });
   });
 
-  it('walks a done driver again, so a script uploaded later from the older lists is rebuilt', async () => {
+  it('a script an older control plane uploads after the walk is done is not reported current, and is rebuilt', async () => {
     for (const v of ['va', 'vb']) await declare(v);
     expect((await rollOut(s1, keysA)).complete).toBe(true);
+    const fingerprint = await storePlatformFingerprint({ callerPublicKeys: [keysB.caller], platformPublicKeys: [keysB.platform] });
+    const status = async () => storeRebuildStatus(await host.admin.storeDriverRebuild(staff, 'graph'), fingerprint, ['va', 'vb']);
     expect(await pass(keysB)).toMatchObject({ outcome: 'done' });
-    // A control plane still serving the old lists (a deploy rolling out) pushes vb after the walk.
+    // Done, but within the hour the new fingerprint appeared: a deploy may still be rolling out.
+    expect(await status()).toMatchObject({ current: false, pending: [], settling: expect.any(String) });
+    // The control plane still serving the old lists pushes vb after the walk.
     await push('vb', keysA);
     expect(binding(scriptOf('vb'), CALLER_KEYS)).toBe(keysA.caller);
-    // The scheduled pass trusts a fresh walk...
-    clock.advance(STORE_REBUILD_REVERIFY_MS - 1);
+    clock.advance(STORE_REBUILD_SETTLE_MS - 1);
     expect(await pass(keysB)).toMatchObject({ outcome: 'current', walked: [] });
-    // ...until it has stood a day: then it walks again, and rebuilds only vb.
+    expect((await status()).current).toBe(false);
+    // Once the hour has passed the walk goes again, rebuilds only vb, and now proves every script current.
     clock.advance(1);
     puts.length = 0;
     expect(await pass(keysB)).toMatchObject({ outcome: 'done', walked: ['-canary', 'va', 'vb'], uploaded: ['vb'] });
     expect(puts).toEqual([scriptOf('vb')]);
     expect(binding(scriptOf('vb'), CALLER_KEYS)).toBe(keysB.caller);
-    // A person's run does not wait for the day.
+    expect(await status()).toEqual({ current: true, pending: [] });
+    // A settled walk is still walked again a day after it finished, whatever changed meanwhile.
     await push('va', keysA);
-    expect(await pass(keysB, 100, 'always')).toMatchObject({ outcome: 'done', uploaded: ['va'] });
-    expect(binding(scriptOf('va'), CALLER_KEYS)).toBe(keysB.caller);
+    clock.advance(STORE_REBUILD_REVERIFY_MS - 1);
+    expect(await pass(keysB)).toMatchObject({ outcome: 'current' });
+    clock.advance(1);
+    expect(await pass(keysB)).toMatchObject({ outcome: 'done', uploaded: ['va'] });
+    // A person's run does not wait for either.
+    await push('vb', keysA);
+    expect(await pass(keysB, 100, 'always')).toMatchObject({ outcome: 'done', uploaded: ['vb'] });
+    expect(binding(scriptOf('vb'), CALLER_KEYS)).toBe(keysB.caller);
   });
 
   it('never walks a driver another pass holds the lease on', async () => {
@@ -365,6 +376,8 @@ describe('the fleet rebuild (#2309)', () => {
     // Still failing: retried, and nothing else walked again.
     expect(await pass(keysB)).toMatchObject({ outcome: 'failing', walked: ['vb'] });
     failPut.clear();
+    // Past the settle window, so the walk that ends now proves every script current.
+    clock.advance(STORE_REBUILD_SETTLE_MS);
     const done = await pass(keysB);
     expect(done).toMatchObject({ outcome: 'done', walked: ['vb'], uploaded: ['vb'] });
     expect(storeRebuildStatus(done.rebuild, fingerprint, ['va', 'vb', 'vc'])).toEqual({ current: true, pending: [] });
@@ -402,11 +415,14 @@ describe('the fleet rebuild (#2309)', () => {
       expect(binding(scriptOf('va'), CALLER_KEYS)).toBe(keysA.caller);
       const ran = await call(app, 'POST', '/store-drivers/graph/rebuild', person);
       expect(ran.status).toBe(200);
-      expect(await ran.json()).toMatchObject({ pass: { outcome: 'done', uploaded: ['-canary', 'va', 'vb'] }, rebuild: { current: true, pending: [] } });
+      // Every script rebuilt; within the hour the new lists appeared it reads as settling, not current.
+      expect(await ran.json()).toMatchObject({ pass: { outcome: 'done', uploaded: ['-canary', 'va', 'vb'] }, rebuild: { current: false, pending: [], settling: expect.any(String) } });
       expect(binding(scriptOf('vb'), CALLER_KEYS)).toBe(keysB.caller);
       const audit = await host.admin.auditLog(staff, { action: 'rebuildStoreDriver' });
       expect(audit).toEqual([expect.objectContaining({ actor: person, after: expect.objectContaining({ driver: 'graph', outcome: 'done' }) })]);
-      // Again: a person's run re-walks a driver that is done, reads every script, and uploads none.
+      // Again, once the deploy has surely rolled out: a person's run re-walks a driver that is done,
+      // reads every script, uploads none, and now proves it current.
+      clock.advance(STORE_REBUILD_SETTLE_MS);
       puts.length = 0;
       expect(await (await call(app, 'POST', '/store-drivers/graph/rebuild', person)).json()).toMatchObject({
         pass: { outcome: 'done', walked: ['-canary', 'va', 'vb'], uploaded: [] },

@@ -72,6 +72,8 @@ export const STORE_DRIVER_RELEASES_DDL = `
   CREATE TABLE IF NOT EXISTS store_driver_rebuilds (
     driver           TEXT PRIMARY KEY,
     fingerprint      TEXT NOT NULL,
+    -- When this fingerprint was first walked towards: a restart keeps it, a new fingerprint resets it.
+    fingerprint_since TEXT NOT NULL,
     cursor           TEXT,
     failures         TEXT NOT NULL,
     state            TEXT NOT NULL,
@@ -506,6 +508,8 @@ export interface StoreDriverRebuildRecord {
   readonly driver: string;
   /** What the platform builds every script from, as the walk converges every script on it. */
   readonly fingerprint: string;
+  /** When a walk towards this fingerprint first began: about when the control plane building from it was deployed. */
+  readonly fingerprintSince: string;
   /** The last vertical the walk reached, in slug order; null before the first. */
   readonly cursor: string | null;
   /** The verticals walked and not rebuilt. Retried on every pass until each is, or no longer declares the driver. */
@@ -520,6 +524,7 @@ export interface StoreDriverRebuildRecord {
 interface RebuildRow {
   driver: string;
   fingerprint: string;
+  fingerprint_since: string;
   cursor: string | null;
   failures: string;
   state: 'running' | 'done';
@@ -532,13 +537,14 @@ interface RebuildRow {
 
 const rebuildRowOf = (db: SwitchSql, driver: string): RebuildRow | undefined =>
   (db.all(
-    'SELECT driver, fingerprint, cursor, failures, state, holder, lease_expires_at, started_at, updated_at, finished_at FROM store_driver_rebuilds WHERE driver = ?',
+    'SELECT driver, fingerprint, fingerprint_since, cursor, failures, state, holder, lease_expires_at, started_at, updated_at, finished_at FROM store_driver_rebuilds WHERE driver = ?',
     driver,
   ) as unknown as RebuildRow[])[0];
 
 const rebuildOf = (r: RebuildRow): StoreDriverRebuildRecord => ({
   driver: r.driver,
   fingerprint: r.fingerprint,
+  fingerprintSince: r.fingerprint_since,
   cursor: r.cursor,
   failures: JSON.parse(r.failures) as StoreDriverRebuildFailure[],
   state: r.state,
@@ -571,12 +577,14 @@ export function claimStoreDriverRebuildIn(
   const lease = input.nowMs + input.ttlMs;
   if (!row || row.fingerprint !== input.fingerprint || (input.restart && row.state === 'done')) {
     db.run(
-      `INSERT INTO store_driver_rebuilds (driver, fingerprint, cursor, failures, state, holder, lease_expires_at, started_at, updated_at, finished_at)
-       VALUES (?, ?, NULL, '[]', 'running', ?, ?, ?, ?, NULL)
+      `INSERT INTO store_driver_rebuilds (driver, fingerprint, fingerprint_since, cursor, failures, state, holder, lease_expires_at, started_at, updated_at, finished_at)
+       VALUES (?, ?, ?, NULL, '[]', 'running', ?, ?, ?, ?, NULL)
        ON CONFLICT (driver) DO UPDATE SET fingerprint = excluded.fingerprint, cursor = NULL, failures = '[]', state = 'running',
+         fingerprint_since = CASE WHEN store_driver_rebuilds.fingerprint = excluded.fingerprint
+           THEN store_driver_rebuilds.fingerprint_since ELSE excluded.fingerprint_since END,
          holder = excluded.holder, lease_expires_at = excluded.lease_expires_at, started_at = excluded.started_at,
          updated_at = excluded.updated_at, finished_at = NULL`,
-      input.driver, input.fingerprint, input.holder, lease, input.at, input.at,
+      input.driver, input.fingerprint, input.at, input.holder, lease, input.at, input.at,
     );
   } else {
     db.run('UPDATE store_driver_rebuilds SET holder = ?, lease_expires_at = ? WHERE driver = ?', input.holder, lease, input.driver);

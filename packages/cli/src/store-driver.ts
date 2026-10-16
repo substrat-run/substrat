@@ -130,6 +130,12 @@ export const rebuildStoreDriver = (input: Plane & { driver: string }) =>
  */
 export function storeDriverRebuildLines(rebuild: StoreDriverRebuildView): string[] {
   if (rebuild.current) return [`  scripts: current (every script is built from ${rebuild.fingerprint.slice(0, 12)})`];
+  if (rebuild.settling) {
+    return [
+      `  scripts: settling: every script was current when walked (${rebuild.walk?.finishedAt ?? 'just now'}), but the control plane's deploy may still`,
+      `    have been rolling out then. It is walked again from ${rebuild.settling}; if the deploy had finished before the walk, it is current already.`,
+    ];
+  }
   const shown = rebuild.pending.slice(0, 10);
   return [
     `  scripts: NOT current: ${rebuild.pending.length} may still be built from older keys or code (target ${rebuild.fingerprint.slice(0, 12)})`,
