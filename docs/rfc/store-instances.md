@@ -1039,7 +1039,7 @@ All 22 questions were answered on 2026-10-15. The load-bearing ones are recorded
 [K-53](../decisions/K-053-a-tenant-level-store-is-a-named-instance-that-a-tenant-s-verticals-connect-to-explicitly.md).
 The answers use the maintainer's new word **driver** for what this RFC first called a kind: the
 platform-registered, pinned code that backs a store. The code and this RFC's body say driver
-since #2324; the ratified K-49, K-50 and D-63 text and the proposed K-52 keep the word kind.
+since #2324; the ratified K-49, K-50 and D-63 text and K-52 keep the word kind.
 Nothing these answers decide is built yet.
 
 | Q | Topic | Answer |
