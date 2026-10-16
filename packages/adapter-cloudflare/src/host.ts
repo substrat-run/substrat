@@ -503,7 +503,7 @@ import {
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
-import { UNSETTLED_COPY_STATES, fenceAttachmentSweep, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
+import { fenceAttachmentSweep, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
@@ -4109,12 +4109,17 @@ export class CloudflareScopeHost implements ScopeHost {
       if (!isPrimaryScopeRow(record)) {
         throw substratError('conflict', `refused: scope ${scopeId} is a copy, and a copy may not judge orphan attachments`);
       }
-      // One read per unsettled state, so no page of settled entries can hide one.
-      const copies = await Promise.all(
-        UNSETTLED_COPY_STATES.map((state) => this.cp.listScopeScriptCopies({ tenantId, scopeId, state, limit: 1 })),
-      );
-      const unsettled = unsettledCopyRefusal(scopeId, copies.flat().map(scopeScriptCopyOf));
-      if (unsettled) throw unsettled;
+      // Every ledger entry of the scope, page by page, so no page can hide one: a pass needs all of
+      // them settled (`SETTLED_COPY_STATES` is an allowlist), and stops at the first that is not.
+      let after: { scriptRef: string; moveId: string } | undefined;
+      for (;;) {
+        const page = (await this.cp.listScopeScriptCopies({ tenantId, scopeId, limit: 100, ...(after ? { after } : {}) })).map(scopeScriptCopyOf);
+        const unsettled = unsettledCopyRefusal(scopeId, page);
+        if (unsettled) throw unsettled;
+        const last = page[page.length - 1];
+        if (page.length < 100 || !last) break;
+        after = { scriptRef: last.scriptRef, moveId: last.moveId };
+      }
       // The tenant's status too, as every door into a scope asks.
       await this.assertLive(tenantId, scopeId);
       vouched = true;

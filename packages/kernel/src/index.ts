@@ -352,7 +352,7 @@ export {
   ATTACHMENT_CONDEMNED_DDL,
   ORPHAN_SWEEP_FENCE_MS,
   ORPHAN_SWEEP_GRACE_MS,
-  UNSETTLED_COPY_STATES,
+  SETTLED_COPY_STATES,
   attachmentSweepFenceKey,
   condemnOrphanAttachments,
   fenceAttachmentSweep,

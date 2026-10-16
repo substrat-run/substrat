@@ -19,8 +19,8 @@
  * 3. **The restore fence.** A restore takes a committed row away; a pass inside the fence deletes
  *    nothing, and restoring the row back finds its bytes. Past the fence the orphan is swept.
  * 4. **The copy, live.** A pass asked of a fork, or for a tenant the scope was not provisioned for,
- *    of an archived or reaped scope, of a suspended tenant's scope, or of a scope with a pending,
- *    kept or retained copy in another script, is refused and deletes nothing.
+ *    of an archived or reaped scope, of a suspended tenant's scope, or of a scope with any copy
+ *    in another script whose ledger state is not `done`, is refused and deletes nothing.
  *
  * And no caller can hand a pass a later instant: a `now` in the request is not read.
  *
@@ -74,7 +74,7 @@ export interface OrphanSweepFixture extends ScopeHostFixture {
    */
   clockAhead(ms: number): void;
   /** Record another script's copy of the scope in the host's copy ledger (#1722), in `state`. */
-  recordCopy(tenant: TenantId, scope: ScopeId, state: 'pending' | 'eligible' | 'retained' | 'kept' | 'done'): Promise<void>;
+  recordCopy(tenant: TenantId, scope: ScopeId, state: string): Promise<void>;
 }
 
 const DAY = 86_400_000;
@@ -422,8 +422,9 @@ export function orphanSweepContractSuite(adapterName: string, makeFixture: () =>
       });
     });
 
-    describe('a copy of the scope in another script, still unsettled, holds the pass', () => {
-      it.each(['pending', 'kept', 'retained'] as const)('a %s copy refuses the pass and deletes nothing', async (state) => {
+    describe('a copy of the scope in another script holds the pass until it is settled', () => {
+      // Every state but `done`, and a state the ledger does not know yet: settled is an allowlist.
+      it.each(['pending', 'eligible', 'kept', 'retained', 'some-future-state'] as const)('a %s copy refuses the pass and deletes nothing', async (state) => {
         const s8 = await freshScope();
         const now = Date.now();
         const orphan = await plant(now, s8);
@@ -434,7 +435,19 @@ export function orphanSweepContractSuite(adapterName: string, makeFixture: () =>
         expect(await present(attachmentBlobKey(s8, orphan))).toBe(true);
       });
 
-      it.each(['eligible', 'done'] as const)('the twin: a %s copy holds nothing more, and the pass sweeps', async (state) => {
+      it('an unsettled copy behind a full page of settled ones still refuses the pass', async () => {
+        const s10 = await freshScope();
+        const now = Date.now();
+        const orphan = await plant(now, s10);
+        for (let i = 0; i < 101; i++) await fixture.recordCopy(t1, s10, 'done');
+        await fixture.recordCopy(t1, s10, 'eligible');
+        const err = await refusal(sweep(now + ORPHAN_SWEEP_GRACE_MS + DAY, { scope: s10 }));
+        expect(errorCodeOf(err)).toBe('conflict');
+        expect((err as Error).message).toContain('eligible');
+        expect(await present(attachmentBlobKey(s10, orphan))).toBe(true);
+      });
+
+      it.each(['done'] as const)('the twin: a %s copy holds nothing more, and the pass sweeps', async (state) => {
         const s9 = await freshScope();
         const now = Date.now();
         const orphan = await plant(now, s9);

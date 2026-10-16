@@ -69,8 +69,16 @@ alone stops a row that committed from losing its bytes:
   reaped scope is never woken.
 - **No unsettled copy elsewhere.** After a carry, another version's script can keep a copy of the
   scope that took writes the serving copy lacks, uploads among them. Its bytes share the scope's
-  prefix. While the copy ledger holds such a copy (a move still pending, a copy kept as
-  divergent, or a copy recorded before the ledger), the pass is refused. Settle the copy first. A
+  prefix. The pass is refused while the copy ledger holds any entry for the scope that is not
+  `done`, and `done` is the only state that lets it through, so a state added later holds the pass
+  too. The states that hold it:
+  - a move still pending;
+  - a source still waiting for its wipe (`eligible`). That wipe is the step that finds a write
+    landed after the export, and it may not have run;
+  - a copy kept as divergent;
+  - a copy retained unchecked.
+
+  Settle the copy first. A
   deployment with no directory cannot read the ledger, so a pass there needs its caller to have
   checked it (`copiesSettled`). The platform's driver does that, and it reports a scope held this
   way rather than skipping it silently.

@@ -642,7 +642,7 @@ import {
   refuseCondemnedInDump,
   rowlessAttachmentIds,
   sweepOrphanAttachments,
-  UNSETTLED_COPY_STATES,
+  SETTLED_COPY_STATES,
   unsettledCopyRefusal,
   type OrphanSweepReport,
   type OrphanSweepRequest,
@@ -3662,9 +3662,9 @@ export class SqliteScopeHost implements ScopeHost {
     const copies = this.directory
       .prepare(
         `SELECT script_ref AS scriptRef, state FROM scope_script_copies
-          WHERE tenant_id = ? AND scope_id = ? AND state IN (${UNSETTLED_COPY_STATES.map(() => '?').join(', ')})`,
+          WHERE tenant_id = ? AND scope_id = ? AND state NOT IN (${SETTLED_COPY_STATES.map(() => '?').join(', ')})`,
       )
-      .all(tenantId, scopeId, ...UNSETTLED_COPY_STATES) as { scriptRef: string; state: string }[];
+      .all(tenantId, scopeId, ...SETTLED_COPY_STATES) as { scriptRef: string; state: string }[];
     const unsettled = unsettledCopyRefusal(scopeId, copies);
     if (unsettled) throw unsettled;
     // Only an active scope: an archived or reaped one is not this pass's to judge.

@@ -19,7 +19,7 @@ Attachment bytes that no row points at can now be swept, and nothing can sweep t
 
 **Only the scope's own live copy judges.** Both adapters refuse a scope that is not active (archived, reaped, or under a suspended tenant) and a fork or a preview. With a directory, the hosted adapter reads the scope's record before it addresses the scope's storage, so a reaped scope is never woken. Its scope object also refuses on its own when its storage was reaped, when its delivered lifecycle is not active, when it holds nothing at all, when it is a copy a carry wiped or kept, and when its provision receipt does not name the tenant.
 
-**No pass while another script's copy is unsettled.** While the copy ledger holds a copy of the scope that is pending, kept or retained, the pass is refused, because that copy may hold rows, uploads among them, that the serving copy lacks. A deployment with no directory cannot read the ledger, so it refuses unless its caller says it checked (`copiesSettled: true`).
+**No pass while another script's copy is unsettled.** While the copy ledger holds any entry for the scope that is not `done` (pending, eligible, kept, retained, or a state added later), the pass is refused, because that copy may hold rows, uploads among them, that the serving copy lacks, or may still turn one up. `done` is the only settled state (`SETTLED_COPY_STATES`, an allowlist). A deployment with no directory cannot read the ledger, so it refuses unless its caller says it checked (`copiesSettled: true`).
 
 **What the sweep cannot protect.** A restore from a dump older than 35 days can bring back rows whose bytes were swept, the same exposure a removed attachment already has.
 

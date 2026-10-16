@@ -39,7 +39,7 @@ declare const TextDecoder: new () => { decode(input: Uint8Array): string };
  *    copy that makes it. A host refuses a scope that is not active, a store that holds nothing, a
  *    copy a carry wiped or kept, a fork, and a scope not provisioned for the tenant. It also
  *    refuses while another script's copy of the scope is unsettled in the copy ledger
- *    (`UNSETTLED_COPY_STATES`), because that copy may hold rows the serving one lacks. Which
+ *    (any state but `SETTLED_COPY_STATES`), because that copy may hold rows the serving one lacks. Which
  *    deployment is asked is the driver's business: the platform asks the one serving the scope.
  *
  * The instant a pass judges age and the fence against is the HOST's clock, never a caller's
@@ -181,16 +181,25 @@ export function condemnOrphanAttachments(sql: ScopedSql, ids: readonly string[],
 }
 
 /**
- * The copy-ledger states (#1722) of another script's copy of a scope that may hold rows the
- * serving copy lacks: a move still in flight, a copy kept because it took writes after its export,
- * and a copy recorded before the ledger, whose contents nobody checked. Their bytes share the
- * scope's attachment prefix, so a pass is refused while any of them stands.
+ * The copy-ledger states (#1722) in which another script's copy of a scope can no longer hold a
+ * row the serving copy lacks, nor discover one. An ALLOWLIST: every other state, a future one
+ * included, holds the pass. Only `done` qualifies: the copy was wiped (or found already wiped),
+ * reaped with its scope, or is the move's destination, the copy that serves. Every other state can
+ * still hold, or still turn up, a write the serving copy never saw:
+ *
+ * - `pending`: a move in flight; its outcome is not known yet.
+ * - `eligible`: a carry's source awaiting its fenced wipe. The wipe is what discovers a write that
+ *   landed after the export and turns the copy `kept`, and it is best effort, so until it has run
+ *   the copy may hold an upload whose bytes share this scope's prefix.
+ * - `kept`: such a write was found; staff resolve it.
+ * - `retained`: a copy kept on purpose (a bind that did not land, a copy from before the ledger),
+ *   whose contents nobody checked against the serving copy.
  */
-export const UNSETTLED_COPY_STATES: readonly string[] = ['pending', 'kept', 'retained'];
+export const SETTLED_COPY_STATES: readonly string[] = ['done'];
 
-/** The refusal of a pass over a scope with an unsettled copy, or null when there is none. */
+/** The refusal of a pass over a scope with a copy not yet settled, or null when there is none. */
 export function unsettledCopyRefusal(scopeId: string, copies: readonly { state: string; scriptRef: string }[]): Error | null {
-  const unsettled = copies.filter((c) => UNSETTLED_COPY_STATES.includes(c.state));
+  const unsettled = copies.filter((c) => !SETTLED_COPY_STATES.includes(c.state));
   if (unsettled.length === 0) return null;
   return substratError(
     'conflict',
