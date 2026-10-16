@@ -512,19 +512,11 @@ export function mayHoldScopeStores(
  * with that rename named, rather than as a missing `driver` beside a silently dropped key.
  */
 export const SCOPE_STORE_KIND_RENAMED = 'scopeStores[].kind was renamed driver: declare { binding, driver }';
-export const scopeStoreNeed = z.preprocess(
-  (raw, ctx) => {
-    if (raw !== null && typeof raw === 'object' && Object.hasOwn(raw, 'kind')) {
-      ctx.addIssue({ code: 'custom', message: SCOPE_STORE_KIND_RENAMED, path: ['kind'], input: raw });
-      return z.NEVER;
-    }
-    return raw;
-  },
-  z.object({
-    binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
-    driver: z.literal('graph'),
-  }),
-);
+export const scopeStoreNeed = z.object({
+  binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  driver: z.literal('graph'),
+  kind: z.never({ message: SCOPE_STORE_KIND_RENAMED }).optional(),
+});
 export type ScopeStoreNeed = z.infer<typeof scopeStoreNeed>;
 
 /** The env name the platform binds a scope store under. */

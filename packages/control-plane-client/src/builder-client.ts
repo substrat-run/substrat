@@ -235,23 +235,23 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
   // -- store driver releases (D-63, #2300). Staff only, and every write by a person's sign-in: the
   // service token is refused. On this client beside `setListing`, the other staff-only write.
 
-  /** A kind's pins, its current good release and every rollout. */
-  getStoreDriver(kind: string): Promise<StoreDriverView> {
-    return this.read(`/store-drivers/${seg(kind)}`);
+  /** A driver's pins, its current good release and every rollout. */
+  getStoreDriver(driver: string): Promise<StoreDriverView> {
+    return this.read(`/store-drivers/${seg(driver)}`);
   }
 
   /** Store a release bundle (`storeDriverReleaseUpload`); the control plane names it by its sha256. */
-  uploadStoreDriverRelease(kind: string, body: unknown): Promise<{ release: StoreDriverReleaseView; pinned: boolean }> {
-    return this.read(`/store-drivers/${seg(kind)}/releases`, this.write('PUT', body));
+  uploadStoreDriverRelease(driver: string, body: unknown): Promise<{ release: StoreDriverReleaseView; pinned: boolean }> {
+    return this.read(`/store-drivers/${seg(driver)}/releases`, this.write('PUT', body));
   }
 
   /** Roll a stored, pinned release out: canary first, then every vertical. Post again to resume. */
-  rollOutStoreDriver(kind: string, sha256: string): Promise<StoreDriverRolloutResultView> {
-    return this.read(`/store-drivers/${seg(kind)}/rollouts`, this.write('POST', { sha256 }));
+  rollOutStoreDriver(driver: string, sha256: string): Promise<StoreDriverRolloutResultView> {
+    return this.read(`/store-drivers/${seg(driver)}/rollouts`, this.write('POST', { sha256 }));
   }
 
-  /** Return the kind to the immediately previous good release. */
-  rollBackStoreDriver(kind: string): Promise<StoreDriverRolloutResultView> {
-    return this.read(`/store-drivers/${seg(kind)}/rollback`, this.write('POST'));
+  /** Return the driver to the immediately previous good release. */
+  rollBackStoreDriver(driver: string): Promise<StoreDriverRolloutResultView> {
+    return this.read(`/store-drivers/${seg(driver)}/rollback`, this.write('POST'));
   }
 }

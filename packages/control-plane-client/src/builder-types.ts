@@ -119,7 +119,7 @@ export interface DumpTable {
 /** One scope store inside a pull or a restore (#2211). Opaque tables, not sealed. */
 export interface StoreDump {
   binding: string;
-  kind: string;
+  driver: string;
   tables: DumpTable[];
 }
 
@@ -214,16 +214,16 @@ export interface ListingRecord {
 
 /** A stored store-driver release (#2300): its bytes are named by their sha256. */
 export interface StoreDriverReleaseView {
-  kind: string;
+  driver: string;
   sha256: string;
   sourceCommit: string;
   uploadedBy: string;
   uploadedAt: string;
 }
 
-/** One attempt to move every script of a kind to a release. */
+/** One attempt to move every script of a driver to a release. */
 export interface StoreDriverRolloutView {
-  kind: string;
+  driver: string;
   seq: number;
   sha256: string;
   action: 'rollout' | 'rollback';
@@ -237,7 +237,7 @@ export interface StoreDriverRolloutView {
 }
 
 export interface StoreDriverView {
-  kind: string;
+  driver: string;
   pins: { sha256: string; sourceCommit: string; schema: number }[];
   current: { sha256: string; seq: number; previousGoodSha256: string | null } | null;
   rollouts: StoreDriverRolloutView[];

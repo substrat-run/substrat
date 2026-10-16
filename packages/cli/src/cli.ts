@@ -150,12 +150,12 @@ Usage:
   substrat promote  <slug> --version <versionId>
                     [--ack-permissions] [--ack-migrations] [--ack-export-break]  (prod is the only channel)
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
-  substrat store-driver upload --kind <kind> --dir <dir> --entry <kind_x/…/module.py> [--commit <sha>]
+  substrat store-driver upload --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>]
                                               store a release of a scope-store driver (staff, signed in)
-  substrat store-driver rollout --kind <kind> --sha256 <sha256>
+  substrat store-driver rollout --driver <driver> --sha256 <sha256>
                                               canary a stored, pinned release, then roll it out
-  substrat store-driver rollback --kind <kind>  return to the previous good release
-  substrat store-driver status --kind <kind>    a kind's current release and rollouts
+  substrat store-driver rollback --driver <driver>  return to the previous good release
+  substrat store-driver status --driver <driver>    a driver's current release and rollouts
   substrat unpublish <slug>                   remove from the public marketplace (staff)
   substrat versions <slug>                    list a vertical's versions + channels
   substrat installs <slug>                    list this workspace's installs of a vertical
@@ -624,16 +624,20 @@ function reportStoreBackfill(result: PromoteResult): void {
 }
 
 const STORE_DRIVER_USAGE = [
-  'usage: substrat store-driver upload   --kind <kind> --dir <dir> --entry <kind_x/…/module.py> [--commit <sha>]',
-  '       substrat store-driver rollout  --kind <kind> --sha256 <sha256>',
-  '       substrat store-driver rollback --kind <kind>',
-  '       substrat store-driver status   --kind <kind>',
+  'usage: substrat store-driver upload   --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>]',
+  '       substrat store-driver rollout  --driver <driver> --sha256 <sha256>',
+  '       substrat store-driver rollback --driver <driver>',
+  '       substrat store-driver status   --driver <driver>',
 ];
 
 async function cmdStoreDriver(): Promise<void> {
   const sub = argv[1];
-  const kind = flag('kind');
-  if (!['upload', 'rollout', 'rollback', 'status'].includes(sub ?? '') || !kind) {
+  if (argv.includes('--kind')) {
+    console.error('--kind was renamed --driver');
+    process.exit(1);
+  }
+  const driver = flag('driver');
+  if (!['upload', 'rollout', 'rollback', 'status'].includes(sub ?? '') || !driver) {
     for (const line of STORE_DRIVER_USAGE) console.error(line);
     process.exit(1);
   }
@@ -646,10 +650,10 @@ async function cmdStoreDriver(): Promise<void> {
   const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   console.log(`authenticating with ${as}`);
   console.log(`control plane ${controlPlaneUrl}`);
-  const plane = { controlPlaneUrl, header, kind };
+  const plane = { controlPlaneUrl, header, driver };
   if (sub === 'status') {
     const view = await storeDriverStatus(plane);
-    for (const line of storeDriverStatusLines(kind, view)) console.log(line);
+    for (const line of storeDriverStatusLines(driver, view)) console.log(line);
     return;
   }
   if (sub === 'upload') {
@@ -661,7 +665,7 @@ async function cmdStoreDriver(): Promise<void> {
     }
     const body = packStoreDriverDir(dir, entry, flag('commit') ?? sourceCommitOf(dir, packedFilesOf(dir)));
     const { release, pinned } = await uploadStoreDriverRelease({ ...plane, body });
-    console.log(`✓ stored ${kind} ${release.sha256} (commit ${release.sourceCommit})`);
+    console.log(`✓ stored ${driver} ${release.sha256} (commit ${release.sourceCommit})`);
     console.log(pinned ? '  pinned: roll it out with `substrat store-driver rollout`' : '  not pinned yet: it runs once a reviewed change pins this sha256 and commit');
     return;
   }
@@ -669,7 +673,7 @@ async function cmdStoreDriver(): Promise<void> {
     sub === 'rollback'
       ? await rollBackStoreDriver(plane)
       : await rollOutStoreDriver({ ...plane, sha256: sha256! });
-  console.log(`✓ ${kind} ${result.rollout.action} to ${result.rollout.sha256}: ${result.rollout.state} (${result.moved.length} vertical(s) this run)`);
+  console.log(`✓ ${driver} ${result.rollout.action} to ${result.rollout.sha256}: ${result.rollout.state} (${result.moved.length} vertical(s) this run)`);
   if (!result.complete) console.log('  verticals remain: run the same command again to continue');
 }
 
@@ -1195,6 +1199,11 @@ async function main(): Promise<void> {
       return cmdPublish();
     case 'store-driver':
       return cmdStoreDriver();
+    case 'store-kind':
+      // Renamed with the concept (K-53): a store's code is its driver. Nothing to alias, since no
+      // driver was ever registered for the old command to have acted on.
+      console.error('`substrat store-kind` was renamed `substrat store-driver`, and its --kind flag --driver');
+      process.exit(1);
     case 'unpublish':
       return cmdUnpublish();
     case 'whoami':
