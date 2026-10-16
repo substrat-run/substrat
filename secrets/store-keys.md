@@ -9,7 +9,7 @@ leaks. The tool is `pnpm store-keys` (`tools/store-keys.mts`).
 > **Status.** K-52 is *proposed*, not ratified. What this page describes is the code on `main`:
 > the envelope module, the router's and the control plane's signers, and the store entry. If
 > K-52 changes before it is ratified, this page changes with it. The rename of the store
-> concept to *store driver* (PR #2324) changes wording only. The variables below and the store
+> concept to *store driver* (K-53, #2324) changed wording only. The variables below and the store
 > script's own bindings (`SUBSTRAT_STORE_CALLER_KEYS`, `SUBSTRAT_STORE_PLATFORM_KEYS`,
 > `SUBSTRAT_STORE_*`) keep their names.
 
