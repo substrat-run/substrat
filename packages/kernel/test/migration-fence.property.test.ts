@@ -62,12 +62,22 @@ function fenced(setup: string, statements: readonly string[]): 'applied' | 'refu
 const tablesOf = (db: Db): string[] =>
   (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[]).map((r) => r.name);
 
-/** Every sequence of 1…`max` items. */
-function* sequences<T>(items: readonly T[], max: number, prefix: T[] = []): Generator<T[]> {
-  if (prefix.length > 0) yield prefix;
-  if (prefix.length === max) return;
-  for (const item of items) yield* sequences(items, max, [...prefix, item]);
+/**
+ * Every sequence of 1…`max` items, depth first. A sequence SQLite refuses is `prune`d, and none
+ * that extends it is generated: it would fail at the same statement. Most of the space is refused,
+ * so this is what keeps the walk to a few thousand migrations.
+ */
+function* sequences<T>(items: readonly T[], max: number, prefix: T[] = []): Generator<{ seq: T[]; prune: () => void }> {
+  for (const item of items) {
+    const seq = [...prefix, item];
+    let dead = false;
+    yield { seq, prune: () => (dead = true) };
+    if (!dead && seq.length < max) yield* sequences(items, max, seq);
+  }
 }
+
+/** A bound for a walk on a slow, shared CI runner; it takes a few seconds locally. */
+const WALK_TIMEOUT_MS = 120_000;
 
 describe('the data-loss fence agrees with ground truth on every short migration (#115)', () => {
   /**
@@ -98,9 +108,12 @@ describe('the data-loss fence agrees with ground truth on every short migration 
     let checked = 0;
     const unexplained: string[] = [];
     for (const setup of setups) {
-      for (const seq of sequences(statements, max)) {
+      for (const { seq, prune } of sequences(statements, max)) {
         const truth = raw(setup, seq);
-        if (!truth) continue;
+        if (!truth) {
+          prune();
+          continue;
+        }
         checked += 1;
         // Which original table holds each name at the end, as SQLite resolves them in order.
         const holder = new Map(N.map((t) => [t, t]));
@@ -149,13 +162,13 @@ describe('the data-loss fence agrees with ground truth on every short migration 
     const { checked, unexplained } = tableLevel(['a', 'b', 'c'], ['drop', 'create', 'delete', 'rename', 'copy', 'create-as'], 3);
     expect(unexplained).toEqual([]);
     expect(checked).toBeGreaterThan(3_000);
-  });
+  }, WALK_TIMEOUT_MS);
 
   it('table level: drops, renames and rebuilds with a free fourth name', () => {
     const { checked, unexplained } = tableLevel(['a', 'b', 'c', 'd'], ['drop', 'rename', 'create-as'], 3);
     expect(unexplained).toEqual([]);
     expect(checked).toBeGreaterThan(1_000);
-  });
+  }, WALK_TIMEOUT_MS);
 
   it('column level: drops, adds and renames of columns, with the table moved aside and back', () => {
     const setup = `CREATE TABLE a (id TEXT PRIMARY KEY, v TEXT, w TEXT);
@@ -180,10 +193,13 @@ describe('the data-loss fence agrees with ground truth on every short migration 
 
     let checked = 0;
     const disagree: string[] = [];
-    for (const seq of sequences(steps, 4)) {
+    for (const { seq, prune } of sequences(steps, 4)) {
       const statements = toSql(seq);
       const truth = raw(setup, statements);
-      if (!truth) continue;
+      if (!truth) {
+        prune();
+        continue;
+      }
       checked += 1;
       const table = tablesOf(truth)[0]!;
       const names = (truth.prepare(`SELECT name FROM pragma_table_info('${table}')`).all() as { name: string }[]).map((r) => r.name);
@@ -196,5 +212,5 @@ describe('the data-loss fence agrees with ground truth on every short migration 
     }
     expect(disagree).toEqual([]);
     expect(checked).toBeGreaterThan(1_000);
-  });
+  }, WALK_TIMEOUT_MS);
 });
