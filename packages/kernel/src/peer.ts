@@ -49,6 +49,7 @@ import {
 } from '@substrat-run/contracts';
 import { isPrimaryScope } from './scope-identity.js';
 import type { PermissionChecker } from './permission-checker.js';
+import { inheritTupleTrust } from './permission-eval.js';
 import {
   PEER_SUBJECT_PREFIX,
   SYSTEM_SWITCH_OFF_RELATION,
@@ -207,7 +208,8 @@ export function boundToPeerDeclarations(
       return grantedEntities(subject, permission, node, entityType, checkEntity, options);
     };
   }
-  return bounded;
+  // Only narrows, so the built-in evaluator's node-wide `all` still holds for it.
+  return inheritTupleTrust(inner, bounded);
 }
 
 const NO_KEYS: ReadonlySet<string> = new Set<string>();

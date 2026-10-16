@@ -15,6 +15,8 @@ import {
 } from '@substrat-run/contracts';
 import { boundToPeerDeclarations, collectPeers, ulid, type PeerDeclarations, type PermissionChecker } from '../src/index.js';
 import type { GrantedEntitiesPage } from '../src/grant-scoped-read.js';
+import * as kernelIndex from '../src/index.js';
+import { createTupleEvaluator, grantedEntitiesForContext, type PermissionTupleRow, type ScopeTupleReader } from '../src/permission-eval.js';
 import type { Holdings } from '../src/permission-checker.js';
 
 /**
@@ -209,5 +211,49 @@ describe('#2263 boundToPeerDeclarations', () => {
     const bounded = boundToPeerDeclarations(scripted(new Map([[refOf(peer), new Set(['a:read'])]])), () => peers);
     const asked: PermissionKey[] = [KEYS[4]!, KEYS[3]!, KEYS[0]!];
     expect(await bounded.covers(peer, asked, node)).toEqual({ covered: false, missing: asked });
+  });
+
+  describe('the built-in evaluator keeps its node-wide answer when bounded, and nothing else gains it', () => {
+    const permission = permissionKey.parse('item:read');
+    const who: CheckSubject = { kind: 'principal', id: person };
+    const peer: CheckSubject = { kind: 'vertical', id: VERTICALS[0]!, scope: peerScope };
+    const declaredFor = (keys: string[]) =>
+      collectPeers([{ peers: [peerSpec.parse({ vertical: peer.id, operations: [], permissions: keys })] }]);
+    const evaluatorHolding = (...subjects: CheckSubject[]) => {
+      const rows: PermissionTupleRow[] = subjects.map((s) => ({
+        subject: refOf(s), relation: `granted:${permission}`, object: `scope:${node.scopeId}`, expires_at: null, revoked_at: null,
+      }));
+      const scope: ScopeTupleReader = {
+        tuples: (s, prefix) => rows.filter((r) => r.subject === s && r.relation.startsWith(prefix)),
+        grant: (s, relation, object) => rows.find((r) => r.subject === s && r.relation === relation && r.object === object),
+        parents: () => [], shapeProtectedTypes: () => [], switchedOff: () => false,
+      };
+      return createTupleEvaluator({ now: () => '2026-01-01T00:00:00Z', tenantTuples: () => [], getRole: () => undefined, scopeFor: () => scope });
+    };
+    const read = (checker: PermissionChecker, subject: CheckSubject) =>
+      grantedEntitiesForContext(checker, subject, permission, node, 'item', undefined, (key, entity) => checker.check(subject, key, node, entity));
+
+    it('a bounded built-in evaluator still answers all for a node-wide grant, and is frozen like it', async () => {
+      const bounded = boundToPeerDeclarations(evaluatorHolding(who, peer), () => declaredFor(['item:read']));
+      expect(await read(bounded, who)).toEqual({ kind: 'all' });
+      expect(await read(bounded, peer)).toEqual({ kind: 'all' });
+      expect(Object.isFrozen(bounded)).toBe(true);
+      // A copy of it is not the evaluator's, as for the evaluator itself.
+      expect(await read({ ...bounded }, who)).toEqual({ kind: 'incomplete', reason: 'checker' });
+    });
+
+    it('an undeclared peer key never reads as all, whatever the tuples say', async () => {
+      const bounded = boundToPeerDeclarations(evaluatorHolding(peer), () => declaredFor(['other:key']));
+      expect(await read(bounded, peer)).toEqual({ kind: 'ids', ids: [], nextCursor: null });
+    });
+
+    it("a provider's checker stays untrusted when bounded, and the trust cannot be claimed from the package", async () => {
+      const fake: PermissionChecker = Object.freeze({
+        check: async (...args: Parameters<PermissionChecker['check']>) => ({ allowed: true as const, proof: [{ subject: objectRef.parse(refOf(args[0])), relation: `granted:${args[1]}`, object: objectRef.parse(`scope:${node.scopeId}`) }] }),
+        covers: async () => ({ covered: true as const, missing: [] as [] }),
+      });
+      expect(await read(boundToPeerDeclarations(fake, () => new Map()), who)).toEqual({ kind: 'incomplete', reason: 'checker' });
+      expect('inheritTupleTrust' in kernelIndex).toBe(false);
+    });
   });
 });
