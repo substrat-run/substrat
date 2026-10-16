@@ -681,7 +681,9 @@ apply. A migration that loses rows or values, or retypes them, without declaring
 `SqlMigration` (`moves`, verified; `discards`, with a required reason) is red in its own PR
 instead of failing a populated scope closed after a promote. Each declaration is printed with
 its reason. Foreign keys and CHECKs are off in the replay, since a synthetic row satisfies
-neither, so a cascade's loss is the run-time fence's to catch. Needs the build),
+neither, so a cascade's loss is the run-time fence's to catch. The replay is the kernel's own
+`replayMigrations` (#2321), which `substrat push` also runs through the vertical's pinned kernel
+before upload, so an external vertical is refused at push rather than at promote. Needs the build),
 `lint:tests`, `lint:floating-promises` (`tools/floating-promises.mjs`, #2131: oxlint's
 type-aware `no-floating-promises` over every workerd suite, found from the vitest configs that
 load `@cloudflare/vitest-plugin`, and the shared contract-tests suites they run; a suite whose

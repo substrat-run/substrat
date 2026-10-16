@@ -264,7 +264,9 @@ test('decide: the adapter\'s scope DO selects the kernel, other adapter source d
     return asked;
   };
   assert.deepEqual(ask(['packages/adapter-cloudflare/src/scope-do.ts']), ['@substrat-run/kernel']);
-  assert.deepEqual(ask(['packages/adapter-cloudflare/src/control-plane-do.ts', 'packages/adapter-sqlite/src/scope-do.ts']), []);
+  assert.deepEqual(ask(['packages/adapter-cloudflare/src/control-plane-do.ts']), []);
+  // adapter-sqlite's own scope DO is not the kernel's to read (the CLI's push suite reads it: below).
+  assert.deepEqual(ask(['packages/adapter-sqlite/src/scope-do.ts']), ['@substrat-run/cli']);
 });
 test('CHANGED_NAMES: a file moved out of an engine is listed where it left, too', () => {
   const dir = mkdtempSync(join(tmpdir(), 'ci-scope-'));
@@ -288,7 +290,12 @@ test('readersOf: an engine manifest selects the console, nothing else an engine 
   assert.deepEqual(readersOf(['engines/notifications/src/index.ts']), ['@substrat-run/console']);
   assert.deepEqual(readersOf(['engines/a/src/index.ts', 'engines/b/src/index.ts']), ['@substrat-run/console']);
   assert.deepEqual(readersOf(['engines/notifications/src/send.ts', 'engines/notifications/test/index.ts']), []);
-  assert.deepEqual(readersOf(['packages/kernel/src/index.ts', 'apps/console/src/index.ts']), []);
+  assert.deepEqual(readersOf(['apps/console/src/index.ts']), []);
+});
+test('readersOf: kernel and adapter-sqlite source select the CLI, whose push links both into a fixture (#2321)', () => {
+  assert.deepEqual(readersOf(['packages/kernel/src/migration-replay.ts']), ['@substrat-run/cli']);
+  assert.deepEqual(readersOf(['packages/adapter-sqlite/src/index.ts']), ['@substrat-run/cli']);
+  assert.deepEqual(readersOf(['packages/kernel/test/migration-replay.test.ts', 'packages/adapter-cloudflare/src/index.ts']), []);
 });
 test('READS: every entry names a suite that exists, in the package it names', () => {
   // A misspelled or renamed reader is a pnpm filter that selects nothing, silently.

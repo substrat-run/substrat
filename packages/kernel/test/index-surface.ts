@@ -100,6 +100,8 @@ export const INDEX_VALUE_EXPORTS = [
   'MEMBER_REMOVE_REQUESTED',
   'MIGRATION_DIGEST_FENCE_DDL',
   'MIGRATION_DIGEST_MARK_LEGACY',
+  // #2321: the migration replay `substrat push` calls through a vertical's own kernel, and its version.
+  'MIGRATION_REPLAY_API',
   'MODEL_USAGE_RETENTION_DAYS',
   'NotListable',
   'NotSearchable',
@@ -477,6 +479,8 @@ export const INDEX_VALUE_EXPORTS = [
   'releaseStoreDriverHoldIn',
   'repairDerivedObjects',
   'replayFor',
+  // #2321: see MIGRATION_REPLAY_API.
+  'replayMigrations',
   'replayStoreErasures',
   'repointScopeGrants',
   'requestEmail',
