@@ -26,25 +26,27 @@ import { spawnSync } from 'node:child_process';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  base64UrlToBytes,
   generateScopeStoreKeyPair,
-  parseScopeStorePublicKeys,
   ScopeStoreKeyError,
   scopeStoreKeyId,
+  scopeStorePublicKeyProblem,
   scopeStorePublicKeysFrom,
   scopeStoreSignerPublicKey,
   type ScopeStoreAudience,
+  type ScopeStoreKeyProblem,
+  type ScopeStorePublicKeyProblem,
 } from '../packages/contracts/src/scope-store-envelope.ts';
 import { parseEnvText, STORE_KEY_AUDIENCES, STORE_KEY_UPLOADER } from '../scripts/secrets.mjs';
+import { repoRoot } from './repo-path.mjs';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-export const AUDIENCES = Object.keys(STORE_KEY_AUDIENCES) as ScopeStoreAudience[];
+const ROOT = repoRoot(import.meta.url);
+const AUDIENCES = Object.keys(STORE_KEY_AUDIENCES) as ScopeStoreAudience[];
 const other = (aud: ScopeStoreAudience): ScopeStoreAudience => (aud === 'caller' ? 'platform' : 'caller');
 
 /** A refusal. Its message is written by this file and never carries a value it was given. */
 export class StoreKeysError extends Error {}
 
-export interface Finding {
+interface Finding {
   readonly level: 'error' | 'warn';
   /** The variable (or file) the finding is about. Never its value. */
   readonly subject: string;
@@ -53,36 +55,29 @@ export interface Finding {
 
 // ── reading one audience ─────────────────────────────────────────────────────────
 
-interface ListedKey {
-  readonly position: number;
-  readonly publicKey: string;
-  readonly kid: string;
-  readonly hex: string;
-}
-
+/** A public key, as listed or as derived from a private key. Canonical, so equal text is equal bytes. */
 interface Signer {
   readonly publicKey: string;
   readonly kid: string;
-  readonly hex: string;
 }
 
-const hexOf = (key: string) => [...base64UrlToBytes(key)!].map((b) => b.toString(16).padStart(2, '0')).join('');
-
-/** What the envelope module says about one list entry, mapped onto its own fixed messages. */
-function entryRefusal(entry: string): string | undefined {
-  try {
-    parseScopeStorePublicKeys(entry);
-    return undefined;
-  } catch (error) {
-    const message = (error as Error).message;
-    // The module's messages are fixed strings; anything else is reported as one, never echoed.
-    if (message.includes('small-order')) return 'is a small-order point';
-    if (message.includes('not canonical')) return 'is not canonical base64url (another spelling of a key: unused trailing bits set)';
-    if (message.includes('32 bytes')) return 'is not 32 bytes of base64url (not a raw Ed25519 public key)';
-    if (message.includes('empty')) return 'is empty';
-    return 'is refused by the store';
-  }
+interface ListedKey extends Signer {
+  readonly position: number;
 }
+
+const PUBLIC_KEY_PROBLEM: Readonly<Record<ScopeStorePublicKeyProblem, string>> = {
+  empty: 'is empty',
+  length: 'is not 32 bytes of base64url (not a raw Ed25519 public key)',
+  'small-order': 'is a small-order point',
+  'non-canonical': 'is not canonical base64url (another spelling of a key: unused trailing bits set)',
+};
+
+const SIGNER_PROBLEM: Readonly<Record<ScopeStoreKeyProblem, string>> = {
+  encoding: 'is not base64url',
+  'not-ed25519': 'is not an Ed25519 PKCS8 key',
+  'no-public-half': 'has no public half',
+  'small-order': 'is a small-order point',
+};
 
 /** One audience's public-key list, entry by entry. Findings never carry an entry's text. */
 async function readList(name: string, text: string | undefined, findings: Finding[]): Promise<ListedKey[] | undefined> {
@@ -94,18 +89,17 @@ async function readList(name: string, text: string | undefined, findings: Findin
   const entries = text.split(',').map((entry) => entry.trim());
   for (const [i, entry] of entries.entries()) {
     const position = i + 1;
-    const refusal = entryRefusal(entry);
-    if (refusal) {
-      findings.push({ level: 'error', subject: name, check: `entry ${position} ${refusal}` });
+    const problem = scopeStorePublicKeyProblem(entry);
+    if (problem) {
+      findings.push({ level: 'error', subject: name, check: `entry ${position} ${PUBLIC_KEY_PROBLEM[problem]}` });
       continue;
     }
-    const hex = hexOf(entry);
-    const twin = listed.find((key) => key.hex === hex);
+    const twin = listed.find((key) => key.publicKey === entry);
     if (twin) {
       findings.push({ level: 'error', subject: name, check: `entry ${position} is entry ${twin.position} again` });
       continue;
     }
-    listed.push({ position, publicKey: entry, kid: await scopeStoreKeyId(entry), hex });
+    listed.push({ position, publicKey: entry, kid: await scopeStoreKeyId(entry) });
   }
   return listed;
 }
@@ -117,12 +111,10 @@ async function readSigner(subject: string, text: string | undefined, findings: F
     return undefined;
   }
   try {
-    const { publicKey, kid } = await scopeStoreSignerPublicKey(text);
-    return { publicKey, kid, hex: hexOf(publicKey) };
+    return await scopeStoreSignerPublicKey(text);
   } catch (error) {
-    // ScopeStoreKeyError's messages are the module's fixed strings; any other throw is not shown.
-    const check = error instanceof ScopeStoreKeyError ? error.message.replace(/^the store signing key /, '') : 'is not usable';
-    findings.push({ level: 'error', subject, check });
+    // Reported by its reason alone; nothing the key's parser said is shown.
+    findings.push({ level: 'error', subject, check: error instanceof ScopeStoreKeyError ? SIGNER_PROBLEM[error.reason] : 'is not usable' });
     return undefined;
   }
 }
@@ -130,35 +122,33 @@ async function readSigner(subject: string, text: string | undefined, findings: F
 // ── doctor ───────────────────────────────────────────────────────────────────────
 
 /** A key `generate` wrote to a file and the operator has not yet made the signer. */
-export interface StagedKey {
+interface StagedKey {
   /** How the operator named it: the file path. */
   readonly label: string;
   /** The file's text: one `STORE_<AUDIENCE>_KEY=<pkcs8>` line. */
   readonly text: string;
 }
 
-export type Phase = 'steady' | 'listed' | 'switched' | 'two-listed' | 'unknown';
+type Phase = 'steady' | 'listed' | 'switched' | 'two-listed' | 'unknown';
 
-export interface AudienceReport {
-  readonly audience: ScopeStoreAudience;
+interface AudienceReport {
   readonly listed: readonly ListedKey[] | undefined;
   readonly signer: Signer | undefined;
   readonly staged: readonly (Signer & { readonly label: string })[];
   readonly phase: Phase;
 }
 
-export interface DoctorReport {
+interface DoctorReport {
   readonly findings: readonly Finding[];
   readonly audiences: Readonly<Record<ScopeStoreAudience, AudienceReport>>;
 }
 
 /** Which step of a rotation a list and its signer are at. */
 function phaseOf(listed: readonly ListedKey[] | undefined, signer: Signer | undefined, staged: readonly Signer[]): Phase {
-  if (!listed || !signer || !listed.some((key) => key.hex === signer.hex)) return 'unknown';
+  if (!listed || !signer || !listed.some((key) => key.publicKey === signer.publicKey)) return 'unknown';
   if (listed.length === 1) return 'steady';
-  const stagedListed = staged.find((key) => listed.some((l) => l.hex === key.hex));
-  if (stagedListed && stagedListed.hex !== signer.hex) return 'listed';
-  if (stagedListed && stagedListed.hex === signer.hex) return 'switched';
+  const stagedListed = staged.find((key) => listed.some((l) => l.publicKey === key.publicKey));
+  if (stagedListed) return stagedListed.publicKey === signer.publicKey ? 'switched' : 'listed';
   return 'two-listed';
 }
 
@@ -188,39 +178,40 @@ export async function doctor(values: Readonly<Record<string, string>>, stagedFil
     if (signer) staged[audience].push({ ...signer, label: file.label });
   }
 
+  // L16: a key listed for both audiences, or one key signing both, lets the caller key sign `substrat.erase`.
+  const { caller: callerNames, platform: platformNames } = STORE_KEY_AUDIENCES;
+  for (const key of lists.caller ?? []) {
+    const twin = lists.platform?.find((t) => t.publicKey === key.publicKey);
+    if (twin) {
+      findings.push({ level: 'error', subject: callerNames.publicKeys, check: `entry ${key.position} (kid ${key.kid}) is also ${platformNames.publicKeys} entry ${twin.position}: every store refuses every call while a key is in both lists` });
+    }
+  }
+  if (signers.caller && signers.caller.publicKey === signers.platform?.publicKey) {
+    findings.push({ level: 'error', subject: callerNames.privateKey, check: `is the same key as ${platformNames.privateKey}: each audience needs its own` });
+  }
+
   for (const aud of AUDIENCES) {
     const names = STORE_KEY_AUDIENCES[aud];
     const otherNames = STORE_KEY_AUDIENCES[other(aud)];
     const own = lists[aud];
     const theirs = lists[other(aud)];
-    // L16: a key listed for both audiences lets the caller key sign `substrat.erase`.
-    for (const key of own ?? []) {
-      const twin = theirs?.find((t) => t.hex === key.hex);
-      if (twin && aud === 'caller') {
-        findings.push({ level: 'error', subject: names.publicKeys, check: `entry ${key.position} (kid ${key.kid}) is also ${otherNames.publicKeys} entry ${twin.position}: every store refuses every call while a key is in both lists` });
-      }
-    }
     const signer = signers[aud];
     if (signer) {
-      if (own && !own.some((key) => key.hex === signer.hex)) {
+      if (own && !own.some((key) => key.publicKey === signer.publicKey)) {
         findings.push({ level: 'error', subject: names.privateKey, check: `signs as kid ${signer.kid}, which ${names.publicKeys} does not list: every ${aud} call is refused (the signer was switched before its key was listed)` });
       }
-      if (theirs?.some((key) => key.hex === signer.hex)) {
+      if (theirs?.some((key) => key.publicKey === signer.publicKey)) {
         findings.push({ level: 'error', subject: names.privateKey, check: `signs as kid ${signer.kid}, which ${otherNames.publicKeys} lists: its holder could sign ${other(aud)} envelopes` });
-      }
-      const otherSigner = signers[other(aud)];
-      if (otherSigner?.hex === signer.hex && aud === 'caller') {
-        findings.push({ level: 'error', subject: names.privateKey, check: `is the same key as ${otherNames.privateKey}: each audience needs its own` });
       }
     }
     for (const key of staged[aud]) {
-      if (theirs?.some((t) => t.hex === key.hex)) {
+      if (theirs?.some((t) => t.publicKey === key.publicKey)) {
         findings.push({ level: 'error', subject: key.label, check: `(kid ${key.kid}, ${aud}) is listed in ${otherNames.publicKeys}` });
       }
-      if (signers[other(aud)]?.hex === key.hex) {
+      if (signers[other(aud)]?.publicKey === key.publicKey) {
         findings.push({ level: 'error', subject: key.label, check: `is the same key as ${otherNames.privateKey}` });
       }
-      if (own && !own.some((l) => l.hex === key.hex)) {
+      if (own && !own.some((l) => l.publicKey === key.publicKey)) {
         findings.push({ level: 'warn', subject: key.label, check: `(kid ${key.kid}) is not in ${names.publicKeys} yet: list it and deploy before making it the signer` });
       }
     }
@@ -243,12 +234,12 @@ export async function doctor(values: Readonly<Record<string, string>>, stagedFil
 
   const audiences = {} as Record<ScopeStoreAudience, AudienceReport>;
   for (const aud of AUDIENCES) {
-    audiences[aud] = { audience: aud, listed: lists[aud], signer: signers[aud], staged: staged[aud], phase: phaseOf(lists[aud], signers[aud], staged[aud]) };
+    audiences[aud] = { listed: lists[aud], signer: signers[aud], staged: staged[aud], phase: phaseOf(lists[aud], signers[aud], staged[aud]) };
   }
   return { findings, audiences };
 }
 
-export function formatDoctor(report: DoctorReport): string {
+function formatDoctor(report: DoctorReport): string {
   const lines: string[] = [];
   for (const aud of AUDIENCES) {
     const names = STORE_KEY_AUDIENCES[aud];
@@ -256,13 +247,13 @@ export function formatDoctor(report: DoctorReport): string {
     lines.push(`● ${aud}  (signer: ${names.signer} ${names.privateKey}; list: ${names.publicKeys})  phase: ${a.phase}`);
     for (const key of a.listed ?? []) {
       const marks = [
-        a.signer?.hex === key.hex ? 'signer' : '',
-        ...a.staged.filter((s) => s.hex === key.hex).map((s) => `staged ${s.label}`),
+        a.signer?.publicKey === key.publicKey ? 'signer' : '',
+        ...a.staged.filter((s) => s.publicKey === key.publicKey).map((s) => `staged ${s.label}`),
       ].filter(Boolean);
       lines.push(`    ${key.kid}  ${key.publicKey}${marks.length ? `  ← ${marks.join(', ')}` : ''}`);
     }
-    if (a.signer && !a.listed?.some((key) => key.hex === a.signer!.hex)) lines.push(`    ${a.signer.kid}  (signer, NOT listed)`);
-    for (const s of a.staged) if (!a.listed?.some((key) => key.hex === s.hex)) lines.push(`    ${s.kid}  (staged ${s.label}, not listed)`);
+    if (a.signer && !a.listed?.some((key) => key.publicKey === a.signer!.publicKey)) lines.push(`    ${a.signer.kid}  (signer, NOT listed)`);
+    for (const s of a.staged) if (!a.listed?.some((key) => key.publicKey === s.publicKey)) lines.push(`    ${s.kid}  (staged ${s.label}, not listed)`);
   }
   const errors = report.findings.filter((f) => f.level === 'error');
   const warnings = report.findings.filter((f) => f.level === 'warn');
@@ -300,7 +291,7 @@ export function rotatePlan(report: DoctorReport, aud: ScopeStoreAudience, env: s
     const target = listed.find((key) => key.kid === drop);
     if (!target) throw new StoreKeysError(`refusing: ${names.publicKeys} lists no key with kid ${drop}`);
     if (!a.signer) throw new StoreKeysError(`refusing: ${names.privateKey} is unset, so dropping a key cannot be checked against the signer`);
-    if (target.hex === a.signer.hex) {
+    if (target.publicKey === a.signer.publicKey) {
       throw new StoreKeysError(`refusing: kid ${drop} is the key ${names.privateKey} signs with; every ${aud} call would be refused. Switch the signer first.`);
     }
     // Never empty: the signer's key is listed (a blocking finding otherwise) and is not the target.
@@ -321,7 +312,7 @@ export function rotatePlan(report: DoctorReport, aud: ScopeStoreAudience, env: s
     '',
     `${at(['steady'])} 1. pnpm store-keys generate --audience ${aud} --out <path outside any git work tree>`,
     `     Keep the file until step 4. It is the new private key; the public key and kid are on stderr.`,
-    `${at([])} 2. Add the new public key to ${names.publicKeys} (comma-separated, after the current one),`,
+    `  2. Add the new public key to ${names.publicKeys} (comma-separated, after the current one),`,
     `     then: node scripts/secrets.mjs push --env ${env} --only ${STORE_KEY_UPLOADER}, and deploy the ${STORE_KEY_UPLOADER}.`,
     `       ${STORE_REACH_CAVEAT}`,
     `     Check: pnpm store-keys doctor --env ${env} --key-file <path>  (the staged key must be listed).`,
@@ -351,7 +342,7 @@ const inside = (dir: string, path: string) => {
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 };
 
-export interface WriteFs {
+interface WriteFs {
   openSync: typeof openSync;
   writeSync: typeof writeSync;
   fstatSync: typeof fstatSync;
@@ -382,8 +373,9 @@ export function assertPrivateOutPath(out: string, repoRoot = ROOT): string {
   if (git.status === 0) {
     throw new StoreKeysError(`refusing: ${path} is inside the git work tree ${git.stdout.trim()}; a private key never goes there`);
   }
-  if ((statSync(realParent).mode & 0o007) !== 0) {
-    throw new StoreKeysError(`refusing: ${realParent} is open to other users (mode ${(statSync(realParent).mode & 0o777).toString(8)}); use a directory only you can read`);
+  const parentMode = statSync(realParent).mode;
+  if ((parentMode & 0o007) !== 0) {
+    throw new StoreKeysError(`refusing: ${realParent} is open to other users (mode ${(parentMode & 0o777).toString(8)}); use a directory only you can read`);
   }
   return join(realParent, relative(parent, path));
 }
@@ -428,14 +420,14 @@ export interface GenerateIo {
 
 export async function generate(
   aud: ScopeStoreAudience,
-  target: { readonly out: string } | { readonly stdout: true; readonly toTerminal: boolean },
+  target: { readonly out: string } | { readonly toTerminal: boolean },
   io: GenerateIo,
   options: { readonly repoRoot?: string; readonly fs?: WriteFs } = {},
 ): Promise<{ readonly publicKey: string; readonly kid: string }> {
   const names = STORE_KEY_AUDIENCES[aud];
   // Every refusal happens before the key exists.
   const out = 'out' in target ? assertPrivateOutPath(target.out, options.repoRoot) : undefined;
-  if (!out && io.stdout.isTTY && !(target as { toTerminal: boolean }).toTerminal) {
+  if ('toTerminal' in target && io.stdout.isTTY && !target.toTerminal) {
     throw new StoreKeysError(
       'refusing: stdout is a terminal, so the private key would land in its scrollback. Redirect it, use --out, or pass --yes-print-to-terminal.',
     );
@@ -475,7 +467,7 @@ interface Args {
 
 const BOOLEAN = new Set(['stdout', 'yes-print-to-terminal']);
 
-export function parseArgs(argv: readonly string[]): Args {
+function parseArgs(argv: readonly string[]): Args {
   const flags = new Map<string, string[]>();
   const [command, ...rest] = argv;
   for (let i = 0; i < rest.length; i++) {
@@ -519,7 +511,12 @@ function readStaged(args: Args): StagedKey[] {
   });
 }
 
-const USAGE = readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(4, 10).map((l) => l.replace(/^ \* ?/, '')).join('\n');
+const USAGE = `usage:
+  pnpm store-keys generate --audience caller|platform --out <path outside the work tree>
+  pnpm store-keys generate --audience caller|platform --stdout [--yes-print-to-terminal]
+  pnpm store-keys doctor [--env prod|test|dev] [--file <env file>] [--key-file <path>]...
+  pnpm store-keys rotate --audience caller|platform [--env …] [--file …] [--key-file <path>]... [--drop <kid>]
+Runbook: secrets/store-keys.md`;
 
 /** Run one command. Returns the exit code; never throws, and never prints a value it read. */
 export async function main(argv: readonly string[], io: GenerateIo): Promise<number> {
@@ -530,7 +527,7 @@ export async function main(argv: readonly string[], io: GenerateIo): Promise<num
         const toStdout = args.flags.has('stdout');
         const out = one(args, 'out');
         if (toStdout === (out !== undefined)) throw new StoreKeysError('generate needs exactly one of --out <path> or --stdout');
-        await generate(audienceOf(args), out !== undefined ? { out } : { stdout: true, toTerminal: args.flags.has('yes-print-to-terminal') }, io);
+        await generate(audienceOf(args), out !== undefined ? { out } : { toTerminal: args.flags.has('yes-print-to-terminal') }, io);
         return 0;
       }
       case 'doctor': {

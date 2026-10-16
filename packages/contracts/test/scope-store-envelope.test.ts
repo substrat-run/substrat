@@ -14,6 +14,7 @@ import {
   scopeStoreEnvelopeFresh,
   ScopeStoreKeyError,
   scopeStoreKeyId,
+  scopeStorePublicKeyProblem,
   scopeStoreSignerPublicKey,
   scopeStorePublicKeysFrom,
   verifyScopeStoreCall,
@@ -343,10 +344,26 @@ describe('scope store envelope (#2287)', () => {
     const issued = await issueScopeStoreEnvelope({ privateKey: vector.privateKeyPkcs8, aud: 'caller', script: vector.script, name: NAME, op: 'read', body: bodyFor('read') });
     expect(issued.envelope.kid).toBe(vector.kid);
     const truncated = vector.privateKeyPkcs8.slice(0, -4);
-    for (const bad of ['not base64url!', truncated, vector.publicKey]) {
-      const error = await scopeStoreSignerPublicKey(bad).then(() => undefined, (e: unknown) => e as Error);
+    for (const [bad, reason] of [['not base64url!', 'encoding'], [truncated, 'not-ed25519'], [vector.publicKey, 'not-ed25519']] as const) {
+      const error = await scopeStoreSignerPublicKey(bad).then(() => undefined, (e: unknown) => e as ScopeStoreKeyError);
       expect(error).toBeInstanceOf(ScopeStoreKeyError);
+      expect(error!.reason).toBe(reason);
       expect(error!.message).not.toContain(bad);
     }
+  });
+
+  it('names each public-key problem as a code, and the list parser refuses exactly those', () => {
+    const cases = [
+      ['', 'empty'],
+      ['abc', 'length'],
+      [bytesToBase64Url(new Uint8Array(32).fill(0).map((_, i) => (i === 0 ? 1 : 0))), 'small-order'],
+      [alias(vector.publicKey), 'non-canonical'],
+      [vector.publicKey, undefined],
+    ] as const;
+    for (const [key, problem] of cases) {
+      expect(scopeStorePublicKeyProblem(key)).toBe(problem);
+      if (problem && problem !== 'empty') expect(() => parseScopeStorePublicKeys(key)).toThrow();
+    }
+    expect(parseScopeStorePublicKeys(vector.publicKey)).toEqual([vector.publicKey]);
   });
 });

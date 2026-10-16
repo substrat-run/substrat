@@ -7,12 +7,12 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import { chmodSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
 import { scopeStoreSignerPublicKey } from '../packages/contracts/src/scope-store-envelope.ts';
-import { MANIFEST, STORE_KEY_AUDIENCES, STORE_KEY_UPLOADER } from '../scripts/secrets.mjs';
-import { storeKeyProblems } from './secrets-coverage.mjs';
+import { MANIFEST } from '../scripts/secrets.mjs';
+import { repoRoot } from './repo-path.mjs';
+import { readRepoFile, storeKeyProblems } from './store-key-inventory.mjs';
 import {
   assertPrivateOutPath,
   doctor,
@@ -24,7 +24,7 @@ import {
   type GenerateIo,
 } from './store-keys.mts';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = repoRoot(import.meta.url);
 
 const b64u = (hex: string) => Buffer.from(hex, 'hex').toString('base64url');
 const pkcs8 = (seed: string) => b64u(`302e020100300506032b657004220420${seed}`);
@@ -272,12 +272,12 @@ test('writePrivateFile: a file that comes out readable by others is removed and 
 });
 
 test('generate --stdout: refuses a terminal unless told, warns, and prints only the key line', async () => {
-  await assert.rejects(generate('platform', { stdout: true, toTerminal: false }, recorder(true)), /stdout is a terminal/);
+  await assert.rejects(generate('platform', { toTerminal: false }, recorder(true)), /stdout is a terminal/);
   const tty = recorder(true);
-  await generate('platform', { stdout: true, toTerminal: true }, tty);
+  await generate('platform', { toTerminal: true }, tty);
   assert.match(tty.out, /^STORE_PLATFORM_KEY=[A-Za-z0-9_-]+\n$/);
   const piped = recorder(false);
-  const { kid } = await generate('platform', { stdout: true, toTerminal: false }, piped);
+  const { kid } = await generate('platform', { toTerminal: false }, piped);
   assert.match(piped.out, /^STORE_PLATFORM_KEY=[A-Za-z0-9_-]+\n$/);
   const key = piped.out.trim().split('=')[1]!;
   assert.match(piped.err, /scrollback/);
@@ -351,15 +351,8 @@ test('the command line, end to end: exit codes and the stdout/stderr split', () 
 
 // ── the inventory check in secrets-coverage ─────────────────────────────────────
 
-const realRead = (rel: string) => {
-  try {
-    return readFileSync(join(ROOT, rel), 'utf8');
-  } catch {
-    return undefined;
-  }
-};
-const coverage = (manifest = MANIFEST, read = realRead) =>
-  storeKeyProblems({ manifest, audiences: STORE_KEY_AUDIENCES, uploader: STORE_KEY_UPLOADER, read });
+const realRead = readRepoFile;
+const coverage = (manifest = MANIFEST, read: (rel: string) => string | undefined = realRead) => storeKeyProblems(manifest, read);
 const clone = () => structuredClone(MANIFEST) as typeof MANIFEST;
 
 test('inventory: the repository as it is passes', () => {
