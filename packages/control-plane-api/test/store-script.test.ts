@@ -355,7 +355,7 @@ describe('a rollout moves a store script with `to`, and canaries in the platform
     expect(text(cf.puts[0]!, 'SUBSTRAT_STORE_SCRIPT')).toBe('substrat-store-graph--canary');
     expect(text(cf.puts[0]!, STORE_RELEASE_VAR)).toBe(pins[1]!.sha256);
     expect(await refusal(canary({ driver: 'graph', to: 'a'.repeat(64) }))).toMatchObject({ status: 409 });
-    expect(await refusal(canary({ driver: 'nokind', to: pins[1]!.sha256 }))).toMatchObject({ status: 403 });
+    expect(await refusal(canary({ driver: 'nodriver', to: pins[1]!.sha256 }))).toMatchObject({ status: 403 });
   });
 });
 

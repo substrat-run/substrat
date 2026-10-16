@@ -190,7 +190,7 @@ describe('assertSandboxContract', () => {
       expect((thrown as Error).message).toMatch(message);
     };
     refused(
-      { ...manifest([own]), tenantStores: [{ binding: 'DB', driver: 'relational' }] },
+      { ...manifest([own]), tenantStores: [{ binding: 'DB', kind: 'relational' }] },
       /binding 'DB' is declared as an own store and as a per-tenant store/,
     );
     refused(
@@ -200,17 +200,17 @@ describe('assertSandboxContract', () => {
     // An own DO binding also lands under its own name, so it must not take a store's runtime name.
     const tenant = '01JABCDEFGHJKMNPQRSTVWXYZ0';
     refused(
-      { ...manifest([{ ...own, name: `DB__${tenant}` }]), tenantStores: [{ binding: 'DB', driver: 'relational' }] },
+      { ...manifest([{ ...own, name: `DB__${tenant}` }]), tenantStores: [{ binding: 'DB', kind: 'relational' }] },
       new RegExp(`binding 'DB__${tenant}' is the runtime name of per-tenant store 'DB'`),
     );
     refused(
-      { ...manifest([{ ...own, name: `ATTACHMENTS__${tenant}` }]), blobStores: [{ binding: 'ATTACHMENTS', driver: 'blob' }] },
+      { ...manifest([{ ...own, name: `ATTACHMENTS__${tenant}` }]), blobStores: [{ binding: 'ATTACHMENTS', kind: 'blob' }] },
       new RegExp(`binding 'ATTACHMENTS__${tenant}' is the runtime name of per-tenant store 'ATTACHMENTS'`),
     );
     // The twin: an own DO binding of another name is admitted beside the per-tenant store.
     ok([{ ...own, name: 'SCOPE' }]);
     expect(() =>
-      assertSandboxContract({ ...manifest([{ ...own, name: 'SCOPE' }]), tenantStores: [{ binding: 'DB', driver: 'relational' }] }),
+      assertSandboxContract({ ...manifest([{ ...own, name: 'SCOPE' }]), tenantStores: [{ binding: 'DB', kind: 'relational' }] }),
     ).not.toThrow();
   });
 });

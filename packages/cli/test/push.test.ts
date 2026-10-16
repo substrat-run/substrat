@@ -139,12 +139,12 @@ describe('readRuntimeNeeds', () => {
   it('reads a blob declared on tenantStores, which push sends as a blob store', () => {
     const dir = scratch({
       substrat: {
-        runtimeNeeds: { entry: 'src/worker.ts', tenantStores: [{ binding: 'FILES', driver: 'blob' }] },
+        runtimeNeeds: { entry: 'src/worker.ts', tenantStores: [{ binding: 'FILES', kind: 'blob' }] },
       },
     });
     expect(manifestStoresOf(readRuntimeNeeds(dir), false)).toEqual({
       tenantStores: [],
-      blobStores: [{ binding: 'FILES', driver: 'blob' }],
+      blobStores: [{ binding: 'FILES', kind: 'blob' }],
     });
   });
 
@@ -186,6 +186,14 @@ describe('readRuntimeNeeds', () => {
     const needs = readRuntimeNeeds(dir);
     expect(needs?.scopeStores).toEqual([{ binding: 'GRAPH', driver: 'graph' }]);
     expect(() => assertDeclaredScopeStores({ scopeStores: needs?.scopeStores })).toThrow(/not registered/);
+  });
+
+  // K-53's rename is a clean break, so the push says what moved rather than "driver: required".
+  it('refuses the pre-rename `kind`, naming the rename, before anything is pushed', () => {
+    const dir = scratch({
+      substrat: { runtimeNeeds: { entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] } },
+    });
+    expect(() => readRuntimeNeeds(dir)).toThrow(/scopeStores\[\]\.kind was renamed driver/);
   });
 
   it('refuses a scope-store driver the declaration does not have', () => {
