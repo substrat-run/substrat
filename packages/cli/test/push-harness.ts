@@ -22,7 +22,7 @@ export const built = existsSync(pushJs);
  *  as its manifest declares them (#1677: the host derives index migrations from those). */
 export type ModuleSpec = {
   id: string;
-  migrations?: { version: string; sql: string }[];
+  migrations?: { version: string; sql: string; moves?: unknown; discards?: unknown }[];
   searchables?: unknown[];
   lists?: unknown[];
   /** As its manifest declares them (#1995: the push derives the attachment store from these). */
