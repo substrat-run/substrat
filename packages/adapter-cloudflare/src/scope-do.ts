@@ -305,6 +305,7 @@ import { assertNoWorkerdStorage, doScopedSql, doBuiltColumnsOf, doRedactionSql, 
 import {
   actorOf,
   admitPeer,
+  boundToPeerDeclarations,
   collectPeers,
   switchPeer,
   peerSubjectRef,
@@ -1397,7 +1398,9 @@ export function defineScopeDO(
       if (highest) this.mintEventId.seedFrom(highest);
 
       const controlPlane = this.controlPlaneReader();
-      this.checker = createDoTupleChecker({ scopeSql: this.sql, controlPlane });
+      // #2263: a peer holds only what this code's declaration names, whatever the tuples say. The
+      // union is this class's code-time module set, so a promote (new code) is a new union.
+      this.checker = boundToPeerDeclarations(createDoTupleChecker({ scopeSql: this.sql, controlPlane }), () => this.peers);
     }
 
     // -- module registration (port of SqliteScopeHost.registerModule) ---------

@@ -493,6 +493,13 @@ peers: [
   runs it for one install now. Until then the calling app's panel says the target grants it
   nothing. An app that keeps no owner of record still gets this part of the reconcile: the
   permissions its version declares are added, and nothing else is changed.
+- **Narrowing it takes effect when the version is promoted.** A peer holds only what the
+  version serving the install declares. Drop a permission from a peer's entry, or drop the
+  peer, and the first call after the promote no longer has it, on every install, with no
+  reconcile in between. The grant an earlier version wrote stays in the scope as a record, but it
+  counts for nothing, and switching the peer off and on again does not bring it back. Declare
+  the permission again and the peer holds it again. A permission a tenant took away stays
+  taken away whichever way the declaration moves.
 - **It may invoke only what is listed.** Any other operation is refused `forbidden` before it
   runs. `operations: []` declares a peer that holds its permissions and invokes nothing. That
   is the shape for an app that only receives from this one.

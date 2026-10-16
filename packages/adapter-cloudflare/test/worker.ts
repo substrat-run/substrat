@@ -17,6 +17,8 @@ import {
   freshnessMod,
   liveMod,
   ownParentMod,
+  peerModNarrowed,
+  peerModWithoutCaller,
   scheduleMod,
   spineParentMod,
   journalFenceDropMod,
@@ -274,6 +276,14 @@ export const SpineDropScopeDO = defineScopeDO([spineDropMod], {});
 
 /** #113: a migration-free module set, so a wiped copy's writes reach `WriteRevision` (test/wiped-copy-module.ts). */
 export const WipedCopyScopeDO = defineScopeDO([wipedCopyMod], {});
+
+/**
+ * #2263: `peerMod` as a later version ships it — the caller narrowed, or dropped. A DO closes over
+ * its code-time module set, so each version is its own class; peer-local.test.ts provisions it
+ * through a host that registers the WIDER `peerMod`, which is the storage an earlier version left.
+ */
+export const NarrowedPeerScopeDO = defineScopeDO([peerModNarrowed], {});
+export const RemovedPeerScopeDO = defineScopeDO([peerModWithoutCaller], {});
 
 export { ControlPlaneDO };
 
