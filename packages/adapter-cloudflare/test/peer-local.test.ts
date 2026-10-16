@@ -1549,6 +1549,7 @@ describe('#2263 — a narrowed or removed peer declaration holds nothing it no l
     ]);
     expect(await refusal(host.verticalInvokeLocal(caller, t, s, 'peer/note', { id: 'w1', body: 'x' }))).toBe('permission_denied');
     await expect(host.verticalInvokeLocal(caller, t, s, 'peer/list')).resolves.toEqual([]);
+    expect((await host.peerGrantsStatusLocal(s)).find((p) => p.vertical === PEER_CALLER)?.calls).toBe('on');
   });
 
   it('the kill switch OFF then ON gives back only what the running declaration names', async () => {
@@ -1575,6 +1576,8 @@ describe('#2263 — a narrowed or removed peer declaration holds nothing it no l
       { permission: READ, held: false },
       { permission: WRITE, held: false },
     ]);
+    // The status read agrees with the door: the panel must not say its grants are active.
+    expect((await host.peerGrantsStatusLocal(s)).find((p) => p.vertical === PEER_CALLER)?.calls).toBe('ungranted');
   });
 
   it('the twin: the wider code over the same seats holds both keys', async () => {
@@ -1583,5 +1586,6 @@ describe('#2263 — a narrowed or removed peer declaration holds nothing it no l
       { permission: READ, held: true },
       { permission: WRITE, held: true },
     ]);
+    expect((await hostOn(env.SCOPE).peerGrantsStatusLocal(s)).find((p) => p.vertical === PEER_CALLER)?.calls).toBe('on');
   });
 });

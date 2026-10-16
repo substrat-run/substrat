@@ -12,6 +12,7 @@ import {
   actorOf,
   admitPeer,
   collectPeers,
+  peerGrantsStatus,
   peerSeats,
   resolvePeerInstanceFrom,
   samePeerVertical,
@@ -351,5 +352,40 @@ describe('a tenant-pinned registration is the same peer vertical, in its own ten
     expect(() => at(declare('crm'), 't-abc/crm')).toThrow(/not a declared peer/);
     // Never the reverse: a bare caller does not meet a declared pinned spelling.
     expect(() => at(declare('t-abc/crm'), 'crm', 't-abc')).toThrow(/not a declared peer/);
+  });
+});
+
+describe('#2263: the status read is bounded by the running declaration, as the checker is', () => {
+  const NOW = '2026-09-22T00:00:00.000Z';
+  const declaredWith = (permissions: string[]) => collectPeers([manifest([{ vertical: CALLER, operations: [], permissions }])]);
+  const seated = (permissions: string[]) => {
+    const { db, sql } = fresh();
+    for (const seat of peerSeats(declaredWith(permissions), S)) {
+      const st = seatScopeTuple(seat.subject, seat.relation, seat.object, null);
+      db.prepare(st.sql).run(...st.params);
+    }
+    return sql;
+  };
+
+  it('a declared key held live reads on', () => {
+    expect(peerGrantsStatus(seated(['doc:read', 'doc:write']), NOW, declaredWith(['doc:read']))).toEqual([
+      { vertical: CALLER, calls: 'on' },
+    ]);
+  });
+
+  it('a peer whose only live grants are keys the declaration dropped reads ungranted', () => {
+    expect(peerGrantsStatus(seated(['doc:write']), NOW, declaredWith(['doc:read']))).toEqual([
+      { vertical: CALLER, calls: 'ungranted' },
+    ]);
+  });
+
+  it('a peer the running code no longer declares reads ungranted, though its grants remain', () => {
+    expect(peerGrantsStatus(seated(['doc:read']), NOW, new Map())).toEqual([{ vertical: CALLER, calls: 'ungranted' }]);
+  });
+
+  it('a switched-off peer reads off whatever the declaration says', () => {
+    const sql = seated(['doc:read']);
+    switchPeer(sql, { vertical: CALLER, scopeId: S, to: 'off', at: NOW });
+    expect(peerGrantsStatus(sql, NOW, new Map())).toEqual([{ vertical: CALLER, calls: 'off' }]);
   });
 });

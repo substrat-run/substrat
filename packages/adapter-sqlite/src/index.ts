@@ -8318,7 +8318,7 @@ export class SqliteScopeHost implements ScopeHost {
       }
       const rt = this.runtime(tenantId, scopeId);
       const states: PeerGrantsRow[] = await rt.actor.turn(() =>
-        peerGrantsStatus(switchSqlOf(rt.db), new Date().toISOString()),
+        peerGrantsStatus(switchSqlOf(rt.db), new Date().toISOString(), this.peerDeclarations()),
       );
       const offPeers = new Set(states.filter((p) => p.calls === 'off').map((p) => p.vertical));
       const explanations =

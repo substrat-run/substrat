@@ -4970,7 +4970,7 @@ export function defineScopeDO(
      * unqueued read as the line above: nothing here decides a write.
      */
     async peerGrantsStatus(): Promise<PeerGrantsRow[]> {
-      return peerGrantsStatus(this.switchSql(), new Date().toISOString());
+      return peerGrantsStatus(this.switchSql(), new Date().toISOString(), this.peers);
     }
 
     /**

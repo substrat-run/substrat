@@ -54,6 +54,9 @@ describe('#2263: a narrowed or removed peer declaration (pure adapter)', () => {
   const call = (host: SqliteScopeHost, s: ReturnType<typeof scopeId.parse>, op: string, input?: unknown) =>
     host.getVerticalScope(caller, t, s).then((stub) => stub.invoke(op, input));
   const covers = (host: SqliteScopeHost, s: ReturnType<typeof scopeId.parse>) => host.peerCovers(t, s, PEER_CALLER, [READ, WRITE]);
+  /** Where the scope's status read says the caller stands — what the dashboard panel shows. */
+  const callsOf = async (host: SqliteScopeHost, s: ReturnType<typeof scopeId.parse>) =>
+    (await host.admin.peerGrantsStatus(staff, { tenantId: t, scopeId: s })).find((p) => p.vertical === PEER_CALLER)?.calls;
   /** The scope's `vertical:` grant rows, read from its file with every host closed. */
   const tuples = (s: ReturnType<typeof scopeId.parse>) => {
     const db = new Database(join(dir, `${t}__${s}.sqlite`));
@@ -101,6 +104,8 @@ describe('#2263: a narrowed or removed peer declaration (pure adapter)', () => {
       // `peer/note` checks the dropped key; `peer/list` the kept one.
       expect(await refusal(call(host, s, 'peer/note', { id: 'n1', body: 'x' }))).toBe('permission_denied');
       await expect(call(host, s, 'peer/list')).resolves.toEqual([]);
+      // It still holds a key the code declares, so the status read says its calls go through.
+      expect(await callsOf(host, s)).toBe('on');
       // A reconcile changes nothing about it: it never takes the tuple, and never needs to.
       await host.provisionScope(staff, { tenantId: t, scopeId: s });
       expect(await refusal(call(host, s, 'peer/note', { id: 'n1', body: 'x' }))).toBe('permission_denied');
@@ -116,6 +121,8 @@ describe('#2263: a narrowed or removed peer declaration (pure adapter)', () => {
     const s = await provisionedByFull();
     await serve(removed, async (host) => {
       expect(await refusal(call(host, s, 'peer/list'))).toBe('forbidden');
+      // The status read agrees with the door: the panel must not say its grants are active.
+      expect(await callsOf(host, s)).toBe('ungranted');
       expect(await covers(host, s)).toEqual([
         { permission: READ, held: false },
         { permission: WRITE, held: false },

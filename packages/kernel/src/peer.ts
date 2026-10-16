@@ -287,12 +287,16 @@ export interface PeerGrantsRow {
  * fact the DIRECTORY holds, not this storage, and the surfaces above join the two.
  *
  * Then `subjectGrantState` per subject: the SAME predicate `admitPeer` refuses on, so the
- * status a tenant reads and the answer the next call gets cannot disagree.
+ * status a tenant reads and the answer the next call gets cannot disagree. And (#2263) the same
+ * bound the checker applies (`boundToPeerDeclarations`): `on` needs a live grant of a key the
+ * RUNNING declaration names, so a peer the code no longer declares, or whose only live grants
+ * are keys it dropped, reads `ungranted` — what its next call meets. An OFF position stays `off`:
+ * it was put there on purpose and is still recorded, whatever the declaration says.
  *
  * `substr` rather than `LIKE`, as everywhere on this table: `LIKE` is case-insensitive in
  * SQLite and a Durable Object caps its patterns (#1655).
  */
-export function peerGrantsStatus(db: SwitchSql, now: string): PeerGrantsRow[] {
+export function peerGrantsStatus(db: SwitchSql, now: string, declarations: PeerDeclarations): PeerGrantsRow[] {
   const rows = db.all(
     `SELECT DISTINCT subject FROM _substrat_tuples
       WHERE substr(subject, 1, ${PEER_SUBJECT_PREFIX.length}) = '${PEER_SUBJECT_PREFIX}'
@@ -301,8 +305,22 @@ export function peerGrantsStatus(db: SwitchSql, now: string): PeerGrantsRow[] {
   ) as { subject: string }[];
   return rows.map((row) => {
     const vertical = row.subject.slice(PEER_SUBJECT_PREFIX.length);
-    return { vertical, calls: subjectGrantState(db, row.subject, now) };
+    const calls = subjectGrantState(db, row.subject, now);
+    return { vertical, calls: calls === 'on' && !holdsDeclaredKey(db, row.subject, now, declarations.get(vertical)) ? 'ungranted' : calls };
   });
+}
+
+/** Does `subject` hold a live, unexpired grant of a key `declared` names? The status read's bound. */
+function holdsDeclaredKey(db: SwitchSql, subject: string, now: string, declared: PeerDeclaration | undefined): boolean {
+  if (!declared) return false;
+  const live = db.all(
+    `SELECT relation FROM _substrat_tuples
+      WHERE subject = ? AND substr(relation, 1, 8) = 'granted:'
+        AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
+    subject,
+    now,
+  ) as { relation: string }[];
+  return live.some((row) => declared.permissions.has(row.relation.slice('granted:'.length)));
 }
 
 /**
