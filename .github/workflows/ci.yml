@@ -287,8 +287,8 @@ jobs:
       # is not re-emitted deploys every vertical behind the OLD stamp, silently.
       - run: pnpm lint:platform-entry --check
       # The store-entry checkpoint (#2289). The control plane uploads this module as a
-      # store script's main, in front of the kind, so the envelope is checked before
-      # the kind's class is constructed. A change that is not re-emitted deploys the
+      # store script's main, in front of the driver, so the envelope is checked before
+      # the driver's class is constructed. A change that is not re-emitted deploys the
       # old door.
       - run: pnpm lint:store-entry --check
       # #2245: a worker deployed with no node flag statically imports no node builtin. A shared

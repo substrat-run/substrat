@@ -440,6 +440,19 @@ and `POST /store-drivers/:driver/rollback` always goes there:
   rollout 409 until a control plane that pins it again is deployed. Pins take effect at
   control-plane deploy (D-63), and a pin is never meant to be removed.
 
+**A rollback across the store driver rename** (K-53, #2324). The release tables were named
+`store_kind_*`, keyed by `kind`, before the rename, and each start of the control plane moves a
+directory that still has them onto `store_driver_*`, rows kept. Code from before the rename, run
+again (a rollback), recreates its `store_kind_*` tables beside the moved ones. On the next start
+of later code, an empty one is dropped, and one holding rows over an empty `store_driver_*` table
+takes its place. A table holding rows under **both** names cannot be resolved by the start: it
+logs `the directory holds rows under both …`, keeps both, and every directory dump of it is
+refused at restore until one is cleared. The remedy is to restore a directory dump taken before
+the pre-rename code ran again (a restore replaces every table), or to export the `store_kind_*`
+rows, carry over any still wanted, and drop the `store_kind_*` tables by hand. Today this cannot
+arise: no driver has been registered, so no pre-rename build could write a release, rollout or
+hold.
+
 One invariant this log carries alone, worth naming: grant tuples persist no `grantedBy` —
 the tuple table stores `(subject, relation, object, expires_at, revoked_at)` and nothing
 else — so the admin log is the **only witness** of who granted what, and effective grant

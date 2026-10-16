@@ -123,6 +123,30 @@ export function legacyStoreDriverRenames(
   return statements;
 }
 
+/** What to do about a table that holds rows under both names (see {@link legacyStoreDriverRenames}). */
+const BOTH_NAMES_REMEDY =
+  'Restore a directory dump taken before the pre-rename code ran again (a restore replaces every table), ' +
+  'or export the store_kind_* rows, carry over any that are still wanted, and drop the store_kind_* tables by hand.';
+
+/**
+ * The tables that hold rows under both names, which {@link legacyStoreDriverRenames} leaves
+ * alone, as one line a start logs: until one is cleared, a directory dump carries both and a
+ * restore of it is refused. Undefined when there are none. Reachable only after a rollback to
+ * pre-rename code that wrote a release, rollout or hold, which no registered driver allowed yet.
+ */
+export function legacyStoreDriverConflict(tables: readonly string[], hasRows: (table: string) => boolean): string | undefined {
+  const held = new Set(tables.map((t) => t.toLowerCase()));
+  const both = [...LEGACY_STORE_DRIVER_TABLES].filter(
+    ([from, to]) => held.has(from) && held.has(to) && hasRows(from) && hasRows(to),
+  );
+  if (both.length === 0) return undefined;
+  return (
+    `substrat: the directory holds rows under both ${both.map(([from, to]) => `${from} and ${to}`).join(', ')}: ` +
+    `code from before the store driver rename (K-53) ran again and wrote them. Both are kept, and a directory ` +
+    `dump of it is refused at restore until one is cleared. ${BOTH_NAMES_REMEDY}`
+  );
+}
+
 /**
  * A directory dump's tables with the pre-rename names mapped onto this code's (see
  * {@link legacyStoreDriverRenames}), so a copy taken before the rename restores: the dump's rows
@@ -145,7 +169,7 @@ export function mapLegacyStoreDriverDump<
       throw substratError(
         'validation_failed',
         `restore refused: the dump carries rows in both ${legacy.name} and ${current.name}, the same table ` +
-          `before and after the store driver rename. Nothing was changed.`,
+          `before and after the store driver rename (K-53). Nothing was changed. ${BOTH_NAMES_REMEDY}`,
       );
     }
   }

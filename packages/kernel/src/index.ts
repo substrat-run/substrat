@@ -651,6 +651,7 @@ export {
   beginStoreDriverRolloutIn,
   finishStoreDriverRolloutIn,
   holdStoreDriverIn,
+  legacyStoreDriverConflict,
   legacyStoreDriverRenames,
   recordStoreDriverReleaseIn,
   releaseStoreDriverHoldIn,

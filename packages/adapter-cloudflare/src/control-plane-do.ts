@@ -84,6 +84,7 @@ import {
   VERSION_MIGRATIONS_DDL,
   VERTICAL_SCOPE_STORES_DDL,
   STORE_DRIVER_RELEASES_DDL,
+  legacyStoreDriverConflict,
   legacyStoreDriverRenames,
   beginStoreDriverRolloutIn,
   finishStoreDriverRolloutIn,
@@ -1603,6 +1604,9 @@ export class ControlPlaneDO extends DurableObject {
     // `SELECT` reads the columns here, and an emptied directory (a restore) has nothing to move.
     const tables = (this.sql.exec(`SELECT name FROM sqlite_master WHERE type = 'table'`).toArray() as unknown as { name: string }[]).map((t) => t.name);
     const hasRows = (table: string) => this.sql.exec(`SELECT 1 FROM "${table}" LIMIT 1`).toArray().length > 0;
+    // Asked before the moves below, which drop a name with no rows.
+    const bothNames = legacyStoreDriverConflict(tables, hasRows);
+    if (bothNames) console.error(bothNames);
     for (const stmt of legacyStoreDriverRenames(tables, (table) => doBuiltColumnsOf(this.sql, table), hasRows)) this.sql.exec(stmt);
     const held = holdSwitchRecords.map(switchesTableOf);
     for (const stmt of DIRECTORY_DDL_PLAN.loop) {

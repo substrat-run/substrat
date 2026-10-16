@@ -5,7 +5,7 @@
  * reach cheaply.
  */
 import { describe, expect, it } from 'vitest';
-import { legacyStoreDriverRenames } from '../src/index.js';
+import { legacyStoreDriverConflict, legacyStoreDriverRenames } from '../src/index.js';
 import { mapLegacyStoreDriverDump } from '../src/store-driver-releases.js';
 
 const RELEASE_COLUMNS = ['kind', 'sha256', 'source_commit', 'uploaded_by', 'uploaded_at'];
@@ -64,6 +64,22 @@ describe('legacyStoreDriverRenames', () => {
   });
 });
 
+describe('legacyStoreDriverConflict', () => {
+  const tables = ['store_kind_releases', 'store_driver_releases', 'store_kind_holds', 'store_driver_holds'];
+
+  it('names every table holding rows under both names, and the remedy', () => {
+    const line = legacyStoreDriverConflict(tables, rowsIn(...tables));
+    expect(line).toContain('store_kind_releases and store_driver_releases, store_kind_holds and store_driver_holds');
+    expect(line).toMatch(/refused at restore until one is cleared/);
+    expect(line).toMatch(/Restore a directory dump taken before .* or export the store_kind_\* rows/);
+  });
+
+  it('is silent when either name is empty, or only one name exists: the start resolves those itself', () => {
+    expect(legacyStoreDriverConflict(tables, rowsIn('store_kind_releases', 'store_driver_holds'))).toBeUndefined();
+    expect(legacyStoreDriverConflict(['store_kind_releases'], rowsIn('store_kind_releases'))).toBeUndefined();
+  });
+});
+
 describe('mapLegacyStoreDriverDump', () => {
   it('maps an old table’s name and key column, and the binding record’s column, and leaves the rest', () => {
     const tenants = { name: 'tenants', columns: ['tenant_id', 'kind'], rows: [] };
@@ -101,7 +117,7 @@ describe('mapLegacyStoreDriverDump', () => {
 
     it('refuses it when both hold rows', () => {
       expect(() => mapLegacyStoreDriverDump([legacy([['graph', 'a']]), current([['graph', 'b']])])).toThrow(
-        /carries rows in both store_kind_holds and store_driver_holds/,
+        /carries rows in both store_kind_holds and store_driver_holds.*Restore a directory dump taken before/,
       );
     });
   });

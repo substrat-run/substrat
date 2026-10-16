@@ -504,6 +504,7 @@ import {
   driverDeclarationsOf,
   verticalScopeStoresOf,
   STORE_DRIVER_RELEASES_DDL,
+  legacyStoreDriverConflict,
   legacyStoreDriverRenames,
   beginStoreDriverRolloutIn,
   finishStoreDriverRolloutIn,
@@ -2735,6 +2736,9 @@ export class SqliteScopeHost implements ScopeHost {
     // `applyDirectorySchema` would only create empty tables beside them.
     const tables = (this.directory.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as { name: string }[]).map((t) => t.name);
     const hasRows = (table: string) => this.directory.prepare(`SELECT 1 FROM "${table}" LIMIT 1`).get() !== undefined;
+    // Asked before the moves below, which drop a name with no rows.
+    const bothNames = legacyStoreDriverConflict(tables, hasRows);
+    if (bothNames) console.error(bothNames);
     for (const stmt of legacyStoreDriverRenames(tables, (table) => builtColumnsOf(this.directory, table), hasRows)) this.directory.exec(stmt);
     // #1764: `VERSION_MIGRATIONS_DDL` indexes these two columns, so a directory created
     // before them needs them before `applyDirectorySchema` reaches that statement.

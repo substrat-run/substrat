@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { platformActorId } from '@substrat-run/contracts';
 import { STORE_KIND_RELEASES_DDL_BEFORE_RENAME } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
@@ -157,7 +157,16 @@ describe('a directory built before the store driver rename (K-53)', () => {
           'INSERT INTO store_kind_releases (kind, sha256, source_commit, uploaded_by, uploaded_at) VALUES (?, ?, ?, ?, ?)',
         ).run('graph', other, 'd'.repeat(40), staff, '2026-10-16T00:00:00.000Z');
       });
-      await new SqliteScopeHost({ dir }).close();
+      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        await new SqliteScopeHost({ dir }).close();
+        // The one case the start cannot resolve is said, with what to do, rather than found at a restore.
+        expect(logged.mock.calls.flat().join('\n')).toMatch(
+          /rows under both store_kind_releases and store_driver_releases: .*Restore a directory dump taken before/,
+        );
+      } finally {
+        logged.mockRestore();
+      }
       const db = new Database(join(dir, '_directory.sqlite'), { readonly: true });
       try {
         expect(db.prepare('SELECT driver, holder FROM store_driver_holds').all()).toEqual([{ driver: 'graph', holder: 'h1' }]);

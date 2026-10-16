@@ -343,6 +343,7 @@ export const INDEX_VALUE_EXPORTS = [
   'jobRunListLimit',
   'jobRunOf',
   'kernelJobFor',
+  'legacyStoreDriverConflict',
   'legacyStoreDriverRenames',
   'lifecycleReceipt',
   'lifecycleRefusal',
