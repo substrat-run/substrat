@@ -79,3 +79,14 @@ test('only a toMatchObject CALL is read, not a mention of the name', () => {
   assert.deepEqual(findBareRegExps('const m = { toMatchObject: 1, a: /z/ };'), []);
   assert.deepEqual(findBareRegExps('expect(m.toMatchObject).toBeDefined(); const r = { a: /z/ };'), []);
 });
+
+test('reads toMatchObject<T>(…) with a type argument, arrow types included', () => {
+  assert.deepEqual(lines('expect(x).toMatchObject<Row>({ a: /z/ });'), [1]);
+  assert.deepEqual(lines('expect(x).toMatchObject<{ f: (a: A) => B }>({ a: /z/ });'), [1]);
+  assert.deepEqual(findBareRegExps('expect(x).toMatchObject<Row>({ a: expect.stringMatching(/z/) });'), []);
+  assert.deepEqual(findBareRegExps('const c = a < b; const r = { a: /z/ };'), []);
+});
+
+test('a [/] class does not end the literal early and hide the next violation', () => {
+  assert.deepEqual(lines('expect(x).toMatchObject({\n  a: /[/]z/,\n  b: /q/,\n});'), [2, 3]);
+});

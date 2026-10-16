@@ -27,7 +27,9 @@
  * regex literals are lexed, so a message that mentions `toMatchObject({ a: /x/ })` is not
  * accused. What it cannot see is a pattern reached through a variable
  * (`const expected = { a: /re/ }; …toMatchObject(expected)`); that needs the type checker.
- * Division vs. regex after `)` / `]` / `}` is read as division, so a regex literal that
+ * A JSX closing tag or `x++ / 2` on a line can be read as the start of a regex and swallow the
+ * rest of THAT line. This scans git-tracked files only (`lint:tests`), so a new file is read
+ * once it is added. Division vs. regex after `)` / `]` / `}` is read as division, so a regex literal that
  * starts a statement right after one of those is not seen — nothing a matcher argument does.
  */
 
@@ -161,11 +163,24 @@ export function findBareRegExps(src) {
   const found = [];
   for (let k = 0; k < t.length; k += 1) {
     if (t[k].text !== 'toMatchObject' || t[k].kind !== 'word') continue;
-    // `?.(` is two tokens; accept `toMatchObject(` only.
-    if (t[k + 1]?.text !== '(') continue;
+    // `toMatchObject<T>(` carries a type argument: skip the balanced `<…>` (a `=>` inside it
+    // is an arrow type, not a closer). `?.(` is two tokens; accept `toMatchObject(` only.
+    let open = k + 1;
+    if (t[open]?.text === '<') {
+      let depth = 0;
+      for (; open < t.length; open += 1) {
+        if (t[open].kind !== 'punct') continue;
+        if (t[open].text === '<') depth += 1;
+        else if (t[open].text === '>' && t[open - 1].text !== '=' && (depth -= 1) === 0) {
+          open += 1;
+          break;
+        }
+      }
+    }
+    if (t[open]?.text !== '(') continue;
     /** Each open bracket on the way down: true when it is a call's argument list. */
     const stack = [{ open: '(', call: false }];
-    let j = k + 2;
+    let j = open + 1;
     for (; j < t.length && stack.length > 0; j += 1) {
       const tok = t[j];
       if (tok.kind === 'punct' && (tok.text === '(' || tok.text === '[' || tok.text === '{')) {
