@@ -89,4 +89,6 @@ test('reads toMatchObject<T>(…) with a type argument, arrow types included', (
 
 test('a [/] class does not end the literal early and hide the next violation', () => {
   assert.deepEqual(lines('expect(x).toMatchObject({\n  a: /[/]z/,\n  b: /q/,\n});'), [2, 3]);
+  // Read early, the `'` after the class opens a string that runs to the end of the line.
+  assert.equal(findBareRegExps("expect(x).toMatchObject({ a: /[/]'/, b: /q/ });").length, 2);
 });
