@@ -8,6 +8,7 @@
 '@substrat-run/control-plane-client': patch
 '@substrat-run/cli': patch
 '@substrat-run/control-plane': patch
+'@substrat-run/dashboard-web': patch
 ---
 
 Scope stores: a key revocation or a store entry fix now reaches every store script without a push (#2309).
