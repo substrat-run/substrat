@@ -178,10 +178,10 @@ export async function doctor(values: Readonly<Record<string, string>>, stagedFil
   }
   const staged = { caller: [], platform: [] } as Record<ScopeStoreAudience, (Signer & { label: string })[]>;
   for (const file of stagedFiles) {
-    const entries = Object.entries(parseEnvText(file.text));
+    const entries = Object.entries(parseEnvText(file.text) as Record<string, string>);
     const audience = AUDIENCES.find((aud) => entries.length === 1 && entries[0]![0] === STORE_KEY_AUDIENCES[aud].privateKey);
     if (!audience) {
-      findings.push({ level: 'error', subject: file.label, check: `is not one STORE_CALLER_KEY= or STORE_PLATFORM_KEY= line, as generate writes` });
+      findings.push({ level: 'error', subject: file.label, check: 'is not one STORE_CALLER_KEY= or STORE_PLATFORM_KEY= line, as generate writes' });
       continue;
     }
     const signer = await readSigner(file.label, entries[0]![1], findings);
