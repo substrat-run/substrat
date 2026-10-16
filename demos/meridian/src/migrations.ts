@@ -155,6 +155,12 @@ export const meridianMigrations = [
     DROP TABLE hr_leave_requests;
     DROP TABLE hr_absence_ledger;
   `,
+    // #115: the rows move into the engine's tables, which the kernel verifies (each target must
+    // gain what its source held) before it lets the two tables go.
+    moves: {
+      hr_leave_requests: 'absence_requests',
+      hr_absence_ledger: 'absence_ledger',
+    },
   },
   // boundary-lint-end R5
 ];

@@ -210,6 +210,12 @@ export const invoicingMigrations = [
       DROP TABLE invoicing_lines;
       ALTER TABLE invoicing_lines_new RENAME TO invoicing_lines;
     `,
+    // #115: the document reference moves out of `source_*`, which the kernel would otherwise
+    // read as those values being lost. Verified: `document_*` must gain what `source_*` held.
+    moves: {
+      'invoicing_lines.source_type': 'invoicing_lines.document_type',
+      'invoicing_lines.source_id': 'invoicing_lines.document_id',
+    },
   },
 ];
 

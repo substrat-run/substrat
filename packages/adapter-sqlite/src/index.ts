@@ -1299,6 +1299,12 @@ const KERNEL_DDL = `
   ${OUTBOX_ENTITY_INDEX}
 `;
 
+/**
+ * The scope spine a fresh scope gets, for a tool that replays a vertical's migrations outside a
+ * host — `pnpm lint:migration-fence` (#115), whose reviewed spine migrations read and write it.
+ */
+export const SCOPE_SPINE_DDL: string = KERNEL_DDL;
+
 /** An executor or a connector — same journal and retry, different argument. */
 type RegisteredEffector =
   | {
