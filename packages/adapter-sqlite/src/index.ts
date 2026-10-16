@@ -2742,6 +2742,8 @@ export class SqliteScopeHost implements ScopeHost {
       this.ensureColumn(this.directory, 'vertical_versions', 'migrations_split', 'migrations_split INTEGER');
     }
     this.applyDirectorySchema();
+    // #2322: a migration's declared moves and discards, on a table created before they were carried.
+    this.ensureColumn(this.directory, 'vertical_version_migrations', 'declarations', 'declarations TEXT');
   }
 
   /**
