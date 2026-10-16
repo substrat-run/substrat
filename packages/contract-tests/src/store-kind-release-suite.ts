@@ -417,6 +417,15 @@ export function storeKindReleaseContractSuite(adapterName: string, makeFixture: 
         await host.admin.deleteVertical(staff, d);
         expect(await pending(kind, sha('1'))).toMatchObject({ verticals: [target(b, again)], pending: 1, walked: 1 });
 
+        // A request that stops without any end (its invocation died after uploads it never
+        // recorded) leaves its row rolling and the ledger as it was. The next request continues
+        // nothing: it walks everything again rather than trust a ledger a stopped request followed.
+        const stopped = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('1'), action: 'rollout', holder });
+        await host.admin.releaseStoreKindHold(staff, { kind, holder });
+        expect((await host.admin.storeKindState(staff, kind)).rollouts.find((r) => r.seq === stopped.seq)?.state).toBe('diverged');
+        expect(await pending(kind, sha('1'))).toMatchObject({ pending: 2, walked: 0 });
+        expect(await host.admin.holdStoreKind(staff, { kind, holder, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
+
         // A failed end drops the ledger: the next request walks everything again.
         const third = await host.admin.beginStoreKindRollout(staff, { kind, sha256: sha('1'), action: 'rollout', holder });
         await host.admin.finishStoreKindRollout(staff, { kind, seq: third.seq, holder, state: 'failed', detail: 'x' });
