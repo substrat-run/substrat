@@ -261,7 +261,7 @@ export function flattenDeclaredMigrations(
 
 /** The promotion gate covers store classes and every SQL migration the host would apply.
  * Hash SQL separately so the digest input stays small even for an omitted manifest list. */
-async function migrationDigest(
+export async function migrationDigest(
   doClasses: string[],
   declared: ReturnType<typeof flattenDeclaredMigrations>,
 ): Promise<string> {
