@@ -84,7 +84,7 @@ scheduleContractSuite('adapter-yours', async () => { /* default checker */ });
 Every adapter suite takes the same `(adapterName, makeFixture)` pair, except
 `directoryRestoreSuite`, which takes a directory harness, and `scopeStoreRunnerContractSuite`,
 which is not an adapter suite at all — a store driver runs it against its runner, and the
-package holds it on the trivial kind in its own `test/`; the one thing that varies is which
+package holds it on the trivial driver in its own `test/`; the one thing that varies is which
 checker the fixture is built with, and the table says which and why. Every
 suite above is one an *adapter* runs. One more, `entityCheckConformanceSuite`, holds a
 **vertical or engine** to its declarations rather than an adapter to the contract, and has
