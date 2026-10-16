@@ -161,3 +161,74 @@ describe('the backfill opens past a failed batch, never past the database itself
     expect(isStorageFault(null)).toBe(false);
   });
 });
+
+/**
+ * #2322 on the pure adapter: a directory whose `vertical_version_migrations` predates the
+ * `declarations` column. Opening it adds the column, its rows read as declaring nothing, and a
+ * version published since stores and reads its declarations — after a restore of a dump of the
+ * older shape too.
+ */
+describe('a directory from before #2322, opened by this code', () => {
+  let dir: string | undefined;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+
+  const staff = platformActorId.parse('01JZ00000000000000000000ST');
+  const plain = [{ moduleId: 'helpdesk', version: '0001-init', sql: 'CREATE TABLE a (id TEXT);' }];
+  const declared = [{ ...plain[0]!, discards: { 'a.note': 'never read' } }];
+  const manifest = (version: string, migrations: unknown[]) =>
+    JSON.stringify({
+      version, entry: 'i.js', compatibilityDate: '2026-07-01',
+      registry: { permissions: [], roles: [], entityGrants: [] },
+      digests: { manifest: 'm', permission: 'p', migration: 'g' }, migrations,
+    });
+  const publish = (host: SqliteScopeHost, id: string, version: string, migrations: unknown[]) =>
+    host.admin.publishVersion(staff, {
+      id, verticalSlug: 'acme', version, manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g',
+      deploymentRef: null, manifestJson: manifest(version, migrations),
+    });
+
+  const older = ulid();
+  const plant = async (): Promise<DirectoryDump> => {
+    dir = mkdtempSync(join(tmpdir(), 'version-declarations-'));
+    const host = new SqliteScopeHost({ dir });
+    await host.admin.registerVertical(staff, { slug: 'acme', name: 'Acme', source: 'builtin' });
+    await publish(host, older, '1.0.0', plain);
+    await host.close();
+    const db = new Database(join(dir, '_directory.sqlite'));
+    db.exec('ALTER TABLE vertical_version_migrations DROP COLUMN declarations');
+    const defs = db
+      .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL`)
+      .all() as { name: string; sql: string }[];
+    const tables = defs.map(({ name, sql }) => {
+      const stmt = db.prepare(`SELECT * FROM "${name}"`).raw(true);
+      return { name, ddl: sql, rows: stmt.all() as unknown[][], columns: stmt.columns().map((c) => c.name) };
+    });
+    db.close();
+    return { capturedAt: new Date().toISOString(), tables };
+  };
+
+  const check = async (host: SqliteScopeHost) => {
+    expect(await host.admin.versionMigrations(staff, 'acme', older)).toEqual(plain);
+    const id = ulid();
+    await publish(host, id, `1.1.${id.toLowerCase()}`, declared);
+    expect(await host.admin.versionMigrations(staff, 'acme', id)).toEqual(declared);
+  };
+
+  it('opens, adds the column, and reads the older rows as declaring nothing', async () => {
+    await plant();
+    const host = new SqliteScopeHost({ dir: dir! });
+    await check(host);
+    await host.close();
+  });
+
+  it('and a restore of a dump of the older shape does the same', async () => {
+    const before = await plant();
+    const host = new SqliteScopeHost({ dir: dir! });
+    await host.admin.restoreDirectory(staff, before);
+    await check(host);
+    await host.close();
+  });
+});

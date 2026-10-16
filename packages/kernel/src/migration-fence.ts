@@ -58,9 +58,14 @@
  * unqualified statement after it. An authored migration that makes one is refused before it runs,
  * on both adapters, and every measuring read names `main` so nothing else can answer for a table.
  *
+ * **ATTACH and DETACH are refused** for the same first reason (#2321): a Durable Object refuses
+ * them, so the migration could never run hosted. And an attached database is a FILE, which the
+ * fence does not measure and a replay outside a host (`substrat push`) would otherwise create on
+ * the machine running it. Refused before anything runs, on both adapters.
+ *
  * Kernel-derived DDL is exempt: its tables are indexes, rebuilt from the data this protects.
  */
-import { namesSpineTable, substratError, tokenizeSql } from '@substrat-run/contracts';
+import { blankReason, namesSpineTable, substratError, tokenizeSql } from '@substrat-run/contracts';
 import type { ScopedSql, SqlMigration } from './scope-host.js';
 import { DO_SQL_LIMITS } from './sql-limits.js';
 import { executableSqlStatements } from './sql-statements.js';
@@ -387,6 +392,12 @@ function createsTemp(statement: string): boolean {
   return w[at] !== undefined && schemaAndName(w[at]!).schema === 'temp';
 }
 
+/** A statement that attaches or detaches a database: `ATTACH [DATABASE] …`, `DETACH [DATABASE] …`. */
+function attaches(statement: string): boolean {
+  const w = words(statement);
+  return w[0] !== undefined && !w[0].quoted && (w[0].text === 'attach' || w[0].text === 'detach');
+}
+
 /**
  * What a declaration counts: a column's values per class, or a table's rows — carried in one
  * class slot so a move compares tables and columns with the same loop.
@@ -486,8 +497,24 @@ export function fenceMigration(sql: ScopedSql, migration: SqlMigration, key: str
       'migration_temp',
     );
   }
+  const attach = statements.find(attaches);
+  if (attach !== undefined) {
+    throw declarationError(
+      key,
+      `it attaches or detaches a database (\`${attach.slice(0, 80)}\`). A Durable Object refuses ATTACH and DETACH, so this ` +
+        'migration cannot run on the hosted adapter, and an attached database is a file outside the scope the fence protects. ' +
+        "Keep the migration inside the scope's own database",
+      'migration_attach',
+    );
+  }
   const moves = Object.entries(migration.moves ?? {});
   const discards = Object.entries(migration.discards ?? {});
+  // The push boundary refuses a `__proto__` declaration key, which a record parsed from JSON would
+  // silently drop (#2322); refusing it here too means the author hears it at lint time, not when
+  // the push leaves the migrations off.
+  for (const [what, record] of [['moves', migration.moves], ['discards', migration.discards]] as const) {
+    if (record && Object.hasOwn(record, '__proto__')) throw declarationError(key, `${what} names __proto__, which a declaration cannot carry`);
+  }
   if (moves.length === 0 && discards.length === 0 && statements.every(additive)) {
     run();
     return;
@@ -506,7 +533,9 @@ export function fenceMigration(sql: ScopedSql, migration: SqlMigration, key: str
   const parsedDiscards = discards.map(([spec, why]) => {
     const target = targetOf(spec);
     if (!target) throw declarationError(key, `discards: { '${spec}': … } is not 'table' or 'table.column'`);
-    if (typeof why !== 'string' || why.trim() === '') throw declarationError(key, `discards: { '${spec}': … } gives no reason; the reason is what a reviewer reads`);
+    // The push boundary's own rule (`blankReason`): a reason of only whitespace or invisible
+    // characters says nothing a reviewer can read, so neither side accepts it (#2322).
+    if (typeof why !== 'string' || blankReason(why)) throw declarationError(key, `discards: { '${spec}': … } gives no reason; the reason is what a reviewer reads`);
     if (!countOf(before, target)) throw declarationError(key, `discards names ${show(target)}, which this scope does not hold before the migration`);
     return target;
   });

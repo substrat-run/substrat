@@ -49,7 +49,7 @@ export { causedByMod } from './caused-by-module.js';
 export { membershipExecutorContractSuite } from './membership-executor-suite.js';
 export { findingsContractSuite } from './findings-suite.js';
 export { scopeStoreContractSuite } from './scope-store-suite.js';
-// #2213: what a kind's own runner passes, and the trivial kind both suites run.
+// #2213: what a driver's own runner passes, and the trivial driver both suites run.
 export { scopeStoreRunnerContractSuite, type ScopeStoreRunnerFixture } from './scope-store-runner-suite.js';
 export { counterScopeStoreRunner } from './counter-runner.js';
 export { findingsAtomicContractSuite, type DirectoryExec } from './findings-atomic-suite.js';
@@ -76,11 +76,11 @@ export { scopeRepointContractSuite } from './scope-repoint-suite.js';
 export { sqlLimitsContractSuite } from './sql-limits-suite.js';
 export { grantExpiryContractSuite } from './grant-expiry-suite.js';
 export {
-  storeKindHoldExpiryContractSuite,
-  storeKindReleaseContractSuite,
-  type StoreKindHoldExpiryFixture,
-  type StoreKindReleaseFixture,
-} from './store-kind-release-suite.js';
+  storeDriverHoldExpiryContractSuite,
+  storeDriverReleaseContractSuite,
+  type StoreDriverHoldExpiryFixture,
+  type StoreDriverReleaseFixture,
+} from './store-driver-release-suite.js';
 export { facetRecencyContractSuite, type FacetRecencyFixture } from './facet-recency-suite.js';
 export type { GrantExpiryFixture } from './grant-expiry-suite.js';
 export { entityCheckConformanceSuite, planEntityCheckCoverage } from './entity-check-suite.js';
@@ -140,6 +140,7 @@ export {
   type ConnectorCall,
 } from './connector-fixture.js';
 export { directoryRestoreSuite, type DirectoryRestoreHarness, type RestorableDirectory } from './directory-restore-suite.js';
+export { STORE_KIND_RELEASES_DDL_BEFORE_RENAME } from './directory-shapes.js';
 export { SPLIT_CASES } from './split-cases.js';
 export { migrationCommentsContractSuite } from './migration-comments-suite.js';
 export { commentedDdlMod } from './migration-comments.js';

@@ -152,17 +152,17 @@ export {
   ROLLOUT_VERTICALS_PER_REQUEST,
   canaryObjectName,
   canaryStoreRelease,
-  decodeStoreKindRelease,
-  runStoreKindRollout,
-  storeKindRelease,
+  decodeStoreDriverRelease,
+  runStoreDriverRollout,
+  storeDriverRelease,
   storeReleaseKey,
   storedReleaseLoader,
   type CanaryCall,
-  type StoreKindRolloutDeps,
-  type StoreKindRolloutResult,
+  type StoreDriverRolloutDeps,
+  type StoreDriverRolloutResult,
   type StoreReleaseBytes,
 } from './store-releases.js';
-export type { ScopeStoreEnsurerOptions, StoreKindReleaseArtifact } from './store-script.js';
+export type { ScopeStoreEnsurerOptions, StoreDriverReleaseArtifact } from './store-script.js';
 export {
   withPlatformEntry,
   platformEntrySkipReason,
@@ -181,7 +181,7 @@ export {
   STORE_RESERVED_MODULES,
   STORE_VERIFIER_MODULE,
 } from './store-entry.js';
-export type { StoreEntryOptions, PythonStoreKindRelease, PythonStoreScript } from './store-entry.js';
+export type { StoreEntryOptions, PythonStoreDriverRelease, PythonStoreScript } from './store-entry.js';
 export type {
   WfpUploaderOptions,
   PatchScriptBindingsFn,

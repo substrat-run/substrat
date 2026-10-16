@@ -341,8 +341,8 @@ derivation from operations; context assembly (§7); and the handoff.
 2. **A Durable Object per thread** holding the WebSocket (hibernating) and the in-flight run,
    with the engine still the record. This is a platform-run object per scope, which is exactly
    what [scope-stores.md](scope-stores.md) and [K-49](../decisions/K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md)
-   (proposed) describe as a *kind*. I have not checked whether the assistant fits that
-   mechanism; it looks like a natural first non-trivial kind.
+   (proposed) describe as a *driver*. I have not checked whether the assistant fits that
+   mechanism; it looks like a natural first non-trivial driver.
 3. **Cloudflare's `AIChatAgent` in the vertical's worker.** Rejected in §3.1.
 
 **P0 ran both** ([spikes/assistant-thread/FINDINGS.md](../../spikes/assistant-thread/FINDINGS.md),
@@ -375,7 +375,7 @@ nothing more. A tool step waits until a client with a live session attaches. So 
 object holds no credential, and the record carries where the run is, not what it may do.
 
 The protocol in §5.1 is identical either way, so the choice does not leak to clients. How a
-vertical is given the object (a scope-store kind, or a class the uploader supplies as it does
+vertical is given the object (a scope-store driver, or a class the uploader supplies as it does
 for the scope sweeper) is still open.
 
 ### 5.4 Inference
@@ -1063,7 +1063,7 @@ is the real critical path.
    coordinator over a placement-agnostic loop and record, with request plus `waitUntil` as the
    fallback shape (§5.3). **Working decision for P1: take that recommendation.** Deployed
    confirmation (P0b) happens on the dashboard's preview deploy. How the object is provided to
-   a *vertical* (a scope-store kind, or a class the uploader supplies) is deferred; the
+   a *vertical* (a scope-store driver, or a class the uploader supplies) is deferred; the
    dashboard declares its own.
 3. **Engine name and scope.** `engine-assistant` (recommended, to avoid colliding with ticket0's
    own "conversation"), and whether participants and handoff belong in it or in a vertical's

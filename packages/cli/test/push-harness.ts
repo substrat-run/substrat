@@ -22,7 +22,7 @@ export const built = existsSync(pushJs);
  *  as its manifest declares them (#1677: the host derives index migrations from those). */
 export type ModuleSpec = {
   id: string;
-  migrations?: { version: string; sql: string }[];
+  migrations?: { version: string; sql: string; moves?: Record<string, string>; discards?: Record<string, string> }[];
   searchables?: unknown[];
   lists?: unknown[];
   /** As its manifest declares them (#1995: the push derives the attachment store from these). */
@@ -32,6 +32,9 @@ export type ModuleSpec = {
 /** The workspace kernel, linked into a fixture the way a vertical's node_modules has it. */
 const workspaceKernel = fileURLToPath(new URL('../../kernel', import.meta.url));
 export const kernelBuilt = existsSync(join(workspaceKernel, 'dist', 'index.js'));
+/** The workspace adapter-sqlite, whose `SCOPE_SPINE_DDL` the data-loss replay builds first (#2321). */
+const workspaceAdapterSqlite = fileURLToPath(new URL('../../adapter-sqlite', import.meta.url));
+export const adapterSqliteBuilt = existsSync(join(workspaceAdapterSqlite, 'dist', 'index.js'));
 
 export const STORES = [{ binding: 'SCOPE', class: 'ScopeDO' }];
 
@@ -39,7 +42,7 @@ export function vertical(
   modules: ModuleSpec[],
   stores: { binding: string; class: string }[] = STORES,
   /** `needs`: further `runtimeNeeds` fields, beside `entry` and `stores`. */
-  opts: { kernel?: boolean; needs?: Record<string, unknown> } = {},
+  opts: { kernel?: boolean; adapterSqlite?: boolean; needs?: Record<string, unknown> } = {},
 ): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'substrat-cli-migrations-')));
   writeFileSync(
@@ -66,18 +69,23 @@ export function vertical(
     mkdirSync(join(dir, 'node_modules', '@substrat-run'), { recursive: true });
     symlinkSync(workspaceKernel, join(dir, 'node_modules', '@substrat-run', 'kernel'), 'dir');
   }
+  if (opts.adapterSqlite) {
+    mkdirSync(join(dir, 'node_modules', '@substrat-run'), { recursive: true });
+    symlinkSync(workspaceAdapterSqlite, join(dir, 'node_modules', '@substrat-run', 'adapter-sqlite'), 'dir');
+  }
   writeFileSync(join(dir, 'perms.mjs'), `export const permissions = ${JSON.stringify({ modules: entries, roles: [] })};\n`);
   return dir;
 }
 
 const RUNNER = `
-const [pushJs, dir] = process.argv.slice(2);
+const [pushJs, dir, extra] = process.argv.slice(2);
 const { push } = await import(pushJs);
 globalThis.fetch = async (_url, init) => {
   process.stdout.write('\\nMANIFEST ' + init.body.get('manifest') + '\\n');
   return new Response(JSON.stringify({ id: 'v', admission: 'admitted', deploymentRef: 'r', verticalSlug: 'helpdesk' }));
 };
-await push({ dir, slug: 'helpdesk', version: '1.0.0', controlPlaneUrl: 'http://cp.invalid', authHeader: {}, skipLint: true });
+const v = await push({ dir, slug: 'helpdesk', version: '1.0.0', controlPlaneUrl: 'http://cp.invalid', authHeader: {}, skipLint: true, ...JSON.parse(extra) });
+process.stdout.write('\\nDATALOSS ' + JSON.stringify(v.dataLoss) + '\\n');
 `;
 
 export function pushed(dir: string): DeployManifest {
@@ -92,7 +100,11 @@ export function pushedWith(dir: string): { manifest: DeployManifest; stderr: str
 }
 
 /** The push as a process: its exit status and both streams, uploaded or not. */
-export function pushRun(dir: string): { status: number | null; stdout: string; stderr: string } {
+export function pushRun(
+  dir: string,
+  /** Further `PushOptions`, e.g. `{ requireDataLossCheck: true }`. */
+  extra: Record<string, unknown> = {},
+): { status: number | null; stdout: string; stderr: string } {
   const scratch = mkdtempSync(join(tmpdir(), 'substrat-cli-push-'));
   // An `npx` that "builds" by writing the entry module into wrangler's --outdir.
   writeFileSync(
@@ -102,7 +114,7 @@ export function pushRun(dir: string): { status: number | null; stdout: string; s
   );
   const runner = join(scratch, 'run.mjs');
   writeFileSync(runner, RUNNER);
-  const r = spawnSync(process.execPath, [runner, pushJs, dir], {
+  const r = spawnSync(process.execPath, [runner, pushJs, dir, JSON.stringify(extra)], {
     encoding: 'utf8',
     env: { ...process.env, PATH: `${scratch}:${process.env.PATH ?? ''}`, GITHUB_ACTIONS: '' },
   });

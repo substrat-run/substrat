@@ -109,7 +109,7 @@ import {
   scope as scopeSchema,
   tenant as tenantSchema,
   tenantRole,
-  type AdminAction,
+  type WrittenAdminAction,
   type ConnectLink,
   type ConnectLinkConsume,
   type ConnectLinkFilter,
@@ -281,7 +281,7 @@ import {
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
   attachmentBlobKey,
-  UPLOAD_LINK_WRONG_TARGET,
+  normalizeUploadMediaType,
   type UploadLinkRedeemInput,
   attachmentSha256,
   entitlementDenial,
@@ -508,13 +508,12 @@ import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsEra
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import type {
-  StoreKindHoldMode,
-  StoreKindReleaseRecord,
-  StoreKindRolloutAction,
-  StoreKindRolloutRecord,
-  StoreKindRolloutState,
-  StoreKindRolloutTarget,
-  StoreKindState,
+  StoreDriverHoldMode,
+  StoreDriverReleaseRecord,
+  StoreDriverRolloutAction,
+  StoreDriverRolloutRecord,
+  StoreDriverRolloutState,
+  StoreDriverState,
 } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
@@ -678,44 +677,36 @@ interface ControlPlaneStub {
       tenant_id: string;
       vertical: string;
       binding: string;
-      kind: string;
+      driver: string;
       ref: string;
       created_at: string;
     }[]
   >;
-  recordStoreKindRelease(input: { kind: string; sha256: string; sourceCommit: string; actor: string; at: string }): Promise<{
-    record: StoreKindReleaseRecord;
+  recordStoreDriverRelease(input: { driver: string; sha256: string; sourceCommit: string; actor: string; at: string }): Promise<{
+    record: StoreDriverReleaseRecord;
     created: boolean;
   }>;
-  getStoreKindRelease(kind: string, sha256: string): Promise<StoreKindReleaseRecord | undefined>;
-  storeKindState(kind: string): Promise<StoreKindState>;
-  storeKindDeclarations(kind: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
-  storeKindRolloutPending(input: { kind: string; sha256: string; action: StoreKindRolloutAction; limit: number }): Promise<{
-    verticals: StoreKindRolloutTarget[];
-    pending: number;
-    walked: number;
-    unreadable: string[];
-  }>;
-  storeKindRolloutWalked(input: { kind: string; seq: number; limit: number }): Promise<{ verticals: StoreKindRolloutTarget[]; walked: number }>;
-  holdStoreKind(input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): Promise<boolean>;
-  releaseStoreKindHold(input: { kind: string; holder: string }): Promise<void>;
-  beginStoreKindRollout(input: {
-    kind: string;
+  getStoreDriverRelease(driver: string, sha256: string): Promise<StoreDriverReleaseRecord | undefined>;
+  storeDriverState(driver: string): Promise<StoreDriverState>;
+  storeDriverDeclarations(driver: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
+  holdStoreDriver(input: { driver: string; holder: string; mode: StoreDriverHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): Promise<boolean>;
+  releaseStoreDriverHold(input: { driver: string; holder: string }): Promise<void>;
+  beginStoreDriverRollout(input: {
+    driver: string;
     sha256: string;
-    action: StoreKindRolloutAction;
+    action: StoreDriverRolloutAction;
     holder: string;
     actor: string;
     at: string;
-  }): Promise<StoreKindRolloutRecord>;
-  finishStoreKindRollout(input: {
-    kind: string;
+  }): Promise<StoreDriverRolloutRecord>;
+  finishStoreDriverRollout(input: {
+    driver: string;
     seq: number;
     holder: string;
-    state: Exclude<StoreKindRolloutState, 'rolling'>;
+    state: Exclude<StoreDriverRolloutState, 'rolling'>;
     detail: string | null;
-    walked?: readonly StoreKindRolloutTarget[];
     at: string;
-  }): Promise<StoreKindRolloutRecord>;
+  }): Promise<StoreDriverRolloutRecord>;
   getBlobStore(
     tenantId: string,
     vertical: string,
@@ -1642,11 +1633,12 @@ interface ScopeStubRpc {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<DoReply<AttachmentRecord>>;
-  /** Look an upload link up without spending it. */
+  /** Look an upload link up without spending it; `target` is judged before its state. */
   uploadLinkInspectReply(
     secret: string,
     tenantId: TenantId,
     scopeId: ScopeId,
+    target?: EntityRef,
   ): Promise<DoReply<{ view: UploadLinkView; mintedBy: PrincipalId }>>;
   attachmentListReply(
     entity: EntityRef,
@@ -2744,7 +2736,7 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly scopeStoreRunners: Map<string, ScopeStoreRunner>;
   private readonly scopeStoreVertical?: string;
   private readonly scopeStoreLifecycle: ScopeStoreLifecycle;
-  private readonly scopeStoreKinds: Readonly<Record<string, string>>;
+  private readonly scopeStoreDrivers: Readonly<Record<string, string>>;
   private readonly scopeStoreTransport: 'platform' | 'binding';
   private readonly cp: ControlPlaneStub;
   private readonly servicePrincipals: CloudflareScopeHostOptions['servicePrincipals'];
@@ -2864,7 +2856,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;
     this.scopeStoreVertical = options.scopeStores?.vertical;
-    this.scopeStoreKinds = options.scopeStores?.kinds ?? {};
+    this.scopeStoreDrivers = options.scopeStores?.drivers ?? {};
     this.scopeStoreTransport = scopeStoreTransportOf(options);
     this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
     this.scopeStoreLifecycle = scopeStoreLifecycleOf(this.scopeStoreRunners);
@@ -3929,7 +3921,7 @@ export class CloudflareScopeHost implements ScopeHost {
   async scopeStoreExportLocal(
     tenantId: TenantId,
     scopeId: ScopeId,
-  ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
+  ): Promise<{ binding: string; driver: string; tables: ScopeDumpTable[] }[]> {
     this.refuseLocalStoresOnPlatform('export');
     return this.exportScopeStores(tenantId, scopeId);
   }
@@ -3937,7 +3929,7 @@ export class CloudflareScopeHost implements ScopeHost {
   async scopeStoreImportLocal(
     tenantId: TenantId,
     scopeId: ScopeId,
-    stores: { binding: string; kind?: string; tables: ScopeDumpTable[] }[],
+    stores: { binding: string; driver?: string; tables: ScopeDumpTable[] }[],
   ): Promise<void> {
     this.refuseUnusableScopeStores(stores);
     await this.importScopeStores(tenantId, scopeId, stores);
@@ -4387,10 +4379,10 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.buildAttachmentSurface({ principal }, tenantId, scopeId, store);
   }
 
-  async inspectUploadLink(tenantId: TenantId, scopeId: ScopeId, secret: string): Promise<UploadLinkView> {
+  async inspectUploadLink(tenantId: TenantId, scopeId: ScopeId, secret: string, target?: EntityRef): Promise<UploadLinkView> {
     await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
-    return unwrapReply(await this.scopeStub(scopeId).uploadLinkInspectReply(secret, tenantId, scopeId)).view;
+    return unwrapReply(await this.scopeStub(scopeId).uploadLinkInspectReply(secret, tenantId, scopeId, target)).view;
   }
 
   async redeemUploadLink(
@@ -4402,21 +4394,19 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     const stub = this.scopeStub(scopeId);
-    const { view, mintedBy } = unwrapReply(await stub.uploadLinkInspectReply(secret, tenantId, scopeId));
-    if (view.entity.entityType !== input.entity.entityType || view.entity.entityId !== input.entity.entityId) {
-      throw substratError('not_found', 'This upload link is not valid for that target.', {
-        reason: UPLOAD_LINK_WRONG_TARGET,
-      });
-    }
+    // The target first (the kernel judges it before the state), so a wrong path never reads as gone.
+    const { view, mintedBy } = unwrapReply(await stub.uploadLinkInspectReply(secret, tenantId, scopeId, input.entity));
     const store = await this.resolveAttachmentStore(tenantId);
     const id = ulid();
     const key = attachmentBlobKey(scopeId, id);
     const filename = view.filename ?? input.filename;
+    // Recorded as it is judged: the essence, never a parameter or a stray space.
+    const contentType = normalizeUploadMediaType(input.contentType);
     const record = attachmentRecord.parse({
       id,
       entity: view.entity,
       filename,
-      contentType: input.contentType,
+      contentType,
       size: input.body.byteLength,
       sha256: await attachmentSha256(input.body),
       visibility: view.visibility,
@@ -4426,7 +4416,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // Bytes first, row second, exactly as an upload: a refusal (size, type, a lost key, a link
     // someone else spent first) compensates the object away, and the link is unspent with it.
     // A lost reply keeps the bytes (`compensatingRefusal`); retrying the link is #2315.
-    await store.put(key, input.body, { contentType: input.contentType });
+    await store.put(key, input.body, { contentType });
     return unwrapReply(await compensatingRefusal(store, key, () =>
       stub.attachmentRedeemUploadLinkReply(record, secret, tenantId, scopeId),
     ));
@@ -5098,27 +5088,27 @@ export class CloudflareScopeHost implements ScopeHost {
     return erasures;
   }
 
-  /** A runner's kind, or the kind declared for an ambient binding. Never invented. */
-  private scopeStoreKind(binding: string): string {
-    const kind = this.scopeStoreRunners.get(binding)?.kind ?? this.scopeStoreKinds[binding];
-    if (!kind) {
-      throw substratError('unavailable', `scope store '${binding}' has no declared kind`);
+  /** A runner's driver, or the driver declared for an ambient binding. Never invented. */
+  private scopeStoreDriver(binding: string): string {
+    const driver = this.scopeStoreRunners.get(binding)?.driver ?? this.scopeStoreDrivers[binding];
+    if (!driver) {
+      throw substratError('unavailable', `scope store '${binding}' has no declared driver`);
     }
-    return kind;
+    return driver;
   }
 
   /**
    * A dump's stores this host cannot load are refused before any write (#2211, L8): a
-   * binding that is not bound, a kind other than the bound one, or any store at all for
+   * binding that is not bound, a driver other than the bound one, or any store at all for
    * a destination with no vertical (no store object can be named for it, so loading would
    * drop them), or a destination on a vertical other than the one this host is pinned to.
    * `vertical` undefined is a caller that cannot read the destination here;
    * `importScopeStores` then refuses a scope with no vertical itself, still before a store
-   * write. A store with no `kind` is refused: the dump contract requires one, and an
-   * unparsed dump would otherwise skip the kind comparison.
+   * write. A store with no `driver` is refused: the dump contract requires one, and an
+   * unparsed dump would otherwise skip the driver comparison.
    */
   private refuseUnusableScopeStores(
-    stores: readonly { binding: string; kind?: string }[] | undefined,
+    stores: readonly { binding: string; driver?: string }[] | undefined,
     vertical?: string | null,
   ): void {
     const listed = stores ?? [];
@@ -5137,14 +5127,14 @@ export class CloudflareScopeHost implements ScopeHost {
       if (!bound.has(store.binding)) {
         throw substratError('not_found', `dump names scope store '${store.binding}', which is not bound`);
       }
-      if (!store.kind) {
-        throw substratError('validation_failed', `dump's scope store '${store.binding}' names no kind`);
+      if (!store.driver) {
+        throw substratError('validation_failed', `dump's scope store '${store.binding}' names no driver`);
       }
-      const kind = this.scopeStoreRunners.get(store.binding)?.kind ?? this.scopeStoreKinds[store.binding];
-      if (store.kind !== kind) {
+      const driver = this.scopeStoreRunners.get(store.binding)?.driver ?? this.scopeStoreDrivers[store.binding];
+      if (store.driver !== driver) {
         throw substratError(
           'conflict',
-          `dump's scope store '${store.binding}' is kind '${store.kind}', and this host binds kind '${kind ?? 'undeclared'}'`,
+          `dump's scope store '${store.binding}' is driver '${store.driver}', and this host binds driver '${driver ?? 'undeclared'}'`,
         );
       }
     }
@@ -5153,19 +5143,19 @@ export class CloudflareScopeHost implements ScopeHost {
   private async exportScopeStores(
     tenantId: TenantId,
     scopeId: ScopeId,
-  ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
+  ): Promise<{ binding: string; driver: string; tables: ScopeDumpTable[] }[]> {
     // No binding is no store, answered before the directory read: a host with no control
     // plane cannot make that read, and a deployment with no store must not fail an export.
     const bindings = this.scopeStoreBindingNames();
     if (bindings.length === 0) return [];
     const vertical = await this.lifecycleStoreVertical(tenantId, scopeId);
     if (!vertical) return [];
-    const stores: { binding: string; kind: string; tables: ScopeDumpTable[] }[] = [];
+    const stores: { binding: string; driver: string; tables: ScopeDumpTable[] }[] = [];
     for (const binding of bindings) {
       const exported = await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.export');
       stores.push({
         binding,
-        kind: this.scopeStoreKind(binding),
+        driver: this.scopeStoreDriver(binding),
         tables: exported.tables,
       });
     }
@@ -6553,7 +6543,7 @@ export class CloudflareScopeHost implements ScopeHost {
 
     const transitionScope = async (
       actor: PlatformActorId,
-      action: AdminAction,
+      action: WrittenAdminAction,
       tenantId: TenantId,
       scopeId: ScopeId,
       from: ScopeStatus[],
@@ -8506,50 +8496,40 @@ export class CloudflareScopeHost implements ScopeHost {
           createdAt: r.created_at,
         }));
       },
-      // -- store-kind releases, rollouts and holds (D-63, #2300) -------------------
-      recordStoreKindRelease: async (actor, input) => {
+      // -- store-driver releases, rollouts and holds (D-63, #2300) -------------------
+      recordStoreDriverRelease: async (actor, input) => {
         const at = new Date().toISOString();
-        const { record, created } = await this.directory('recordStoreKindRelease', { ...input, actor, at });
-        if (created) await this.recordAdmin(actor, 'uploadStoreKindRelease', { tenantId: null }, null, record);
+        const { record, created } = await this.directory('recordStoreDriverRelease', { ...input, actor, at });
+        if (created) await this.recordAdmin(actor, 'uploadStoreDriverRelease', { tenantId: null }, null, record);
         return record;
       },
-      getStoreKindRelease: async (actor, kind, sha256) => {
-        const record = await this.cp.getStoreKindRelease(kind, sha256);
-        await this.recordAccess(actor, 'getStoreKindRelease', { tenantId: null }, { kind, sha256 }, record ? 1 : 0);
+      getStoreDriverRelease: async (actor, driver, sha256) => {
+        const record = await this.cp.getStoreDriverRelease(driver, sha256);
+        await this.recordAccess(actor, 'getStoreDriverRelease', { tenantId: null }, { driver, sha256 }, record ? 1 : 0);
         return record;
       },
-      storeKindState: async (actor, kind) => {
-        const state = await this.cp.storeKindState(kind);
-        await this.recordAccess(actor, 'storeKindState', { tenantId: null }, { kind }, state.rollouts.length);
+      storeDriverState: async (actor, driver) => {
+        const state = await this.cp.storeDriverState(driver);
+        await this.recordAccess(actor, 'storeDriverState', { tenantId: null }, { driver }, state.rollouts.length);
         return state;
       },
-      storeKindDeclarations: async (actor, kind) => {
-        const declared = await this.directory('storeKindDeclarations', kind);
-        await this.recordAccess(actor, 'storeKindDeclarations', { tenantId: null }, { kind }, declared.verticals.length);
+      storeDriverDeclarations: async (actor, driver) => {
+        const declared = await this.directory('storeDriverDeclarations', driver);
+        await this.recordAccess(actor, 'storeDriverDeclarations', { tenantId: null }, { driver }, declared.verticals.length);
         return declared;
       },
-      storeKindRolloutPending: async (actor, input) => {
-        const page = await this.directory('storeKindRolloutPending', input);
-        await this.recordAccess(actor, 'storeKindRolloutPending', { tenantId: null }, { kind: input.kind, sha256: input.sha256, action: input.action }, page.verticals.length);
-        return page;
+      holdStoreDriver: async (_actor, input) => this.directory('holdStoreDriver', input),
+      releaseStoreDriverHold: async (_actor, input) => {
+        await this.cp.releaseStoreDriverHold(input);
       },
-      storeKindRolloutWalked: async (actor, input) => {
-        const walked = await this.directory('storeKindRolloutWalked', input);
-        await this.recordAccess(actor, 'storeKindRolloutWalked', { tenantId: null }, { kind: input.kind, seq: input.seq }, walked.verticals.length);
-        return walked;
-      },
-      holdStoreKind: async (_actor, input) => this.directory('holdStoreKind', input),
-      releaseStoreKindHold: async (_actor, input) => {
-        await this.cp.releaseStoreKindHold(input);
-      },
-      beginStoreKindRollout: async (actor, input) => {
-        const row = await this.directory('beginStoreKindRollout', { ...input, actor, at: new Date().toISOString() });
-        await this.recordAdmin(actor, input.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row);
+      beginStoreDriverRollout: async (actor, input) => {
+        const row = await this.directory('beginStoreDriverRollout', { ...input, actor, at: new Date().toISOString() });
+        await this.recordAdmin(actor, input.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, row);
         return row;
       },
-      finishStoreKindRollout: async (actor, input) => {
-        const row = await this.directory('finishStoreKindRollout', { ...input, at: new Date().toISOString() });
-        await this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row);
+      finishStoreDriverRollout: async (actor, input) => {
+        const row = await this.directory('finishStoreDriverRollout', { ...input, at: new Date().toISOString() });
+        await this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, row);
         return row;
       },
       listScopeTables: async (actor, tenantId, scopeId): Promise<ScopeTable[]> => {
@@ -10419,7 +10399,7 @@ export class CloudflareScopeHost implements ScopeHost {
 
   private async recordAdmin(
     actor: PlatformActorId,
-    action: AdminAction,
+    action: WrittenAdminAction,
     target: { tenantId: TenantId | null; scopeId?: ScopeId | null; vertical?: string | null },
     before: unknown,
     after: unknown,
@@ -10433,7 +10413,7 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   private adminEntry(
     actor: PlatformActorId,
-    action: AdminAction,
+    action: WrittenAdminAction,
     target: { tenantId: TenantId | null; scopeId?: ScopeId | null; vertical?: string | null },
     before: unknown,
     after: unknown,

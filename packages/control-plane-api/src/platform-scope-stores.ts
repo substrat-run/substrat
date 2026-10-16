@@ -2,7 +2,7 @@ import {
   LIST_PAGE_MAX,
   mayHoldScopeStores,
   scopeStoresDeclaredIn,
-  STORE_KINDS,
+  STORE_DRIVERS,
   issueScopeStoreEnvelope,
   SCOPE_STORE_ENVELOPE_HEADER,
   SCOPE_STORE_SIGNATURE_HEADER,
@@ -17,7 +17,7 @@ import {
   type ReservedStoreOperation,
   type Scope,
   type ScopeDumpTable,
-  type StoreKindRegistration,
+  type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import { callReservedStoreOperation, type HostAdmin } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
@@ -37,7 +37,7 @@ export interface PlatformScopeStoreDispatch {
 
 export interface PlatformScopeStoreTarget {
   readonly vertical: string;
-  readonly kind: string;
+  readonly driver: string;
   readonly tenantId: string;
   readonly scopeId: string;
   readonly binding: string;
@@ -46,7 +46,7 @@ export interface PlatformScopeStoreTarget {
 /** One declared binding, as a version manifest lists it. */
 export interface DeclaredScopeStore {
   readonly binding: string;
-  readonly kind: string;
+  readonly driver: string;
 }
 
 export interface PlatformScopeStores {
@@ -55,12 +55,12 @@ export interface PlatformScopeStores {
     scopeId: string;
     vertical: string;
     stores: readonly DeclaredScopeStore[];
-  }): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]>;
+  }): Promise<{ binding: string; driver: string; tables: ScopeDumpTable[] }[]>;
   importStores(input: {
     tenantId: string;
     scopeId: string;
     vertical: string;
-    stores: readonly { binding: string; kind: string; tables: ScopeDumpTable[] }[];
+    stores: readonly { binding: string; driver: string; tables: ScopeDumpTable[] }[];
   }): Promise<void>;
   eraseSubject(input: {
     tenantId: string;
@@ -163,7 +163,7 @@ export async function unrouteScope(
  * ordinary install whose store the router serves. A pin that names another script than the
  * pointer's is unknown, as #2242's erasure gate has it.
  *
- * The gate is `mayHoldScopeStores`: with no kind registered nothing can hold a store, and the
+ * The gate is `mayHoldScopeStores`: with no driver registered nothing can hold a store, and the
  * answer is none. Otherwise a version that cannot be named, a manifest that cannot be read, or one
  * the gate says may hold a store without naming it refuses (503), rather than let a backup, a
  * wipe, a replay or an erasure skip a store that may hold data.
@@ -175,15 +175,15 @@ export async function runningVersionStoresOf(
   admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest'>,
   actor: PlatformActorId,
   scope: Pick<Scope, 'id' | 'vertical' | 'verticalVersionId' | 'servingRef'>,
-  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+  drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS,
   running?: RunningVersion,
 ): Promise<DeclaredScopeStore[]> {
-  if (!scope.vertical || !mayHoldScopeStores(undefined, kinds)) return [];
+  if (!scope.vertical || !mayHoldScopeStores(undefined, drivers)) return [];
   const { versionId } = running ?? await runningVersionOf(admin, actor, scope);
   const manifestJson = versionId
     ? await admin.versionManifest(actor, scope.vertical, versionId).catch(() => undefined)
     : undefined;
-  if (!mayHoldScopeStores(manifestJson, kinds)) return [];
+  if (!mayHoldScopeStores(manifestJson, drivers)) return [];
   const declared = typeof manifestJson === 'string' && scopeStoresDeclaredIn(manifestJson) ? declaredStoresOf(manifestJson) : [];
   if (declared.length > 0) return declared;
   throw new ControlPlaneError(503, `scope ${scope.id} may hold scope stores, and the version it runs cannot say which`);
@@ -196,34 +196,34 @@ export async function runningVersionStoresOf(
  * and the meter reach `all`, so an object under a binding a later version dropped is still
  * reached. A restore imports only into `running` (L8).
  *
- * A binding keeps its kind for the life of the vertical, since publish refuses a re-kind; a
- * running version whose kind disagrees with the record, or a record that cannot be read,
+ * A binding keeps its driver for the life of the vertical, since publish refuses a driver change; a
+ * running version whose driver disagrees with the record, or a record that cannot be read,
  * refuses (503).
  */
 export async function scopeStoreReachOf(
   admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest' | 'verticalScopeStores'>,
   actor: PlatformActorId,
   scope: Pick<Scope, 'id' | 'vertical' | 'verticalVersionId' | 'servingRef'>,
-  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+  drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS,
   running?: RunningVersion,
 ): Promise<{ running: DeclaredScopeStore[]; all: DeclaredScopeStore[] }> {
-  const current = await runningVersionStoresOf(admin, actor, scope, kinds, running);
-  if (!scope.vertical || !mayHoldScopeStores(undefined, kinds)) return { running: current, all: current };
+  const current = await runningVersionStoresOf(admin, actor, scope, drivers, running);
+  if (!scope.vertical || !mayHoldScopeStores(undefined, drivers)) return { running: current, all: current };
   let declared: readonly DeclaredScopeStore[];
   try {
     declared = await admin.verticalScopeStores(actor, scope.vertical);
   } catch {
     throw new ControlPlaneError(503, `the scope stores '${scope.vertical}' has declared could not be read`);
   }
-  const all = new Map(declared.map((store) => [store.binding, store.kind]));
+  const all = new Map(declared.map((store) => [store.binding, store.driver]));
   for (const store of current) {
-    const kind = all.get(store.binding);
-    if (kind !== undefined && kind !== store.kind) {
-      throw new ControlPlaneError(503, `scope store '${store.binding}' is declared as both '${kind}' and '${store.kind}'`);
+    const driver = all.get(store.binding);
+    if (driver !== undefined && driver !== store.driver) {
+      throw new ControlPlaneError(503, `scope store '${store.binding}' is declared as both '${driver}' and '${store.driver}'`);
     }
-    all.set(store.binding, store.kind);
+    all.set(store.binding, store.driver);
   }
-  return { running: current, all: [...all].map(([binding, kind]) => ({ binding, kind })) };
+  return { running: current, all: [...all].map(([binding, driver]) => ({ binding, driver })) };
 }
 
 /** `scopeStoreReachOf`'s `all`: every store the lifecycle reaches for a scope (#2286). */
@@ -231,10 +231,10 @@ export async function scopeStoresOf(
   admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest' | 'verticalScopeStores'>,
   actor: PlatformActorId,
   scope: Pick<Scope, 'id' | 'vertical' | 'verticalVersionId' | 'servingRef'>,
-  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+  drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS,
   running?: RunningVersion,
 ): Promise<DeclaredScopeStore[]> {
-  return (await scopeStoreReachOf(admin, actor, scope, kinds, running)).all;
+  return (await scopeStoreReachOf(admin, actor, scope, drivers, running)).all;
 }
 
 function asControlPlane(error: unknown): never {
@@ -244,7 +244,7 @@ function asControlPlane(error: unknown): never {
   throw error;
 }
 
-/** Sign the envelope and POST the reserved operation at that kind's script. */
+/** Sign the envelope and POST the reserved operation at that driver's script. */
 export async function callPlatformScopeStore(
   dispatch: PlatformScopeStoreDispatch,
   target: PlatformScopeStoreTarget,
@@ -254,7 +254,7 @@ export async function callPlatformScopeStore(
   return callPlatformScopeStoreAt(
     dispatch,
     {
-      scriptName: scopeStoreScriptName(target.vertical, target.kind),
+      scriptName: scopeStoreScriptName(target.vertical, target.driver),
       objectName: scopeStoreObjectName(target.tenantId, target.vertical, target.scopeId, target.binding),
     },
     operation,
@@ -329,7 +329,7 @@ export function platformScopeStoresFor(dispatch: PlatformScopeStoreDispatch): Pl
         const { tables } = storeExportResult.parse(
           await call({ ...store, tenantId, scopeId, vertical }, 'substrat.export'),
         );
-        exported.push({ binding: store.binding, kind: store.kind, tables });
+        exported.push({ binding: store.binding, driver: store.driver, tables });
       }
       return exported;
     },

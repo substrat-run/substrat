@@ -24,6 +24,9 @@
     "lint:migration-fence": "tsx tools/migration-fence.mts",
     "test:schedule-sweeper": "tsx --test tools/schedule-sweeper.test.mts",
     "test:reserved-keys": "tsx --test tools/reserved-keys.test.mts",
+    "store-keys": "tsx tools/store-keys.mts",
+    "test:store-keys": "tsx --test tools/store-keys.test.mts",
+    "test:permission-diff": "tsx --test tools/permission-diff.test.mts",
     "lint:model": "tsx tools/model-diff.mts",
     "lint:export-schemas": "tsx tools/export-schema-diff.mts",
     "test:export-schemas": "tsx --test tools/export-schema-diff.test.mts",
@@ -86,7 +89,8 @@
     "test:repo-path": "node --test tools/repo-path.test.mjs",
     "test:override-advisories": "node --test tools/override-advisories.test.mjs",
     "lint:publish-manifests": "node tools/publish-manifests.mjs",
-    "test:publish-manifests": "node --test tools/publish-manifests.test.mjs"
+    "test:publish-manifests": "node --test tools/publish-manifests.test.mjs",
+    "test:bare-regexp": "node --test tools/bare-regexp.test.mjs"
   },
   "devDependencies": {
     "@babel/parser": "^7.29.7",

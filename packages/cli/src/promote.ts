@@ -16,6 +16,10 @@
 import {
   diffRegistries,
   grantShapeHolderNotes,
+  clipReviewText,
+  discardTally,
+  reviewSql,
+  reviewText,
   unitemisedRegistryChanges,
   type ExportBreak,
   type MigrationDiff,
@@ -132,8 +136,6 @@ export async function explainRefusal(
       '',
       'migration changes:',
       ...formatMigrationDiff(migrations, refused.migration).map((l) => `  ${l}`),
-      '',
-      'note: the registry does not yet require --ack-migrations for a change to SQL migrations alone (#1754).',
     ];
   } catch (e) {
     return [`(the diffs could not be read: ${e instanceof Error ? e.message : String(e)})`];
@@ -178,6 +180,44 @@ export function formatRegistryDiff(from: PermissionRegistry | null, to: Permissi
 }
 
 /**
+ * Pusher-supplied text on one terminal line (#2322): every control, format and bidi character
+ * made visible (`reviewText`), then quoted, which escapes the newlines and tabs it keeps. So no
+ * reason, table name or id prints as a terminal command, a reordered word or a forged line.
+ */
+const quoted = (text: string): string => JSON.stringify(reviewText(text));
+
+/** What an id may hold to print bare in the listing's one-line header. */
+const PLAIN_ID = /^[A-Za-z0-9@/._~:+-]+$/;
+
+/**
+ * A module id or migration version on the listing's header line: bare when it is a plain id, as
+ * every id the push boundary admits is, and `quoted` otherwise, so nothing in it can break the line.
+ */
+const idOf = (text: string): string => (PLAIN_ID.test(text) ? text : quoted(text));
+
+/**
+ * A discard's reason as the listing shows it: quoted, and cut where the review cuts it
+ * (`clipReviewText`: 280 characters or 6 lines), saying where the rest is. A terminal has no
+ * expander, and the listing must stay readable down to the acknowledgement.
+ */
+function reasonOf(why: string): string {
+  const { shown, clipped } = clipReviewText(why);
+  return clipped ? `${JSON.stringify(shown)}… (cut; the whole reason is in the dashboard's promote dialog and the migration's source)` : quoted(why);
+}
+
+/**
+ * What one migration declares it moves and discards (#2322), one line each under its id.
+ * Every target and reason is the pusher's text, so each goes through `quoted`.
+ */
+function declarationLines(m: MigrationEntry): string[] {
+  if (m.declarationsLeftOut) return ['    (declares moves or discards, left out: past the size bound of this answer; read them in the repository)'];
+  return [
+    ...Object.entries(m.discards ?? {}).map(([target, why]) => `    discards ${quoted(target)}: ${reasonOf(why)}`),
+    ...Object.entries(m.moves ?? {}).map(([from, to]) => `    moves ${quoted(from)} → ${quoted(to)} (verified at apply)`),
+  ];
+}
+
+/**
  * The migrations a promote adds, each with its SQL. `null` is a version whose manifest carries
  * none. `digestMoved` is whether the gate refused on the migration digest.
  */
@@ -188,15 +228,36 @@ export function formatMigrationDiff(diff: MigrationDiff | null, digestMoved: boo
         'older than migrations in the manifest, or its migrations were over the size a manifest carries. Read them in the repository.',
     ];
   }
+  // The id and the SQL are the pusher's text too. The header is one line, so the module and the
+  // version print bare only when they are plain ids and are quoted otherwise (`idOf`): a newline
+  // in either would forge another entry above the real one. The SQL is split into its lines after
+  // `reviewSql`, so a control or bidi character in it prints as `<U+XXXX>`, not as itself.
   const entry = (mark: string, m: MigrationEntry) => [
-    `${mark} ${m.moduleId} ${m.version}`,
-    ...(m.sql === null ? ['    (SQL left out: past the size bound of this answer)'] : m.sql.split('\n').map((l) => `    ${l}`)),
+    `${mark} ${idOf(m.moduleId)} ${idOf(m.version)}`,
+    ...declarationLines(m),
+    ...(m.sql === null ? ['    (SQL left out: past the size bound of this answer)'] : reviewSql(m.sql).split('\n').map((l) => `    ${l}`)),
   ];
+  const discards = discardTally(diff);
   const lines = [
+    ...(discards.count > 0
+      ? [
+          `! this promote deliberately discards data in ${discards.atLeast ? 'at least ' : ''}${discards.count} place${discards.count === 1 ? '' : 's'}; ` +
+            "each reason is the migration author's own",
+        ]
+      : discards.atLeast
+        ? ["! this list is cut, so it cannot show whether a migration left out of it discards data; read the rest in the repository"]
+        : []),
     ...(diff.baseline === 'unavailable'
       ? ['(the serving version predates carried migrations, so every migration this version ships is listed)']
       : []),
-    ...diff.changed.flatMap((m) => entry('~ (edited after shipping; a scope that already ran it will not run it again)', m)),
+    ...diff.changed.flatMap((m) =>
+      entry(
+        m.edited === 'declarations'
+          ? '~ (declarations edited after shipping; a scope that already ran it is unaffected, one that has not is held to these)'
+          : '~ (edited after shipping; a scope that already ran it will not run it again)',
+        m,
+      ),
+    ),
     ...diff.added.flatMap((m) => entry('+', m)),
   ];
   if (diff.total === 0) {

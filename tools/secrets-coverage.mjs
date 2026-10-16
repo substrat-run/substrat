@@ -20,6 +20,8 @@
  *     hard-required secret without a MANIFEST entry now fails here instead of in
  *     production.
  *
+ *  3. The scope-store envelope's four keys, held to one inventory (`tools/store-key-inventory.mjs`).
+ *
  * (2) is deliberately narrow — it reads one phrase, not "every string field", because
  * most of a worker's `Env` fields are optional behavioural config that intentionally
  * lives in `wrangler.jsonc` `vars` and is never meant to reach `secrets.mjs` (see its
@@ -31,6 +33,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { MANIFEST } from '../scripts/secrets.mjs';
+import { storeKeyProblems } from './store-key-inventory.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -89,10 +92,14 @@ for (const [worker, cfg] of Object.entries(MANIFEST)) {
   }
 }
 
+// ── 3. the scope-store keys ─────────────────────────────────────────────────────
+for (const p of storeKeyProblems(MANIFEST)) problems.push(`store keys: ${p}`);
+
 if (problems.length > 0) {
-  console.error('secrets-coverage: scripts/secrets.mjs is missing a secret a worker declares required.\n');
+  console.error('secrets-coverage: scripts/secrets.mjs, a worker and the templates disagree about a secret.\n');
   for (const p of problems) console.error(`  ✗ ${p}`);
-  console.error('\nAdd the missing name to MANIFEST.<worker>.required and .secrets in scripts/secrets.mjs.');
+  console.error('\nAdd a missing name to MANIFEST.<worker>.required and .secrets in scripts/secrets.mjs.');
+  console.error('For a store-keys line, STORE_KEY_AUDIENCES is the inventory; see secrets/store-keys.md.');
   process.exit(1);
 }
 console.log('secrets-coverage: ok');

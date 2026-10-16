@@ -83,24 +83,23 @@ import {
   tenantHeldOf,
   VERSION_MIGRATIONS_DDL,
   VERTICAL_SCOPE_STORES_DDL,
-  STORE_KIND_RELEASES_DDL,
-  beginStoreKindRolloutIn,
-  finishStoreKindRolloutIn,
-  holdStoreKindIn,
-  kindDeclarationsOf,
-  recordStoreKindReleaseIn,
-  releaseStoreKindHoldIn,
-  storeKindReleaseIn,
-  storeKindStateIn,
-  storeKindRolloutPendingIn,
-  storeKindRolloutWalkedIn,
-  type StoreKindHoldMode,
-  type StoreKindReleaseRecord,
-  type StoreKindRolloutAction,
-  type StoreKindRolloutRecord,
-  type StoreKindRolloutState,
-  type StoreKindRolloutTarget,
-  type StoreKindState,
+  STORE_DRIVER_RELEASES_DDL,
+  legacyStoreDriverConflict,
+  legacyStoreDriverRenames,
+  beginStoreDriverRolloutIn,
+  finishStoreDriverRolloutIn,
+  holdStoreDriverIn,
+  driverDeclarationsOf,
+  recordStoreDriverReleaseIn,
+  releaseStoreDriverHoldIn,
+  storeDriverReleaseIn,
+  storeDriverStateIn,
+  type StoreDriverHoldMode,
+  type StoreDriverReleaseRecord,
+  type StoreDriverRolloutAction,
+  type StoreDriverRolloutRecord,
+  type StoreDriverRolloutState,
+  type StoreDriverState,
   forgetVerticalScopeStores,
   indexVersionScopeStores,
   verticalScopeStoresOf,
@@ -926,8 +925,8 @@ const DIRECTORY_DDL = `
     created_at TEXT NOT NULL,
     PRIMARY KEY (tenant_id, vertical, binding)
   );
-  -- A store kind's stored releases, rollouts and holds (D-63, #2300).
-  ${STORE_KIND_RELEASES_DDL}
+  -- A store driver's stored releases, rollouts and holds (D-63, #2300).
+  ${STORE_DRIVER_RELEASES_DDL}
   CREATE TABLE IF NOT EXISTS verticals (
     slug         TEXT PRIMARY KEY,
     name         TEXT NOT NULL,
@@ -1469,19 +1468,16 @@ export const REPLIED_METHODS = [
   'linkIdentity',
   // #1748: refuses an expiry outside its bounds with validation_failed.
   'createFindingRule',
-  // #2286: refuses a re-kinded scope-store binding with conflict, and an unreadable manifest with unavailable.
+  // #2286: refuses a scope-store binding moved to another driver with conflict, and an unreadable manifest with unavailable.
   'insertVersion',
   'verticalScopeStores',
-  // #2300: a store kind's release, rollout and hold writes refuse with conflict, not_found,
+  // #2300: a store driver's release, rollout and hold writes refuse with conflict, not_found,
   // validation_failed or unavailable.
-  'recordStoreKindRelease',
-  'storeKindDeclarations',
-  // #2312: a rollout page refuses a limit that is not positive, and an unknown rollout.
-  'storeKindRolloutPending',
-  'storeKindRolloutWalked',
-  'holdStoreKind',
-  'beginStoreKindRollout',
-  'finishStoreKindRollout',
+  'recordStoreDriverRelease',
+  'storeDriverDeclarations',
+  'holdStoreDriver',
+  'beginStoreDriverRollout',
+  'finishStoreDriverRollout',
 ] as const;
 export type RepliedMethod = (typeof REPLIED_METHODS)[number];
 
@@ -1602,6 +1598,16 @@ export class ControlPlaneDO extends DurableObject {
    * creates each table with its backfill; `holdFences` does the same for #1184's removal fence.
    */
   private buildDirectorySchema({ holdSwitchRecords, holdFences = false }: { holdSwitchRecords: readonly SwitchKind[]; holdFences?: boolean }): void {
+    // A directory built before the store driver rename keeps its rows under the old names (and one
+    // that ran pre-rename code again, a rollback, holds both names), and
+    // the DDL below would only create empty tables beside them. Probed, not attempted: an empty
+    // `SELECT` reads the columns here, and an emptied directory (a restore) has nothing to move.
+    const tables = (this.sql.exec(`SELECT name FROM sqlite_master WHERE type = 'table'`).toArray() as unknown as { name: string }[]).map((t) => t.name);
+    const hasRows = (table: string) => this.sql.exec(`SELECT 1 FROM "${table}" LIMIT 1`).toArray().length > 0;
+    // Asked before the moves below, which drop a name with no rows.
+    const bothNames = legacyStoreDriverConflict(tables, hasRows);
+    if (bothNames) console.error(bothNames);
+    for (const stmt of legacyStoreDriverRenames(tables, (table) => doBuiltColumnsOf(this.sql, table), hasRows)) this.sql.exec(stmt);
     const held = holdSwitchRecords.map(switchesTableOf);
     for (const stmt of DIRECTORY_DDL_PLAN.loop) {
       if (held.some((table) => stmt.includes(table))) continue;
@@ -1611,6 +1617,8 @@ export class ControlPlaneDO extends DurableObject {
     this.ensureDirectoryColumns();
     // #1764's, held back by `planDirectoryDdl`: its index names a column added just above.
     for (const stmt of DIRECTORY_DDL_PLAN.afterColumns) this.sql.exec(stmt);
+    // #2322: a migration's declared moves and discards, on a table created before they were carried.
+    this.addColumn('vertical_version_migrations', 'declarations TEXT');
   }
 
   /**
@@ -2318,71 +2326,57 @@ export class ControlPlaneDO extends DurableObject {
     }[];
   }
 
-  // -- store-kind releases, rollouts and holds (D-63, #2300) ---------------------
-  // Kernel code over the directory (store-kind-releases.ts), shared with the SQLite host. Each
+  // -- store-driver releases, rollouts and holds (D-63, #2300) ---------------------
+  // Kernel code over the directory (store-driver-releases.ts), shared with the SQLite host. Each
   // call is one transaction, and the object runs one at a time, so a hold is taken atomically.
 
-  recordStoreKindRelease(input: { kind: string; sha256: string; sourceCommit: string; actor: string; at: string }): {
-    record: StoreKindReleaseRecord;
+  recordStoreDriverRelease(input: { driver: string; sha256: string; sourceCommit: string; actor: string; at: string }): {
+    record: StoreDriverReleaseRecord;
     created: boolean;
   } {
-    return this.ctx.storage.transactionSync(() => recordStoreKindReleaseIn(this.kernelSql, input));
+    return this.ctx.storage.transactionSync(() => recordStoreDriverReleaseIn(this.kernelSql, input));
   }
 
-  getStoreKindRelease(kind: string, sha256: string): StoreKindReleaseRecord | undefined {
-    return storeKindReleaseIn(this.kernelSql, kind, sha256);
+  getStoreDriverRelease(driver: string, sha256: string): StoreDriverReleaseRecord | undefined {
+    return storeDriverReleaseIn(this.kernelSql, driver, sha256);
   }
 
-  storeKindState(kind: string): StoreKindState {
-    return this.ctx.storage.transactionSync(() => storeKindStateIn(this.kernelSql, kind, Date.now()));
+  storeDriverState(driver: string): StoreDriverState {
+    return this.ctx.storage.transactionSync(() => storeDriverStateIn(this.kernelSql, driver, Date.now()));
   }
 
-  storeKindDeclarations(kind: string): { verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] } {
-    return this.ctx.storage.transactionSync(() => kindDeclarationsOf(this.kernelSql, kind));
+  storeDriverDeclarations(driver: string): { verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] } {
+    return this.ctx.storage.transactionSync(() => driverDeclarationsOf(this.kernelSql, driver));
   }
 
-  storeKindRolloutPending(input: { kind: string; sha256: string; action: StoreKindRolloutAction; limit: number }): {
-    verticals: StoreKindRolloutTarget[];
-    pending: number;
-    walked: number;
-    unreadable: string[];
-  } {
-    return this.ctx.storage.transactionSync(() => storeKindRolloutPendingIn(this.kernelSql, input));
+  holdStoreDriver(input: { driver: string; holder: string; mode: StoreDriverHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): boolean {
+    return this.ctx.storage.transactionSync(() => holdStoreDriverIn(this.kernelSql, { ...input, nowMs: Date.now() }));
   }
 
-  storeKindRolloutWalked(input: { kind: string; seq: number; limit: number }): { verticals: StoreKindRolloutTarget[]; walked: number } {
-    return this.ctx.storage.transactionSync(() => storeKindRolloutWalkedIn(this.kernelSql, input));
+  releaseStoreDriverHold(input: { driver: string; holder: string }): void {
+    releaseStoreDriverHoldIn(this.kernelSql, input);
   }
 
-  holdStoreKind(input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): boolean {
-    return this.ctx.storage.transactionSync(() => holdStoreKindIn(this.kernelSql, { ...input, nowMs: Date.now() }));
-  }
-
-  releaseStoreKindHold(input: { kind: string; holder: string }): void {
-    releaseStoreKindHoldIn(this.kernelSql, input);
-  }
-
-  beginStoreKindRollout(input: {
-    kind: string;
+  beginStoreDriverRollout(input: {
+    driver: string;
     sha256: string;
-    action: StoreKindRolloutAction;
+    action: StoreDriverRolloutAction;
     holder: string;
     actor: string;
     at: string;
-  }): StoreKindRolloutRecord {
-    return this.ctx.storage.transactionSync(() => beginStoreKindRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() }));
+  }): StoreDriverRolloutRecord {
+    return this.ctx.storage.transactionSync(() => beginStoreDriverRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() }));
   }
 
-  finishStoreKindRollout(input: {
-    kind: string;
+  finishStoreDriverRollout(input: {
+    driver: string;
     seq: number;
     holder: string;
-    state: Exclude<StoreKindRolloutState, 'rolling'>;
+    state: Exclude<StoreDriverRolloutState, 'rolling'>;
     detail: string | null;
-    walked?: readonly StoreKindRolloutTarget[];
     at: string;
-  }): StoreKindRolloutRecord {
-    return this.ctx.storage.transactionSync(() => finishStoreKindRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() }));
+  }): StoreDriverRolloutRecord {
+    return this.ctx.storage.transactionSync(() => finishStoreDriverRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() }));
   }
 
   // -- scope lifecycle (control-plane.md §4.1/§4.2) ---------------------------
@@ -3320,7 +3314,7 @@ export class ControlPlaneDO extends DurableObject {
         v.originJson, v.migrations?.length ?? null, v.createdAt,
       );
       writeVersionMigrations(this.kernelSql, v.id, v.migrations);
-      // #2286: the version's scope-store bindings, refusing one re-kinded, in the insert's transaction.
+      // #2286: the version's scope-store bindings, refusing one moved to another driver, in the insert's transaction.
       indexVersionScopeStores(this.kernelSql, v.verticalSlug, v.id, v.manifestJson);
     });
   }

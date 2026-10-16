@@ -14,11 +14,11 @@ export function declaredSweeper(
   sweeperClasses: string[] | undefined;
 }>;
 
-/** A store script as the platform uploads it (#2289): the entry in front of the kind. */
+/** A store script as the platform uploads it (#2289): the entry in front of the driver. */
 export function storeScriptAsUploaded(
   dir: string,
   options: {
-    kindMain: string;
+    driverMain: string;
     className: string;
     script: string;
     callerPublicKeys: string[];

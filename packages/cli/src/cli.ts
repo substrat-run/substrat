@@ -42,9 +42,10 @@ import { printVersions } from './versions.js';
 import { checkOutboundDeclared } from './outbound-scan.js';
 import { exportBreakLines, promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
-import { isReleaseSha, packedFilesOf, packStoreKindDir, rollBackStoreKind, sourceCommitOf, rollOutStoreKind, storeKindStatus, storeKindStatusLines, uploadStoreKindRelease } from './store-kind.js';
+import { isReleaseSha, packedFilesOf, packStoreDriverDir, rollBackStoreDriver, sourceCommitOf, rollOutStoreDriver, storeDriverStatus, storeDriverStatusLines, uploadStoreDriverRelease } from './store-driver.js';
 import { fetchWhoami } from './whoami.js';
 import { planeFor } from './plane.js';
+import { dataLossCheckRequired, formatDataLossCheck } from './data-loss-check.js';
 import { cliVersion, warnIfDistStale } from './version.js';
 import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing, provisionScope, rebindScopeVertical, bindScopeVersion, scopeStatus } from './scope.js';
 import { printInstalls } from './installs.js';
@@ -132,12 +133,25 @@ Usage:
                                                defineScopeSweeperDO are refused — they
                                                would never fire; --allow-unswept-schedules
                                                pushes them anyway
+                                               Authored migrations are replayed against a
+                                               populated in-memory scope through the
+                                               vertical's own kernel's data-loss fence;
+                                               one that would lose undeclared data is
+                                               refused (declare it: moves / discards).
+                                               A check skipped (no node:sqlite, Node
+                                               < 22.13) or incomplete (a migration that
+                                               cannot run on made-up rows, or runs past
+                                               30 s) is a warning;
+                                               --require-data-loss-check (or
+                                               SUBSTRAT_REQUIRE_DATA_LOSS_CHECK=1/true/yes)
+                                               makes it a refusal
                                                A host the code names as a literal that
                                                package.json substrat.outbound does not
                                                declare is warned about with the line to add
                                                (best effort); --strict makes it an error
   substrat push     [dir] --check [--json]     run the push's LOCAL gate and stop: the layer
-                                               rules, the entity model this tree would ship
+                                               rules, the data-loss migration replay, the
+                                               entity model this tree would ship
                                                (or a note that it would ship none), then the
                                                declared permission surface — resolve
                                                "substrat": { "permissions" }, import it,
@@ -150,12 +164,12 @@ Usage:
   substrat promote  <slug> --version <versionId>
                     [--ack-permissions] [--ack-migrations] [--ack-export-break]  (prod is the only channel)
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
-  substrat store-kind upload --kind <kind> --dir <dir> --entry <kind_x/…/module.py> [--commit <sha>]
-                                              store a release of a scope-store kind (staff, signed in)
-  substrat store-kind rollout --kind <kind> --sha256 <sha256>
+  substrat store-driver upload --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>]
+                                              store a release of a scope-store driver (staff, signed in)
+  substrat store-driver rollout --driver <driver> --sha256 <sha256>
                                               canary a stored, pinned release, then roll it out
-  substrat store-kind rollback --kind <kind>  return to the previous good release
-  substrat store-kind status --kind <kind>    a kind's current release and rollouts
+  substrat store-driver rollback --driver <driver>  return to the previous good release
+  substrat store-driver status --driver <driver>    a driver's current release and rollouts
   substrat unpublish <slug>                   remove from the public marketplace (staff)
   substrat versions <slug>                    list a vertical's versions + channels
   substrat installs <slug>                    list this workspace's installs of a vertical
@@ -231,7 +245,8 @@ Usage:
                                               re-forks from prod. --ttl is the GC backstop
                                               (default 72h; 'none' pins the preview until deleted).
                                               Takes push's own overrides too: --skip-lint,
-                                              --allow-unserved-ui and --allow-unswept-schedules
+                                              --allow-unserved-ui, --allow-unswept-schedules
+                                              and --require-data-loss-check
   substrat preview delete --tag <tag> [--slug <s>]  reap a preview (idempotent)
   substrat preview ls [--slug <s>]            list a vertical's active previews
   substrat model view [dir|model.json]        render the entity model as a self-contained
@@ -406,7 +421,10 @@ async function cmdPush(): Promise<void> {
   // rules above have already run, which makes `substrat push --check` the whole local gate.
   // Every failure throws (main() prints it and exits non-zero) — that is the gate.
   if (argv.includes('--check')) {
-    const surface = await checkPermissionSurface(dir);
+    const surface = await checkPermissionSurface(dir, {
+      require: dataLossCheckRequired(argv),
+      log: jsonCheck ? console.error : console.log,
+    });
     // The schedule check (#1646) the push would make — `--check` is the whole local gate, so
     // a vertical whose schedules nothing would run is refused here too. A tree with no deploy
     // config has no bindings to judge; the push itself names that refusal.
@@ -496,6 +514,8 @@ async function cmdPush(): Promise<void> {
     // does not scan the same tree twice.
     skipLint: argv.includes('--skip-lint'),
     linted,
+    // A data-loss replay (#2321) that was skipped or incomplete is a loud warning; this makes it a refusal.
+    requireDataLossCheck: dataLossCheckRequired(argv),
     envSpec: meta.envSpec,
     ownerGrants: meta.ownerGrants,
     entitlements: meta.entitlements,
@@ -511,6 +531,7 @@ async function cmdPush(): Promise<void> {
     controlPlaneUrl, authHeader: header,
   });
   console.log(`✓ pushed ${v.verticalSlug ?? slug}. version ${v.id} (${version}) is ${v.admission}; deploymentRef=${v.deploymentRef}`);
+  console.log(`  ${formatDataLossCheck(v.dataLoss)}`);
   // Advisory, same spirit as the permission-surface gate: a bound surface the new
   // version stopped declaring keeps serving, but probably not what its users expect.
   for (const w of v.warnings ?? []) console.warn(`⚠ ${w}`);
@@ -623,53 +644,57 @@ function reportStoreBackfill(result: PromoteResult): void {
   }
 }
 
-const STORE_KIND_USAGE = [
-  'usage: substrat store-kind upload   --kind <kind> --dir <dir> --entry <kind_x/…/module.py> [--commit <sha>]',
-  '       substrat store-kind rollout  --kind <kind> --sha256 <sha256>',
-  '       substrat store-kind rollback --kind <kind>',
-  '       substrat store-kind status   --kind <kind>',
+const STORE_DRIVER_USAGE = [
+  'usage: substrat store-driver upload   --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>]',
+  '       substrat store-driver rollout  --driver <driver> --sha256 <sha256>',
+  '       substrat store-driver rollback --driver <driver>',
+  '       substrat store-driver status   --driver <driver>',
 ];
 
-async function cmdStoreKind(): Promise<void> {
+async function cmdStoreDriver(): Promise<void> {
   const sub = argv[1];
-  const kind = flag('kind');
-  if (!['upload', 'rollout', 'rollback', 'status'].includes(sub ?? '') || !kind) {
-    for (const line of STORE_KIND_USAGE) console.error(line);
+  if (argv.includes('--kind')) {
+    console.error('--kind was renamed --driver');
+    process.exit(1);
+  }
+  const driver = flag('driver');
+  if (!['upload', 'rollout', 'rollback', 'status'].includes(sub ?? '') || !driver) {
+    for (const line of STORE_DRIVER_USAGE) console.error(line);
     process.exit(1);
   }
   const sha256 = flag('sha256');
   if (sub === 'rollout' && !isReleaseSha(sha256)) {
-    console.error('a rollout names the release by --sha256 <64 lowercase hex>, as `store-kind upload` printed it');
-    for (const line of STORE_KIND_USAGE) console.error(line);
+    console.error('a rollout names the release by --sha256 <64 lowercase hex>, as `store-driver upload` printed it');
+    for (const line of STORE_DRIVER_USAGE) console.error(line);
     process.exit(1);
   }
   const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   console.log(`authenticating with ${as}`);
   console.log(`control plane ${controlPlaneUrl}`);
-  const plane = { controlPlaneUrl, header, kind };
+  const plane = { controlPlaneUrl, header, driver };
   if (sub === 'status') {
-    const view = await storeKindStatus(plane);
-    for (const line of storeKindStatusLines(kind, view)) console.log(line);
+    const view = await storeDriverStatus(plane);
+    for (const line of storeDriverStatusLines(driver, view)) console.log(line);
     return;
   }
   if (sub === 'upload') {
     const dir = flag('dir');
     const entry = flag('entry');
     if (!dir || !entry) {
-      for (const line of STORE_KIND_USAGE) console.error(line);
+      for (const line of STORE_DRIVER_USAGE) console.error(line);
       process.exit(1);
     }
-    const body = packStoreKindDir(dir, entry, flag('commit') ?? sourceCommitOf(dir, packedFilesOf(dir)));
-    const { release, pinned } = await uploadStoreKindRelease({ ...plane, body });
-    console.log(`✓ stored ${kind} ${release.sha256} (commit ${release.sourceCommit})`);
-    console.log(pinned ? '  pinned: roll it out with `substrat store-kind rollout`' : '  not pinned yet: it runs once a reviewed change pins this sha256 and commit');
+    const body = packStoreDriverDir(dir, entry, flag('commit') ?? sourceCommitOf(dir, packedFilesOf(dir)));
+    const { release, pinned } = await uploadStoreDriverRelease({ ...plane, body });
+    console.log(`✓ stored ${driver} ${release.sha256} (commit ${release.sourceCommit})`);
+    console.log(pinned ? '  pinned: roll it out with `substrat store-driver rollout`' : '  not pinned yet: it runs once a reviewed change pins this sha256 and commit');
     return;
   }
   const result =
     sub === 'rollback'
-      ? await rollBackStoreKind(plane)
-      : await rollOutStoreKind({ ...plane, sha256: sha256! });
-  console.log(`✓ ${kind} ${result.rollout.action} to ${result.rollout.sha256}: ${result.rollout.state} (${result.moved.length} vertical(s) this run)`);
+      ? await rollBackStoreDriver(plane)
+      : await rollOutStoreDriver({ ...plane, sha256: sha256! });
+  console.log(`✓ ${driver} ${result.rollout.action} to ${result.rollout.sha256}: ${result.rollout.state} (${result.moved.length} vertical(s) this run)`);
   if (!result.complete) console.log('  verticals remain: run the same command again to continue');
 }
 
@@ -1017,6 +1042,8 @@ async function cmdPreview(): Promise<void> {
       allowUnservedUi: argv.includes('--allow-unserved-ui'),
       // …and the same schedule check (#1646): a preview's schedules need a sweeper too.
       allowUnsweptSchedules: argv.includes('--allow-unswept-schedules'),
+      // …and the same data-loss replay (#2321), which a preview's migrations meet too.
+      requireDataLossCheck: dataLossCheckRequired(argv),
       linted,
       envSpec: meta.envSpec,
       ownerGrants: meta.ownerGrants,
@@ -1193,8 +1220,13 @@ async function main(): Promise<void> {
       return cmdPromote();
     case 'publish':
       return cmdPublish();
+    case 'store-driver':
+      return cmdStoreDriver();
     case 'store-kind':
-      return cmdStoreKind();
+      // Renamed with the concept (K-53): a store's code is its driver. Nothing to alias, since no
+      // driver was ever registered for the old command to have acted on.
+      console.error('`substrat store-kind` was renamed `substrat store-driver`, and its --kind flag --driver');
+      process.exit(1);
     case 'unpublish':
       return cmdUnpublish();
     case 'whoami':

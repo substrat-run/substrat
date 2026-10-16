@@ -14,6 +14,8 @@ import {
   scopeStoreEnvelopeFresh,
   ScopeStoreKeyError,
   scopeStoreKeyId,
+  scopeStorePublicKeyProblem,
+  scopeStoreSignerPublicKey,
   scopeStorePublicKeysFrom,
   verifyScopeStoreCall,
   verifyScopeStoreEnvelope,
@@ -335,5 +337,48 @@ describe('scope store envelope (#2287)', () => {
     expect(parseScopeStoreEnvelope(lines.join('\n'))?.iat).toBe(999_999_999_999_999);
     lines[7] = '9999999999999999';
     expect(parseScopeStoreEnvelope(lines.join('\n'))).toBeUndefined();
+  });
+  it('a signer key names the public key and kid it signs under, and an unusable one never echoes itself', async () => {
+    expect(await scopeStoreSignerPublicKey(vector.privateKeyPkcs8)).toEqual({ publicKey: vector.publicKey, kid: vector.kid });
+    // The derivation is the signer's own: an envelope issued with the key carries the same kid.
+    const issued = await issueScopeStoreEnvelope({ privateKey: vector.privateKeyPkcs8, aud: 'caller', script: vector.script, name: NAME, op: 'read', body: bodyFor('read') });
+    expect(issued.envelope.kid).toBe(vector.kid);
+    const truncated = vector.privateKeyPkcs8.slice(0, -4);
+    const der = base64UrlToBytes(vector.privateKeyPkcs8)!;
+    const withTrailing = (n: number) => bytesToBase64Url(Uint8Array.from([...der, ...new Uint8Array(n)]));
+    // The same seed under X25519's algorithm identifier (1.3.101.110): right length, wrong key type.
+    const x25519 = bytesToBase64Url(Uint8Array.from(der.map((byte, i) => (i === 11 ? 0x6e : byte))));
+    const cases = [
+      ['not base64url!', 'encoding'],
+      [truncated, 'not-pkcs8-v1'],
+      [vector.publicKey, 'not-pkcs8-v1'],
+      // A DER parser may tolerate trailing bytes and derive the same kid; the signer does not.
+      [withTrailing(1), 'not-pkcs8-v1'],
+      [withTrailing(16), 'not-pkcs8-v1'],
+      [x25519, 'not-pkcs8-v1'],
+    ] as const;
+    for (const [bad, reason] of cases) {
+      const error = await scopeStoreSignerPublicKey(bad).then(() => undefined, (e: unknown) => e as ScopeStoreKeyError);
+      expect(error).toBeInstanceOf(ScopeStoreKeyError);
+      expect(error!.reason).toBe(reason);
+      expect(error!.message).not.toContain(bad);
+    }
+    // The signer refuses the same values: one function judges both.
+    await expect(issueScopeStoreEnvelope({ privateKey: withTrailing(1), aud: 'caller', script: vector.script, name: NAME, op: 'read', body: bodyFor('read') })).rejects.toBeInstanceOf(ScopeStoreKeyError);
+  });
+
+  it('names each public-key problem as a code, and the list parser refuses exactly those', () => {
+    const cases = [
+      ['', 'empty'],
+      ['abc', 'length'],
+      [bytesToBase64Url(new Uint8Array(32).fill(0).map((_, i) => (i === 0 ? 1 : 0))), 'small-order'],
+      [alias(vector.publicKey), 'non-canonical'],
+      [vector.publicKey, undefined],
+    ] as const;
+    for (const [key, problem] of cases) {
+      expect(scopeStorePublicKeyProblem(key)).toBe(problem);
+      if (problem && problem !== 'empty') expect(() => parseScopeStorePublicKeys(key)).toThrow();
+    }
+    expect(parseScopeStorePublicKeys(vector.publicKey)).toEqual([vector.publicKey]);
   });
 });

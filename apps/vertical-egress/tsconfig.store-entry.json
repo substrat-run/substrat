@@ -1,5 +1,5 @@
 {
-  // The platform's store entry and its test kind (packages/control-plane-api/store-entry,
+  // The platform's store entry and its test driver (packages/control-plane-api/store-entry,
   // #2289) run in workerd and are bundled, never emitted, by tools/store-entry-emit.mts. They
   // are typechecked here, the package whose suites run them, because this one has the workers
   // types and control-plane-api's node build does not.

@@ -387,12 +387,12 @@ export interface VerticalScopeHost {
   scopeStoreExportLocal?(
     tenantId: TenantId,
     scopeId: ScopeId,
-  ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]>;
+  ): Promise<{ binding: string; driver: string; tables: ScopeDumpTable[] }[]>;
   /** Replace each named scope store from a dump (#2211). Refuses a binding that is not declared. */
   scopeStoreImportLocal?(
     tenantId: TenantId,
     scopeId: ScopeId,
-    stores: { binding: string; kind?: string; tables: ScopeDumpTable[] }[],
+    stores: { binding: string; driver?: string; tables: ScopeDumpTable[] }[],
   ): Promise<void>;
   entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>>;
   facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult>;
