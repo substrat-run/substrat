@@ -109,7 +109,7 @@ import {
   scope as scopeSchema,
   tenant as tenantSchema,
   tenantRole,
-  type AdminAction,
+  type WrittenAdminAction,
   type ConnectLink,
   type ConnectLinkConsume,
   type ConnectLinkFilter,
@@ -6544,7 +6544,7 @@ export class CloudflareScopeHost implements ScopeHost {
 
     const transitionScope = async (
       actor: PlatformActorId,
-      action: AdminAction,
+      action: WrittenAdminAction,
       tenantId: TenantId,
       scopeId: ScopeId,
       from: ScopeStatus[],
@@ -10400,7 +10400,7 @@ export class CloudflareScopeHost implements ScopeHost {
 
   private async recordAdmin(
     actor: PlatformActorId,
-    action: AdminAction,
+    action: WrittenAdminAction,
     target: { tenantId: TenantId | null; scopeId?: ScopeId | null; vertical?: string | null },
     before: unknown,
     after: unknown,
@@ -10414,7 +10414,7 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   private adminEntry(
     actor: PlatformActorId,
-    action: AdminAction,
+    action: WrittenAdminAction,
     target: { tenantId: TenantId | null; scopeId?: ScopeId | null; vertical?: string | null },
     before: unknown,
     after: unknown,

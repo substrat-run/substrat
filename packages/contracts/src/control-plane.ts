@@ -52,6 +52,9 @@ import { platformRequestFailureOrigin } from './platform-request.js';
 // mutation writes; the tenant registry, lifecycle, and entitlement store land in
 // later slices (control-plane.md §4.1–4.3).
 
+/** Admin actions a log may hold and no host writes any more (see {@link adminAction}). */
+export const HISTORIC_ADMIN_ACTIONS = ['uploadStoreKindRelease', 'rollOutStoreKind', 'rollBackStoreKind'] as const;
+
 // One row per control-plane mutation. Extended additively as §4.2/§4.3 add
 // lifecycle and entitlement actions (new enum members are additive — D-28).
 export const adminAction = z.enum([
@@ -244,8 +247,13 @@ export const adminAction = z.enum([
   'uploadStoreDriverRelease',
   'rollOutStoreDriver',
   'rollBackStoreDriver',
+  // Historic, never written: the same three actions as #2300 wrote them, before K-53 renamed a
+  // store's code its driver. Kept so a log that already holds one still reads.
+  ...HISTORIC_ADMIN_ACTIONS,
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
+/** An action a host writes today: every {@link AdminAction} but the historic ones. */
+export type WrittenAdminAction = Exclude<AdminAction, (typeof HISTORIC_ADMIN_ACTIONS)[number]>;
 
 /**
  * One change to a scope's copy marker (#2005), as its admin-log row: a `mark` (`markScopeCopy`)

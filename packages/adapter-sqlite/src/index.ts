@@ -108,7 +108,7 @@ import {
   scope as scopeSchema,
   tenant as tenantSchema,
   tenantRole,
-  type AdminAction,
+  type WrittenAdminAction,
   type AccessLogEntry,
   type CheckSubject,
   type BecomeCapabilityInput,
@@ -3311,7 +3311,7 @@ export class SqliteScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     opts?: SystemSwitchReassertOptions,
-    audit: (action: AdminAction, after: Record<string, unknown>) => void = (action, after) =>
+    audit: (action: WrittenAdminAction, after: Record<string, unknown>) => void = (action, after) =>
       this.recordAdmin(actor, action, { tenantId, scopeId }, null, after),
   ): SystemSwitchReassert[] {
     const at = new Date().toISOString();
@@ -4142,7 +4142,7 @@ export class SqliteScopeHost implements ScopeHost {
     // the directory's recorded-off modules go back off in the load's own turn, as a
     // provision's seat does — no schedule pass can run in between.
     // The re-assert's audit rows are written only once the load has committed.
-    const rows: [AdminAction, Record<string, unknown>][] = [];
+    const rows: [WrittenAdminAction, Record<string, unknown>][] = [];
     // #1869: the re-point's source is the separate hint when given; the dump is otherwise as sent.
     const source = { tables: dump.tables, scopeId: opts?.sourceScopeId ?? dump.scopeId };
     await this.loadDump(tenantId, scopeId, source, (rt) =>
@@ -7582,7 +7582,7 @@ export class SqliteScopeHost implements ScopeHost {
 
   private recordAdmin(
     actor: PlatformActorId,
-    action: AdminAction,
+    action: WrittenAdminAction,
     target: { tenantId: TenantId | null; scopeId?: ScopeId | null; vertical?: string | null },
     before: unknown,
     after: unknown,
@@ -7848,7 +7848,7 @@ export class SqliteScopeHost implements ScopeHost {
     // — an explicit, audited restore, never a silent flag flip.
     const transitionScope = (
       actor: PlatformActorId,
-      action: AdminAction,
+      action: WrittenAdminAction,
       tenantId: TenantId,
       scopeId: ScopeId,
       from: ScopeStatus[],
