@@ -125,7 +125,7 @@ describe('platform script names (#1923)', () => {
 });
 
 describe('scope-store script names (RFC scope-stores §10.7, L20)', () => {
-  const KINDS = ['graph', 'g2', 'graphx'];
+  const DRIVERS = ['graph', 'g2', 'graphx'];
   const VERTICALS = [
     'crm',
     'acme-crm',
@@ -141,7 +141,7 @@ describe('scope-store script names (RFC scope-stores §10.7, L20)', () => {
 
   it('gives distinct (driver, vertical) pairs distinct names, and the same pair the same name', () => {
     const seen = new Map<string, string>();
-    for (const driver of KINDS) {
+    for (const driver of DRIVERS) {
       for (const vertical of VERTICALS) {
         const name = scopeStoreScriptName(vertical, driver);
         const pair = `${driver} ${vertical}`;
@@ -168,7 +168,7 @@ describe('scope-store script names (RFC scope-stores §10.7, L20)', () => {
     // would be `-canary`: no slug decodes to it, and the builder refuses it outright.
     expect(verticalSlug.safeParse(SCOPE_STORE_CANARY).success).toBe(false);
     expect(() => scopeStoreScriptName(SCOPE_STORE_CANARY, 'graph')).toThrow(/vertical slug/);
-    for (const driver of KINDS) {
+    for (const driver of DRIVERS) {
       for (const vertical of VERTICALS) expect(scopeStoreScriptName(vertical, driver)).not.toBe(scopeStoreCanaryScriptName(driver));
     }
 

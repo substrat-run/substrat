@@ -94,7 +94,7 @@ one a caller can forget.
 
 `getScope(…, { store })` would put the store on that options bag. This RFC does not.
 The door is `getScopeStore(principal, tenantId, scopeId, binding)`. The returned stub
-has `tenantId`, `scopeId`, `subjectDriver` and `invoke(operation, input)`. `invoke` takes
+has `tenantId`, `scopeId`, `subjectKind` and `invoke(operation, input)`. `invoke` takes
 no `InvokeOptions`. Passing them is an error, the same rule as a silent `ifMatch`.
 The type is `StoreStub<Catalog>`, parameterized by the driver's operation catalog.
 
@@ -186,7 +186,7 @@ reviewed change. A review of that change is the review of what the platform will
 
 A release is published by a person with a staff credential, never by the CI or automation
 service token. That rule keys on the actor: the service token resolves to the staff
-principal driver too, so publishing refuses a service actor rather than admitting "staff".
+principal kind too, so publishing refuses a service actor rather than admitting "staff".
 The rollout's canary runs on a platform-owned canary object that holds no tenant data and
 is never a tenant's scope. It calls every reserved operation (`substrat.export`,
 `substrat.import`, `substrat.size`, `substrat.wipe`, `substrat.erase`) and asserts each
