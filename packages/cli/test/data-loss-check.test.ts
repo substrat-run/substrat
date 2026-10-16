@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -45,6 +45,51 @@ const fakeChild = (message: unknown): string => {
   const path = join(mkdtempSync(join(tmpdir(), 'substrat-replay-child-')), 'child.mjs');
   writeFileSync(path, `process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(${JSON.stringify(JSON.stringify(message))} + '\\n'));\n`);
   return path;
+};
+
+/**
+ * The real replay child, behind a wrapper that writes the child's pid to a file, and — by
+ * listening on the child's own progress lines — each migration as it starts: the process to
+ * watch, by pid, on any platform, and the moment it is really running a given migration rather
+ * than still reading its request. Liveness is `process.kill(pid, 0)` — ESRCH is gone; any other
+ * error is not an answer, and throws.
+ */
+const pidRecordingChild = (): { path: string; pid: () => number | undefined; started: () => string } => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-replay-pid-'));
+  const pidFile = join(dir, 'pid');
+  const startedFile = join(dir, 'started');
+  const path = join(dir, 'child.mjs');
+  writeFileSync(
+    path,
+    [
+      "import fs from 'node:fs';",
+      "import { syncBuiltinESMExports } from 'node:module';",
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
+      'const write = fs.writeSync;',
+      // The child's progress goes to fd 1 through writeSync; copy each `started` key aside.
+      `fs.writeSync = (fd, data, ...rest) => { if (fd === 1) { try { const m = JSON.parse(String(data)); if (m.type === 'started') fs.appendFileSync(${JSON.stringify(startedFile)}, m.key + '\\n'); } catch {} } return write(fd, data, ...rest); };`,
+      'syncBuiltinESMExports();',
+      `await import(${JSON.stringify(pathToFileURL(childPath).href)});`,
+    ].join('\n'),
+  );
+  return {
+    path,
+    pid: () => (existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : undefined),
+    started: () => (existsSync(startedFile) ? readFileSync(startedFile, 'utf8') : ''),
+  };
+};
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    throw e;
+  }
+};
+const until = async (what: () => boolean, ms: number): Promise<boolean> => {
+  for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) if (what()) return true;
+  return what();
 };
 
 describe.runIf(ready)("the push's data-loss check, through the vertical's own kernel", () => {
@@ -105,13 +150,19 @@ describe.runIf(ready)("the push's data-loss check, through the vertical's own ke
 
   it('a migration that never ends is stopped at the time limit: INCOMPLETE, naming it, and its process is gone', async () => {
     const forever: Migration = { version: '0002', sql: 'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c;' };
+    const child = pidRecordingChild();
     const started = Date.now();
-    const { result, warn } = await run(inputs([INIT, forever, { version: '0003', sql: 'DROP TABLE notes;' }]), { timeoutMs: 1500 });
+    const { result, warn } = await run(inputs([INIT, forever, { version: '0003', sql: 'DROP TABLE notes;' }]), {
+      timeoutMs: 1500,
+      childPath: child.path,
+    });
     await expect(result).resolves.toMatchObject({ status: 'incomplete', authored: 3, notReplayed: 2, key: 'notes@0002' });
     expect(Date.now() - started).toBeLessThan(15_000);
     expect(warn[0]).toMatch(/notes@0002 could not be replayed on synthetic data: it did not finish within 1\.5 s and was stopped/);
-    // Killed, not abandoned: no replay process of this build is left spinning.
-    expect(spawnSync('pgrep', ['-f', childPath]).status).toBe(1);
+    // Killed, not abandoned: the answer comes once the replay process is gone.
+    const pid = child.pid();
+    expect(pid).toBeGreaterThan(0);
+    expect(alive(pid!)).toBe(false);
   }, 30_000);
 
   it('the time limit is per migration: a replay longer than it in total still passes', async () => {
@@ -227,23 +278,14 @@ describe('the strict switch', () => {
   });
 });
 
-/** Pids of processes running `path`, or [] — pgrep exits 1 when nothing matches. */
-const pidsOf = (path: string): number[] =>
-  (spawnSync('pgrep', ['-f', path], { encoding: 'utf8' }).stdout ?? '').split('\n').filter(Boolean).map(Number);
-const until = async (what: () => boolean, ms: number): Promise<boolean> => {
-  for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) if (what()) return true;
-  return what();
-};
-
 describe.runIf(ready)('the replay process does not outlive the push that started it', () => {
   const checkJs = fileURLToPath(new URL('../dist/data-loss-check.js', import.meta.url));
   const FOREVER = 'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c;';
 
-  /** A push stand-in running one endless migration in a child copied to a path of its own. */
+  /** A push stand-in running one endless migration in a replay child whose pid it records. */
   const parentRunningForever = () => {
     const dir = mkdtempSync(join(tmpdir(), 'substrat-replay-orphan-'));
-    const child = join(dir, 'replay-child.mjs');
-    copyFileSync(childPath, child);
+    const child = pidRecordingChild();
     const parent = join(dir, 'parent.mjs');
     writeFileSync(
       parent,
@@ -251,7 +293,7 @@ describe.runIf(ready)('the replay process does not outlive the push that started
 const kernel = await import(${JSON.stringify(kernelUrl)});
 await checkMigrationDataLoss(
   { kernel, kernelUrl: ${JSON.stringify(kernelUrl)}, modules: [{ manifest: { id: 'notes' }, migrations: ${JSON.stringify([INIT, { version: '0002', sql: FOREVER }])} }], spineDdl: async () => undefined },
-  { childPath: ${JSON.stringify(child)}, timeoutMs: 600000 },
+  { childPath: ${JSON.stringify(child.path)}, timeoutMs: 600000 },
 );
 `,
     );
@@ -262,13 +304,18 @@ await checkMigrationDataLoss(
     it(`a push killed with ${signal}, the replay's pid alone, takes the replay with it`, async () => {
       const { child, process: parent } = parentRunningForever();
       try {
-        expect(await until(() => pidsOf(child).length > 0, 15_000)).toBe(true);
+        // The replay is running the endless migration — not still reading its request, which a
+        // dead parent would end by itself — before the push is killed.
+        expect(await until(() => child.started().includes('notes@0002'), 15_000)).toBe(true);
+        const pid = child.pid()!;
+        expect(alive(pid)).toBe(true);
         parent.kill(signal);
         // The watchdog polls every 200 ms; a few seconds is generous under load.
-        expect(await until(() => pidsOf(child).length === 0, 10_000)).toBe(true);
+        expect(await until(() => !alive(pid), 10_000)).toBe(true);
       } finally {
         parent.kill('SIGKILL');
-        for (const pid of pidsOf(child)) process.kill(pid, 'SIGKILL');
+        const pid = child.pid();
+        if (pid !== undefined && alive(pid)) process.kill(pid, 'SIGKILL');
       }
     }, 40_000);
   }
