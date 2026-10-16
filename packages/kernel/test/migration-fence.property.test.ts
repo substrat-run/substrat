@@ -14,8 +14,9 @@ import { runMigrationStatements, type ScopedSql, type SqlValue } from '../src/in
  *
  * - `in-place`: a table that kept its identity holds as many rows as before, but not the same ones
  *   (`DELETE` + `INSERT`), so it passes although rows are gone;
- * - `recreated`: a table was dropped and its original name made again holding as many rows, which
- *   counts as the create-copy-drop-rename rebuild the fence must accept;
+ * - `recreated`: a table was dropped and its original name taken by a table this migration
+ *   created, holding as many rows wherever it ends up, even renamed away again: counts cannot tell
+ *   that from the create-copy-drop-rename rebuild (and a rename after it) the fence must accept;
  * - `copied`: every value survives, but a table's rows now live under another table's identity —
  *   refused until `moves` declares it, by design.
  *
@@ -106,6 +107,8 @@ describe('the data-loss fence agrees with ground truth on every short migration 
         if (kinds.includes('rename')) statements.push(`ALTER TABLE ${x} RENAME TO ${y}`);
         if (kinds.includes('copy')) statements.push(`INSERT INTO ${x} SELECT * FROM ${y}`);
         if (kinds.includes('create-as')) statements.push(`CREATE TABLE ${x} AS SELECT * FROM ${y}`);
+        // One step, two statements: a table made from another and renamed onto `x`, the rebuild.
+        if (kinds.includes('rebuild')) statements.push(`CREATE TABLE n AS SELECT * FROM ${y}; ALTER TABLE n RENAME TO ${x}`);
         if (kinds.includes('qualified')) statements.push(`ALTER TABLE main.${x} RENAME TO "${y}"`);
       }
       if (kinds.includes('qualified')) statements.push(`DROP TABLE "${x}"`, `DROP TABLE IF EXISTS "main"."${x}"`);
@@ -134,16 +137,25 @@ describe('the data-loss fence agrees with ground truth on every short migration 
         // Which original table holds each name at the end, as SQLite resolves them in order.
         const holder = new Map(N.map((t) => [t, t]));
         const dropped = new Set<string>();
-        for (const s of seq) {
+        // An original table's name, first taken by a table this migration created: that table's id.
+        // It counts only if the original ends up dropped (moved aside first, or dropped first).
+        const standIn = new Map<string, string>();
+        let made = 0;
+        const place = (name: string, id: string) => {
+          holder.set(name, id);
+          if (id.startsWith('new:') && N.includes(name) && !standIn.has(name)) standIn.set(name, id);
+        };
+        for (const s of seq.flatMap((step) => step.split('; '))) {
           const w = s.replace('IF EXISTS ', '').split(' ');
           if (w[0] === 'DROP') {
             const id = holder.get(nameOf(w[2]!));
             holder.delete(nameOf(w[2]!));
             if (id && N.includes(id)) dropped.add(id);
-          } else if (w[0] === 'CREATE') holder.set(w[2]!, `new:${w[2]}`);
+          } else if (w[0] === 'CREATE') place(w[2]!, `new:${(made += 1)}`);
           else if (w[0] === 'ALTER') {
-            holder.set(nameOf(w[5]!), holder.get(nameOf(w[2]!))!);
+            const id = holder.get(nameOf(w[2]!))!;
             holder.delete(nameOf(w[2]!));
+            place(nameOf(w[5]!), id);
           }
         }
         const rowsOf = (t: string): string[] => (truth.prepare(`SELECT tag FROM ${t}`).all() as { tag: string }[]).map((r) => r.tag);
@@ -158,8 +170,11 @@ describe('the data-loss fence agrees with ground truth on every short migration 
         const explained = (t: string): 'in-place' | 'recreated' | undefined => {
           const at = identityOf(t);
           if (at !== undefined && !dropped.has(t) && rowsOf(at).length >= ROWS[t]!) return 'in-place';
-          // Made AGAIN: the name is held by a table a CREATE made, never by one renamed onto it.
-          if (dropped.has(t) && holder.get(t)?.startsWith('new:') && rowsOf(t).length >= ROWS[t]!) return 'recreated';
+          // Continued by a table this migration CREATED, wherever that table is now — never by an
+          // original table renamed onto the name.
+          const by = standIn.get(t);
+          const now = by === undefined ? undefined : [...holder].find(([, id]) => id === by)?.[0];
+          if (dropped.has(t) && now !== undefined && rowsOf(now).length >= ROWS[t]!) return 'recreated';
           return undefined;
         };
         const verdict = fenced(setup, seq);
@@ -181,8 +196,8 @@ describe('the data-loss fence agrees with ground truth on every short migration 
     expect(checked).toBeGreaterThan(3_000);
   }, WALK_TIMEOUT_MS);
 
-  it('table level: drops, renames and rebuilds with a free fourth name', () => {
-    const { checked, unexplained } = tableLevel(['a', 'b', 'c', 'd'], ['drop', 'rename', 'create-as'], 3);
+  it('table level: drops, renames, rebuilds and rebuild-then-rename with a free fourth name', () => {
+    const { checked, unexplained } = tableLevel(['a', 'b', 'c', 'd'], ['drop', 'rename', 'create-as', 'rebuild'], 3);
     expect(unexplained).toEqual([]);
     expect(checked).toBeGreaterThan(1_000);
   }, WALK_TIMEOUT_MS);

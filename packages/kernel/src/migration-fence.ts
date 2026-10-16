@@ -360,8 +360,15 @@ function createsTemp(statement: string): boolean {
   if (!['table', 'view', 'index', 'trigger'].includes(kw(at) ?? '')) return false;
   at += 1;
   if (kw(at) === 'if' && kw(at + 1) === 'not' && kw(at + 2) === 'exists') at += 3;
-  return w[at] !== undefined && lower(w[at]!.text).startsWith('temp.');
+  if (w[at] === undefined || !lower(w[at]!.text).startsWith('temp.')) return false;
+  // The tokenizer folds `"temp"."x"` and `"temp.x"` alike; the second is ONE identifier, a main
+  // table whose name holds a dot. Read the name where the statement writes it.
+  return !LITERAL_DOTTED_NAME.test(statement);
 }
+
+/** A CREATE whose object name is a single quoted identifier beginning `temp.` (not a schema). */
+const LITERAL_DOTTED_NAME =
+  /^\s*create\s+(?:(?:unique|virtual)\s+)?(?:table|view|index|trigger)\s+(?:if\s+not\s+exists\s+)?(?:"temp\.[^"]*"|`temp\.[^`]*`|\[temp\.[^\]]*\])/i;
 
 /**
  * What a declaration counts: a column's values per class, or a table's rows — carried in one

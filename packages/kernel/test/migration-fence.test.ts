@@ -410,18 +410,29 @@ describe('the data-loss fence (#115)', () => {
       ['CREATE TEMP VIEW v AS SELECT 1'],
       ['CREATE TEMP TRIGGER t AFTER INSERT ON a BEGIN SELECT 1; END'],
       ['CREATE INDEX temp.i ON a (id)'],
+      ['CREATE VIRTUAL TABLE temp.f USING fts5(x)'],
+      ['CREATE TABLE IF NOT EXISTS temp.x (id TEXT)'],
+      ['CREATE TABLE "temp"."x" ("temp.y" TEXT)'],
     ])('an authored migration that makes one is refused before it runs: %s', (stmt) => {
       expect(invalid(`${stmt}; DROP TABLE a;`)).toContain('creates a TEMP object');
     });
 
-    it('a table merely named like the schema is not one', () => {
-      scope(setup).migrate({ sql: 'CREATE TABLE temporary_notes (id TEXT); CREATE TABLE "temp_x" (id TEXT);' });
+    it('a table merely named like the schema is not one, a dot in a quoted name included', () => {
+      const s = scope(setup);
+      s.migrate({ sql: 'CREATE TABLE temporary_notes (id TEXT); CREATE TABLE "temp_x" (id TEXT); CREATE TABLE "temp.x" (id TEXT);' });
+      expect(s.rows(`SELECT name FROM main.sqlite_master WHERE name = 'temp.x'`)).toHaveLength(1);
     });
 
     it('a TEMP object already on the connection does not answer for the scope\'s table', () => {
       const s = scope(setup);
       s.db.exec('CREATE TEMP TABLE a AS SELECT * FROM b');
       expect(refusal(() => s.migrate({ sql: 'DELETE FROM main.a;' }))).toContain('table a held 2 row(s), now 0');
+    });
+
+    it('nor for its columns: a TEMP shadow without the column does not hide its loss', () => {
+      const s = scope(`CREATE TABLE a (id TEXT, v TEXT); INSERT INTO a VALUES ('1', 'p'), ('2', 'q');`);
+      s.db.exec("CREATE TEMP TABLE a (id TEXT); INSERT INTO temp.a VALUES ('x')");
+      expect(refusal(() => s.migrate({ sql: 'ALTER TABLE main.a DROP COLUMN v;' }))).toContain('column a.v held 2 value(s) and is gone');
     });
   });
 
