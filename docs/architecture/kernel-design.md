@@ -554,7 +554,11 @@ shared across a tenant's verticals is §13 question 21.
   freely. Each table after the migration is claimed by one table before it, a rename first, so
   `DROP TABLE b; ALTER TABLE a RENAME TO b` loses `b`'s rows visibly; a `DROP TABLE` releases the
   name, so a later rename or `RENAME COLUMN` on it is the renamed table's, whatever order the scope
-  created them in, and a dropped table comes back only under its original name. Every measuring query stays
+  created them in, and a dropped table comes back only under its original name — continued, and
+  followed through later renames, when a table the migration made is renamed onto that name (the
+  create-copy-drop-rename rebuild). An authored migration that makes a TEMP object is refused
+  before it runs: a Durable Object refuses TEMP objects, and one would shadow the scope's tables
+  for every unqualified statement; the measuring reads name `main` for the same reason. Every measuring query stays
   inside `DO_SQL_LIMITS` (a column per storage class, so 25 table columns per scan). The
   override is reviewed in the migration diff, on `SqlMigration`, outside the SQL and its digest:
   `moves` (verified — the target must gain what its sources held, and a table moved whole must

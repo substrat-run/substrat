@@ -200,6 +200,10 @@ a table dropped and then made again under the same name with at least as many ro
 source a move's target gained from. In the other direction, data copied under another table's name
 is refused until `moves` declares it.
 
+A migration that creates a TEMP table, view, index or trigger is refused before it runs. A Durable
+Object does not allow TEMP objects, so it could never run in production; use a regular table and
+drop it before the migration ends.
+
 In this repository `pnpm lint:migration-fence` replays every migration against a scope that holds
 data, so an undeclared loss fails in the pull request that adds it.
 

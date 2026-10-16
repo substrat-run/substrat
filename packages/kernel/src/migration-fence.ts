@@ -51,6 +51,11 @@
  * the scope does not hold before the migration (a move's target excepted, which the migration may
  * create) is an authoring error and refuses the migration too.
  *
+ * **TEMP objects are refused.** A Durable Object refuses them outright, so a migration making one
+ * could never run on the hosted adapter, and a TEMP table shadows the scope's own tables for every
+ * unqualified statement after it. An authored migration that makes one is refused before it runs,
+ * on both adapters, and every measuring read names `main` so nothing else can answer for a table.
+ *
  * Kernel-derived DDL is exempt: its tables are indexes, rebuilt from the data this protects.
  */
 import { namesSpineTable, substratError, tokenizeSql } from '@substrat-run/contracts';
