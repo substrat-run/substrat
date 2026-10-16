@@ -296,6 +296,22 @@ describe('flattenDeclaredMigrations carries the declarations (#2322)', () => {
     expect(r.omitted).toBeUndefined();
   });
 
+  it('carries constructor and prototype, legal table names, and hashes them like any other declaration (#2322 r2)', async () => {
+    const named = { ...INIT, discards: { constructor: 'replaced by builders', prototype: 'never shipped' } };
+    const r = flattenDeclaredMigrations(surface([named]) as never);
+    expect(r.omitted).toBeUndefined();
+    expect(r.migrations).toEqual([{ moduleId: 'helpdesk', ...named }]);
+    const plain = await migrationDigest(['ScopeDO'], flattenDeclaredMigrations(surface([INIT]) as never));
+    const declared = await migrationDigest(['ScopeDO'], r);
+    expect(declared).not.toBe(plain);
+  });
+
+  it('leaves the field off for a __proto__ key, which the manifest cannot carry (#2322 r2)', () => {
+    const r = flattenDeclaredMigrations(surface([{ ...INIT, discards: JSON.parse('{"__proto__":"why"}') }]) as never);
+    expect(r.migrations).toBeUndefined();
+    expect(r.omitted).toMatch(/declares moves or discards this push cannot carry/);
+  });
+
   it('leaves the field off, with the reason, for a declaration the manifest cannot carry — and still hashes it', () => {
     const r = flattenDeclaredMigrations(surface([{ ...INIT, discards: { 'ticket.note': ' ' } }]) as never);
     expect(r.migrations).toBeUndefined();

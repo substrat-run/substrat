@@ -255,12 +255,31 @@ describe('the diff formatters', () => {
       }),
       false,
     );
-    expect(out).toContain(`+ desk${shown} 0002${shown}`);
+    expect(out).toContain(`+ "desk${shown}" "0002${shown}"`);
     expect(out).toContain(`    discards "t${shown}": "why${shown}"`);
     expect(out).toContain(`    moves "a${shown}" → "b${shown}" (verified at apply)`);
     expect(out).toContain(`    SELECT 1;${shown}`);
     expect(out).toContain('    SELECT 2;');
     for (const line of out) expect(line, line).not.toMatch(/[\p{Cc}\p{Cf}\u2028\u2029]/u);
+  });
+
+  it('formatMigrationDiff: a version with a newline cannot forge an entry above the real one (#2322 r2)', () => {
+    const version = '0007\n+ helpdesk 0008-harmless\n    SELECT 1;\nfake';
+    const out = formatMigrationDiff(
+      diff({ added: [{ moduleId: 'helpdesk', version, sql: 'DROP TABLE x;', discards: { x: 'why' } }], total: 1 }),
+      false,
+    );
+    const at = out.findIndex((l) => l.startsWith('+ '));
+    expect(out[at]).toBe('+ helpdesk "0007\\n+ helpdesk 0008-harmless\\n    SELECT 1;\\nfake"');
+    expect(out.slice(at + 1)).toEqual(['    discards "x": "why"', '    DROP TABLE x;']);
+    expect(out.filter((l) => l.startsWith('+ '))).toHaveLength(1);
+    // A plain id prints bare, as before.
+    expect(formatMigrationDiff(diff({ added: [{ moduleId: '@acme/desk', version: '0001-init', sql: 's' }], total: 1 }), false)[0]).toBe('+ @acme/desk 0001-init');
+  });
+
+  it('formatMigrationDiff: CRLF SQL prints its lines, and a lone CR still shows (#2322 r2)', () => {
+    const out = formatMigrationDiff(diff({ added: [{ moduleId: 'd', version: '1', sql: 'SELECT 1;\r\nSELECT 2;\rX' }], total: 1 }), false);
+    expect(out).toEqual(['+ d 1', '    SELECT 1;', '    SELECT 2;<U+000D>X']);
   });
 
   it('formatMigrationDiff: a long or many-line reason is cut where the review cuts it, saying where the rest is (#2322 r1)', () => {

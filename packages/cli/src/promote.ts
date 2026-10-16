@@ -18,6 +18,7 @@ import {
   grantShapeHolderNotes,
   clipReviewText,
   discardTally,
+  reviewSql,
   reviewText,
   unitemisedRegistryChanges,
   type ExportBreak,
@@ -185,6 +186,15 @@ export function formatRegistryDiff(from: PermissionRegistry | null, to: Permissi
  */
 const quoted = (text: string): string => JSON.stringify(reviewText(text));
 
+/** What an id may hold to print bare in the listing's one-line header. */
+const PLAIN_ID = /^[A-Za-z0-9@/._~:+-]+$/;
+
+/**
+ * A module id or migration version on the listing's header line: bare when it is a plain id, as
+ * every id the push boundary admits is, and `quoted` otherwise, so nothing in it can break the line.
+ */
+const idOf = (text: string): string => (PLAIN_ID.test(text) ? text : quoted(text));
+
 /**
  * A discard's reason as the listing shows it: quoted, and cut where the review cuts it
  * (`clipReviewText`: 280 characters or 6 lines), saying where the rest is. A terminal has no
@@ -218,12 +228,14 @@ export function formatMigrationDiff(diff: MigrationDiff | null, digestMoved: boo
         'older than migrations in the manifest, or its migrations were over the size a manifest carries. Read them in the repository.',
     ];
   }
-  // The id and the SQL are the pusher's text too: each SQL line, and the id, go through
-  // `reviewText`, so a control or bidi character in them prints as `<U+XXXX>`, not as itself.
+  // The id and the SQL are the pusher's text too. The header is one line, so the module and the
+  // version print bare only when they are plain ids and are quoted otherwise (`idOf`): a newline
+  // in either would forge another entry above the real one. The SQL is split into its lines after
+  // `reviewSql`, so a control or bidi character in it prints as `<U+XXXX>`, not as itself.
   const entry = (mark: string, m: MigrationEntry) => [
-    `${mark} ${reviewText(m.moduleId)} ${reviewText(m.version)}`,
+    `${mark} ${idOf(m.moduleId)} ${idOf(m.version)}`,
     ...declarationLines(m),
-    ...(m.sql === null ? ['    (SQL left out: past the size bound of this answer)'] : m.sql.split('\n').map((l) => `    ${reviewText(l)}`)),
+    ...(m.sql === null ? ['    (SQL left out: past the size bound of this answer)'] : reviewSql(m.sql).split('\n').map((l) => `    ${l}`)),
   ];
   const discards = discardTally(diff);
   const lines = [
