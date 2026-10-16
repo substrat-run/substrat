@@ -565,9 +565,12 @@ shared across a tenant's verticals is §13 question 21.
   bring each of its columns under the same name unless the column is declared by name) and
   `discards` (with a required reason; also how a deliberate retype, a widening included, is
   declared — counts cannot tell `5 → 5.0` from `5 → 0.05`). A refusal fails the scope closed like any failed
-  migration, with the data intact; `pnpm lint:migration-fence` replays every migration in the
-  repo against populated scopes through the same function, so an in-repo refusal is red in
-  its pull request first. Kernel-derived DDL is exempt, and a kernel column (`_substrat_*`)
+  migration, with the data intact. `replayMigrations` (`migration-replay.ts`, #2321) applies a
+  vertical's modules against an in-memory scope populated before each authored migration,
+  through the same function: `pnpm lint:migration-fence` runs it over every migration in the
+  repo, so an in-repo refusal is red in its pull request first, and `substrat push` runs it
+  through the vertical's own kernel before upload. The CLI supplies only the in-memory
+  `node:sqlite` and adapter-sqlite's spine, and stays free of the kernel as a dependency. Kernel-derived DDL is exempt, and a kernel column (`_substrat_*`)
   leaving is #2090's check to refuse. Not seen, because it counts: in-place replacement (values
   rewritten at the same count and storage class, rows replaced by as many other rows, a column
   dropped, re-added and refilled); a dropped table whose name is continued by a table the

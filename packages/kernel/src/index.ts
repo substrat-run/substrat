@@ -495,6 +495,8 @@ export {
 export type { OwnerStore, TableChange, TableStatement, TableStep } from './table-ownership.js';
 export { blankSqlComments, executableSqlStatements, splitSqlStatements } from './sql-statements.js';
 export { fencedTables } from './migration-fence.js';
+export { MIGRATION_REPLAY_API, replayMigrations } from './migration-replay.js';
+export type { ReplayDatabase, ReplayModule, ReplayOutcome } from './migration-replay.js';
 export type {
   ModuleErasureCounts,
   ModuleErasurePlan,
