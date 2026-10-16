@@ -551,13 +551,20 @@ shared across a tenant's verticals is §13 question 21.
   retyped, refuses the migration — following `RENAME TO`/`RENAME COLUMN` and judging a rebuild
   by its end name. "Production data" is therefore rows that exist, per scope and per table:
   there is no phase flag, and a table nobody has written to may be dropped or reshaped
-  freely. The override is reviewed in the migration diff, on `SqlMigration`, outside the SQL
-  and its digest: `moves` (verified — the target must gain what its sources held) and
-  `discards` (with a required reason). A refusal fails the scope closed like any failed
+  freely. Each table after the migration is claimed by one table before it, a rename first, so
+  `DROP TABLE b; ALTER TABLE a RENAME TO b` loses `b`'s rows visibly. Every measuring query stays
+  inside `DO_SQL_LIMITS` (a column per storage class, so 25 table columns per scan). The
+  override is reviewed in the migration diff, on `SqlMigration`, outside the SQL and its digest:
+  `moves` (verified — the target must gain what its sources held, and a table moved whole must
+  bring each of its columns under the same name unless the column is declared by name) and
+  `discards` (with a required reason; also how a deliberate retype, a widening included, is
+  declared — counts cannot tell `5 → 5.0` from `5 → 0.05`). A refusal fails the scope closed like any failed
   migration, with the data intact; `pnpm lint:migration-fence` replays every migration in the
   repo against populated scopes through the same function, so an in-repo refusal is red in
-  its pull request first. Kernel-derived DDL is exempt. Not seen: values rewritten in place at
-  the same count and storage class.
+  its pull request first. Kernel-derived DDL is exempt, and a kernel column (`_substrat_*`)
+  leaving is #2090's check to refuse. Not seen, because it counts: values rewritten in place at
+  the same count and storage class, rows replaced by as many other rows, and which source a
+  move's target gained from.
 - **Large backfills are jobs, not migrations.** The migration adds the shape; a chunked
   job (alarm-driven) backfills and marks completion in the journal separately. Backfill
   writes are flagged so they don't pollute the event spine as fake user activity.

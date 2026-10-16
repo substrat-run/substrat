@@ -171,18 +171,30 @@ migration diff is reviewed:
 ```ts
 {
   version: '0007-retire-drafts',
-  sql: `INSERT INTO notes (id, body) SELECT id, body FROM drafts; DROP TABLE drafts; ALTER TABLE notes DROP COLUMN legacy_flag;`,
-  // Verified: `notes` must gain at least the rows `drafts` held.
-  moves: { drafts: 'notes' },
+  sql: `INSERT INTO notes (id, body, written_by) SELECT id, body, author FROM drafts;
+        DROP TABLE drafts;
+        ALTER TABLE notes DROP COLUMN legacy_flag;`,
+  // Verified: `notes` gains every row `drafts` held, and each of drafts' columns arrives in a
+  // `notes` column of the same name (`id`, `body`) or is moved by name (`author`).
+  moves: { drafts: 'notes', 'drafts.author': 'notes.written_by' },
   // Given up on purpose. The reason is required; it is what the reviewer reads.
   discards: { 'notes.legacy_flag': 'the flag was never read after the 0004 redesign' },
 }
 ```
 
 A move goes table to table or `table.column` to `table.column`, and it is checked: if the target
-gains less than its sources held, the migration is still refused. A declaration that names a table
-or column the scope does not hold is refused as a typo. Migrations the model planner generates
-never need either: it refuses to write a destructive change in the first place.
+gains less than its sources held, the migration is still refused. A table moved whole must also
+bring each of its columns that held values, into a target column of the same name; a column that
+arrives under another name is moved by name, and one left behind is discarded by name, or the
+migration is refused. A declaration that names a table or column the scope does not hold is
+refused as a typo. Migrations the model planner generates never need either: it refuses to write
+a destructive change in the first place.
+
+The check counts values; it does not compare them. So it reports any change of a value's storage
+type, including a faithful widening (`5` becoming `5.0` when a column moves to `REAL`), because a
+count cannot tell that from `5` becoming `0.05`: a widening you mean is declared with `discards`,
+naming the column and saying what changed. And it cannot see values rewritten in place at the same
+count and type, rows replaced by as many other rows, or which source a move's target gained from.
 
 In this repository `pnpm lint:migration-fence` replays every migration against a scope that holds
 data, so an undeclared loss fails in the pull request that adds it.
