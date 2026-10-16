@@ -552,7 +552,9 @@ shared across a tenant's verticals is §13 question 21.
   by its end name. "Production data" is therefore rows that exist, per scope and per table:
   there is no phase flag, and a table nobody has written to may be dropped or reshaped
   freely. Each table after the migration is claimed by one table before it, a rename first, so
-  `DROP TABLE b; ALTER TABLE a RENAME TO b` loses `b`'s rows visibly. Every measuring query stays
+  `DROP TABLE b; ALTER TABLE a RENAME TO b` loses `b`'s rows visibly; a `DROP TABLE` releases the
+  name, so a later rename or `RENAME COLUMN` on it is the renamed table's, whatever order the scope
+  created them in, and a dropped table comes back only under its original name. Every measuring query stays
   inside `DO_SQL_LIMITS` (a column per storage class, so 25 table columns per scan). The
   override is reviewed in the migration diff, on `SqlMigration`, outside the SQL and its digest:
   `moves` (verified — the target must gain what its sources held, and a table moved whole must

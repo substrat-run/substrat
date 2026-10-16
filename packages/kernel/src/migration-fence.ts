@@ -24,7 +24,8 @@
  *
  * **What counts as a loss**, for a table that held rows: it is gone (under the name `ALTER TABLE …
  * RENAME TO` last gave it, or under its original name, so a rebuild back into place keeps it —
- * each table after the migration is claimed by one table before it, a rename first); it has fewer
+ * each table after the migration is claimed by one table before it, a rename first, and a `DROP
+ * TABLE` releases the name it removed); it has fewer
  * rows; one of its columns that held values is gone (`RENAME COLUMN` is followed) or holds fewer
  * of them in some storage class — which is how a retype shows, `'1.50'` turning into `1`. Counts
  * cannot tell a faithful widening (`5` → `5.0`) from a rewrite (`5` → `0.05`), so any change of
