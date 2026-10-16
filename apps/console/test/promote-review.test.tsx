@@ -171,11 +171,11 @@ describe('MigrationDiffView: declared moves and discards (#2322)', () => {
 
   it('escapes a reason, makes bidi controls visible, and cuts a long one behind an expander', () => {
     const html = view(
-      migrationsOnTop([{ moduleId: 'desk', version: '0002', sql: 's', discards: { t: `<img src=x>‮${'r'.repeat(400)}TAIL` } }], undefined),
+      migrationsOnTop([{ moduleId: 'desk', version: '0002', sql: 's', discards: { t: `<img src=x>\u202E${'r'.repeat(400)}TAIL` } }], undefined),
     );
     expect(html).not.toContain('<img');
     expect(html).toContain('&lt;img src=x&gt;&lt;U+202E&gt;');
-    expect(html).not.toMatch(/[‪-‮⁦-⁩]/);
+    expect(html).not.toMatch(/[\u202A-\u202E\u2066-\u2069]/);
     expect(html).toMatch(/<details[^>]*><summary[^>]*>.*… show all<\/summary>.*TAIL<\/details>/);
   });
 

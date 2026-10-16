@@ -185,8 +185,8 @@ describe('deployManifest.migrations declarations (#2322)', () => {
 
 describe('reviewText and discardCount (#2322)', () => {
   it('makes every bidi control visible and keeps the rest verbatim', () => {
-    expect(reviewText('keeps‮sdrop')).toBe('keeps<U+202E>sdrop');
-    expect(reviewText('⁦a⁩‎‏؜‪')).toBe('<U+2066>a<U+2069><U+200E><U+200F><U+061C><U+202A>');
+    expect(reviewText('keeps\u202Esdrop')).toBe('keeps<U+202E>sdrop');
+    expect(reviewText('\u2066a\u2069\u200E\u200F\u061C\u202A')).toBe('<U+2066>a<U+2069><U+200E><U+200F><U+061C><U+202A>');
     expect(reviewText('<b>"x"</b>\né')).toBe('<b>"x"</b>\né');
   });
 
@@ -213,6 +213,6 @@ describe('clipReviewText (#2322)', () => {
     expect(r.clipped).toBe(true);
     expect(Array.from(r.shown)).toHaveLength(REVIEW_TEXT_SHOWN_MAX);
     expect(r.full).toBe(long);
-    expect(clipReviewText('a‮b').full).toBe('a<U+202E>b');
+    expect(clipReviewText('a\u202Eb').full).toBe('a<U+202E>b');
   });
 });

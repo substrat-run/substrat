@@ -155,7 +155,7 @@ export function migrationsOnTop(
  * (U+2066–U+2069), and the marks (U+200E, U+200F, U+061C). Invisible, and able to make text
  * read in an order other than the one it is stored in.
  */
-const BIDI_CONTROLS = /[‪-‮⁦-⁩‎‏؜]/g;
+const BIDI_CONTROLS = /[\u202A-\u202E\u2066-\u2069\u200E\u200F\u061C]/g;
 
 /**
  * Pusher-supplied text (a discard's reason, a declared target) as a review shows it (#2322):

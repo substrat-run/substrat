@@ -55,12 +55,12 @@ describe('PromoteMigrations: declared moves and discards', () => {
   });
 
   it('renders a reason as text, never markup, with bidi controls made visible', () => {
-    show(diff([{ moduleId: 'desk', version: '0002', sql: 's', discards: { 'a‮b': '<img src=x onerror=alert(1)><b>bold</b>⁦x' } }]));
+    show(diff([{ moduleId: 'desk', version: '0002', sql: 's', discards: { 'a\u202Eb': '<img src=x onerror=alert(1)><b>bold</b>\u2066x' } }]));
     expect(container.querySelector('img')).toBeNull();
     expect(container.querySelector('b')).toBeNull();
     expect(text()).toContain('a<U+202E>b');
     expect(text()).toContain('<img src=x onerror=alert(1)><b>bold</b><U+2066>x');
-    expect(text()).not.toMatch(/[‪-‮⁦-⁩]/);
+    expect(text()).not.toMatch(/[\u202A-\u202E\u2066-\u2069]/);
   });
 
   it('cuts a long reason with an expander, and shows it whole on request', () => {
