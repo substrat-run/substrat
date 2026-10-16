@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from 'react';
-import { clipReviewText, discardTally, reviewText, type MigrationEntry } from '@substrat-run/contracts';
+import { clipReviewText, discardTally, reviewLine, reviewSql, type MigrationEntry } from '@substrat-run/contracts';
 import type { MigrationSection } from '../lib/promote-review';
 import { Pill } from './ui';
 
@@ -109,7 +109,8 @@ function DiscardCallout({ tally: { count, atLeast } }: { tally: { count: number;
  * What one migration declares (#2322). Every string here is the pusher's: rendered as React
  * text (never markup), with every control, format and bidi character made visible (`reviewText`),
  * and a long or many-line reason cut with an expander so it cannot push the rest of the review
- * out of sight. The migration's id and SQL below go through `reviewText` too.
+ * out of sight. A one-line position (an id, a table or column) goes through `reviewLine`, which shows a newline
+ * too, and the SQL through `reviewSql`.
  */
 function MigrationDeclarations({ entry }: { entry: MigrationEntry }) {
   if (entry.declarationsLeftOut) {
@@ -127,7 +128,7 @@ function MigrationDeclarations({ entry }: { entry: MigrationEntry }) {
       {discards.map(([target, why]) => (
         <div key={`d${target}`} style={{ ...muted, display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
           <Pill kind="danger">Discards</Pill>
-          <span style={mono}>{reviewText(target)}</span>
+          <span style={mono}>{reviewLine(target)}</span>
           <Reason text={why} />
         </div>
       ))}
@@ -135,7 +136,7 @@ function MigrationDeclarations({ entry }: { entry: MigrationEntry }) {
         <div key={`m${from}`} style={{ ...muted, display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
           <Pill kind="info">Moves</Pill>
           <span style={mono}>
-            {reviewText(from)} → {reviewText(to)}
+            {reviewLine(from)} → {reviewLine(to)}
           </span>
           <span>verified when it runs</span>
         </div>
@@ -186,7 +187,7 @@ function MigrationGroup({
           <div key={`${e.moduleId}\u001f${e.version}`}>
             <details>
               <summary style={{ ...mono, cursor: 'pointer' }}>
-                {reviewText(e.moduleId)} · {reviewText(e.version)}
+                {reviewLine(e.moduleId)} · {reviewLine(e.version)}
               </summary>
               {e.sql === null ? (
                 <div style={{ ...muted, fontSize: 12, padding: '6px 0' }}>SQL left out: past the size bound of this answer.</div>
@@ -203,7 +204,7 @@ function MigrationGroup({
                     borderRadius: 6,
                   }}
                 >
-                  {reviewText(e.sql)}
+                  {reviewSql(e.sql)}
                 </pre>
               )}
             </details>

@@ -98,6 +98,14 @@ describe('PromoteMigrations: declared moves and discards', () => {
     expect(text()).not.toMatch(/[\p{Cc}\p{Cf}]/u);
   });
 
+  it('shows a newline in an id or a target as a mark, and reads CRLF SQL as its lines (#2322 r2)', () => {
+    show(diff([{ moduleId: 'desk', version: '0007\n+ desk 0008', sql: 'SELECT 1;\r\nSELECT 2;\rX', discards: { 'a\nb': 'why' }, moves: { 'c\td': 'e' } }]));
+    expect(text()).toContain('desk · 0007<U+000A>+ desk 0008');
+    expect(text()).toContain('a<U+000A>b— why');
+    expect(text()).toContain('c<U+0009>d → e');
+    expect(container.querySelector('pre')?.textContent).toBe('SELECT 1;\nSELECT 2;<U+000D>X');
+  });
+
   it('cuts a reason of many short lines too, so its height is bounded (#2322 r1)', () => {
     const reason = Array.from({ length: 10 }, (_, i) => `line ${i}`).join('\n');
     show(diff([{ moduleId: 'desk', version: '0002', sql: 's', discards: { t: reason } }]));

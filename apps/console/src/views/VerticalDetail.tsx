@@ -9,7 +9,7 @@ import type {
   VerticalChannel,
   VerticalVersion,
 } from '@substrat-run/contracts';
-import { clipReviewText, discardTally, grantShapeHolderNotes, reviewText, type MigrationEntry } from '@substrat-run/contracts';
+import { clipReviewText, discardTally, grantShapeHolderNotes, reviewLine, reviewSql, type MigrationEntry } from '@substrat-run/contracts';
 import { Badge, Button, Card, Checkbox, Dialog, Input, Select, SelectBox, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
@@ -1279,7 +1279,8 @@ export function PermissionDiffView({ review }: { review: PermissionReview }) {
 /**
  * What one migration declares it moves and discards (#2322). Every string is the pusher's:
  * React text with every control, format and bidi character made visible, and a long or
- * many-line reason cut behind a `<details>`. The id and SQL go through `reviewText` too.
+ * many-line reason cut behind a `<details>`. An id, table or column goes through `reviewLine`, which shows a
+ * newline too (the line sits in a pre-wrap block), and the SQL through `reviewSql`.
  */
 function DeclarationLines({ entry }: { entry: MigrationEntry }) {
   if (entry.declarationsLeftOut) {
@@ -1291,7 +1292,7 @@ function DeclarationLines({ entry }: { entry: MigrationEntry }) {
         const reason = clipReviewText(why);
         return (
           <div key={`d${target}`} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-            discards <Tag mono>{reviewText(target)}</Tag> —{' '}
+            discards <Tag mono>{reviewLine(target)}</Tag> —{' '}
             {reason.clipped ? (
               <details style={{ display: 'inline' }}>
                 <summary style={{ display: 'inline', cursor: 'pointer' }}>{reason.shown}… show all</summary>
@@ -1305,7 +1306,7 @@ function DeclarationLines({ entry }: { entry: MigrationEntry }) {
       })}
       {Object.entries(entry.moves ?? {}).map(([from, to]) => (
         <div key={`m${from}`}>
-          moves <Tag mono>{reviewText(from)}</Tag> → <Tag mono>{reviewText(to)}</Tag> (verified when it runs)
+          moves <Tag mono>{reviewLine(from)}</Tag> → <Tag mono>{reviewLine(to)}</Tag> (verified when it runs)
         </div>
       ))}
     </>
@@ -1349,7 +1350,7 @@ export function MigrationDiffView({ review }: { review: MigrationReview }) {
       )}
       {entries.map((m) => (
         <div key={`${m.tag}:${m.moduleId}:${m.version}`}>
-          <Tag mono>{reviewText(`${m.moduleId}@${m.version}`)}</Tag>{' '}
+          <Tag mono>{reviewLine(`${m.moduleId}@${m.version}`)}</Tag>{' '}
           {m.tag === 'edited'
             ? 'edited after shipping — scopes that ran it will not run the new SQL'
             : m.tag === 'redeclared'
@@ -1359,7 +1360,7 @@ export function MigrationDiffView({ review }: { review: MigrationReview }) {
           {m.sql === null ? (
             <div style={{ color: 'var(--text-tertiary)' }}>SQL left out: over the read's size bound.</div>
           ) : (
-            <pre style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap', fontSize: 12 }}>{reviewText(m.sql)}</pre>
+            <pre style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap', fontSize: 12 }}>{reviewSql(m.sql)}</pre>
           )}
         </div>
       ))}

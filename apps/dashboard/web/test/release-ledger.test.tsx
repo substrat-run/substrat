@@ -171,3 +171,16 @@ describe('migrationDiffItems: declared discards on the row (#2322)', () => {
     ]);
   });
 });
+
+describe('migrationDiffItems: the id and version as the review shows them (#2322 r2)', () => {
+  it('makes a newline or control in them visible', () => {
+    const [item] = migrationDiffItems({
+      baseline: 'version',
+      added: [{ moduleId: 'desk', version: `0007${String.fromCodePoint(0x0a, 0x202e)}x`, sql: 's' }],
+      changed: [],
+      total: 1,
+      truncated: false,
+    });
+    expect(item?.name).toBe('migration 0007<U+000A><U+202E>x');
+  });
+});

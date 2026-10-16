@@ -208,6 +208,15 @@ describe('MigrationDiffView: declared moves and discards (#2322)', () => {
     expect(view({ ...cut, added: [{ moduleId: 'd', version: '1', sql: 's' }] })).toContain('cannot show whether a migration left out of it discards data');
   });
 
+  it('shows a newline in an id or a target as a mark, and reads CRLF SQL as its lines (#2322 r2)', () => {
+    const html = view(
+      migrationsOnTop([{ moduleId: 'desk', version: '0007\nmoves x', sql: 'SELECT 1;\r\nSELECT 2;\rX', discards: { 'a\nmoves b': 'why' } }], undefined),
+    );
+    expect(html).toContain('desk@0007&lt;U+000A&gt;moves x');
+    expect(html).toContain('a&lt;U+000A&gt;moves b');
+    expect(html).toContain('SELECT 1;\nSELECT 2;&lt;U+000D&gt;X');
+  });
+
   it('names a declarations-only edit as such', () => {
     const html = view(
       migrationsOnTop([{ moduleId: 'desk', version: '0001', sql: 's', discards: { t: 'why' } }], [{ moduleId: 'desk', version: '0001', sql: 's' }]),
