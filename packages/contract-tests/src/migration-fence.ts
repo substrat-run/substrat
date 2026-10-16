@@ -60,3 +60,22 @@ export const fenceWideMod = fenceModule(FENCE_WIDE.id, FENCE_WIDE.key, FENCE_WID
   { version: '0002-touch', sql: `UPDATE ${FENCE_WIDE.table} SET c1 = c1;` },
   { version: '0003-drop-last', sql: `ALTER TABLE ${FENCE_WIDE.table} DROP COLUMN c${FENCE_WIDE.columns - 1};` },
 ]);
+
+/**
+ * #115 r2: a dropped name reused by a rename, then renamed again. `0002` drops `<p>_b`, renames
+ * `<p>_a` onto that name and on to `<p>_c`. Declared as `<p>_b`'s loss it applies; declared as
+ * `<p>_a`'s — the remedy a rename credited to the dropped table would name — it is refused, since
+ * `<p>_a`'s rows are all in `<p>_c` and `<p>_b`'s are the ones gone.
+ */
+const reusedName = (p: string, discard: string): SqlMigration[] => [
+  { version: '0001-create', sql: `CREATE TABLE ${p}_b (id TEXT, x TEXT); CREATE TABLE ${p}_a (id TEXT, x TEXT);` },
+  {
+    version: '0002-replace',
+    sql: `DROP TABLE ${p}_b; ALTER TABLE ${p}_a RENAME TO ${p}_b; ALTER TABLE ${p}_b RENAME TO ${p}_c;`,
+    discards: { [`${p}_${discard}`]: 'contract fixture: the staging copy is replaced' },
+  },
+];
+export const FENCE_REUSED_RIGHT = { id: '@test/fence-reused-right', key: 'fence-reused-right', table: 'frr_c', prefix: 'frr' } as const;
+export const FENCE_REUSED_WRONG = { id: '@test/fence-reused-wrong', key: 'fence-reused-wrong', table: 'frw_c', prefix: 'frw' } as const;
+export const fenceReusedRightMod = fenceModule(FENCE_REUSED_RIGHT.id, FENCE_REUSED_RIGHT.key, FENCE_REUSED_RIGHT.table, reusedName('frr', 'b'));
+export const fenceReusedWrongMod = fenceModule(FENCE_REUSED_WRONG.id, FENCE_REUSED_WRONG.key, FENCE_REUSED_WRONG.table, reusedName('frw', 'a'));

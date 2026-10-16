@@ -15,15 +15,24 @@ import type { ScopeHostFixture } from './scope-host-suite.js';
 import {
   FENCE_DECLARED,
   FENCE_UNDECLARED,
+  FENCE_REUSED_RIGHT,
+  FENCE_REUSED_WRONG,
   FENCE_WIDE,
   FENCE_WIDE_COLUMNS,
   fenceDeclaredMod,
   fenceUndeclaredMod,
   fenceWideDdl,
+  fenceReusedRightMod,
+  fenceReusedWrongMod,
   fenceWideMod,
 } from './migration-fence.js';
 
-type Fixture = typeof FENCE_DECLARED | typeof FENCE_UNDECLARED | typeof FENCE_WIDE;
+type Fixture =
+  | typeof FENCE_DECLARED
+  | typeof FENCE_UNDECLARED
+  | typeof FENCE_WIDE
+  | typeof FENCE_REUSED_RIGHT
+  | typeof FENCE_REUSED_WRONG;
 
 export function migrationFenceContractSuite(adapterName: string, makeFixture: () => Promise<ScopeHostFixture>): void {
   describe(`the migration data-loss fence (#115): ${adapterName}`, () => {
@@ -39,10 +48,14 @@ export function migrationFenceContractSuite(adapterName: string, makeFixture: ()
       host.registerModule(fenceUndeclaredMod);
       host.registerModule(fenceDeclaredMod);
       host.registerModule(fenceWideMod);
+      host.registerModule(fenceReusedRightMod);
+      host.registerModule(fenceReusedWrongMod);
       await host.admin.createTenant(staff, { id: t, slug: `fence-${t.toLowerCase()}`, name: 'Fence' });
       await host.admin.grantEntitlement(staff, t, FENCE_UNDECLARED.key);
       await host.admin.grantEntitlement(staff, t, FENCE_DECLARED.key);
       await host.admin.grantEntitlement(staff, t, FENCE_WIDE.key);
+      await host.admin.grantEntitlement(staff, t, FENCE_REUSED_RIGHT.key);
+      await host.admin.grantEntitlement(staff, t, FENCE_REUSED_WRONG.key);
     });
     afterAll(async () => {
       await fixture?.cleanup();
@@ -147,6 +160,49 @@ export function migrationFenceContractSuite(adapterName: string, makeFixture: ()
       // 0002 ran (its measuring did not trip the DO's result limit); 0003 did not.
       expect(journalOf(after, FENCE_WIDE)).toEqual(['0001-create', '0002-touch']);
       expect(after.tables.find((x) => x.name === FENCE_WIDE.table)?.columns).toContain(last);
+    });
+
+    /**
+     * The scope's own dump, back before `m`'s `0002`: its `_a` (two rows) and `_b` (one row), in
+     * the catalogue order `bFirst` says, and no `_c`.
+     */
+    const beforeTheReplace = async (s: ReturnType<typeof scopeId.parse>, m: typeof FENCE_REUSED_RIGHT | typeof FENCE_REUSED_WRONG, bFirst: boolean) => {
+      const dump = await host.admin.exportScope(staff, t, s);
+      const table = (suffix: string, rows: string[][]) =>
+        ({ name: `${m.prefix}_${suffix}`, ddl: `CREATE TABLE ${m.prefix}_${suffix} (id TEXT, x TEXT)`, columns: ['id', 'x'], rows }) as (typeof dump.tables)[number];
+      const a = table('a', [
+        ['1', 'p'],
+        ['2', 'q'],
+      ]);
+      const b = table('b', [['x', 'r']]);
+      const tables = dump.tables
+        .filter((x) => x.name !== m.table)
+        .map((x) => {
+          if (x.name !== '_substrat_migrations') return x;
+          const [mod, version] = [x.columns.indexOf('module_id'), x.columns.indexOf('version')];
+          return { ...x, rows: x.rows.filter((r) => !(r[mod] === m.id && r[version] === '0002-replace')) };
+        });
+      return { ...dump, tables: [...tables, ...(bFirst ? [b, a] : [a, b])] };
+    };
+
+    describe.each([true, false])('a dropped name reused by a rename, then renamed again (b created first: %s) (#115 r2)', (bFirst) => {
+      it("declared as the dropped table's loss, it applies, and the renamed table's rows are in its new name", async () => {
+        const s = await provision();
+        await host.restoreScope(staff, t, s, await beforeTheReplace(s, FENCE_REUSED_RIGHT, bFirst));
+        expect(await tables(s, FENCE_REUSED_RIGHT)).toEqual([FENCE_REUSED_RIGHT.table]);
+        const after = await host.admin.exportScope(staff, t, s);
+        expect(after.tables.find((x) => x.name === FENCE_REUSED_RIGHT.table)?.rows.map((r) => r[0]).sort()).toEqual(['1', '2']);
+        expect(journalOf(after, FENCE_REUSED_RIGHT)).toEqual(['0001-create', '0002-replace']);
+      });
+
+      it('declared as the renamed table instead, it is refused, naming the table whose rows are gone', async () => {
+        const s = await provision();
+        await host.restoreScope(staff, t, s, await beforeTheReplace(s, FENCE_REUSED_WRONG, bFirst));
+        await expect(tables(s, FENCE_REUSED_WRONG)).rejects.toThrow(
+          new RegExp(`migration failed for ${FENCE_REUSED_WRONG.id}@0002-replace — scope fails closed: .*table ${FENCE_REUSED_WRONG.prefix}_b held 1 row\\(s\\) and is gone`),
+        );
+        expect(journalOf(await host.admin.exportScope(staff, t, s), FENCE_REUSED_WRONG)).toEqual(['0001-create']);
+      });
     });
   });
 }
