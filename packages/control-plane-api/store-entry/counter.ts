@@ -1,12 +1,12 @@
 import { DurableObject, env as ambient } from 'cloudflare:workers';
 
 /**
- * The test kind. Its counter moves only when the entry constructed it and handed it a call.
- * `env` answers the binding names the kind was constructed with, `ambient` the ones its module
+ * The test driver. Its counter moves only when the entry constructed it and handed it a call.
+ * `env` answers the binding names the driver was constructed with, `ambient` the ones its module
  * reads from `cloudflare:workers`, `exports` what `ctx.exports` reaches, `echo` the exact body it
  * received, `arm` sets an alarm and `alarmed` counts the alarms the entry forwarded, `seen`
- * counts the calls this instance has had (in memory, so a kind built per call answers 1). The
- * reserved operations answer the way a kind's must, from the counter.
+ * counts the calls this instance has had (in memory, so a driver built per call answers 1). The
+ * reserved operations answer the way a driver's must, from the counter.
  */
 export class CounterStore extends DurableObject<Record<string, unknown>> {
   #seen = 0;

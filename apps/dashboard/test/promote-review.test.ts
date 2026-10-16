@@ -475,9 +475,9 @@ describe('promoteWithCheckpoint', () => {
 });
 
 /**
- * The migrations a promote would run (#1677 part b). The gate's migration digest does not
- * cover SQL (#1754), so the review is what raises a SQL-only change, and the dialog asks for
- * it on its own. That acknowledgement is client-side, and these hold it to the same rules as
+ * The migrations a promote would run (#1677 part b). The gate refuses a SQL change on its own
+ * (#1949), except between versions pushed by a CLI older than 0.38.0, whose digest did not cover
+ * SQL; the review is what raises one there, and the dialog asks for it before anything is sent. That acknowledgement is client-side, and these hold it to the same rules as
  * the rest: shown before it can be given, ticked on its own, and never skipped.
  */
 describe('the migration section from the review (#1677)', () => {

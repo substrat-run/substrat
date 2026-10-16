@@ -1,6 +1,6 @@
 /**
  * #2213: the runner suite is only worth running if a broken runner fails it. The
- * trivial kind passes every check, and each twin below breaks one rule and must fail
+ * trivial driver passes every check, and each twin below breaks one rule and must fail
  * the check that names it — while still passing the rest, so the failure is that
  * rule's and not a side effect.
  */
@@ -41,7 +41,7 @@ function overriding(
 
 const CHECK = {
   stop: 'a stop without a start resolves',
-  envelope: 'a kind call answers the envelope, and an unknown operation answers its error',
+  envelope: 'a driver call answers the envelope, and an unknown operation answers its error',
   readBack: 'a write is read back on its own address',
   address: 'the object is keyed on the whole address: tenant, vertical, scope and binding',
   restart: 'a stop and a start serve the same repositories',
@@ -95,7 +95,7 @@ const TWINS: { name: string; breaks: readonly string[]; makeRunner: () => ScopeS
     makeRunner: () => {
       let inner = counterScopeStoreRunner();
       return {
-        kind: 'counter',
+        driver: 'counter',
         async start() {},
         async stop() {
           inner = counterScopeStoreRunner();

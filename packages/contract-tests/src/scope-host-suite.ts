@@ -6195,10 +6195,10 @@ export function scopeHostContractSuite(
     });
 
     // #2286, L17: what the lifecycle reaches is every binding any version declared.
-    it('keeps every scope-store binding a version declared, refuses a re-kind at publish, and names none it cannot read', async () => {
+    it('keeps every scope-store binding a version declared, refuses a driver change at publish, and names none it cannot read', async () => {
       const slug = `bind-${ulid().toLowerCase().slice(-8)}`;
       await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
-      const publish = (scopeStores?: { binding: string; kind: string }[], raw?: string) => {
+      const publish = (scopeStores?: { binding: string; driver: string }[], raw?: string) => {
         const id = ulid();
         return host.admin.publishVersion(staff, {
           id,
@@ -6216,22 +6216,22 @@ export function scopeHostContractSuite(
           }),
         }).then(() => id);
       };
-      await publish([{ binding: 'GRAPH', kind: 'graph' }, { binding: 'OLD', kind: 'graph' }]);
-      await publish([{ binding: 'GRAPH', kind: 'graph' }]);
+      await publish([{ binding: 'GRAPH', driver: 'graph' }, { binding: 'OLD', driver: 'graph' }]);
+      await publish([{ binding: 'GRAPH', driver: 'graph' }]);
       // A dropped binding is still there.
       expect(await host.admin.verticalScopeStores(staff, slug)).toEqual([
-        { binding: 'GRAPH', kind: 'graph' },
-        { binding: 'OLD', kind: 'graph' },
+        { binding: 'GRAPH', driver: 'graph' },
+        { binding: 'OLD', driver: 'graph' },
       ]);
-      // A re-kind is refused, and the version is not stored.
+      // A driver change is refused, and the version is not stored.
       const before = (await host.admin.listVersions(staff, slug)).length;
-      await expectRefusal(publish([{ binding: 'NEW', kind: 'graph' }, { binding: 'OLD', kind: 'counter' }]), 'conflict');
+      await expectRefusal(publish([{ binding: 'NEW', driver: 'graph' }, { binding: 'OLD', driver: 'counter' }]), 'conflict');
       expect((await host.admin.listVersions(staff, slug)).length).toBe(before);
       // So is a version that declares one binding twice.
-      await expectRefusal(publish([{ binding: 'NEW', kind: 'graph' }, { binding: 'NEW', kind: 'graph' }]), 'conflict');
+      await expectRefusal(publish([{ binding: 'NEW', driver: 'graph' }, { binding: 'NEW', driver: 'graph' }]), 'conflict');
       expect((await host.admin.listVersions(staff, slug)).length).toBe(before);
-      // The twin: the same kind again, with a new binding beside it, is published.
-      await publish([{ binding: 'OLD', kind: 'graph' }, { binding: 'NEW', kind: 'graph' }]);
+      // The twin: the same driver again, with a new binding beside it, is published.
+      await publish([{ binding: 'OLD', driver: 'graph' }, { binding: 'NEW', driver: 'graph' }]);
       expect((await host.admin.verticalScopeStores(staff, slug)).map((s) => s.binding)).toEqual(['GRAPH', 'NEW', 'OLD']);
       // A version whose manifest cannot be read may declare a store nobody can name.
       await publish(undefined, '{nope');
@@ -6853,6 +6853,19 @@ export function scopeHostContractSuite(
       const junk = await publish('not json');
       expect(await host.admin.versionManifest(staff, 'migrationsapart', junk)).toBe('not json');
       expect(await host.admin.versionMigrations(staff, 'migrationsapart', junk)).toBeNull();
+
+      // #2322: each migration's declared moves and discards are stored beside its SQL and read
+      // back as published, whatever digest the publisher claimed; one declaring none has neither.
+      const declared = [
+        { ...migrations[0]!, moves: { legacy_a: 'a' } },
+        { ...migrations[1]! },
+        { ...migrations[2]!, discards: { 'b.c': 'replaced by d; see "0003"' } },
+      ];
+      const withDeclarations = await publish({ ...base, migrations: declared });
+      expect(await host.admin.versionMigrations(staff, 'migrationsapart', withDeclarations)).toEqual(declared);
+      // A declaration the push boundary refuses (a discard with no reason) carries no SQL at all.
+      const reasonless = await publish({ ...base, migrations: [{ ...migrations[0]!, discards: { a: '' } }] });
+      expect(await host.admin.versionMigrations(staff, 'migrationsapart', reasonless)).toBeNull();
     });
 
     it('an archived scope blocks the delete naming the reap step; a reaped tombstone never blocks', async () => {

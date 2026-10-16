@@ -23,7 +23,7 @@
  * {@link SCOPE_STORE_ENVELOPE_WINDOW_SECONDS} on either side of the verifier's clock. A
  * store does not remember nonces (RFC Q2): an envelope replayed inside the window, at the
  * same script and object with the same body, is accepted again. The reserved operations are
- * idempotent, and a kind operation's retry safety is the vertical's.
+ * idempotent, and a driver operation's retry safety is the vertical's.
  *
  * The script line is an opaque string compared for equality: the signer builds it, the
  * verifier is told its own. Nothing here parses it.
@@ -43,7 +43,7 @@ export const SCOPE_STORE_SIGNATURE_HEADER = 'x-substrat-store-signature';
 
 /**
  * The operations only the platform may send to a scope store (#2207). A vertical's
- * stub refuses every one of them. A kind's registration has to answer all of them,
+ * stub refuses every one of them. A driver's registration has to answer all of them,
  * `substrat.erase` included, before a hosted deploy may store tenant data.
  */
 export const RESERVED_STORE_OPERATIONS = [
@@ -220,25 +220,44 @@ export async function scopeStoreKeyId(publicKey: string): Promise<string> {
   return bytesToBase64Url(new Uint8Array(hash).slice(0, 8));
 }
 
+/** What is wrong with one configured public key, as a code a tool can switch on. */
+export type ScopeStorePublicKeyProblem = 'empty' | 'length' | 'small-order' | 'non-canonical';
+
+/**
+ * Why a store refuses one configured public key, or undefined when it accepts it: empty, not
+ * 32 bytes of base64url, a small-order point, or not in canonical base64url (its unused trailing
+ * bits set, so two spellings would name one key).
+ */
+export function scopeStorePublicKeyProblem(key: string): ScopeStorePublicKeyProblem | undefined {
+  if (key.length === 0) return 'empty';
+  const bytes = base64UrlToBytes(key);
+  if (bytes?.length !== 32) return 'length';
+  if (isSmallOrderKey(bytes)) return 'small-order';
+  // Canonical means the bytes re-encode to the same text, so equal text is equal bytes.
+  if (bytesToBase64Url(bytes) !== key) return 'non-canonical';
+  return undefined;
+}
+
+const PUBLIC_KEY_PROBLEM: Readonly<Record<ScopeStorePublicKeyProblem, string>> = {
+  empty: 'a store public key list is empty or has an empty entry',
+  length: 'a store public key is not 32 bytes of base64url',
+  'small-order': 'a store public key is a small-order point',
+  'non-canonical': 'a store public key is not canonical base64url',
+};
+
 /**
  * A store's public keys for one audience, as configured: raw Ed25519 keys, base64url,
- * separated by commas (whitespace around each is ignored). Throws on an empty list, a key
- * that is not 32 bytes, a small-order point, a key not in canonical base64url (its unused trailing bits set, so
- * two spellings would name one key), or the same key twice. Rotation is: add the new key,
- * switch the signer, then drop the old key.
+ * separated by commas (whitespace around each is ignored). Throws on an empty list, any key
+ * {@link scopeStorePublicKeyProblem} refuses, or the same key twice. Rotation is: add the new
+ * key, switch the signer, then drop the old key.
  */
 export function parseScopeStorePublicKeys(text: string): readonly string[] {
   const keys = text.split(',').map((key) => key.trim());
-  if (keys.length === 0 || keys.some((key) => key.length === 0)) {
-    throw new Error('a store public key list is empty or has an empty entry');
-  }
+  if (keys.some((key) => key.length === 0)) throw new Error(PUBLIC_KEY_PROBLEM.empty);
   const seen = new Set<string>();
   for (const key of keys) {
-    const bytes = base64UrlToBytes(key);
-    if (bytes?.length !== 32) throw new Error('a store public key is not 32 bytes of base64url');
-    if (isSmallOrderKey(bytes)) throw new Error('a store public key is a small-order point');
-    // Canonical means the bytes re-encode to the same text, so equal text is equal bytes.
-    if (bytesToBase64Url(bytes) !== key) throw new Error('a store public key is not canonical base64url');
+    const problem = scopeStorePublicKeyProblem(key);
+    if (problem) throw new Error(PUBLIC_KEY_PROBLEM[problem]);
     if (seen.has(key)) throw new Error('a store public key is listed twice');
     seen.add(key);
   }
@@ -280,26 +299,62 @@ interface SigningKey {
   readonly kid: string;
 }
 
-/** Import a PKCS8 Ed25519 private key (base64url) and derive its key id from its public half. */
-async function signingKey(pkcs8: string): Promise<SigningKey> {
+/**
+ * The DER prefix of an Ed25519 PKCS8 v1 private key (RFC 8410 §7): SEQUENCE, version 0, the
+ * Ed25519 algorithm identifier, then a 34-byte OCTET STRING wrapping the 32-byte seed. With the
+ * seed it is exactly 48 bytes, the form WebCrypto exports and `generateScopeStoreKeyPair` writes.
+ */
+const PKCS8_V1_ED25519_PREFIX = [0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20];
+
+/**
+ * Import a PKCS8 Ed25519 private key (base64url) and derive its key id from its public half.
+ * Only the canonical 48-byte v1 form is accepted: a DER parser may tolerate trailing bytes or
+ * another encoding of the same seed, and whether it does differs between runtimes, so a key a
+ * tool accepts here could otherwise be one the deployed signer refuses.
+ */
+async function signingKey(pkcs8: string): Promise<SigningKey & { readonly publicKey: string }> {
   const bytes = base64UrlToBytes(pkcs8);
-  if (!bytes) throw new ScopeStoreKeyError('the store signing key is not base64url');
-  let jwk: JsonWebKey;
+  if (!bytes) throw new ScopeStoreKeyError('the store signing key is not base64url', 'encoding');
+  if (bytes.length !== 48 || PKCS8_V1_ED25519_PREFIX.some((byte, i) => bytes[i] !== byte)) {
+    throw new ScopeStoreKeyError('the store signing key is not a 48-byte Ed25519 PKCS8 v1 key', 'not-pkcs8-v1');
+  }
   let key: CryptoKey;
+  let x: unknown;
   try {
     // Extractable only so its public half (`x`) can be read for the key id; it never leaves here.
     key = await crypto.subtle.importKey('pkcs8', copyBytes(bytes), { name: 'Ed25519' }, true, ['sign']);
-    jwk = (await crypto.subtle.exportKey('jwk', key)) as JsonWebKey;
+    x = ((await crypto.subtle.exportKey('jwk', key)) as JsonWebKey).x;
   } catch {
-    throw new ScopeStoreKeyError('the store signing key is not an Ed25519 PKCS8 key');
+    throw new ScopeStoreKeyError('the store signing key is not an Ed25519 PKCS8 key', 'not-ed25519');
   }
-  if (typeof jwk.x !== 'string') throw new ScopeStoreKeyError('the store signing key has no public half');
-  return { key, kid: await scopeStoreKeyId(jwk.x) };
+  if (typeof x !== 'string') throw new ScopeStoreKeyError('the store signing key has no public half', 'no-public-half');
+  // The only key a JWK export can name that scopeStoreKeyId refuses is a small-order point.
+  if (scopeStorePublicKeyProblem(x)) throw new ScopeStoreKeyError('the store signing key is a small-order point', 'small-order');
+  return { key, publicKey: x, kid: await scopeStoreKeyId(x) };
 }
+
+/**
+ * The raw public key and key id a PKCS8 Ed25519 private key (base64url) signs under, derived the
+ * way {@link issueScopeStoreEnvelope} derives them. Throws {@link ScopeStoreKeyError} when the key
+ * is unusable, whose message never carries the key.
+ */
+export async function scopeStoreSignerPublicKey(pkcs8: string): Promise<{ readonly publicKey: string; readonly kid: string }> {
+  const { publicKey, kid } = await signingKey(pkcs8);
+  return { publicKey, kid };
+}
+
+/** Why a signing key cannot be used. */
+export type ScopeStoreKeyProblem = 'encoding' | 'not-pkcs8-v1' | 'not-ed25519' | 'no-public-half' | 'small-order';
 
 /** A signing key that is present but cannot be used. Its message never carries the key. */
 export class ScopeStoreKeyError extends Error {
   override readonly name = 'ScopeStoreKeyError';
+  constructor(
+    message: string,
+    readonly reason: ScopeStoreKeyProblem,
+  ) {
+    super(message);
+  }
 }
 
 /**
@@ -394,14 +449,14 @@ export type ScopeStoreCallVerdict =
   | { readonly ok: false; readonly refusal: ScopeStoreRefusal };
 
 /**
- * Every envelope check a store makes on a call before the kind's class runs (RFC §10.3
+ * Every envelope check a store makes on a call before the driver's class runs (RFC §10.3
  * checks 1–4, L4, L5), in one place, so a store entry carries no copy. The object binding
  * (check 5: the object's id is `idFromName` of the signed name) is the entry's, because it
  * needs the object's id; so is reading the configured keys and script name.
  *
  * `script` is the store script's own name, compared with the signed line for equality.
  * The body must be JSON naming the signed operation as `operation` and the signed object
- * as `objectName`, so the signed name is the one the kind is asked about.
+ * as `objectName`, so the signed name is the one the driver is asked about.
  */
 export async function verifyScopeStoreCall(input: {
   readonly envelope: string | null | undefined;

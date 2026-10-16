@@ -82,6 +82,7 @@ export * from './manifest.js';
 export * from './openapi.js';
 export * from './deploy.js';
 export * from './migration-diff.js';
+export * from './review-text.js';
 export * from './registry-diff.js';
 export * from './ci.js';
 export * from './money.js';

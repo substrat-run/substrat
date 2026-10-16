@@ -227,6 +227,32 @@ describe('the data-loss fence (#115)', () => {
       expect(invalid({ sql: 'DROP TABLE notes;', discards: { notes: '  ' } })).toContain('gives no reason');
     });
 
+    it('a __proto__ declaration key is refused, as the push boundary refuses it (#2322 r2)', () => {
+      const discards = JSON.parse('{"__proto__":"why"}') as Record<string, string>;
+      expect(invalid({ sql: 'DROP TABLE notes;', discards })).toContain('discards names __proto__, which a declaration cannot carry');
+      const moves = JSON.parse('{"__proto__":"notes"}') as Record<string, string>;
+      expect(invalid({ sql: 'DROP TABLE notes;', moves })).toContain('moves names __proto__, which a declaration cannot carry');
+    });
+
+    it('while constructor and prototype are ordinary table names a discard may name (#2322 r2)', () => {
+      const s = scope(`CREATE TABLE "constructor" (id TEXT); CREATE TABLE "prototype" (id TEXT);
+        INSERT INTO "constructor" VALUES ('a'); INSERT INTO "prototype" VALUES ('b');`);
+      s.migrate({
+        sql: 'DROP TABLE "constructor"; DROP TABLE "prototype";',
+        discards: { constructor: 'replaced by builders', prototype: 'never shipped' },
+      });
+      expect(s.rows(`SELECT name FROM sqlite_master WHERE name IN ('constructor', 'prototype')`)).toHaveLength(0);
+    });
+
+    it('and so is one of only invisible characters — the push boundary’s rule, `blankReason` (#2322)', () => {
+      // Zero-width space, word joiner, BOM, a bidi override and a soft hyphen: nothing a reviewer reads.
+      const invisible = String.fromCodePoint(0x200b, 0x2060, 0xfeff, 0x202e, 0x00ad, 0x20);
+      expect(invalid({ sql: 'DROP TABLE notes;', discards: { notes: invisible } })).toContain('gives no reason');
+      // And the letters that render as nothing: Hangul fillers, Khmer inherent vowels, blank Braille.
+      const blank = String.fromCodePoint(0x115f, 0x1160, 0x3164, 0xffa0, 0x17b4, 0x17b5, 0x2800);
+      expect(invalid({ sql: 'DROP TABLE notes;', discards: { notes: blank } })).toContain('gives no reason');
+    });
+
     it('a declaration naming a table or column the scope does not hold is refused', () => {
       expect(invalid({ sql: 'DROP TABLE notes;', discards: { notez: 'typo' } })).toContain('discards names notez');
       expect(invalid({ sql: 'DROP TABLE notes;', moves: { 'notes.bdy': 'x.body' } })).toContain('moves names notes.bdy');
@@ -384,6 +410,32 @@ describe('the data-loss fence (#115)', () => {
 
     it('a qualified rename is followed', () => {
       scope(setup).migrate({ sql: 'ALTER TABLE main.a RENAME TO t; ALTER TABLE main.b RENAME TO a; ALTER TABLE "main".t RENAME TO b;' });
+    });
+  });
+
+  describe('ATTACH and DETACH (#2321)', () => {
+    const setup = `CREATE TABLE a (id TEXT); INSERT INTO a VALUES ('1'), ('2');`;
+    it.each([
+      ["ATTACH DATABASE ':memory:' AS x"],
+      ["attach ':memory:' as x"],
+      ['DETACH DATABASE x'],
+      ['detach x'],
+    ])('an authored migration that runs one is refused before anything runs: %s', (stmt) => {
+      const s = scope(setup);
+      let message = '';
+      try {
+        s.migrate({ sql: `${stmt}; DROP TABLE a;` });
+      } catch (err) {
+        expect(errorCodeOf(err)).toBe('validation_failed');
+        message = (err as Error).message;
+      }
+      expect(message).toContain('attaches or detaches a database');
+      expect(s.rows('SELECT id FROM a')).toHaveLength(2);
+      expect(s.rows("SELECT name FROM pragma_database_list WHERE name = 'x'")).toEqual([]);
+    });
+
+    it('a table or column merely named attach is not one', () => {
+      scope(setup).migrate({ sql: 'CREATE TABLE "attach" (detach TEXT); ALTER TABLE a ADD COLUMN attach TEXT;' });
     });
   });
 

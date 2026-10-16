@@ -11,7 +11,7 @@ import {
   tenantId,
   type HostnameBinding,
   type ScopeId,
-  type StoreKindRegistration,
+  type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
@@ -34,8 +34,8 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
   const staff = platformActorId.parse(ulid());
   const t = tenantId.parse(ulid());
   const auth = { [DEV_ACTOR_HEADER]: staff };
-  const graph: StoreKindRegistration = {
-    kind: 'graph',
+  const graph: StoreDriverRegistration = {
+    driver: 'graph',
     releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
     operations: [],
@@ -71,7 +71,7 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
         compatibilityDate: '2026-07-01',
         registry: { permissions: [], roles: [], entityGrants: [] },
         digests: { manifest: 'm', permission: 'p', migration: 'g' },
-        scopeStores: [{ binding: 'GRAPH', kind: 'graph' }],
+        scopeStores: [{ binding: 'GRAPH', driver: 'graph' }],
       }),
     });
     await host.admin.admitVersion(staff, id);
@@ -133,7 +133,7 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
     createControlPlaneApi({
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
-      storeKinds: [graph],
+      storeDrivers: [graph],
       platformScopeStores: caller,
       ...(dispatch ? { resolveVerticalRef: async () => undefined } : {}),
     });
@@ -164,7 +164,7 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
     });
 
     it('a reap refused because its stores cannot be named keeps the hostname', async () => {
-      // A kind is registered, and a fork of an unbound, unpinned source runs a version nobody can name.
+      // A driver is registered, and a fork of an unbound, unpinned source runs a version nobody can name.
       const fork = await snapshot(false);
       const { caller, seen } = witness(() => fork.hostname);
       const res = await apiWith(caller, false).request(`/tenants/${t}/scopes/${fork.id}`, { method: 'DELETE', headers: auth });

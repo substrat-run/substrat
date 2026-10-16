@@ -1,4 +1,4 @@
-import type { EmittedModel, MigrationDiff } from '@substrat-run/contracts';
+import { reviewLine, type EmittedModel, type MigrationDiff } from '@substrat-run/contracts';
 import type { ChannelHistoryEntry, DeploymentVersion, ReleaseRow } from './api';
 import { grantShapeHolderNotes, type RegistryDiff, type RegistryLike } from './registry-diff';
 
@@ -105,14 +105,31 @@ export function schemaDiffItems(from: EmittedModel | null | undefined, to: Emitt
   return items;
 }
 
-/** What a promote would run on top of the serving version's migrations — the promote review's diff. */
+/**
+ * What a promote would run on top of the serving version's migrations — the promote review's diff.
+ * The id and version are the pusher's text, shown through `reviewLine` like every review surface (#2322).
+ */
 export function migrationDiffItems(m: MigrationDiff): DiffItem[] {
   return [
-    ...m.added.map((e): DiffItem => ({ kind: 'added', name: `migration ${e.version}`, note: `${e.moduleId} · runs on update` })),
+    ...m.added.map((e): DiffItem => ({ kind: 'added', name: `migration ${reviewLine(e.version)}`, note: `${reviewLine(e.moduleId)} · runs on update${discardsNote(e)}` })),
     // An edited shipped migration does NOT re-run on a scope that journaled it — which
     // is exactly why it is its own row and not folded into "added".
-    ...m.changed.map((e): DiffItem => ({ kind: 'changed', name: `migration ${e.version}`, note: `${e.moduleId} · edited after it shipped; will not re-run where applied` })),
+    ...m.changed.map((e): DiffItem => ({
+      kind: 'changed',
+      name: `migration ${reviewLine(e.version)}`,
+      note:
+        e.edited === 'declarations'
+          ? `${reviewLine(e.moduleId)} · declarations edited after it shipped${discardsNote(e)}`
+          : `${reviewLine(e.moduleId)} · edited after it shipped; will not re-run where applied${discardsNote(e)}`,
+    })),
   ];
+}
+
+/** #2322: a migration that declares it discards data says so on its row; the reasons are in the promote dialog. */
+function discardsNote(e: MigrationDiff['added'][number]): string {
+  const n = Object.keys(e.discards ?? {}).length;
+  if (n > 0) return ` · deliberately discards data (${n})`;
+  return e.declarationsLeftOut ? ' · declares moves or discards not shown here' : '';
 }
 
 /** One row of the Releases list. Every nullable is "not known", never zero. */

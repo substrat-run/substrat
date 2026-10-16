@@ -114,6 +114,80 @@ describe('version migrations stored apart (#1764)', () => {
     });
   });
 
+  describe('declared moves and discards (#2322)', () => {
+    const declared = [
+      { ...migrations[0]!, moves: { legacy: 'a' } },
+      { ...migrations[1]!, discards: { 'a.note': 'never read; <b>see</b> 0003' } },
+    ];
+    const split = (sql: SwitchSql, id: string, ms: unknown[]) => {
+      sql.run('INSERT INTO vertical_versions (id, vertical_slug, migration_count, migrations_split) VALUES (?, ?, ?, 1)', id, 'acme', ms.length);
+      writeVersionMigrations(sql, id, ms as never);
+    };
+
+    it('stores them beside the SQL and reads them back; a migration declaring none has neither key', () => {
+      const { sql } = fresh();
+      split(sql, 'v', [...declared, { moduleId: helpdesk, version: '0003', sql: 'SELECT 1;' }]);
+      expect(versionMigrationsOf(sql, 'v')?.migrations).toEqual([...declared, { moduleId: helpdesk, version: '0003', sql: 'SELECT 1;' }]);
+      const cols = sql.all('SELECT declarations FROM vertical_version_migrations ORDER BY ordinal').map((r) => r.declarations);
+      expect(cols[2]).toBeNull();
+    });
+
+    it('stores and reads back constructor and prototype as the table names they are (#2322 r2)', () => {
+      const { sql } = fresh();
+      const named = [{ ...migrations[0]!, discards: { constructor: 'why', prototype: 'why' }, moves: { 'constructor.a': 'prototype.a' } }];
+      split(sql, 'v', named);
+      expect(versionMigrationsOf(sql, 'v')?.migrations).toEqual(named);
+    });
+
+    it('a version holding a newline, tab, zero-width or bidi character is stored and read back as it is (#2322 r3)', () => {
+      const version = `0007\n+ x\t${String.fromCodePoint(0x200b, 0x202e)}y`;
+      const odd = [{ ...migrations[0]!, version }];
+      // Split from a push, and from a stored pre-#1764 manifest the backfill has not reached.
+      const { sql } = fresh();
+      split(sql, 'v', odd);
+      expect(versionMigrationsOf(sql, 'v')?.migrations).toEqual(odd);
+      expect(splitManifestMigrations(manifest({ migrations: odd }), 'push').migrations).toEqual(odd);
+      legacy(sql, 'old', manifest({ migrations: odd }));
+      expect(versionMigrationsOf(sql, 'old')?.migrations).toEqual(odd);
+    });
+
+    it('a stored row naming __proto__ makes the version not available, as the push boundary refuses it', () => {
+      const { sql } = fresh();
+      split(sql, 'v', migrations);
+      sql.run('UPDATE vertical_version_migrations SET declarations = ? WHERE ordinal = 0', '{"discards":{"__proto__":"why","b":"ok"}}');
+      expect(versionMigrationsOf(sql, 'v')?.migrations).toBeNull();
+    });
+
+    it('a row stored before they were carried (NULL) reads as declaring none', () => {
+      const { sql } = fresh();
+      split(sql, 'old', migrations);
+      sql.run('UPDATE vertical_version_migrations SET declarations = NULL');
+      expect(versionMigrationsOf(sql, 'old')?.migrations).toEqual(migrations);
+    });
+
+    it('a row whose declarations do not read makes the whole version not available, never a list without them', () => {
+      for (const bad of ['not json', '{}', '{"discards":{"a":""}}', '{"moves":{"a":1}}', '{"other":{"a":"b"}}', '[]']) {
+        const { sql } = fresh();
+        split(sql, 'v', declared);
+        sql.run('UPDATE vertical_version_migrations SET declarations = ? WHERE ordinal = 1', bad);
+        expect(versionMigrationsOf(sql, 'v')?.migrations, bad).toBeNull();
+      }
+    });
+
+    it('a version the backfill moves keeps them, and so does one read before it is moved', () => {
+      const { sql } = fresh();
+      legacy(sql, 'carried', manifest({ migrations: declared }));
+      expect(versionMigrationsOf(sql, 'carried')?.migrations).toEqual(declared);
+      splitVersionMigrationsBatch(sql);
+      expect(versionMigrationsOf(sql, 'carried')?.migrations).toEqual(declared);
+    });
+
+    it('a push whose declaration the boundary refuses carries no SQL at all, so the version reads not available', () => {
+      const r = splitManifestMigrations(manifest({ migrations: [{ ...migrations[0]!, discards: { a: ' ' } }] }), 'push');
+      expect(r.migrations).toBeNull();
+    });
+  });
+
   describe('splitVersionMigrationsBatch', () => {
     const seed = (sql: SwitchSql, n: number) => {
       const ids = Array.from({ length: n }, (_, i) => `v${String(i).padStart(3, '0')}`);

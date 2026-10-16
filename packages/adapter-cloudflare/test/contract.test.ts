@@ -43,7 +43,7 @@ import {
   bindingInviteContractSuite,
   impersonationContractSuite,
   inertScopeContractSuite,
-  storeKindReleaseContractSuite,
+  storeDriverReleaseContractSuite,
   connectLinkContractSuite,
   causedByContractSuite,
   scopeCausedByContractSuite,
@@ -139,9 +139,9 @@ inertScopeContractSuite('adapter-cloudflare', async () => {
   return { host, cleanup: async () => host.close() };
 });
 
-// #2300: a store kind's releases, rollouts and holds, in the ControlPlaneDO. The hold-expiry
+// #2300: a store driver's releases, rollouts and holds, in the ControlPlaneDO. The hold-expiry
 // transition is the pure host's alone: this object reads the wall clock (#956).
-storeKindReleaseContractSuite('adapter-cloudflare', async () => {
+storeDriverReleaseContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     fetch: connectorTestFetch,

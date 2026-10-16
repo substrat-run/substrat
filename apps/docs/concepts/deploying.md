@@ -203,10 +203,67 @@ is refused until `moves` declares it.
 
 A migration that creates a TEMP table, view, index or trigger is refused before it runs. A Durable
 Object does not allow TEMP objects, so it could never run in production; use a regular table and
-drop it before the migration ends.
+drop it before the migration ends. So is one that runs `ATTACH` or `DETACH`, for the same reason:
+a Durable Object refuses both, and an attached database is a file outside the scope.
 
-In this repository `pnpm lint:migration-fence` replays every migration against a scope that holds
-data, so an undeclared loss fails in the pull request that adds it.
+`substrat push` asks the same question before it uploads anything. It replays your migrations,
+in the order a scope applies them, against an in-memory scope where every table holds a row and
+every column a value, through the fence in *your* `@substrat-run/kernel`, the copy your scopes
+run at promote. A migration that would lose undeclared data refuses the push, with the same
+message and the declaration to add. `substrat push --check` runs it too, so a CI job that gates
+on `--check` fails in the pull request. The replay runs in a process of its own, with an empty
+environment, against an empty in-memory database. It reads none of your data, and since `ATTACH`
+is refused it writes no file. Each migration gets 30 seconds: one that runs longer, such as a
+recursive CTE with no end, is stopped and reported as incomplete. A Durable Object's own CPU limit
+would stop it at promote too. The replay process also ends with the push, however the push ends:
+on exit, on Ctrl-C, or killed by any signal, `SIGKILL` included. A watchdog thread inside it
+notices the push is gone within a fraction of a second. The one case it cannot see is a push that
+is paused (`SIGSTOP`) rather than gone; the replay then stops at its own overall deadline. The
+watchdog relies on how POSIX systems re-parent an orphaned process, so on Windows only that
+deadline stops a replay whose push was killed.
+
+The replay needs `node:sqlite`, so Node 22.13 or later. If a migration reads one of the
+platform's `_substrat_*` tables, it also needs `@substrat-run/adapter-sqlite` installed, at least
+as a devDependency, to build them. When it cannot run, the push still goes ahead and says so
+loudly. That happens when SQLite is unavailable, when your kernel predates the replay, or when a
+migration's SQL cannot run on made-up values (a `json_extract` over text that is not JSON) or in
+time. The
+summary line reads `data-loss check: SKIPPED (…)`, or `INCOMPLETE (3 of 7 authored migration(s)
+were not replayed after …)`, because the replay stops at the first migration it cannot run. That
+default is permissive on purpose, because promote is the hard gate: the fence still refuses
+there. To make a skipped or incomplete check refuse the push as well, pass
+`--require-data-loss-check`, or set `SUBSTRAT_REQUIRE_DATA_LOSS_CHECK` to `1`, `true` or `yes` in
+CI. Any other value is read as no, with a warning. There is no flag
+past a refusal. A `discards` entry with its reason is how a migration loses data on purpose,
+including a table you know is empty everywhere, which the replay fills like any other.
+
+In this repository `pnpm lint:migration-fence` runs the same replay over every migration, so an
+undeclared loss fails in the pull request that adds it.
+
+The declarations also travel with the version. `substrat push` carries each migration's `moves` and
+`discards` beside its SQL, and the promote review (the dashboard's promote dialog and
+`substrat promote`) lists them under the migration: every move as source → target, every discard
+with its reason word for word. A promote that discards anything says so first, and says "at
+least" when the list is cut. Everything the review shows from the version (the reason, the table
+and column names, the migration's id and its SQL) is the author's own text, so it is shown as
+plain text with every control, format and bidirectional character made visible as `<U+XXXX>`: an
+escape sequence cannot drive your terminal, and a reason cannot reorder, hide or forge what you
+read. A long reason, or one of many lines, is cut behind a "show all". A version pushed before
+declarations were carried, or a migration that declares none, shows none.
+
+A reason has to say something a reviewer can read: one of only whitespace or invisible characters
+is refused, by the same rule at the push and when the migration runs. A declaration cannot name
+`__proto__`, refused at both too; `constructor` and `prototype` are ordinary table names. A
+migration's id and `version` are shown on one line, with a newline or tab in them made visible
+too, so neither can start a line of its own in the review.
+
+Declarations are not part of the SQL, so they do not change the digest a scope journals for the
+migration, and editing one on a shipped migration does not make a scope that already ran it fail
+closed. They are part of the version's migration digest, so a promote that adds, removes or
+rewords a declaration asks for the migration acknowledgement like a SQL change does. That digest
+is computed by the pushing CLI and nothing on the platform recomputes it. What the review shows is
+read from the declarations the control plane stored, never inferred from the digest, so a client
+that hashed something else still cannot hide a declared discard from the review.
 
 ## Previews: run a version against a copy of the data
 

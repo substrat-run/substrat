@@ -6,7 +6,7 @@ import { counterScopeStoreRunner, invalidStoreInput, objectNameOf } from './coun
 import type { ScopeHostFixture } from './scope-host-suite.js';
 
 /**
- * The trivial kind, with what this suite reads back about the host's calls:
+ * The trivial driver, with what this suite reads back about the host's calls:
  * `address` (what the host handed in), `erased` (the subjects erased on this object),
  * `wiped` (every object wiped), and `fail-wipe` (`true` makes each later `substrat.wipe`
  * answer 503, until `false`).
@@ -109,7 +109,7 @@ export function scopeStoreContractSuite(
         release = resolve;
       });
       const slow: ScopeStoreRunner = {
-        kind: 'slow',
+        driver: 'slow',
         async start() {
           started += 1;
           await gate;
@@ -223,7 +223,7 @@ export function scopeStoreContractSuite(
       await store.invoke('increment', { by: 4 });
       const dump = await host.admin.exportScope(staff, tenant, scopeB);
       expect(dump.stores).toEqual([
-        expect.objectContaining({ binding: 'GRAPH', kind: 'counter' }),
+        expect.objectContaining({ binding: 'GRAPH', driver: 'counter' }),
       ]);
       await store.invoke('increment', { by: 1 });
       await host.restoreScope(staff, tenant, scopeB, dump);
@@ -240,7 +240,7 @@ export function scopeStoreContractSuite(
       const refusal = await host.restoreScope(staff, tenant, scopeB, {
         ...dump,
         tables: [...dump.tables, PROBE_TABLE],
-        stores: [...dump.stores, { binding: 'MISSING', kind: 'counter', tables: [] }],
+        stores: [...dump.stores, { binding: 'MISSING', driver: 'counter', tables: [] }],
       }).then(
         () => undefined,
         (err: unknown) => err,
@@ -251,9 +251,9 @@ export function scopeStoreContractSuite(
       expect(await tableNames(scopeB)).not.toContain(PROBE_TABLE.name);
     });
 
-    // L8: a store of another kind would be handed to this kind's import, and a destination
+    // L8: a store of another driver would be handed to this driver's import, and a destination
     // with no vertical has no store object to load into. Both refuse before any write.
-    it('a restore whose store is of another kind writes nothing', async () => {
+    it('a restore whose store is of another driver writes nothing', async () => {
       const store = await host.getScopeStore(principal, tenant, scopeB, 'GRAPH');
       const before = Number(await store.invoke('read'));
       const dump = await host.admin.exportScope(staff, tenant, scopeB);
@@ -261,7 +261,7 @@ export function scopeStoreContractSuite(
       const refusal = await host.restoreScope(staff, tenant, scopeB, {
         ...dump,
         tables: [...dump.tables, PROBE_TABLE],
-        stores: dump.stores.map((one) => ({ ...one, kind: 'other' })),
+        stores: dump.stores.map((one) => ({ ...one, driver: 'other' })),
       }).then(
         () => undefined,
         (err: unknown) => err,
@@ -272,8 +272,8 @@ export function scopeStoreContractSuite(
     });
 
     // CodeRabbit on #2244: the host does not parse the dump it is handed, so a store with no
-    // kind skipped the kind comparison above and was imported.
-    it('a restore whose store names no kind writes nothing', async () => {
+    // driver skipped the driver comparison above and was imported.
+    it('a restore whose store names no driver writes nothing', async () => {
       const store = await host.getScopeStore(principal, tenant, scopeB, 'GRAPH');
       const before = Number(await store.invoke('read'));
       const dump = await host.admin.exportScope(staff, tenant, scopeB);
@@ -337,7 +337,7 @@ export function scopeStoreContractSuite(
         tenantId: tenant,
         scopeId: dest,
         vertical: 'docs',
-      }, { ...dump, stores: [...dump.stores, { binding: 'MISSING', kind: 'counter', tables: [] }] }).then(
+      }, { ...dump, stores: [...dump.stores, { binding: 'MISSING', driver: 'counter', tables: [] }] }).then(
         () => undefined,
         (err: unknown) => err,
       );

@@ -297,11 +297,19 @@ export const scopeDumpTable = z.object({
 });
 export type ScopeDumpTable = z.infer<typeof scopeDumpTable>;
 
-/** One scope store inside a dump (#2211). Opaque tables: they are not sealed per subject. */
+/**
+ * One scope store inside a dump (#2211). Opaque tables: they are not sealed per subject.
+ *
+ * `driver` was `kind` until K-53's rename. No hosted store ever ran, so no dump carries one; a
+ * hand-made or local dump that still spells `kind` is refused with the rename named, never
+ * loaded as a store without a driver.
+ */
+export const SCOPE_STORE_DUMP_KIND_RENAMED = 'a dump\'s stores[].kind was renamed driver: write { binding, driver, tables }';
 export const scopeStoreDump = z.object({
   binding: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
-  kind: z.string().min(1),
+  driver: z.string().min(1),
   tables: z.array(scopeDumpTable),
+  kind: z.never({ message: SCOPE_STORE_DUMP_KIND_RENAMED }).optional(),
 });
 export type ScopeStoreDump = z.infer<typeof scopeStoreDump>;
 

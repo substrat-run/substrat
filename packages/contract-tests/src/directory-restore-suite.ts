@@ -109,6 +109,17 @@ const oldScopes = (ids: string[]): ScopeDumpTable => ({
   rows: ids.map((id) => rowOf(OLDEST_SCOPES.columns, { ...LIVE_SCOPE, scope_id: id })),
 });
 
+/** The directory tables K-53's rename moved: the release tables, and the binding record's key. */
+const STORE_DRIVER_KEYED = ['store_driver_current', 'store_driver_holds', 'store_driver_releases', 'store_driver_rollouts', 'vertical_scope_stores'];
+
+/** `t`, one of {@link STORE_DRIVER_KEYED}, as the code before the rename named and built it, with no rows. */
+const legacyStoreKind = (t: ScopeDumpTable): ScopeDumpTable => ({
+  name: t.name.replace(/^store_driver_/, 'store_kind_'),
+  ddl: t.ddl.replace(/\bstore_driver_/g, 'store_kind_').replace(/\bdriver\b/g, 'kind'),
+  columns: t.columns.map((c) => (c === 'driver' ? 'kind' : c)),
+  rows: [],
+});
+
 type Refusal = [what: string, craft: (tables: ScopeDumpTable[]) => ScopeDumpTable[], message: RegExp];
 
 export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHarness): void {
@@ -239,6 +250,46 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
         });
       });
 
+      // K-53's rename: a copy taken before it names the release tables `store_kind_*` and keys
+      // them, and `vertical_scope_stores`, by `kind`. Its rows land in today's tables by name.
+      it('a directory from before the store driver rename', async () => {
+        await using(async (dir, fresh) => {
+          const legacy = fresh.map((t) =>
+            STORE_DRIVER_KEYED.includes(t.name) ? { ...legacyStoreKind(t), rows: [crafted(t.name, t.columns)] } : t,
+          );
+          expect(legacy.map((t) => t.name)).toEqual(expect.arrayContaining(['store_kind_releases', 'store_kind_holds']));
+          await dir.restore(legacy);
+          await dir.settle();
+          const after = await dir.snapshot();
+          expect(shapeOf(after)).toEqual(shapeOf(fresh));
+          expect(after.map((t) => t.name).filter((n) => n.startsWith('store_kind_'))).toEqual([]);
+          for (const table of STORE_DRIVER_KEYED) {
+            const t = find(after, table);
+            expect(recordsOf(t)).toEqual([Object.fromEntries(t.columns.map((c) => [c, valueFor(table, c)]))]);
+          }
+        });
+      });
+
+      // A copy taken after a rollback across the rename: the pre-rename code created its tables
+      // empty beside the moved ones, and the copy carries both. The empty name is left out, and
+      // a rollback's own rows, under the old name over an empty new one, are kept.
+      it('a directory that ran pre-rename code again: both names, one of them empty', async () => {
+        await using(async (dir, fresh) => {
+          const current = find(fresh, 'store_driver_releases');
+          const row = crafted(current.name, current.columns);
+          await dir.restore([
+            ...withTable(fresh, 'store_driver_releases', (t) => ({ ...t, rows: [row] })),
+            { ...legacyStoreKind(current), rows: [] },
+            { ...legacyStoreKind(find(fresh, 'store_driver_holds')), rows: [crafted('store_driver_holds', find(fresh, 'store_driver_holds').columns)] },
+          ]);
+          await dir.settle();
+          const after = await dir.snapshot();
+          expect(shapeOf(after)).toEqual(shapeOf(fresh));
+          expect(find(after, 'store_driver_releases').rows).toEqual([row]);
+          expect(recordsOf(find(after, 'store_driver_holds'))).toHaveLength(1);
+        });
+      });
+
       it('a directory from before the tenant registry, holding only its scopes', async () => {
         await using(async (dir, fresh) => {
           await dir.restore([{ name: 'scopes', ...inShape(OLDEST_SCOPES) }]);
@@ -366,6 +417,15 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
             })),
           new RegExp(`named for SQLite's rowid: ${alias}`),
         ]),
+        [
+          // Loading both would merge two histories of one table into it.
+          'a table holding rows under both its pre-rename and its driver name',
+          (tables) => [
+            ...withTable(tables, 'store_driver_releases', (t) => ({ ...t, rows: [crafted(t.name, t.columns)] })),
+            (({ columns, ...t }) => ({ ...t, columns, rows: [crafted(t.name, columns)] }))(legacyStoreKind(find(tables, 'store_driver_releases'))),
+          ],
+          /carries rows in both store_kind_releases and store_driver_releases/,
+        ],
         [
           // A column added to one table, then a later table's row refused: the addition goes too.
           'a row that fails after a column was added',

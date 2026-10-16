@@ -404,6 +404,14 @@ export const READS = [
     paths: /^packages\/adapter-cloudflare\/src\/scope-do\.ts$/,
     suite: 'packages/kernel/test/carried-copy.test.ts',
   },
+  // The push links the workspace kernel and adapter-sqlite into a fixture vertical's
+  // node_modules, as an external vertical installs them: the push reaches the vertical's own
+  // kernel at run time (#1677, #2321), so the Apache-2.0 CLI declares neither.
+  {
+    reader: '@substrat-run/cli',
+    paths: /^packages\/(kernel|adapter-sqlite)\/src\//,
+    suite: 'packages/cli/test/push-data-loss.test.ts',
+  },
   // The store hop on workerd (#2207) bundles the router's store-call source. The router is a
   // worker, not a package vertical-egress can depend on. (The store entry it uploads comes
   // through declared devDependencies on control-plane-api and the CLI, so needs no row.)

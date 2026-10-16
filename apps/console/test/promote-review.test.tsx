@@ -147,3 +147,80 @@ describe('the console promote review (#1677)', () => {
     ]);
   });
 });
+
+describe('MigrationDiffView: declared moves and discards (#2322)', () => {
+  const view = (diff: Parameters<typeof migrationReviewOf>[0]) =>
+    renderToString(createElement(MigrationDiffView, { review: migrationReviewOf(wire(diff)) }));
+
+  it('shows each discard with its reason and each move, counted, and nothing for a migration declaring none', () => {
+    const html = view(
+      migrationsOnTop(
+        [
+          { moduleId: 'desk', version: '0001', sql: 'SELECT 1;' },
+          { moduleId: 'desk', version: '0002', sql: 'DROP TABLE legacy;', discards: { legacy: 'unused since 2024' }, moves: { 'a.b': 'c.d' } },
+        ],
+        undefined,
+      ),
+    );
+    expect(html).toContain('deliberately discards data in <!-- -->1<!-- --> place');
+    expect(html).toContain('unused since 2024');
+    expect(html).toContain('c.d');
+    expect(html.match(/discards <span/g)).toHaveLength(1);
+    expect(view(migrationsOnTop([{ moduleId: 'desk', version: '0001', sql: 's' }], undefined))).not.toMatch(/discards|moves/);
+  });
+
+  it('escapes a reason, makes bidi controls visible, and cuts a long one behind an expander', () => {
+    const html = view(
+      migrationsOnTop([{ moduleId: 'desk', version: '0002', sql: 's', discards: { t: `<img src=x>\u202E${'r'.repeat(400)}TAIL` } }], undefined),
+    );
+    expect(html).not.toContain('<img');
+    expect(html).toContain('&lt;img src=x&gt;&lt;U+202E&gt;');
+    expect(html).not.toMatch(/[\u202A-\u202E\u2066-\u2069]/);
+    expect(html).toMatch(/<details[^>]*><summary[^>]*>.*… show all<\/summary>.*TAIL<\/details>/);
+  });
+
+  it('makes controls visible in a target, both ends of a move, the id and the SQL — not only the reason (#2322 r1)', () => {
+    const c = (...p: number[]) => String.fromCodePoint(...p);
+    const hostile = c(0x202e, 0x200b, 0x9b, 0x1b);
+    const shown = '&lt;U+202E&gt;&lt;U+200B&gt;&lt;U+009B&gt;&lt;U+001B&gt;';
+    const html = view(
+      migrationsOnTop(
+        [{ moduleId: 'desk', version: `0002${hostile}`, sql: `DROP TABLE t;${hostile}`, discards: { [`t${hostile}`]: 'why' }, moves: { [`a${hostile}`]: `b${hostile}` } }],
+        undefined,
+      ),
+    );
+    expect(html).toContain(`desk@0002${shown}`);
+    expect(html).toContain(`DROP TABLE t;${shown}`);
+    expect(html).toContain(`t${shown}`);
+    expect(html).toContain(`a${shown}`);
+    expect(html).toContain(`b${shown}`);
+    expect(html).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+  });
+
+  it('cuts a many-line reason, and says "at least" or that a cut list cannot say (#2322 r1)', () => {
+    const reason = Array.from({ length: 10 }, (_, i) => `line ${i}`).join('\n');
+    const html = view(migrationsOnTop([{ moduleId: 'desk', version: '0002', sql: 's', discards: { t: reason } }], undefined));
+    const summary = /<summary[^>]*>([\s\S]*?)<\/summary>/.exec(html)?.[1] ?? '';
+    expect(summary).toContain('line 5<!-- -->… show all');
+    expect(summary).not.toContain('line 6');
+    const cut = { baseline: 'none' as const, changed: [], total: 300, truncated: true };
+    expect(view({ ...cut, added: [{ moduleId: 'd', version: '1', sql: 's', discards: { t: 'why' } }] })).toContain('at least <!-- -->1');
+    expect(view({ ...cut, added: [{ moduleId: 'd', version: '1', sql: 's' }] })).toContain('cannot show whether a migration left out of it discards data');
+  });
+
+  it('shows a newline in an id or a target as a mark, and reads CRLF SQL as its lines (#2322 r2)', () => {
+    const html = view(
+      migrationsOnTop([{ moduleId: 'desk', version: `0007\nmoves x\t${String.fromCodePoint(0x200b, 0x202e)}y`, sql: 'SELECT 1;\r\nSELECT 2;\rX', discards: { 'a\nmoves b': 'why' } }], undefined),
+    );
+    expect(html).toContain('desk@0007&lt;U+000A&gt;moves x&lt;U+0009&gt;&lt;U+200B&gt;&lt;U+202E&gt;y');
+    expect(html).toContain('a&lt;U+000A&gt;moves b');
+    expect(html).toContain('SELECT 1;\nSELECT 2;&lt;U+000D&gt;X');
+  });
+
+  it('names a declarations-only edit as such', () => {
+    const html = view(
+      migrationsOnTop([{ moduleId: 'desk', version: '0001', sql: 's', discards: { t: 'why' } }], [{ moduleId: 'desk', version: '0001', sql: 's' }]),
+    );
+    expect(html).toContain('declarations edited after shipping');
+  });
+});
