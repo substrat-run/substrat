@@ -184,7 +184,8 @@ rollout upload the scripts they reach. The rest are rebuilt by the control plane
 - **Attesting the deploy finished.** `substrat store-driver rebuild --driver <driver> --deploy-finished`
   is a person saying no control-plane deploy is rolling out. That run starts the walk over from its
   first script, and once that walk is done it proves every script current without waiting out the
-  window. It is recorded in the admin log with the person, and status names who attested. Use it
+  window. Repeating it continues the attested walk under way rather than starting it over, so a fleet
+  larger than one run (180 scripts) finishes by repeating it until it reads `scripts: current`. It is recorded in the admin log with the person, and status names who attested. Use it
   only when the deploy that changed the lists serves the new version alone (the deploy is finished,
   not part way through a gradual rollout); otherwise wait for the window, or run `store-driver
   rebuild` without it and let the window run.
