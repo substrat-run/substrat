@@ -66,14 +66,22 @@ export const STORE_REBUILD_REVERIFY_MS = 24 * 60 * 60_000;
  * control-plane deploy rolls out, the version still building from the older inputs can push a
  * script after the walk read it. A walk that finished within this window of its fingerprint first
  * being walked towards reads as settling, and the scheduled pass walks it again once the window has
- * passed. A deploy that takes longer to roll out is followed by `store-driver rebuild`.
+ * passed. A deploy that takes longer to roll out is followed by `store-driver rebuild`. The default;
+ * the control plane reads `STORE_REBUILD_SETTLE_MINUTES`.
  */
 export const STORE_REBUILD_SETTLE_MS = 60 * 60_000;
 /** Whether a done walk finished long enough after its fingerprint appeared to prove every script current. */
-const settled = (rebuild: StoreDriverRebuildRecord) =>
-  Date.parse(rebuild.finishedAt ?? rebuild.updatedAt) - Date.parse(rebuild.fingerprintSince) >= STORE_REBUILD_SETTLE_MS;
+const settled = (rebuild: StoreDriverRebuildRecord, settleMs: number) =>
+  Date.parse(rebuild.finishedAt ?? rebuild.updatedAt) - Date.parse(rebuild.fingerprintSince) >= settleMs;
+const finishedMs = (rebuild: StoreDriverRebuildRecord) => Date.parse(rebuild.finishedAt ?? rebuild.updatedAt);
 /** How long a pass's lease on a driver's rebuild lives between progress writes. */
 const STORE_REBUILD_LEASE_TTL_MS = 10 * 60_000;
+
+/**
+ * The binding an unreadable vertical's store is walked under. A script's name and build take the
+ * vertical and the driver only, so the binding names nothing the upload uses.
+ */
+const UNNAMED_BINDING = 'UNNAMED';
 
 /** The cursor once the canary is walked: before every slug, after "not started" (null). */
 const CANARY_WALKED = '';
@@ -103,6 +111,8 @@ interface StoreFleetRebuildDeps {
   reverify: 'always' | 'when-due';
   /** For a test: the clock the reverification is judged on. */
   now?: () => number;
+  /** The settle window; {@link STORE_REBUILD_SETTLE_MS} by default. */
+  settleMs?: number;
 }
 
 export interface StoreDriverRebuildPass {
@@ -165,9 +175,7 @@ async function rebuildDriver(
   const now = (deps.now ?? Date.now)();
   const restart =
     doneHere &&
-    (deps.reverify === 'always' ||
-      now - Date.parse(stood.finishedAt ?? stood.updatedAt) >= STORE_REBUILD_REVERIFY_MS ||
-      (!settled(stood) && now - Date.parse(stood.fingerprintSince) >= STORE_REBUILD_SETTLE_MS));
+    (deps.reverify === 'always' || now >= nextAutomaticWalk(stood, deps.settleMs ?? STORE_REBUILD_SETTLE_MS));
   if (doneHere && !restart) return result('current', stood);
   if (budget <= 0) return result('paused', stood);
 
@@ -188,14 +196,16 @@ async function rebuildDriver(
     held = await admin.holdStoreDriver(actor, { driver, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS });
     if (!held) return result('held', rebuild);
     const declared = await admin.storeDriverDeclarations(actor, driver);
-    const unreadable = new Set(declared.unreadable);
-    for (const vertical of unreadable) {
-      failures.set(vertical, 'a version of it declares stores that cannot be named, so its scripts cannot be listed');
-    }
     const byVertical = new Map(declared.verticals.map((v) => [v.vertical, v.stores.map((s) => ({ binding: s.binding, driver }))]));
+    // A vertical whose stores cannot be named may still run a script of this driver. Its name is the
+    // vertical's and the driver's alone, so it is walked by name: rebuilt if it exists, and left
+    // alone if not (no script, nothing that accepts a key). Only a failure to do that is a failure.
+    for (const vertical of declared.unreadable) {
+      if (!byVertical.has(vertical)) byVertical.set(vertical, [{ binding: UNNAMED_BINDING, driver }]);
+    }
     // A failure no longer to be had: the vertical declares the driver no more, and is readable.
     for (const vertical of [...failures.keys()]) {
-      if (vertical !== SCOPE_STORE_CANARY && !byVertical.has(vertical) && !unreadable.has(vertical)) failures.delete(vertical);
+      if (vertical !== SCOPE_STORE_CANARY && !byVertical.has(vertical)) failures.delete(vertical);
     }
     const ahead = aheadOf(cursor, [...byVertical.keys()].sort());
     const walking = new Set(ahead);
@@ -253,23 +263,32 @@ function aheadOf(cursor: string | null, verticals: readonly string[]): string[] 
 }
 
 /**
+ * When the scheduled pass walks a done rebuild again: once its settle window has passed, for a walk
+ * that finished inside it; else a day after it finished.
+ */
+function nextAutomaticWalk(rebuild: StoreDriverRebuildRecord, settleMs: number): number {
+  return settled(rebuild, settleMs) ? finishedMs(rebuild) + STORE_REBUILD_REVERIFY_MS : Date.parse(rebuild.fingerprintSince) + settleMs;
+}
+
+/**
  * Whether every script of a driver is built from what the platform builds from now, and which may
  * not be: while the rebuild is towards another fingerprint (or none ran yet), the canary and every
  * vertical that declared the driver; while it runs, the ones ahead of its cursor and the ones that
  * failed. A push or serve may have rebuilt some of them since, and the walk then finds them
  * current, so `pending` may over-count, never under-count. A walk that is done but not settled (see
- * {@link STORE_REBUILD_SETTLE_MS}) is not current: `settling` says when it is walked again.
+ * {@link STORE_REBUILD_SETTLE_MS}) is not current: `settling` says when it is walked again. `nextWalk`
+ * is when the scheduled pass walks a done rebuild again.
  */
 export function storeRebuildStatus(
   rebuild: StoreDriverRebuildRecord | undefined,
   fingerprint: string,
   declared: readonly string[],
-): { current: boolean; pending: string[]; settling?: string } {
+  settleMs: number = STORE_REBUILD_SETTLE_MS,
+): { current: boolean; pending: string[]; settling?: string; nextWalk?: string } {
   if (!rebuild || rebuild.fingerprint !== fingerprint) return { current: false, pending: [SCOPE_STORE_CANARY, ...declared] };
   if (rebuild.state === 'done') {
-    return settled(rebuild)
-      ? { current: true, pending: [] }
-      : { current: false, pending: [], settling: new Date(Date.parse(rebuild.fingerprintSince) + STORE_REBUILD_SETTLE_MS).toISOString() };
+    const nextWalk = new Date(nextAutomaticWalk(rebuild, settleMs)).toISOString();
+    return settled(rebuild, settleMs) ? { current: true, pending: [], nextWalk } : { current: false, pending: [], settling: nextWalk, nextWalk };
   }
   const pending = new Set([...aheadOf(rebuild.cursor, declared), ...rebuild.failures.map((f) => f.vertical)]);
   return { current: false, pending: [...pending] };

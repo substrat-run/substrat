@@ -397,6 +397,13 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   STORE_REBUILD_SUBREQUESTS?: string;
   /**
+   * #2309: minutes after new key lists (or a new store entry) first appear during which a finished
+   * store-script rebuild is not yet proof, because a control-plane deploy may still be rolling out
+   * (`STORE_REBUILD_SETTLE_MS`, 60 by default). Set it to how long a deploy of this worker takes to
+   * serve only the new version. A garbled value is the default.
+   */
+  STORE_REBUILD_SETTLE_MINUTES?: string;
+  /**
    * #1705: consumer scopes one cross-vertical pass visits, at most. Unset is the kernel's
    * default (`CROSS_VERTICAL_CONSUMERS_PER_PASS`), and `0` pauses the phase: nothing is read or
    * delivered, watermarks hold, and the producers' outboxes keep the backlog. A garbled value
@@ -683,6 +690,7 @@ function storeReleasesFor(env: Env) {
       createStoreCanaryEnsurer({ ...(await options()), loadRelease })(input),
     // #2309: what every store script is built from now; the fleet rebuild converges on it.
     fingerprint: async () => storePlatformFingerprint(await options()),
+    ...settleOf(env),
     callCanary: (target: { scriptName: string; objectName: string }, operation: ReservedStoreOperation, input?: unknown) =>
       callPlatformScopeStoreAt(
         { platformKey, fetch: (scriptName, request) => dispatch.get(scriptName).fetch(request) },
@@ -692,6 +700,12 @@ function storeReleasesFor(env: Env) {
       ),
   };
 }
+/** `STORE_REBUILD_SETTLE_MINUTES` as the rebuild's settle window, or nothing for the default. */
+function settleOf(env: Env): { settleMs?: number } {
+  const minutes = parseNonNegativeInteger(env.STORE_REBUILD_SETTLE_MINUTES);
+  return minutes === undefined ? {} : { settleMs: minutes * 60_000 };
+}
+
 /**
  * One scheduled pass of the store scripts' rebuild (#2309), when this control plane uploads store
  * scripts and keeps releases. Logs what it did; a pass with nothing to do logs nothing.
@@ -711,6 +725,7 @@ async function rebuildStoreScripts(env: Env, admin: HostAdmin): Promise<void> {
     ensureCanary: flow.ensureCanary,
     budget: storeRebuildBudget(subrequests),
     reverify: 'when-due',
+    ...settleOf(env),
   });
   const active = passes.filter((p) => p.outcome !== 'current');
   if (active.length > 0) {

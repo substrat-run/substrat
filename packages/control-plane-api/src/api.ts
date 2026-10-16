@@ -449,6 +449,8 @@ export interface ControlPlaneApiOptions {
      * Absent ⇒ no fleet rebuild: the status reports none and the rebuild route answers 501.
      */
     fingerprint?: () => Promise<string>;
+    /** The rebuild's settle window (`STORE_REBUILD_SETTLE_MS` by default). */
+    settleMs?: number;
   };
   /**
    * The actor a request's credential names when that credential is a person's staff session,
@@ -10466,7 +10468,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!fingerprint) return undefined;
     const [walk, declared] = await Promise.all([admin.storeDriverRebuild(actor, driver), admin.storeDriverDeclarations(actor, driver)]);
     const verticals = [...new Set([...declared.verticals.map((v) => v.vertical), ...declared.unreadable])].sort();
-    return { fingerprint, ...storeRebuildStatus(walk, fingerprint, verticals), walk: walk ?? null };
+    return { fingerprint, ...storeRebuildStatus(walk, fingerprint, verticals, options.storeReleases?.settleMs), walk: walk ?? null };
   };
 
   app.get('/store-drivers/:driver', async (c) => {
@@ -10521,9 +10523,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = await byAPerson(c);
     const { flow, ensureScopeStores } = releaseFlow();
     if (!flow.fingerprint) throw new ControlPlaneError(501, 'this control plane does not rebuild store scripts');
-    const fingerprint = await flow.fingerprint();
+    let fingerprint: string | undefined;
     let ran: Omit<StoreDriverRebuildPass, 'rebuild'> = { driver: registration.driver, outcome: 'error', walked: [], uploaded: [] };
     try {
+      // Inside the audited path: lists that cannot be read refuse the run, and that refusal is audited too.
+      fingerprint = await flow.fingerprint();
       const [pass] = await runStoreFleetRebuild({
         admin: c.var.admin,
         actor,
@@ -10536,6 +10540,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // A person asking re-walks a driver that is done: after a control plane deploy has finished
         // rolling out, that walk is the proof no script kept the older lists.
         reverify: 'always',
+        ...(flow.settleMs === undefined ? {} : { settleMs: flow.settleMs }),
       });
       const { rebuild: _row, ...result } = pass!;
       ran = result;

@@ -129,18 +129,25 @@ export const rebuildStoreDriver = (input: Plane & { driver: string }) =>
  * still accept it.
  */
 export function storeDriverRebuildLines(rebuild: StoreDriverRebuildView): string[] {
-  if (rebuild.current) return [`  scripts: current (every script is built from ${rebuild.fingerprint.slice(0, 12)})`];
+  const walk = rebuild.walk;
+  // Why it reads as it does: when these lists were first walked towards, and when the next automatic walk is.
+  const timing = walk && walk.fingerprint === rebuild.fingerprint
+    ? [`    first walked towards ${walk.fingerprintSince}${rebuild.nextWalk ? `; next automatic re-walk ${rebuild.nextWalk}` : ''}`]
+    : [];
+  if (rebuild.current) return [`  scripts: current (every script is built from ${rebuild.fingerprint.slice(0, 12)}, walk finished ${walk?.finishedAt})`, ...timing];
   if (rebuild.settling) {
     return [
-      `  scripts: settling: every script was current when walked (${rebuild.walk?.finishedAt ?? 'just now'}), but the control plane's deploy may still`,
-      `    have been rolling out then. It is walked again from ${rebuild.settling}; if the deploy had finished before the walk, it is current already.`,
+      `  scripts: settling: every script was current when walked (${walk?.finishedAt ?? 'just now'}), but the control plane's deploy may still`,
+      `    have been rolling out then. It is walked again from ${rebuild.settling}; once the deploy serves only the new version, \`substrat store-driver rebuild\` walks it at once.`,
+      ...timing,
     ];
   }
   const shown = rebuild.pending.slice(0, 10);
   return [
     `  scripts: NOT current: ${rebuild.pending.length} may still be built from older keys or code (target ${rebuild.fingerprint.slice(0, 12)})`,
     ...(shown.length ? [`    pending: ${shown.join(', ')}${rebuild.pending.length > shown.length ? `, … ${rebuild.pending.length - shown.length} more` : ''}`] : []),
-    ...(rebuild.walk?.failures ?? []).slice(0, 10).map((f) => `    failed: ${f.vertical}: ${f.detail}`),
+    ...(walk?.failures ?? []).slice(0, 10).map((f) => `    failed: ${f.vertical}: ${f.detail}`),
+    ...timing,
   ];
 }
 

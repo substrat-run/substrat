@@ -28,6 +28,7 @@ import {
   type CanaryCall,
 } from '../src/index.js';
 import { PUSH_HOLD_TTL_MS } from '../src/store-releases.js';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { STORE_REBUILD_REVERIFY_MS, STORE_REBUILD_SETTLE_MS } from '../src/store-rebuild.js';
 
 /**
@@ -335,7 +336,7 @@ describe('the fleet rebuild (#2309)', () => {
     expect(await pass(keysB)).toMatchObject({ outcome: 'done', walked: ['-canary', 'va', 'vb'], uploaded: ['vb'] });
     expect(puts).toEqual([scriptOf('vb')]);
     expect(binding(scriptOf('vb'), CALLER_KEYS)).toBe(keysB.caller);
-    expect(await status()).toEqual({ current: true, pending: [] });
+    expect(await status()).toMatchObject({ current: true, pending: [] });
     // A settled walk is still walked again a day after it finished, whatever changed meanwhile.
     await push('va', keysA);
     clock.advance(STORE_REBUILD_REVERIFY_MS - 1);
@@ -346,6 +347,66 @@ describe('the fleet rebuild (#2309)', () => {
     await push('vb', keysA);
     expect(await pass(keysB, 100, 'always')).toMatchObject({ outcome: 'done', uploaded: ['vb'] });
     expect(binding(scriptOf('vb'), CALLER_KEYS)).toBe(keysB.caller);
+  });
+
+  it('rebuilds the script of a vertical whose stores cannot be named, by its name, and never reads current while that fails', async () => {
+    for (const v of ['va', 'vb']) await declare(v);
+    expect((await rollOut(s1, keysA)).complete).toBe(true);
+    // vx's only version has a manifest nobody can read, yet a script of the driver runs under its name.
+    await host.admin.registerVertical(staff, { slug: 'vx', name: 'vx', source: 'cli' });
+    const id = ulid();
+    await host.admin.publishVersion(staff, {
+      id, verticalSlug: 'vx', version: '1.0.0', manifestDigest: `m-${id}`, permissionDigest: 'p', migrationDigest: 'g',
+      deploymentRef: null, manifestJson: '{nope',
+    });
+    expect((await host.admin.storeDriverDeclarations(staff, 'graph')).unreadable).toEqual(['vx']);
+    await push('vx', keysA);
+    const fingerprint = await storePlatformFingerprint({ callerPublicKeys: [keysB.caller], platformPublicKeys: [keysB.platform] });
+    // Its rebuild fails: the walk ends failing, and status lists it, not current.
+    failPut.add(scriptOf('vx'));
+    const failing = await pass(keysB);
+    expect(failing).toMatchObject({ outcome: 'failing', walked: ['-canary', 'va', 'vb', 'vx'], uploaded: ['-canary', 'va', 'vb'] });
+    expect(storeRebuildStatus(failing.rebuild, fingerprint, ['va', 'vb', 'vx'])).toEqual({ current: false, pending: ['vx'] });
+    expect(binding(scriptOf('vx'), CALLER_KEYS)).toBe(keysA.caller);
+    // Once it can be uploaded, it is rebuilt by its name like any other, and the driver is current.
+    failPut.clear();
+    clock.advance(STORE_REBUILD_SETTLE_MS);
+    expect(await pass(keysB)).toMatchObject({ outcome: 'done', walked: ['vx'], uploaded: ['vx'] });
+    expect(binding(scriptOf('vx'), CALLER_KEYS)).toBe(keysB.caller);
+    expect(storeRebuildStatus(await host.admin.storeDriverRebuild(staff, 'graph'), fingerprint, ['va', 'vb', 'vx'])).toMatchObject({ current: true });
+  });
+
+  it('takes its settle window from the control plane, so a deploy that rolls out longer can be waited out', async () => {
+    await declare('va');
+    expect((await rollOut(s1, keysA)).complete).toBe(true);
+    const fingerprint = await storePlatformFingerprint({ callerPublicKeys: [keysB.caller], platformPublicKeys: [keysB.platform] });
+    const run = (settleMs: number) =>
+      runStoreFleetRebuild({
+        admin: host.admin, actor: staff, drivers: [registration], fingerprint, bytes,
+        ensure: ensureWith(keysB), ensureCanary: canaryWith(keysB), budget: 100, reverify: 'when-due',
+        now: () => Date.parse(clock.read()), settleMs,
+      });
+    expect((await run(3 * STORE_REBUILD_SETTLE_MS))[0]).toMatchObject({ outcome: 'done' });
+    const row = async () => (await host.admin.storeDriverRebuild(staff, 'graph'))!;
+    // Three hours: still settling after one, and walked again only after three.
+    clock.advance(STORE_REBUILD_SETTLE_MS);
+    expect(storeRebuildStatus(await row(), fingerprint, ['va'], 3 * STORE_REBUILD_SETTLE_MS)).toMatchObject({ current: false, settling: expect.any(String) });
+    expect((await run(3 * STORE_REBUILD_SETTLE_MS))[0]).toMatchObject({ outcome: 'current' });
+    clock.advance(2 * STORE_REBUILD_SETTLE_MS);
+    expect((await run(3 * STORE_REBUILD_SETTLE_MS))[0]).toMatchObject({ outcome: 'done', walked: ['-canary', 'va'] });
+    expect(storeRebuildStatus(await row(), fingerprint, ['va'], 3 * STORE_REBUILD_SETTLE_MS)).toMatchObject({ current: true });
+    // With no window, a finished walk is proof at once.
+    expect(storeRebuildStatus(await row(), fingerprint, ['va'], 0)).toMatchObject({ current: true });
+  });
+
+  it('drops a failure of a vertical that no longer declares the driver', async () => {
+    for (const v of ['va', 'vb']) await declare(v);
+    expect((await rollOut(s1, keysA)).complete).toBe(true);
+    failPut.add(scriptOf('vb'));
+    expect(await pass(keysB)).toMatchObject({ outcome: 'failing' });
+    await host.admin.deleteVertical(staff, 'vb');
+    expect(await pass(keysB)).toMatchObject({ outcome: 'done', walked: [] });
+    expect((await host.admin.storeDriverRebuild(staff, 'graph'))!.failures).toEqual([]);
   });
 
   it('never walks a driver another pass holds the lease on', async () => {
@@ -380,7 +441,7 @@ describe('the fleet rebuild (#2309)', () => {
     clock.advance(STORE_REBUILD_SETTLE_MS);
     const done = await pass(keysB);
     expect(done).toMatchObject({ outcome: 'done', walked: ['vb'], uploaded: ['vb'] });
-    expect(storeRebuildStatus(done.rebuild, fingerprint, ['va', 'vb', 'vc'])).toEqual({ current: true, pending: [] });
+    expect(storeRebuildStatus(done.rebuild, fingerprint, ['va', 'vb', 'vc'])).toMatchObject({ current: true, pending: [] });
     expect(binding(scriptOf('vb'), CALLER_KEYS)).toBe(keysB.caller);
   });
 
@@ -429,6 +490,29 @@ describe('the fleet rebuild (#2309)', () => {
         rebuild: { current: true },
       });
       expect(puts).toEqual([]);
+    });
+
+    it('audits a run refused because the key lists cannot be read', async () => {
+      await declare('va');
+      const app = createControlPlaneApi({
+        host,
+        authenticate: UNSAFE_devPlatformActorAuth(),
+        storeDrivers: [registration],
+        humanStaffActor: async () => person,
+        ensureScopeStores: ensureWith(keysB),
+        storeReleases: {
+          bytes,
+          ensureCanary: ({ loadRelease, ...input }) => createStoreCanaryEnsurer({ ...optionsWith(keysB), loadRelease })(input),
+          callCanary: canaryCall,
+          fingerprint: async () => {
+            throw new ControlPlaneError(503, 'the store public keys are not usable');
+          },
+        },
+      });
+      expect((await call(app, 'POST', '/store-drivers/graph/rebuild', person)).status).toBe(503);
+      expect(await host.admin.auditLog(staff, { action: 'rebuildStoreDriver' })).toEqual([
+        expect.objectContaining({ actor: person, after: expect.objectContaining({ driver: 'graph', outcome: 'error', error: 'the store public keys are not usable' }) }),
+      ]);
     });
 
     it('answers 501 when the control plane does not rebuild, and reports no rebuild', async () => {

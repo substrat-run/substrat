@@ -270,6 +270,8 @@ export interface StoreDriverRebuildView {
    * deploy may still have been rolling out: when it is walked again. Not current until then.
    */
   settling?: string;
+  /** When the scheduled pass walks a done rebuild again (after the settle window, then daily). */
+  nextWalk?: string;
   /** The walk's row: absent before its first pass. Its fingerprint may be an older one. */
   walk: {
     fingerprint: string;

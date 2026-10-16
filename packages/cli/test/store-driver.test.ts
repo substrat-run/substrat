@@ -140,24 +140,36 @@ describe('store-driver rollout and status, before and after a request (#2300)', 
     expect(storeDriverStatusLines('graph', { driver: 'graph', pins: [], current: null, rollouts: [], rollbackTarget: null, unfinishedRollback: null })[0]).toBe('graph: current none, rolls back to nothing');
   });
 
-  it('says whether every script carries what the control plane builds from now, and which may not (#2309)', () => {
+  it('says whether every script carries what the control plane builds from now, which may not, and when it is walked again (#2309)', () => {
     const base = { driver: 'graph', pins: [], current: null, rollouts: [], rollbackTarget: null, unfinishedRollback: null };
-    const walk = { fingerprint: 'f'.repeat(64), fingerprintSince: 't', cursor: 'va', failures: [{ vertical: 'vb', detail: 'upload failed (500)' }], state: 'running' as const, startedAt: 't', updatedAt: 't', finishedAt: null };
-    const behind = storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: 'f'.repeat(64), current: false, pending: ['vb', 'vc'], walk } });
+    const fp = 'f'.repeat(64);
+    const walk = { fingerprint: fp, fingerprintSince: '2026-10-16T00:00:00.000Z', cursor: 'va', failures: [{ vertical: 'vb', detail: 'upload failed (500)' }], state: 'running' as const, startedAt: 't', updatedAt: 't', finishedAt: null };
+    const behind = storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: fp, current: false, pending: ['vb', 'vc'], walk } });
     expect(behind.slice(1)).toEqual([
       `  scripts: NOT current: 2 may still be built from older keys or code (target ${'f'.repeat(12)})`,
       '    pending: vb, vc',
       '    failed: vb: upload failed (500)',
+      '    first walked towards 2026-10-16T00:00:00.000Z',
     ]);
-    const current = storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: 'f'.repeat(64), current: true, pending: [], walk: { ...walk, failures: [], state: 'done' } } });
-    expect(current.slice(1)).toEqual([`  scripts: current (every script is built from ${'f'.repeat(12)})`]);
-    // Done, but too soon after the new lists appeared to prove it: settling, with when it is walked again.
-    const settling = storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: 'f'.repeat(64), current: false, pending: [], settling: '2026-10-16T01:00:00.000Z', walk: { ...walk, failures: [], state: 'done', finishedAt: '2026-10-16T00:10:00.000Z' } } });
+    const done = { ...walk, failures: [], state: 'done' as const, finishedAt: '2026-10-16T01:10:00.000Z' };
+    const current = storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: fp, current: true, pending: [], nextWalk: '2026-10-17T01:10:00.000Z', walk: done } });
+    expect(current.slice(1)).toEqual([
+      `  scripts: current (every script is built from ${'f'.repeat(12)}, walk finished 2026-10-16T01:10:00.000Z)`,
+      '    first walked towards 2026-10-16T00:00:00.000Z; next automatic re-walk 2026-10-17T01:10:00.000Z',
+    ]);
+    // Done, but too soon after the new lists appeared to prove it: settling, with why and when it is walked again.
+    const early = { ...done, finishedAt: '2026-10-16T00:10:00.000Z' };
+    const settling = storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: fp, current: false, pending: [], settling: '2026-10-16T01:00:00.000Z', nextWalk: '2026-10-16T01:00:00.000Z', walk: early } });
     expect(settling[1]).toMatch(/^ {2}scripts: settling: every script was current when walked \(2026-10-16T00:10:00\.000Z\)/);
     expect(settling[2]).toContain('walked again from 2026-10-16T01:00:00.000Z');
+    expect(settling[2]).toContain('`substrat store-driver rebuild` walks it at once');
+    expect(settling[3]).toBe('    first walked towards 2026-10-16T00:00:00.000Z; next automatic re-walk 2026-10-16T01:00:00.000Z');
+    // A walk towards older lists says nothing about these lists' timing.
+    expect(storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: fp, current: false, pending: ['va'], walk: { ...walk, failures: [], fingerprint: 'e'.repeat(64) } } }).at(-1)).toBe('    pending: va');
     // A control plane that does not rebuild says nothing about it.
     expect(storeDriverStatusLines('graph', base)).toHaveLength(1);
   });
+
 });
 
 // K-53's rename: the old command and flag name the new spelling and stop, before any auth or call.
