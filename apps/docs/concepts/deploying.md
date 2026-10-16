@@ -203,26 +203,32 @@ is refused until `moves` declares it.
 
 A migration that creates a TEMP table, view, index or trigger is refused before it runs. A Durable
 Object does not allow TEMP objects, so it could never run in production; use a regular table and
-drop it before the migration ends.
+drop it before the migration ends. So is one that runs `ATTACH` or `DETACH`, for the same reason:
+a Durable Object refuses both, and an attached database is a file outside the scope.
 
 `substrat push` asks the same question before it uploads anything. It replays your migrations,
 in the order a scope applies them, against an in-memory scope where every table holds a row and
 every column a value, through the fence in *your* `@substrat-run/kernel`, the copy your scopes
 run at promote. A migration that would lose undeclared data refuses the push, with the same
 message and the declaration to add. `substrat push --check` runs it too, so a CI job that gates
-on `--check` fails in the pull request. Your real data, your environment and the network play no
-part: the replay starts from an empty database.
+on `--check` fails in the pull request. The replay runs in a process of its own, with an empty
+environment, against an empty in-memory database. It reads none of your data, and since `ATTACH`
+is refused it writes no file. Each migration gets 30 seconds: one that runs longer, such as a
+recursive CTE with no end, is stopped and reported as incomplete. A Durable Object's own CPU limit
+would stop it at promote too.
 
 The replay needs `node:sqlite`, so Node 22.13 or later. If a migration reads one of the
 platform's `_substrat_*` tables, it also needs `@substrat-run/adapter-sqlite` installed, at least
 as a devDependency, to build them. When it cannot run, the push still goes ahead and says so
 loudly. That happens when SQLite is unavailable, when your kernel predates the replay, or when a
-migration's SQL cannot run on made-up values (a `json_extract` over text that is not JSON). The
+migration's SQL cannot run on made-up values (a `json_extract` over text that is not JSON) or in
+time. The
 summary line reads `data-loss check: SKIPPED (…)`, or `INCOMPLETE (3 of 7 authored migration(s)
 were not replayed after …)`, because the replay stops at the first migration it cannot run. That
 default is permissive on purpose, because promote is the hard gate: the fence still refuses
 there. To make a skipped or incomplete check refuse the push as well, pass
-`--require-data-loss-check` or set `SUBSTRAT_REQUIRE_DATA_LOSS_CHECK=1` in CI. There is no flag
+`--require-data-loss-check`, or set `SUBSTRAT_REQUIRE_DATA_LOSS_CHECK` to `1`, `true` or `yes` in
+CI. Any other value is read as no, with a warning. There is no flag
 past a refusal. A `discards` entry with its reason is how a migration loses data on purpose,
 including a table you know is empty everywhere, which the replay fills like any other.
 

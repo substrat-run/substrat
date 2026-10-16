@@ -566,7 +566,7 @@ projects that predate the gate — but the run says so, loudly.
 The push itself also replays your migrations against a populated in-memory scope and refuses one
 that would lose data without declaring it ([A migration cannot quietly lose data](/concepts/deploying#a-migration-cannot-quietly-lose-data)).
 On a runner without `node:sqlite` (Node before 22.13) that check is skipped with a warning; set
-`SUBSTRAT_REQUIRE_DATA_LOSS_CHECK=1` in the job to make a skipped check fail it instead.
+`SUBSTRAT_REQUIRE_DATA_LOSS_CHECK=1` (or `true`, `yes`) in the job to make a skipped check fail it instead.
 
 ### Declared outbound hosts
 

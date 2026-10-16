@@ -139,10 +139,12 @@ Usage:
                                                one that would lose undeclared data is
                                                refused (declare it: moves / discards).
                                                A check skipped (no node:sqlite, Node
-                                               < 22.13) or incomplete is a warning;
+                                               < 22.13) or incomplete (a migration that
+                                               cannot run on made-up rows, or runs past
+                                               30 s) is a warning;
                                                --require-data-loss-check (or
-                                               SUBSTRAT_REQUIRE_DATA_LOSS_CHECK=1) makes
-                                               it a refusal
+                                               SUBSTRAT_REQUIRE_DATA_LOSS_CHECK=1/true/yes)
+                                               makes it a refusal
                                                A host the code names as a literal that
                                                package.json substrat.outbound does not
                                                declare is warned about with the line to add

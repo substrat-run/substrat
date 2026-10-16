@@ -558,7 +558,9 @@ shared across a tenant's verticals is §13 question 21.
   followed through later renames, when a table the migration made is renamed onto that name (the
   create-copy-drop-rename rebuild). An authored migration that makes a TEMP object is refused
   before it runs: a Durable Object refuses TEMP objects, and one would shadow the scope's tables
-  for every unqualified statement; the measuring reads name `main` for the same reason. Every measuring query stays
+  for every unqualified statement; the measuring reads name `main` for the same reason. So is one
+  that runs `ATTACH` or `DETACH` (#2321): a Durable Object refuses both, and an attached database is
+  a file the fence does not measure. Every measuring query stays
   inside `DO_SQL_LIMITS` (a column per storage class, so 25 table columns per scan). The
   override is reviewed in the migration diff, on `SqlMigration`, outside the SQL and its digest:
   `moves` (verified — the target must gain what its sources held, and a table moved whole must
@@ -569,8 +571,9 @@ shared across a tenant's verticals is §13 question 21.
   vertical's modules against an in-memory scope populated before each authored migration,
   through the same function: `pnpm lint:migration-fence` runs it over every migration in the
   repo, so an in-repo refusal is red in its pull request first, and `substrat push` runs it
-  through the vertical's own kernel before upload. The CLI supplies only the in-memory
-  `node:sqlite` and adapter-sqlite's spine, and stays free of the kernel as a dependency. Kernel-derived DDL is exempt, and a kernel column (`_substrat_*`)
+  through the vertical's own kernel before upload, in a child process it kills when one migration
+  runs past 30 s (no in-process SQLite call can be interrupted). The CLI supplies only the
+  in-memory `node:sqlite` and adapter-sqlite's spine, and stays free of the kernel as a dependency. Kernel-derived DDL is exempt, and a kernel column (`_substrat_*`)
   leaving is #2090's check to refuse. Not seen, because it counts: in-place replacement (values
   rewritten at the same count and storage class, rows replaced by as many other rows, a column
   dropped, re-added and refilled); a dropped table whose name is continued by a table the
