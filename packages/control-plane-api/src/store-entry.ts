@@ -8,7 +8,7 @@ import {
   STORE_ENTRY_PYTHON_SOURCE,
   STORE_ENTRY_PYTHON_VERIFIER_SOURCE,
   STORE_ENTRY_SOURCE,
-  STORE_KIND_PLACEHOLDER,
+  STORE_DRIVER_PLACEHOLDER,
   STORE_OBJECT_BINDING,
   STORE_OBJECT_CLASS,
   STORE_PLATFORM_KEYS_VAR,
@@ -27,7 +27,7 @@ export {
   STORE_ENTRY_PYTHON_SOURCE,
   STORE_ENTRY_PYTHON_VERIFIER_SOURCE,
   STORE_ENTRY_SOURCE,
-  STORE_KIND_PLACEHOLDER,
+  STORE_DRIVER_PLACEHOLDER,
   STORE_OBJECT_BINDING,
   STORE_OBJECT_CLASS,
   STORE_PYTHON_COMPATIBILITY_DATE,
@@ -78,9 +78,9 @@ const encode = (text: string) => new TextEncoder().encode(text);
 
 /** A kind class name the entry can import: an identifier, and not the entry's own class. */
 function assertKindClass(className: string, identifier: RegExp): void {
-  if (!identifier.test(className)) throw new Error(`store kind class '${className}' is not an identifier`);
+  if (!identifier.test(className)) throw new Error(`store driver class '${className}' is not an identifier`);
   if (className === STORE_OBJECT_CLASS) {
-    throw new Error(`store kind class '${className}' is the entry's own object class`);
+    throw new Error(`store driver class '${className}' is the entry's own object class`);
   }
 }
 
@@ -128,25 +128,25 @@ export function withStoreEntry<
 >(bundle: B, options: StoreEntryOptions): B {
   assertKindClass(options.className, /^[A-Za-z_$][A-Za-z0-9_$]*$/);
   if (!MODULE_NAME.test(bundle.entry) || STORE_RESERVED_MODULES.includes(bundle.entry)) {
-    throw new Error(`store kind entry '${bundle.entry}' is not a module name the store entry can import`);
+    throw new Error(`store driver entry '${bundle.entry}' is not a module name the store entry can import`);
   }
   const reservedModule = bundle.modules.find((module) => STORE_RESERVED_MODULES.includes(module.name));
   if (reservedModule) {
-    throw new Error(`a store kind release may not ship a module named '${reservedModule.name}'`);
+    throw new Error(`a store driver release may not ship a module named '${reservedModule.name}'`);
   }
   if ((bundle.doClasses ?? []).includes(STORE_OBJECT_CLASS)) {
-    throw new Error(`a store kind release may not declare the class '${STORE_OBJECT_CLASS}'`);
+    throw new Error(`a store driver release may not declare the class '${STORE_OBJECT_CLASS}'`);
   }
   const reserved = (bundle.bindings ?? []).find((binding) => binding.name.startsWith(STORE_RESERVED_BINDING_PREFIX));
   if (reserved) {
-    throw new Error(`a store kind release may not declare the binding '${reserved.name}'`);
+    throw new Error(`a store driver release may not declare the binding '${reserved.name}'`);
   }
   const refusedFlag = (bundle.compatibilityFlags ?? []).find((flag) => REFUSED_KIND_FLAGS.includes(flag));
   if (refusedFlag) {
-    throw new Error(`a store kind release may not set '${refusedFlag}'`);
+    throw new Error(`a store driver release may not set '${refusedFlag}'`);
   }
   const entryBindings = storeEntryBindings(options);
-  const source = STORE_ENTRY_SOURCE.split(STORE_KIND_PLACEHOLDER)
+  const source = STORE_ENTRY_SOURCE.split(STORE_DRIVER_PLACEHOLDER)
     .join(`./${bundle.entry}`)
     .split(STORE_CLASS_PLACEHOLDER)
     .join(options.className);
@@ -165,7 +165,7 @@ export function withStoreEntry<
 }
 
 /** One release of a Python kind, as the publish flow hands it to the upload. */
-export interface PythonStoreKindRelease {
+export interface PythonStoreDriverRelease {
   /** The module that exports the registered class, for example `kind_graph/store.py`. */
   readonly entry: string;
   readonly modules: readonly { readonly name: string; readonly content: Uint8Array }[];
@@ -201,12 +201,12 @@ const PYTHON_KIND_MODULE = /^(kind_[a-z0-9_]+)(?:\/[A-Za-z_][A-Za-z0-9_]*)*\/[A-
  * whatever `withStoreEntry` refuses of the script name and the keys. A reserved module name
  * cannot pass the path rule, and is refused again by name.
  */
-export function withPythonStoreEntry(release: PythonStoreKindRelease, options: StoreEntryOptions): PythonStoreScript {
+export function withPythonStoreEntry(release: PythonStoreDriverRelease, options: StoreEntryOptions): PythonStoreScript {
   assertKindClass(options.className, /^[A-Za-z_][A-Za-z0-9_]*$/);
   assertPythonKindModules(release);
   const bindings = storeEntryBindings(options);
   const kindModule = release.entry.replace(/\.py$/, '').replaceAll('/', '.');
-  const source = STORE_ENTRY_PYTHON_SOURCE.split(STORE_KIND_PLACEHOLDER)
+  const source = STORE_ENTRY_PYTHON_SOURCE.split(STORE_DRIVER_PLACEHOLDER)
     .join(kindModule)
     .split(STORE_CLASS_PLACEHOLDER)
     .join(options.className);
@@ -232,22 +232,22 @@ export function withPythonStoreEntry(release: PythonStoreKindRelease, options: S
  * under one package, none twice, and the entry is one of them. The upload applies it when a
  * release arrives (#2300), and `withPythonStoreEntry` again before every script it builds.
  */
-export function assertPythonKindModules(release: PythonStoreKindRelease): void {
+export function assertPythonKindModules(release: PythonStoreDriverRelease): void {
   const packages = new Set<string>();
   const names = new Set<string>();
   for (const module of release.modules) {
     const path = PYTHON_KIND_MODULE.exec(module.name);
     if (!path || STORE_RESERVED_MODULES.includes(module.name)) {
-      throw new Error(`a store kind release may not ship a module named '${module.name}': a kind module is kind_<package>/…/<module>.py`);
+      throw new Error(`a store driver release may not ship a module named '${module.name}': a kind module is kind_<package>/…/<module>.py`);
     }
-    if (names.has(module.name)) throw new Error(`a store kind release ships '${module.name}' twice`);
+    if (names.has(module.name)) throw new Error(`a store driver release ships '${module.name}' twice`);
     names.add(module.name);
     packages.add(path[1]!);
   }
   if (packages.size > 1) {
-    throw new Error(`a store kind release ships more than one package (${[...packages].sort().join(', ')})`);
+    throw new Error(`a store driver release ships more than one package (${[...packages].sort().join(', ')})`);
   }
   if (!names.has(release.entry)) {
-    throw new Error(`store kind entry '${release.entry}' is not one of the release's modules`);
+    throw new Error(`store driver entry '${release.entry}' is not one of the release's modules`);
   }
 }

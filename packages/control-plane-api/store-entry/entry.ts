@@ -19,7 +19,7 @@
  * stopped by the review of its release (D-63), not by this module.
  */
 import { DurableObject } from 'cloudflare:workers';
-import * as kindModule from '__SUBSTRAT_STORE_KIND__';
+import * as kindModule from '__SUBSTRAT_STORE_DRIVER__';
 import type { ScopeStoreEnvelope } from '@substrat-run/contracts/scope-store-envelope';
 import { STORE_OBJECT_BINDING, STORE_RESERVED_BINDING_PREFIX } from './names.js';
 import { storeCallVerdict } from './verify.js';

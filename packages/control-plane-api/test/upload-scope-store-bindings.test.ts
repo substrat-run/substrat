@@ -9,10 +9,10 @@ import {
   platformActorId,
   RESERVED_STORE_OPERATIONS,
   scopeStoreScriptName,
-  STORE_KINDS,
-  storeKindReleaseDigest,
+  STORE_DRIVERS,
+  storeDriverReleaseDigest,
   tenantId,
-  type StoreKindRegistration,
+  type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
@@ -59,13 +59,13 @@ describe('a vertical upload carries no scope-store binding, and its store script
    * giving the control plane an option that could register a kind outside review. Its pin is the
    * digest of the release above.
    */
-  let testKind: StoreKindRegistration;
-  const registry = STORE_KINDS as StoreKindRegistration[];
+  let testKind: StoreDriverRegistration;
+  const registry = STORE_DRIVERS as StoreDriverRegistration[];
 
   beforeAll(async () => {
     testKind = {
       kind: 'graph',
-      releases: [{ sha256: await storeKindReleaseDigest(release), sourceCommit: release.sourceCommit, schema: 0 }],
+      releases: [{ sha256: await storeDriverReleaseDigest(release), sourceCommit: release.sourceCommit, schema: 0 }],
       className: 'Store',
       operations: ['read'],
       platformOperations: [...RESERVED_STORE_OPERATIONS],
@@ -289,7 +289,7 @@ describe('a vertical upload carries no scope-store binding, and its store script
     stubCloudflare();
     registry.push(testKind);
     const rollout = ulid();
-    expect(await host.admin.holdStoreKind(staff, { kind: 'graph', holder: rollout, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
+    expect(await host.admin.holdStoreDriver(staff, { kind: 'graph', holder: rollout, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
     const before = puts.length;
     const res = await push(await tenant('store-held'));
     expect(res.status).toBe(409);
@@ -301,12 +301,12 @@ describe('a vertical upload carries no scope-store binding, and its store script
     expect(await failuresOf('store-held/crm')).toEqual(
       expect.arrayContaining([expect.objectContaining({ stage: 'store-upload', status: 409 })]),
     );
-    await host.admin.releaseStoreKindHold(staff, { kind: 'graph', holder: rollout });
+    await host.admin.releaseStoreDriverHold(staff, { kind: 'graph', holder: rollout });
     const retried = await push('store-held');
     expect(retried.status, await retried.clone().text()).toBe(201);
     // The push let its shared hold go: a rollout can hold the kind now.
-    expect(await host.admin.holdStoreKind(staff, { kind: 'graph', holder: rollout, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
-    await host.admin.releaseStoreKindHold(staff, { kind: 'graph', holder: rollout });
+    expect(await host.admin.holdStoreDriver(staff, { kind: 'graph', holder: rollout, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
+    await host.admin.releaseStoreDriverHold(staff, { kind: 'graph', holder: rollout });
   });
 
   it('a control plane with no store uploader refuses the push (501) and uploads nothing', async () => {

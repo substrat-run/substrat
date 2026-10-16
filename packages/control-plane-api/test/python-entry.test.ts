@@ -5,7 +5,7 @@ import {
   STORE_CLASS_PLACEHOLDER,
   STORE_ENTRY_PYTHON_SOURCE,
   STORE_ENTRY_PYTHON_VERIFIER_SOURCE,
-  STORE_KIND_PLACEHOLDER,
+  STORE_DRIVER_PLACEHOLDER,
   STORE_OBJECT_BINDING,
   STORE_OBJECT_CLASS,
   STORE_PLATFORM_KEYS_VAR,
@@ -35,7 +35,7 @@ describe('the Python entry, as shipped', () => {
     expect(STORE_ENTRY_PYTHON_SOURCE).toContain(`OBJECT_BINDING = "${STORE_OBJECT_BINDING}"`);
     expect(STORE_ENTRY_PYTHON_SOURCE).toContain(`RESERVED_BINDING_PREFIX = "${STORE_RESERVED_BINDING_PREFIX}"`);
     expect(STORE_ENTRY_PYTHON_SOURCE).toContain(`class ${STORE_OBJECT_CLASS}(DurableObject):`);
-    expect(STORE_ENTRY_PYTHON_SOURCE).toContain(`from ${STORE_KIND_PLACEHOLDER} import ${STORE_CLASS_PLACEHOLDER} as StoreKind`);
+    expect(STORE_ENTRY_PYTHON_SOURCE).toContain(`from ${STORE_DRIVER_PLACEHOLDER} import ${STORE_CLASS_PLACEHOLDER} as StoreDriver`);
   });
 
   it('carries no switch that addresses an object other than the signed one', () => {

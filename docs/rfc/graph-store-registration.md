@@ -11,7 +11,7 @@ The later ratification of [D-63](../decisions/D-063-a-store-kind-is-platform-cod
 in #2306 explicitly rejected that proposal. This branch follows D-63 and retains
 main's release upload, canary, rollout, rollback and schema checks unchanged.
 
-Graph is **not registered**. `STORE_KINDS` stays empty and a hosted push declaring
+Graph is **not registered**. `STORE_DRIVERS` stays empty and a hosted push declaring
 `kind: 'graph'` is refused. This document preserves the proposed registration for
 review; it does not authorize running a release.
 
@@ -69,9 +69,9 @@ resolveHistoryRevision
   schema compatibility for rollout and rollback. Local entry tests alone do
   not establish a production dispatch upload.
 
-Use the existing `substrat store-kind upload`, `rollout`, `rollback` and `status`
+Use the existing `substrat store-driver upload`, `rollout`, `rollback` and `status`
 flow, with a human staff sign-in for writes. Uploading bytes can precede the pin;
 running them requires the reviewed pin and a control-plane deployment containing
-it. The former `store-kind publish --entry <file.py>` proposal is not the current
-interface. See [the CLI implementation](../../packages/cli/src/store-kind.ts)
+it. The former `store-driver publish --entry <file.py>` proposal is not the current
+interface. See [the CLI implementation](../../packages/cli/src/store-driver.ts)
 and [scope stores](../../apps/docs/concepts/scope-stores.md).

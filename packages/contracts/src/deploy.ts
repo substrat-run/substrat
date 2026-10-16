@@ -8,7 +8,7 @@ import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
 import { scopeDumpTable } from './introspection.js';
 import { substratError } from './errors.js';
-import { SCOPE_STORE_CANARY, STORE_KIND_ID } from './script-names.js';
+import { SCOPE_STORE_CANARY, STORE_DRIVER_ID } from './script-names.js';
 import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
 
 // The deploy manifest is the JSON part a `substrat push` sends alongside the
@@ -340,13 +340,13 @@ const storeCatalogOperation = storeOperationName.refine((name) => !name.startsWi
     message: 'a catalog operation cannot use the substrat. prefix — those names are the platform’s',
   });
 
-/** A store kind id: `[a-z0-9]+` (RFC scope-stores §10.7, L20). Part of every store script name. */
-export const storeKindId = z.string().regex(STORE_KIND_ID, { message: 'a store kind id is [a-z0-9]+' });
+/** A store driver id: `[a-z0-9]+` (RFC scope-stores §10.7, L20). Part of every store script name. */
+export const storeDriverId = z.string().regex(STORE_DRIVER_ID, { message: 'a store driver id is [a-z0-9]+' });
 
 /**
- * One pinned release of a store kind (D-63): the sha256 of the release bundle, which the
+ * One pinned release of a store driver (D-63): the sha256 of the release bundle, which the
  * platform checks at every upload, and the source commit the bundle was built from, which a
- * reviewer reads. The digest is {@link storeKindReleaseDigest} over the bundle's modules and the
+ * reviewer reads. The digest is {@link storeDriverReleaseDigest} over the bundle's modules and the
  * module the entry imports.
  *
  * `schema` is the version of the stored data the release migrates an object to when it wakes
@@ -355,26 +355,26 @@ export const storeKindId = z.string().regex(STORE_KIND_ID, { message: 'a store k
  * not by a rollout, a rollback, or the restore after a failed rollout. A kind's migrations are
  * forward-only, so a release that changes the stored shape raises it.
  */
-export const storeKindRelease = z
+export const storeDriverRelease = z
   .object({
     sha256: z.string().regex(/^[0-9a-f]{64}$/, { message: 'a release sha256 is 64 lowercase hex' }),
     sourceCommit: z.string().regex(/^[0-9a-f]{40}$/, { message: 'a release source commit is 40 lowercase hex' }),
     schema: z.number().int({ message: 'a release schema is an integer' }).nonnegative({ message: 'a release schema is not negative' }),
   })
   .strict();
-export type StoreKindRelease = z.infer<typeof storeKindRelease>;
+export type StoreDriverRelease = z.infer<typeof storeDriverRelease>;
 
 /**
- * A store kind, registered in this repo and pinned (D-63): every release the platform may run,
+ * A store driver, registered in this repo and pinned (D-63): every release the platform may run,
  * the class it runs, the catalog a vertical may call, and every reserved operation. A release is
  * pinned by a reviewed change to this list, and a pin is never removed, a superseded release
- * included. The list itself is {@link STORE_KINDS}. Empty until a kind is reviewed in.
+ * included. The list itself is {@link STORE_DRIVERS}. Empty until a kind is reviewed in.
  */
-export const storeKindRegistration = z.object({
+export const storeDriverRegistration = z.object({
   // Held to the kind-id grammar first (L20), so a second kind cannot be added outside it.
-  kind: storeKindId.pipe(z.literal('graph')),
+  kind: storeDriverId.pipe(z.literal('graph')),
   releases: z
-    .array(storeKindRelease)
+    .array(storeDriverRelease)
     .min(1)
     .refine((releases) => new Set(releases.map((r) => r.sha256)).size === releases.length, {
       message: 'a release is pinned once',
@@ -384,24 +384,24 @@ export const storeKindRegistration = z.object({
   operations: z.array(storeCatalogOperation),
   platformOperations: z.array(z.enum(RESERVED_STORE_OPERATIONS)).refine(
     (ops) => RESERVED_STORE_OPERATIONS.every((op) => ops.includes(op)),
-    { message: 'a store kind answers every reserved operation, including substrat.erase' },
+    { message: 'a store driver answers every reserved operation, including substrat.erase' },
   ),
 });
-export type StoreKindRegistration = z.infer<typeof storeKindRegistration>;
+export type StoreDriverRegistration = z.infer<typeof storeDriverRegistration>;
 
-/** Registered store kinds. None, until a reviewed registration lands (#2210). */
-export const STORE_KINDS: readonly StoreKindRegistration[] = [];
+/** Registered store drivers. None, until a reviewed registration lands (#2210). */
+export const STORE_DRIVERS: readonly StoreDriverRegistration[] = [];
 
 /** The most module bytes one release bundle may carry (#2300), decoded. A bigger upload is 413. */
 export const STORE_RELEASE_MAX_BYTES = 10 * 1024 * 1024;
 
 /**
- * A release bundle as `substrat store-kind upload` sends it (#2300): the commit it was built from,
+ * A release bundle as `substrat store-driver upload` sends it (#2300): the commit it was built from,
  * the module the platform's entry imports, and every module, base64. The control plane stores it
- * keyed by its {@link storeKindReleaseDigest}, which it computes itself. Module names are judged
+ * keyed by its {@link storeDriverReleaseDigest}, which it computes itself. Module names are judged
  * by the Python entry's package rule when the bundle arrives, the same rule its upload applies.
  */
-export const storeKindReleaseUpload = z
+export const storeDriverReleaseUpload = z
   .object({
     sourceCommit: z.string().regex(/^[0-9a-f]{40}$/, { message: 'a release source commit is 40 lowercase hex' }),
     entry: z.string().min(1),
@@ -411,7 +411,7 @@ export const storeKindReleaseUpload = z
       .max(1000),
   })
   .strict();
-export type StoreKindReleaseUpload = z.infer<typeof storeKindReleaseUpload>;
+export type StoreDriverReleaseUpload = z.infer<typeof storeDriverReleaseUpload>;
 
 /** The domain tag a release digest starts with. Another framing is another tag, and a pin migration. */
 export const STORE_RELEASE_DIGEST_TAG = 'substrat.store-release/v1';
@@ -420,7 +420,7 @@ export const STORE_RELEASE_DIGEST_TAG = 'substrat.store-release/v1';
 const RELEASE_DIGEST_NAME = /^[\x21-\x7e]+$/;
 
 /**
- * The sha256 that pins a store kind's release (D-63), as lowercase hex. It covers everything that
+ * The sha256 that pins a store driver's release (D-63), as lowercase hex. It covers everything that
  * decides what runs, apart from the class the registration names: the module the platform's
  * entry imports, and every module's name and bytes. Framed as {@link STORE_RELEASE_DIGEST_TAG}
  * and one zero byte, the entry's name and one zero byte, then each module in name order: its
@@ -433,7 +433,7 @@ const RELEASE_DIGEST_NAME = /^[\x21-\x7e]+$/;
  * the sort below (UTF-16 code units) the byte order, so a pin computed outside JavaScript agrees.
  * A module named twice is refused, and so is an entry that is not one of the modules.
  */
-export async function storeKindReleaseDigest(release: {
+export async function storeDriverReleaseDigest(release: {
   readonly entry: string;
   readonly modules: readonly { readonly name: string; readonly content: Uint8Array }[];
 }): Promise<string> {
@@ -495,7 +495,7 @@ export function scopeStoresDeclaredIn(manifestJson: string | null): boolean | un
  */
 export function mayHoldScopeStores(
   manifestJson: string | null | undefined,
-  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+  kinds: readonly StoreDriverRegistration[] = STORE_DRIVERS,
 ): boolean {
   if (kinds.length === 0) return false;
   if (manifestJson === undefined) return true;
@@ -803,15 +803,15 @@ export function storeNamesOfBindings(
 /**
  * A scope store whose kind has no registration is refused (#2207). The declaration
  * parses — `graph` is the kind — and still cannot be stored as if the platform
- * could run it. {@link STORE_KINDS} is what "registered" means.
+ * could run it. {@link STORE_DRIVERS} is what "registered" means.
  */
 export function assertScopeStoresRegistered(stores: readonly ScopeStoreNeed[]): void {
   for (const store of stores) {
-    if (!STORE_KINDS.some((kind) => kind.kind === store.kind)) {
+    if (!STORE_DRIVERS.some((kind) => kind.kind === store.kind)) {
       throw substratError(
         'forbidden',
         `deploy refused: scope store '${store.binding}' declares kind '${store.kind}', which is not registered. ` +
-          `A store kind is platform code, registered in this repo.`,
+          `A store driver is platform code, registered in this repo.`,
       );
     }
   }

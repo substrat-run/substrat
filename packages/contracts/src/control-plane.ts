@@ -238,12 +238,12 @@ export const adminAction = z.enum([
   // #1720 — a tenant admin chooses or clears the instance one calling app reaches.
   'setPeerBinding',
   'bindConnectionScope',
-  // #2297/#2300 — a store kind's release: its bytes stored (by sha256, before or after the pin
+  // #2297/#2300 — a store driver's release: its bytes stored (by sha256, before or after the pin
   // lands), rolled out across the verticals that declare the kind, or rolled back to the
   // immediately previous good release. Each row names the kind, the sha256 and the rollout.
-  'uploadStoreKindRelease',
-  'rollOutStoreKind',
-  'rollBackStoreKind',
+  'uploadStoreDriverRelease',
+  'rollOutStoreDriver',
+  'rollBackStoreDriver',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
 

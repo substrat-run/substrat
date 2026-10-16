@@ -7,13 +7,13 @@ import {
   deployManifest,
   mayHoldScopeStores,
   scopeStoresDeclaredIn,
-  STORE_KINDS,
-  type StoreKindRegistration,
+  STORE_DRIVERS,
+  type StoreDriverRegistration,
   runtimeNeeds,
   scopeStoreBindingName,
-  storeKindId,
-  storeKindRegistration,
-  storeKindReleaseDigest,
+  storeDriverId,
+  storeDriverRegistration,
+  storeDriverReleaseDigest,
   storeOperationName,
   storeRequest,
   STORE_OPERATION_NAME_MAX,
@@ -141,7 +141,7 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
   it('refuses a registration that does not answer substrat.erase', () => {
     const reserved = RESERVED_STORE_OPERATIONS.filter((op) => op !== 'substrat.erase');
     expect(() =>
-      storeKindRegistration.parse({
+      storeDriverRegistration.parse({
         kind: 'graph',
         releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
         className: 'Store',
@@ -160,20 +160,20 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
       platformOperations: [...RESERVED_STORE_OPERATIONS],
     });
     for (const kind of ['graph-x', 'graph_x', 'Graph', 'gr aph', '']) {
-      expect(storeKindId.safeParse(kind).success, kind).toBe(false);
-      const parsed = storeKindRegistration.safeParse(registration(kind));
+      expect(storeDriverId.safeParse(kind).success, kind).toBe(false);
+      const parsed = storeDriverRegistration.safeParse(registration(kind));
       expect(parsed.success, kind).toBe(false);
       expect(JSON.stringify(parsed.error?.issues), kind).toContain('[a-z0-9]+');
     }
     // The twin: ids in the grammar parse, and the registered kind is one.
-    for (const kind of ['graph', 'g2', '0']) expect(storeKindId.safeParse(kind).success, kind).toBe(true);
-    expect(storeKindRegistration.safeParse(registration('graph')).success).toBe(true);
-    for (const kind of STORE_KINDS) expect(storeKindRegistration.safeParse(kind).success, kind.kind).toBe(true);
+    for (const kind of ['graph', 'g2', '0']) expect(storeDriverId.safeParse(kind).success, kind).toBe(true);
+    expect(storeDriverRegistration.safeParse(registration('graph')).success).toBe(true);
+    for (const kind of STORE_DRIVERS) expect(storeDriverRegistration.safeParse(kind).success, kind.kind).toBe(true);
   });
 
   it('refuses a catalog operation on the reserved prefix', () => {
     expect(() =>
-      storeKindRegistration.parse({
+      storeDriverRegistration.parse({
         kind: 'graph',
         releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
         className: 'Store',
@@ -184,7 +184,7 @@ describe('a scope store is declared by binding and kind (#2208)', () => {
   });
 });
 
-describe('a store kind release is pinned by sha256 and source commit (D-63)', () => {
+describe('a store driver release is pinned by sha256 and source commit (D-63)', () => {
   const registration = (releases: unknown) => ({
     kind: 'graph',
     releases,
@@ -195,7 +195,7 @@ describe('a store kind release is pinned by sha256 and source commit (D-63)', ()
   const pin = { sha256: 'c'.repeat(64), sourceCommit: 'd'.repeat(40), schema: 0 };
 
   it('admits a list of pins, and refuses an empty list, a repeated pin, and a malformed one', () => {
-    expect(storeKindRegistration.safeParse(registration([pin, { ...pin, sha256: 'e'.repeat(64), schema: 3 }])).success).toBe(true);
+    expect(storeDriverRegistration.safeParse(registration([pin, { ...pin, sha256: 'e'.repeat(64), schema: 3 }])).success).toBe(true);
     for (const releases of [
       [],
       [pin, { ...pin }],
@@ -211,10 +211,10 @@ describe('a store kind release is pinned by sha256 and source commit (D-63)', ()
       [{ ...pin, release: '1.0.0' }],
       '1.0.0',
     ]) {
-      expect(storeKindRegistration.safeParse(registration(releases)).success, JSON.stringify(releases)).toBe(false);
+      expect(storeDriverRegistration.safeParse(registration(releases)).success, JSON.stringify(releases)).toBe(false);
     }
     // The registration that named a release by label is no longer one.
-    expect(storeKindRegistration.safeParse({ ...registration([pin]), releases: undefined, release: '1.0.0' }).success).toBe(false);
+    expect(storeDriverRegistration.safeParse({ ...registration([pin]), releases: undefined, release: '1.0.0' }).success).toBe(false);
   });
 
   const text = (value: string) => new TextEncoder().encode(value);
@@ -228,12 +228,12 @@ describe('a store kind release is pinned by sha256 and source commit (D-63)', ()
     // printf 'substrat.store-release/v1\000' 'kind_graph/store.py\000', then the modules in name
     // order: 'kind_graph/__init__.py\000' + 8 zero bytes, 'kind_graph/store.py\000' + 7 zero
     // bytes + '\033' + the 27 bytes of the module, piped to `shasum -a 256`.
-    expect(await storeKindReleaseDigest(bundle)).toBe('99b9a70c48f2304ed01034abc9b70e9661231a4e89a26e2bad49074afb6f933f');
+    expect(await storeDriverReleaseDigest(bundle)).toBe('99b9a70c48f2304ed01034abc9b70e9661231a4e89a26e2bad49074afb6f933f');
   });
 
   it('is the same digest in any order, and another for any other bytes, name, split or entry', async () => {
-    const digest = await storeKindReleaseDigest(bundle);
-    expect(await storeKindReleaseDigest({ ...bundle, modules: [...modules].reverse() })).toBe(digest);
+    const digest = await storeDriverReleaseDigest(bundle);
+    expect(await storeDriverReleaseDigest({ ...bundle, modules: [...modules].reverse() })).toBe(digest);
     const others = [
       { ...bundle, modules: [modules[0]!, { ...modules[1]!, content: text(' ') }] },
       { entry: 'kind_graph/graph.py', modules: [{ ...modules[0]!, name: 'kind_graph/graph.py' }, modules[1]!] },
@@ -245,37 +245,37 @@ describe('a store kind release is pinned by sha256 and source commit (D-63)', ()
     ];
     const seen = new Set([
       digest,
-      await storeKindReleaseDigest({ entry: 'a', modules: [{ name: 'a', content: text('b') }, { name: 'b', content: text('c') }] }),
+      await storeDriverReleaseDigest({ entry: 'a', modules: [{ name: 'a', content: text('b') }, { name: 'b', content: text('c') }] }),
     ]);
     for (const release of others) {
-      const other = await storeKindReleaseDigest(release);
+      const other = await storeDriverReleaseDigest(release);
       expect(seen.has(other), JSON.stringify([release.entry, release.modules.map((m) => m.name)])).toBe(false);
       seen.add(other);
     }
   });
 
   it('refuses a release that names a module twice, or whose entry is not one of its modules', async () => {
-    await expect(storeKindReleaseDigest({ ...bundle, modules: [modules[0]!, modules[0]!] })).rejects.toThrow(/twice/);
-    await expect(storeKindReleaseDigest({ ...bundle, entry: 'kind_graph/legacy.py' })).rejects.toThrow(/not one of its modules/);
+    await expect(storeDriverReleaseDigest({ ...bundle, modules: [modules[0]!, modules[0]!] })).rejects.toThrow(/twice/);
+    await expect(storeDriverReleaseDigest({ ...bundle, entry: 'kind_graph/legacy.py' })).rejects.toThrow(/not one of its modules/);
   });
 
   it('refuses every name the framing cannot tell apart: NUL, a lone surrogate, non-ASCII, space, control, empty', async () => {
     // The two collisions the framing had with any name admitted. A NUL let one name absorb the
     // next module's frame: [x: '', y: 'code'] framed exactly as ['x' + 9 NUL + 'y': 'code'].
     await expect(
-      storeKindReleaseDigest({ entry: 'x\0\0\0\0\0\0\0\0\0y', modules: [{ name: 'x\0\0\0\0\0\0\0\0\0y', content: text('code') }] }),
+      storeDriverReleaseDigest({ entry: 'x\0\0\0\0\0\0\0\0\0y', modules: [{ name: 'x\0\0\0\0\0\0\0\0\0y', content: text('code') }] }),
     ).rejects.toThrow(/printable ASCII/);
     // And a lone surrogate encodes to U+FFFD's bytes, so these two names were one.
     for (const name of ['kind_a/\uD800.py', 'kind_a/�.py']) {
-      await expect(storeKindReleaseDigest({ entry: name, modules: [{ name, content: text('') }] })).rejects.toThrow(/printable ASCII/);
+      await expect(storeDriverReleaseDigest({ entry: name, modules: [{ name, content: text('') }] })).rejects.toThrow(/printable ASCII/);
     }
     for (const name of ['kind_a/é.py', 'kind_a/a b.py', 'kind_a/a\tb.py', 'kind_a/\x7f.py', '']) {
-      await expect(storeKindReleaseDigest({ entry: name, modules: [{ name, content: text('') }] }), JSON.stringify(name)).rejects.toThrow(
+      await expect(storeDriverReleaseDigest({ entry: name, modules: [{ name, content: text('') }] }), JSON.stringify(name)).rejects.toThrow(
         /printable ASCII/,
       );
     }
     // The entry is held to the rule as well as the modules.
-    await expect(storeKindReleaseDigest({ ...bundle, entry: 'kind_graph/store.py\0' })).rejects.toThrow(/printable ASCII/);
+    await expect(storeDriverReleaseDigest({ ...bundle, entry: 'kind_graph/store.py\0' })).rejects.toThrow(/printable ASCII/);
   });
 });
 
@@ -302,15 +302,15 @@ describe('a store operation name is a fixed label (#2207 §6, #2245)', () => {
       operations,
       platformOperations: [...RESERVED_STORE_OPERATIONS],
     });
-    expect(storeKindRegistration.safeParse(registration(['increment'])).success).toBe(true);
-    expect(storeKindRegistration.safeParse(registration(['look:up'])).success).toBe(false);
+    expect(storeDriverRegistration.safeParse(registration(['increment'])).success).toBe(true);
+    expect(storeDriverRegistration.safeParse(registration(['look:up'])).success).toBe(false);
   });
 });
 
 // #2242: subject erasure destroys the key once the stores answer, so "cannot tell" must
 // never read as "holds none". The gate is the registry: no registered kind, no store.
 describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
-  const graph: StoreKindRegistration = {
+  const graph: StoreDriverRegistration = {
     kind: 'graph',
     releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
@@ -337,7 +337,7 @@ describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
   });
 
   it('with no kind registered nothing may hold a store, whatever the manifest says', () => {
-    expect(STORE_KINDS).toEqual([]);
+    expect(STORE_DRIVERS).toEqual([]);
     for (const json of [declaring, manifest(), null, undefined, '{not json']) {
       expect(mayHoldScopeStores(json)).toBe(false);
     }

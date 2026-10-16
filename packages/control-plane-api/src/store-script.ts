@@ -1,16 +1,16 @@
 import {
   SCOPE_STORE_CANARY,
-  STORE_KINDS,
+  STORE_DRIVERS,
   scopeStoreCanaryScriptName,
-  storeKindReleaseDigest,
+  storeDriverReleaseDigest,
   type ScopeStoreNeed,
-  type StoreKindRegistration,
-  type StoreKindRelease,
+  type StoreDriverRegistration,
+  type StoreDriverRelease,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { scopeStoreUploadPlan } from './deploy.js';
 import { STORE_OBJECT_CLASS, STORE_RESERVED_BINDING_PREFIX } from './store-entry.generated.js';
-import { withPythonStoreEntry, type PythonStoreKindRelease, type PythonStoreScript } from './store-entry.js';
+import { withPythonStoreEntry, type PythonStoreDriverRelease, type PythonStoreScript } from './store-entry.js';
 
 /**
  * The binding that records which pinned release a store script runs: the release bundle's
@@ -25,7 +25,7 @@ export const STORE_RELEASE_VAR = `${STORE_RESERVED_BINDING_PREFIX}_RELEASE`;
 export const STORE_BUILD_VAR = `${STORE_RESERVED_BINDING_PREFIX}_BUILD`;
 
 /** One release of a kind's code, as the publish flow stores it (#2297). */
-export interface StoreKindReleaseArtifact extends PythonStoreKindRelease {
+export interface StoreDriverReleaseArtifact extends PythonStoreDriverRelease {
   /** The commit the bundle was built from. A reviewer reads it; the upload checks the sha256. */
   readonly sourceCommit: string;
   /**
@@ -43,7 +43,7 @@ export interface ScopeStoreEnsurerOptions {
   callerPublicKeys: readonly string[];
   /** The `platform` audience's public keys, in the same form. Never one of the caller's. */
   platformPublicKeys: readonly string[];
-  kinds?: readonly StoreKindRegistration[];
+  kinds?: readonly StoreDriverRegistration[];
   /**
    * A release's bytes. With `sha256`, that release: the one the script runs, or the one a
    * rollout moves it to. Without it, the kind's current good release (#2300). Undefined when
@@ -53,14 +53,14 @@ export interface ScopeStoreEnsurerOptions {
     readonly kind: string;
     readonly vertical: string;
     readonly sha256?: string;
-  }) => Promise<StoreKindReleaseArtifact | undefined>;
+  }) => Promise<StoreDriverReleaseArtifact | undefined>;
 }
 
 /** Everything the upload sends, as one digest, so a script built from anything else differs. */
 async function buildDigest(script: PythonStoreScript): Promise<string> {
   const { modules, ...config } = script;
   const named = modules.map((module) => ({ name: `module/${module.name}/${module.contentType}`, content: module.content }));
-  return storeKindReleaseDigest({
+  return storeDriverReleaseDigest({
     entry: named[0]!.name,
     modules: [...named, { name: 'config', content: new TextEncoder().encode(JSON.stringify(config)) }],
   });
@@ -103,8 +103,8 @@ export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
 export function createStoreCanaryEnsurer(opts: ScopeStoreEnsurerOptions) {
   const ensure = scriptEnsurer(opts);
   return async (input: { kind: string; to: string }): Promise<{ scriptName: string }> => {
-    const kind = (opts.kinds ?? STORE_KINDS).find((k) => k.kind === input.kind);
-    if (!kind) throw new ControlPlaneError(403, `scope store kind '${input.kind}' is not registered`);
+    const kind = (opts.kinds ?? STORE_DRIVERS).find((k) => k.kind === input.kind);
+    if (!kind) throw new ControlPlaneError(403, `scope store driver '${input.kind}' is not registered`);
     const scriptName = scopeStoreCanaryScriptName(kind.kind);
     await ensure(
       { kind: kind.kind, vertical: SCOPE_STORE_CANARY, scriptName, className: kind.className, releases: kind.releases },
@@ -120,7 +120,7 @@ interface EnsuredScript {
   readonly vertical: string;
   readonly scriptName: string;
   readonly className: string;
-  readonly releases: readonly StoreKindRelease[];
+  readonly releases: readonly StoreDriverRelease[];
 }
 
 function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
@@ -151,11 +151,11 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
     // The bytes about to be sent, copied once and hashed now: never a hash taken when they
     // arrived (D-63). The copy is what is built from and sent, so the hashed bytes are the
     // sent bytes whatever the loader keeps or shares.
-    const loaded: PythonStoreKindRelease = {
+    const loaded: PythonStoreDriverRelease = {
       entry: release.entry,
       modules: release.modules.map((module) => ({ name: module.name, content: new Uint8Array(module.content) })),
     };
-    const sha256 = await storeKindReleaseDigest(loaded).catch((e: unknown) => {
+    const sha256 = await storeDriverReleaseDigest(loaded).catch((e: unknown) => {
       throw new ControlPlaneError(422, e instanceof Error ? e.message : String(e));
     });
     const asked = wanted ?? release.sha256;

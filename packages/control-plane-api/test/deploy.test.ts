@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { errorCodeOf, RESERVED_STORE_OPERATIONS, scopeStoreObjectName } from '@substrat-run/contracts';
-import type { DeclaredBinding, DeployManifest, StoreKindRegistration } from '@substrat-run/contracts';
+import type { DeclaredBinding, DeployManifest, StoreDriverRegistration } from '@substrat-run/contracts';
 import {
   assertSandboxContract,
   deploymentRefFor,
@@ -218,7 +218,7 @@ describe('assertSandboxContract', () => {
 describe('scope store upload plan (#2210)', () => {
   // A release is pinned by sha256 (D-63); the label here only names which test pin it is.
   const pinOf = (release: string) => ({ sha256: (release === '1.0.0' ? 'a' : 'b').repeat(64), sourceCommit: 'c'.repeat(40), schema: 0 });
-  const kind = (release: string): StoreKindRegistration => ({
+  const kind = (release: string): StoreDriverRegistration => ({
     kind: 'graph',
     releases: [pinOf(release)],
     className: 'Store',

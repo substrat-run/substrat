@@ -32,7 +32,7 @@ stopped by the review of its release (D-63), not by this module.
 from workers import DurableObject, Request, Response, WorkerEntrypoint, import_from_javascript
 from js import Object
 
-from __SUBSTRAT_STORE_KIND__ import __SUBSTRAT_STORE_CLASS__ as StoreKind
+from __SUBSTRAT_STORE_DRIVER__ import __SUBSTRAT_STORE_CLASS__ as StoreDriver
 
 # Each of these is a name in store-entry/names.ts; test/python-entry.test.ts holds them equal.
 VERIFIER_MODULE = "./substrat-store-verify.js"
@@ -72,7 +72,7 @@ class SubstratStoreObject(DurableObject):
     def _kind_object(self):
         """Constructed once per object instance, on first use, so the kind keeps its in-memory state."""
         if self._kind is None:
-            self._kind = StoreKind(self.ctx, _kind_env(self.env))
+            self._kind = StoreDriver(self.ctx, _kind_env(self.env))
         return self._kind
 
     async def fetch(self, request):

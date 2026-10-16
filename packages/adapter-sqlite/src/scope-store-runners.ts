@@ -15,7 +15,7 @@ export function scopeStoreRunnersFor(
 ): NonNullable<ScopeStoreHostOptions['runners']> {
   for (const [kind, runner] of Object.entries(runners)) {
     if (runner.kind !== kind) {
-      throw new Error(`the runner given for scope-store kind '${kind}' is kind '${runner.kind}'`);
+      throw new Error(`the runner given for scope-store driver '${kind}' is kind '${runner.kind}'`);
     }
   }
   return declared.map(({ binding, kind }) => {

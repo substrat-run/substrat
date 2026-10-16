@@ -3,13 +3,13 @@ import {
   assertDeclaredScopeStores,
   PLATFORM_BINDING_PREFIX,
   scopeStoreScriptName,
-  STORE_KINDS,
+  STORE_DRIVERS,
   storeNamesOfBindings,
   substratError,
   verticalScriptStem,
   type ScopeStoreNeed,
-  type StoreKindRegistration,
-  type StoreKindRelease,
+  type StoreDriverRegistration,
+  type StoreDriverRelease,
 } from '@substrat-run/contracts';
 import type { AssetRouting, DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 
@@ -193,7 +193,7 @@ export interface ScopeStoreUploadPlan {
   readonly scripts: readonly {
     readonly kind: string;
     /** Every pinned release of the kind (D-63). Which one a script runs is not the plan's. */
-    readonly releases: readonly StoreKindRelease[];
+    readonly releases: readonly StoreDriverRelease[];
     readonly vertical: string;
     readonly scriptName: string;
     readonly className: string;
@@ -211,9 +211,9 @@ export interface ScopeStoreUploadPlan {
 export function scopeStoreUploadPlan(input: {
   readonly vertical: string;
   readonly stores: readonly ScopeStoreNeed[];
-  readonly kinds?: readonly StoreKindRegistration[];
+  readonly kinds?: readonly StoreDriverRegistration[];
 }): ScopeStoreUploadPlan {
-  const kinds = input.kinds ?? STORE_KINDS;
+  const kinds = input.kinds ?? STORE_DRIVERS;
   const scripts: ScopeStoreUploadPlan['scripts'][number][] = [];
   const seen = new Set<string>();
   for (const store of input.stores) {
@@ -222,7 +222,7 @@ export function scopeStoreUploadPlan(input: {
       throw substratError(
         'forbidden',
         `deploy refused: scope store '${store.binding}' declares kind '${store.kind}', which is not registered. ` +
-          `A store kind is platform code, registered in this repo.`,
+          `A store driver is platform code, registered in this repo.`,
       );
     }
     if (seen.has(kind.kind)) continue;
@@ -249,7 +249,7 @@ export function verticalUploadBindings<B>(input: {
   readonly vertical: string;
   readonly manifest: { readonly bindings: readonly DeclaredBinding[]; readonly scopeStores: readonly ScopeStoreNeed[] };
   readonly platformBindings: readonly B[];
-  readonly kinds?: readonly StoreKindRegistration[];
+  readonly kinds?: readonly StoreDriverRegistration[];
 }): (DeclaredBinding | B)[] {
   const plan = scopeStoreUploadPlan({ vertical: input.vertical, stores: input.manifest.scopeStores, kinds: input.kinds });
   return [...input.manifest.bindings, ...input.platformBindings, ...plan.bindings];

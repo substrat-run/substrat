@@ -2,7 +2,7 @@ import {
   LIST_PAGE_MAX,
   mayHoldScopeStores,
   scopeStoresDeclaredIn,
-  STORE_KINDS,
+  STORE_DRIVERS,
   issueScopeStoreEnvelope,
   SCOPE_STORE_ENVELOPE_HEADER,
   SCOPE_STORE_SIGNATURE_HEADER,
@@ -17,7 +17,7 @@ import {
   type ReservedStoreOperation,
   type Scope,
   type ScopeDumpTable,
-  type StoreKindRegistration,
+  type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import { callReservedStoreOperation, type HostAdmin } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
@@ -175,7 +175,7 @@ export async function runningVersionStoresOf(
   admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest'>,
   actor: PlatformActorId,
   scope: Pick<Scope, 'id' | 'vertical' | 'verticalVersionId' | 'servingRef'>,
-  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+  kinds: readonly StoreDriverRegistration[] = STORE_DRIVERS,
   running?: RunningVersion,
 ): Promise<DeclaredScopeStore[]> {
   if (!scope.vertical || !mayHoldScopeStores(undefined, kinds)) return [];
@@ -204,7 +204,7 @@ export async function scopeStoreReachOf(
   admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest' | 'verticalScopeStores'>,
   actor: PlatformActorId,
   scope: Pick<Scope, 'id' | 'vertical' | 'verticalVersionId' | 'servingRef'>,
-  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+  kinds: readonly StoreDriverRegistration[] = STORE_DRIVERS,
   running?: RunningVersion,
 ): Promise<{ running: DeclaredScopeStore[]; all: DeclaredScopeStore[] }> {
   const current = await runningVersionStoresOf(admin, actor, scope, kinds, running);
@@ -231,7 +231,7 @@ export async function scopeStoresOf(
   admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest' | 'verticalScopeStores'>,
   actor: PlatformActorId,
   scope: Pick<Scope, 'id' | 'vertical' | 'verticalVersionId' | 'servingRef'>,
-  kinds: readonly StoreKindRegistration[] = STORE_KINDS,
+  kinds: readonly StoreDriverRegistration[] = STORE_DRIVERS,
   running?: RunningVersion,
 ): Promise<DeclaredScopeStore[]> {
   return (await scopeStoreReachOf(admin, actor, scope, kinds, running)).all;

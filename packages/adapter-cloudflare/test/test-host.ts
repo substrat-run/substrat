@@ -10,7 +10,7 @@ import { CloudflareScopeHost as HostUnderTest, type CloudflareScopeHostOptions }
 export * from '../src/host.js';
 
 /** `ScopeStoreCounterDO` (worker.ts) is the store behind GRAPH. */
-export const TEST_SCOPE_STORE_KINDS = { GRAPH: 'counter' } as const;
+export const TEST_SCOPE_STORE_DRIVERS = { GRAPH: 'counter' } as const;
 
 export class CloudflareScopeHost extends HostUnderTest {
   constructor(options: CloudflareScopeHostOptions) {
@@ -19,7 +19,7 @@ export class CloudflareScopeHost extends HostUnderTest {
       scopeStores: {
         runners: [],
         ...options.scopeStores,
-        kinds: { ...TEST_SCOPE_STORE_KINDS, ...options.scopeStores?.kinds },
+        kinds: { ...TEST_SCOPE_STORE_DRIVERS, ...options.scopeStores?.kinds },
       },
     });
   }

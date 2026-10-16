@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest';
-import { RESERVED_STORE_OPERATIONS, storeKindReleaseDigest, type StoreKindRegistration } from '@substrat-run/contracts';
+import { RESERVED_STORE_OPERATIONS, storeDriverReleaseDigest, type StoreDriverRegistration } from '@substrat-run/contracts';
 import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
 import { createScopeStoreEnsurer, createStoreCanaryEnsurer, STORE_BUILD_VAR, STORE_RELEASE_VAR } from '../src/store-script.js';
 import {
@@ -45,13 +45,13 @@ const artifact = (source: string) => ({
 const v1 = artifact('class Store:\n    pass\n');
 const v2 = artifact('class Store:\n    version = 2\n');
 
-let pins: StoreKindRegistration['releases'];
+let pins: StoreDriverRegistration['releases'];
 let caller: string;
 let platform: string;
 beforeAll(async () => {
   pins = [
-    { sha256: await storeKindReleaseDigest(v1), sourceCommit: v1.sourceCommit, schema: 0 },
-    { sha256: await storeKindReleaseDigest(v2), sourceCommit: v2.sourceCommit, schema: 0 },
+    { sha256: await storeDriverReleaseDigest(v1), sourceCommit: v1.sourceCommit, schema: 0 },
+    { sha256: await storeDriverReleaseDigest(v2), sourceCommit: v2.sourceCommit, schema: 0 },
   ];
   caller = (await generateScopeStoreKeyPair()).publicKey;
   platform = (await generateScopeStoreKeyPair()).publicKey;
@@ -95,7 +95,7 @@ function ensurer(input: {
   rolledOut?: ReturnType<typeof artifact> | undefined;
   stored?: ReturnType<typeof artifact>[];
   callerKeys?: string[];
-  releases?: StoreKindRegistration['releases'];
+  releases?: StoreDriverRegistration['releases'];
   asked?: { sha256?: string }[];
 }) {
   return createScopeStoreEnsurer({
@@ -117,7 +117,7 @@ function ensurer(input: {
       input.asked?.push({ ...(sha256 ? { sha256 } : {}) });
       if (sha256 === undefined) return 'rolledOut' in input ? input.rolledOut : v1;
       for (const candidate of input.stored ?? [v1, v2]) {
-        if ((await storeKindReleaseDigest(candidate)) === sha256) return candidate;
+        if ((await storeDriverReleaseDigest(candidate)) === sha256) return candidate;
       }
       return undefined;
     },
@@ -155,7 +155,7 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
     expect(text(put, STORE_RELEASE_VAR)).toBe(pins[0]!.sha256);
     expect([...put.parts.keys()]).toEqual([STORE_ENTRY_PYTHON_MODULE, STORE_VERIFIER_MODULE, 'kind_counter/store.py', 'kind_counter/blob.py']);
     const entry = new TextDecoder().decode(put.parts.get(STORE_ENTRY_PYTHON_MODULE)!.bytes);
-    expect(entry).toContain('from kind_counter.store import Store as StoreKind');
+    expect(entry).toContain('from kind_counter.store import Store as StoreDriver');
     expect(put.parts.get(STORE_VERIFIER_MODULE)).toEqual({
       type: 'application/javascript+module',
       bytes: bytes(STORE_ENTRY_PYTHON_VERIFIER_SOURCE),
@@ -266,7 +266,7 @@ describe('a store script is put in place before the vertical (#2210, D-63)', () 
   it('refuses (422) a release whose modules break the module rule', async () => {
     const cf = cloudflare();
     const bad = { ...v1, modules: [...v1.modules, { name: 'workers.py', content: bytes('') }] };
-    const releases = [{ sha256: await storeKindReleaseDigest(bad), sourceCommit: v1.sourceCommit, schema: 0 }];
+    const releases = [{ sha256: await storeDriverReleaseDigest(bad), sourceCommit: v1.sourceCommit, schema: 0 }];
     expect(await refusal(ensurer({ rolledOut: bad, releases })(need))).toMatchObject({ status: 422, message: expect.stringMatching(/workers\.py/) });
     expect(cf.puts).toEqual([]);
   });

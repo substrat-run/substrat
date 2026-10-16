@@ -76,11 +76,11 @@ export { scopeRepointContractSuite } from './scope-repoint-suite.js';
 export { sqlLimitsContractSuite } from './sql-limits-suite.js';
 export { grantExpiryContractSuite } from './grant-expiry-suite.js';
 export {
-  storeKindHoldExpiryContractSuite,
-  storeKindReleaseContractSuite,
-  type StoreKindHoldExpiryFixture,
-  type StoreKindReleaseFixture,
-} from './store-kind-release-suite.js';
+  storeDriverHoldExpiryContractSuite,
+  storeDriverReleaseContractSuite,
+  type StoreDriverHoldExpiryFixture,
+  type StoreDriverReleaseFixture,
+} from './store-driver-release-suite.js';
 export { facetRecencyContractSuite, type FacetRecencyFixture } from './facet-recency-suite.js';
 export type { GrantExpiryFixture } from './grant-expiry-suite.js';
 export { entityCheckConformanceSuite, planEntityCheckCoverage } from './entity-check-suite.js';

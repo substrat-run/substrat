@@ -11,7 +11,7 @@ import {
   tenantId,
   type HostnameBinding,
   type ScopeId,
-  type StoreKindRegistration,
+  type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
@@ -34,7 +34,7 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
   const staff = platformActorId.parse(ulid());
   const t = tenantId.parse(ulid());
   const auth = { [DEV_ACTOR_HEADER]: staff };
-  const graph: StoreKindRegistration = {
+  const graph: StoreDriverRegistration = {
     kind: 'graph',
     releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
@@ -133,7 +133,7 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
     createControlPlaneApi({
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
-      storeKinds: [graph],
+      storeDrivers: [graph],
       platformScopeStores: caller,
       ...(dispatch ? { resolveVerticalRef: async () => undefined } : {}),
     });

@@ -305,8 +305,8 @@ platform does not make that claim when it cannot tell (#2242). Erasure fails clo
 - An empty list means the host knows it holds nothing: no binding, a scope with no
   vertical, or a scope on a vertical the host is not pinned to.
 
-The control plane's rule is gated on the store-kind registry. A push that declares an
-unregistered kind is refused, so while `STORE_KINDS` is empty no deployment can hold a
+The control plane's rule is gated on the store-driver registry. A push that declares an
+unregistered kind is refused, so while `STORE_DRIVERS` is empty no deployment can hold a
 store, and erasure proceeds as it did before stores existed. The fail-closed arm is
 dormant until the first kind is registered.
 
@@ -675,7 +675,7 @@ control plane both apply.
 
 **The bindings and kinds** come from the resolved version's reviewed manifest record:
 `vertical_versions.manifest_json`, field `scopeStores`, parsed by `storedDeployManifest`.
-It was accepted at push against `STORE_KINDS` (D-63) and is not edited afterwards. The
+It was accepted at push against `STORE_DRIVERS` (D-63) and is not edited afterwards. The
 router does not trust the vertical's claim about which bindings exist.
 
 **Reading the record.** A missing manifest is "no stores" only where the version predates
@@ -721,7 +721,7 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 
 | Id | Rule |
 |---|---|
-| L1 | A hosted serving upload carries no binding named `SUBSTRAT_STORE_*`, whatever `STORE_KINDS` holds. With L18, that holds for every name in the upload, the vertical's own included |
+| L1 | A hosted serving upload carries no binding named `SUBSTRAT_STORE_*`, whatever `STORE_DRIVERS` holds. With L18, that holds for every name in the upload, the vertical's own included |
 | L2 | A hosted `getScopeStore` call leaves the worker only as `fetch` of `store.substrat.internal`. With no direct binding and no runner configured, the host never falls back to an ambient binding |
 | L3 | The router refuses a `substrat.*` operation, a scope other than the routed one, and a binding the serving version does not declare, before it signs |
 | L4 | The store refuses an envelope whose signature fails, whose `kid` names no listed key, whose `script` is not its own, whose `digest` does not match the body, whose `aud` does not match `op`, whose `iat` is outside the window, or whose `name` is not the name of the object's own id. Each is checked before kind code runs |
@@ -854,7 +854,7 @@ What each open PR keeps:
 |---|---|---|
 | #2240 reserved ops | `callReservedStoreOperation`, and `HostAdmin.scopeStoreSizes` on the pure host | `/internal/scope-store-sizes` and `VerticalClient.scopeStoreSizes` (removed in #2254) |
 | #2242 erasure | Ordering (redact, erase, then destroy the key), the host arm, and the control-plane arm's rules | `/internal/scope-store-erase`, and the fix's call to the vertical: superseded by the control-plane-direct erase on #2254 (item (k)) |
-| #2243 dump, restore, reap | Stores in the dump; on reap and delete the stores are wiped before the scope's own storage (L6), and on restore and import the scope's tables load before its stores; masked exports without stores | `/internal/scope-store-export` and `-import`. `scopeStoreKind` / `scopeStores.kinds` become dev and test only. "Closes #2211" becomes "Part of #2211" |
+| #2243 dump, restore, reap | Stores in the dump; on reap and delete the stores are wiped before the scope's own storage (L6), and on restore and import the scope's tables load before its stores; masked exports without stores | `/internal/scope-store-export` and `-import`. `scopeStoreDriver` / `scopeStores.kinds` become dev and test only. "Closes #2211" becomes "Part of #2211" |
 | #2244 meter | The gauge table and the sweep | Its reader moves from the vertical's route to the control plane (in #2254) |
 | #2246 invocation log | Everything | none |
 | #2247 upload plan | `scopeStoreScriptName`, one script per (kind, vertical), made injective in step 2 | The name-only MAC, replaced in step 5 |

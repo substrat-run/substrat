@@ -17,7 +17,7 @@ import {
   type PrincipalId,
   ASSET_PART_PREFIX,
   assetHash,
-  STORE_KINDS,
+  STORE_DRIVERS,
   STORE_RELEASE_MAX_BYTES,
   channelName,
   connectLinkId,
@@ -120,7 +120,7 @@ import {
   PLATFORM_FEATURE_SCOPE_SWEEPER,
   type ScopeStoreNeed,
   type StoreErasure,
-  type StoreKindRegistration,
+  type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import type {
   BindAcknowledgement,
@@ -176,7 +176,7 @@ import { connectionGrantsForScope, type VerticalClient } from './vertical-client
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
 import type { ScopeStoreEnsurerOptions } from './store-script.js';
-import { PUSH_HOLD_TTL_MS, runStoreKindRollout, storeKindRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
+import { PUSH_HOLD_TTL_MS, runStoreDriverRollout, storeDriverRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
 import { assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, listAllScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
 import { oidcCallbackUrl, retireClientsOfReapedScope, wirePreviewAuth, type PreviewAuthDeps } from './preview-auth.js';
@@ -405,10 +405,10 @@ export interface ControlPlaneApiOptions {
    */
   platformScopeStores?: PlatformScopeStores;
   /**
-   * The registered scope-store kinds (#2207) this control plane judges a scope's stores against
-   * (`mayHoldScopeStores`, #2242). `STORE_KINDS` unless a test registers one.
+   * The registered scope-store drivers (#2207) this control plane judges a scope's stores against
+   * (`mayHoldScopeStores`, #2242). `STORE_DRIVERS` unless a test registers one.
    */
-  storeKinds?: readonly StoreKindRegistration[];
+  storeDrivers?: readonly StoreDriverRegistration[];
   /** #1722: how long a copy move owns its ledger entries, and so how long its restore may land
    *  (`CopyRestoreFence`). `SCOPE_COPY_LEASE_MS` unless a test needs a lease it can outlive. */
   copyLeaseMs?: number;
@@ -433,7 +433,7 @@ export interface ControlPlaneApiOptions {
     /** How many scripts it uploaded; absent counts as some. */
   }) => Promise<void | { uploaded: number }>;
   /**
-   * A store kind's release flow (D-63, #2300): where release bytes are kept, how a release is put
+   * A store driver's release flow (D-63, #2300): where release bytes are kept, how a release is put
    * in the kind's canary script, and how the canary's reserved calls reach it. Absent ⇒ the
    * release routes answer 501, and a push of a declared store finds no release (409).
    */
@@ -1545,7 +1545,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
   /** The stores of the version the scope's deployment runs (`scopeStoresOf`, #2207). */
   const manifestStores = (c: ReqCtx, scope: Scope, running?: RunningVersion): Promise<DeclaredScopeStore[]> =>
-    scopeStoresOf(c.var.admin, c.get('actor'), scope, options.storeKinds, running);
+    scopeStoresOf(c.var.admin, c.get('actor'), scope, options.storeDrivers, running);
 
   /**
    * The platform's path to a scope's stores, or nothing: no caller is a co-located host whose
@@ -1592,7 +1592,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const exportPlatformStores = async (c: ReqCtx, scope: Scope): Promise<ScopeDump['stores'] | undefined> => {
     const caller = options.platformScopeStores;
     if (!caller || !scope.vertical) return undefined;
-    const { running, all } = await scopeStoreReachOf(c.var.admin, c.get('actor'), scope, options.storeKinds);
+    const { running, all } = await scopeStoreReachOf(c.var.admin, c.get('actor'), scope, options.storeDrivers);
     if (all.length === 0) return undefined;
     const exported = await caller.exportStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical: scope.vertical, stores: all });
     const current = new Set(running.map((store) => store.binding));
@@ -1673,7 +1673,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (!scope.vertical) throw new ControlPlaneError(422, 'restore refused: the dump names stores and the scope names no vertical');
     // The destination's running version only (L8): a binding only an earlier version declared
     // would be imported into an object nothing in the code the scope runs reads.
-    const declared = new Map((await runningVersionStoresOf(c.var.admin, c.get('actor'), scope, options.storeKinds))
+    const declared = new Map((await runningVersionStoresOf(c.var.admin, c.get('actor'), scope, options.storeDrivers))
       .map((d) => [d.binding, d.kind]));
     for (const store of stores) {
       const kind = declared.get(store.binding);
@@ -7710,8 +7710,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // a script's release before a rollout moved it would upload the old release back over it.
       // Neither the refusal nor anything else here names another vertical: a push answers its own.
       for (const kind of kinds) {
-        if (!(await host.admin.holdStoreKind(actor, { kind, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS }))) {
-          throw new ControlPlaneError(409, `${operation} refused: scope store kind '${kind}' is being rolled out; try again in a few minutes`);
+        if (!(await host.admin.holdStoreDriver(actor, { kind, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS }))) {
+          throw new ControlPlaneError(409, `${operation} refused: scope store driver '${kind}' is being rolled out; try again in a few minutes`);
         }
         held.push(kind);
       }
@@ -7722,8 +7722,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // stops (409) rather than upload after a rollout could have taken the kind.
       for (const kind of kinds) {
         for (const each of held) {
-          if (!(await host.admin.holdStoreKind(actor, { kind: each, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS, renew: true }))) {
-            throw new ControlPlaneError(409, `${operation} refused: the hold on scope store kind '${each}' lapsed during the upload; try again`);
+          if (!(await host.admin.holdStoreDriver(actor, { kind: each, holder, mode: 'shared', ttlMs: PUSH_HOLD_TTL_MS, renew: true }))) {
+            throw new ControlPlaneError(409, `${operation} refused: the hold on scope store driver '${each}' lapsed during the upload; try again`);
           }
         }
         await options.ensureScopeStores({ vertical: slug, stores: stores.filter((store) => store.kind === kind), loadRelease });
@@ -7743,7 +7743,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       );
       throw e;
     } finally {
-      for (const kind of held) await host.admin.releaseStoreKindHold(actor, { kind, holder }).catch(() => undefined);
+      for (const kind of held) await host.admin.releaseStoreDriverHold(actor, { kind, holder }).catch(() => undefined);
     }
   };
 
@@ -10368,18 +10368,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json(summary);
   });
 
-  // -- store-kind releases (D-63, #2300) ----------------------------------------
+  // -- store-driver releases (D-63, #2300) ----------------------------------------
   // Staff only: none of these is on the builder or the tenant allowlist. A write is also made by a
   // person: `humanStaffActor` must name the same actor from a human staff sign-in, so the
   // automation token, which resolves to a staff actor as well, publishes nothing.
-  const registeredKind = (kind: string): StoreKindRegistration => {
-    const registration = (options.storeKinds ?? STORE_KINDS).find((k) => k.kind === kind);
-    if (!registration) throw new ControlPlaneError(403, `scope store kind '${kind}' is not registered`);
+  const registeredKind = (kind: string): StoreDriverRegistration => {
+    const registration = (options.storeDrivers ?? STORE_DRIVERS).find((k) => k.kind === kind);
+    if (!registration) throw new ControlPlaneError(403, `scope store driver '${kind}' is not registered`);
     return registration;
   };
   const releaseFlow = () => {
     if (!options.storeReleases || !options.ensureScopeStores) {
-      throw new ControlPlaneError(501, 'this control plane keeps no store kind releases');
+      throw new ControlPlaneError(501, 'this control plane keeps no store driver releases');
     }
     return { flow: options.storeReleases, ensureScopeStores: options.ensureScopeStores };
   };
@@ -10391,23 +10391,23 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   const byAPerson = async (c: Context<{ Variables: Vars }>): Promise<PlatformActorId> => {
     if (!/^application\/json\s*(;|$)/i.test(c.req.header('content-type') ?? '')) {
-      throw new ControlPlaneError(415, 'a store kind release write takes application/json');
+      throw new ControlPlaneError(415, 'a store driver release write takes application/json');
     }
     const origin = c.req.header('origin');
     const site = c.req.header('sec-fetch-site');
     if ((origin && origin !== new URL(c.req.url).origin) || (site && site !== 'same-origin' && site !== 'none')) {
-      throw new ControlPlaneError(403, 'a store kind release write is not taken from another origin');
+      throw new ControlPlaneError(403, 'a store driver release write is not taken from another origin');
     }
     const actor = c.get('actor');
     const person = options.humanStaffActor ? await options.humanStaffActor(c.req.raw) : null;
     if (!person || person !== actor) {
-      throw new ControlPlaneError(403, 'a store kind release is published by a person: this takes a staff sign-in, not a service token');
+      throw new ControlPlaneError(403, 'a store driver release is published by a person: this takes a staff sign-in, not a service token');
     }
     return actor;
   };
   /** The pin a release is run under, or a refusal: the platform runs only what this repo pins. */
-  const pinOf = async (c: Context<{ Variables: Vars }>, registration: StoreKindRegistration, sha256: string) => {
-    const stored = await c.var.admin.getStoreKindRelease(c.get('actor'), registration.kind, sha256);
+  const pinOf = async (c: Context<{ Variables: Vars }>, registration: StoreDriverRegistration, sha256: string) => {
+    const stored = await c.var.admin.getStoreDriverRelease(c.get('actor'), registration.kind, sha256);
     if (!stored) throw new ControlPlaneError(404, `release ${sha256} of '${registration.kind}' is not stored`);
     const pin = registration.releases.find((p) => p.sha256 === sha256);
     if (!pin) {
@@ -10420,14 +10420,14 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
   const rollOut = async (
     c: Context<{ Variables: Vars }>,
-    registration: StoreKindRegistration,
+    registration: StoreDriverRegistration,
     sha256: string,
     action: 'rollout' | 'rollback',
   ) => {
     const { flow, ensureScopeStores } = releaseFlow();
     const actor = c.get('actor');
     const loadRelease = storedReleaseLoader({ admin: c.var.admin, actor, bytes: flow.bytes });
-    const result = await runStoreKindRollout({
+    const result = await runStoreDriverRollout({
       admin: c.var.admin,
       actor,
       registration,
@@ -10443,7 +10443,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json(result, result.complete ? 200 : 202);
   };
   /** Neither a rollout nor a rollback lowers the stored schema: a kind migrates forward only. */
-  const assertSchemaKept = (registration: StoreKindRegistration, from: string | null, to: { sha256: string; schema: number }) => {
+  const assertSchemaKept = (registration: StoreDriverRegistration, from: string | null, to: { sha256: string; schema: number }) => {
     if (from === null || from === to.sha256) return;
     const leaving = registration.releases.find((p) => p.sha256 === from);
     if (!leaving) throw new ControlPlaneError(409, `the current release ${from} of '${registration.kind}' is not pinned, so its schema cannot be judged`);
@@ -10452,30 +10452,30 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   };
 
-  app.get('/store-kinds/:kind', async (c) => {
+  app.get('/store-drivers/:kind', async (c) => {
     const registration = registeredKind(c.req.param('kind'));
-    const state = await c.var.admin.storeKindState(c.get('actor'), registration.kind);
+    const state = await c.var.admin.storeDriverState(c.get('actor'), registration.kind);
     return c.json({ kind: registration.kind, pins: registration.releases, ...state });
   });
 
   // Store a release's bytes, before or after its pin lands (D-63). Idempotent per bundle.
-  app.put('/store-kinds/:kind/releases', async (c) => {
+  app.put('/store-drivers/:kind/releases', async (c) => {
     const registration = registeredKind(c.req.param('kind'));
     const actor = await byAPerson(c);
     const { flow } = releaseFlow();
     const body = await readCappedJson(c.req.raw, STORE_RELEASE_REQUEST_MAX_BYTES);
-    const release = await storeKindRelease({ admin: c.var.admin, actor, bytes: flow.bytes, kind: registration.kind, body });
+    const release = await storeDriverRelease({ admin: c.var.admin, actor, bytes: flow.bytes, kind: registration.kind, body });
     return c.json({ release, pinned: registration.releases.some((p) => p.sha256 === release.sha256 && p.sourceCommit === release.sourceCommit) }, 201);
   });
 
   // Roll a stored, pinned release out: the canary, then every vertical that ever declared the
   // kind. Posting the same release again converges a rollout that stopped.
-  app.post('/store-kinds/:kind/rollouts', async (c) => {
+  app.post('/store-drivers/:kind/rollouts', async (c) => {
     const registration = registeredKind(c.req.param('kind'));
     await byAPerson(c);
     const { sha256 } = z.object({ sha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict().parse(await c.req.json());
     const pin = await pinOf(c, registration, sha256);
-    const { current } = await c.var.admin.storeKindState(c.get('actor'), registration.kind);
+    const { current } = await c.var.admin.storeDriverState(c.get('actor'), registration.kind);
     assertSchemaKept(registration, current?.sha256 ?? null, pin);
     return rollOut(c, registration, sha256, 'rollout');
   });
@@ -10483,11 +10483,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // Return to the immediately previous good release (D-63), never further and never a guess. After
   // a rollout that ended diverged, that is the current good release itself: undoing the bad
   // rollout converges every script back on the release the fleet was healthy on (kernel
-  // `storeKindStateIn`, `rollbackTarget`).
-  app.post('/store-kinds/:kind/rollback', async (c) => {
+  // `storeDriverStateIn`, `rollbackTarget`).
+  app.post('/store-drivers/:kind/rollback', async (c) => {
     const registration = registeredKind(c.req.param('kind'));
     await byAPerson(c);
-    const { current, rollbackTarget } = await c.var.admin.storeKindState(c.get('actor'), registration.kind);
+    const { current, rollbackTarget } = await c.var.admin.storeDriverState(c.get('actor'), registration.kind);
     if (!current || !rollbackTarget) throw new ControlPlaneError(409, `kind '${registration.kind}' has no previous good release to roll back to`);
     const pin = await pinOf(c, registration, rollbackTarget);
     assertSchemaKept(registration, current.sha256, pin);

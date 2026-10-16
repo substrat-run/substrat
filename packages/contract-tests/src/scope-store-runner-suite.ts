@@ -201,7 +201,7 @@ export function scopeStoreRunnerChecks(fixture: ScopeStoreRunnerFixture): ScopeS
 }
 
 /**
- * The runner contract a scope-store kind's runner passes (#2213). A kind runs it in its
+ * The runner contract a scope-store driver's runner passes (#2213). A kind runs it in its
  * own repository, against its own runner: the platform runs only the trivial kind.
  *
  * ```ts

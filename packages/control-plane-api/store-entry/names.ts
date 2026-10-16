@@ -31,7 +31,7 @@ export const STORE_PYTHON_COMPATIBILITY_FLAGS = ['python_workers'];
 export const STORE_RESERVED_MODULES = [STORE_ENTRY_MODULE, STORE_ENTRY_PYTHON_MODULE, STORE_VERIFIER_MODULE];
 
 /** The import specifier the uploader replaces with `./<the kind module>`. */
-export const STORE_KIND_PLACEHOLDER = '__SUBSTRAT_STORE_KIND__';
+export const STORE_DRIVER_PLACEHOLDER = '__SUBSTRAT_STORE_DRIVER__';
 
 /** The class name the uploader replaces, inside a property access on the kind module. */
 export const STORE_CLASS_PLACEHOLDER = '__SUBSTRAT_STORE_CLASS__';

@@ -22,9 +22,9 @@ import type {
   ScopeHealthRecord,
   ScopeRecord,
   ScopeRow,
-  StoreKindReleaseView,
-  StoreKindRolloutResultView,
-  StoreKindView,
+  StoreDriverReleaseView,
+  StoreDriverRolloutResultView,
+  StoreDriverView,
   VersionRow,
   Whoami,
 } from './builder-types.js';
@@ -232,26 +232,26 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
     return this.read(path, this.write('POST', body));
   }
 
-  // -- store kind releases (D-63, #2300). Staff only, and every write by a person's sign-in: the
+  // -- store driver releases (D-63, #2300). Staff only, and every write by a person's sign-in: the
   // service token is refused. On this client beside `setListing`, the other staff-only write.
 
   /** A kind's pins, its current good release and every rollout. */
-  getStoreKind(kind: string): Promise<StoreKindView> {
-    return this.read(`/store-kinds/${seg(kind)}`);
+  getStoreDriver(kind: string): Promise<StoreDriverView> {
+    return this.read(`/store-drivers/${seg(kind)}`);
   }
 
-  /** Store a release bundle (`storeKindReleaseUpload`); the control plane names it by its sha256. */
-  uploadStoreKindRelease(kind: string, body: unknown): Promise<{ release: StoreKindReleaseView; pinned: boolean }> {
-    return this.read(`/store-kinds/${seg(kind)}/releases`, this.write('PUT', body));
+  /** Store a release bundle (`storeDriverReleaseUpload`); the control plane names it by its sha256. */
+  uploadStoreDriverRelease(kind: string, body: unknown): Promise<{ release: StoreDriverReleaseView; pinned: boolean }> {
+    return this.read(`/store-drivers/${seg(kind)}/releases`, this.write('PUT', body));
   }
 
   /** Roll a stored, pinned release out: canary first, then every vertical. Post again to resume. */
-  rollOutStoreKind(kind: string, sha256: string): Promise<StoreKindRolloutResultView> {
-    return this.read(`/store-kinds/${seg(kind)}/rollouts`, this.write('POST', { sha256 }));
+  rollOutStoreDriver(kind: string, sha256: string): Promise<StoreDriverRolloutResultView> {
+    return this.read(`/store-drivers/${seg(kind)}/rollouts`, this.write('POST', { sha256 }));
   }
 
   /** Return the kind to the immediately previous good release. */
-  rollBackStoreKind(kind: string): Promise<StoreKindRolloutResultView> {
-    return this.read(`/store-kinds/${seg(kind)}/rollback`, this.write('POST'));
+  rollBackStoreDriver(kind: string): Promise<StoreDriverRolloutResultView> {
+    return this.read(`/store-drivers/${seg(kind)}/rollback`, this.write('POST'));
   }
 }

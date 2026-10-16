@@ -324,7 +324,7 @@
 			// prod's map. Create:
 			//   wrangler r2 bucket create substrat-scope-backups-test
 			//   wrangler r2 bucket create substrat-directory-backups-test
-			//   wrangler r2 bucket create substrat-store-releases-test   (store kind releases, #2300)
+			//   wrangler r2 bucket create substrat-store-releases-test   (store driver releases, #2300)
 			"r2_buckets": [
 				{ "binding": "SCOPE_BACKUPS", "bucket_name": "substrat-scope-backups-test" },
 				{ "binding": "DIRECTORY_BACKUPS", "bucket_name": "substrat-directory-backups-test" },

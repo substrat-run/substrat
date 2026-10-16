@@ -375,7 +375,7 @@ nothing more. A tool step waits until a client with a live session attaches. So 
 object holds no credential, and the record carries where the run is, not what it may do.
 
 The protocol in §5.1 is identical either way, so the choice does not leak to clients. How a
-vertical is given the object (a scope-store kind, or a class the uploader supplies as it does
+vertical is given the object (a scope-store driver, or a class the uploader supplies as it does
 for the scope sweeper) is still open.
 
 ### 5.4 Inference
@@ -1063,7 +1063,7 @@ is the real critical path.
    coordinator over a placement-agnostic loop and record, with request plus `waitUntil` as the
    fallback shape (§5.3). **Working decision for P1: take that recommendation.** Deployed
    confirmation (P0b) happens on the dashboard's preview deploy. How the object is provided to
-   a *vertical* (a scope-store kind, or a class the uploader supplies) is deferred; the
+   a *vertical* (a scope-store driver, or a class the uploader supplies) is deferred; the
    dashboard declares its own.
 3. **Engine name and scope.** `engine-assistant` (recommended, to avoid colliding with ticket0's
    own "conversation"), and whether participants and handoff belong in it or in a vertical's

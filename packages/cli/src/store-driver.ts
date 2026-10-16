@@ -1,5 +1,5 @@
 /**
- * `substrat store-kind upload | rollout | rollback | status --kind <kind>` (D-63, #2300). Staff
+ * `substrat store-driver upload | rollout | rollback | status --kind <kind>` (D-63, #2300). Staff
  * only, and a write must be made from a person's sign-in (`substrat login`): the control plane
  * refuses the service token.
  *
@@ -17,8 +17,8 @@
 import { spawnSync } from 'node:child_process';
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { STORE_RELEASE_MAX_BYTES, type StoreKindReleaseUpload } from '@substrat-run/contracts';
-import type { StoreKindView } from '@substrat-run/control-plane-client';
+import { STORE_RELEASE_MAX_BYTES, type StoreDriverReleaseUpload } from '@substrat-run/contracts';
+import type { StoreDriverView } from '@substrat-run/control-plane-client';
 import { planeFor } from './plane.js';
 
 const KIND_MODULE = /^kind_[a-z0-9_]+\/(?:[A-Za-z_][A-Za-z0-9_]*\/)*[A-Za-z_][A-Za-z0-9_]*\.py$/;
@@ -81,7 +81,7 @@ export function sourceCommitOf(dir: string, files: readonly string[]): string {
 }
 
 /** The kind's package under `dir`, as the upload body. `entry` is the module with the class. */
-export function packStoreKindDir(dir: string, entry: string, sourceCommit: string): StoreKindReleaseUpload {
+export function packStoreDriverDir(dir: string, entry: string, sourceCommit: string): StoreDriverReleaseUpload {
   const files = packedFilesOf(dir);
   const refused = files.filter((path) => !KIND_MODULE.test(path));
   if (refused.length > 0) {
@@ -108,28 +108,28 @@ export const isReleaseSha = (value: string | undefined): value is string => valu
 
 type Plane = { controlPlaneUrl: string; header: Record<string, string> };
 
-export const uploadStoreKindRelease = (input: Plane & { kind: string; body: StoreKindReleaseUpload }) =>
-  planeFor(input.controlPlaneUrl, input.header).uploadStoreKindRelease(input.kind, input.body);
+export const uploadStoreDriverRelease = (input: Plane & { kind: string; body: StoreDriverReleaseUpload }) =>
+  planeFor(input.controlPlaneUrl, input.header).uploadStoreDriverRelease(input.kind, input.body);
 
-export const rollOutStoreKind = (input: Plane & { kind: string; sha256: string }) =>
-  planeFor(input.controlPlaneUrl, input.header).rollOutStoreKind(input.kind, input.sha256);
+export const rollOutStoreDriver = (input: Plane & { kind: string; sha256: string }) =>
+  planeFor(input.controlPlaneUrl, input.header).rollOutStoreDriver(input.kind, input.sha256);
 
-export const rollBackStoreKind = (input: Plane & { kind: string }) =>
-  planeFor(input.controlPlaneUrl, input.header).rollBackStoreKind(input.kind);
+export const rollBackStoreDriver = (input: Plane & { kind: string }) =>
+  planeFor(input.controlPlaneUrl, input.header).rollBackStoreDriver(input.kind);
 
-export const storeKindStatus = (input: Plane & { kind: string }) =>
-  planeFor(input.controlPlaneUrl, input.header).getStoreKind(input.kind);
+export const storeDriverStatus = (input: Plane & { kind: string }) =>
+  planeFor(input.controlPlaneUrl, input.header).getStoreDriver(input.kind);
 
 /**
- * What `store-kind status` prints. "Rolls back to" is the server's `rollbackTarget`, never the
+ * What `store-driver status` prints. "Rolls back to" is the server's `rollbackTarget`, never the
  * current release's previous good one: after a diverged or paused rollout it is the current
  * release, and a rollback still under way continues to its own target.
  */
-export function storeKindStatusLines(kind: string, view: StoreKindView): string[] {
+export function storeDriverStatusLines(kind: string, view: StoreDriverView): string[] {
   return [
     `${kind}: current ${view.current?.sha256 ?? 'none'}, rolls back to ${view.rollbackTarget ?? 'nothing'}`,
     ...(view.unfinishedRollback
-      ? [`  a rollback to ${view.unfinishedRollback} stopped part way: run \`substrat store-kind rollback\` again to finish it`]
+      ? [`  a rollback to ${view.unfinishedRollback} stopped part way: run \`substrat store-driver rollback\` again to finish it`]
       : []),
     ...view.rollouts.slice(-10).map((r) => `  #${r.seq} ${r.action} ${r.sha256} ${r.state}${r.detail ? ` — ${r.detail}` : ''}`),
   ];

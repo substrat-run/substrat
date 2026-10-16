@@ -10,7 +10,7 @@ This sits below the [per-tenant stores](./tenancy.md). A tenant store is one dat
 
 ## What you can use today
 
-Nothing here is live for a vertical yet. No store kind is registered, and a push that declares a scope store is refused. Everything below is what the platform does once a kind is registered and its store script is deployed.
+Nothing here is live for a vertical yet. No store driver is registered, and a push that declares a scope store is refused. Everything below is what the platform does once a kind is registered and its store script is deployed.
 
 Today a vertical author can:
 

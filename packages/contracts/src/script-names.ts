@@ -52,14 +52,14 @@ export function verticalScriptStem(slug: string): string {
  */
 export const SCOPE_STORE_SCRIPT_PREFIX = 'substrat-store-';
 
-/** A store kind id (L20). No `-` and no `_`, which is what keeps {@link scopeStoreScriptName} injective. */
-export const STORE_KIND_ID = /^[a-z0-9]+$/;
+/** A store driver id (L20). No `-` and no `_`, which is what keeps {@link scopeStoreScriptName} injective. */
+export const STORE_DRIVER_ID = /^[a-z0-9]+$/;
 
 /** The registry id grammar `verticalSlug` parses (ids.ts), repeated so this file imports nothing. */
 const VERTICAL_SLUG = /^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\/)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 
 /**
- * The script a scope-store kind is uploaded as, for one vertical (#2210).
+ * The script a scope-store driver is uploaded as, for one vertical (#2210).
  *
  * Stable across releases and across the vertical's own pushes: a new release of the kind
  * replaces this script in place, and the objects stay where `scopeStoreObjectName` addresses
@@ -72,8 +72,8 @@ const VERTICAL_SLUG = /^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\/)?[a-z0-9](?:[a-z0-9-]
  * Anything outside those two grammars is refused rather than flattened.
  */
 export function scopeStoreScriptName(vertical: string, kind: string): string {
-  if (!STORE_KIND_ID.test(kind)) {
-    throw new Error(`not a scope-store kind id: '${kind}' (expected [a-z0-9]+)`);
+  if (!STORE_DRIVER_ID.test(kind)) {
+    throw new Error(`not a scope-store driver id: '${kind}' (expected [a-z0-9]+)`);
   }
   if (!VERTICAL_SLUG.test(vertical)) {
     throw new Error(`not a vertical slug: '${vertical}'`);
@@ -93,8 +93,8 @@ export const SCOPE_STORE_CANARY = '-canary';
  * because the part after the kind would be a slug starting with `-`.
  */
 export function scopeStoreCanaryScriptName(kind: string): string {
-  if (!STORE_KIND_ID.test(kind)) {
-    throw new Error(`not a scope-store kind id: '${kind}' (expected [a-z0-9]+)`);
+  if (!STORE_DRIVER_ID.test(kind)) {
+    throw new Error(`not a scope-store driver id: '${kind}' (expected [a-z0-9]+)`);
   }
   return `${SCOPE_STORE_SCRIPT_PREFIX}${kind}-${SCOPE_STORE_CANARY}`;
 }

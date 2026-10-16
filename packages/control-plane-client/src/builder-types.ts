@@ -212,8 +212,8 @@ export interface ListingRecord {
   listed: boolean;
 }
 
-/** A stored store-kind release (#2300): its bytes are named by their sha256. */
-export interface StoreKindReleaseView {
+/** A stored store-driver release (#2300): its bytes are named by their sha256. */
+export interface StoreDriverReleaseView {
   kind: string;
   sha256: string;
   sourceCommit: string;
@@ -222,7 +222,7 @@ export interface StoreKindReleaseView {
 }
 
 /** One attempt to move every script of a kind to a release. */
-export interface StoreKindRolloutView {
+export interface StoreDriverRolloutView {
   kind: string;
   seq: number;
   sha256: string;
@@ -236,19 +236,19 @@ export interface StoreKindRolloutView {
   detail: string | null;
 }
 
-export interface StoreKindView {
+export interface StoreDriverView {
   kind: string;
   pins: { sha256: string; sourceCommit: string; schema: number }[];
   current: { sha256: string; seq: number; previousGoodSha256: string | null } | null;
-  rollouts: StoreKindRolloutView[];
+  rollouts: StoreDriverRolloutView[];
   /** Where a rollback goes now: the server decides, a client never derives it. */
   rollbackTarget: string | null;
   /** A rollback that stopped part way, until it ends good. Unless it targets the current release, no rollout begins meanwhile. */
   unfinishedRollback: string | null;
 }
 
-export interface StoreKindRolloutResultView {
-  rollout: StoreKindRolloutView;
+export interface StoreDriverRolloutResultView {
+  rollout: StoreDriverRolloutView;
   /** The verticals this request moved. */
   moved: string[];
   /** False when verticals remain: post the same rollout again. */

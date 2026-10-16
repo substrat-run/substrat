@@ -3,13 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { storeKindReleaseUpload } from '@substrat-run/contracts';
-import { isReleaseSha, packedFilesOf, packStoreKindDir, sourceCommitOf, storeKindStatusLines } from '../src/store-kind.js';
+import { storeDriverReleaseUpload } from '@substrat-run/contracts';
+import { isReleaseSha, packedFilesOf, packStoreDriverDir, sourceCommitOf, storeDriverStatusLines } from '../src/store-driver.js';
 
 const COMMIT = 'a'.repeat(40);
 
 function kindDir(files: Record<string, string>): string {
-  const dir = mkdtempSync(join(tmpdir(), 'store-kind-pack-'));
+  const dir = mkdtempSync(join(tmpdir(), 'store-driver-pack-'));
   for (const [path, text] of Object.entries(files)) {
     mkdirSync(join(dir, path, '..'), { recursive: true });
     writeFileSync(join(dir, path), text);
@@ -17,7 +17,7 @@ function kindDir(files: Record<string, string>): string {
   return dir;
 }
 
-describe('packStoreKindDir (#2300)', () => {
+describe('packStoreDriverDir (#2300)', () => {
   it('packs the kind package recursively by relative path, skipping bytecode', () => {
     const dir = kindDir({
       'kind_graph/__init__.py': '',
@@ -26,11 +26,11 @@ describe('packStoreKindDir (#2300)', () => {
       'kind_graph/__pycache__/store.cpython-312.pyc': 'bytecode',
     });
     try {
-      const body = packStoreKindDir(dir, 'kind_graph/store.py', COMMIT);
+      const body = packStoreDriverDir(dir, 'kind_graph/store.py', COMMIT);
       expect(body.modules.map((m) => m.name)).toEqual(['kind_graph/__init__.py', 'kind_graph/schema/v1.py', 'kind_graph/store.py']);
       expect(atob(body.modules[2]!.contentBase64)).toBe('class Store:\n    pass\n');
       // What the control plane parses.
-      expect(storeKindReleaseUpload.safeParse(body).success).toBe(true);
+      expect(storeDriverReleaseUpload.safeParse(body).success).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -46,14 +46,14 @@ describe('packStoreKindDir (#2300)', () => {
     for (const [files, refusal] of cases) {
       const dir = kindDir(files);
       try {
-        expect(() => packStoreKindDir(dir, 'kind_graph/store.py', COMMIT), JSON.stringify(files)).toThrow(refusal);
+        expect(() => packStoreDriverDir(dir, 'kind_graph/store.py', COMMIT), JSON.stringify(files)).toThrow(refusal);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
     }
     const dir = kindDir({ 'kind_graph/store.py': '' });
     try {
-      expect(() => packStoreKindDir(dir, 'kind_graph/missing.py', COMMIT)).toThrow(/missing\.py/);
+      expect(() => packStoreDriverDir(dir, 'kind_graph/missing.py', COMMIT)).toThrow(/missing\.py/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -111,13 +111,13 @@ describe('the files a release packs, and the commit they are (#2300)', () => {
   });
 });
 
-describe('store-kind rollout and status, before and after a request (#2300)', () => {
+describe('store-driver rollout and status, before and after a request (#2300)', () => {
   it('says when a rollback stopped part way', () => {
-    const lines = storeKindStatusLines('graph', {
+    const lines = storeDriverStatusLines('graph', {
       kind: 'graph', pins: [], current: { sha256: 'b'.repeat(64), seq: 2, previousGoodSha256: 'a'.repeat(64) },
       rollouts: [], rollbackTarget: 'a'.repeat(64), unfinishedRollback: 'a'.repeat(64),
     });
-    expect(lines[1]).toBe(`  a rollback to ${'a'.repeat(64)} stopped part way: run \`substrat store-kind rollback\` again to finish it`);
+    expect(lines[1]).toBe(`  a rollback to ${'a'.repeat(64)} stopped part way: run \`substrat store-driver rollback\` again to finish it`);
   });
 
   it('names a release by its sha256 only', () => {
@@ -126,7 +126,7 @@ describe('store-kind rollout and status, before and after a request (#2300)', ()
   });
 
   it("prints the server's rollback target, not the current release's previous good one", () => {
-    const lines = storeKindStatusLines('graph', {
+    const lines = storeDriverStatusLines('graph', {
       kind: 'graph',
       pins: [],
       current: { sha256: 'b'.repeat(64), seq: 3, previousGoodSha256: 'a'.repeat(64) },
@@ -136,6 +136,6 @@ describe('store-kind rollout and status, before and after a request (#2300)', ()
       unfinishedRollback: null,
     });
     expect(lines[0]).toBe(`graph: current ${'b'.repeat(64)}, rolls back to ${'b'.repeat(64)}`);
-    expect(storeKindStatusLines('graph', { kind: 'graph', pins: [], current: null, rollouts: [], rollbackTarget: null, unfinishedRollback: null })[0]).toBe('graph: current none, rolls back to nothing');
+    expect(storeDriverStatusLines('graph', { kind: 'graph', pins: [], current: null, rollouts: [], rollbackTarget: null, unfinishedRollback: null })[0]).toBe('graph: current none, rolls back to nothing');
   });
 });

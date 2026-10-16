@@ -12,7 +12,7 @@ import {
   tenantId,
   type ScopeDump,
   type ScopeId,
-  type StoreKindRegistration,
+  type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import {
   createControlPlaneApi,
@@ -36,7 +36,7 @@ describe('a dropped scope-store binding stays reached (#2286)', () => {
   const staff = platformActorId.parse(ulid());
   const t = tenantId.parse(ulid());
   const auth = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
-  const graph: StoreKindRegistration = {
+  const graph: StoreDriverRegistration = {
     kind: 'graph',
     releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
@@ -134,7 +134,7 @@ describe('a dropped scope-store binding stays reached (#2286)', () => {
   const apiWith = (caller: PlatformScopeStores) => createControlPlaneApi({
     host,
     authenticate: UNSAFE_devPlatformActorAuth(),
-    storeKinds: [graph],
+    storeDrivers: [graph],
     platformScopeStores: caller,
     resolveVerticalRef: async () => deployment,
   });
@@ -222,7 +222,7 @@ describe('a dropped scope-store binding stays reached (#2286)', () => {
       const api = createControlPlaneApi({
         host,
         authenticate: UNSAFE_devPlatformActorAuth(),
-        storeKinds: [graph],
+        storeDrivers: [graph],
         platformScopeStores: store.caller,
         verticals: { [slug]: hosted },
       });

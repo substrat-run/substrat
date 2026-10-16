@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { unreachablePlatformScopeStores, type PlatformScopeStores, type VerticalClient } from '@substrat-run/control-plane-api';
-import { RESERVED_STORE_OPERATIONS, platformActorId, scopeId, tenantId, type StoreKindRegistration } from '@substrat-run/contracts';
+import { RESERVED_STORE_OPERATIONS, platformActorId, scopeId, tenantId, type StoreDriverRegistration } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { reapExpiredSnapshot } from '../src/worker.js';
 
@@ -12,7 +12,7 @@ import { reapExpiredSnapshot } from '../src/worker.js';
  */
 describe('the sweep unroutes an expired snapshot before its wipe, and only then (#2285)', () => {
   const staff = platformActorId.parse(ulid());
-  const graph: StoreKindRegistration = {
+  const graph: StoreDriverRegistration = {
     kind: 'graph',
     releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',

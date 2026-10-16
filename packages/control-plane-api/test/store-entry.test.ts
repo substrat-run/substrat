@@ -3,7 +3,7 @@ import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-e
 import {
   STORE_CLASS_PLACEHOLDER,
   STORE_ENTRY_MODULE,
-  STORE_KIND_PLACEHOLDER,
+  STORE_DRIVER_PLACEHOLDER,
   STORE_OBJECT_BINDING,
   STORE_OBJECT_CLASS,
   STORE_RESERVED_MODULES,
@@ -32,7 +32,7 @@ describe('withStoreEntry', async () => {
     expect(uploaded.modules.map((m) => m.name)).toEqual([STORE_ENTRY_MODULE, 'kind.js']);
     const source = new TextDecoder().decode(uploaded.modules[0]!.content);
     expect(source).toContain('"./kind.js"');
-    expect(source).not.toContain(STORE_KIND_PLACEHOLDER);
+    expect(source).not.toContain(STORE_DRIVER_PLACEHOLDER);
     expect(source).not.toContain(STORE_CLASS_PLACEHOLDER);
     expect(uploaded.doClasses).toEqual([STORE_OBJECT_CLASS]);
     expect(uploaded.compatibilityFlags).toEqual(['disallow_importable_env', 'disable_ctx_exports']);
@@ -112,8 +112,8 @@ describe('withPythonStoreEntry', async () => {
       ['kind_graph/schema/tables.py', 'text/x-python'],
     ]);
     const entry = new TextDecoder().decode(script.modules[0]!.content);
-    expect(entry).toContain('from kind_graph.store import GraphStore as StoreKind');
-    expect(entry).not.toContain(STORE_KIND_PLACEHOLDER);
+    expect(entry).toContain('from kind_graph.store import GraphStore as StoreDriver');
+    expect(entry).not.toContain(STORE_DRIVER_PLACEHOLDER);
     expect(entry).not.toContain(STORE_CLASS_PLACEHOLDER);
     // The kind's modules are the release's own bytes, not a decoded and re-encoded copy.
     expect(script.modules[2]!.content).toBe(given.modules[0]!.content);

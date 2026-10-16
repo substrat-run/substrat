@@ -188,7 +188,7 @@ describe('readRuntimeNeeds', () => {
     expect(() => assertDeclaredScopeStores({ scopeStores: needs?.scopeStores })).toThrow(/not registered/);
   });
 
-  it('refuses a scope-store kind the declaration does not have', () => {
+  it('refuses a scope-store driver the declaration does not have', () => {
     const dir = scratch({
       substrat: { runtimeNeeds: { entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', kind: 'document' }] } },
     });

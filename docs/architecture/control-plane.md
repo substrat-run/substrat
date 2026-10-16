@@ -412,19 +412,19 @@ caller, no record — is a v0 stopgap the code comment already admits.
 
 **The staff roster holds people only.** A staff sign-in (the session cookie or the CLI's bearer
 session, both gated by the D1 roster) is how the control plane tells a person from the
-automation token, which also acts as staff. D-63 relies on that: a store kind release is stored,
+automation token, which also acts as staff. D-63 relies on that: a store driver release is stored,
 rolled out and rolled back only by an actor whose credential is a rostered sign-in (#2300). So
 no roster entry may be an automation identity, a shared mailbox, or anything else that can
 finish the login without a person. Such an entry would publish releases as if it were one.
 
-**A store kind release reaches at most 300 verticals** (#2300). A rollout or rollback walks every
+**A store driver release reaches at most 300 verticals** (#2300). A rollout or rollback walks every
 vertical any version ever declared the kind in, uploading at most 100 scripts per request; posting
 it again continues. A kind declared by more than 300 verticals cannot be rolled out **or rolled
 back** (409) until the rollout row carries a cursor (#2312). Watch that count before a kind grows
 towards it: past it, the emergency path is closed too.
 
-**Which rollback, and what blocks a rollout** (#2300). `GET /store-kinds/:kind` answers `rollbackTarget`,
-and `POST /store-kinds/:kind/rollback` always goes there:
+**Which rollback, and what blocks a rollout** (#2300). `GET /store-drivers/:kind` answers `rollbackTarget`,
+and `POST /store-drivers/:kind/rollback` always goes there:
 
 - A request that runs out of its 100 uploads ends `paused`. It is not a fault: post the same rollout,
   or the same rollback, again.

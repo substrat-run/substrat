@@ -11,7 +11,7 @@ import {
   scopeId,
   tenantId,
   type ScopeId,
-  type StoreKindRegistration,
+  type StoreDriverRegistration,
   type SubjectShredReceipt,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
@@ -34,7 +34,7 @@ import {
  * bindings to erase. Every case below reads the key back after the request: kept
  * means a retry can still converge, destroyed means the erasure is final.
  *
- * Gated on the store-kind registry: with no kind registered no deployment can hold a store,
+ * Gated on the store-driver registry: with no kind registered no deployment can hold a store,
  * and erasure proceeds as it did before stores existed.
  */
 describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
@@ -43,7 +43,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
   const staff = platformActorId.parse(ulid());
   const t = tenantId.parse(ulid());
   const auth = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
-  const graph: StoreKindRegistration = {
+  const graph: StoreDriverRegistration = {
     kind: 'graph',
     releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
     className: 'GraphStore',
@@ -112,17 +112,17 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
   const shred = (api: ReturnType<typeof createControlPlaneApi>, s: ScopeId, subject: string) =>
     api.request(`/tenants/${t}/scopes/${s}/subjects/${subject}/shred`, { method: 'POST', headers: auth });
 
-  const bySlug = (platformScopeStores: PlatformScopeStores, storeKinds?: readonly StoreKindRegistration[]) =>
+  const bySlug = (platformScopeStores: PlatformScopeStores, storeDrivers?: readonly StoreDriverRegistration[]) =>
     createControlPlaneApi({
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       verticals: { docs: redactOnly as unknown as VerticalClient },
       resolveVerticalRef: async () => undefined,
       platformScopeStores,
-      ...(storeKinds ? { storeKinds } : {}),
+      ...(storeDrivers ? { storeDrivers } : {}),
     });
 
-  describe('no store kind registered: nothing can hold a store, erasure proceeds', () => {
+  describe('no store driver registered: nothing can hold a store, erasure proceeds', () => {
     it('no store is asked, and the key is destroyed', async () => {
       const { s, subject, keyKept } = await sealedScope();
       const { caller, asked } = platformStores(() => {
@@ -193,7 +193,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
     });
   });
 
-  describe('a store kind registered: a deployment that may hold a store is asked, or the key is kept', () => {
+  describe('a store driver registered: a deployment that may hold a store is asked, or the key is kept', () => {
     // Stricter than asking the vertical (#2207): with no version to read, the control plane
     // cannot say which bindings to erase, so it refuses rather than guess an empty list.
     it('a scope with no bound version and no pin is a version unknown: 503, and the key is kept', async () => {
@@ -210,7 +210,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       const api = createControlPlaneApi({
         host,
         authenticate: UNSAFE_devPlatformActorAuth(),
-        storeKinds: [graph],
+        storeDrivers: [graph],
         resolveVerticalRef: async (r) => (r === ref ? (redactOnly as unknown as VerticalClient) : undefined),
         platformScopeStores: unreachablePlatformScopeStores(),
       });
@@ -257,7 +257,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         const api = createControlPlaneApi({
           host,
           authenticate: UNSAFE_devPlatformActorAuth(),
-          storeKinds: [graph],
+          storeDrivers: [graph],
           resolveVerticalRef: async (r) => (r === version.ref ? (redactOnly as unknown as VerticalClient) : undefined),
           platformScopeStores: platform.caller,
         });
@@ -295,7 +295,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         const api = createControlPlaneApi({
           host,
           authenticate: UNSAFE_devPlatformActorAuth(),
-          storeKinds: [graph],
+          storeDrivers: [graph],
           resolveVerticalRef: async (r) => (r === servingRef ? (redactOnly as unknown as VerticalClient) : undefined),
           platformScopeStores: platform.caller,
         });
@@ -359,7 +359,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         const api = createControlPlaneApi({
           host,
           authenticate: UNSAFE_devPlatformActorAuth(),
-          storeKinds: [graph],
+          storeDrivers: [graph],
           resolveVerticalRef: async (r) => (r === version.ref ? (redactOnly as unknown as VerticalClient) : undefined),
           platformScopeStores: caller,
         });
@@ -387,7 +387,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         const api = createControlPlaneApi({
           host,
           authenticate: UNSAFE_devPlatformActorAuth(),
-          storeKinds: [graph],
+          storeDrivers: [graph],
           platformScopeStores: caller,
         });
         return { ...scope, res: await shred(api, scope.s, scope.subject) };
@@ -433,7 +433,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         const api = createControlPlaneApi({
           host,
           authenticate: UNSAFE_devPlatformActorAuth(),
-          storeKinds: [graph],
+          storeDrivers: [graph],
           resolveVerticalRef: async (r) => (r === servingRef ? (redactOnly as unknown as VerticalClient) : undefined),
           platformScopeStores: caller,
         });

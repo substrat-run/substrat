@@ -508,12 +508,12 @@ import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsEra
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import type {
-  StoreKindHoldMode,
-  StoreKindReleaseRecord,
-  StoreKindRolloutAction,
-  StoreKindRolloutRecord,
-  StoreKindRolloutState,
-  StoreKindState,
+  StoreDriverHoldMode,
+  StoreDriverReleaseRecord,
+  StoreDriverRolloutAction,
+  StoreDriverRolloutRecord,
+  StoreDriverRolloutState,
+  StoreDriverState,
 } from '@substrat-run/kernel';
 import {
   isOrangeToOrange,
@@ -682,31 +682,31 @@ interface ControlPlaneStub {
       created_at: string;
     }[]
   >;
-  recordStoreKindRelease(input: { kind: string; sha256: string; sourceCommit: string; actor: string; at: string }): Promise<{
-    record: StoreKindReleaseRecord;
+  recordStoreDriverRelease(input: { kind: string; sha256: string; sourceCommit: string; actor: string; at: string }): Promise<{
+    record: StoreDriverReleaseRecord;
     created: boolean;
   }>;
-  getStoreKindRelease(kind: string, sha256: string): Promise<StoreKindReleaseRecord | undefined>;
-  storeKindState(kind: string): Promise<StoreKindState>;
-  storeKindDeclarations(kind: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
-  holdStoreKind(input: { kind: string; holder: string; mode: StoreKindHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): Promise<boolean>;
-  releaseStoreKindHold(input: { kind: string; holder: string }): Promise<void>;
-  beginStoreKindRollout(input: {
+  getStoreDriverRelease(kind: string, sha256: string): Promise<StoreDriverReleaseRecord | undefined>;
+  storeDriverState(kind: string): Promise<StoreDriverState>;
+  storeDriverDeclarations(kind: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
+  holdStoreDriver(input: { kind: string; holder: string; mode: StoreDriverHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): Promise<boolean>;
+  releaseStoreDriverHold(input: { kind: string; holder: string }): Promise<void>;
+  beginStoreDriverRollout(input: {
     kind: string;
     sha256: string;
-    action: StoreKindRolloutAction;
+    action: StoreDriverRolloutAction;
     holder: string;
     actor: string;
     at: string;
-  }): Promise<StoreKindRolloutRecord>;
-  finishStoreKindRollout(input: {
+  }): Promise<StoreDriverRolloutRecord>;
+  finishStoreDriverRollout(input: {
     kind: string;
     seq: number;
     holder: string;
-    state: Exclude<StoreKindRolloutState, 'rolling'>;
+    state: Exclude<StoreDriverRolloutState, 'rolling'>;
     detail: string | null;
     at: string;
-  }): Promise<StoreKindRolloutRecord>;
+  }): Promise<StoreDriverRolloutRecord>;
   getBlobStore(
     tenantId: string,
     vertical: string,
@@ -2735,7 +2735,7 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly scopeStoreRunners: Map<string, ScopeStoreRunner>;
   private readonly scopeStoreVertical?: string;
   private readonly scopeStoreLifecycle: ScopeStoreLifecycle;
-  private readonly scopeStoreKinds: Readonly<Record<string, string>>;
+  private readonly scopeStoreDrivers: Readonly<Record<string, string>>;
   private readonly scopeStoreTransport: 'platform' | 'binding';
   private readonly cp: ControlPlaneStub;
   private readonly servicePrincipals: CloudflareScopeHostOptions['servicePrincipals'];
@@ -2855,7 +2855,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;
     this.scopeStoreVertical = options.scopeStores?.vertical;
-    this.scopeStoreKinds = options.scopeStores?.kinds ?? {};
+    this.scopeStoreDrivers = options.scopeStores?.kinds ?? {};
     this.scopeStoreTransport = scopeStoreTransportOf(options);
     this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
     this.scopeStoreLifecycle = scopeStoreLifecycleOf(this.scopeStoreRunners);
@@ -5090,8 +5090,8 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /** A runner's kind, or the kind declared for an ambient binding. Never invented. */
-  private scopeStoreKind(binding: string): string {
-    const kind = this.scopeStoreRunners.get(binding)?.kind ?? this.scopeStoreKinds[binding];
+  private scopeStoreDriver(binding: string): string {
+    const kind = this.scopeStoreRunners.get(binding)?.kind ?? this.scopeStoreDrivers[binding];
     if (!kind) {
       throw substratError('unavailable', `scope store '${binding}' has no declared kind`);
     }
@@ -5131,7 +5131,7 @@ export class CloudflareScopeHost implements ScopeHost {
       if (!store.kind) {
         throw substratError('validation_failed', `dump's scope store '${store.binding}' names no kind`);
       }
-      const kind = this.scopeStoreRunners.get(store.binding)?.kind ?? this.scopeStoreKinds[store.binding];
+      const kind = this.scopeStoreRunners.get(store.binding)?.kind ?? this.scopeStoreDrivers[store.binding];
       if (store.kind !== kind) {
         throw substratError(
           'conflict',
@@ -5156,7 +5156,7 @@ export class CloudflareScopeHost implements ScopeHost {
       const exported = await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.export');
       stores.push({
         binding,
-        kind: this.scopeStoreKind(binding),
+        kind: this.scopeStoreDriver(binding),
         tables: exported.tables,
       });
     }
@@ -8497,40 +8497,40 @@ export class CloudflareScopeHost implements ScopeHost {
           createdAt: r.created_at,
         }));
       },
-      // -- store-kind releases, rollouts and holds (D-63, #2300) -------------------
-      recordStoreKindRelease: async (actor, input) => {
+      // -- store-driver releases, rollouts and holds (D-63, #2300) -------------------
+      recordStoreDriverRelease: async (actor, input) => {
         const at = new Date().toISOString();
-        const { record, created } = await this.directory('recordStoreKindRelease', { ...input, actor, at });
-        if (created) await this.recordAdmin(actor, 'uploadStoreKindRelease', { tenantId: null }, null, record);
+        const { record, created } = await this.directory('recordStoreDriverRelease', { ...input, actor, at });
+        if (created) await this.recordAdmin(actor, 'uploadStoreDriverRelease', { tenantId: null }, null, record);
         return record;
       },
-      getStoreKindRelease: async (actor, kind, sha256) => {
-        const record = await this.cp.getStoreKindRelease(kind, sha256);
-        await this.recordAccess(actor, 'getStoreKindRelease', { tenantId: null }, { kind, sha256 }, record ? 1 : 0);
+      getStoreDriverRelease: async (actor, kind, sha256) => {
+        const record = await this.cp.getStoreDriverRelease(kind, sha256);
+        await this.recordAccess(actor, 'getStoreDriverRelease', { tenantId: null }, { kind, sha256 }, record ? 1 : 0);
         return record;
       },
-      storeKindState: async (actor, kind) => {
-        const state = await this.cp.storeKindState(kind);
-        await this.recordAccess(actor, 'storeKindState', { tenantId: null }, { kind }, state.rollouts.length);
+      storeDriverState: async (actor, kind) => {
+        const state = await this.cp.storeDriverState(kind);
+        await this.recordAccess(actor, 'storeDriverState', { tenantId: null }, { kind }, state.rollouts.length);
         return state;
       },
-      storeKindDeclarations: async (actor, kind) => {
-        const declared = await this.directory('storeKindDeclarations', kind);
-        await this.recordAccess(actor, 'storeKindDeclarations', { tenantId: null }, { kind }, declared.verticals.length);
+      storeDriverDeclarations: async (actor, kind) => {
+        const declared = await this.directory('storeDriverDeclarations', kind);
+        await this.recordAccess(actor, 'storeDriverDeclarations', { tenantId: null }, { kind }, declared.verticals.length);
         return declared;
       },
-      holdStoreKind: async (_actor, input) => this.directory('holdStoreKind', input),
-      releaseStoreKindHold: async (_actor, input) => {
-        await this.cp.releaseStoreKindHold(input);
+      holdStoreDriver: async (_actor, input) => this.directory('holdStoreDriver', input),
+      releaseStoreDriverHold: async (_actor, input) => {
+        await this.cp.releaseStoreDriverHold(input);
       },
-      beginStoreKindRollout: async (actor, input) => {
-        const row = await this.directory('beginStoreKindRollout', { ...input, actor, at: new Date().toISOString() });
-        await this.recordAdmin(actor, input.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row);
+      beginStoreDriverRollout: async (actor, input) => {
+        const row = await this.directory('beginStoreDriverRollout', { ...input, actor, at: new Date().toISOString() });
+        await this.recordAdmin(actor, input.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, row);
         return row;
       },
-      finishStoreKindRollout: async (actor, input) => {
-        const row = await this.directory('finishStoreKindRollout', { ...input, at: new Date().toISOString() });
-        await this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreKind' : 'rollOutStoreKind', { tenantId: null }, null, row);
+      finishStoreDriverRollout: async (actor, input) => {
+        const row = await this.directory('finishStoreDriverRollout', { ...input, at: new Date().toISOString() });
+        await this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, row);
         return row;
       },
       listScopeTables: async (actor, tenantId, scopeId): Promise<ScopeTable[]> => {

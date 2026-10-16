@@ -53,7 +53,7 @@ a fresh host.
 | `scopeRepointContractSuite` | which grant tuples a restore, fork or snapshot re-points at the scope it lands in — a scope-level grant moves, an entity-narrowed grant does not, however its type is cased (#1869) | the **default** checker, so it asserts decisions as well as stored rows |
 | `membershipExecutorContractSuite` | the membership executor — an accepted invite assigns its tenant role, and by default joins no org, with the admin row correlated to the event; a redelivery changes nothing, a rolled-back accept effects nothing, and an invite beyond what its sender holds now (demoted, removed, or never — including while the add is held in front of its directory unit) is refused for good, on the inline path and the retry backstop alike; a removal is bounded by the remover, and an add the person was removed after — through the seam, or by any tenant-level removal, a no-op included — never lands (#1184); mounted with `orgs: 'join'`, an add joins the org and a removal leaves it only when the inviter or remover is a live member of it, read inside the unit, so a scope-level org grant is never conferred by a non-member, and a join expires no later than the inviter's own membership (#2047) | the **default** checker; the bound is a permission-set comparison an allow-all checker would always pass |
 | `scopeStoreContractSuite` | scope stores through the host — the door, the address it hands a runner, the five reserved operations behind snapshot, restore, reap, erasure and the meter (#2213) | `UNSAFE_allowAllChecker`, with the trivial kind's runner (`counterScopeStoreRunner`) |
-| `scopeStoreRunnerContractSuite` | a scope-store kind's **runner**, with no host — one object per whole address, a restart that keeps them, the envelope, and the five reserved operations' shapes (#2213). A kind runs it in its own repository | no host and no checker: it takes the runner and one write and one read of the kind's catalog |
+| `scopeStoreRunnerContractSuite` | a scope-store driver's **runner**, with no host — one object per whole address, a restart that keeps them, the envelope, and the five reserved operations' shapes (#2213). A kind runs it in its own repository | no host and no checker: it takes the runner and one write and one read of the kind's catalog |
 | `directoryRestoreSuite` | a directory restore builds every directory table from the running code's schema, and the dump contributes rows only, by column name; a table the directory does not build is refused (#1912) | no checker: it takes a directory harness, not a scope-host fixture |
 
 ```ts
@@ -83,7 +83,7 @@ scheduleContractSuite('adapter-yours', async () => { /* default checker */ });
 
 Every adapter suite takes the same `(adapterName, makeFixture)` pair, except
 `directoryRestoreSuite`, which takes a directory harness, and `scopeStoreRunnerContractSuite`,
-which is not an adapter suite at all — a store kind runs it against its runner, and the
+which is not an adapter suite at all — a store driver runs it against its runner, and the
 package holds it on the trivial kind in its own `test/`; the one thing that varies is which
 checker the fixture is built with, and the table says which and why. Every
 suite above is one an *adapter* runs. One more, `entityCheckConformanceSuite`, holds a

@@ -647,21 +647,21 @@ export {
   type VerticalScopeStore,
 } from './vertical-scope-stores.js';
 export {
-  STORE_KIND_RELEASES_DDL,
-  beginStoreKindRolloutIn,
-  finishStoreKindRolloutIn,
-  holdStoreKindIn,
-  recordStoreKindReleaseIn,
-  releaseStoreKindHoldIn,
-  storeKindReleaseIn,
-  storeKindStateIn,
-  type StoreKindHoldMode,
-  type StoreKindReleaseRecord,
-  type StoreKindRolloutAction,
-  type StoreKindRolloutRecord,
-  type StoreKindRolloutState,
-  type StoreKindState,
-} from './store-kind-releases.js';
+  STORE_DRIVER_RELEASES_DDL,
+  beginStoreDriverRolloutIn,
+  finishStoreDriverRolloutIn,
+  holdStoreDriverIn,
+  recordStoreDriverReleaseIn,
+  releaseStoreDriverHoldIn,
+  storeDriverReleaseIn,
+  storeDriverStateIn,
+  type StoreDriverHoldMode,
+  type StoreDriverReleaseRecord,
+  type StoreDriverRolloutAction,
+  type StoreDriverRolloutRecord,
+  type StoreDriverRolloutState,
+  type StoreDriverState,
+} from './store-driver-releases.js';
 export type { SplitManifest } from './version-migrations.js';
 export {
   admitPeer,

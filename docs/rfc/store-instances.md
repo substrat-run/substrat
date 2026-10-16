@@ -840,7 +840,7 @@ same holds for grain: **decide the first kind's grain before #2210 registers it*
 
 ## 9. How a kind declares its grain
 
-The grain is the kind's, recorded in its registration (`STORE_KINDS`, #2301), and
+The grain is the kind's, recorded in its registration (`STORE_DRIVERS`, #2301), and
 reviewed with it: `grain: 'scope' | 'tenant'`. The vertical's declaration does not change.
 
 A vertical cannot choose the grain, because that would let a vertical decide that its data
