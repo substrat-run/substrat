@@ -8,7 +8,7 @@
  * a directory table, read by its keys, instead of reading every version's manifest per call.
  *
  * A binding keeps its driver for the life of its vertical. The driver names the store script, so a
- * moved to another driver binding would point the same name at another script's object, and the union would have
+ * binding moved to another driver would point the same name at another script's object, and the union would have
  * to hold both. `publishVersion` refuses it instead (`conflict`), in the transaction that inserts
  * the version: one door, where the push can still be told to pick a new binding name. A manifest
  * that declares one binding twice is refused there too.
@@ -157,7 +157,7 @@ export function indexVersionScopeStores(
 /**
  * Every binding any version of the vertical declared, in binding order. An unmarked vertical is
  * indexed first (the caller runs this in one transaction). Refuses (`unavailable`) when a version's
- * manifest cannot be read, or when versions stored before the record moved to another driver a binding: the
+ * manifest cannot be read, or when versions stored before the record moved a binding to another driver: the
  * lifecycle cannot name every store the vertical may hold.
  */
 export function verticalScopeStoresOf(db: SwitchSql, verticalSlug: string): VerticalScopeStore[] {
@@ -182,7 +182,7 @@ export function verticalScopeStoresOf(db: SwitchSql, verticalSlug: string): Vert
  * not indexed yet is indexed first (the caller runs this in one transaction).
  *
  * `unreadable` names the verticals that cannot say: a version whose manifest cannot be read, or
- * versions stored before the record that moved to another driver a binding. Any of them may declare the driver, so
+ * versions stored before the record that moved a binding to another driver. Any of them may declare the driver, so
  * a caller that must reach every script (a rollout) refuses while the list is not empty, rather
  * than leave a script on another release without saying so.
  */

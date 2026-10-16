@@ -2385,7 +2385,7 @@ export interface HostAdmin {
    * rather than where the typing was.
    *
    * Refuses (`conflict`) a version that declares a scope-store binding the vertical already
-   * declared as another kind (#2286): see `verticalScopeStores`.
+   * declared as another driver (#2286): see `verticalScopeStores`.
    */
   publishVersion(actor: PlatformActorId, input: PublishVersionInput): Promise<void>;
   /** Ordered by id (ULID = publish order), `asc` unless `page.order` says otherwise. */
@@ -2665,7 +2665,7 @@ export interface HostAdmin {
    */
   versionManifest(actor: PlatformActorId, verticalSlug: string, versionId: string): Promise<string | null>;
   /**
-   * Every scope-store binding any version of the vertical has declared, with its kind (#2286,
+   * Every scope-store binding any version of the vertical has declared, with its driver (#2286,
    * RFC scope-stores L17): what export, wipe, erasure and the meter reach, so an object under a
    * binding a later version dropped is still reached. Read by its keys, with no per-version work
    * once the vertical is indexed. A binding keeps its kind for the life of the vertical:
@@ -3075,46 +3075,46 @@ export interface HostAdmin {
    */
   recordStoreDriverRelease(
     actor: PlatformActorId,
-    input: { kind: string; sha256: string; sourceCommit: string },
+    input: { driver: string; sha256: string; sourceCommit: string },
   ): Promise<StoreDriverReleaseRecord>;
   /** One stored release, or undefined. */
-  getStoreDriverRelease(actor: PlatformActorId, kind: string, sha256: string): Promise<StoreDriverReleaseRecord | undefined>;
+  getStoreDriverRelease(actor: PlatformActorId, driver: string, sha256: string): Promise<StoreDriverReleaseRecord | undefined>;
   /**
-   * A kind's current good release, every rollout of it, oldest first, and where a rollback goes.
-   * A `rolling` row whose holder holds the kind no longer reads as `diverged`.
+   * A driver's current good release, every rollout of it, oldest first, and where a rollback goes.
+   * A `rolling` row whose holder holds the driver no longer reads as `diverged`.
    */
-  storeDriverState(actor: PlatformActorId, kind: string): Promise<StoreDriverState>;
+  storeDriverState(actor: PlatformActorId, driver: string): Promise<StoreDriverState>;
   /**
-   * Every vertical any version of which declared a store of `kind`, with those bindings: the
+   * Every vertical any version of which declared a store of `driver`, with those bindings: the
    * scripts a rollout reaches, and in `unreadable` every vertical that cannot say (a manifest that
-   * does not parse, or versions from before the record that re-kinded a binding): the caller that
+   * does not parse, or versions from before the record that moved a binding to another driver): the caller that
    * must reach every script refuses while it is not empty.
    */
-  storeDriverDeclarations(actor: PlatformActorId, kind: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
+  storeDriverDeclarations(actor: PlatformActorId, driver: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
   /**
-   * Take or renew a lease on a kind (#2300): `exclusive` for a rollout or rollback, `shared` for
+   * Take or renew a lease on a driver (#2300): `exclusive` for a rollout or rollback, `shared` for
    * a push or serve rebuilding a script. False when a live hold of another holder excludes it.
    * `renew` extends only a hold the holder still holds (a lapsed one answers false, never a fresh
    * hold), and `rolloutSeq` also needs that rollout to be `rolling` still.
    */
   holdStoreDriver(
     actor: PlatformActorId,
-    input: { kind: string; holder: string; mode: StoreDriverHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number },
+    input: { driver: string; holder: string; mode: StoreDriverHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number },
   ): Promise<boolean>;
-  releaseStoreDriverHold(actor: PlatformActorId, input: { kind: string; holder: string }): Promise<void>;
+  releaseStoreDriverHold(actor: PlatformActorId, input: { driver: string; holder: string }): Promise<void>;
   /**
-   * Begin a rollout (or a rollback) of a stored release, as the kind's exclusive holder; refused
+   * Begin a rollout (or a rollback) of a stored release, as the driver's exclusive holder; refused
    * (`conflict`) otherwise. A rollback must name `storeDriverState`'s `rollbackTarget`. Audited
    * under `rollOutStoreDriver` / `rollBackStoreDriver`.
    */
   beginStoreDriverRollout(
     actor: PlatformActorId,
-    input: { kind: string; sha256: string; action: StoreDriverRolloutAction; holder: string },
+    input: { driver: string; sha256: string; action: StoreDriverRolloutAction; holder: string },
   ): Promise<StoreDriverRolloutRecord>;
   /** End a rollout as its exclusive holder; a `good` end makes its release current. Audited as its begin. */
   finishStoreDriverRollout(
     actor: PlatformActorId,
-    input: { kind: string; seq: number; holder: string; state: Exclude<StoreDriverRolloutState, 'rolling'>; detail: string | null },
+    input: { driver: string; seq: number; holder: string; state: Exclude<StoreDriverRolloutState, 'rolling'>; detail: string | null },
   ): Promise<StoreDriverRolloutRecord>;
   /**
    * One scope's directory record. Cross-checks the (tenantId, scopeId) pair and
