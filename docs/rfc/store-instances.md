@@ -1,23 +1,25 @@
 ---
-status: proposed
+status: accepted
 layer: kernel
-description: A tenant-level store instance that several verticals of one tenant connect to, weighed against the per-scope store of K-49/K-50. Four options, three authorization shapes, the lifecycle a shared object needs, and what it does to the open scope-store stack. Records the maintainer's direction of 2026-10-15: named tenant-level instances with explicit connections and platform-addressed partitions (B), a script per partition as the upgrade for stronger separation (B′), and per-scope stores kept for scope-grain kinds. Still proposed; its 22 open questions are unanswered.
+description: A tenant-level store instance that several verticals of one tenant connect to, weighed against the per-scope store of K-49/K-50. Four options, three authorization shapes, the lifecycle a shared object needs, and what it does to the open scope-store stack. Records the maintainer's direction of 2026-10-15: named tenant-level instances with explicit connections and platform-addressed partitions (B), a script per partition as the upgrade for stronger separation (B′), and per-scope stores kept for scope-grain kinds. Accepted: its 22 questions were answered on 2026-10-15 and the direction is K-53.
 ---
 
 # RFC: store instances
 
-**Status: proposed.** It weighs an alternative to the per-scope store of
+**Status: accepted** (the 22 questions of §12 answered 2026-10-15, §12.1; the direction
+recorded as [K-53](../decisions/K-053-a-tenant-level-store-is-a-named-instance-that-a-tenant-s-verticals-connect-to-explicitly.md);
+open: the background-write record of Q14, the K-52 amendment for tenant-grain envelopes and
+the `reader` audience, the quota numbers, the isolation requirements of §11.1, and the rename
+of "kind" to "driver" in the code and the ratified records). It weighs an alternative to the per-scope store of
 [scope-stores.md](scope-stores.md) (K-49, K-50, D-63) for one requirement that the per-scope
-store cannot meet. The maintainer has set a direction (below). The decisions it asks for are
-§12, and every one of them is still open.
+store cannot meet.
 
 > **Maintainer direction (2026-10-15).** The first kind's requirement is accepted: a
 > tenant-wide store shared by the verticals of one tenant. Option B is the direction: named
 > tenant-level instances, explicit connections, and platform-addressed partitions (§4, §5,
 > §6 (ii)). B′, a script per partition, is the upgrade when stronger separation is wanted.
-> A stays for scope-grain kinds, and the kind declares its grain (§9). This document stays
-> `proposed` until it is merged and until the 22 open questions of §12 have been answered
-> one by one. The structural isolation requirements the maintainer wants pursued before any
+> A stays for scope-grain kinds, and the kind declares its grain (§9). The 22 open questions
+> of §12 were answered one by one on 2026-10-15 (§12.1). The structural isolation requirements the maintainer wants pursued before any
 > third-party kind is allowed are §11.1.
 
 Written against `origin/main` at `02a72f0e8`. References are to sections and symbols, not
@@ -140,12 +142,12 @@ differ in which layers they keep, so they are named first.
    `<tenantId>/<vertical>/<scopeId>/<binding>` (`scopeStoreObjectName`) from
    `OUTBOUND_POLICY`, which it set at dispatch and which the vertical cannot write. The
    vertical names a binding, never an object (K-49).
-2. **What the envelope binds.** The signed envelope (scope-stores §10.3; open PR #2293) puts
+2. **What the envelope binds.** The signed envelope (scope-stores §10.3; #2293, merged) puts
    the version, the audience, the name, the operation, a body digest, the issue time and a
-   nonce inside the signature. The store script holds verification keys only (open PR #2293).
+   nonce inside the signature. The store script holds verification keys only (#2293).
    So nothing that runs in a store script can mint an envelope.
 3. **Which script holds the object.** `idFromName` is per script. Two scripts never share an
-   object. Open PR #2295's entry module also refuses a name whose vertical is not the
+   object. #2295's entry module also refuses a name whose vertical is not the
    script's own.
 4. **Which isolate runs the code.** Objects of one class in one script may share an isolate
    and its memory (#2210; not exercised, §13). Objects in different scripts never do.
@@ -153,7 +155,7 @@ differ in which layers they keep, so they are named first.
 **An isolation property of today's design, stated neutrally.** A store script runs the
 kind's code. The entry module checks every envelope before the kind's class is constructed,
 but it runs in the same interpreter as that class. Within its object, the kind's code is
-trusted by review alone (D-63; scope-stores Q3, recorded on open PR #2302). The open stack
+trusted by review alone (D-63; scope-stores Q3, ratified in #2302). The open stack
 has one script per (kind, vertical). So the code of one kind release runs, in one script,
 for **every tenant that installed that vertical**. If the kind misbehaves, through a defect
 or otherwise, the reach is everything in that script and isolate: every tenant of the
@@ -519,8 +521,8 @@ two things have to be kept apart when grading them:
     that instance.
 - **What holds it: addressing, mechanically.** A caller cannot name another partition, and
   cannot run a non-read operation on one. Router and envelope enforce both, in platform code,
-  before any kind code runs. A store script holds no key that mints an envelope (open PR
-  #2293).
+  before any kind code runs. A store script holds no key that mints an envelope
+  (#2293).
 - **What does not hold mechanically: data separation against the kind.** Every partition of
   every instance of the tenant is an object of one class in the one (kind, tenant) script.
   The objects may share an isolate, and the kind's code can carry data between them through
@@ -754,10 +756,10 @@ is never recorded as `0`.
 - The script per (kind, vertical), and the upload of a store script at the vertical's push
   (#2299). Under B it happens at instance creation.
 
-### 8.1 The open PRs
+### 8.1 The open PRs (since merged)
 
-These are by another contributor and carry a `dibs` claim. This RFC proposes nothing to
-change on them. The table says only what each would mean if B were chosen.
+*As of 2026-10-16 every PR in this table has merged; #2298 merged as K-52, without D-64.*
+They were open when this RFC was written. This RFC proposed nothing to change on them. The table says only what each would mean if B were chosen.
 
 | PR | Issue | Under B (tenant-grain kind) | Under A (scope-grain kind) |
 |---|---|---|---|
@@ -774,9 +776,9 @@ change on them. The table says only what each would mean if B were chosen.
 
 ### 8.2 Statements that would change
 
-The decisions are cited as they stand on `main` (K-49, K-50 and D-63 `proposed`), and as
-open PR #2302 would ratify them (K-49 and K-50 `accepted`, with Q3 and Q5 answered). #2302
-is open.
+The decisions were cited as they stood on `main` when this RFC was written (K-49, K-50 and
+D-63 `proposed`), and as #2302 would ratify them (K-49 and K-50 `accepted`, with Q3 and Q5
+answered). #2302 has since merged, and so has D-63's pin (#2306).
 
 - **K-49, "one per (tenant, vertical, scope, binding)", and the object name.** Under B these
   become true of a scope-grain kind only. A tenant-grain kind is one object per instance, or
@@ -804,7 +806,7 @@ is open.
   this becomes one script per (kind, tenant), and an exhausted isolate restarts one tenant's
   objects only.
 - **D-63's release pin, as it is being ratified.** D-63 is being ratified with a
-  hash-and-commit pin, in a separate docs PR that is open and not merged. The parts:
+  hash-and-commit pin, in a separate docs PR (#2306, since merged). The parts:
   - the registration pins the exact sha256 of the release bundle and the source commit it
     was built from, and the bytes may live outside the repo;
   - only a human staff credential publishes a release, never the automation's service token;
@@ -838,7 +840,7 @@ same holds for grain: **decide the first kind's grain before #2210 registers it*
 
 ## 9. How a kind declares its grain
 
-The grain is the kind's, recorded in its registration (`STORE_KINDS`, open PR #2301), and
+The grain is the kind's, recorded in its registration (`STORE_KINDS`, #2301), and
 reviewed with it: `grain: 'scope' | 'tenant'`. The vertical's declaration does not change.
 
 A vertical cannot choose the grain, because that would let a vertical decide that its data
@@ -931,9 +933,11 @@ that Workers for Platforms supports it.
 4. **No platform bindings handed to the kind.** The environment the kind receives leaves out
    the store namespace and the verification keys (§3). *Unverified* for both runtimes.
 
-## 12. Open questions
+## 12. Questions (answered 2026-10-15)
 
-Each one is for the maintainer. The lean is stated so it can be rejected cleanly.
+These were the open questions for the maintainer, each with a lean stated so it could be
+rejected cleanly. All 22 are answered; the answers, and what stays open after them, are
+§12.1.
 
 1. **Granularity.** One instance per tenant (per kind), or named instances, several per
    tenant? *Lean:* named instances. The maintainer's proposal asks for more than one, and a
@@ -1029,6 +1033,51 @@ Each one is for the maintainer. The lean is stated so it can be rejected cleanly
     narrowable. The data is unchanged, so the producer's last declaration about it is still the
     right bound, and a reconnect replaces it with the producer's current declaration.
 
+### 12.1 The maintainer's answers (2026-10-15)
+
+All 22 questions were answered on 2026-10-15. The load-bearing ones are recorded as
+[K-53](../decisions/K-053-a-tenant-level-store-is-a-named-instance-that-a-tenant-s-verticals-connect-to-explicitly.md).
+The answers use the maintainer's new word **driver** for what this RFC calls a kind: the
+platform-registered, pinned code that backs a store. The code, this RFC's body, the ratified
+K-49, K-50 and D-63 text and the proposed K-52 still say "kind" until a separate rename lands.
+Nothing these answers decide is built yet.
+
+| Q | Topic | Answer |
+|---|---|---|
+| Q1 | Granularity | The lean: named instances, several per tenant |
+| Q2 | The connection permission | A new connection permission key, held by owner and admin |
+| Q3 | Cross-vertical reads | Shape (ii), with reads **opt-in**: a connection reads nothing from another partition until a tenant admin enables reads for that connection, and then only over the read operations the producer declared shareable. Limited to non-personal shapes, permanently |
+| Q4 | Ingestion-only first slice (D) | The lean: no, unless B's script count or upload behaviour fails on a real account |
+| Q5 | Residency | The lean: fixed at creation, and a connect across jurisdictions is refused |
+| Q6 | Who creates instances | The lean: a tenant admin only, never a vertical's provisioning |
+| Q7 | Quotas | The lean: a ceiling on instances per tenant and on connections per instance, bytes metered per partition, numbers from a real account |
+| Q8 | Naming | The lean: a ULID in every name, the display name in the directory only, script names held injective against L20 |
+| Q9 | How grain is declared | The driver declares it in its registration, `grain: 'scope' \| 'tenant'`, decided for the first driver before it is registered |
+| Q10 | Disconnect | The lean: keep the partition, unwritable, readable only through existing grants; a reconnect revives it; deletion is an explicit step |
+| Q11 | A deleted scope's rows | The lean: removed for a reaped scope, kept for an archived one |
+| Q12 | Preview, fork and snapshot reach | The lean: none in v1 |
+| Q13 | The door's name | The lean: `getScopeStore` for both grains |
+| Q14 | Background writes | Decided in a **separate record**, which must be settled before a tenant-grain driver's first tenant. Deferred, not open-ended |
+| Q15 | One instance mechanism or two | Share the tenant-facing half with auth-server-style instances (one directory of tenant-level instances, one connection permission, one dashboard door). The transports stay separate: OIDC verification and the platform-routed envelope do not become one protocol |
+| Q16 | The connection's grain | The lean: per installation scope |
+| Q17 | Per-call audit of `reader` calls | The lean: the log line plus a per-connection read counter |
+| Q18 | Who sees the connection graph | The lean: tenant admins, a read-only view for `dashboard:read`, and a vertical sees only its own bindings' state |
+| Q19 | Deleting an instance with live connections | The lean: refused, naming the live connections |
+| Q20 | Noisy neighbours within a tenant | Option B: accepted for the first driver, and measured |
+| Q21 | The script grain inside a tenant | Option B: one script per (driver, tenant), with separation inside a tenant held by review. B′ (a script per partition) is **required** before any driver written outside this repo is registered at tenant grain, the same condition #2302 sets for scope-stores Q3 |
+| Q22 | The shareable list after a connection ends | The lean: the last recorded list stands, and the admin may only narrow it |
+
+**Still open after these answers:**
+
+- the separate record on background writes (Q14);
+- a K-52 amendment, recorded with the instance implementation: the new envelope fields
+  (the caller's vertical, scope and connection, under a new `v`) on every tenant-grain call,
+  and the `reader` audience (§5.5);
+- the quota numbers (Q7) and the Workers for Platforms limits behind them (§13);
+- the isolation requirements of §11.1, which gate any driver written outside this repo,
+  B′ among them;
+- the rename of "kind" to "driver" in the code and the ratified records.
+
 ## 13. Unverified
 
 Not in this repository, or not shown by anything in it:
@@ -1040,7 +1089,7 @@ Not in this repository, or not shown by anything in it:
   count (one per kind and partition, that is per installation scope × binding), together with
   the window it opens on every first connect.
 - **A real dispatch-namespace upload of a store script, Python or JS.** It has not been run.
-  Open PRs #2299, #2300 and #2301 say the same.
+  #2299, #2300 and #2301 (now merged) say the same.
 - **Isolate sharing between objects of one script.** It has not been exercised (spike
   FINDINGS, "Not shown"). The §3 exposure is argued from the design, not measured.
 - **A filtered environment for the kind (§3).** Whether the entry module can hand the kind's
@@ -1052,11 +1101,10 @@ Not in this repository, or not shown by anything in it:
 - **Read-only storage access for one call.** Whether a store object can run a `reader`
   operation under storage that refuses writes is not established. §6 (ii) therefore holds
   "read-only" by operation name and review, not by the storage layer.
-- **D-64 and the D-63 amendment.** D-64 exists only on open PR #2298 and is not accepted as
-  written. D-63's hash-and-commit pin is in a separate docs PR that is not merged. Neither is
-  on `main`.
-- **The ratification of K-49 and K-50, and the Q3 and Q5 answers.** These are open PR #2302,
-  at head `68d47b39f`. They are not on `main`.
+- **D-64 and the D-63 amendment.** *Resolved since writing:* D-64 was not accepted, and #2298
+  merged as K-52 without it. D-63's hash-and-commit pin merged in #2306.
+- **The ratification of K-49 and K-50, and the Q3 and Q5 answers.** *Resolved since writing:*
+  #2302 merged on 2026-10-15.
 - **Cold-start cost per tenant script for the first kind's runtime**, and the bundle size it
   uploads per script. No measurement exists.
 

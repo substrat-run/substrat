@@ -84,7 +84,7 @@ These are recorded rather than fixed, and are tracked in
 
 ## The decision log
 
-[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->115 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
+[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->116 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
 generated from [`decisions/`](decisions/), one file per decision. The tables in master plan
 §12 and kernel design §14 are generated from the same source and must not be hand-edited.
 
@@ -207,7 +207,7 @@ Open proposals. A document leaves when it is decided — to `architecture/` rewr
 | [model-phase-plan.md](rfc/model-phase-plan.md) | `building` | The model phase. Umbrella #685 open. |
 | [rallypoint-concept.md](rfc/rallypoint-concept.md) | `historical` | The RallyPoint concept — the racket-club demo that drove engine-booking; the demo is gone, the argument stays. |
 | [scope-stores.md](rfc/scope-stores.md) | `proposed` | A platform-run object per scope, declared as a kind and reached through its own door. #2207. |
-| [store-instances.md](rfc/store-instances.md) | `proposed` | A tenant-level store instance that several verticals of one tenant connect to, weighed against the per-scope store of K-49/K-50. Four options, three authorization shapes, the lifecycle a shared object needs, and what it does to the open scope-store stack. Records the maintainer's direction of 2026-10-15: named tenant-level instances with explicit connections and platform-addressed partitions (B), a script per partition as the upgrade for stronger separation (B′), and per-scope stores kept for scope-grain kinds. Still proposed; its 22 open questions are unanswered. |
+| [store-instances.md](rfc/store-instances.md) | `accepted` | A tenant-level store instance that several verticals of one tenant connect to, weighed against the per-scope store of K-49/K-50. Four options, three authorization shapes, the lifecycle a shared object needs, and what it does to the open scope-store stack. Records the maintainer's direction of 2026-10-15: named tenant-level instances with explicit connections and platform-addressed partitions (B), a script per partition as the upgrade for stronger separation (B′), and per-scope stores kept for scope-grain kinds. Accepted: its 22 questions were answered on 2026-10-15 and the direction is K-53. |
 | [sub-transactions.md](rfc/sub-transactions.md) | `superseded` | Moved — the sub-transactions RFC shipped as ctx.atomic and now lives in architecture/. |
 | [vat-carriage.md](rfc/vat-carriage.md) | `proposed` | Concept spec for VAT carriage in engine-invoicing (#326) — a rate and a tax amount on a line, a per-rate decomposition frozen at export. Argued against the currency work that already shipped and against K-39; recommends per-line carriage and leaves the replace-or-additive question to a human. |
 
