@@ -6910,7 +6910,8 @@ export function defineScopeDO(
         // changes which tenant the scope belongs to: the platform's word for it (`provisionedFor`)
         // must agree with the receipt held, and is refused before the first drop if it does not.
         // #2314: a row for an id the orphan sweep condemned here is refused, as the insert refuses it.
-        refuseCondemnedInDump(doSpineSql(this.sql), tables);
+        // Judged on `replayable`, the very tables whose rows the replay below inserts.
+        refuseCondemnedInDump(doSpineSql(this.sql), replayable);
         const receiptBefore = this.provisionedFor();
         if (provisionedFor !== undefined && receiptBefore !== null && receiptBefore !== provisionedFor) {
           const refused = substratError('conflict', tenantReceiptRefusal(receiptBefore, provisionedFor));
