@@ -141,7 +141,8 @@ rollout upload the scripts they reach. The rest are rebuilt by the control plane
 - **Run it now.** `substrat store-driver rebuild --driver <driver>` runs a pass at once, for one
   driver, as a person (a staff sign-in, never the service token). It is audited as
   `rebuildStoreDriver`, takes the same lease as the scheduled pass (so the two never walk a driver at
-  once), and walks up to 180 scripts. It answers `paused` while scripts remain: run it again.
+  once), and walks up to 180 scripts. A driver whose walk is done is walked again (reads only, and an
+  upload for a script that is not current). It answers `paused` while scripts remain: run it again.
 - **How long.** For N scripts of one driver (its verticals plus its canary), the scheduled pass alone
   needs ⌈N / 100⌉ passes: 1,000 verticals take 11 passes, about 2¾ hours, on top of the wait for the
   first pass. Running `store-driver rebuild` back to back takes ⌈N / 180⌉ runs, 6 for 1,000
@@ -152,9 +153,12 @@ rollout upload the scripts they reach. The rest are rebuilt by the control plane
   driver's canary script) and each failure. A script it could not rebuild is retried on every pass
   and is an ops-failure row (`store-rebuild`), so it reaches the failure digest. A vertical whose
   versions' stores cannot be named is listed as a failure until it can.
-- **During a deploy.** While two control-plane versions run side by side with different lists, each
-  converges on its own fingerprint and the rebuild restarts when the other runs. It settles once one
-  version serves.
+- **During a deploy.** While two control-plane versions run side by side with different lists, a push
+  served by the older one uploads its script with the older lists, even after the walk is done. A
+  `done` walk is therefore walked again a day after it finished (it reads each script and uploads
+  only one that is not current), and `store-driver rebuild` always walks again. So after a list
+  change, wait until the control-plane deploy serves only the new version, then run
+  `store-driver rebuild` for every driver until it reads `scripts: current`: that walk is the proof.
 
 ## A leaked private key
 
@@ -163,7 +167,8 @@ The order is the reverse of a planned rotation, because the old key must stop si
 1. Generate a new pair (step 1) and list the new public key (step 2).
 2. Switch the signer to it at once (step 4), without waiting for step 3. Calls for that audience
    fail at any store script that does not yet carry the new list. That is the cost of revoking.
-   Run `substrat store-driver rebuild --driver <driver>` for every driver until it reads
+   Once the control-plane deploy serves only the new version, run
+   `substrat store-driver rebuild --driver <driver>` for every driver until it reads
    `scripts: current`, so the new list reaches every script without waiting for the scheduled pass.
 3. Revoke the old private key at the secrets manager: replace it in the password-manager copy,
    and make sure no other copy of the old line survives (files, shell history, scrollback).

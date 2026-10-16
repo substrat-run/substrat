@@ -710,6 +710,7 @@ async function rebuildStoreScripts(env: Env, admin: HostAdmin): Promise<void> {
     ensure,
     ensureCanary: flow.ensureCanary,
     budget: storeRebuildBudget(subrequests),
+    reverify: 'when-due',
   });
   const active = passes.filter((p) => p.outcome !== 'current');
   if (active.length > 0) {

@@ -10533,6 +10533,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         ensure: ensureScopeStores,
         ensureCanary: flow.ensureCanary,
         budget: storeRebuildBudget(STORE_REBUILD_REQUEST_SUBREQUESTS),
+        // A person asking re-walks a driver that is done: after a control plane deploy has finished
+        // rolling out, that walk is the proof no script kept the older lists.
+        reverify: 'always',
       });
       const { rebuild: _row, ...result } = pass!;
       ran = result;

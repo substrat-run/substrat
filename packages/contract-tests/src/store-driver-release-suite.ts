@@ -383,6 +383,11 @@ export function storeDriverReleaseContractSuite(adapterName: string, makeFixture
       const restarted = await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f2', holder: a, ttlMs: 60_000 });
       expect(restarted).toMatchObject({ fingerprint: 'f2', cursor: null, failures: [], state: 'running', finishedAt: null });
       expect(await host.admin.storeDriverRebuild(staff, driver)).toEqual(restarted);
+      // A restart starts a done rebuild over at the same fingerprint, and leaves a running one where it is.
+      await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f2', holder: a, cursor: 'q', failures: [], done: true, ttlMs: 60_000, release: true });
+      expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f2', holder: b, ttlMs: 60_000, restart: true })).toMatchObject({ cursor: null, state: 'running', finishedAt: null });
+      await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f2', holder: b, cursor: 'm', failures: [], done: false, ttlMs: 60_000, release: true });
+      expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f2', holder: a, ttlMs: 60_000, restart: true })).toMatchObject({ cursor: 'm', state: 'running' });
       // Another driver's rebuild is its own row.
       expect(await host.admin.storeDriverRebuild(staff, freshDriver())).toBeUndefined();
       await expectRefusal(host.admin.claimStoreDriverRebuild(staff, { driver: freshDriver(), fingerprint: 'f', holder: a, ttlMs: 0 }), 'validation_failed');

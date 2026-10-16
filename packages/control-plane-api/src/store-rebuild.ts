@@ -54,6 +54,13 @@ export const STORE_REBUILD_REQUEST_SUBREQUESTS = 900;
 /** The scripts a pass with `subrequests` to spend may walk: {@link STORE_REBUILD_SUBREQUESTS_PER_SCRIPT} each. */
 export const storeRebuildBudget = (subrequests: number): number =>
   Math.max(1, Math.floor(subrequests / STORE_REBUILD_SUBREQUESTS_PER_SCRIPT));
+/**
+ * How long a `done` rebuild stands before a scheduled pass walks it again. A walk that is done
+ * proves every script was current when it read it; a control plane still serving the older inputs
+ * (a deploy rolling out gradually) can upload a script after that. Walking it again reads each
+ * script's settings and uploads only a script that is not current.
+ */
+export const STORE_REBUILD_REVERIFY_MS = 24 * 60 * 60_000;
 /** How long a pass's lease on a driver's rebuild lives between progress writes. */
 const STORE_REBUILD_LEASE_TTL_MS = 10 * 60_000;
 
@@ -78,6 +85,13 @@ interface StoreFleetRebuildDeps {
   ensureCanary: (input: { driver: string; existingOnly: true; loadRelease: LoadRelease }) => Promise<{ uploaded: boolean }>;
   /** The most scripts this pass walks, across drivers. */
   budget: number;
+  /**
+   * When a `done` rebuild is walked again: `always` (a person asked for this pass), or once it has
+   * stood {@link STORE_REBUILD_REVERIFY_MS} (the scheduled pass).
+   */
+  reverify: 'always' | 'when-due';
+  /** For a test: the clock the reverification is judged on. */
+  now?: () => number;
 }
 
 export interface StoreDriverRebuildPass {
@@ -136,11 +150,15 @@ async function rebuildDriver(
   const result = (outcome: StoreDriverRebuildPass['outcome'], rebuild?: StoreDriverRebuildRecord): StoreDriverRebuildPass =>
     ({ driver, outcome, walked, uploaded, ...(rebuild ? { rebuild } : {}) });
   const stood = await admin.storeDriverRebuild(actor, driver);
-  if (stood && stood.fingerprint === fingerprint && stood.state === 'done') return result('current', stood);
+  const doneHere = stood?.fingerprint === fingerprint && stood.state === 'done';
+  const restart =
+    doneHere &&
+    (deps.reverify === 'always' || (deps.now ?? Date.now)() - Date.parse(stood.finishedAt ?? stood.updatedAt) >= STORE_REBUILD_REVERIFY_MS);
+  if (doneHere && !restart) return result('current', stood);
   if (budget <= 0) return result('paused', stood);
 
   const holder = ulid();
-  const claimed = await admin.claimStoreDriverRebuild(actor, { driver, fingerprint, holder, ttlMs: STORE_REBUILD_LEASE_TTL_MS });
+  const claimed = await admin.claimStoreDriverRebuild(actor, { driver, fingerprint, holder, ttlMs: STORE_REBUILD_LEASE_TTL_MS, restart });
   if (!claimed) return result('busy', stood);
   let rebuild = claimed;
   let cursor = claimed.cursor;

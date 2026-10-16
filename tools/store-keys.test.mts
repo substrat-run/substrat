@@ -185,7 +185,8 @@ test('rotate: prints the ordered steps, the compromise order and the #2309 limit
   assert.match(plan, /#2309/);
   // The old key counts as revoked only once the rebuild reads current, and the compromise order runs it at once.
   assert.match(plan, /5\. Drop the old key[\s\S]*revoked only once store-driver status reads `scripts: current`/);
-  assert.match(plan, /COMPROMISED key[\s\S]*substrat store-driver rebuild --driver/);
+  // ...and a compromised key's switch is followed by a rebuild at once, before the old key is revoked.
+  assert.match(plan, /switch the signer FIRST[\s\S]*substrat store-driver rebuild --driver[\s\S]*revoke the old/);
   assert.match(plan, /→ 1\./);
 });
 

@@ -557,17 +557,19 @@ export function storeDriverRebuildIn(db: SwitchSql, driver: string): StoreDriver
  * Take the lease on a driver's fleet rebuild, towards `fingerprint`, for `ttlMs`. Answers the
  * rebuild as it stands, or null while another holder's lease is live. A rebuild towards another
  * fingerprint (or none yet) starts over: no vertical is walked and none has failed, because every
- * script may have been built from something else than what the platform builds from now.
+ * script may have been built from something else than what the platform builds from now. With
+ * `restart`, a rebuild already `done` at this fingerprint starts over too (a re-verification: a
+ * script uploaded since by a control plane still building from older inputs is found and rebuilt).
  */
 export function claimStoreDriverRebuildIn(
   db: SwitchSql,
-  input: { driver: string; fingerprint: string; holder: string; nowMs: number; ttlMs: number; at: string },
+  input: { driver: string; fingerprint: string; holder: string; nowMs: number; ttlMs: number; at: string; restart?: boolean },
 ): StoreDriverRebuildRecord | null {
   if (!(input.ttlMs > 0)) throw substratError('validation_failed', 'a store-driver rebuild lease needs a positive lifetime');
   const row = rebuildRowOf(db, input.driver);
   if (row && row.holder !== null && row.holder !== input.holder && Number(row.lease_expires_at) > input.nowMs) return null;
   const lease = input.nowMs + input.ttlMs;
-  if (!row || row.fingerprint !== input.fingerprint) {
+  if (!row || row.fingerprint !== input.fingerprint || (input.restart && row.state === 'done')) {
     db.run(
       `INSERT INTO store_driver_rebuilds (driver, fingerprint, cursor, failures, state, holder, lease_expires_at, started_at, updated_at, finished_at)
        VALUES (?, ?, NULL, '[]', 'running', ?, ?, ?, ?, NULL)

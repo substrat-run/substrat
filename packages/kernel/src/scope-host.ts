@@ -3137,12 +3137,12 @@ export interface HostAdmin {
   storeDriverRebuild(actor: PlatformActorId, driver: string): Promise<StoreDriverRebuildRecord | undefined>;
   /**
    * Take the lease on a driver's fleet rebuild towards `fingerprint` (#2309): the rebuild as it
-   * stands, started over when it was towards another fingerprint, or null while another holder's
-   * lease is live.
+   * stands, started over when it was towards another fingerprint (or, with `restart`, when it is
+   * done), or null while another holder's lease is live.
    */
   claimStoreDriverRebuild(
     actor: PlatformActorId,
-    input: { driver: string; fingerprint: string; holder: string; ttlMs: number },
+    input: { driver: string; fingerprint: string; holder: string; ttlMs: number; restart?: boolean },
   ): Promise<StoreDriverRebuildRecord | null>;
   /**
    * Record the lease holder's progress and renew its lease (or drop it with `release`); refused
