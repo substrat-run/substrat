@@ -147,3 +147,42 @@ describe('the console promote review (#1677)', () => {
     ]);
   });
 });
+
+describe('MigrationDiffView: declared moves and discards (#2322)', () => {
+  const view = (diff: Parameters<typeof migrationReviewOf>[0]) =>
+    renderToString(createElement(MigrationDiffView, { review: migrationReviewOf(wire(diff)) }));
+
+  it('shows each discard with its reason and each move, counted, and nothing for a migration declaring none', () => {
+    const html = view(
+      migrationsOnTop(
+        [
+          { moduleId: 'desk', version: '0001', sql: 'SELECT 1;' },
+          { moduleId: 'desk', version: '0002', sql: 'DROP TABLE legacy;', discards: { legacy: 'unused since 2024' }, moves: { 'a.b': 'c.d' } },
+        ],
+        undefined,
+      ),
+    );
+    expect(html).toContain('deliberately discards data in <!-- -->1<!-- --> place');
+    expect(html).toContain('unused since 2024');
+    expect(html).toContain('c.d');
+    expect(html.match(/discards <span/g)).toHaveLength(1);
+    expect(view(migrationsOnTop([{ moduleId: 'desk', version: '0001', sql: 's' }], undefined))).not.toMatch(/discards|moves/);
+  });
+
+  it('escapes a reason, makes bidi controls visible, and cuts a long one behind an expander', () => {
+    const html = view(
+      migrationsOnTop([{ moduleId: 'desk', version: '0002', sql: 's', discards: { t: `<img src=x>‮${'r'.repeat(400)}TAIL` } }], undefined),
+    );
+    expect(html).not.toContain('<img');
+    expect(html).toContain('&lt;img src=x&gt;&lt;U+202E&gt;');
+    expect(html).not.toMatch(/[‪-‮⁦-⁩]/);
+    expect(html).toMatch(/<details[^>]*><summary[^>]*>.*… show all<\/summary>.*TAIL<\/details>/);
+  });
+
+  it('names a declarations-only edit as such', () => {
+    const html = view(
+      migrationsOnTop([{ moduleId: 'desk', version: '0001', sql: 's', discards: { t: 'why' } }], [{ moduleId: 'desk', version: '0001', sql: 's' }]),
+    );
+    expect(html).toContain('declarations edited after shipping');
+  });
+});

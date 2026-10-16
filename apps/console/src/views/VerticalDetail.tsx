@@ -9,7 +9,7 @@ import type {
   VerticalChannel,
   VerticalVersion,
 } from '@substrat-run/contracts';
-import { grantShapeHolderNotes } from '@substrat-run/contracts';
+import { clipReviewText, discardCount, grantShapeHolderNotes, reviewText, type MigrationEntry } from '@substrat-run/contracts';
 import { Badge, Button, Card, Checkbox, Dialog, Input, Select, SelectBox, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
@@ -1276,6 +1276,41 @@ export function PermissionDiffView({ review }: { review: PermissionReview }) {
   );
 }
 
+/**
+ * What one migration declares it moves and discards (#2322). Every string is the pusher's:
+ * React text with bidi controls made visible, and a long reason cut behind a `<details>`.
+ */
+function DeclarationLines({ entry }: { entry: MigrationEntry }) {
+  if (entry.declarationsLeftOut) {
+    return <div style={{ color: 'var(--text-tertiary)' }}>Declares moves or discards left out by the read's bounds.</div>;
+  }
+  return (
+    <>
+      {Object.entries(entry.discards ?? {}).map(([target, why]) => {
+        const reason = clipReviewText(why);
+        return (
+          <div key={`d${target}`} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+            discards <Tag mono>{reviewText(target)}</Tag> —{' '}
+            {reason.clipped ? (
+              <details style={{ display: 'inline' }}>
+                <summary style={{ display: 'inline', cursor: 'pointer' }}>{reason.shown}… show all</summary>
+                {reason.full}
+              </details>
+            ) : (
+              reason.full
+            )}
+          </div>
+        );
+      })}
+      {Object.entries(entry.moves ?? {}).map(([from, to]) => (
+        <div key={`m${from}`}>
+          moves <Tag mono>{reviewText(from)}</Tag> → <Tag mono>{reviewText(to)}</Tag> (verified when it runs)
+        </div>
+      ))}
+    </>
+  );
+}
+
 export function MigrationDiffView({ review }: { review: MigrationReview }) {
   if (review.kind === 'unavailable') {
     return (
@@ -1287,9 +1322,10 @@ export function MigrationDiffView({ review }: { review: MigrationReview }) {
   }
   const { diff } = review;
   const entries = [
-    ...diff.changed.map((m) => ({ ...m, tag: 'edited' })),
+    ...diff.changed.map((m) => ({ ...m, tag: m.edited === 'declarations' ? 'redeclared' : 'edited' })),
     ...diff.added.map((m) => ({ ...m, tag: 'new' })),
   ];
+  const discards = discardCount(diff);
   return (
     <div style={diffBox}>
       <span style={{ color: 'var(--text-secondary)' }}>
@@ -1298,10 +1334,21 @@ export function MigrationDiffView({ review }: { review: MigrationReview }) {
       {entries.length === 0 && (
         <span style={{ color: 'var(--text-tertiary)' }}>No migration is new or edited.</span>
       )}
+      {discards > 0 && (
+        <span>
+          <Tag>discards data</Tag> This promote deliberately discards data in {discards} place{discards === 1 ? '' : 's'}. Each reason is
+          the migration author’s own.
+        </span>
+      )}
       {entries.map((m) => (
         <div key={`${m.tag}:${m.moduleId}:${m.version}`}>
           <Tag mono>{`${m.moduleId}@${m.version}`}</Tag>{' '}
-          {m.tag === 'edited' ? 'edited after shipping — scopes that ran it will not run the new SQL' : 'new'}
+          {m.tag === 'edited'
+            ? 'edited after shipping — scopes that ran it will not run the new SQL'
+            : m.tag === 'redeclared'
+              ? 'declarations edited after shipping — scopes that ran it are unaffected; the rest are held to these'
+              : 'new'}
+          <DeclarationLines entry={m} />
           {m.sql === null ? (
             <div style={{ color: 'var(--text-tertiary)' }}>SQL left out: over the read's size bound.</div>
           ) : (
