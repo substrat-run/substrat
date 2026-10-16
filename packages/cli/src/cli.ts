@@ -42,7 +42,7 @@ import { printVersions } from './versions.js';
 import { checkOutboundDeclared } from './outbound-scan.js';
 import { exportBreakLines, promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
-import { isReleaseSha, packedFilesOf, packStoreDriverDir, rollBackStoreDriver, sourceCommitOf, rollOutStoreDriver, storeDriverStatus, storeDriverStatusLines, uploadStoreDriverRelease } from './store-driver.js';
+import { isReleaseSha, packedFilesOf, packStoreDriverDir, rebuildStoreDriver, rollBackStoreDriver, sourceCommitOf, rollOutStoreDriver, storeDriverRebuildLines, storeDriverStatus, storeDriverStatusLines, uploadStoreDriverRelease } from './store-driver.js';
 import { fetchWhoami } from './whoami.js';
 import { planeFor } from './plane.js';
 import { dataLossCheckRequired, formatDataLossCheck } from './data-loss-check.js';
@@ -170,6 +170,8 @@ Usage:
                                               canary a stored, pinned release, then roll it out
   substrat store-driver rollback --driver <driver>  return to the previous good release
   substrat store-driver status --driver <driver>    a driver's current release and rollouts
+  substrat store-driver rebuild --driver <driver>   rebuild every script of the driver now, at
+                                              the release it runs (after a key is revoked)
   substrat unpublish <slug>                   remove from the public marketplace (staff)
   substrat versions <slug>                    list a vertical's versions + channels
   substrat installs <slug>                    list this workspace's installs of a vertical
@@ -649,6 +651,7 @@ const STORE_DRIVER_USAGE = [
   '       substrat store-driver rollout  --driver <driver> --sha256 <sha256>',
   '       substrat store-driver rollback --driver <driver>',
   '       substrat store-driver status   --driver <driver>',
+  '       substrat store-driver rebuild  --driver <driver>',
 ];
 
 async function cmdStoreDriver(): Promise<void> {
@@ -658,7 +661,7 @@ async function cmdStoreDriver(): Promise<void> {
     process.exit(1);
   }
   const driver = flag('driver');
-  if (!['upload', 'rollout', 'rollback', 'status'].includes(sub ?? '') || !driver) {
+  if (!['upload', 'rollout', 'rollback', 'status', 'rebuild'].includes(sub ?? '') || !driver) {
     for (const line of STORE_DRIVER_USAGE) console.error(line);
     process.exit(1);
   }
@@ -675,6 +678,15 @@ async function cmdStoreDriver(): Promise<void> {
   if (sub === 'status') {
     const view = await storeDriverStatus(plane);
     for (const line of storeDriverStatusLines(driver, view)) console.log(line);
+    return;
+  }
+  if (sub === 'rebuild') {
+    const { pass, rebuild } = await rebuildStoreDriver(plane);
+    console.log(`✓ ${driver} rebuild: ${pass.outcome}, ${pass.walked.length} script(s) walked, ${pass.uploaded.length} uploaded this run`);
+    for (const line of storeDriverRebuildLines(rebuild)) console.log(line);
+    if (pass.outcome === 'paused') console.log('  scripts remain: run the same command again to continue');
+    if (pass.outcome === 'held') console.log('  a rollout or rollback holds the driver: run it again once that ends');
+    if (pass.outcome === 'busy') console.log('  another pass is rebuilding the driver: run `store-driver status` to follow it');
     return;
   }
   if (sub === 'upload') {

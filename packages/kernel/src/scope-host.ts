@@ -5,7 +5,7 @@ import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
 import type { ScopeCopyBackfillResult, SubjectErasureFence } from './scope-copy-ledger.js';
 import type { VerticalScopeStore } from './vertical-scope-stores.js';
-import type { StoreDriverHoldMode, StoreDriverReleaseRecord, StoreDriverRolloutAction, StoreDriverRolloutRecord, StoreDriverRolloutState, StoreDriverState } from './store-driver-releases.js';
+import type { StoreDriverHoldMode, StoreDriverRebuildFailure, StoreDriverRebuildRecord, StoreDriverReleaseRecord, StoreDriverRolloutAction, StoreDriverRolloutRecord, StoreDriverRolloutState, StoreDriverState } from './store-driver-releases.js';
 import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
   OnBehalfOf,
@@ -3133,6 +3133,43 @@ export interface HostAdmin {
     actor: PlatformActorId,
     input: { driver: string; seq: number; holder: string; state: Exclude<StoreDriverRolloutState, 'rolling'>; detail: string | null },
   ): Promise<StoreDriverRolloutRecord>;
+  /** The platform's rebuild of every script of a driver (#2309), or undefined before its first. */
+  storeDriverRebuild(actor: PlatformActorId, driver: string): Promise<StoreDriverRebuildRecord | undefined>;
+  /**
+   * Take the lease on a driver's fleet rebuild towards `fingerprint` (#2309): the rebuild as it
+   * stands, started over when it was towards another fingerprint, or null while another holder's
+   * lease is live.
+   */
+  claimStoreDriverRebuild(
+    actor: PlatformActorId,
+    input: { driver: string; fingerprint: string; holder: string; ttlMs: number },
+  ): Promise<StoreDriverRebuildRecord | null>;
+  /**
+   * Record the lease holder's progress and renew its lease (or drop it with `release`); refused
+   * (`conflict`) once another pass claimed the row or it was restarted at another fingerprint.
+   */
+  advanceStoreDriverRebuild(
+    actor: PlatformActorId,
+    input: {
+      driver: string;
+      fingerprint: string;
+      holder: string;
+      cursor: string | null;
+      failures: readonly StoreDriverRebuildFailure[];
+      done: boolean;
+      ttlMs: number;
+      release?: boolean;
+    },
+  ): Promise<StoreDriverRebuildRecord>;
+  /**
+   * Audit a staff-run pass of a driver's fleet rebuild (#2309) as `rebuildStoreDriver`: the driver,
+   * how the pass ended and what it walked. The scheduled pass writes no admin row; its failures are
+   * ops-failure rows.
+   */
+  recordStoreDriverRebuildRun(
+    actor: PlatformActorId,
+    entry: { driver: string; outcome: string; walked: readonly string[]; uploaded: readonly string[]; error?: string },
+  ): Promise<void>;
   /**
    * One scope's directory record. Cross-checks the (tenantId, scopeId) pair and
    * returns undefined on a mismatch rather than another tenant's scope (K-3) —

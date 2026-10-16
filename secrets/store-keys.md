@@ -73,8 +73,8 @@ know. That takes two pushes, in this order.
    `pnpm store-keys doctor --env <env> --key-file ~/keys/store-caller.key --key-file ~/keys/store-platform.key`
    reports the two private keys as unset, which is expected here, and must report nothing else.
 3. Push and deploy the lists: `node scripts/secrets.mjs push --env <env> --only control-plane`,
-   then deploy the control plane. Every store script uploaded from now on carries them (a script
-   uploaded earlier gets them only on its next upload, #2309).
+   then deploy the control plane. Every store script uploaded from now on carries them, and the
+   control plane rebuilds the ones uploaded earlier (see [the fleet rebuild](#the-fleet-rebuild)).
 4. Paste each generated line in as `STORE_CALLER_KEY=` / `STORE_PLATFORM_KEY=`, then delete
    the generated files. `pnpm store-keys doctor --env <env>` must now print `✓ ok`.
 5. Push and deploy the signers: `node scripts/secrets.mjs push --env <env>`, then deploy the
@@ -108,25 +108,53 @@ these steps with the current one marked. It refuses when the set fails `doctor`.
 2. **List** the new public key after the current one in its `…_PUBLIC_KEYS`,
    `node scripts/secrets.mjs push --env <env> --only control-plane`, and deploy the control plane.
    Check: `doctor --key-file <file>` shows the staged key listed.
-3. **Wait** until every store script the signer calls carries the new list (see the limit below).
+3. **Wait** until every store script carries the new list: `substrat store-driver status --driver <driver>`
+   reads `scripts: current` for every registered driver ([the fleet rebuild](#the-fleet-rebuild)).
 4. **Switch the signer.** Replace the `STORE_…_KEY=` line with the staged file's line, push
    `--only router` (caller) or `--only control-plane` (platform), deploy that worker, and delete
    the staged file. `doctor` refuses a signer whose key is not listed, which is the ordering that
    would break every call for that audience.
 5. **Drop** the old key: `rotate --audience <aud> --drop <old kid>` prints the new list value. It
    refuses to drop the key the signer uses, and a kid that is not listed. Paste it, push
-   `--only control-plane` and deploy the control plane.
+   `--only control-plane` and deploy the control plane. The old key is revoked only once
+   `store-driver status` reads `scripts: current` again for every driver: until then each script it
+   lists as pending still accepts the old key.
 
-### The limit: a list reaches a store script only when that script is uploaded
+### The fleet rebuild
 
-The control plane writes the lists into a store script when it uploads it. Today that happens
-on the owning vertical's next push or serve. Nothing re-uploads the whole fleet when a list
-changes; that is issue #2309. Until it is built:
+The control plane writes the lists into a store script when it uploads it. A push, a serve and a
+rollout upload the scripts they reach. The rest are rebuilt by the control plane itself (#2309):
 
-- step 3 lasts until every vertical with a store has been pushed or served again, and nothing
-  reports when that has happened;
-- a dropped or revoked key is still accepted by every store script uploaded before the drop,
-  until that script's next upload.
+- **What starts it.** What the platform builds a store script from (both key lists, the store entry,
+  its verifier and the compatibility flags) is one digest, the *fingerprint*. Deploying the control
+  plane with a changed list changes it. Each driver's rebuild converges every script on the
+  fingerprint the running control plane computes, and starts over when that changes.
+- **What it does.** It rebuilds each existing script at the release it already runs; it never moves a
+  script to another release and never creates one. A script already built from the fingerprint is
+  read and left alone. It takes the shared hold a push takes, so it waits while a rollout or
+  rollback holds the driver, and a rollout that paused, or a rollback that has not finished, keeps
+  its scripts where they are.
+- **When it runs.** On the control plane's quarter-hourly scheduled pass. A pass spends at most
+  `STORE_REBUILD_SUBREQUESTS` subrequests (default 500, half an invocation's 1000; 5 a script), so it
+  walks 100 scripts, the driver's canary first, then each vertical in slug order. It records where it
+  stopped, and the next pass continues there. `STORE_REBUILD_SUBREQUESTS=0` pauses it.
+- **Run it now.** `substrat store-driver rebuild --driver <driver>` runs a pass at once, for one
+  driver, as a person (a staff sign-in, never the service token). It is audited as
+  `rebuildStoreDriver`, takes the same lease as the scheduled pass (so the two never walk a driver at
+  once), and walks up to 180 scripts. It answers `paused` while scripts remain: run it again.
+- **How long.** For N scripts of one driver (its verticals plus its canary), the scheduled pass alone
+  needs ⌈N / 100⌉ passes: 1,000 verticals take 11 passes, about 2¾ hours, on top of the wait for the
+  first pass. Running `store-driver rebuild` back to back takes ⌈N / 180⌉ runs, 6 for 1,000
+  verticals, each as long as its uploads (a few minutes at most). With several drivers, the
+  scheduled pass shares its budget across them in registration order.
+- **Where to watch.** `substrat store-driver status --driver <driver>` ends with `scripts: current`,
+  or `scripts: NOT current` with the scripts that may still be on the old build (`-canary` is the
+  driver's canary script) and each failure. A script it could not rebuild is retried on every pass
+  and is an ops-failure row (`store-rebuild`), so it reaches the failure digest. A vertical whose
+  versions' stores cannot be named is listed as a failure until it can.
+- **During a deploy.** While two control-plane versions run side by side with different lists, each
+  converges on its own fingerprint and the rebuild restarts when the other runs. It settles once one
+  version serves.
 
 ## A leaked private key
 
@@ -135,13 +163,16 @@ The order is the reverse of a planned rotation, because the old key must stop si
 1. Generate a new pair (step 1) and list the new public key (step 2).
 2. Switch the signer to it at once (step 4), without waiting for step 3. Calls for that audience
    fail at any store script that does not yet carry the new list. That is the cost of revoking.
+   Run `substrat store-driver rebuild --driver <driver>` for every driver until it reads
+   `scripts: current`, so the new list reaches every script without waiting for the scheduled pass.
 3. Revoke the old private key at the secrets manager: replace it in the password-manager copy,
    and make sure no other copy of the old line survives (files, shell history, scrollback).
 4. Drop the old public key (step 5) and deploy the control plane.
+5. Run `store-driver rebuild` for every driver again until each reads `scripts: current`. Only then
+   is the old key revoked everywhere: a script still listed as pending accepts it.
 
 Dropping the public key while the old key still signs would refuse the platform's own calls
-wherever the new list arrives. Even done in this order, the compromised key stays accepted by
-each store script until that script is uploaded again (#2309).
+wherever the new list arrives.
 
 A leaked key signs only for its own audience, and for every store script and object of it: the
 envelope names the script and object, and the key does not limit either. A leaked `caller` key
@@ -154,6 +185,6 @@ included, to any store. Both are emergencies.
 - It never prints a private key anywhere but the one place `generate` was told to put it.
 - It never writes inside a git work tree, never edits the env file, and never overwrites a file.
 - It never talks to Cloudflare. It does not push secrets, deploy a worker, upload a store script
-  or re-upload the fleet; `scripts/secrets.mjs` and the deploys do those, and the fleet
-  re-upload does not exist yet (#2309).
-- It cannot see what is deployed, so it cannot tell you a rotation's step 3 is finished.
+  or rebuild the fleet; `scripts/secrets.mjs`, the deploys and the control plane's rebuild do those.
+- It cannot see what is deployed, so it cannot tell you a rotation's step 3 is finished:
+  `substrat store-driver status` can.

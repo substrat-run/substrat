@@ -245,6 +245,45 @@ export interface StoreDriverView {
   rollbackTarget: string | null;
   /** A rollback that stopped part way, until it ends good. Unless it targets the current release, no rollout begins meanwhile. */
   unfinishedRollback: string | null;
+  /**
+   * The platform's rebuild of every script of the driver (#2309), when this control plane rebuilds
+   * them. `current`: every script is built from what the platform builds from now (its key lists,
+   * entry and verifier). Until it is, `pending` names the scripts that may not be (`-canary` is the
+   * driver's canary script), an upper bound.
+   */
+  rebuild?: StoreDriverRebuildView;
+}
+
+/** A failure of the fleet rebuild: the vertical (or `-canary`) and why. */
+export interface StoreDriverRebuildFailureView {
+  vertical: string;
+  detail: string;
+}
+
+export interface StoreDriverRebuildView {
+  /** What the platform builds every script from now. */
+  fingerprint: string;
+  current: boolean;
+  pending: string[];
+  /** The walk's row: absent before its first pass. Its fingerprint may be an older one. */
+  walk: {
+    fingerprint: string;
+    cursor: string | null;
+    failures: StoreDriverRebuildFailureView[];
+    state: 'running' | 'done';
+    startedAt: string;
+    updatedAt: string;
+    finishedAt: string | null;
+  } | null;
+}
+
+/** One pass of the fleet rebuild over one driver, as a staff request ran it. */
+export interface StoreDriverRebuildPassView {
+  driver: string;
+  outcome: 'current' | 'busy' | 'held' | 'paused' | 'done' | 'failing' | 'error';
+  walked: string[];
+  uploaded: string[];
+  error?: string;
 }
 
 export interface StoreDriverRolloutResultView {

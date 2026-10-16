@@ -18,7 +18,7 @@ import { spawnSync } from 'node:child_process';
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { STORE_RELEASE_MAX_BYTES, type StoreDriverReleaseUpload } from '@substrat-run/contracts';
-import type { StoreDriverView } from '@substrat-run/control-plane-client';
+import type { StoreDriverRebuildView, StoreDriverView } from '@substrat-run/control-plane-client';
 import { planeFor } from './plane.js';
 
 const DRIVER_MODULE = /^driver_[a-z0-9_]+\/(?:[A-Za-z_][A-Za-z0-9_]*\/)*[A-Za-z_][A-Za-z0-9_]*\.py$/;
@@ -120,6 +120,24 @@ export const rollBackStoreDriver = (input: Plane & { driver: string }) =>
 export const storeDriverStatus = (input: Plane & { driver: string }) =>
   planeFor(input.controlPlaneUrl, input.header).getStoreDriver(input.driver);
 
+export const rebuildStoreDriver = (input: Plane & { driver: string }) =>
+  planeFor(input.controlPlaneUrl, input.header).rebuildStoreDriver(input.driver);
+
+/**
+ * Whether every script of the driver is built from what the control plane builds from now (#2309).
+ * An old key is revoked only once this reads `current`: until then a script on the list below may
+ * still accept it.
+ */
+export function storeDriverRebuildLines(rebuild: StoreDriverRebuildView): string[] {
+  if (rebuild.current) return [`  scripts: current (every script is built from ${rebuild.fingerprint.slice(0, 12)})`];
+  const shown = rebuild.pending.slice(0, 10);
+  return [
+    `  scripts: NOT current: ${rebuild.pending.length} may still be built from older keys or code (target ${rebuild.fingerprint.slice(0, 12)})`,
+    ...(shown.length ? [`    pending: ${shown.join(', ')}${rebuild.pending.length > shown.length ? `, … ${rebuild.pending.length - shown.length} more` : ''}`] : []),
+    ...(rebuild.walk?.failures ?? []).slice(0, 10).map((f) => `    failed: ${f.vertical}: ${f.detail}`),
+  ];
+}
+
 /**
  * What `store-driver status` prints. "Rolls back to" is the server's `rollbackTarget`, never the
  * current release's previous good one: after a diverged or paused rollout it is the current
@@ -132,5 +150,6 @@ export function storeDriverStatusLines(driver: string, view: StoreDriverView): s
       ? [`  a rollback to ${view.unfinishedRollback} stopped part way: run \`substrat store-driver rollback\` again to finish it`]
       : []),
     ...view.rollouts.slice(-10).map((r) => `  #${r.seq} ${r.action} ${r.sha256} ${r.state}${r.detail ? ` — ${r.detail}` : ''}`),
+    ...(view.rebuild ? storeDriverRebuildLines(view.rebuild) : []),
   ];
 }

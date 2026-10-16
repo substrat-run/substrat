@@ -171,6 +171,7 @@ export const INDEX_VALUE_EXPORTS = [
   'admissionBackoffMs',
   'admissionMissOutcome',
   'admitPeer',
+  'advanceStoreDriverRebuildIn',
   'afterMigration',
   'afterRuntimeDdl',
   'allowedFor',
@@ -230,6 +231,7 @@ export const INDEX_VALUE_EXPORTS = [
   'checkBecomeInput',
   'checkedWithin',
   'chooseAttachmentExtractor',
+  'claimStoreDriverRebuildIn',
   'clearCopyMarker',
   'clearSwitchOwed',
   'collectPeers',
@@ -404,6 +406,7 @@ export const INDEX_VALUE_EXPORTS = [
   'operationsFor',
   'orgChangeBound',
   'parseValidationRecords',
+  'storeDriverRebuildIn',
   // #2252: the peer rule the adapters' doors, the platform's resolvers and the dashboard share.
   'peerCallerAt',
   'peerGrantsStatus',

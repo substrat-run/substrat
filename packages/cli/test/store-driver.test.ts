@@ -139,6 +139,21 @@ describe('store-driver rollout and status, before and after a request (#2300)', 
     expect(lines[0]).toBe(`graph: current ${'b'.repeat(64)}, rolls back to ${'b'.repeat(64)}`);
     expect(storeDriverStatusLines('graph', { driver: 'graph', pins: [], current: null, rollouts: [], rollbackTarget: null, unfinishedRollback: null })[0]).toBe('graph: current none, rolls back to nothing');
   });
+
+  it('says whether every script carries what the control plane builds from now, and which may not (#2309)', () => {
+    const base = { driver: 'graph', pins: [], current: null, rollouts: [], rollbackTarget: null, unfinishedRollback: null };
+    const walk = { fingerprint: 'f'.repeat(64), cursor: 'va', failures: [{ vertical: 'vb', detail: 'upload failed (500)' }], state: 'running' as const, startedAt: 't', updatedAt: 't', finishedAt: null };
+    const behind = storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: 'f'.repeat(64), current: false, pending: ['vb', 'vc'], walk } });
+    expect(behind.slice(1)).toEqual([
+      `  scripts: NOT current: 2 may still be built from older keys or code (target ${'f'.repeat(12)})`,
+      '    pending: vb, vc',
+      '    failed: vb: upload failed (500)',
+    ]);
+    const current = storeDriverStatusLines('graph', { ...base, rebuild: { fingerprint: 'f'.repeat(64), current: true, pending: [], walk: { ...walk, failures: [], state: 'done' } } });
+    expect(current.slice(1)).toEqual([`  scripts: current (every script is built from ${'f'.repeat(12)})`]);
+    // A control plane that does not rebuild says nothing about it.
+    expect(storeDriverStatusLines('graph', base)).toHaveLength(1);
+  });
 });
 
 // K-53's rename: the old command and flag name the new spelling and stop, before any auth or call.

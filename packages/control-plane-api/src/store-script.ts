@@ -56,6 +56,23 @@ export interface ScopeStoreEnsurerOptions {
   }) => Promise<StoreDriverReleaseArtifact | undefined>;
 }
 
+/**
+ * What the platform builds every store script from, as one digest (#2309): the entry, its
+ * verifier, the compatibility date and flags, and both key lists. It is the build digest of one
+ * fixed probe release, so it changes exactly when the platform's half of every script's build
+ * changes (a key added, dropped or revoked, an entry or verifier fix) and never when a driver's
+ * release does. The fleet rebuild converges every script on it.
+ */
+export async function storePlatformFingerprint(keys: Pick<ScopeStoreEnsurerOptions, 'callerPublicKeys' | 'platformPublicKeys'>): Promise<string> {
+  const probe = 'driver_substrat_probe/probe.py';
+  return buildDigest(
+    withPythonStoreEntry(
+      { entry: probe, modules: [{ name: probe, content: new Uint8Array() }] },
+      { className: 'Probe', script: 'substrat-store-probe', callerPublicKeys: keys.callerPublicKeys, platformPublicKeys: keys.platformPublicKeys },
+    ),
+  );
+}
+
 /** Everything the upload sends, as one digest, so a script built from anything else differs. */
 async function buildDigest(script: PythonStoreScript): Promise<string> {
   const { modules, ...config } = script;
@@ -86,10 +103,16 @@ async function buildDigest(script: PythonStoreScript): Promise<string> {
  */
 export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
   const ensure = scriptEnsurer(opts);
-  return async (input: { vertical: string; stores: readonly ScopeStoreNeed[]; to?: string }): Promise<{ uploaded: number }> => {
+  return async (input: {
+    vertical: string;
+    stores: readonly ScopeStoreNeed[];
+    to?: string;
+    /** The fleet rebuild (#2309): a script that does not exist is left alone, never uploaded. */
+    existingOnly?: boolean;
+  }): Promise<{ uploaded: number }> => {
     const plan = scopeStoreUploadPlan({ vertical: input.vertical, stores: input.stores, drivers: opts.drivers });
     let uploaded = 0;
-    for (const script of plan.scripts) if (await ensure(script, input.to)) uploaded++;
+    for (const script of plan.scripts) if (await ensure(script, input.to, { existingOnly: input.existingOnly })) uploaded++;
     return { uploaded };
   };
 }
@@ -98,20 +121,24 @@ export function createScopeStoreEnsurer(opts: ScopeStoreEnsurerOptions) {
  * Put a driver's release in the platform's canary script (D-63, #2300), where it is canaried
  * before any vertical's script moves: `scopeStoreCanaryScriptName(driver)`, built and checked as a
  * vertical's script is, except that it may move to a lower `schema`: every canary object is fresh
- * and wiped, so none holds migrated data. Answers the script's name.
+ * and wiped, so none holds migrated data. With `existingOnly` instead of `to`, the fleet rebuild
+ * (#2309): the canary script is rebuilt at the release it runs, and left alone when there is none.
+ * Answers the script's name and whether it was uploaded.
  */
 export function createStoreCanaryEnsurer(opts: ScopeStoreEnsurerOptions) {
   const ensure = scriptEnsurer(opts);
-  return async (input: { driver: string; to: string }): Promise<{ scriptName: string }> => {
+  return async (
+    input: { driver: string; to: string } | { driver: string; existingOnly: true },
+  ): Promise<{ scriptName: string; uploaded: boolean }> => {
     const driver = (opts.drivers ?? STORE_DRIVERS).find((k) => k.driver === input.driver);
     if (!driver) throw new ControlPlaneError(403, `scope store driver '${input.driver}' is not registered`);
     const scriptName = scopeStoreCanaryScriptName(driver.driver);
-    await ensure(
+    const uploaded = await ensure(
       { driver: driver.driver, vertical: SCOPE_STORE_CANARY, scriptName, className: driver.className, releases: driver.releases },
-      input.to,
-      { anySchema: true },
+      'to' in input ? input.to : undefined,
+      { anySchema: true, existingOnly: 'existingOnly' in input },
     );
-    return { scriptName };
+    return { scriptName, uploaded };
   };
 }
 
@@ -128,8 +155,9 @@ function scriptEnsurer(opts: ScopeStoreEnsurerOptions) {
     `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}` +
     `/workers/dispatch/namespaces/${opts.namespace}/scripts/${encodeURIComponent(name)}`;
 
-  return async (script: EnsuredScript, to: string | undefined, rule: { anySchema?: boolean } = {}): Promise<boolean> => {
+  return async (script: EnsuredScript, to: string | undefined, rule: { anySchema?: boolean; existingOnly?: boolean } = {}): Promise<boolean> => {
     const current = await recorded(scriptUrl(script.scriptName));
+    if (rule.existingOnly && !current.exists) return false;
     if (current.exists && !current.release) {
       // Not an upload of this code. Which release it runs cannot be told, so it is not guessed.
       throw new ControlPlaneError(409, `store script '${script.scriptName}' records no release`);

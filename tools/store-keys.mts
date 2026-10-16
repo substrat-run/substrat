@@ -267,9 +267,10 @@ function formatDoctor(report: DoctorReport): string {
 // ── rotate ───────────────────────────────────────────────────────────────────────
 
 const STORE_REACH_CAVEAT =
-  'A store script is written with the lists only when it is uploaded: today that is its vertical\'s\n' +
-  '       next push or serve, not a fleet-wide re-ensure (issue #2309). Until that exists, a changed\n' +
-  '       list reaches each store script only as its vertical is pushed or served again.';
+  'The deployed lists reach every store script through the control plane\'s rebuild (#2309): its\n' +
+  '       quarter-hourly pass rebuilds a bounded number of scripts each time. The change has reached\n' +
+  '       every script once `substrat store-driver status --driver <driver>` reads `scripts: current`\n' +
+  '       for every driver; `substrat store-driver rebuild --driver <driver>` runs a pass at once.';
 
 /**
  * The ordered rotation for one audience with the current step marked, or the new list value
@@ -316,19 +317,21 @@ export function rotatePlan(report: DoctorReport, aud: ScopeStoreAudience, env: s
     `     then: node scripts/secrets.mjs push --env ${env} --only ${STORE_KEY_UPLOADER}, and deploy the ${STORE_KEY_UPLOADER}.`,
     `       ${STORE_REACH_CAVEAT}`,
     `     Check: pnpm store-keys doctor --env ${env} --key-file <path>  (the staged key must be listed).`,
-    `${at(['listed'])} 3. Wait until every store script that ${names.signer} calls carries the new list (step 2's caveat).`,
+    `${at(['listed'])} 3. Wait until every store script carries the new list: store-driver status reads \`scripts: current\` (step 2's caveat).`,
     `${at(['listed'])} 4. Switch the signer: replace the ${names.privateKey}= line in the env file with the staged file's line,`,
     `     node scripts/secrets.mjs push --env ${env} --only ${names.signer}, deploy the ${names.signer}, then delete the staged file.`,
     `     Doctor refuses a signer whose key is not listed, which is the ordering that breaks every ${aud} call.`,
     `${at(['switched'])} 5. Drop the old key: pnpm store-keys rotate --audience ${aud} --drop <old kid> prints the new list.`,
     `     It refuses to drop the key the signer uses. Push and deploy the ${STORE_KEY_UPLOADER} again (same caveat).`,
+    '     The old key is revoked only once store-driver status reads `scripts: current` again: until then a',
+    '     script it lists as pending still accepts it.',
     '',
     'A COMPROMISED key is revoked in a different order: switch the signer FIRST (steps 1, 2 and 4 at once,',
     `accepting that ${aud} calls fail at stores that do not yet list the new key), revoke the old`,
     `${names.privateKey} value at the secrets manager, and only then drop the old public key (step 5).`,
     'Dropping the old public key while it still signs would refuse the platform\'s own calls wherever',
-    'the new list arrives. Either way the fleet-wide effect is bounded by issue #2309: a store script',
-    'keeps the old list, and keeps accepting the compromised key, until it is uploaded again.',
+    'the new list arrives. Then run `substrat store-driver rebuild --driver <driver>` for every driver until',
+    'it reads `scripts: current` (issue #2309): until then a pending script still accepts the compromised key.',
     '',
     'The runbook is secrets/store-keys.md.',
   ].join('\n');

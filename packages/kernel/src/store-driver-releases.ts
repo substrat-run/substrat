@@ -20,6 +20,13 @@
  * A begin or finish is refused unless the caller still holds the driver exclusively, so a holder
  * whose lease lapsed cannot write over the next one; its `rolling` row reads as `diverged` to the
  * next rollout, which converges every script again.
+ *
+ * - `store_driver_rebuilds` (#2309): the platform's walk that rebuilds every script of the driver
+ *   at the release it runs, after what the platform builds a script from changed (a key list, the
+ *   entry, its verifier). One row per driver: the `fingerprint` of what the platform builds from
+ *   that the walk converges on, the last vertical it walked (`cursor`, in slug order), the
+ *   verticals it could not rebuild, and whether it is `done`. A new fingerprint starts the walk
+ *   again. The row carries its own lease, so two passes never walk one driver at once.
  */
 import { substratError } from '@substrat-run/contracts';
 import type { SwitchSql } from './system-switch.js';
@@ -61,6 +68,18 @@ export const STORE_DRIVER_RELEASES_DDL = `
     mode       TEXT NOT NULL,
     expires_at INTEGER NOT NULL,
     PRIMARY KEY (driver, holder)
+  );
+  CREATE TABLE IF NOT EXISTS store_driver_rebuilds (
+    driver           TEXT PRIMARY KEY,
+    fingerprint      TEXT NOT NULL,
+    cursor           TEXT,
+    failures         TEXT NOT NULL,
+    state            TEXT NOT NULL,
+    holder           TEXT,
+    lease_expires_at INTEGER NOT NULL,
+    started_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    finished_at      TEXT
   );
 `;
 
@@ -474,4 +493,135 @@ export function finishStoreDriverRolloutIn(
     );
   }
   return rolloutAt(db, input.driver, input.seq)!;
+}
+
+/** One vertical (or the driver's canary) the fleet rebuild could not rebuild, and why. */
+export interface StoreDriverRebuildFailure {
+  readonly vertical: string;
+  readonly detail: string;
+}
+
+/** Where the platform's rebuild of every script of a driver stands (#2309). */
+export interface StoreDriverRebuildRecord {
+  readonly driver: string;
+  /** What the platform builds every script from, as the walk converges every script on it. */
+  readonly fingerprint: string;
+  /** The last vertical the walk reached, in slug order; null before the first. */
+  readonly cursor: string | null;
+  /** The verticals walked and not rebuilt. Retried on every pass until each is, or no longer declares the driver. */
+  readonly failures: readonly StoreDriverRebuildFailure[];
+  /** `done`: every vertical was walked and none failed. */
+  readonly state: 'running' | 'done';
+  readonly startedAt: string;
+  readonly updatedAt: string;
+  readonly finishedAt: string | null;
+}
+
+interface RebuildRow {
+  driver: string;
+  fingerprint: string;
+  cursor: string | null;
+  failures: string;
+  state: 'running' | 'done';
+  holder: string | null;
+  lease_expires_at: number;
+  started_at: string;
+  updated_at: string;
+  finished_at: string | null;
+}
+
+const rebuildRowOf = (db: SwitchSql, driver: string): RebuildRow | undefined =>
+  (db.all(
+    'SELECT driver, fingerprint, cursor, failures, state, holder, lease_expires_at, started_at, updated_at, finished_at FROM store_driver_rebuilds WHERE driver = ?',
+    driver,
+  ) as unknown as RebuildRow[])[0];
+
+const rebuildOf = (r: RebuildRow): StoreDriverRebuildRecord => ({
+  driver: r.driver,
+  fingerprint: r.fingerprint,
+  cursor: r.cursor,
+  failures: JSON.parse(r.failures) as StoreDriverRebuildFailure[],
+  state: r.state,
+  startedAt: r.started_at,
+  updatedAt: r.updated_at,
+  finishedAt: r.finished_at,
+});
+
+/** The driver's fleet rebuild, or undefined before its first. */
+export function storeDriverRebuildIn(db: SwitchSql, driver: string): StoreDriverRebuildRecord | undefined {
+  const row = rebuildRowOf(db, driver);
+  return row ? rebuildOf(row) : undefined;
+}
+
+/**
+ * Take the lease on a driver's fleet rebuild, towards `fingerprint`, for `ttlMs`. Answers the
+ * rebuild as it stands, or null while another holder's lease is live. A rebuild towards another
+ * fingerprint (or none yet) starts over: no vertical is walked and none has failed, because every
+ * script may have been built from something else than what the platform builds from now.
+ */
+export function claimStoreDriverRebuildIn(
+  db: SwitchSql,
+  input: { driver: string; fingerprint: string; holder: string; nowMs: number; ttlMs: number; at: string },
+): StoreDriverRebuildRecord | null {
+  if (!(input.ttlMs > 0)) throw substratError('validation_failed', 'a store-driver rebuild lease needs a positive lifetime');
+  const row = rebuildRowOf(db, input.driver);
+  if (row && row.holder !== null && row.holder !== input.holder && Number(row.lease_expires_at) > input.nowMs) return null;
+  const lease = input.nowMs + input.ttlMs;
+  if (!row || row.fingerprint !== input.fingerprint) {
+    db.run(
+      `INSERT INTO store_driver_rebuilds (driver, fingerprint, cursor, failures, state, holder, lease_expires_at, started_at, updated_at, finished_at)
+       VALUES (?, ?, NULL, '[]', 'running', ?, ?, ?, ?, NULL)
+       ON CONFLICT (driver) DO UPDATE SET fingerprint = excluded.fingerprint, cursor = NULL, failures = '[]', state = 'running',
+         holder = excluded.holder, lease_expires_at = excluded.lease_expires_at, started_at = excluded.started_at,
+         updated_at = excluded.updated_at, finished_at = NULL`,
+      input.driver, input.fingerprint, input.holder, lease, input.at, input.at,
+    );
+  } else {
+    db.run('UPDATE store_driver_rebuilds SET holder = ?, lease_expires_at = ? WHERE driver = ?', input.holder, lease, input.driver);
+  }
+  return rebuildOf(rebuildRowOf(db, input.driver)!);
+}
+
+/**
+ * Record how far the lease holder's walk got, renewing the lease for `ttlMs`, or with `release`
+ * dropping it. `done` ends the rebuild; it needs no failure left. Refused (`conflict`) unless the
+ * caller is still the row's holder, towards `fingerprint`: once another pass claimed the row (a
+ * lapsed lease) or restarted it (a new fingerprint), the old holder writes nothing. A holder whose
+ * lease lapsed while nobody claimed the row still records what it did, which is then true.
+ */
+export function advanceStoreDriverRebuildIn(
+  db: SwitchSql,
+  input: {
+    driver: string;
+    fingerprint: string;
+    holder: string;
+    cursor: string | null;
+    failures: readonly StoreDriverRebuildFailure[];
+    done: boolean;
+    nowMs: number;
+    ttlMs: number;
+    release?: boolean;
+    at: string;
+  },
+): StoreDriverRebuildRecord {
+  const row = rebuildRowOf(db, input.driver);
+  if (!row || row.holder !== input.holder || row.fingerprint !== input.fingerprint) {
+    throw substratError('conflict', `the rebuild of '${input.driver}' is not held by ${input.holder}`);
+  }
+  if (input.done && input.failures.length > 0) {
+    throw substratError('validation_failed', `the rebuild of '${input.driver}' is not done while a vertical failed`);
+  }
+  db.run(
+    `UPDATE store_driver_rebuilds SET cursor = ?, failures = ?, state = ?, holder = ?, lease_expires_at = ?, updated_at = ?, finished_at = ?
+     WHERE driver = ?`,
+    input.cursor,
+    JSON.stringify(input.failures),
+    input.done ? 'done' : 'running',
+    input.release ? null : input.holder,
+    input.release ? 0 : input.nowMs + input.ttlMs,
+    input.at,
+    input.done ? input.at : null,
+    input.driver,
+  );
+  return rebuildOf(rebuildRowOf(db, input.driver)!);
 }

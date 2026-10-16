@@ -89,12 +89,17 @@ import {
   beginStoreDriverRolloutIn,
   finishStoreDriverRolloutIn,
   holdStoreDriverIn,
+  advanceStoreDriverRebuildIn,
+  claimStoreDriverRebuildIn,
+  storeDriverRebuildIn,
   driverDeclarationsOf,
   recordStoreDriverReleaseIn,
   releaseStoreDriverHoldIn,
   storeDriverReleaseIn,
   storeDriverStateIn,
   type StoreDriverHoldMode,
+  type StoreDriverRebuildFailure,
+  type StoreDriverRebuildRecord,
   type StoreDriverReleaseRecord,
   type StoreDriverRolloutAction,
   type StoreDriverRolloutRecord,
@@ -1478,6 +1483,9 @@ export const REPLIED_METHODS = [
   'holdStoreDriver',
   'beginStoreDriverRollout',
   'finishStoreDriverRollout',
+  // #2309: a fleet rebuild's lease write refuses with conflict or validation_failed.
+  'claimStoreDriverRebuild',
+  'advanceStoreDriverRebuild',
 ] as const;
 export type RepliedMethod = (typeof REPLIED_METHODS)[number];
 
@@ -2377,6 +2385,28 @@ export class ControlPlaneDO extends DurableObject {
     at: string;
   }): StoreDriverRolloutRecord {
     return this.ctx.storage.transactionSync(() => finishStoreDriverRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() }));
+  }
+
+  storeDriverRebuild(driver: string): StoreDriverRebuildRecord | undefined {
+    return storeDriverRebuildIn(this.kernelSql, driver);
+  }
+
+  claimStoreDriverRebuild(input: { driver: string; fingerprint: string; holder: string; ttlMs: number; at: string }): StoreDriverRebuildRecord | null {
+    return this.ctx.storage.transactionSync(() => claimStoreDriverRebuildIn(this.kernelSql, { ...input, nowMs: Date.now() }));
+  }
+
+  advanceStoreDriverRebuild(input: {
+    driver: string;
+    fingerprint: string;
+    holder: string;
+    cursor: string | null;
+    failures: readonly StoreDriverRebuildFailure[];
+    done: boolean;
+    ttlMs: number;
+    release?: boolean;
+    at: string;
+  }): StoreDriverRebuildRecord {
+    return this.ctx.storage.transactionSync(() => advanceStoreDriverRebuildIn(this.kernelSql, { ...input, nowMs: Date.now() }));
   }
 
   // -- scope lifecycle (control-plane.md §4.1/§4.2) ---------------------------

@@ -35,6 +35,8 @@ async function legacyDirectory(): Promise<string> {
       db.exec(`ALTER TABLE ${table} RENAME TO ${old}`);
       db.exec(`ALTER TABLE ${old} RENAME COLUMN driver TO kind`);
     }
+    // The fleet rebuild's table (#2309) came after the rename: a directory from before it has none.
+    db.exec('DROP TABLE store_driver_rebuilds');
     db.exec('ALTER TABLE vertical_scope_stores RENAME COLUMN driver TO kind');
     db.prepare(
       'INSERT INTO store_kind_releases (kind, sha256, source_commit, uploaded_by, uploaded_at) VALUES (?, ?, ?, ?, ?)',

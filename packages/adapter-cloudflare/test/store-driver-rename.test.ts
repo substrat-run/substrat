@@ -36,6 +36,8 @@ describe('K-53: a directory DO built before the store driver rename', () => {
         sql.exec(`ALTER TABLE ${table} RENAME TO ${old}`);
         sql.exec(`ALTER TABLE ${old} RENAME COLUMN driver TO kind`);
       }
+      // The fleet rebuild's table (#2309) came after the rename: a directory from before it has none.
+      sql.exec('DROP TABLE store_driver_rebuilds');
       sql.exec('ALTER TABLE vertical_scope_stores RENAME COLUMN driver TO kind');
       sql.exec(
         'INSERT INTO store_kind_releases (kind, sha256, source_commit, uploaded_by, uploaded_at) VALUES (?, ?, ?, ?, ?)',

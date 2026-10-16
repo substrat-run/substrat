@@ -176,6 +176,7 @@ import { connectionGrantsForScope, type VerticalClient } from './vertical-client
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
 import type { ScopeStoreEnsurerOptions } from './store-script.js';
+import { STORE_REBUILD_REQUEST_SUBREQUESTS, runStoreFleetRebuild, storeRebuildBudget, storeRebuildStatus, type StoreDriverRebuildPass } from './store-rebuild.js';
 import { PUSH_HOLD_TTL_MS, runStoreDriverRollout, storeDriverRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
 import { assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, listAllScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
@@ -429,6 +430,8 @@ export interface ControlPlaneApiOptions {
     stores: readonly ScopeStoreNeed[];
     /** The release a rollout moves the scripts to; a push or serve passes none (#2300). */
     to?: string;
+    /** The fleet rebuild (#2309): rebuild a script that exists, and create none. */
+    existingOnly?: boolean;
     loadRelease: ScopeStoreEnsurerOptions['loadRelease'];
     /** How many scripts it uploaded; absent counts as some. */
   }) => Promise<void | { uploaded: number }>;
@@ -439,8 +442,15 @@ export interface ControlPlaneApiOptions {
    */
   storeReleases?: {
     bytes: StoreReleaseBytes;
-    ensureCanary(input: { driver: string; to: string; loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }): Promise<{ scriptName: string }>;
+    ensureCanary(
+      input: ({ driver: string; to: string } | { driver: string; existingOnly: true }) & { loadRelease: ScopeStoreEnsurerOptions['loadRelease'] },
+    ): Promise<{ scriptName: string; uploaded?: boolean }>;
     callCanary: CanaryCall;
+    /**
+     * What the platform builds every store script from now (`storePlatformFingerprint`, #2309).
+     * Absent ⇒ no fleet rebuild: the status reports none and the rebuild route answers 501.
+     */
+    fingerprint?: () => Promise<string>;
   };
   /**
    * The actor a request's credential names when that credential is a person's staff session,
@@ -10452,10 +10462,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   };
 
+  /** Where the platform's rebuild of every script of the driver stands (#2309), if it rebuilds them. */
+  const rebuildView = async (admin: HostAdmin, actor: PlatformActorId, driver: string) => {
+    const fingerprint = await options.storeReleases?.fingerprint?.();
+    if (!fingerprint) return undefined;
+    const walk = await admin.storeDriverRebuild(actor, driver);
+    const declared = await admin.storeDriverDeclarations(actor, driver);
+    const verticals = [...new Set([...declared.verticals.map((v) => v.vertical), ...declared.unreadable])].sort();
+    return { fingerprint, ...storeRebuildStatus(walk, fingerprint, verticals), walk: walk ?? null };
+  };
+
   app.get('/store-drivers/:driver', async (c) => {
     const registration = registeredDriver(c.req.param('driver'));
     const state = await c.var.admin.storeDriverState(c.get('actor'), registration.driver);
-    return c.json({ driver: registration.driver, pins: registration.releases, ...state });
+    const rebuild = await rebuildView(c.var.admin, c.get('actor'), registration.driver);
+    return c.json({ driver: registration.driver, pins: registration.releases, ...state, ...(rebuild ? { rebuild } : {}) });
   });
 
   // Store a release's bytes, before or after its pin lands (D-63). Idempotent per bundle.
@@ -10492,6 +10513,41 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const pin = await pinOf(c, registration, rollbackTarget);
     assertSchemaKept(registration, current.sha256, pin);
     return rollOut(c, registration, rollbackTarget, 'rollback');
+  });
+
+  // Run a pass of the platform's rebuild of every script of the driver now (#2309): the scheduled
+  // pass does the same every quarter hour, and this is for when that is too slow, after a key is
+  // revoked. Same lease and hold as the scheduled pass, so the two never walk the driver at once,
+  // and a rollout or rollback excludes both. Rebuilds at the release each script runs; moves none.
+  app.post('/store-drivers/:driver/rebuild', async (c) => {
+    const registration = registeredDriver(c.req.param('driver'));
+    const actor = await byAPerson(c);
+    const { flow, ensureScopeStores } = releaseFlow();
+    if (!flow.fingerprint) throw new ControlPlaneError(501, 'this control plane does not rebuild store scripts');
+    let ran: Omit<StoreDriverRebuildPass, 'rebuild'> = { driver: registration.driver, outcome: 'error', walked: [], uploaded: [] };
+    try {
+      const [pass] = await runStoreFleetRebuild({
+        admin: c.var.admin,
+        actor,
+        drivers: [registration],
+        fingerprint: await flow.fingerprint(),
+        bytes: flow.bytes,
+        ensure: ensureScopeStores,
+        ensureCanary: async (input) => ({ uploaded: (await flow.ensureCanary(input)).uploaded ?? true }),
+        budget: storeRebuildBudget(STORE_REBUILD_REQUEST_SUBREQUESTS),
+      });
+      const { rebuild: _row, ...result } = pass!;
+      ran = result;
+    } catch (e) {
+      ran = { ...ran, error: e instanceof Error ? e.message : String(e) };
+      throw e;
+    } finally {
+      // Written however the pass ended, a refused one included: a staff request reached the fleet.
+      await c.var.admin.recordStoreDriverRebuildRun(actor, ran);
+    }
+    if (ran.outcome === 'error') throw new ControlPlaneError(502, `the rebuild of '${registration.driver}' failed: ${ran.error}`);
+    const rebuild = (await rebuildView(c.var.admin, actor, registration.driver))!;
+    return c.json({ pass: ran, rebuild }, ran.outcome === 'paused' || ran.outcome === 'held' || ran.outcome === 'busy' ? 202 : 200);
   });
 
   return app;

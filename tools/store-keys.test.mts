@@ -183,6 +183,9 @@ test('rotate: prints the ordered steps, the compromise order and the #2309 limit
   assert.ok(plan.indexOf('2. Add') < plan.indexOf('4. Switch') && plan.indexOf('4. Switch') < plan.indexOf('5. Drop'));
   assert.match(plan, /COMPROMISED key[\s\S]*switch the signer FIRST[\s\S]*revoke the old\s+STORE_CALLER_KEY value at the secrets manager/);
   assert.match(plan, /#2309/);
+  // The old key counts as revoked only once the rebuild reads current, and the compromise order runs it at once.
+  assert.match(plan, /5\. Drop the old key[\s\S]*revoked only once store-driver status reads `scripts: current`/);
+  assert.match(plan, /COMPROMISED key[\s\S]*substrat store-driver rebuild --driver/);
   assert.match(plan, /→ 1\./);
 });
 
