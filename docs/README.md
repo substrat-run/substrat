@@ -84,7 +84,7 @@ These are recorded rather than fixed, and are tracked in
 
 ## The decision log
 
-[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->116 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
+[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->117 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
 generated from [`decisions/`](decisions/), one file per decision. The tables in master plan
 §12 and kernel design §14 are generated from the same source and must not be hand-edited.
 
@@ -143,6 +143,8 @@ How the platform works **today** — present tense. A document here may not open
 | [dashboard.md](architecture/dashboard.md) | `built` | The tenant-facing self-service surface. apps/dashboard. |
 | [dependency-policy.md](architecture/dependency-policy.md) | `built` | Peer vs direct dependencies, and the declared-deps gate. |
 | [error-model.md](architecture/error-model.md) | `built` | One error model — RFC 9457 problem+json, a closed code taxonomy, typed throws that survive the RPC hop. |
+| [kernel-design.md](architecture/kernel-design.md) | `canonical` | Technical shape of the plan's decisions, and the K log. |
+| [kernel-design.md](architecture/kernel-design.md) | `canonical` | Technical shape of the plan's decisions, and the K log. |
 | [kernel-design.md](architecture/kernel-design.md) | `canonical` | Technical shape of the plan's decisions, and the K log. |
 | [marketplace-publish.md](architecture/marketplace-publish.md) | `built` | Push to your team, publish to everyone. |
 | [membership.md](architecture/membership.md) | `built` | Membership, invites, and the admin as first consumer. |

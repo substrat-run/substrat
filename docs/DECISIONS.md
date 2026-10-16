@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-116 decisions · 63 plan · 53 kernel
+117 decisions · 63 plan · 54 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -128,3 +128,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-51](decisions/K-051-the-assistant-s-record-is-an-engine-composed-by-call-the-run-is-host-code.md) | 2026-10-15 | kernel | The assistant's record is an engine composed by call; the run is host code, written by a key no person holds <br>*awaiting ratification* | #2283 |
 | [K-52](decisions/K-052-the-scope-store-envelope-is-ed25519-per-audience-and-an-object-is-bound-to-its-name-by-its-id.md) | 2026-10-15 | kernel | The scope-store envelope is Ed25519 per audience, a store script holds public keys only, and an object is bound to its name by its id <br>*amends K-49, K-50* | #2287, #2289, #2290 |
 | [K-53](decisions/K-053-a-tenant-level-store-is-a-named-instance-that-a-tenant-s-verticals-connect-to-explicitly.md) | 2026-10-15 | kernel | A tenant-level store is a named instance that a tenant's verticals connect to explicitly <br>*amends K-49* | #2207, #2303 |
+| [K-54](decisions/K-054-a-mutation-can-mint-a-single-use-upload-link-that-takes-a-file-with-no-session.md) | 2026-10-16 | kernel | A mutation can mint a single-use upload link that takes a file with no session | #2311, #2323, #2314, #2315 |
