@@ -544,6 +544,8 @@ export const INDEX_VALUE_EXPORTS = [
   'statefulTablesOf',
   'storeDriverReleaseIn',
   'storeDriverStateIn',
+  'storeDriverRolloutPendingIn',
+  'storeDriverRolloutWalkedIn',
   'strandJudgmentsOf',
   'subjectErasureClaimParams',
   'subjectGrantState',

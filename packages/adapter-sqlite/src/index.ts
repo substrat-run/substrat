@@ -513,6 +513,8 @@ import {
   releaseStoreDriverHoldIn,
   storeDriverReleaseIn,
   storeDriverStateIn,
+  storeDriverRolloutPendingIn,
+  storeDriverRolloutWalkedIn,
   splitManifestMigrations,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
@@ -10562,6 +10564,16 @@ export class SqliteScopeHost implements ScopeHost {
         const declared = this.directory.transaction(() => driverDeclarationsOf(switchSqlOf(this.directory), driver))();
         this.recordAccess(actor, 'storeDriverDeclarations', { tenantId: null }, { driver }, declared.verticals.length);
         return declared;
+      },
+      storeDriverRolloutPending: async (actor, input) => {
+        const page = this.directory.transaction(() => storeDriverRolloutPendingIn(switchSqlOf(this.directory), input))();
+        this.recordAccess(actor, 'storeDriverRolloutPending', { tenantId: null }, { driver: input.driver, sha256: input.sha256, action: input.action }, page.verticals.length);
+        return page;
+      },
+      storeDriverRolloutWalked: async (actor, input) => {
+        const walked = this.directory.transaction(() => storeDriverRolloutWalkedIn(switchSqlOf(this.directory), input))();
+        this.recordAccess(actor, 'storeDriverRolloutWalked', { tenantId: null }, { driver: input.driver, seq: input.seq }, walked.verticals.length);
+        return walked;
       },
       holdStoreDriver: async (_actor, input) =>
         this.directory.transaction(() =>

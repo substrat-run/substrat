@@ -94,11 +94,14 @@ import {
   releaseStoreDriverHoldIn,
   storeDriverReleaseIn,
   storeDriverStateIn,
+  storeDriverRolloutPendingIn,
+  storeDriverRolloutWalkedIn,
   type StoreDriverHoldMode,
   type StoreDriverReleaseRecord,
   type StoreDriverRolloutAction,
   type StoreDriverRolloutRecord,
   type StoreDriverRolloutState,
+  type StoreDriverRolloutTarget,
   type StoreDriverState,
   forgetVerticalScopeStores,
   indexVersionScopeStores,
@@ -1475,6 +1478,9 @@ export const REPLIED_METHODS = [
   // validation_failed or unavailable.
   'recordStoreDriverRelease',
   'storeDriverDeclarations',
+  // #2312: a rollout page refuses a limit that is not positive, and an unknown rollout.
+  'storeDriverRolloutPending',
+  'storeDriverRolloutWalked',
   'holdStoreDriver',
   'beginStoreDriverRollout',
   'finishStoreDriverRollout',
@@ -2349,6 +2355,19 @@ export class ControlPlaneDO extends DurableObject {
     return this.ctx.storage.transactionSync(() => driverDeclarationsOf(this.kernelSql, driver));
   }
 
+  storeDriverRolloutPending(input: { driver: string; sha256: string; action: StoreDriverRolloutAction; limit: number }): {
+    verticals: StoreDriverRolloutTarget[];
+    pending: number;
+    walked: number;
+    unreadable: string[];
+  } {
+    return this.ctx.storage.transactionSync(() => storeDriverRolloutPendingIn(this.kernelSql, input));
+  }
+
+  storeDriverRolloutWalked(input: { driver: string; seq: number; limit: number }): { verticals: StoreDriverRolloutTarget[]; walked: number } {
+    return this.ctx.storage.transactionSync(() => storeDriverRolloutWalkedIn(this.kernelSql, input));
+  }
+
   holdStoreDriver(input: { driver: string; holder: string; mode: StoreDriverHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): boolean {
     return this.ctx.storage.transactionSync(() => holdStoreDriverIn(this.kernelSql, { ...input, nowMs: Date.now() }));
   }
@@ -2374,6 +2393,7 @@ export class ControlPlaneDO extends DurableObject {
     holder: string;
     state: Exclude<StoreDriverRolloutState, 'rolling'>;
     detail: string | null;
+    walked?: readonly StoreDriverRolloutTarget[];
     at: string;
   }): StoreDriverRolloutRecord {
     return this.ctx.storage.transactionSync(() => finishStoreDriverRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() }));

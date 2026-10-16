@@ -340,6 +340,116 @@ export function storeDriverReleaseContractSuite(adapterName: string, makeFixture
       expect(after.unreadable).toContain(slugC);
       expect(after.verticals).toEqual(declared.verticals);
     });
+
+    describe('a rollout paged over several requests walks from its ledger (#2312)', () => {
+      /** Three verticals declaring `driver`, in slug order, and the version each first declared it in. */
+      const fleetOf = async (driver: string) => {
+        const stem = `pw${ulid().toLowerCase().slice(-8)}`;
+        const slugs = [`${stem}-b`, `${stem}-c`, `${stem}-d`];
+        const firsts: Record<string, string> = {};
+        for (const slug of slugs) firsts[slug] = await declare(slug, driver);
+        return { stem, slugs, firsts };
+      };
+      const declare = async (slug: string, driver: string) => {
+        await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+        const id = ulid();
+        await host.admin.publishVersion(staff, {
+          id,
+          verticalSlug: slug,
+          version: `1.0.${id.slice(-6).toLowerCase()}`,
+          manifestDigest: `m-${id}`,
+          permissionDigest: 'p',
+          migrationDigest: 'g',
+          deploymentRef: null,
+          manifestJson: JSON.stringify({
+            version: '1.0.0', entry: 'index.js', compatibilityDate: '2026-07-01',
+            registry: { permissions: [], roles: [], entityGrants: [] },
+            digests: { manifest: 'm', permission: 'p', migration: 'g' },
+            scopeStores: [{ binding: 'G', driver }],
+          }),
+        });
+        return id;
+      };
+      const target = (slug: string, firstVersionId: string) => ({ vertical: slug, stores: [{ binding: 'G', firstVersionId }] });
+      const pending = (driver: string, sha256: string, action: 'rollout' | 'rollback' = 'rollout', limit = 10) =>
+        host.admin.storeDriverRolloutPending(staff, { driver, sha256, action, limit });
+
+      it('continues a paused attempt from what it walked, and starts every other attempt from nothing', async () => {
+        const driver = freshDriver();
+        const { slugs, firsts } = await fleetOf(driver);
+        const [b, c, d] = slugs as [string, string, string];
+        const holder = ulid();
+        await host.admin.recordStoreDriverRelease(staff, { driver, sha256: sha('1'), sourceCommit: commit('c') });
+        await host.admin.recordStoreDriverRelease(staff, { driver, sha256: sha('2'), sourceCommit: commit('c') });
+        expect(await host.admin.holdStoreDriver(staff, { driver, holder, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
+
+        // A fresh attempt walks every declaration, in slug order, a page at a time.
+        expect(await pending(driver, sha('1'), 'rollout', 2)).toEqual({
+          verticals: [target(b, firsts[b]!), target(c, firsts[c]!)],
+          pending: 3,
+          walked: 0,
+          unreadable: expect.any(Array),
+        });
+        const first = await host.admin.beginStoreDriverRollout(staff, { driver, sha256: sha('1'), action: 'rollout', holder });
+        // Only a paused end records what it walked: any other is refused, and ends nothing.
+        await expectRefusal(
+          host.admin.finishStoreDriverRollout(staff, { driver, seq: first.seq, holder, state: 'good', detail: null, walked: [target(b, firsts[b]!)] }),
+          'validation_failed',
+        );
+        expect((await host.admin.storeDriverState(staff, driver)).rollouts.at(-1)?.state).toBe('rolling');
+        await host.admin.finishStoreDriverRollout(staff, { driver, seq: first.seq, holder, state: 'paused', detail: null, walked: [target(b, firsts[b]!)] });
+
+        // The same rollout continues past b; another release or the other action starts afresh.
+        expect(await pending(driver, sha('1'))).toMatchObject({ verticals: [target(c, firsts[c]!), target(d, firsts[d]!)], pending: 2, walked: 1 });
+        expect(await pending(driver, sha('2'))).toMatchObject({ pending: 3, walked: 0 });
+        expect(await pending(driver, sha('1'), 'rollback')).toMatchObject({ pending: 3, walked: 0 });
+
+        // The second request of the attempt sees the first's walk as its earlier requests', and adds c.
+        const second = await host.admin.beginStoreDriverRollout(staff, { driver, sha256: sha('1'), action: 'rollout', holder });
+        expect(await host.admin.storeDriverRolloutWalked(staff, { driver, seq: second.seq, limit: 10 })).toEqual({ verticals: [target(b, firsts[b]!)], walked: 1 });
+        await host.admin.finishStoreDriverRollout(staff, { driver, seq: second.seq, holder, state: 'paused', detail: null, walked: [target(c, firsts[c]!)] });
+        expect(await pending(driver, sha('1'))).toMatchObject({ verticals: [target(d, firsts[d]!)], pending: 1, walked: 2 });
+
+        // A vertical deleted and registered again under the same slug declares the store anew, so it
+        // is walked again; one deleted for good is no longer pending, nor counted walked.
+        await host.admin.deleteVertical(staff, b);
+        const again = await declare(b, driver);
+        await host.admin.deleteVertical(staff, d);
+        expect(await pending(driver, sha('1'))).toMatchObject({ verticals: [target(b, again)], pending: 1, walked: 1 });
+
+        // A request that stops without any end (its invocation died after uploads it never
+        // recorded) leaves its row rolling and the ledger as it was. The next request continues
+        // nothing: it walks everything again rather than trust a ledger a stopped request followed.
+        const stopped = await host.admin.beginStoreDriverRollout(staff, { driver, sha256: sha('1'), action: 'rollout', holder });
+        await host.admin.releaseStoreDriverHold(staff, { driver, holder });
+        expect((await host.admin.storeDriverState(staff, driver)).rollouts.find((r) => r.seq === stopped.seq)?.state).toBe('diverged');
+        expect(await pending(driver, sha('1'))).toMatchObject({ pending: 2, walked: 0 });
+        expect(await host.admin.holdStoreDriver(staff, { driver, holder, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
+
+        // A failed end drops the ledger: the next request walks everything again.
+        const third = await host.admin.beginStoreDriverRollout(staff, { driver, sha256: sha('1'), action: 'rollout', holder });
+        await host.admin.finishStoreDriverRollout(staff, { driver, seq: third.seq, holder, state: 'failed', detail: 'x' });
+        expect(await pending(driver, sha('1'))).toMatchObject({ pending: 2, walked: 0 });
+        // So does a rollout of another release in between two pauses of the same one.
+        const p1 = await host.admin.beginStoreDriverRollout(staff, { driver, sha256: sha('1'), action: 'rollout', holder });
+        await host.admin.finishStoreDriverRollout(staff, { driver, seq: p1.seq, holder, state: 'paused', detail: null, walked: [target(b, again)] });
+        const other = await host.admin.beginStoreDriverRollout(staff, { driver, sha256: sha('2'), action: 'rollout', holder });
+        await host.admin.finishStoreDriverRollout(staff, { driver, seq: other.seq, holder, state: 'paused', detail: null, walked: [] });
+        expect(await pending(driver, sha('1'))).toMatchObject({ pending: 2, walked: 0 });
+        await host.admin.releaseStoreDriverHold(staff, { driver, holder });
+      });
+
+      it('records each page read in the access log, as the declarations read is, and refuses a page of no verticals', async () => {
+        const driver = freshDriver();
+        await fleetOf(driver);
+        await expectRefusal(pending(driver, sha('1'), 'rollout', 0), 'validation_failed');
+        await pending(driver, sha('1'), 'rollout', 2);
+        const reads = (await host.admin.accessLog(staff)).filter((e) => e.method === 'storeDriverRolloutPending' && e.actor === staff && String(e.params).includes(driver));
+        expect(reads).toHaveLength(1);
+        expect(reads[0]).toMatchObject({ tenantId: null, resultCount: 2 });
+        await expectRefusal(host.admin.storeDriverRolloutWalked(staff, { driver, seq: 99, limit: 1 }), 'not_found');
+      });
+    });
   });
 }
 
