@@ -149,16 +149,17 @@ rollout upload the scripts they reach. The rest are rebuilt by the control plane
   verticals, each as long as its uploads (a few minutes at most). With several drivers, the
   scheduled pass shares its budget across them in registration order.
 - **Where to watch.** `substrat store-driver status --driver <driver>` ends with `scripts: current`,
-  or `scripts: NOT current` with the scripts that may still be on the old build (`-canary` is the
+  `scripts: settling` (see the next point), or `scripts: NOT current` with the scripts that may still be on the old build (`-canary` is the
   driver's canary script) and each failure. A script it could not rebuild is retried on every pass
   and is an ops-failure row (`store-rebuild`), so it reaches the failure digest. A vertical whose
   versions' stores cannot be named is listed as a failure until it can.
 - **During a deploy.** While two control-plane versions run side by side with different lists, a push
-  served by the older one uploads its script with the older lists, even after the walk is done. A
-  `done` walk is therefore walked again a day after it finished (it reads each script and uploads
-  only one that is not current), and `store-driver rebuild` always walks again. So after a list
-  change, wait until the control-plane deploy serves only the new version, then run
-  `store-driver rebuild` for every driver until it reads `scripts: current`: that walk is the proof.
+  served by the older one uploads its script with the older lists, even after the walk is done. So a
+  walk that finished within an hour of its lists first appearing does not count: status reads
+  `scripts: settling` with the time it is walked again, and the scheduled pass walks it again then
+  (reading each script, uploading only one that is not current). A `done` walk is also walked again
+  a day after it finished, and `store-driver rebuild` always walks again. A deploy that takes longer
+  than an hour to serve only the new version is followed by `store-driver rebuild` for every driver.
 
 ## A leaked private key
 
