@@ -32,8 +32,18 @@ import { DatabaseSync } from 'node:sqlite';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { moduleMigrations, runMigrationStatements, type ScopedSql, type SqlMigration, type SqlValue } from '../packages/kernel/dist/index.js';
+import {
+  fencedTables,
+  moduleMigrations,
+  runMigrationStatements,
+  type ScopedSql,
+  type SqlMigration,
+  type SqlValue,
+} from '../packages/kernel/dist/index.js';
 import { SCOPE_SPINE_DDL } from '../packages/adapter-sqlite/dist/index.js';
+// The same judge `tools/vitest/sql-limits.cjs` loads by path: node's SQLite does not enforce a
+// Durable Object's limits, and the fence's measuring queries must stay inside them.
+import { assertWithinSqlLimits } from '../packages/kernel/dist/sql-limits.js';
 import { syncTemplate } from './template-sync.mjs';
 
 interface ModuleLike {
@@ -57,17 +67,13 @@ function valueFor(type: string, table: string, column: string, n: number): SqlVa
   return `${table}.${column}#${n}`;
 }
 
-/** Give every table a row and every column a value, so the next migration meets a populated scope. */
-function populate(db: DatabaseSync): void {
-  const tables = db
-    .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table'")
-    .all() as { name: string; sql: string | null }[];
-  const virtual = tables.filter((t) => /^\s*create\s+virtual\b/i.test(t.sql ?? '')).map((t) => t.name.toLowerCase());
+/**
+ * Give every table the fence measures a row, and every column a value, so the next migration
+ * meets a populated scope. The kernel's own list, so the replay fills exactly what is judged.
+ */
+function populate(db: DatabaseSync, sql: ScopedSql): void {
   let n = 0;
-  for (const { name } of tables) {
-    const lower = name.toLowerCase();
-    if (lower.startsWith('_substrat_') || lower.startsWith('sqlite_') || lower.startsWith('_cf_')) continue;
-    if (virtual.some((v) => lower === v || lower.startsWith(`${v}_`))) continue;
+  for (const name of fencedTables(sql)) {
     const columns = db.prepare('SELECT name, type FROM pragma_table_info(?)').all(name) as { name: string; type: string }[];
     const rows = (db.prepare(`SELECT COUNT(*) AS n FROM ${quote(name)}`).get() as { n: number }).n;
     if (rows === 0) {
@@ -94,7 +100,10 @@ export function replay(label: string, modules: readonly Registration[]): Outcome
   db.exec('PRAGMA ignore_check_constraints = ON');
   db.exec(SCOPE_SPINE_DDL);
   const sql: ScopedSql = {
-    query: <T>(q: string, p: readonly SqlValue[] = []) => db.prepare(q).all(...(p as never[])) as T[],
+    query: <T>(q: string, p: readonly SqlValue[] = []) => {
+      assertWithinSqlLimits(q);
+      return db.prepare(q).all(...(p as never[])) as T[];
+    },
     exec: (q: string, p: readonly SqlValue[] = []) => ({ changes: Number(db.prepare(q).run(...(p as never[])).changes) }),
   };
   const failures: string[] = [];
@@ -106,7 +115,7 @@ export function replay(label: string, modules: readonly Registration[]): Outcome
       const isAuthored = authored.has(migration.version);
       db.exec('BEGIN');
       try {
-        if (isAuthored) populate(db);
+        if (isAuthored) populate(db, sql);
         runMigrationStatements(sql, migration, (st) => db.exec(st), { key, authored: isAuthored });
         db.exec('COMMIT');
       } catch (err) {
