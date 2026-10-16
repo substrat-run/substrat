@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -138,7 +138,7 @@ describe.runIf(ready)("the push's data-loss check, through the vertical's own ke
         probe,
         `process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(JSON.stringify({ type: 'done', result: { kind: 'error', message: JSON.stringify(Object.keys(process.env)) } }) + '\\n'));\n`,
       );
-      const r = await replayInChild({ kernelUrl, modules: [] }, { childPath: probe });
+      const r = await replayInChild({ kernelUrl, modules: [], deadlineMs: 60_000 }, { childPath: probe });
       expect(r).toMatchObject({ kind: 'error' });
       expect(JSON.parse((r as { message: string }).message)).not.toContain('SUBSTRAT_REPLAY_PROBE');
     } finally {
@@ -225,4 +225,92 @@ describe('the strict switch', () => {
     );
     expect(formatDataLossCheck({ status: 'skipped', why: 'x' })).toBe('data-loss check: SKIPPED (x) — the fence still refuses at promote');
   });
+});
+
+/** Pids of processes running `path`, or [] — pgrep exits 1 when nothing matches. */
+const pidsOf = (path: string): number[] =>
+  (spawnSync('pgrep', ['-f', path], { encoding: 'utf8' }).stdout ?? '').split('\n').filter(Boolean).map(Number);
+const until = async (what: () => boolean, ms: number): Promise<boolean> => {
+  for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) if (what()) return true;
+  return what();
+};
+
+describe.runIf(ready)('the replay process does not outlive the push that started it', () => {
+  const checkJs = fileURLToPath(new URL('../dist/data-loss-check.js', import.meta.url));
+  const FOREVER = 'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c;';
+
+  /** A push stand-in running one endless migration in a child copied to a path of its own. */
+  const parentRunningForever = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-replay-orphan-'));
+    const child = join(dir, 'replay-child.mjs');
+    copyFileSync(childPath, child);
+    const parent = join(dir, 'parent.mjs');
+    writeFileSync(
+      parent,
+      `import { checkMigrationDataLoss } from ${JSON.stringify(pathToFileURL(checkJs).href)};
+const kernel = await import(${JSON.stringify(kernelUrl)});
+await checkMigrationDataLoss(
+  { kernel, kernelUrl: ${JSON.stringify(kernelUrl)}, modules: [{ manifest: { id: 'notes' }, migrations: ${JSON.stringify([INIT, { version: '0002', sql: FOREVER }])} }], spineDdl: async () => undefined },
+  { childPath: ${JSON.stringify(child)}, timeoutMs: 600000 },
+);
+`,
+    );
+    return { child, process: spawn(process.execPath, [parent], { stdio: 'ignore' }) };
+  };
+
+  for (const signal of ['SIGTERM', 'SIGKILL'] as const) {
+    it(`a push killed with ${signal}, the replay's pid alone, takes the replay with it`, async () => {
+      const { child, process: parent } = parentRunningForever();
+      try {
+        expect(await until(() => pidsOf(child).length > 0, 15_000)).toBe(true);
+        parent.kill(signal);
+        // The watchdog polls every 200 ms; a few seconds is generous under load.
+        expect(await until(() => pidsOf(child).length === 0, 10_000)).toBe(true);
+      } finally {
+        parent.kill('SIGKILL');
+        for (const pid of pidsOf(child)) process.kill(pid, 'SIGKILL');
+      }
+    }, 40_000);
+  }
+});
+
+describe.runIf(ready)('the replay process kills itself at its hard deadline', () => {
+  it('whatever the parent is waiting for: the backstop behind the per-migration limit', async () => {
+    const forever = { version: '0002', sql: 'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c;' };
+    const r = await replayInChild(
+      { kernelUrl, modules: [{ manifest: { id: 'notes' }, migrations: [INIT, forever] }], deadlineMs: 1500 },
+      { childPath, timeoutMs: 600_000 },
+    );
+    expect(r).toMatchObject({ kind: 'error' });
+    expect((r as { message: string }).message).toMatch(/the replay process ended \(SIGKILL\) without an answer/);
+  }, 30_000);
+});
+
+describe.runIf(ready)('the time limit is per migration', () => {
+  /** A migration that runs about `ms` on this machine: a bounded recursive CTE, calibrated here. */
+  const migrationTaking = (() => {
+    let perRow: number | undefined;
+    return async (ms: number, version: string): Promise<Migration> => {
+      if (perRow === undefined) {
+        const { DatabaseSync } = await import('node:sqlite');
+        const db = new DatabaseSync(':memory:');
+        const rows = 2_000_000;
+        const t0 = performance.now();
+        db.exec(`WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < ${rows}) SELECT count(*) FROM c;`);
+        perRow = (performance.now() - t0) / rows;
+      }
+      const n = Math.max(1, Math.round(ms / perRow));
+      return { version, sql: `WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < ${n}) SELECT count(*) FROM c;` };
+    };
+  })();
+
+  it('three migrations each at about half the limit pass, though together they run past it', async () => {
+    const limit = 4000;
+    const slow = await Promise.all(['0002', '0003', '0004'].map((v) => migrationTaking(limit / 2, v)));
+    const started = Date.now();
+    const { result } = await run(inputs([INIT, ...slow]), { timeoutMs: limit });
+    await expect(result).resolves.toEqual({ status: 'passed', authored: 4 });
+    // The point of the test: the replay as a whole took longer than one migration may.
+    expect(Date.now() - started).toBeGreaterThan(limit);
+  }, 60_000);
 });

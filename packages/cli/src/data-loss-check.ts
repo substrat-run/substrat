@@ -126,6 +126,9 @@ export function replayInChild(
     let stdout = '';
     let stderr = '';
     let timer: NodeJS.Timeout | undefined;
+    // A push that ends any other way — it exits, throws, or is killed by a signal, SIGKILL
+    // included — takes the replay with it through the child's own watchdog
+    // (`data-loss-replay-child.ts`), which no handler here could do for SIGKILL.
     const settle = (result: ChildResult): void => {
       if (settled) return;
       settled = true;
@@ -290,7 +293,14 @@ async function replay(
     JSON.stringify(inputs.modules.map((m) => ({ manifest: (m as { manifest?: unknown }).manifest, migrations: (m as { migrations?: unknown }).migrations }))),
   ) as unknown[];
   const timeoutMs = opts.timeoutMs ?? MIGRATION_TIMEOUT_MS;
-  const result = await replayInChild({ kernelUrl: inputs.kernelUrl, modules, spineDdl: await inputs.spineDdl() }, { ...opts, timeoutMs });
+  // The child's own backstop, far past anything the per-migration limit allows: every authored
+  // migration and up to three derived ones per module (search, entity state, list), each at the
+  // limit, plus one for the start.
+  const deadlineMs = timeoutMs * (authoredCount + 3 * modules.length + 1);
+  const result = await replayInChild(
+    { kernelUrl: inputs.kernelUrl, modules, spineDdl: await inputs.spineDdl(), deadlineMs },
+    { ...opts, timeoutMs },
+  );
   if (result.kind === 'no-sqlite') {
     return { status: 'skipped', why: `node:sqlite unavailable on Node ${process.versions.node}; it needs 22.13 or later` };
   }

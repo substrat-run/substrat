@@ -8,13 +8,41 @@
  * DDL — and writes one JSON line per message to stdout, synchronously, so the line naming the
  * migration about to run is out before that migration can block the process. Started with an empty
  * environment, in the temp directory, against an in-memory database.
+ *
+ * It must not outlive the push that started it, however that push ends. The parent kills it on a
+ * timeout, but a parent killed by a signal runs no handler at all, and an orphaned replay blocked
+ * in a SQLite step would spin forever. So the child carries a watchdog of
+ * its own: a worker thread — which a blocked main thread cannot starve — that kills this process
+ * when its parent is gone (the parent pid changes as the OS re-parents it) or the request's hard
+ * deadline passes. Covered: the parent exiting, crashing, or being killed by any signal, SIGKILL
+ * included, within the watchdog's poll interval. Not covered: a parent that is alive but stopped
+ * (SIGSTOP) — the replay then runs until the deadline.
  */
 import { writeSync } from 'node:fs';
+import { Worker } from 'node:worker_threads';
 
 export interface ReplayRequest {
   readonly kernelUrl: string;
   readonly modules: readonly unknown[];
   readonly spineDdl?: string;
+  /** Wall-clock limit for the whole replay, after which the child kills itself — a backstop. */
+  readonly deadlineMs: number;
+}
+
+/** How often the watchdog looks at its parent. */
+export const WATCHDOG_POLL_MS = 200;
+
+/** Kill this process when the parent that started it is gone, or `deadlineMs` has passed. */
+function watchdog(deadlineMs: number): void {
+  const worker = new Worker(
+    `const { workerData: { parent, until, every } } = require('node:worker_threads');
+     setInterval(() => {
+       if (process.ppid !== parent || Date.now() > until) process.kill(process.pid, 'SIGKILL');
+     }, every);`,
+    { eval: true, workerData: { parent: process.ppid, until: Date.now() + deadlineMs, every: WATCHDOG_POLL_MS } },
+  );
+  // The watchdog never keeps a finished replay alive.
+  worker.unref();
 }
 
 /** Each stdout line, in order: zero or more `started`, then one `done`. */
@@ -41,6 +69,7 @@ async function main(): Promise<void> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
   const request = JSON.parse(Buffer.concat(chunks).toString('utf8')) as ReplayRequest;
+  watchdog(request.deadlineMs);
 
   let open: () => Sqlite;
   try {
