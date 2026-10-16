@@ -438,6 +438,13 @@ export function uploadLinkContractSuite(
           'a/b,c/d',
           'image/png,application/xhtml+xml,*/*',
           'image/png, text/html',
+          // One slash, then a comma or whitespace: a browser reads each as the type before it.
+          'image/png,x',
+          'image/png x',
+          'image/png\tx',
+          // A wildcard is an allowlist's word, never a file's type.
+          'image/*',
+          '*/*',
           'image/png\0',
           'image/png\rx',
           'image/png\nx',
@@ -457,6 +464,26 @@ export function uploadLinkContractSuite(
         expect((await redeem(minted, target, { contentType: ' Image/PNG; q=1', filename: 'a.png' })).contentType).toBe(
           'image/png',
         );
+
+        // Each family leaves out the types a browser sniffs or parses as HTML; its ordinary members pass.
+        const file: EntityRef = { entityType: 'ufile', entityId: target.entityId };
+        const fileLink = await mint(alice, { entity: file });
+        for (const contentType of [
+          'text/xsl',
+          'application/unknown',
+          'unknown/unknown',
+          'text/html',
+          'text/html,x',
+          'text/html x',
+          'text/html\tx',
+          '*/*',
+          'text/*',
+        ]) {
+          const refused = await refusal(redeem(fileLink, file, { contentType, filename: 'a.bin', body: bytes('<p>x</p>') }));
+          expect(reasonOf(refused), JSON.stringify(contentType)).toBe(UPLOAD_LINK_TYPE_REFUSED);
+        }
+        expect((await linkOf(fileLink.id)).state).toBe('pending');
+        expect((await redeem(fileLink, file, { contentType: 'text/csv', filename: 'a.csv' })).contentType).toBe('text/csv');
 
         // The twin: `upic` names `image/svg+xml` exactly, and takes it.
         const pic: EntityRef = { entityType: 'upic', entityId: target.entityId };

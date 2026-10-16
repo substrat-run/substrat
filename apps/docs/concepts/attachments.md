@@ -57,7 +57,8 @@ links*, so widening it is a reviewed diff.
 
 **A family never admits an active type.** `image/*` admits PNG, JPEG and the rest, but not
 `image/svg+xml`. `text/*` admits plain text and CSV, but not `text/html`. Active means HTML,
-every XML type (`text/xml`, `application/xml` and any subtype ending in `+xml`, such as
+`text/xsl` (which Chrome parses as HTML even under `nosniff`), the types a browser sniffs for
+HTML (`application/unknown`, `unknown/unknown`), every XML type (`text/xml`, `application/xml` and any subtype ending in `+xml`, such as
 `image/svg+xml`, `application/xhtml+xml` or `application/rss+xml`), and every JavaScript MIME
 type the WHATWG MIME Sniffing standard lists (`text/javascript`, `application/javascript`,
 `application/x-javascript`, `text/ecmascript` and the rest). A browser runs these instead of
@@ -65,8 +66,9 @@ showing them, and the person holding the link chooses the bytes. The type is jud
 essence, without parameters, spaces or capitals, so `image/svg+xml; charset=utf-8` is still SVG,
 and `image/jpg` is judged and recorded as `image/jpeg` (so an allowlist entry spelled `image/jpg`
 never matches; write `image/jpeg`). A type that is not exactly one `type/subtype` (a list such as
-`image/png,text/html`, which a browser reads as its last type, or one with a control character) is
-refused by every allowlist, including an absent one. To take an active type, name it exactly:
+`image/png,text/html`, which a browser reads as its last type; `text/html,x` or `text/html x`,
+read as `text/html`; one with a control character; or a wildcard such as `*/*` or `image/*`, which
+is an allowlist entry and never a file) is refused by every allowlist, including an absent one. To take an active type, name it exactly:
 
 ```ts
 uploadLinks: { maxBytes: 2 * 1024 * 1024, contentTypes: ['image/*', 'image/svg+xml'] },

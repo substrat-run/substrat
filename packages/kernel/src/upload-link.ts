@@ -142,10 +142,13 @@ export function normalizeUploadMediaType(raw: string): string {
 }
 
 /**
- * Types a browser runs rather than shows, named one by one: HTML, and the JavaScript MIME type
- * essences of the WHATWG MIME Sniffing standard. With them, by rule rather than by list, is
- * every XML type (`isActiveContentType`): a top-level navigation renders XML as a document,
- * where an XHTML-namespace `<script>` runs.
+ * Types a browser runs rather than shows, named one by one: HTML; `text/xsl`, which Chrome
+ * parses as HTML even under `nosniff`; the two essences the WHATWG MIME Sniffing standard (§7.1)
+ * hands to its unknown-type sniffer, which finds HTML in an HTML body; and the JavaScript MIME
+ * type essences of the same standard. With them, by rule rather than by list, is every XML type
+ * (`isActiveContentType`): a top-level navigation renders XML as a document, where an
+ * XHTML-namespace `<script>` runs. The third essence §7.1 sniffs, the any-type wildcard, is not
+ * a type a file can be declared as at all (`isMediaTypeEssence`).
  */
 export const ACTIVE_CONTENT_TYPES: ReadonlySet<string> = new Set([
   'text/html',
@@ -153,6 +156,10 @@ export const ACTIVE_CONTENT_TYPES: ReadonlySet<string> = new Set([
   'image/svg+xml',
   'text/xml',
   'application/xml',
+  'text/xsl',
+  // WHATWG MIME Sniffing §7.1: sniffed as an unknown type, so an HTML body is read as HTML.
+  'application/unknown',
+  'unknown/unknown',
   // WHATWG MIME Sniffing §4.6, "JavaScript MIME type".
   'application/ecmascript',
   'application/javascript',
@@ -181,11 +188,14 @@ export const isActiveContentType = (type: string): boolean => ACTIVE_CONTENT_TYP
 
 /**
  * One media type essence, exactly: `type/subtype`, each an RFC 9110 token (lowercase, since it is
- * judged normalized). No comma, so a header listing several types is not one; no space, NUL, CR
- * or LF; one slash with something on both sides. A browser reading `image/png,text/html` keeps
- * the LAST type it can parse, so a list would let a family judge one type and a page serve another.
+ * judged normalized) less `*`. No comma, so a header listing several types is not one; no space,
+ * tab, NUL, CR or LF; one slash with something on both sides. A browser reading
+ * `image/png,text/html` keeps the LAST type it can parse, and reads `text/html,x` or
+ * `text/html x` as `text/html`, so either would let a family judge one type and a page serve
+ * another. No `*`: a wildcard is what an allowlist ENTRY may say, never what a file is, and the
+ * any-type wildcard is sniffed for HTML.
  */
-const MEDIA_TYPE_ESSENCE = /^[a-z0-9!#$%&'*+.^_`|~-]+\/[a-z0-9!#$%&'*+.^_`|~-]+$/;
+const MEDIA_TYPE_ESSENCE = /^[a-z0-9!#$%&'+.^_`|~-]+\/[a-z0-9!#$%&'+.^_`|~-]+$/;
 export const isMediaTypeEssence = (type: string): boolean => MEDIA_TYPE_ESSENCE.test(type);
 
 /**

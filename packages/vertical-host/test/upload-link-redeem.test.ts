@@ -330,6 +330,29 @@ describe('mountUploadLinkRedeem — an upload link, over HTTP', () => {
     expect((await put(`${minted.path}?filename=a.png`, PNG, { 'content-type': 'image/png' })).status).toBe(201);
   });
 
+  it('refuses with 415 what each family leaves out: types a browser sniffs or parses as HTML, wildcards, one-slash spellings a browser reads as HTML', async () => {
+    const entity: EntityRef = { entityType: 'ufile', entityId: `http-file-${++n}` };
+    const minted = await mint(entity);
+    for (const contentType of [
+      'text/xsl',
+      'application/unknown',
+      'unknown/unknown',
+      'text/html,x',
+      'text/html x',
+      'text/html\tx',
+      '*/*',
+      'text/*',
+    ]) {
+      // The body is not sniffable, so the claim alone decides.
+      const res = await put(`${minted.path}?filename=a.bin`, '<p>x</p>', { 'content-type': contentType });
+      expect(res.status, JSON.stringify(contentType)).toBe(415);
+    }
+    expect(await filesOf(entity)).toEqual([]);
+    expect(await stateOf(minted.id)).toBe('pending');
+    // The twin: an ordinary member of the same family goes through on the same link.
+    expect((await put(`${minted.path}?filename=a.csv`, 'a,b', { 'content-type': 'text/csv' })).status).toBe(201);
+  });
+
   it('refuses a file whose bytes contradict its name — a PNG called .pdf — with 415', async () => {
     const entity = target();
     const minted = await mint(entity);

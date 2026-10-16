@@ -87,6 +87,19 @@ describe('uploadContentTypeAllowed', () => {
     }
   });
 
+  it('the types a browser sniffs for HTML, or parses as HTML, are active: text/xsl and the unknown essences', () => {
+    for (const t of ['text/xsl', 'application/unknown', 'unknown/unknown']) {
+      expect(isActiveContentType(t), t).toBe(true);
+      expect(uploadContentTypeAllowed(['text/*', 'application/*', 'unknown/*'], t), t).toBe(false);
+      expect(uploadContentTypeAllowed([t], t), t).toBe(true);
+    }
+    // The near misses Chrome renders as text stay ordinary.
+    for (const t of ['text/xslt', 'text/x-xsl', 'text/css', 'text/vtt', 'text/plain']) {
+      expect(isActiveContentType(t), t).toBe(false);
+      expect(uploadContentTypeAllowed(['text/*'], t), t).toBe(true);
+    }
+  });
+
   it('its twin: ordinary members of every family stay admitted — the rule is not "refuse everything"', () => {
     for (const ok of ['image/png', 'image/jpeg', 'text/plain', 'text/csv', 'application/json', 'application/zip', 'application/pdf']) {
       expect(isActiveContentType(ok), ok).toBe(false);
@@ -102,6 +115,15 @@ describe('a type that is not exactly one essence is admitted by nothing', () => 
   /** A list, a control character, a missing or extra part: none is one `type/subtype`. */
   const MALFORMED = [
   'a/b,c/d',
+  // One slash, then a comma or whitespace: Chrome reads each as the type before it.
+  'text/html,x',
+  'text/html x',
+  'text/html\tx',
+  'image/png,x',
+  // A wildcard in either part is an allowlist's word, never a file's type.
+  '*/*',
+  'image/*',
+  '*/png',
   'image/png,application/xhtml+xml,*/*',
   'image/png, text/html',
   'image/svg+xml,*/*',
@@ -128,8 +150,8 @@ describe('a type that is not exactly one essence is admitted by nothing', () => 
     }
   });
 
-  it('its twin: a well-formed essence, RFC 9110 token characters included, is judged as before', () => {
-    for (const t of ['image/png', 'application/vnd.ms-excel', 'application/x-www-form-urlencoded', "a!#$%&'*+.^_`|~-/b0"]) {
+  it('its twin: a well-formed essence, every RFC 9110 token character but `*` included, is judged as before', () => {
+    for (const t of ['image/png', 'application/vnd.ms-excel', 'application/x-www-form-urlencoded', "a!#$%&'+.^_`|~-/b0"]) {
       expect(isMediaTypeEssence(t), t).toBe(true);
       expect(uploadContentTypeAllowed(null, t), t).toBe(true);
     }
