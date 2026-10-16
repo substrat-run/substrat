@@ -337,6 +337,7 @@ describe('mountUploadLinkRedeem — an upload link, over HTTP', () => {
       'text/xsl',
       'application/unknown',
       'unknown/unknown',
+      'multipart/x-mixed-replace',
       'text/html,x',
       'text/html x',
       'text/html\tx',

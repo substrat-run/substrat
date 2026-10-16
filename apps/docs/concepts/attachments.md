@@ -57,7 +57,8 @@ links*, so widening it is a reviewed diff.
 
 **A family never admits an active type.** `image/*` admits PNG, JPEG and the rest, but not
 `image/svg+xml`. `text/*` admits plain text and CSV, but not `text/html`. Active means HTML,
-`text/xsl` (which Chrome parses as HTML even under `nosniff`), the types a browser sniffs for
+`text/xsl` (which Chrome parses as HTML even under `nosniff`), `multipart/x-mixed-replace` (whose
+parts WebKit renders as documents, also under `nosniff`), the types a browser sniffs for
 HTML (`application/unknown`, `unknown/unknown`), every XML type (`text/xml`, `application/xml` and any subtype ending in `+xml`, such as
 `image/svg+xml`, `application/xhtml+xml` or `application/rss+xml`), and every JavaScript MIME
 type the WHATWG MIME Sniffing standard lists (`text/javascript`, `application/javascript`,
@@ -74,11 +75,14 @@ is an allowlist entry and never a file) is refused by every allowlist, including
 uploadLinks: { maxBytes: 2 * 1024 * 1024, contentTypes: ['image/*', 'image/svg+xml'] },
 ```
 
-::: warning Leaving `contentTypes` out admits every well-formed type, active ones included
-An SVG or an HTML file uploaded through such a link is stored as what it says it is. If your own
-download route serves attachments, answer `Content-Disposition: attachment` and a sandboxing
-`Content-Security-Policy` (`sandbox`), as the platform's link-share download does, so a stored
-file is never run as your origin.
+::: warning Serve stored files as downloads, whatever the allowlist
+Any route of yours that serves an attachment should answer with all three of
+`X-Content-Type-Options: nosniff`, `Content-Disposition: attachment` and a sandboxing
+`Content-Security-Policy` (`default-src 'none'; sandbox`), as the platform's link-share download
+does, so a stored file is never run as your origin. The active-type rule is a second line, not the
+first: leaving `contentTypes` out admits every well-formed type, active ones included, and an
+exact entry admits the type it names. The rule was checked against Chrome and WebKit; Firefox was
+not covered.
 :::
 
 ### Mint it, in an operation

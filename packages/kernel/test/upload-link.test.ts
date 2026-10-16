@@ -87,16 +87,20 @@ describe('uploadContentTypeAllowed', () => {
     }
   });
 
-  it('the types a browser sniffs for HTML, or parses as HTML, are active: text/xsl and the unknown essences', () => {
-    for (const t of ['text/xsl', 'application/unknown', 'unknown/unknown']) {
+  it('the types a browser sniffs for HTML, or parses as HTML, are active: text/xsl, the unknown essences, multipart/x-mixed-replace', () => {
+    for (const t of ['text/xsl', 'application/unknown', 'unknown/unknown', 'multipart/x-mixed-replace']) {
       expect(isActiveContentType(t), t).toBe(true);
-      expect(uploadContentTypeAllowed(['text/*', 'application/*', 'unknown/*'], t), t).toBe(false);
+      expect(uploadContentTypeAllowed(['text/*', 'application/*', 'unknown/*', 'multipart/*'], t), t).toBe(false);
       expect(uploadContentTypeAllowed([t], t), t).toBe(true);
     }
     // The near misses Chrome renders as text stay ordinary.
     for (const t of ['text/xslt', 'text/x-xsl', 'text/css', 'text/vtt', 'text/plain']) {
       expect(isActiveContentType(t), t).toBe(false);
       expect(uploadContentTypeAllowed(['text/*'], t), t).toBe(true);
+    }
+    for (const t of ['multipart/mixed', 'multipart/form-data', 'multipart/related']) {
+      expect(isActiveContentType(t), t).toBe(false);
+      expect(uploadContentTypeAllowed(['multipart/*'], t), t).toBe(true);
     }
   });
 

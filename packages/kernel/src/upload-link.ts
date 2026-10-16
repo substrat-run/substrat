@@ -143,7 +143,8 @@ export function normalizeUploadMediaType(raw: string): string {
 
 /**
  * Types a browser runs rather than shows, named one by one: HTML; `text/xsl`, which Chrome
- * parses as HTML even under `nosniff`; the two essences the WHATWG MIME Sniffing standard (§7.1)
+ * parses as HTML even under `nosniff`; `multipart/x-mixed-replace`, whose parts WebKit renders
+ * as documents even under `nosniff`; the two essences the WHATWG MIME Sniffing standard (§7.1)
  * hands to its unknown-type sniffer, which finds HTML in an HTML body; and the JavaScript MIME
  * type essences of the same standard. With them, by rule rather than by list, is every XML type
  * (`isActiveContentType`): a top-level navigation renders XML as a document, where an
@@ -160,6 +161,8 @@ export const ACTIVE_CONTENT_TYPES: ReadonlySet<string> = new Set([
   // WHATWG MIME Sniffing §7.1: sniffed as an unknown type, so an HTML body is read as HTML.
   'application/unknown',
   'unknown/unknown',
+  // WebKit renders each part as a document, script included, even under `nosniff`.
+  'multipart/x-mixed-replace',
   // WHATWG MIME Sniffing §4.6, "JavaScript MIME type".
   'application/ecmascript',
   'application/javascript',

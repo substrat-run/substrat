@@ -7,8 +7,9 @@
  * - `unote` — an attachment target that declares NO `uploadLinks`: the fail-closed half.
  * - `upic` — takes any image AND names `image/svg+xml` exactly: the deliberate twin of
  *   `udoc`'s `image/*`, which admits no SVG.
- * - `ufile` — takes the `text/*`, `application/*` and `unknown/*` families: what the
- *   active-type rule leaves out of each (`text/xsl`, `application/unknown`, `unknown/unknown`).
+ * - `ufile` — takes the `text/*`, `application/*`, `unknown/*` and `multipart/*` families: what
+ *   the active-type rule leaves out of each (`text/xsl`, `application/unknown`, `unknown/unknown`,
+ *   `multipart/x-mixed-replace`).
  *
  * The `upl.poke` consumer tries to mint and to revoke a link, and writes down what it was
  * told: a consumer runs as the system actor, which holds no authorship to lend a file.
@@ -36,8 +37,8 @@ export const UPL_MAX_BYTES = 64;
 export const UPL_CONTENT_TYPES = ['application/pdf', 'text/plain', 'image/*'] as const;
 /** `upic`'s: the family, and SVG by name. */
 export const UPL_PIC_CONTENT_TYPES = ['image/*', 'image/svg+xml'] as const;
-/** `ufile`'s: three families and nothing else. */
-export const UPL_FILE_CONTENT_TYPES = ['text/*', 'application/*', 'unknown/*'] as const;
+/** `ufile`'s: four families and nothing else. */
+export const UPL_FILE_CONTENT_TYPES = ['text/*', 'application/*', 'unknown/*', 'multipart/*'] as const;
 
 export const uploadLinkModManifest = moduleManifest.parse({
   id: '@test/upl',

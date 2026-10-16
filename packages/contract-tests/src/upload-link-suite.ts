@@ -472,6 +472,7 @@ export function uploadLinkContractSuite(
           'text/xsl',
           'application/unknown',
           'unknown/unknown',
+          'multipart/x-mixed-replace',
           'text/html',
           'text/html,x',
           'text/html x',
@@ -484,6 +485,9 @@ export function uploadLinkContractSuite(
         }
         expect((await linkOf(fileLink.id)).state).toBe('pending');
         expect((await redeem(fileLink, file, { contentType: 'text/csv', filename: 'a.csv' })).contentType).toBe('text/csv');
+        // The multipart family's ordinary member still passes.
+        const mixed = await mint(alice, { entity: file });
+        expect((await redeem(mixed, file, { contentType: 'multipart/mixed', filename: 'a.eml' })).contentType).toBe('multipart/mixed');
 
         // The twin: `upic` names `image/svg+xml` exactly, and takes it.
         const pic: EntityRef = { entityType: 'upic', entityId: target.entityId };
