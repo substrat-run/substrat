@@ -284,6 +284,16 @@ describe('the data-loss fence (#115)', () => {
     scope(setup).migrate({ sql: 'DROP TABLE b; ALTER TABLE a RENAME TO b;', discards: { b: 'b was a staging copy' } });
   });
 
+  it('the rename claims its target first, whichever table the scope created first', () => {
+    // `b` before `a` in the catalogue: an unrenamed `b` must not take the name `a` was renamed onto.
+    const setup = `CREATE TABLE b (id TEXT); CREATE TABLE a (id TEXT);
+      INSERT INTO a VALUES ('1'), ('2'), ('3'); INSERT INTO b VALUES ('x');`;
+    const message = refusal(() => scope(setup).migrate({ sql: 'DROP TABLE b; ALTER TABLE a RENAME TO b;' }));
+    expect(message).toContain('table b held 1 row(s) and is gone');
+    expect(message).not.toContain('table a');
+    scope(setup).migrate({ sql: 'DROP TABLE b; ALTER TABLE a RENAME TO b;', discards: { b: 'b was a staging copy' } });
+  });
+
   it('measures a real table that only shares a prefix with a virtual one; skips the exact shadow tables (#115 r1)', () => {
     const setup = `CREATE VIRTUAL TABLE notes USING fts5(body);
       INSERT INTO notes (body) VALUES ('indexed');
