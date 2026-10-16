@@ -15,9 +15,13 @@
  * - `\p{Cf}`: the format characters — the bidirectional embeddings, overrides, isolates and marks
  *   (U+202A–U+202E, U+2066–U+2069, U+200E, U+200F, U+061C), which reorder what is read, and the
  *   zero-width ones (U+200B–U+200D, U+2060, U+FEFF, the soft hyphen…), which hide;
- * - U+2028 and U+2029, the line and paragraph separators, which break a line without being one.
+ * - U+2028 and U+2029, the line and paragraph separators, which break a line without being one;
+ * - the letters that render as nothing: the Hangul fillers (U+115F, U+1160, U+3164, U+FFA0), the
+ *   Khmer inherent vowels (U+17B4, U+17B5) and the blank Braille pattern (U+2800), which are not
+ *   format characters but read exactly like one.
  */
-const INVISIBLE = /[\p{Cc}\p{Cf}\u2028\u2029]/gu;
+const INVISIBLE = /[\p{Cc}\p{Cf}\u2028\u2029\u115F\u1160\u17B4\u17B5\u2800\u3164\uFFA0]/gu;
+const ANY_INVISIBLE = new RegExp(INVISIBLE.source, 'u');
 
 /**
  * The two layout characters kept as they are: a newline (the CLI prints SQL line by line and a
@@ -36,6 +40,31 @@ const codePoint = (c: string): string => `<U+${c.codePointAt(0)!.toString(16).to
  */
 export function reviewText(text: string): string {
   return text.replace(INVISIBLE, (c) => (LAYOUT.has(c) ? c : codePoint(c)));
+}
+
+/**
+ * Author-written text for a position that is ONE line — an id, a table or column name — where a
+ * kept newline or tab would forge another line: {@link reviewText}, with those made visible too.
+ */
+export function reviewLine(text: string): string {
+  return text.replace(INVISIBLE, codePoint);
+}
+
+/**
+ * A migration's SQL as a review shows it: {@link reviewText} after a CRLF line ending is read as
+ * the line break it is, so SQL saved with Windows line endings does not end every line with a
+ * mark. A lone CR still shows, since it returns to the line's start without breaking it.
+ */
+export function reviewSql(sql: string): string {
+  return reviewText(sql.replace(/\r\n/g, '\n'));
+}
+
+/**
+ * Whether text holds any character {@link reviewText} would have to make visible, newline and tab
+ * included: what the push boundary refuses where a value must be plain (a migration's version).
+ */
+export function hasInvisible(text: string): boolean {
+  return ANY_INVISIBLE.test(text);
 }
 
 /**

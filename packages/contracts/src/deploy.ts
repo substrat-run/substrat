@@ -8,7 +8,7 @@ import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
 import { scopeDumpTable } from './introspection.js';
 import { substratError } from './errors.js';
-import { blankReason } from './review-text.js';
+import { blankReason, hasInvisible } from './review-text.js';
 import { SCOPE_STORE_CANARY, STORE_KIND_ID } from './script-names.js';
 import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
 
@@ -1727,8 +1727,6 @@ export const MIGRATION_DECLARATION_TARGET_MAX = 200;
 /** How long a discard's reason is at most, in characters. */
 export const MIGRATION_DISCARD_REASON_MAX = 2000;
 
-/** Keys a plain object treats as its own machinery, refused as declaration keys (#2322). */
-const RESERVED_DECLARATION_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
 
 /** A `moves` or `discards` record: bounded, keyed by `table` or `table.column`, and never empty. */
 function migrationDeclarations(value: z.ZodType<string>) {
@@ -1736,10 +1734,12 @@ function migrationDeclarations(value: z.ZodType<string>) {
     .unknown()
     // Checked on the raw object, before `z.record`: zod drops a `__proto__` key (JSON.parse makes
     // it an own key) without failing, so the review would show one declaration fewer than the
-    // pusher hashed. Refused here, and with it the other object-model names, on every parse —
-    // the push boundary, the CLI before it sends, and the store reading a row back.
-    .refine((v) => typeof v !== 'object' || v === null || !Object.getOwnPropertyNames(v).some((k) => RESERVED_DECLARATION_KEYS.has(k)), {
-      message: 'a declaration cannot name __proto__, constructor or prototype',
+    // pusher hashed. Refused here on every parse — the push boundary, the CLI before it sends, and
+    // the store reading a row back — and by the kernel's fence, so the author hears it at lint
+    // time. Only `__proto__` is lost: `constructor` and `prototype` are ordinary own keys, and
+    // legal table names, and every reader walks a declaration by its own entries.
+    .refine((v) => typeof v !== 'object' || v === null || !Object.hasOwn(v, '__proto__'), {
+      message: 'a declaration cannot name __proto__',
     })
     .pipe(z.record(z.string().min(1).max(MIGRATION_DECLARATION_TARGET_MAX), value))
     .refine((r) => Object.keys(r).length > 0, { message: 'an empty declaration is left off' })
@@ -1755,8 +1755,17 @@ function migrationDeclarations(value: z.ZodType<string>) {
  */
 export const declaredMigration = z.object({
   moduleId,
-  /** The module's `SqlMigration.version`, e.g. `0001-init`. Unique per module. */
-  version: z.string().min(1).max(200),
+  /**
+   * The module's `SqlMigration.version`, e.g. `0001-init`. Unique per module. Plain text: no
+   * control, format or other invisible character (newline and tab included), because a review
+   * prints it as one line beside the migration's SQL and a newline in it would forge another
+   * entry there (#2322).
+   */
+  version: z
+    .string()
+    .min(1)
+    .max(200)
+    .refine((v) => !hasInvisible(v), { message: 'a migration version holds no control or invisible character' }),
   sql: z.string(),
   /**
    * The migration's declared data losses (#2322), exactly as `SqlMigration.moves` and

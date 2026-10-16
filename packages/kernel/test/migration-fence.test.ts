@@ -227,10 +227,30 @@ describe('the data-loss fence (#115)', () => {
       expect(invalid({ sql: 'DROP TABLE notes;', discards: { notes: '  ' } })).toContain('gives no reason');
     });
 
+    it('a __proto__ declaration key is refused, as the push boundary refuses it (#2322 r2)', () => {
+      const discards = JSON.parse('{"__proto__":"why"}') as Record<string, string>;
+      expect(invalid({ sql: 'DROP TABLE notes;', discards })).toContain('discards names __proto__');
+      const moves = JSON.parse('{"__proto__":"notes"}') as Record<string, string>;
+      expect(invalid({ sql: 'DROP TABLE notes;', moves })).toContain('moves names __proto__');
+    });
+
+    it('while constructor and prototype are ordinary table names a discard may name (#2322 r2)', () => {
+      const s = scope(`CREATE TABLE "constructor" (id TEXT); CREATE TABLE "prototype" (id TEXT);
+        INSERT INTO "constructor" VALUES ('a'); INSERT INTO "prototype" VALUES ('b');`);
+      s.migrate({
+        sql: 'DROP TABLE "constructor"; DROP TABLE "prototype";',
+        discards: { constructor: 'replaced by builders', prototype: 'never shipped' },
+      });
+      expect(s.rows(`SELECT name FROM sqlite_master WHERE name IN ('constructor', 'prototype')`)).toHaveLength(0);
+    });
+
     it('and so is one of only invisible characters — the push boundary’s rule, `blankReason` (#2322)', () => {
       // Zero-width space, word joiner, BOM, a bidi override and a soft hyphen: nothing a reviewer reads.
       const invisible = String.fromCodePoint(0x200b, 0x2060, 0xfeff, 0x202e, 0x00ad, 0x20);
       expect(invalid({ sql: 'DROP TABLE notes;', discards: { notes: invisible } })).toContain('gives no reason');
+      // And the letters that render as nothing: Hangul fillers, Khmer inherent vowels, blank Braille.
+      const blank = String.fromCodePoint(0x115f, 0x1160, 0x3164, 0xffa0, 0x17b4, 0x17b5, 0x2800);
+      expect(invalid({ sql: 'DROP TABLE notes;', discards: { notes: blank } })).toContain('gives no reason');
     });
 
     it('a declaration naming a table or column the scope does not hold is refused', () => {

@@ -132,6 +132,20 @@ describe('version migrations stored apart (#1764)', () => {
       expect(cols[2]).toBeNull();
     });
 
+    it('stores and reads back constructor and prototype as the table names they are (#2322 r2)', () => {
+      const { sql } = fresh();
+      const named = [{ ...migrations[0]!, discards: { constructor: 'why', prototype: 'why' }, moves: { 'constructor.a': 'prototype.a' } }];
+      split(sql, 'v', named);
+      expect(versionMigrationsOf(sql, 'v')?.migrations).toEqual(named);
+    });
+
+    it('a stored row naming __proto__ makes the version not available, as the push boundary refuses it', () => {
+      const { sql } = fresh();
+      split(sql, 'v', migrations);
+      sql.run('UPDATE vertical_version_migrations SET declarations = ? WHERE ordinal = 0', '{"discards":{"__proto__":"why","b":"ok"}}');
+      expect(versionMigrationsOf(sql, 'v')?.migrations).toBeNull();
+    });
+
     it('a row stored before they were carried (NULL) reads as declaring none', () => {
       const { sql } = fresh();
       split(sql, 'old', migrations);

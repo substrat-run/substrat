@@ -4,6 +4,7 @@ import {
   storedDeployManifest,
   migrationsOnTop,
   discardTally,
+  declaredMigration,
   DECLARED_MIGRATIONS_SQL_BYTES_MAX,
   MIGRATION_READ_MAX,
   MIGRATION_READ_SQL_BYTES_MAX,
@@ -205,12 +206,28 @@ describe('deployManifest.migrations refuses keys a record would drop, and an inv
     registry: { permissions: [], roles: [], entityGrants: [] }, digests: { manifest: 'm', permission: 'p', migration: 'g' },
     migrations: [JSON.parse(json)],
   }).success;
-  it('refuses __proto__, constructor and prototype as declaration keys, as JSON delivers them', () => {
-    for (const key of ['__proto__', 'constructor', 'prototype']) {
-      expect(parse(`{"moduleId":"m","version":"1","sql":"","discards":{"${key}":"gone","b":"ok"}}`), key).toBe(false);
-      expect(parse(`{"moduleId":"m","version":"1","sql":"","moves":{"${key}":"b"}}`), key).toBe(false);
-    }
+  it('refuses __proto__ as a declaration key, as JSON delivers it, which a record would silently drop', () => {
+    expect(parse('{"moduleId":"m","version":"1","sql":"","discards":{"__proto__":"gone","b":"ok"}}')).toBe(false);
+    expect(parse('{"moduleId":"m","version":"1","sql":"","moves":{"__proto__":"b"}}')).toBe(false);
     expect(parse('{"moduleId":"m","version":"1","sql":"","discards":{"b":"ok"}}')).toBe(true);
+  });
+  it('keeps constructor and prototype, legal table names, as ordinary own keys (#2322 r2)', () => {
+    const json = '{"moduleId":"m","version":"1","sql":"","discards":{"constructor":"why","prototype":"why"},"moves":{"constructor.a":"prototype.a"}}';
+    const r = declaredMigration.safeParse(JSON.parse(json));
+    expect(r.success).toBe(true);
+    expect(r.data?.discards).toEqual({ constructor: 'why', prototype: 'why' });
+    expect(Object.keys(r.data?.discards ?? {})).toEqual(['constructor', 'prototype']);
+    expect(r.data?.moves).toEqual({ 'constructor.a': 'prototype.a' });
+    // And the diff reads them as declarations, not as the object's machinery.
+    const diff = migrationsOnTop([r.data!], [{ moduleId: 'm', version: '1', sql: '' }]);
+    expect(diff.changed[0]).toMatchObject({ edited: 'declarations', discards: { constructor: 'why', prototype: 'why' } });
+  });
+  it('refuses a migration version holding a newline, tab or any other invisible character (#2322 r2)', () => {
+    const at = (version: string) => parse(JSON.stringify({ moduleId: 'm', version, sql: '' }));
+    expect(at('0007-split-notes')).toBe(true);
+    for (const p of [0x0a, 0x09, 0x0d, 0x1b, 0x7f, 0x9b, 0x202e, 0x200b, 0x2028, 0x3164]) {
+      expect(at(`0007${String.fromCodePoint(p)}x`), p.toString(16)).toBe(false);
+    }
   });
   it('refuses a reason of only invisible characters, and keeps one with some text', () => {
     const zw = String.fromCodePoint(0x200b, 0xfeff, 0x2060);

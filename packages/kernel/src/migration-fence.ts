@@ -488,6 +488,12 @@ export function fenceMigration(sql: ScopedSql, migration: SqlMigration, key: str
   }
   const moves = Object.entries(migration.moves ?? {});
   const discards = Object.entries(migration.discards ?? {});
+  // The push boundary refuses a `__proto__` declaration key, which a record parsed from JSON would
+  // silently drop (#2322); refusing it here too means the author hears it at lint time, not when
+  // the push leaves the migrations off.
+  for (const [what, record] of [['moves', migration.moves], ['discards', migration.discards]] as const) {
+    if (record && Object.hasOwn(record, '__proto__')) throw declarationError(key, `${what} names __proto__, which a declaration cannot carry`);
+  }
   if (moves.length === 0 && discards.length === 0 && statements.every(additive)) {
     run();
     return;
