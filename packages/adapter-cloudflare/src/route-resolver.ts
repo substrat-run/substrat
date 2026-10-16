@@ -65,7 +65,7 @@ function scopeStoresOf(json: string | null | undefined): { binding: string; driv
       if (typeof entry !== 'object' || entry === null) return [];
       const binding = Reflect.get(entry, 'binding');
       const driver = Reflect.get(entry, 'driver');
-      return typeof binding === 'string' && typeof kind === 'string' ? [{ binding, kind }] : [];
+      return typeof binding === 'string' && typeof driver === 'string' ? [{ binding, driver }] : [];
     });
   } catch {
     return [];

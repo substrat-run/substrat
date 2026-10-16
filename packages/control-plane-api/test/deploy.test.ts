@@ -161,10 +161,10 @@ describe('assertSandboxContract', () => {
     expectRefusal([{ type: 'ai', name: 'LLM' }], /binding 'LLM' \(type 'ai'\)/);
   });
 
-  it('refuses a scope store whose kind is not registered', () => {
+  it('refuses a scope store whose driver is not registered', () => {
     let thrown: unknown;
     try {
-      assertSandboxContract({ ...manifest([]), scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] });
+      assertSandboxContract({ ...manifest([]), scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] });
     } catch (err) {
       thrown = err;
     }
@@ -190,27 +190,27 @@ describe('assertSandboxContract', () => {
       expect((thrown as Error).message).toMatch(message);
     };
     refused(
-      { ...manifest([own]), tenantStores: [{ binding: 'DB', kind: 'relational' }] },
+      { ...manifest([own]), tenantStores: [{ binding: 'DB', driver: 'relational' }] },
       /binding 'DB' is declared as an own store and as a per-tenant store/,
     );
     refused(
-      { ...manifest([{ ...own, name: 'GRAPH' }]), scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] },
+      { ...manifest([{ ...own, name: 'GRAPH' }]), scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] },
       /binding 'GRAPH' is declared as an own store and as a scope store/,
     );
     // An own DO binding also lands under its own name, so it must not take a store's runtime name.
     const tenant = '01JABCDEFGHJKMNPQRSTVWXYZ0';
     refused(
-      { ...manifest([{ ...own, name: `DB__${tenant}` }]), tenantStores: [{ binding: 'DB', kind: 'relational' }] },
+      { ...manifest([{ ...own, name: `DB__${tenant}` }]), tenantStores: [{ binding: 'DB', driver: 'relational' }] },
       new RegExp(`binding 'DB__${tenant}' is the runtime name of per-tenant store 'DB'`),
     );
     refused(
-      { ...manifest([{ ...own, name: `ATTACHMENTS__${tenant}` }]), blobStores: [{ binding: 'ATTACHMENTS', kind: 'blob' }] },
+      { ...manifest([{ ...own, name: `ATTACHMENTS__${tenant}` }]), blobStores: [{ binding: 'ATTACHMENTS', driver: 'blob' }] },
       new RegExp(`binding 'ATTACHMENTS__${tenant}' is the runtime name of per-tenant store 'ATTACHMENTS'`),
     );
     // The twin: an own DO binding of another name is admitted beside the per-tenant store.
     ok([{ ...own, name: 'SCOPE' }]);
     expect(() =>
-      assertSandboxContract({ ...manifest([{ ...own, name: 'SCOPE' }]), tenantStores: [{ binding: 'DB', kind: 'relational' }] }),
+      assertSandboxContract({ ...manifest([{ ...own, name: 'SCOPE' }]), tenantStores: [{ binding: 'DB', driver: 'relational' }] }),
     ).not.toThrow();
   });
 });
@@ -218,22 +218,22 @@ describe('assertSandboxContract', () => {
 describe('scope store upload plan (#2210)', () => {
   // A release is pinned by sha256 (D-63); the label here only names which test pin it is.
   const pinOf = (release: string) => ({ sha256: (release === '1.0.0' ? 'a' : 'b').repeat(64), sourceCommit: 'c'.repeat(40), schema: 0 });
-  const kind = (release: string): StoreDriverRegistration => ({
-    kind: 'graph',
+  const driver = (release: string): StoreDriverRegistration => ({
+    driver: 'graph',
     releases: [pinOf(release)],
     className: 'Store',
     operations: ['read'],
     platformOperations: [...RESERVED_STORE_OPERATIONS],
   });
   const stores = [
-    { binding: 'GRAPH' as const, kind: 'graph' as const },
-    { binding: 'BLOBS' as const, kind: 'graph' as const },
+    { binding: 'GRAPH' as const, driver: 'graph' as const },
+    { binding: 'BLOBS' as const, driver: 'graph' as const },
   ];
 
-  // L1 (RFC scope-stores §10.7): with a kind registered, neither upload a vertical's push or
+  // L1 (RFC scope-stores §10.7): with a driver registered, neither upload a vertical's push or
   // serve sends carries a SUBSTRAT_STORE_* binding. This is the function both uploads in api.ts
   // build their binding list with, so a store binding injected into it fails here.
-  it('a vertical upload carries no store binding, with a kind registered', () => {
+  it('a vertical upload carries no store binding, with a driver registered', () => {
     const own: DeclaredBinding[] = [{ type: 'kv_namespace', name: 'CACHE', id: 'kv-1' }];
     const ledger = [{ type: 'd1', name: 'SUBSTRAT_TENANT_DB_01ABC', id: 'd1-1' }];
     for (const platformBindings of [ledger, []]) {
@@ -241,28 +241,28 @@ describe('scope store upload plan (#2210)', () => {
         vertical: 'acme/crm',
         manifest: { bindings: own, scopeStores: stores },
         platformBindings,
-        kinds: [kind('1.0.0')],
+        drivers: [driver('1.0.0')],
       });
       expect(bindings.map((b) => b.name).filter((name) => name.startsWith('SUBSTRAT_STORE_'))).toEqual([]);
       // The twin: the vertical's own bindings and the platform's ledger bindings are still there.
       expect(bindings).toEqual([...own, ...platformBindings]);
     }
-    expect(scopeStoreUploadPlan({ vertical: 'acme/crm', stores, kinds: [kind('1.0.0')] }).bindings).toEqual([]);
+    expect(scopeStoreUploadPlan({ vertical: 'acme/crm', stores, drivers: [driver('1.0.0')] }).bindings).toEqual([]);
   });
 
-  it('an upload refuses a declared kind that is not registered, which is every kind today', () => {
+  it('an upload refuses a declared driver that is not registered, which is every driver today', () => {
     expect(() =>
       verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: stores }, platformBindings: [] }),
     ).toThrow(/not registered/);
     expect(verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: [] }, platformBindings: [] })).toEqual([]);
   });
 
-  it('plans one script per kind and vertical, and a new release keeps the name', () => {
-    const first = scopeStoreUploadPlan({ vertical: 'acme/crm', stores, kinds: [kind('1.0.0')] });
-    const next = scopeStoreUploadPlan({ vertical: 'acme/crm', stores, kinds: [kind('2.0.0')] });
+  it('plans one script per driver and vertical, and a new release keeps the name', () => {
+    const first = scopeStoreUploadPlan({ vertical: 'acme/crm', stores, drivers: [driver('1.0.0')] });
+    const next = scopeStoreUploadPlan({ vertical: 'acme/crm', stores, drivers: [driver('2.0.0')] });
     expect(first.scripts).toEqual([
       {
-        kind: 'graph',
+        driver: 'graph',
         releases: [pinOf('1.0.0')],
         vertical: 'acme/crm',
         className: 'Store',
@@ -275,9 +275,9 @@ describe('scope store upload plan (#2210)', () => {
     expect(scopeStoreObjectName('01TENANT', 'acme/crm', '01SCOPE', 'GRAPH')).toBe('01TENANT/acme/crm/01SCOPE/GRAPH');
   });
 
-  it('refuses a kind that is not registered', () => {
+  it('refuses a driver that is not registered', () => {
     expect(() =>
-      scopeStoreUploadPlan({ vertical: 'acme/crm', stores: [{ binding: 'GRAPH', kind: 'graph' }] }),
+      scopeStoreUploadPlan({ vertical: 'acme/crm', stores: [{ binding: 'GRAPH', driver: 'graph' }] }),
     ).toThrow(/not registered/);
   });
 });

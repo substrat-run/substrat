@@ -213,7 +213,7 @@
 	// control-plane.md §4.9 for the honest statement of what is and is not covered.
 	//
 	// Every bucket is created by hand (the commands above; `substrat-store-releases` for store
-	// kind releases, #2300, the same way), never by a deploy: the deploy
+	// driver releases, #2300, the same way), never by a deploy: the deploy
 	// scripts pass `--x-provision=false` because wrangler's auto-provisioning is ON by
 	// default and probes `GET /r2/buckets/<name>` before every upload. That probe makes an
 	// R2 permission a *deploy* requirement, and the CI token deliberately has none — a

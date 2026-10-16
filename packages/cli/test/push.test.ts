@@ -139,12 +139,12 @@ describe('readRuntimeNeeds', () => {
   it('reads a blob declared on tenantStores, which push sends as a blob store', () => {
     const dir = scratch({
       substrat: {
-        runtimeNeeds: { entry: 'src/worker.ts', tenantStores: [{ binding: 'FILES', kind: 'blob' }] },
+        runtimeNeeds: { entry: 'src/worker.ts', tenantStores: [{ binding: 'FILES', driver: 'blob' }] },
       },
     });
     expect(manifestStoresOf(readRuntimeNeeds(dir), false)).toEqual({
       tenantStores: [],
-      blobStores: [{ binding: 'FILES', kind: 'blob' }],
+      blobStores: [{ binding: 'FILES', driver: 'blob' }],
     });
   });
 
@@ -177,20 +177,20 @@ describe('readRuntimeNeeds', () => {
     ).not.toThrow();
   });
 
-  it('reads a scope store, and refuses it while the kind has no registration', () => {
+  it('reads a scope store, and refuses it while the driver has no registration', () => {
     const dir = scratch({
       substrat: {
-        runtimeNeeds: { entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', kind: 'graph' }] },
+        runtimeNeeds: { entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] },
       },
     });
     const needs = readRuntimeNeeds(dir);
-    expect(needs?.scopeStores).toEqual([{ binding: 'GRAPH', kind: 'graph' }]);
+    expect(needs?.scopeStores).toEqual([{ binding: 'GRAPH', driver: 'graph' }]);
     expect(() => assertDeclaredScopeStores({ scopeStores: needs?.scopeStores })).toThrow(/not registered/);
   });
 
   it('refuses a scope-store driver the declaration does not have', () => {
     const dir = scratch({
-      substrat: { runtimeNeeds: { entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', kind: 'document' }] } },
+      substrat: { runtimeNeeds: { entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', driver: 'document' }] } },
     });
     expect(() => readRuntimeNeeds(dir)).toThrow();
   });

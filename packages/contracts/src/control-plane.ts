@@ -239,8 +239,8 @@ export const adminAction = z.enum([
   'setPeerBinding',
   'bindConnectionScope',
   // #2297/#2300 — a store driver's release: its bytes stored (by sha256, before or after the pin
-  // lands), rolled out across the verticals that declare the kind, or rolled back to the
-  // immediately previous good release. Each row names the kind, the sha256 and the rollout.
+  // lands), rolled out across the verticals that declare the driver, or rolled back to the
+  // immediately previous good release. Each row names the driver, the sha256 and the rollout.
   'uploadStoreDriverRelease',
   'rollOutStoreDriver',
   'rollBackStoreDriver',

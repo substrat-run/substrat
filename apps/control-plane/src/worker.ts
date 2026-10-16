@@ -266,7 +266,7 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   SCOPE_BACKUPS?: R2Bucket;
   /**
-   * A store driver's release bytes (#2300), content-addressed by kind and sha256. Bound in
+   * A store driver's release bytes (#2300), content-addressed by driver and sha256. Bound in
    * wrangler.jsonc. Absent ⇒ the release routes answer 501 and a push finds no release to upload.
    */
   STORE_RELEASES?: R2Bucket;
@@ -647,7 +647,7 @@ function storeEnsurerOptionsOf(env: Env) {
 }
 
 /**
- * A store driver's release flow (#2300): the bytes in `STORE_RELEASES`, the kind's canary script
+ * A store driver's release flow (#2300): the bytes in `STORE_RELEASES`, the driver's canary script
  * uploaded like a vertical's, and the canary's reserved calls signed as every platform call is.
  * Absent until the bucket, the upload credentials and the platform key are all configured.
  */
@@ -667,7 +667,7 @@ function storeReleasesFor(env: Env) {
         await bucket.put(key, bytes);
       },
     },
-    ensureCanary: async (input: { kind: string; to: string; loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }) =>
+    ensureCanary: async (input: { driver: string; to: string; loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }) =>
       createStoreCanaryEnsurer({ ...(await options()), loadRelease: input.loadRelease })(input),
     callCanary: (target: { scriptName: string; objectName: string }, operation: ReservedStoreOperation, input?: unknown) =>
       callPlatformScopeStoreAt(
@@ -1538,9 +1538,9 @@ export async function wipeDeclaredScopeStores(
   env: Pick<Env, 'DISPATCH' | 'STORE_PLATFORM_KEY'>,
   admin: StoreReadAdmin,
   scope: Scope,
-  kinds: readonly StoreDriverRegistration[] = STORE_DRIVERS,
+  drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS,
 ): Promise<void> {
-  await (await declaredScopeStoresWipe(platformStoresFor(env), admin, scope, kinds))();
+  await (await declaredScopeStoresWipe(platformStoresFor(env), admin, scope, drivers))();
 }
 
 /** `wipeDeclaredScopeStores` in two halves: the stores resolved now (which may refuse), the wipe when called. */
@@ -1548,10 +1548,10 @@ async function declaredScopeStoresWipe(
   caller: PlatformScopeStores,
   admin: StoreReadAdmin,
   scope: Scope,
-  kinds: readonly StoreDriverRegistration[],
+  drivers: readonly StoreDriverRegistration[],
 ): Promise<() => Promise<void>> {
   const vertical = scope.vertical;
-  const stores = vertical ? await scopeStoresOf(admin, SWEEP_ACTOR, scope, kinds) : [];
+  const stores = vertical ? await scopeStoresOf(admin, SWEEP_ACTOR, scope, drivers) : [];
   return async () => {
     if (vertical && stores.length > 0) {
       await caller.wipeStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical, stores });
@@ -1574,7 +1574,7 @@ export async function reapExpiredSnapshot(
     issuerClient: PreviewAuthDeps['issuerClient'];
     resolveRef?: (deploymentRef: string) => Promise<VerticalClient | undefined>;
     resolveVersion?: (slug: string, versionId: string, actor: PlatformActorId) => Promise<VerticalClient | undefined>;
-    kinds?: readonly StoreDriverRegistration[];
+    drivers?: readonly StoreDriverRegistration[];
   },
   tenantId: TenantId,
   scopeId: ScopeId,
@@ -1584,7 +1584,7 @@ export async function reapExpiredSnapshot(
   const rec = await host.admin.getScopeRecord(actor, tenantId, scopeId);
   if (resolveRef) await claimScopeScriptReap({ admin: host.admin, actor }, tenantId, scopeId);
   else await assertNoUnreachableScopeCopies(host.admin, actor, tenantId, scopeId);
-  const wipeStores = rec ? await declaredScopeStoresWipe(deps.stores, host.admin, rec, deps.kinds ?? STORE_DRIVERS) : undefined;
+  const wipeStores = rec ? await declaredScopeStoresWipe(deps.stores, host.admin, rec, deps.drivers ?? STORE_DRIVERS) : undefined;
   // An expired fork can still be routed: stop routing before the wipe (#2285, L6).
   if (rec) await unrouteScope(host.admin, actor, rec);
   // Its own sign-in clients go once nothing routes to it, and before the row (#1704).
@@ -1607,10 +1607,10 @@ export async function declaredStoreSizes(
   env: Pick<Env, 'DISPATCH' | 'STORE_PLATFORM_KEY'>,
   admin: StoreReadAdmin,
   scope: Scope,
-  kinds: readonly StoreDriverRegistration[] = STORE_DRIVERS,
+  drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS,
 ): Promise<{ binding: string; bytes: number }[]> {
   if (!scope.vertical) return [];
-  const stores = await scopeStoresOf(admin, SWEEP_ACTOR, scope, kinds);
+  const stores = await scopeStoresOf(admin, SWEEP_ACTOR, scope, drivers);
   if (stores.length === 0) return [];
   return platformStoresFor(env).sizeStores({ tenantId: scope.tenantId, scopeId: scope.id, vertical: scope.vertical, stores });
 }

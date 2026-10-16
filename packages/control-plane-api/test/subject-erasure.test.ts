@@ -289,7 +289,7 @@ describe('subject erasure (#37)', () => {
         runners: [{
           binding: 'GRAPH',
           runner: {
-            kind: 'counter',
+            driver: 'counter',
             async start() {},
             async stop() {},
             async invoke(_address, request) {
@@ -359,7 +359,7 @@ describe('subject erasure (#37)', () => {
     expect(res.status).toBe(404);
   });
 
-  it('does not ask the stores to erase when the version declares none, with a kind registered', async () => {
+  it('does not ask the stores to erase when the version declares none, with a driver registered', async () => {
     if (!docsRegistered) {
       await host.admin.registerVertical(staff, { slug: 'docs', name: 'docs', source: 'cli' });
       docsRegistered = true;
@@ -383,7 +383,7 @@ describe('subject erasure (#37)', () => {
     const api = createControlPlaneApi({
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
-      storeDrivers: [graphKind],
+      storeDrivers: [graphDriver],
       resolveVerticalRef: async () => ({
         redactSubject: async () => ({
           events: 0, intents: 0, jobRuns: 0, idempotencyResults: 0, intentIds: [],
@@ -420,7 +420,7 @@ describe('subject erasure (#37)', () => {
       manifestJson: JSON.stringify({
         version: '1.0.0', entry: 'worker.js', compatibilityDate: '2025-01-01',
         digests: { manifest: 'm', permission: 'p', migration: 'g' },
-        scopeStores: [{ binding: 'GRAPH', kind: 'graph' }],
+        scopeStores: [{ binding: 'GRAPH', driver: 'graph' }],
       }),
     });
     await host.admin.admitVersion(staff, versionId);
@@ -431,15 +431,15 @@ describe('subject erasure (#37)', () => {
     return scoped;
   };
   const graphTable = { name: 'nodes', ddl: 'CREATE TABLE nodes(id TEXT)', columns: ['id'], rows: [['a']] };
-  /** A registered graph kind: with none registered no store can exist (`mayHoldScopeStores`, #2242). */
-  const graphKind: StoreDriverRegistration = { kind: 'graph', releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }], className: 'Graph', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] };
+  /** A registered graph driver: with none registered no store can exist (`mayHoldScopeStores`, #2242). */
+  const graphDriver: StoreDriverRegistration = { driver: 'graph', releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }], className: 'Graph', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] };
 
   /** The control plane against a hosted `docs`, its stores reached through the platform. */
   const hosted = (calls: { imported: unknown[][]; erased: string[]; failErase?: boolean }, tables: number) =>
     createControlPlaneApi({
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
-      storeDrivers: [graphKind],
+      storeDrivers: [graphDriver],
       verticals: {
         docs: {
           restoreScope: async () => ({ tables }),
@@ -447,7 +447,7 @@ describe('subject erasure (#37)', () => {
         },
       } as never,
       platformScopeStores: {
-        exportStores: async () => [{ binding: 'GRAPH', kind: 'graph', tables: [graphTable] }],
+        exportStores: async () => [{ binding: 'GRAPH', driver: 'graph', tables: [graphTable] }],
         eraseSubject: async ({ subjectId }) => {
           if (calls.failErase) throw new Error('store unavailable');
           calls.erased.push(subjectId);
@@ -468,10 +468,10 @@ describe('subject erasure (#37)', () => {
     const res = await hosted(calls, dump.tables.length).request(`/tenants/${t}/scopes/${scoped}/restore`, {
       method: 'POST',
       headers: auth,
-      body: JSON.stringify({ ...dump, stores: [{ binding: 'GRAPH', kind: 'graph', tables: [graphTable] }] }),
+      body: JSON.stringify({ ...dump, stores: [{ binding: 'GRAPH', driver: 'graph', tables: [graphTable] }] }),
     });
     expect(res.status).toBe(200);
-    expect(calls.imported).toEqual([[{ binding: 'GRAPH', kind: 'graph', tables: [graphTable] }]]);
+    expect(calls.imported).toEqual([[{ binding: 'GRAPH', driver: 'graph', tables: [graphTable] }]]);
   });
 
   it("refuses, before any write, a dump store the destination's version does not declare (#2207)", async () => {
@@ -480,8 +480,8 @@ describe('subject erasure (#37)', () => {
     const audited = async () => (await host.admin.auditLog(staff, { tenantId: t, action: 'restoreScope' })).length;
     const before = await audited();
     for (const [store, says] of [
-      [{ binding: 'OTHER', kind: 'graph', tables: [graphTable] }, /'OTHER', which this scope's version does not declare/],
-      [{ binding: 'GRAPH', kind: 'counter', tables: [graphTable] }, /is a 'counter', and this scope's version declares a 'graph'/],
+      [{ binding: 'OTHER', driver: 'graph', tables: [graphTable] }, /'OTHER', which this scope's version does not declare/],
+      [{ binding: 'GRAPH', driver: 'counter', tables: [graphTable] }, /is a 'counter', and this scope's version declares a 'graph'/],
     ] as const) {
       const calls = { imported: [] as unknown[][], erased: [] as string[] };
       const res = await hosted(calls, dump.tables.length).request(`/tenants/${t}/scopes/${scoped}/restore`, {
@@ -545,13 +545,13 @@ describe('subject erasure (#37)', () => {
       },
       sizeStores: async () => [],
     });
-    const api = (stores: PlatformScopeStores, kinds: readonly unknown[] = [graphKind]) =>
+    const api = (stores: PlatformScopeStores, drivers: readonly unknown[] = [graphDriver]) =>
       createControlPlaneApi({
         host,
         authenticate: UNSAFE_devPlatformActorAuth(),
         scopeBackups: store,
         platformScopeStores: stores,
-        storeDrivers: kinds as never,
+        storeDrivers: drivers as never,
         resolveVerticalRef: async () => ({
           redactSubject: async () => redaction,
           deleteScope: async () => undefined,
@@ -571,7 +571,7 @@ describe('subject erasure (#37)', () => {
         manifestJson: JSON.stringify({
           version: '1.0.0', entry: 'worker.js', compatibilityDate: '2025-01-01',
           digests: { manifest: 'm', permission: 'p', migration: 'g' },
-          scopeStores: [{ binding: 'GRAPH', kind: 'graph' }],
+          scopeStores: [{ binding: 'GRAPH', driver: 'graph' }],
         }),
       });
       await host.admin.admitVersion(staff, versionId);
@@ -599,7 +599,7 @@ describe('subject erasure (#37)', () => {
       expect(res.status).toBeLessThan(300);
       expect(calls.exported).toEqual([scoped]);
       const taken = [...held.values()].find((d) => d.scopeId === scoped);
-      expect(taken!.stores).toEqual([{ binding: 'GRAPH', kind: 'graph', tables: [graphTable] }]);
+      expect(taken!.stores).toEqual([{ binding: 'GRAPH', driver: 'graph', tables: [graphTable] }]);
     });
 
     it('is carried WITH its store in a full tenant export (Art. 20)', async () => {
@@ -612,7 +612,7 @@ describe('subject erasure (#37)', () => {
       expect(res.status, await res.clone().text()).toBe(200);
       const body = (await res.json()) as { data: { scopeId: string; stores: unknown[] }[] };
       expect(calls.exported).toContain(scoped);
-      expect(body.data.find((d) => d.scopeId === scoped)?.stores).toEqual([{ binding: 'GRAPH', kind: 'graph', tables: [graphTable] }]);
+      expect(body.data.find((d) => d.scopeId === scoped)?.stores).toEqual([{ binding: 'GRAPH', driver: 'graph', tables: [graphTable] }]);
     });
 
     it('asks the store on a shred, and the receipt names it', async () => {
@@ -634,7 +634,7 @@ describe('subject erasure (#37)', () => {
       const res = await api(recording(calls)).request(`/tenants/${t}/scopes/${scoped}/restore`, {
         method: 'POST',
         headers: auth,
-        body: JSON.stringify({ ...dump, stores: [{ binding: 'GRAPH', kind: 'graph', tables: [graphTable] }] }),
+        body: JSON.stringify({ ...dump, stores: [{ binding: 'GRAPH', driver: 'graph', tables: [graphTable] }] }),
       });
       expect(res.status).toBe(200);
       expect(calls.imported).toEqual([scoped]);
@@ -691,7 +691,7 @@ describe('subject erasure (#37)', () => {
       const withStore = await none.request(`/tenants/${t}/scopes/${scoped}/restore`, {
         method: 'POST',
         headers: auth,
-        body: JSON.stringify({ ...dump, stores: [{ binding: 'GRAPH', kind: 'graph', tables: [graphTable] }] }),
+        body: JSON.stringify({ ...dump, stores: [{ binding: 'GRAPH', driver: 'graph', tables: [graphTable] }] }),
       });
       expect(withStore.status, 'restore of a dump store').toBe(503);
       // The replay runs after the data landed, so it reports rather than refuses.
@@ -709,9 +709,9 @@ describe('subject erasure (#37)', () => {
       expect((await host.admin.getScopeRecord(staff, t, scoped))?.status).toBe('archived');
     });
 
-    it('a version that cannot be told refuses once a kind is registered, and proceeds while none is', async () => {
+    it('a version that cannot be told refuses once a driver is registered, and proceeds while none is', async () => {
       // A scope with a vertical and neither a serving pin nor a bound version: nothing says
-      // what it runs. With no kind registered no store can exist, as before stores.
+      // what it runs. With no driver registered no store can exist, as before stores.
       await host.admin.registerVertical(staff, { slug: 'unserved', name: 'unserved', source: 'cli' });
       const scoped = scopeId.parse(ulid());
       await host.provisionScope(staff, { tenantId: t, scopeId: scoped, vertical: 'unserved' });
@@ -719,12 +719,12 @@ describe('subject erasure (#37)', () => {
       const record = await host.admin.getScopeRecord(staff, t, scoped);
       expect(record?.servingRef ?? null).toBeNull();
       expect(record?.verticalVersionId ?? null).toBeNull();
-      const backup = (kinds: readonly unknown[]) =>
-        api(recording(fresh()), kinds).request(`/tenants/${t}/scopes/${scoped}/backups`, { method: 'POST', headers: auth });
-      expect((await backup([graphKind])).status).toBe(503);
+      const backup = (drivers: readonly unknown[]) =>
+        api(recording(fresh()), drivers).request(`/tenants/${t}/scopes/${scoped}/backups`, { method: 'POST', headers: auth });
+      expect((await backup([graphDriver])).status).toBe(503);
       expect((await backup([])).status).toBeLessThan(300);
       const who = ulid();
-      const shred = await api(recording(fresh()), [graphKind]).request(`/tenants/${t}/scopes/${scoped}/subjects/${who}/shred`, { method: 'POST', headers: auth });
+      const shred = await api(recording(fresh()), [graphDriver]).request(`/tenants/${t}/scopes/${scoped}/subjects/${who}/shred`, { method: 'POST', headers: auth });
       expect(shred.status).toBe(503);
       const marks = await host.admin.listShreddedSubjects(staff, t, scoped);
       expect(marks.subjects).not.toContain(who);
@@ -738,7 +738,7 @@ describe('subject erasure (#37)', () => {
       const res = await api(recording(fresh())).request(`/tenants/${t}/scopes/${scoped}/restore`, {
         method: 'POST',
         headers: auth,
-        body: JSON.stringify({ ...before, stores: [{ binding: 'OTHER', kind: 'graph', tables: [graphTable] }] }),
+        body: JSON.stringify({ ...before, stores: [{ binding: 'OTHER', driver: 'graph', tables: [graphTable] }] }),
       });
       expect(res.status).toBe(422);
       // A restore of `before` would have rewound the note away.

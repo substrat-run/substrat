@@ -49,7 +49,7 @@ export { causedByMod } from './caused-by-module.js';
 export { membershipExecutorContractSuite } from './membership-executor-suite.js';
 export { findingsContractSuite } from './findings-suite.js';
 export { scopeStoreContractSuite } from './scope-store-suite.js';
-// #2213: what a kind's own runner passes, and the trivial kind both suites run.
+// #2213: what a driver's own runner passes, and the trivial driver both suites run.
 export { scopeStoreRunnerContractSuite, type ScopeStoreRunnerFixture } from './scope-store-runner-suite.js';
 export { counterScopeStoreRunner } from './counter-runner.js';
 export { findingsAtomicContractSuite, type DirectoryExec } from './findings-atomic-suite.js';

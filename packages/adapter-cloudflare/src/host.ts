@@ -700,7 +700,7 @@ interface ControlPlaneStub {
     at: string;
   }): Promise<StoreDriverRolloutRecord>;
   finishStoreDriverRollout(input: {
-    kind: string;
+    driver: string;
     seq: number;
     holder: string;
     state: Exclude<StoreDriverRolloutState, 'rolling'>;
@@ -3920,7 +3920,7 @@ export class CloudflareScopeHost implements ScopeHost {
   async scopeStoreExportLocal(
     tenantId: TenantId,
     scopeId: ScopeId,
-  ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
+  ): Promise<{ binding: string; driver: string; tables: ScopeDumpTable[] }[]> {
     this.refuseLocalStoresOnPlatform('export');
     return this.exportScopeStores(tenantId, scopeId);
   }
