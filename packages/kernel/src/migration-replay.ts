@@ -65,6 +65,7 @@ export interface ReplayOutcome {
 
 const quote = (n: string): string => `"${n.replace(/"/g, '""')}"`;
 
+declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 const utf8 = new TextEncoder();
 
 /**
