@@ -8,6 +8,7 @@ import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
 import { scopeDumpTable } from './introspection.js';
 import { substratError } from './errors.js';
+import { blankReason } from './review-text.js';
 import { SCOPE_STORE_CANARY, STORE_KIND_ID } from './script-names.js';
 import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
 
@@ -1726,10 +1727,21 @@ export const MIGRATION_DECLARATION_TARGET_MAX = 200;
 /** How long a discard's reason is at most, in characters. */
 export const MIGRATION_DISCARD_REASON_MAX = 2000;
 
+/** Keys a plain object treats as its own machinery, refused as declaration keys (#2322). */
+const RESERVED_DECLARATION_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
+
 /** A `moves` or `discards` record: bounded, keyed by `table` or `table.column`, and never empty. */
 function migrationDeclarations(value: z.ZodType<string>) {
   return z
-    .record(z.string().min(1).max(MIGRATION_DECLARATION_TARGET_MAX), value)
+    .unknown()
+    // Checked on the raw object, before `z.record`: zod drops a `__proto__` key (JSON.parse makes
+    // it an own key) without failing, so the review would show one declaration fewer than the
+    // pusher hashed. Refused here, and with it the other object-model names, on every parse —
+    // the push boundary, the CLI before it sends, and the store reading a row back.
+    .refine((v) => typeof v !== 'object' || v === null || !Object.getOwnPropertyNames(v).some((k) => RESERVED_DECLARATION_KEYS.has(k)), {
+      message: 'a declaration cannot name __proto__, constructor or prototype',
+    })
+    .pipe(z.record(z.string().min(1).max(MIGRATION_DECLARATION_TARGET_MAX), value))
     .refine((r) => Object.keys(r).length > 0, { message: 'an empty declaration is left off' })
     .refine((r) => Object.keys(r).length <= MIGRATION_DECLARATIONS_MAX, {
       message: `at most ${MIGRATION_DECLARATIONS_MAX} entries`,
@@ -1758,8 +1770,9 @@ export const declaredMigration = z.object({
     z
       .string()
       .max(MIGRATION_DISCARD_REASON_MAX)
-      // The fence refuses a discard with no reason at apply; the trust boundary refuses it too.
-      .refine((why) => why.trim() !== '', { message: 'a discard gives a reason' }),
+      // The kernel fence refuses a discard with no reason at apply, by this same rule; the trust
+      // boundary refuses it too. Blank counts invisible characters as nothing (`blankReason`).
+      .refine((why) => !blankReason(why), { message: 'a discard gives a reason a reviewer can read' }),
   ).optional(),
 });
 export type DeclaredMigration = z.infer<typeof declaredMigration>;

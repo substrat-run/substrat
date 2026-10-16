@@ -3,10 +3,7 @@ import {
   deployManifest,
   storedDeployManifest,
   migrationsOnTop,
-  reviewText,
-  clipReviewText,
-  REVIEW_TEXT_SHOWN_MAX,
-  discardCount,
+  discardTally,
   DECLARED_MIGRATIONS_SQL_BYTES_MAX,
   MIGRATION_READ_MAX,
   MIGRATION_READ_SQL_BYTES_MAX,
@@ -183,14 +180,8 @@ describe('deployManifest.migrations declarations (#2322)', () => {
   });
 });
 
-describe('reviewText and discardCount (#2322)', () => {
-  it('makes every bidi control visible and keeps the rest verbatim', () => {
-    expect(reviewText('keeps\u202Esdrop')).toBe('keeps<U+202E>sdrop');
-    expect(reviewText('\u2066a\u2069\u200E\u200F\u061C\u202A')).toBe('<U+2066>a<U+2069><U+200E><U+200F><U+061C><U+202A>');
-    expect(reviewText('<b>"x"</b>\né')).toBe('<b>"x"</b>\né');
-  });
-
-  it('counts the shown discards, edited and added', () => {
+describe('discardTally (#2322)', () => {
+  it('counts the shown discards, edited and added, and says "at least" when the answer is cut', () => {
     const diff = migrationsOnTop(
       [
         { moduleId: 'a', version: '1', sql: 's', discards: { t: 'why', u: 'why' } },
@@ -199,20 +190,31 @@ describe('reviewText and discardCount (#2322)', () => {
       ],
       [{ moduleId: 'a', version: '3', sql: 'old' }],
     );
-    expect(discardCount(diff)).toBe(3);
+    expect(discardTally(diff)).toEqual({ count: 3, atLeast: false });
+    // Past the count bound, the discards of the entries left out are not in the answer.
+    const many = Array.from({ length: MIGRATION_READ_MAX + 1 }, (_, i) => ({
+      moduleId: 'a', version: String(i).padStart(4, '0'), sql: 's', discards: { t: 'why' },
+    }));
+    expect(discardTally(migrationsOnTop(many, []))).toEqual({ count: MIGRATION_READ_MAX, atLeast: true });
   });
 });
 
-describe('clipReviewText (#2322)', () => {
-  it('shows a short reason whole, and cuts a long one at the bound without splitting a character', () => {
-    expect(clipReviewText('why')).toEqual({ full: 'why', shown: 'why', clipped: false });
-    const at = 'a'.repeat(REVIEW_TEXT_SHOWN_MAX);
-    expect(clipReviewText(at).clipped).toBe(false);
-    const long = '😀'.repeat(REVIEW_TEXT_SHOWN_MAX + 1);
-    const r = clipReviewText(long);
-    expect(r.clipped).toBe(true);
-    expect(Array.from(r.shown)).toHaveLength(REVIEW_TEXT_SHOWN_MAX);
-    expect(r.full).toBe(long);
-    expect(clipReviewText('a\u202Eb').full).toBe('a<U+202E>b');
+describe('deployManifest.migrations refuses keys a record would drop, and an invisible reason (#2322)', () => {
+  const parse = (json: string) => deployManifest.safeParse({
+    version: '1.0.0', entry: 'index.js', compatibilityDate: '2026-07-01',
+    registry: { permissions: [], roles: [], entityGrants: [] }, digests: { manifest: 'm', permission: 'p', migration: 'g' },
+    migrations: [JSON.parse(json)],
+  }).success;
+  it('refuses __proto__, constructor and prototype as declaration keys, as JSON delivers them', () => {
+    for (const key of ['__proto__', 'constructor', 'prototype']) {
+      expect(parse(`{"moduleId":"m","version":"1","sql":"","discards":{"${key}":"gone","b":"ok"}}`), key).toBe(false);
+      expect(parse(`{"moduleId":"m","version":"1","sql":"","moves":{"${key}":"b"}}`), key).toBe(false);
+    }
+    expect(parse('{"moduleId":"m","version":"1","sql":"","discards":{"b":"ok"}}')).toBe(true);
+  });
+  it('refuses a reason of only invisible characters, and keeps one with some text', () => {
+    const zw = String.fromCodePoint(0x200b, 0xfeff, 0x2060);
+    expect(parse(JSON.stringify({ moduleId: 'm', version: '1', sql: '', discards: { b: zw } }))).toBe(false);
+    expect(parse(JSON.stringify({ moduleId: 'm', version: '1', sql: '', discards: { b: `${zw}why` } }))).toBe(true);
   });
 });

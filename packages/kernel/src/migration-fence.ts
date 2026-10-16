@@ -60,7 +60,7 @@
  *
  * Kernel-derived DDL is exempt: its tables are indexes, rebuilt from the data this protects.
  */
-import { namesSpineTable, substratError, tokenizeSql } from '@substrat-run/contracts';
+import { blankReason, namesSpineTable, substratError, tokenizeSql } from '@substrat-run/contracts';
 import type { ScopedSql, SqlMigration } from './scope-host.js';
 import { DO_SQL_LIMITS } from './sql-limits.js';
 import { executableSqlStatements } from './sql-statements.js';
@@ -506,7 +506,9 @@ export function fenceMigration(sql: ScopedSql, migration: SqlMigration, key: str
   const parsedDiscards = discards.map(([spec, why]) => {
     const target = targetOf(spec);
     if (!target) throw declarationError(key, `discards: { '${spec}': … } is not 'table' or 'table.column'`);
-    if (typeof why !== 'string' || why.trim() === '') throw declarationError(key, `discards: { '${spec}': … } gives no reason; the reason is what a reviewer reads`);
+    // The push boundary's own rule (`blankReason`): a reason of only whitespace or invisible
+    // characters says nothing a reviewer can read, so neither side accepts it (#2322).
+    if (typeof why !== 'string' || blankReason(why)) throw declarationError(key, `discards: { '${spec}': … } gives no reason; the reason is what a reviewer reads`);
     if (!countOf(before, target)) throw declarationError(key, `discards names ${show(target)}, which this scope does not hold before the migration`);
     return target;
   });

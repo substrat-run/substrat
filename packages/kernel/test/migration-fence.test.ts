@@ -227,6 +227,12 @@ describe('the data-loss fence (#115)', () => {
       expect(invalid({ sql: 'DROP TABLE notes;', discards: { notes: '  ' } })).toContain('gives no reason');
     });
 
+    it('and so is one of only invisible characters — the push boundary’s rule, `blankReason` (#2322)', () => {
+      // Zero-width space, word joiner, BOM, a bidi override and a soft hyphen: nothing a reviewer reads.
+      const invisible = String.fromCodePoint(0x200b, 0x2060, 0xfeff, 0x202e, 0x00ad, 0x20);
+      expect(invalid({ sql: 'DROP TABLE notes;', discards: { notes: invisible } })).toContain('gives no reason');
+    });
+
     it('a declaration naming a table or column the scope does not hold is refused', () => {
       expect(invalid({ sql: 'DROP TABLE notes;', discards: { notez: 'typo' } })).toContain('discards names notez');
       expect(invalid({ sql: 'DROP TABLE notes;', moves: { 'notes.bdy': 'x.body' } })).toContain('moves names notes.bdy');

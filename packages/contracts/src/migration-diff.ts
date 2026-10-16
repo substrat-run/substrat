@@ -151,39 +151,12 @@ export function migrationsOnTop(
 }
 
 /**
- * The Unicode bidirectional controls: embeddings and overrides (U+202A–U+202E), isolates
- * (U+2066–U+2069), and the marks (U+200E, U+200F, U+061C). Invisible, and able to make text
- * read in an order other than the one it is stored in.
+ * How many places a diff declares it deliberately discards data, among the entries it shows.
+ * `atLeast` is set when the answer is cut (`truncated`): an entry left out, or one whose
+ * declarations were, may discard more, so a review says "at least" — or, at none shown, that the
+ * cut list cannot say.
  */
-const BIDI_CONTROLS = /[\u202A-\u202E\u2066-\u2069\u200E\u200F\u061C]/g;
-
-/**
- * Pusher-supplied text (a discard's reason, a declared target) as a review shows it (#2322):
- * every bidirectional control replaced by a visible `<U+XXXX>`, so a reason cannot reorder
- * what a reviewer reads — say, make "keeps" display where "drops" is stored. The rest is kept
- * verbatim; each surface still escapes for its own medium (React's text node, the CLI's
- * `JSON.stringify`).
- */
-export function reviewText(text: string): string {
-  return text.replace(BIDI_CONTROLS, (c) => `<U+${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}>`);
-}
-
-/** How many places a diff's shown entries declare they deliberately discard data. */
-export function discardCount(diff: Pick<MigrationDiff, 'added' | 'changed'>): number {
-  return [...diff.changed, ...diff.added].reduce((n, e) => n + Object.keys(e.discards ?? {}).length, 0);
-}
-
-/** How much of a discard's reason a review shows before it asks to be expanded (#2322). */
-export const REVIEW_TEXT_SHOWN_MAX = 280;
-
-/**
- * A reason as a review first shows it: `reviewText`, cut at {@link REVIEW_TEXT_SHOWN_MAX}
- * characters (never inside a surrogate pair) with `clipped` set, so a long reason cannot push
- * the rest of the review out of sight. The full text is shown on request.
- */
-export function clipReviewText(text: string): { full: string; shown: string; clipped: boolean } {
-  const full = reviewText(text);
-  const chars = Array.from(full);
-  if (chars.length <= REVIEW_TEXT_SHOWN_MAX) return { full, shown: full, clipped: false };
-  return { full, shown: chars.slice(0, REVIEW_TEXT_SHOWN_MAX).join(''), clipped: true };
+export function discardTally(diff: Pick<MigrationDiff, 'added' | 'changed' | 'truncated'>): { count: number; atLeast: boolean } {
+  const count = [...diff.changed, ...diff.added].reduce((n, e) => n + Object.keys(e.discards ?? {}).length, 0);
+  return { count, atLeast: diff.truncated };
 }
