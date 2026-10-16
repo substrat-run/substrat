@@ -573,7 +573,8 @@ shared across a tenant's verticals is §13 question 21.
   repo, so an in-repo refusal is red in its pull request first, and `substrat push` runs it
   through the vertical's own kernel before upload, in a child process it kills when one migration
   runs past 30 s (no in-process SQLite call can be interrupted), and whose own watchdog thread
-  kills it when the push is gone, however it died. The CLI supplies only the
+  kills it when the push is gone, however it died (on POSIX, where an orphan is re-parented; on
+  Windows only the replay's own hard deadline stops it). The CLI supplies only the
   in-memory `node:sqlite` and adapter-sqlite's spine, and stays free of the kernel as a dependency. Kernel-derived DDL is exempt, and a kernel column (`_substrat_*`)
   leaving is #2090's check to refuse. Not seen, because it counts: in-place replacement (values
   rewritten at the same count and storage class, rows replaced by as many other rows, a column

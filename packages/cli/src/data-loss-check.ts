@@ -128,7 +128,8 @@ export function replayInChild(
     let timer: NodeJS.Timeout | undefined;
     // A push that ends any other way — it exits, throws, or is killed by a signal, SIGKILL
     // included — takes the replay with it through the child's own watchdog
-    // (`data-loss-replay-child.ts`), which no handler here could do for SIGKILL.
+    // (`data-loss-replay-child.ts`), which no handler here could do for SIGKILL. On POSIX; on
+    // Windows, where an orphan is not re-parented, only the child's hard deadline stops it.
     const settle = (result: ChildResult): void => {
       if (settled) return;
       settled = true;

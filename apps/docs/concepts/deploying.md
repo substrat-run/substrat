@@ -218,7 +218,9 @@ recursive CTE with no end, is stopped and reported as incomplete. A Durable Obje
 would stop it at promote too. The replay process also ends with the push, however the push ends:
 on exit, on Ctrl-C, or killed by any signal, `SIGKILL` included. A watchdog thread inside it
 notices the push is gone within a fraction of a second. The one case it cannot see is a push that
-is paused (`SIGSTOP`) rather than gone; the replay then stops at its own overall deadline.
+is paused (`SIGSTOP`) rather than gone; the replay then stops at its own overall deadline. The
+watchdog relies on how POSIX systems re-parent an orphaned process, so on Windows only that
+deadline stops a replay whose push was killed.
 
 The replay needs `node:sqlite`, so Node 22.13 or later. If a migration reads one of the
 platform's `_substrat_*` tables, it also needs `@substrat-run/adapter-sqlite` installed, at least

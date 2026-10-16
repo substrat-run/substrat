@@ -16,7 +16,8 @@
  * when its parent is gone (the parent pid changes as the OS re-parents it) or the request's hard
  * deadline passes. Covered: the parent exiting, crashing, or being killed by any signal, SIGKILL
  * included, within the watchdog's poll interval. Not covered: a parent that is alive but stopped
- * (SIGSTOP) — the replay then runs until the deadline.
+ * (SIGSTOP) — the replay then runs until the deadline — and, because the parent check relies on
+ * POSIX re-parenting an orphan, Windows, where only the deadline stops an orphaned replay.
  */
 import { writeSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
