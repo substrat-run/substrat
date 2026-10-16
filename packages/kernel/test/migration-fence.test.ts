@@ -339,6 +339,74 @@ describe('the data-loss fence (#115)', () => {
     expect(s.rows('SELECT x FROM b')).toEqual([{ x: 'p' }]);
   });
 
+  describe('a dropped column releases its name (#115 r3)', () => {
+    const setup = `CREATE TABLE a (id TEXT PRIMARY KEY, v TEXT, w TEXT); INSERT INTO a VALUES ('1', 'v1', 'w1'), ('2', 'v2', 'w2');`;
+
+    it.each([
+      ['in place', 'ALTER TABLE a DROP COLUMN w; ALTER TABLE a RENAME COLUMN v TO w;'],
+      ['after the table moved', 'ALTER TABLE a RENAME TO x; ALTER TABLE x DROP COLUMN w; ALTER TABLE x RENAME COLUMN v TO w;'],
+      [
+        'through a move-aside rebuild',
+        `ALTER TABLE a DROP COLUMN w; ALTER TABLE a RENAME COLUMN v TO w; ALTER TABLE a RENAME TO old;
+         CREATE TABLE a (id TEXT PRIMARY KEY, v TEXT, w TEXT); INSERT INTO a SELECT id, NULL, w FROM old; DROP TABLE old;`,
+      ],
+    ])('a column renamed onto a dropped column\'s name does not stand in for it (%s)', (_, sql) => {
+      expect(refusal(() => scope(setup).migrate({ sql }))).toContain('column a.w held 2 value(s) and is gone');
+    });
+
+    it('a swap through a spare name still applies', () => {
+      scope(setup).migrate({ sql: 'ALTER TABLE a RENAME COLUMN v TO t; ALTER TABLE a RENAME COLUMN w TO v; ALTER TABLE a RENAME COLUMN t TO w;' });
+    });
+  });
+
+  describe('drop tracking holds for every spelling the name takes (#115 r3)', () => {
+    const setup = `CREATE TABLE a (id TEXT); CREATE TABLE b (id TEXT);
+      INSERT INTO a VALUES ('1'), ('2'); INSERT INTO b VALUES ('x'), ('y'), ('z');`;
+
+    it('a DROP releases the name: a new table under it owns its own column renames', () => {
+      const s = scope(`CREATE TABLE b (id TEXT, x TEXT); INSERT INTO b VALUES ('1', 'p');`);
+      expect(
+        refusal(() =>
+          s.migrate({ sql: "DROP TABLE b; CREATE TABLE b (id TEXT, x TEXT); INSERT INTO b VALUES ('n1', 'q'), ('n2', 'r'); ALTER TABLE b RENAME COLUMN x TO y;" }),
+        ),
+      ).toContain('column b.x held 1 value(s) and is gone');
+    });
+
+    it.each([
+      ['DROP TABLE IF EXISTS y'],
+      ['DROP TABLE main.y'],
+      ['DROP TABLE "main"."y"'],
+    ])('a table moved and then dropped is gone, however the drop names it (%s)', (drop) => {
+      expect(
+        refusal(() => scope(setup).migrate({ sql: `ALTER TABLE a RENAME TO y; ${drop}; CREATE TABLE y AS SELECT * FROM b;` })),
+      ).toContain('table a held 2 row(s) and is gone');
+    });
+
+    it('a qualified rename is followed', () => {
+      scope(setup).migrate({ sql: 'ALTER TABLE main.a RENAME TO t; ALTER TABLE main.b RENAME TO a; ALTER TABLE "main".t RENAME TO b;' });
+    });
+  });
+
+  it('a TEMP table shadowing a name takes the DROP, not the main table (#115 r3)', () => {
+    const setup = `CREATE TABLE a (id TEXT); INSERT INTO a VALUES ('1'), ('2'); CREATE TABLE b (id TEXT); INSERT INTO b VALUES ('x'), ('y'), ('z');`;
+    // The DROP removed the TEMP `a`; the main `a` then moved to `y`, rows and all.
+    const s = scope(setup);
+    s.migrate({ sql: 'CREATE TEMP TABLE a (id TEXT); DROP TABLE a; ALTER TABLE a RENAME TO y;' });
+    expect(s.rows('SELECT id FROM y ORDER BY id')).toEqual([{ id: '1' }, { id: '2' }]);
+  });
+
+  it('a column renamed, then the table dropped and rebuilt in place, keeps its values under either name (#115 r3)', () => {
+    scope(`CREATE TABLE a (id TEXT PRIMARY KEY, v TEXT); INSERT INTO a VALUES ('1', 'p'), ('2', 'q');`).migrate({
+      sql: `ALTER TABLE a RENAME COLUMN v TO w; CREATE TABLE n (id TEXT PRIMARY KEY, v TEXT);
+        INSERT INTO n SELECT id, w FROM a; DROP TABLE a; ALTER TABLE n RENAME TO a;`,
+    });
+  });
+
+  it('folds ASCII only, as SQLite does: "ä" and "Ä" are two tables (#115 r3)', () => {
+    const s = scope(`CREATE TABLE "ä" (id TEXT); CREATE TABLE "Ä" (id TEXT); INSERT INTO "ä" VALUES ('1'); INSERT INTO "Ä" VALUES ('2');`);
+    expect(refusal(() => s.migrate({ sql: 'DROP TABLE "ä";' }))).toContain('table ä held 1 row(s) and is gone');
+  });
+
   describe('a table rebuilt back into place after a column rename (#115 r2)', () => {
     const setup = `${NOTES} INSERT INTO notes VALUES ('a', 'hello', '1');`;
     const aside = 'ALTER TABLE notes RENAME COLUMN body TO text; ALTER TABLE notes RENAME TO notes_old;';

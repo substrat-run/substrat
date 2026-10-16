@@ -68,7 +68,8 @@ type Measure = ReadonlyMap<string, TableCount>;
  */
 const COLUMNS_PER_SCAN = Math.floor(DO_SQL_LIMITS.columns / CLASSES.length);
 
-const lower = (s: string): string => s.toLowerCase();
+/** SQLite folds ASCII letters only: `"ä"` and `"Ä"` are two tables, and must stay two keys. */
+const lower = (s: string): string => s.replace(/[A-Z]+/g, (m) => m.toLowerCase());
 const quote = (name: string): string => `"${name.replace(/"/g, '""')}"`;
 const total = (c: Classes): number => CLASSES.reduce((n, k) => n + c[k], 0);
 const NONE: Classes = { integer: 0, real: 0, text: 0, blob: 0 };
@@ -159,7 +160,7 @@ const show = (t: Target): string => (t.column ? `${t.table}.${t.column}` : t.tab
 interface Renames {
   /** Original table → every name it carried, in order. */
   readonly tables: Map<string, string[]>;
-  /** Original table → original column → current column name. */
+  /** Original table → original column → current column name, or `DROPPED`. */
   readonly columns: Map<string, Map<string, string>>;
   /** Original tables a `DROP TABLE` removed, under whatever name they carried then. */
   readonly dropped: ReadonlySet<string>;
@@ -170,27 +171,58 @@ interface Renames {
  * most one table — SQLite refuses a rename onto a name that exists — so a `DROP TABLE` releases it
  * and a later rename onto it is that table's alone, whatever order the scope created them in.
  */
+/** What a column a `DROP COLUMN` removed maps to: a name no column after the migration has. */
+const DROPPED = '\u0000dropped';
+
 function followRenames(statements: readonly string[], before: Measure): Renames {
   const tables = new Map([...before.keys()].map((t) => [t, [t]]));
   const columns = new Map([...before].map(([t, c]) => [t, new Map([...c.columns.keys()].map((k) => [k, k]))]));
   const holder = new Map([...before.keys()].map((t) => [t, t]));
   const dropped = new Set<string>();
+  // A TEMP table this migration made shadows a main table of the same name: an unqualified
+  // `DROP`/`ALTER` reaches it first, so those statements are not the main table's.
+  const temps = new Set<string>();
   const nameAt = (w: { text: string }): string => lower(w.text.replace(/^main\./i, ''));
   for (const statement of statements) {
     const w = words(statement);
     const kw = (i: number): string | undefined => (w[i] && !w[i]!.quoted ? w[i]!.text : undefined);
+    if (kw(0) === 'create' && (kw(1) === 'temp' || kw(1) === 'temporary') && kw(2) === 'table') {
+      const at = kw(3) === 'if' && kw(4) === 'not' && kw(5) === 'exists' ? 6 : 3;
+      if (w[at]) temps.add(lower(w[at]!.text.replace(/^temp\./i, '')));
+      continue;
+    }
     if (kw(0) === 'drop' && kw(1) === 'table') {
       const at = kw(2) === 'if' && kw(3) === 'exists' ? 4 : 2;
-      const original = w[at] ? holder.get(nameAt(w[at]!)) : undefined;
+      if (!w[at]) continue;
+      const name = nameAt(w[at]!);
+      if (temps.delete(name)) continue;
+      const original = holder.get(name);
       if (original === undefined) continue;
-      holder.delete(nameAt(w[at]!));
+      holder.delete(name);
       dropped.add(original);
       continue;
     }
-    if (kw(0) !== 'alter' || kw(1) !== 'table' || kw(3) !== 'rename' || !w[2]) continue;
+    if (kw(0) !== 'alter' || kw(1) !== 'table' || !w[2]) continue;
     const table = nameAt(w[2]);
+    if (temps.has(table)) {
+      if (kw(3) === 'rename' && kw(4) === 'to' && w[5]) {
+        temps.delete(table);
+        temps.add(nameAt(w[5]));
+      }
+      continue;
+    }
     const original = holder.get(table);
     if (!original) continue;
+    const renamed = columns.get(original)!;
+    if (kw(3) === 'drop') {
+      // DROP [COLUMN] c: the column is gone, and its name is free for a later rename.
+      const k = kw(4) === 'column' ? 5 : 4;
+      if (!w[k]) continue;
+      const name = lower(w[k]!.text);
+      for (const [orig, current] of renamed) if (current === name) renamed.set(orig, DROPPED);
+      continue;
+    }
+    if (kw(3) !== 'rename') continue;
     if (kw(4) === 'to' && w[5]) {
       holder.delete(table);
       holder.set(nameAt(w[5]), original);
@@ -201,7 +233,7 @@ function followRenames(statements: readonly string[], before: Measure): Renames 
       if (!w[k] || kw(k + 1) !== 'to' || !w[k + 2]) continue;
       const from = lower(w[k]!.text);
       const to = lower(w[k + 2]!.text);
-      for (const [orig, current] of columns.get(original)!) if (current === from) columns.get(original)!.set(orig, to);
+      for (const [orig, current] of renamed) if (current === from) renamed.set(orig, to);
     }
   }
   return { tables, columns, dropped };
@@ -220,7 +252,8 @@ function endsOf(before: Measure, after: Measure, renames: Renames): Map<string, 
   const claimed = new Set<string>();
   for (const [table, names] of renames.tables) {
     const last = names[names.length - 1]!;
-    if (names.length > 1 && !renames.dropped.has(table) && after.has(last) && !claimed.has(last)) {
+    // `holder` gave each name to one table at a time, so two undropped tables cannot end on one.
+    if (names.length > 1 && !renames.dropped.has(table) && after.has(last)) {
       ends.set(table, { end: last, followed: true });
       claimed.add(last);
     }
@@ -232,7 +265,10 @@ function endsOf(before: Measure, after: Measure, renames: Renames): Map<string, 
     const candidates = renames.dropped.has(table) ? [table] : [table, ...[...names].reverse()];
     const end = candidates.find((n) => after.has(n) && !claimed.has(n));
     if (end !== undefined) claimed.add(end);
-    ends.set(table, end === undefined ? undefined : { end, followed: names.length === 1 });
+    // Followed strictly only when the table never moved: a table rebuilt back into place (moved
+    // aside, or dropped and recreated) may carry a column under its original name.
+    const followed = names.length === 1 && !renames.dropped.has(table);
+    ends.set(table, end === undefined ? undefined : { end, followed });
   }
   return ends;
 }
@@ -265,7 +301,8 @@ function lossesOf(before: Measure, after: Measure, renames: Renames): Loss[] {
       // Followed through its renames; on a table rebuilt back into place, the rename the old table
       // took before it moved aside still names the column, and its original name is the fallback.
       const mapped = renamed.get(column)!;
-      const kept = a.columns.get(mapped) ?? (resolved.followed ? undefined : a.columns.get(column));
+      // A column a `DROP COLUMN` removed is gone, whatever later takes its name.
+      const kept = mapped === DROPPED ? undefined : (a.columns.get(mapped) ?? (resolved.followed ? undefined : a.columns.get(column)));
       // A kernel-derived column (`_substrat_archived_at`, …) leaving is the kernel's own check's to
       // refuse, right after this one in the same transaction (#2090), with the remedy that fits:
       // no declaration can excuse it. Its VALUES are still held here.
