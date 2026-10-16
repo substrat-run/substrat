@@ -152,10 +152,24 @@ rollout upload the scripts they reach. The rest are rebuilt by the control plane
   verticals, each as long as its uploads (a few minutes at most). With several drivers, the
   scheduled pass shares its budget across them in registration order.
 - **Where to watch.** `substrat store-driver status --driver <driver>` ends with `scripts: current`,
-  `scripts: settling` (see the next point), or `scripts: NOT current` with the scripts that may still be on the old build (`-canary` is the
-  driver's canary script) and each failure. A script it could not rebuild is retried on every pass
-  and is an ops-failure row (`store-rebuild`), so it reaches the failure digest. A vertical whose
-  versions' stores cannot be named is listed as a failure until it can.
+  `scripts: settling` (see the next point), or `scripts: NOT current` with the scripts that may still
+  be on the old build (`-canary` is the driver's canary script) and each failure. It never reads
+  `current` while a script could not be rebuilt or checked. A vertical whose versions' stores cannot
+  be named is walked by its script's name, which depends only on the vertical and the driver, so it
+  is a failure only if that script exists and cannot be rebuilt.
+- **A failure that persists.** Each `failed:` line is retried on every pass, and is also an
+  ops-failure row (`store-rebuild`), so it reaches the failure digest. Until it clears, the driver
+  is not current, and the old key is not revoked at that script. What to do:
+  - `upload failed (5xx)`, or the runtime refusing for a moment: nothing. The next pass retries it.
+    Run `store-driver rebuild` to retry at once.
+  - `records no release`: the script was not uploaded by the platform. Find out who uploaded it
+    before anything else.
+  - `release … is not pinned` or `is not stored`: the script runs a release the registration no
+    longer pins. Roll out a pinned release of the driver (`store-driver rollout`), which moves the
+    script and rebuilds it.
+  - Anything else, or a failure that outlives a day: raise it with the platform's staff on call,
+    with the failure line and the driver. Until it is cleared, treat the old key as still accepted
+    by that one script. If the key leaked, that script's vertical is exposed.
 - **During a deploy.** While two control-plane versions run side by side with different lists, a push
   served by the older one uploads its script with the older lists, even after the walk is done. So a
   walk that finished within an hour of its lists first appearing does not count: status reads
