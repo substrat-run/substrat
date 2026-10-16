@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -98,4 +98,62 @@ describe.runIf(built && kernelBuilt)('push --check refuses the same tree', () =>
     expect(strict.status).not.toBe(0);
     expect(strict.stderr).toContain('data-loss check: SKIPPED');
   });
+});
+
+/**
+ * The commands themselves, not `push()`: `substrat push` and `substrat preview create` each read
+ * the switch off their own argv, and a command that forgot to pass it would push permissively
+ * while the other refused. `--version` skips the registry round-trip, and the control plane is an
+ * address nothing listens on, so a test that reaches the network fails there, after the check.
+ */
+describe.runIf(built)('the commands pass the strict switch to the push', () => {
+  const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
+  const command = (args: string[], env: NodeJS.ProcessEnv = {}) => {
+    const scratch = mkdtempSync(join(tmpdir(), 'substrat-cli-cmd-'));
+    writeFileSync(
+      join(scratch, 'npx'),
+      '#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ "$1" = "--outdir" ]; then echo "export default {}" > "$2/worker.js"; fi; shift; done\n',
+      { mode: 0o755 },
+    );
+    const r = spawnSync(process.execPath, [cli, ...args, '--skip-lint'], {
+      env: {
+        ...process.env,
+        HOME: scratch,
+        USERPROFILE: scratch,
+        PATH: `${scratch}:${process.env.PATH ?? ''}`,
+        GITHUB_ACTIONS: '',
+        SUBSTRAT_CP_URL: 'http://127.0.0.1:9',
+        SUBSTRAT_SERVICE_TOKEN: 'svc_test',
+        SUBSTRAT_REQUIRE_DATA_LOSS_CHECK: '',
+        ...env,
+      },
+      encoding: 'utf8',
+    });
+    return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+  };
+  // No kernel to replay through: SKIPPED, which the switch turns into a refusal.
+  const unchecked = () => vertical(helpdesk([INIT]));
+  const REFUSED = /--require-data-loss-check \(or SUBSTRAT_REQUIRE_DATA_LOSS_CHECK=1\) refuses a push it could not fully check/;
+
+  for (const [name, args] of [
+    ['push', (dir: string) => ['push', dir, '--version', '1.0.0']],
+    ['preview create', (dir: string) => ['preview', 'create', dir, '--tag', 'pr-1', '--version', '1.0.0-pr-1.1']],
+  ] as const) {
+    it(`${name}: --require-data-loss-check refuses an unchecked push; without it the push goes on`, () => {
+      const strict = command([...args(unchecked()), '--require-data-loss-check']);
+      expect(strict.status).not.toBe(0);
+      expect(strict.out).toMatch(REFUSED);
+      expect(strict.out).not.toContain('uploading');
+      const permissive = command(args(unchecked()));
+      expect(permissive.out).toContain('⚠ data-loss check: SKIPPED');
+      expect(permissive.out).toContain('uploading');
+      expect(permissive.out).not.toMatch(REFUSED);
+    });
+
+    it(`${name}: SUBSTRAT_REQUIRE_DATA_LOSS_CHECK=true does the same`, () => {
+      const strict = command(args(unchecked()), { SUBSTRAT_REQUIRE_DATA_LOSS_CHECK: 'true' });
+      expect(strict.status).not.toBe(0);
+      expect(strict.out).toMatch(REFUSED);
+    });
+  }
 });

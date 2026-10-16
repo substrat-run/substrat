@@ -367,6 +367,7 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
       envSpec?: unknown;
       __substratKernel?: { moduleMigrations?: unknown } | null;
       __substratSpine?: () => Promise<unknown>;
+      __substratKernelUrl?: string | null;
     };
     try {
       await build({
@@ -383,7 +384,9 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
             `export const __substratKernel = await import('@substrat-run/kernel').catch(() => null);\n` +
             // The spine the data-loss replay builds first (#2321), from the vertical's own
             // adapter-sqlite — imported only when a replay runs, since it loads a native driver.
-            `export const __substratSpine = () => import('@substrat-run/adapter-sqlite').then((m) => m.SCOPE_SPINE_DDL, () => undefined);\n`,
+            `export const __substratSpine = () => import('@substrat-run/adapter-sqlite').then((m) => m.SCOPE_SPINE_DDL, () => undefined);\n` +
+            // Where that kernel resolves, for the replay's own process to import (#2321).
+            `export const __substratKernelUrl = (() => { try { return import.meta.resolve('@substrat-run/kernel'); } catch { return null; } })();\n`,
           resolveDir: resolve(dir),
           sourcefile: 'substrat-surface.mjs',
           loader: 'js',
@@ -452,6 +455,7 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
       ),
       replay: {
         kernel: mod.__substratKernel ?? null,
+        kernelUrl: typeof mod.__substratKernelUrl === 'string' ? mod.__substratKernelUrl : null,
         modules: mod.permissions.modules,
         spineDdl: async () => {
           const ddl = await mod.__substratSpine?.();

@@ -1,29 +1,34 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { existsSync } from 'node:fs';
 import {
   checkMigrationDataLoss,
   dataLossCheckRequired,
   formatDataLossCheck,
-  openInMemorySqlite,
+  replayInChild,
   type ReplayInputs,
 } from '../src/data-loss-check.js';
 
 /**
  * #2321 — the data-loss check a push makes before upload, on its own: the vertical's kernel
- * reached as a value (here the workspace kernel's build, which is what a fixture vertical links),
- * the SQLite opener and the spine injected. The push-level half, through the real `push()`, is in
- * push-data-loss.test.ts.
+ * reached as a value and a URL (here the workspace kernel's build, which is what a fixture
+ * vertical links), the replay run in the BUILT child process, as it ships. The push-level half,
+ * through the real `push()`, is in push-data-loss.test.ts.
  */
 const kernelDist = join(fileURLToPath(new URL('../../kernel', import.meta.url)), 'dist', 'index.js');
-const kernelBuilt = existsSync(kernelDist);
-const kernel = kernelBuilt ? ((await import(pathToFileURL(kernelDist).href)) as Record<string, unknown>) : null;
+const childPath = fileURLToPath(new URL('../dist/data-loss-replay-child.js', import.meta.url));
+const ready = existsSync(kernelDist) && existsSync(childPath);
+const kernel = ready ? ((await import(pathToFileURL(kernelDist).href)) as Record<string, unknown>) : null;
+const kernelUrl = pathToFileURL(kernelDist).href;
 
 type Migration = { version: string; sql: string; moves?: Record<string, string>; discards?: Record<string, string> };
 const INIT: Migration = { version: '0001', sql: 'CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT);' };
 const inputs = (migrations: Migration[], over: Partial<ReplayInputs> = {}): ReplayInputs => ({
   kernel,
+  kernelUrl,
   modules: [{ manifest: { id: 'notes' }, migrations }],
   spineDdl: async () => undefined,
   ...over,
@@ -31,11 +36,18 @@ const inputs = (migrations: Migration[], over: Partial<ReplayInputs> = {}): Repl
 const run = async (i: ReplayInputs, opts: Parameters<typeof checkMigrationDataLoss>[1] = {}) => {
   const log: string[] = [];
   const warn: string[] = [];
-  const result = checkMigrationDataLoss(i, { log: (m) => log.push(m), warn: (m) => warn.push(m), ...opts });
+  const result = checkMigrationDataLoss(i, { log: (m) => log.push(m), warn: (m) => warn.push(m), childPath, ...opts });
   return { result, log, warn };
 };
 
-describe.runIf(kernelBuilt)("the push's data-loss check, through the vertical's own kernel", () => {
+/** A stand-in replay process that answers one message, to drive the parent's handling of it. */
+const fakeChild = (message: unknown): string => {
+  const path = join(mkdtempSync(join(tmpdir(), 'substrat-replay-child-')), 'child.mjs');
+  writeFileSync(path, `process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(${JSON.stringify(JSON.stringify(message))} + '\\n'));\n`);
+  return path;
+};
+
+describe.runIf(ready)("the push's data-loss check, through the vertical's own kernel", () => {
   it('refuses an undeclared destructive migration with the fence message and the remedy', async () => {
     const { result } = await run(inputs([INIT, { version: '0002', sql: 'DROP TABLE notes;' }]));
     await expect(result).rejects.toThrow(/data-loss check: REFUSED — migration notes@0002 would lose data/);
@@ -57,9 +69,18 @@ describe.runIf(kernelBuilt)("the push's data-loss check, through the vertical's 
     await expect(result).resolves.toEqual({ status: 'passed', authored: 2 });
   });
 
-  it('a refusal is a refusal even under --require-data-loss-check, and without it', async () => {
+  it('a refusal is a refusal under --require-data-loss-check too', async () => {
     const drop = inputs([INIT, { version: '0002', sql: 'DROP TABLE notes;' }]);
     await expect((await run(drop, { require: true })).result).rejects.toThrow(/REFUSED/);
+  });
+
+  it('an ATTACH is refused, and writes no file on the machine running the push', async () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'substrat-attach-')), 'leak.db');
+    const { result } = await run(
+      inputs([INIT, { version: '0002', sql: `ATTACH DATABASE '${file}' AS x; CREATE TABLE x.leak (a TEXT); INSERT INTO x.leak VALUES ('hi');` }]),
+    );
+    await expect(result).rejects.toThrow(/REFUSED — migration notes@0002: it attaches or detaches a database/);
+    expect(existsSync(file)).toBe(false);
   });
 
   it('INCOMPLETE says how many migrations went unchecked after the one that could not run, and goes on', async () => {
@@ -82,6 +103,23 @@ describe.runIf(kernelBuilt)("the push's data-loss check, through the vertical's 
     await expect((await run(i, { require: true })).result).rejects.toThrow(/INCOMPLETE.*\n--require-data-loss-check/);
   });
 
+  it('a migration that never ends is stopped at the time limit: INCOMPLETE, naming it, and its process is gone', async () => {
+    const forever: Migration = { version: '0002', sql: 'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c;' };
+    const started = Date.now();
+    const { result, warn } = await run(inputs([INIT, forever, { version: '0003', sql: 'DROP TABLE notes;' }]), { timeoutMs: 1500 });
+    await expect(result).resolves.toMatchObject({ status: 'incomplete', authored: 3, notReplayed: 2, key: 'notes@0002' });
+    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(warn[0]).toMatch(/notes@0002 could not be replayed on synthetic data: it did not finish within 1\.5 s and was stopped/);
+    // Killed, not abandoned: no replay process of this build is left spinning.
+    expect(spawnSync('pgrep', ['-f', childPath]).status).toBe(1);
+  }, 30_000);
+
+  it('the time limit is per migration: a replay longer than it in total still passes', async () => {
+    const many = Array.from({ length: 6 }, (_, i) => ({ version: `00${i + 2}`, sql: `ALTER TABLE notes ADD COLUMN c${i} TEXT;` }));
+    const { result } = await run(inputs([INIT, ...many]), { timeoutMs: 1500 });
+    await expect(result).resolves.toEqual({ status: 'passed', authored: 7 });
+  }, 30_000);
+
   it('builds the spine it is handed first; without it a spine read is INCOMPLETE and names the remedy', async () => {
     const reads: Migration = { version: '0002', sql: 'INSERT INTO notes (id, body) SELECT id, kind FROM _substrat_things;' };
     const spine = 'CREATE TABLE _substrat_things (id TEXT, kind TEXT);';
@@ -91,64 +129,94 @@ describe.runIf(kernelBuilt)("the push's data-loss check, through the vertical's 
     expect(without.warn.join('\n')).toContain('add @substrat-run/adapter-sqlite as a devDependency');
   });
 
-  it('SKIPPED when node:sqlite is unavailable — loud on stderr, never silent, and not a refusal by default', async () => {
-    const { result, warn, log } = await run(inputs([INIT]), { openSqlite: async () => undefined });
-    const check = await result;
-    expect(check).toMatchObject({ status: 'skipped' });
+  it('the replay process sees none of the environment', async () => {
+    process.env.SUBSTRAT_REPLAY_PROBE = 'visible';
+    try {
+      // The child is started with an empty environment; a probe child would print what it sees.
+      const probe = join(mkdtempSync(join(tmpdir(), 'substrat-replay-env-')), 'probe.mjs');
+      writeFileSync(
+        probe,
+        `process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(JSON.stringify({ type: 'done', result: { kind: 'error', message: JSON.stringify(Object.keys(process.env)) } }) + '\\n'));\n`,
+      );
+      const r = await replayInChild({ kernelUrl, modules: [] }, { childPath: probe });
+      expect(r).toMatchObject({ kind: 'error' });
+      expect(JSON.parse((r as { message: string }).message)).not.toContain('SUBSTRAT_REPLAY_PROBE');
+    } finally {
+      delete process.env.SUBSTRAT_REPLAY_PROBE;
+    }
+  });
+});
+
+describe('what the replay process answers', () => {
+  it('no node:sqlite is SKIPPED — loud on stderr, never silent, and not a refusal by default', async () => {
+    const childPath = fakeChild({ type: 'done', result: { kind: 'no-sqlite' } });
+    const i = inputs([INIT], { kernel: { MIGRATION_REPLAY_API: 1, replayMigrations: () => ({}) } });
+    const { result, warn, log } = await run(i, { childPath });
+    await expect(result).resolves.toMatchObject({ status: 'skipped' });
     expect(warn).toEqual([`⚠ data-loss check: SKIPPED (node:sqlite unavailable on Node ${process.versions.node}; it needs 22.13 or later) — the fence still refuses at promote`]);
     expect(log).toEqual([]);
-    await expect((await run(inputs([INIT]), { openSqlite: async () => undefined, require: true })).result).rejects.toThrow(/SKIPPED \(node:sqlite unavailable/);
+    await expect((await run(i, { childPath, require: true })).result).rejects.toThrow(/SKIPPED \(node:sqlite unavailable/);
   });
 
-  it('nothing authored needs no SQLite at all', async () => {
-    const openSqlite = vi.fn(async () => undefined);
-    const { result } = await run(inputs([]), { openSqlite, require: true });
+  it('a process that ends without an answer is SKIPPED, with what it said', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'substrat-replay-crash-')), 'child.mjs');
+    writeFileSync(path, "console.error('boom'); process.exit(3);\n");
+    const i = inputs([INIT], { kernel: { MIGRATION_REPLAY_API: 1, replayMigrations: () => ({}) } });
+    const { result, warn } = await run(i, { childPath: path });
+    await expect(result).resolves.toMatchObject({ status: 'skipped' });
+    expect(warn.join('\n')).toMatch(/the replay itself failed: the replay process ended \(exit 3\) without an answer: boom/);
+  });
+
+  it('nothing authored starts no replay at all', async () => {
+    const { result } = await run(inputs([]), { childPath: '/nonexistent/child.js', require: true });
     await expect(result).resolves.toEqual({ status: 'passed', authored: 0 });
-    expect(openSqlite).not.toHaveBeenCalled();
-  });
-
-  it('replays into one fresh database it opened itself — never anything of the vertical\'s', async () => {
-    const opened: unknown[] = [];
-    const openSqlite = async () => {
-      const open = await openInMemorySqlite();
-      return () => {
-        const db = open!();
-        opened.push(db);
-        return db;
-      };
-    };
-    await (await run(inputs([INIT]), { openSqlite })).result;
-    expect(opened).toHaveLength(1);
   });
 });
 
 describe('a kernel this CLI cannot call is SKIPPED, by feature detection', () => {
-  const skipped = async (k: unknown) => {
-    const { result, warn } = await run(inputs([INIT], { kernel: k }));
+  const skipped = async (over: Partial<ReplayInputs>) => {
+    const { result, warn } = await run(inputs([INIT], over), { childPath: fakeChild({ type: 'done', result: { kind: 'outcome', outcome: { ok: true } } }) });
     await expect(result).resolves.toMatchObject({ status: 'skipped' });
     return warn.join('\n');
   };
   it('no kernel resolves', async () => {
-    expect(await skipped(null)).toContain('no @substrat-run/kernel resolves from the vertical');
+    expect(await skipped({ kernel: null })).toContain('no @substrat-run/kernel resolves from the vertical');
+    expect(await skipped({ kernel: { MIGRATION_REPLAY_API: 1, replayMigrations: () => ({}) }, kernelUrl: null })).toContain(
+      'no @substrat-run/kernel resolves from the vertical',
+    );
   });
   it('a kernel from before the replay', async () => {
-    expect(await skipped({ moduleMigrations: () => [] })).toContain('has no migration replay (upgrade it)');
+    expect(await skipped({ kernel: { moduleMigrations: () => [] } })).toContain('has no migration replay (upgrade it)');
   });
   it('a kernel with a replay API this CLI does not know', async () => {
-    expect(await skipped({ MIGRATION_REPLAY_API: 2, replayMigrations: () => ({}) })).toContain('replay API 2, this CLI calls 1 (upgrade the CLI)');
+    expect(await skipped({ kernel: { MIGRATION_REPLAY_API: 2, replayMigrations: () => ({}) } })).toContain(
+      'replay API 2, this CLI calls 1 (upgrade the CLI)',
+    );
   });
   it('a kernel whose replay returns an outcome of another shape', async () => {
-    const odd = { MIGRATION_REPLAY_API: 1, replayMigrations: () => ({ ok: true }) };
-    expect(await skipped(odd)).toContain('returned a replay outcome this CLI does not recognise');
+    expect(await skipped({ kernel: { MIGRATION_REPLAY_API: 1, replayMigrations: () => ({}) } })).toContain(
+      'returned a replay outcome this CLI does not recognise',
+    );
   });
 });
 
 describe('the strict switch', () => {
-  it('is the flag, or SUBSTRAT_REQUIRE_DATA_LOSS_CHECK=1 — nothing else', () => {
-    expect(dataLossCheckRequired(['push', '--require-data-loss-check'], {})).toBe(true);
-    expect(dataLossCheckRequired(['push'], { SUBSTRAT_REQUIRE_DATA_LOSS_CHECK: '1' })).toBe(true);
-    expect(dataLossCheckRequired(['push'], { SUBSTRAT_REQUIRE_DATA_LOSS_CHECK: '0' })).toBe(false);
-    expect(dataLossCheckRequired(['push'], {})).toBe(false);
+  it('is the flag, or SUBSTRAT_REQUIRE_DATA_LOSS_CHECK set to 1, true or yes in any case', () => {
+    const warned: string[] = [];
+    const required = (env: NodeJS.ProcessEnv, argv = ['push']) => dataLossCheckRequired(argv, env, (m) => warned.push(m));
+    expect(required({}, ['push', '--require-data-loss-check'])).toBe(true);
+    for (const yes of ['1', 'true', 'TRUE', 'Yes', ' yes ']) expect(required({ SUBSTRAT_REQUIRE_DATA_LOSS_CHECK: yes })).toBe(true);
+    for (const no of ['', '0', 'false', 'No']) expect(required({ SUBSTRAT_REQUIRE_DATA_LOSS_CHECK: no })).toBe(false);
+    expect(required({})).toBe(false);
+    expect(warned).toEqual([]);
+  });
+
+  it('an unrecognised value is read as no, out loud', () => {
+    const warned: string[] = [];
+    expect(dataLossCheckRequired(['push'], { SUBSTRAT_REQUIRE_DATA_LOSS_CHECK: 'on' }, (m) => warned.push(m))).toBe(false);
+    expect(warned).toEqual([
+      '⚠ SUBSTRAT_REQUIRE_DATA_LOSS_CHECK=on is not one of 1/true/yes or 0/false/no — read as no, so the data-loss check stays optional',
+    ]);
   });
 
   it('formats every outcome as one summary line', () => {
@@ -156,21 +224,5 @@ describe('the strict switch', () => {
       'data-loss check: PASSED (3 authored migration(s) replayed against a populated scope)',
     );
     expect(formatDataLossCheck({ status: 'skipped', why: 'x' })).toBe('data-loss check: SKIPPED (x) — the fence still refuses at promote');
-  });
-});
-
-describe('node:sqlite, in memory', () => {
-  it('opens a working database where this Node has it, swallowing only the experimental notice', async () => {
-    const open = await openInMemorySqlite();
-    expect(open).toBeDefined();
-    const db = open!();
-    db.exec('CREATE TABLE t (n INTEGER); INSERT INTO t VALUES (7);');
-    expect(db.prepare('SELECT n FROM t').all()).toEqual([{ n: 7 }]);
-  });
-
-  it('restores process.emitWarning, so other warnings still reach the user', async () => {
-    const before = process.emitWarning;
-    await openInMemorySqlite();
-    expect(process.emitWarning).toBe(before);
   });
 });

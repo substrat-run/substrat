@@ -13,28 +13,44 @@
  * What this module supplies is only what the kernel does not import: an empty in-memory SQLite
  * (`node:sqlite`), and the platform's spine tables from the vertical's own
  * `@substrat-run/adapter-sqlite`, when it has one, for an authored migration that reads them.
- * Nothing here opens a file, a network connection or the environment's data.
+ *
+ * It runs in a process of its own (`data-loss-replay-child.ts`), with an empty environment and a
+ * time limit per migration, because a runaway statement — a recursive CTE with no end — runs in
+ * native code nothing in this process could interrupt. The fence refuses ATTACH, so the replay
+ * never reaches a file; it opens no network connection and reads none of the vertical's data.
  *
  * Three outcomes, never confused:
  * - REFUSED — the fence would refuse a migration. The push stops, with the fence's own message
  *   naming the declaration (`moves` / `discards`) to add. There is no flag past it: a `discards`
  *   entry with its reason is the reviewed way to lose data on purpose.
  * - INCOMPLETE — a migration could not be run on synthetic rows at all (its SQL needs real input,
- *   or reads a spine table this CLI could not build). The replay stops there, so the migrations
- *   after it go unchecked, and the warning says how many.
+ *   reads a spine table this CLI could not build, or did not finish in time). The replay stops
+ *   there, so the migrations after it go unchecked, and the warning says how many.
  * - SKIPPED — nothing could be replayed: no `node:sqlite` (Node before 22.13), or a kernel with
  *   no replay this CLI knows how to call.
  * The last two do not refuse by default — promote is the hard gate, and the fence still refuses
  * there — unless the caller asks for the guarantee (`--require-data-loss-check`).
  */
+import { spawn } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import type { ChildMessage, ReplayRequest } from './data-loss-replay-child.js';
 
 /** The replay API this CLI calls — `MIGRATION_REPLAY_API` in `@substrat-run/kernel`. */
 const REPLAY_API = 1;
+
+/**
+ * How long one migration may run. A Durable Object would stop a migration that ran this long
+ * on its own CPU limit, so a replay that has not finished by then is not one worth waiting for.
+ */
+export const MIGRATION_TIMEOUT_MS = 30_000;
 
 /** What the push hands over: read off the same import that yields the permission surface. */
 export interface ReplayInputs {
   /** The vertical's own `@substrat-run/kernel`, as imported from its directory, or null. */
   readonly kernel: unknown;
+  /** Where that kernel resolves, for the replay's own process to import — or null. */
+  readonly kernelUrl: string | null;
   /** The permission entry's `modules`, each a registration carrying its `migrations`. */
   readonly modules: readonly unknown[];
   /** The vertical's adapter-sqlite `SCOPE_SPINE_DDL`, resolved only when a replay runs. */
@@ -51,12 +67,6 @@ export type DataLossCheck =
       readonly key: string;
       readonly message: string;
     };
-
-interface SqliteDatabase {
-  exec(sql: string): void;
-  prepare(sql: string): { all(...p: unknown[]): unknown[]; run(...p: unknown[]): { changes: number | bigint } };
-}
-type SqliteOpener = () => SqliteDatabase;
 
 interface KernelReplay {
   readonly MIGRATION_REPLAY_API?: unknown;
@@ -83,33 +93,117 @@ const isOutcome = (o: unknown): o is ReplayOutcome => {
   );
 };
 
+type ChildResult =
+  | Extract<ChildMessage, { type: 'done' }>['result']
+  | { readonly kind: 'timeout'; readonly key: string | undefined; readonly passed: number };
+
+/** The built child, beside this module in `dist`. */
+const CHILD = fileURLToPath(new URL('./data-loss-replay-child.js', import.meta.url));
+
 /**
- * `node:sqlite`, opened in memory — or undefined where this Node has none (before 22.13 it is
- * missing or behind a flag). Node announces the module as experimental on load; that notice is
- * noise in a push log and is swallowed for this one import, every other warning passing through.
+ * Run the replay in its own process, killing it when one migration runs past `timeoutMs`. Each
+ * `started` line restarts the clock, so the limit is per migration, and says which one was
+ * running when it fired and how many authored migrations had passed before it.
  */
-export async function openInMemorySqlite(): Promise<SqliteOpener | undefined> {
-  const emit = process.emitWarning;
-  process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
-    const text = typeof warning === 'string' ? warning : warning.message;
-    if (/sqlite/i.test(text)) return;
-    return (emit as (...a: unknown[]) => void).call(process, warning, ...rest);
-  }) as typeof process.emitWarning;
-  try {
-    const { DatabaseSync } = (await import('node:sqlite')) as unknown as { DatabaseSync: new (path: string) => SqliteDatabase };
-    return () => new DatabaseSync(':memory:');
-  } catch {
-    return undefined;
-  } finally {
-    process.emitWarning = emit;
-  }
+export function replayInChild(
+  request: ReplayRequest,
+  opts: { readonly childPath?: string; readonly timeoutMs?: number } = {},
+): Promise<ChildResult> {
+  const timeoutMs = opts.timeoutMs ?? MIGRATION_TIMEOUT_MS;
+  // The child's stderr is kept, never forwarded: node's notice that `node:sqlite` is experimental
+  // stays out of the push log, and only a process that dies without answering is shown it.
+  const child = spawn(process.execPath, [opts.childPath ?? CHILD], {
+    cwd: tmpdir(),
+    // Nothing of the pusher's environment: the replay needs none of it.
+    env: process.platform === 'win32' && process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {},
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  return new Promise((resolveResult) => {
+    let settled = false;
+    let key: string | undefined;
+    let authoredStarted = 0;
+    let runningAuthored = false;
+    let stdout = '';
+    let stderr = '';
+    let timer: NodeJS.Timeout | undefined;
+    const settle = (result: ChildResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (child.exitCode !== null || child.signalCode !== null) {
+        resolveResult(result);
+        return;
+      }
+      // Answered only once the process is gone, so nothing the replay started outlives it.
+      child.once('exit', () => resolveResult(result));
+      child.kill('SIGKILL');
+    };
+    const arm = (): void => {
+      clearTimeout(timer);
+      timer = setTimeout(() => settle({ kind: 'timeout', key, passed: authoredStarted - (runningAuthored ? 1 : 0) }), timeoutMs);
+    };
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+      let nl: number;
+      while ((nl = stdout.indexOf('\n')) >= 0) {
+        const line = stdout.slice(0, nl);
+        stdout = stdout.slice(nl + 1);
+        let message: ChildMessage;
+        try {
+          message = JSON.parse(line) as ChildMessage;
+        } catch {
+          continue;
+        }
+        if (message.type === 'started') {
+          key = message.key;
+          runningAuthored = message.authored;
+          if (message.authored) authoredStarted += 1;
+          arm();
+        } else if (message.type === 'done') {
+          settle(message.result);
+        }
+      }
+    });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => {
+      stderr = (stderr + chunk).slice(-2000);
+    });
+    child.on('error', (e) => settle({ kind: 'error', message: e.message }));
+    // `close`, not `exit`: it fires once stdout has drained, so a last `done` line is never lost.
+    child.on('close', (code, signal) =>
+      settle({ kind: 'error', message: `the replay process ended (${signal ?? `exit ${code}`}) without an answer${stderr ? `: ${stderr.trim()}` : ''}` }),
+    );
+    arm();
+    child.stdin.on('error', () => {});
+    child.stdin.end(JSON.stringify(request));
+  });
 }
 
 const DOCS = 'see https://substrat.net/concepts/deploying ("A migration cannot quietly lose data")';
 
-/** Is the check required to have run — the flag, or `SUBSTRAT_REQUIRE_DATA_LOSS_CHECK=1` in CI. */
-export function dataLossCheckRequired(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): boolean {
-  return argv.includes('--require-data-loss-check') || env.SUBSTRAT_REQUIRE_DATA_LOSS_CHECK === '1';
+const TRUTHY = /^(1|true|yes)$/i;
+const FALSY = /^(0|false|no)?$/i;
+
+/**
+ * Is the check required to have run: the flag, or `SUBSTRAT_REQUIRE_DATA_LOSS_CHECK` set to `1`,
+ * `true` or `yes` (any case). Any other non-empty value is warned about rather than read as no,
+ * because a CI job that meant yes would otherwise get the permissive default without a word.
+ */
+export function dataLossCheckRequired(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+  warn: (message: string) => void = console.error,
+): boolean {
+  if (argv.includes('--require-data-loss-check')) return true;
+  const value = (env.SUBSTRAT_REQUIRE_DATA_LOSS_CHECK ?? '').trim();
+  if (TRUTHY.test(value)) return true;
+  if (!FALSY.test(value)) {
+    warn(
+      `⚠ SUBSTRAT_REQUIRE_DATA_LOSS_CHECK=${value} is not one of 1/true/yes or 0/false/no — read as no, so the data-loss check stays optional`,
+    );
+  }
+  return false;
 }
 
 /** The one summary line, the same in the check's own output and the push's last line. */
@@ -137,14 +231,16 @@ export async function checkMigrationDataLoss(
   inputs: ReplayInputs,
   opts: {
     readonly require?: boolean;
-    readonly openSqlite?: () => Promise<SqliteOpener | undefined>;
     readonly log?: (message: string) => void;
     readonly warn?: (message: string) => void;
+    /** The replay process's entry and per-migration limit; the defaults are the shipped ones. */
+    readonly childPath?: string;
+    readonly timeoutMs?: number;
   } = {},
 ): Promise<DataLossCheck> {
   const log = opts.log ?? console.log;
   const warn = opts.warn ?? console.error;
-  const check = await replay(inputs, opts.openSqlite ?? openInMemorySqlite, log);
+  const check = await replay(inputs, opts, log);
   const line = formatDataLossCheck(check);
   if (check.status === 'passed') {
     log(line);
@@ -168,7 +264,7 @@ export async function checkMigrationDataLoss(
 
 async function replay(
   inputs: ReplayInputs,
-  openSqlite: () => Promise<SqliteOpener | undefined>,
+  opts: { readonly childPath?: string; readonly timeoutMs?: number },
   log: (message: string) => void,
 ): Promise<DataLossCheck> {
   const kernel = inputs.kernel as KernelReplay | null;
@@ -178,7 +274,7 @@ async function replay(
   }, 0);
   // Nothing authored, nothing the fence judges — and no reason to need SQLite.
   if (authoredCount === 0) return { status: 'passed', authored: 0 };
-  if (!kernel) return { status: 'skipped', why: 'no @substrat-run/kernel resolves from the vertical' };
+  if (!kernel || !inputs.kernelUrl) return { status: 'skipped', why: 'no @substrat-run/kernel resolves from the vertical' };
   if (typeof kernel.replayMigrations !== 'function') {
     return { status: 'skipped', why: "the vertical's @substrat-run/kernel has no migration replay (upgrade it)" };
   }
@@ -188,26 +284,29 @@ async function replay(
       why: `the vertical's @substrat-run/kernel has migration replay API ${String(kernel.MIGRATION_REPLAY_API)}, this CLI calls ${REPLAY_API} (upgrade the CLI)`,
     };
   }
-  const open = await openSqlite();
-  if (!open) return { status: 'skipped', why: `node:sqlite unavailable on Node ${process.versions.node}; it needs 22.13 or later` };
-
-  const db = open();
-  const database = {
-    exec: (q: string) => db.exec(q),
-    query: (q: string, p: readonly unknown[] = []) => db.prepare(q).all(...p),
-    run: (q: string, p: readonly unknown[] = []) => ({ changes: Number(db.prepare(q).run(...p).changes) }),
-  };
-  let outcome: unknown;
-  try {
-    const spineDdl = await inputs.spineDdl();
-    outcome = (kernel.replayMigrations as (db: unknown, modules: readonly unknown[], opts: unknown) => unknown)(
-      database,
-      inputs.modules,
-      { spineDdl },
-    );
-  } catch (e) {
-    return { status: 'skipped', why: `the replay itself failed: ${e instanceof Error ? e.message : String(e)}` };
+  // The registrations as data — what the replay reads of them, without the handlers no
+  // process boundary can carry.
+  const modules = JSON.parse(
+    JSON.stringify(inputs.modules.map((m) => ({ manifest: (m as { manifest?: unknown }).manifest, migrations: (m as { migrations?: unknown }).migrations }))),
+  ) as unknown[];
+  const timeoutMs = opts.timeoutMs ?? MIGRATION_TIMEOUT_MS;
+  const result = await replayInChild({ kernelUrl: inputs.kernelUrl, modules, spineDdl: await inputs.spineDdl() }, { ...opts, timeoutMs });
+  if (result.kind === 'no-sqlite') {
+    return { status: 'skipped', why: `node:sqlite unavailable on Node ${process.versions.node}; it needs 22.13 or later` };
   }
+  if (result.kind === 'error') return { status: 'skipped', why: `the replay itself failed: ${result.message}` };
+  if (result.kind === 'timeout') {
+    return {
+      status: 'incomplete',
+      authored: authoredCount,
+      notReplayed: authoredCount - result.passed,
+      key: result.key ?? 'the replay',
+      message:
+        `it did not finish within ${timeoutMs / 1000} s and was stopped — a statement with no end, such as a recursive CTE ` +
+        "without a limit? A Durable Object's own CPU limit would stop it at promote too",
+    };
+  }
+  const outcome = result.outcome;
   if (!isOutcome(outcome)) return { status: 'skipped', why: "the vertical's kernel returned a replay outcome this CLI does not recognise" };
   for (const line of outcome.declared) log(`declared  ${line}`);
   if (outcome.refused) {
