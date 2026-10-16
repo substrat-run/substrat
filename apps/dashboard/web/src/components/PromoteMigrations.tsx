@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from 'react';
-import { clipReviewText, discardCount, reviewText, type MigrationEntry } from '@substrat-run/contracts';
+import { clipReviewText, discardTally, reviewText, type MigrationEntry } from '@substrat-run/contracts';
 import type { MigrationSection } from '../lib/promote-review';
 import { Pill } from './ui';
 
@@ -37,7 +37,7 @@ export function PromoteMigrations({ section }: { section: MigrationSection }) {
         </div>
       ) : (
         <>
-          <DiscardCallout count={discardCount(sql)} />
+          <DiscardCallout tally={discardTally(sql)} />
           {sql.baseline === 'unavailable' && (
             <div style={muted}>
               The version prod serves was pushed before versions carried their migrations, so every migration this version ships is
@@ -87,14 +87,19 @@ export function PromoteMigrations({ section }: { section: MigrationSection }) {
 const muted: CSSProperties = { fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.5 };
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 12 };
 
-function DiscardCallout({ count }: { count: number }) {
-  if (count === 0) return null;
+function DiscardCallout({ tally: { count, atLeast } }: { tally: { count: number; atLeast: boolean } }) {
+  if (count === 0) {
+    // A cut answer may hold its discards in the entries it left out: it says so rather than nothing.
+    return atLeast ? (
+      <div style={muted}>This list is cut, so it cannot show whether a migration left out of it discards data. Read the rest in the repository.</div>
+    ) : null;
+  }
   return (
     <div
       role="note"
       style={{ ...muted, color: 'var(--text-primary)', padding: '8px 10px', borderRadius: 6, background: 'var(--surface-inset)' }}
     >
-      <Pill kind="danger">Discards data</Pill> This promote deliberately discards data in {count} place{count === 1 ? '' : 's'}. Each reason
+      <Pill kind="danger">Discards data</Pill> This promote deliberately discards data in {atLeast ? 'at least ' : ''}{count} place{count === 1 ? '' : 's'}. Each reason
       below is the migration author’s own; read it before you acknowledge.
     </div>
   );
@@ -102,8 +107,9 @@ function DiscardCallout({ count }: { count: number }) {
 
 /**
  * What one migration declares (#2322). Every string here is the pusher's: rendered as React
- * text (never markup), with bidi controls made visible (`reviewText`), and a long reason cut
- * with an expander so it cannot push the rest of the review out of sight.
+ * text (never markup), with every control, format and bidi character made visible (`reviewText`),
+ * and a long or many-line reason cut with an expander so it cannot push the rest of the review
+ * out of sight. The migration's id and SQL below go through `reviewText` too.
  */
 function MigrationDeclarations({ entry }: { entry: MigrationEntry }) {
   if (entry.declarationsLeftOut) {
@@ -180,7 +186,7 @@ function MigrationGroup({
           <div key={`${e.moduleId}\u001f${e.version}`}>
             <details>
               <summary style={{ ...mono, cursor: 'pointer' }}>
-                {e.moduleId} · {e.version}
+                {reviewText(e.moduleId)} · {reviewText(e.version)}
               </summary>
               {e.sql === null ? (
                 <div style={{ ...muted, fontSize: 12, padding: '6px 0' }}>SQL left out: past the size bound of this answer.</div>
@@ -197,7 +203,7 @@ function MigrationGroup({
                     borderRadius: 6,
                   }}
                 >
-                  {e.sql}
+                  {reviewText(e.sql)}
                 </pre>
               )}
             </details>

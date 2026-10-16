@@ -9,7 +9,7 @@ import type {
   VerticalChannel,
   VerticalVersion,
 } from '@substrat-run/contracts';
-import { clipReviewText, discardCount, grantShapeHolderNotes, reviewText, type MigrationEntry } from '@substrat-run/contracts';
+import { clipReviewText, discardTally, grantShapeHolderNotes, reviewText, type MigrationEntry } from '@substrat-run/contracts';
 import { Badge, Button, Card, Checkbox, Dialog, Input, Select, SelectBox, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
@@ -1278,7 +1278,8 @@ export function PermissionDiffView({ review }: { review: PermissionReview }) {
 
 /**
  * What one migration declares it moves and discards (#2322). Every string is the pusher's:
- * React text with bidi controls made visible, and a long reason cut behind a `<details>`.
+ * React text with every control, format and bidi character made visible, and a long or
+ * many-line reason cut behind a `<details>`. The id and SQL go through `reviewText` too.
  */
 function DeclarationLines({ entry }: { entry: MigrationEntry }) {
   if (entry.declarationsLeftOut) {
@@ -1325,7 +1326,7 @@ export function MigrationDiffView({ review }: { review: MigrationReview }) {
     ...diff.changed.map((m) => ({ ...m, tag: m.edited === 'declarations' ? 'redeclared' : 'edited' })),
     ...diff.added.map((m) => ({ ...m, tag: 'new' })),
   ];
-  const discards = discardCount(diff);
+  const discards = discardTally(diff);
   return (
     <div style={diffBox}>
       <span style={{ color: 'var(--text-secondary)' }}>
@@ -1334,15 +1335,21 @@ export function MigrationDiffView({ review }: { review: MigrationReview }) {
       {entries.length === 0 && (
         <span style={{ color: 'var(--text-tertiary)' }}>No migration is new or edited.</span>
       )}
-      {discards > 0 && (
+      {discards.count > 0 ? (
         <span>
-          <Tag>discards data</Tag> This promote deliberately discards data in {discards} place{discards === 1 ? '' : 's'}. Each reason is
-          the migration author’s own.
+          <Tag>discards data</Tag> This promote deliberately discards data in {discards.atLeast ? 'at least ' : ''}
+          {discards.count} place{discards.count === 1 ? '' : 's'}. Each reason is the migration author’s own.
         </span>
+      ) : (
+        discards.atLeast && (
+          <span style={{ color: 'var(--text-tertiary)' }}>
+            This list is cut, so it cannot show whether a migration left out of it discards data.
+          </span>
+        )
       )}
       {entries.map((m) => (
         <div key={`${m.tag}:${m.moduleId}:${m.version}`}>
-          <Tag mono>{`${m.moduleId}@${m.version}`}</Tag>{' '}
+          <Tag mono>{reviewText(`${m.moduleId}@${m.version}`)}</Tag>{' '}
           {m.tag === 'edited'
             ? 'edited after shipping — scopes that ran it will not run the new SQL'
             : m.tag === 'redeclared'
@@ -1352,7 +1359,7 @@ export function MigrationDiffView({ review }: { review: MigrationReview }) {
           {m.sql === null ? (
             <div style={{ color: 'var(--text-tertiary)' }}>SQL left out: over the read's size bound.</div>
           ) : (
-            <pre style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap', fontSize: 12 }}>{m.sql}</pre>
+            <pre style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap', fontSize: 12 }}>{reviewText(m.sql)}</pre>
           )}
         </div>
       ))}

@@ -87,6 +87,34 @@ describe('PromoteMigrations: declared moves and discards', () => {
     expect(text()).toContain('A scope that already ran it is unaffected; one that has not is held to these.');
   });
 
+  it('makes every control, format and bidi character visible in the id, the SQL, a target and a reason (#2322 r1)', () => {
+    const c = (...p: number[]) => String.fromCodePoint(...p);
+    const hostile = c(0x1b, 0x9b, 0x7f, 0x202e, 0x200b, 0xfeff);
+    const shown = '<U+001B><U+009B><U+007F><U+202E><U+200B><U+FEFF>';
+    show(diff([{ moduleId: `desk${hostile}`, version: `0002${hostile}`, sql: `DROP TABLE t;${hostile}`, discards: { [`t${hostile}`]: `why${hostile}` } }]));
+    expect(text()).toContain(`desk${shown} · 0002${shown}`);
+    expect(container.querySelector('pre')?.textContent).toBe(`DROP TABLE t;${shown}`);
+    expect(text()).toContain(`t${shown}— why${shown}`);
+    expect(text()).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+  });
+
+  it('cuts a reason of many short lines too, so its height is bounded (#2322 r1)', () => {
+    const reason = Array.from({ length: 10 }, (_, i) => `line ${i}`).join('\n');
+    show(diff([{ moduleId: 'desk', version: '0002', sql: 's', discards: { t: reason } }]));
+    expect(text()).toContain('line 5…');
+    expect(text()).not.toContain('line 6');
+    act(() => [...container.querySelectorAll('button')].find((b) => b.textContent === 'Show all')!.click());
+    expect(text()).toContain('line 9');
+  });
+
+  it('says "at least" when the answer is cut, and that a cut list cannot say when it shows none (#2322 r1)', () => {
+    show({ ...diff([{ moduleId: 'desk', version: '0002', sql: 's', discards: { t: 'why' } }]), total: 300, truncated: true });
+    expect(text()).toContain('deliberately discards data in at least 1 place.');
+    show({ ...diff([{ moduleId: 'desk', version: '0002', sql: 's' }]), total: 300, truncated: true });
+    expect(text()).toContain('This list is cut, so it cannot show whether a migration left out of it discards data.');
+    expect(text()).not.toContain('Discards data');
+  });
+
   it('says declarations were left out rather than showing none', () => {
     show({ ...diff([{ moduleId: 'desk', version: '0002', sql: null, declarationsLeftOut: true }]), truncated: true });
     expect(text()).toContain('Declares moves or discards that are left out');

@@ -179,6 +179,35 @@ describe('MigrationDiffView: declared moves and discards (#2322)', () => {
     expect(html).toMatch(/<details[^>]*><summary[^>]*>.*… show all<\/summary>.*TAIL<\/details>/);
   });
 
+  it('makes controls visible in a target, both ends of a move, the id and the SQL — not only the reason (#2322 r1)', () => {
+    const c = (...p: number[]) => String.fromCodePoint(...p);
+    const hostile = c(0x202e, 0x200b, 0x9b, 0x1b);
+    const shown = '&lt;U+202E&gt;&lt;U+200B&gt;&lt;U+009B&gt;&lt;U+001B&gt;';
+    const html = view(
+      migrationsOnTop(
+        [{ moduleId: 'desk', version: `0002${hostile}`, sql: `DROP TABLE t;${hostile}`, discards: { [`t${hostile}`]: 'why' }, moves: { [`a${hostile}`]: `b${hostile}` } }],
+        undefined,
+      ),
+    );
+    expect(html).toContain(`desk@0002${shown}`);
+    expect(html).toContain(`DROP TABLE t;${shown}`);
+    expect(html).toContain(`t${shown}`);
+    expect(html).toContain(`a${shown}`);
+    expect(html).toContain(`b${shown}`);
+    expect(html).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+  });
+
+  it('cuts a many-line reason, and says "at least" or that a cut list cannot say (#2322 r1)', () => {
+    const reason = Array.from({ length: 10 }, (_, i) => `line ${i}`).join('\n');
+    const html = view(migrationsOnTop([{ moduleId: 'desk', version: '0002', sql: 's', discards: { t: reason } }], undefined));
+    const summary = /<summary[^>]*>([\s\S]*?)<\/summary>/.exec(html)?.[1] ?? '';
+    expect(summary).toContain('line 5<!-- -->… show all');
+    expect(summary).not.toContain('line 6');
+    const cut = { baseline: 'none' as const, changed: [], total: 300, truncated: true };
+    expect(view({ ...cut, added: [{ moduleId: 'd', version: '1', sql: 's', discards: { t: 'why' } }] })).toContain('at least <!-- -->1');
+    expect(view({ ...cut, added: [{ moduleId: 'd', version: '1', sql: 's' }] })).toContain('cannot show whether a migration left out of it discards data');
+  });
+
   it('names a declarations-only edit as such', () => {
     const html = view(
       migrationsOnTop([{ moduleId: 'desk', version: '0001', sql: 's', discards: { t: 'why' } }], [{ moduleId: 'desk', version: '0001', sql: 's' }]),
