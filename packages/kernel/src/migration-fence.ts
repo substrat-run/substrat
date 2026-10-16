@@ -56,6 +56,7 @@ const COLUMNS_PER_SCAN = 64;
 const lower = (s: string): string => s.toLowerCase();
 const quote = (name: string): string => `"${name.replace(/"/g, '""')}"`;
 const total = (c: Classes): number => CLASSES.reduce((n, k) => n + c[k], 0);
+const NONE: Classes = { integer: 0, real: 0, text: 0, blob: 0 };
 
 /** The words of one statement, keywords lowercased; quoted names are kept apart from keywords. */
 function words(statement: string): { text: string; quoted: boolean }[] {
@@ -101,7 +102,7 @@ function measure(sql: ScopedSql): Measure {
         columns.set(lower(c), Object.fromEntries(CLASSES.map((k) => [k, Number(r[`c${i}_${k}`])])) as Classes);
       });
     }
-    if (rows === 0) for (const c of names) columns.set(lower(c), { integer: 0, real: 0, text: 0, blob: 0 });
+    if (rows === 0) for (const c of names) columns.set(lower(c), NONE);
     out.set(lower(table), { rows, columns });
   }
   return out;
@@ -180,19 +181,19 @@ function lossesOf(before: Measure, after: Measure, renames: Renames): Loss[] {
     for (const [column, held] of b.columns) {
       if (total(held) === 0) continue;
       const now = followed ? renames.columns.get(table)!.get(column)! : column;
-      const after = a.columns.get(now);
+      const kept = a.columns.get(now);
       const target = { table, column };
-      if (after === undefined) {
+      if (kept === undefined) {
         losses.push({ target, what: `column ${table}.${column} held ${total(held)} value(s) and is gone` });
         continue;
       }
-      const short = CLASSES.filter((k) => after[k] < held[k]);
+      const short = CLASSES.filter((k) => kept[k] < held[k]);
       if (short.length > 0) {
         losses.push({
           target,
           what:
-            `column ${table}.${column} held ${total(held)} value(s), now ${total(after)}` +
-            (total(after) >= total(held) ? ` (${short.map((k) => `${k} ${held[k]} → ${after[k]}`).join(', ')}: retyped)` : ''),
+            `column ${table}.${column} held ${total(held)} value(s), now ${total(kept)}` +
+            (total(kept) >= total(held) ? ` (${short.map((k) => `${k} ${held[k]} → ${kept[k]}`).join(', ')}: retyped)` : ''),
         });
       }
     }
@@ -203,11 +204,14 @@ function lossesOf(before: Measure, after: Measure, renames: Renames): Loss[] {
 const declarationError = (key: string, message: string) =>
   substratError('validation_failed', `migration ${key}: ${message} (#115)`, { reason: 'migration_declaration' });
 
-/** What a declaration counts: a table's rows, or a column's values per class. */
+/**
+ * What a declaration counts: a column's values per class, or a table's rows — carried in one
+ * class slot so a move compares tables and columns with the same loop.
+ */
 function countOf(m: Measure, t: Target): Classes | undefined {
   const table = m.get(t.table);
   if (!table) return undefined;
-  if (!t.column) return { integer: table.rows, real: 0, text: 0, blob: 0 };
+  if (!t.column) return { ...NONE, integer: table.rows };
   return table.columns.get(t.column);
 }
 
@@ -263,7 +267,7 @@ export function fenceMigration(sql: ScopedSql, migration: SqlMigration, key: str
       failures.push(`moves names ${show(target)} as a target, which does not exist after the migration`);
       continue;
     }
-    const had = countOf(before, target) ?? { integer: 0, real: 0, text: 0, blob: 0 };
+    const had = countOf(before, target) ?? NONE;
     for (const k of CLASSES) {
       const need = sources.reduce((n, s) => n + countOf(before, s)![k], 0);
       const gained = now[k] - had[k];
