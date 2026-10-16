@@ -13,7 +13,7 @@ tracking: ["#2207", "#2303"]
 
 > Accepted 2026-10-15, from the maintainer's answers to the 22 questions of [the store-instances RFC](../rfc/store-instances.md) §12 (recorded in its §12.1). It amends [K-49](./K-049-a-scope-store-is-a-platform-run-object-per-scope-reached-by-its-own-door.md): K-49 covers scope-grain stores, and this record covers tenant-grain ones.
 
-**A store is backed by a driver.** A driver is the platform-registered, pinned code that backs a store. It is what the ratified text of K-49, K-50 and D-63, and the proposed K-52, call a *kind*, and what the code called one until it was renamed in #2324; those records keep the word. This record uses the new word and changes nothing else.
+**A store is backed by a driver.** A driver is the platform-registered, pinned code that backs a store. It is what the ratified text of K-49, K-50 and D-63, and the proposed K-52, call a *kind*, and what the code called one until it was renamed in #2324; those records keep the word. Where this record still quotes the old spelling, `scopeStores: [{ binding, kind }]` and the per-(kind, vertical) script, the code now says `driver`, and the manifest parser refuses `kind` with the rename named. This record uses the new word and changes nothing else.
 
 **This records a direction. Nothing in it is built yet.** No instance, connection, connection permission or driver grain exists in code today.
 

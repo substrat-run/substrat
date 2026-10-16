@@ -1467,7 +1467,7 @@ export const REPLIED_METHODS = [
   'linkIdentity',
   // #1748: refuses an expiry outside its bounds with validation_failed.
   'createFindingRule',
-  // #2286: refuses a re-kinded scope-store binding with conflict, and an unreadable manifest with unavailable.
+  // #2286: refuses a scope-store binding moved to another driver with conflict, and an unreadable manifest with unavailable.
   'insertVersion',
   'verticalScopeStores',
   // #2300: a store driver's release, rollout and hold writes refuse with conflict, not_found,
@@ -3308,7 +3308,7 @@ export class ControlPlaneDO extends DurableObject {
         v.originJson, v.migrations?.length ?? null, v.createdAt,
       );
       writeVersionMigrations(this.kernelSql, v.id, v.migrations);
-      // #2286: the version's scope-store bindings, refusing one re-kinded, in the insert's transaction.
+      // #2286: the version's scope-store bindings, refusing one moved to another driver, in the insert's transaction.
       indexVersionScopeStores(this.kernelSql, v.verticalSlug, v.id, v.manifestJson);
     });
   }

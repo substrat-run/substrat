@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { storeDriverReleaseUpload } from '@substrat-run/contracts';
 import { isReleaseSha, packedFilesOf, packStoreDriverDir, sourceCommitOf, storeDriverStatusLines } from '../src/store-driver.js';
@@ -137,5 +138,31 @@ describe('store-driver rollout and status, before and after a request (#2300)', 
     });
     expect(lines[0]).toBe(`graph: current ${'b'.repeat(64)}, rolls back to ${'b'.repeat(64)}`);
     expect(storeDriverStatusLines('graph', { driver: 'graph', pins: [], current: null, rollouts: [], rollbackTarget: null, unfinishedRollback: null })[0]).toBe('graph: current none, rolls back to nothing');
+  });
+});
+
+// K-53's rename: the old command and flag name the new spelling and stop, before any auth or call.
+describe('the pre-rename spelling, at the command line', () => {
+  const cliJs = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
+  const run = (...args: string[]) =>
+    spawnSync(process.execPath, [cliJs, ...args], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '' } });
+
+  it('`substrat store-kind` exits naming `substrat store-driver` and --driver', () => {
+    const r = run('store-kind', 'status', '--kind', 'graph');
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('`substrat store-kind` was renamed `substrat store-driver`, and its --kind flag --driver');
+  });
+
+  it('`--kind` on `substrat store-driver` exits naming --driver', () => {
+    const r = run('store-driver', 'status', '--kind', 'graph');
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('--kind was renamed --driver');
+  });
+
+  it('twin: `--driver` gets past both guards to the next check', () => {
+    const r = run('store-driver', 'rollout', '--driver', 'graph');
+    expect(r.status).toBe(1);
+    expect(r.stderr).not.toMatch(/was renamed/);
+    expect(r.stderr).toContain('a rollout names the release by --sha256');
   });
 });

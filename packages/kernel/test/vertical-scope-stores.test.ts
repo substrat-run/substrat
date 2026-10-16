@@ -126,7 +126,7 @@ describe('a vertical\'s scope-store bindings, by any version (#2286)', () => {
       sql.run('INSERT INTO vertical_versions (id, vertical_slug, manifest_json, created_at) VALUES (?, ?, ?, ?)', id, vertical, json, when);
     indexVersionScopeStores(sql, 'acme', 'a1', manifest([{ binding: 'GRAPH', driver: 'graph' }]));
     at('acme', 'a1', manifest([{ binding: 'GRAPH', driver: 'graph' }]), '2026-01-01T00:00:00.000Z');
-    // Two versions stored before the record, the second re-kinding a binding: indexing throws.
+    // Two versions stored before the record, the second moving a binding to another driver: indexing throws.
     at('legacy', 'l1', manifest([{ binding: 'GRAPH', driver: 'graph' }]), '2026-01-01T00:00:00.000Z');
     at('legacy', 'l2', manifest([{ binding: 'GRAPH', driver: 'counter' }]), '2026-01-02T00:00:00.000Z');
     // A manifest that does not parse.

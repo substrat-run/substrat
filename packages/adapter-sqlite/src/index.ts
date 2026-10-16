@@ -9188,7 +9188,7 @@ export class SqliteScopeHost implements ScopeHost {
               new Date().toISOString(),
             );
           writeVersionMigrations(switchSqlOf(this.directory), audited.id, split.migrations);
-          // #2286: the version's scope-store bindings, refusing one re-kinded, in the insert's transaction.
+          // #2286: the version's scope-store bindings, refusing one moved to another driver, in the insert's transaction.
           indexVersionScopeStores(switchSqlOf(this.directory), audited.verticalSlug, audited.id, split.manifestJson);
         })();
         this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
