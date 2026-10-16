@@ -282,19 +282,33 @@ interface SigningKey {
 
 /** Import a PKCS8 Ed25519 private key (base64url) and derive its key id from its public half. */
 async function signingKey(pkcs8: string): Promise<SigningKey> {
+  const { kid } = await scopeStoreSignerPublicKey(pkcs8);
+  // The key decoded and imported once already, above; the signing copy is not extractable.
+  const key = await crypto.subtle.importKey('pkcs8', copyBytes(base64UrlToBytes(pkcs8)!), { name: 'Ed25519' }, false, ['sign']);
+  return { key, kid };
+}
+
+/**
+ * The raw public key and key id a PKCS8 Ed25519 private key (base64url) signs under, derived the
+ * way {@link issueScopeStoreEnvelope} derives them. Throws {@link ScopeStoreKeyError} when the key
+ * is unusable, whose message never carries the key.
+ */
+export async function scopeStoreSignerPublicKey(pkcs8: string): Promise<{ readonly publicKey: string; readonly kid: string }> {
   const bytes = base64UrlToBytes(pkcs8);
   if (!bytes) throw new ScopeStoreKeyError('the store signing key is not base64url');
-  let jwk: JsonWebKey;
-  let key: CryptoKey;
+  let x: unknown;
   try {
-    // Extractable only so its public half (`x`) can be read for the key id; it never leaves here.
-    key = await crypto.subtle.importKey('pkcs8', copyBytes(bytes), { name: 'Ed25519' }, true, ['sign']);
-    jwk = (await crypto.subtle.exportKey('jwk', key)) as JsonWebKey;
+    const key = await crypto.subtle.importKey('pkcs8', copyBytes(bytes), { name: 'Ed25519' }, true, ['sign']);
+    x = ((await crypto.subtle.exportKey('jwk', key)) as JsonWebKey).x;
   } catch {
     throw new ScopeStoreKeyError('the store signing key is not an Ed25519 PKCS8 key');
   }
-  if (typeof jwk.x !== 'string') throw new ScopeStoreKeyError('the store signing key has no public half');
-  return { key, kid: await scopeStoreKeyId(jwk.x) };
+  if (typeof x !== 'string') throw new ScopeStoreKeyError('the store signing key has no public half');
+  try {
+    return { publicKey: x, kid: await scopeStoreKeyId(x) };
+  } catch (error) {
+    throw new ScopeStoreKeyError((error as Error).message);
+  }
 }
 
 /** A signing key that is present but cannot be used. Its message never carries the key. */

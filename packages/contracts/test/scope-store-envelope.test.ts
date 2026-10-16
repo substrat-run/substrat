@@ -14,6 +14,7 @@ import {
   scopeStoreEnvelopeFresh,
   ScopeStoreKeyError,
   scopeStoreKeyId,
+  scopeStoreSignerPublicKey,
   scopeStorePublicKeysFrom,
   verifyScopeStoreCall,
   verifyScopeStoreEnvelope,
@@ -335,5 +336,17 @@ describe('scope store envelope (#2287)', () => {
     expect(parseScopeStoreEnvelope(lines.join('\n'))?.iat).toBe(999_999_999_999_999);
     lines[7] = '9999999999999999';
     expect(parseScopeStoreEnvelope(lines.join('\n'))).toBeUndefined();
+  });
+  it('a signer key names the public key and kid it signs under, and an unusable one never echoes itself', async () => {
+    expect(await scopeStoreSignerPublicKey(vector.privateKeyPkcs8)).toEqual({ publicKey: vector.publicKey, kid: vector.kid });
+    // The derivation is the signer's own: an envelope issued with the key carries the same kid.
+    const issued = await issueScopeStoreEnvelope({ privateKey: vector.privateKeyPkcs8, aud: 'caller', script: vector.script, name: NAME, op: 'read', body: bodyFor('read') });
+    expect(issued.envelope.kid).toBe(vector.kid);
+    const truncated = vector.privateKeyPkcs8.slice(0, -4);
+    for (const bad of ['not base64url!', truncated, vector.publicKey]) {
+      const error = await scopeStoreSignerPublicKey(bad).then(() => undefined, (e: unknown) => e as Error);
+      expect(error).toBeInstanceOf(ScopeStoreKeyError);
+      expect(error!.message).not.toContain(bad);
+    }
   });
 });
