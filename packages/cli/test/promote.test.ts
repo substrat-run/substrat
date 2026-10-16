@@ -273,6 +273,11 @@ describe('the diff formatters', () => {
     expect(out[at]).toBe('+ helpdesk "0007\\n+ helpdesk 0008-harmless\\n    SELECT 1;\\nfake"');
     expect(out.slice(at + 1)).toEqual(['    discards "x": "why"', '    DROP TABLE x;']);
     expect(out.filter((l) => l.startsWith('+ '))).toHaveLength(1);
+    // Tab, zero-width and bidi too, all inside the one quoted header token (#2322 r3).
+    const odd = `0007\n+ x\t${String.fromCodePoint(0x200b, 0x202e)}y`;
+    const oddOut = formatMigrationDiff(diff({ added: [{ moduleId: 'helpdesk', version: odd, sql: 's' }], total: 1 }), false);
+    expect(oddOut[0]).toBe('+ helpdesk "0007\\n+ x\\t<U+200B><U+202E>y"');
+    expect(oddOut).toHaveLength(2);
     // A plain id prints bare, as before.
     expect(formatMigrationDiff(diff({ added: [{ moduleId: '@acme/desk', version: '0001-init', sql: 's' }], total: 1 }), false)[0]).toBe('+ @acme/desk 0001-init');
   });

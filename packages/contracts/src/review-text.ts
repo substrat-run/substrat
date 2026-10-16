@@ -21,7 +21,6 @@
  *   format characters but read exactly like one.
  */
 const INVISIBLE = /[\p{Cc}\p{Cf}\u2028\u2029\u115F\u1160\u17B4\u17B5\u2800\u3164\uFFA0]/gu;
-const ANY_INVISIBLE = new RegExp(INVISIBLE.source, 'u');
 
 /**
  * The two layout characters kept as they are: a newline (the CLI prints SQL line by line and a
@@ -57,14 +56,6 @@ export function reviewLine(text: string): string {
  */
 export function reviewSql(sql: string): string {
   return reviewText(sql.replace(/\r\n/g, '\n'));
-}
-
-/**
- * Whether text holds any character {@link reviewText} would have to make visible, newline and tab
- * included: what the push boundary refuses where a value must be plain (a migration's version).
- */
-export function hasInvisible(text: string): boolean {
-  return ANY_INVISIBLE.test(text);
 }
 
 /**

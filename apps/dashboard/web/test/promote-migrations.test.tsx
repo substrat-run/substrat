@@ -99,8 +99,8 @@ describe('PromoteMigrations: declared moves and discards', () => {
   });
 
   it('shows a newline in an id or a target as a mark, and reads CRLF SQL as its lines (#2322 r2)', () => {
-    show(diff([{ moduleId: 'desk', version: '0007\n+ desk 0008', sql: 'SELECT 1;\r\nSELECT 2;\rX', discards: { 'a\nb': 'why' }, moves: { 'c\td': 'e' } }]));
-    expect(text()).toContain('desk · 0007<U+000A>+ desk 0008');
+    show(diff([{ moduleId: 'desk', version: `0007\n+ desk 0008\t${String.fromCodePoint(0x200b, 0x202e)}y`, sql: 'SELECT 1;\r\nSELECT 2;\rX', discards: { 'a\nb': 'why' }, moves: { 'c\td': 'e' } }]));
+    expect(container.querySelector('summary')?.textContent).toBe('desk · 0007<U+000A>+ desk 0008<U+0009><U+200B><U+202E>y');
     expect(text()).toContain('a<U+000A>b— why');
     expect(text()).toContain('c<U+0009>d → e');
     expect(container.querySelector('pre')?.textContent).toBe('SELECT 1;\nSELECT 2;<U+000D>X');

@@ -8,7 +8,7 @@ import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
 import { scopeDumpTable } from './introspection.js';
 import { substratError } from './errors.js';
-import { blankReason, hasInvisible } from './review-text.js';
+import { blankReason } from './review-text.js';
 import { SCOPE_STORE_CANARY, STORE_DRIVER_ID } from './script-names.js';
 import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
 
@@ -1762,16 +1762,12 @@ function migrationDeclarations(value: z.ZodType<string>) {
 export const declaredMigration = z.object({
   moduleId,
   /**
-   * The module's `SqlMigration.version`, e.g. `0001-init`. Unique per module. Plain text: no
-   * control, format or other invisible character (newline and tab included), because a review
-   * prints it as one line beside the migration's SQL and a newline in it would forge another
-   * entry there (#2322).
+   * The module's `SqlMigration.version`, e.g. `0001-init`. Unique per module. Any text the kernel
+   * journals, as the kernel and the data-loss fence accept it: a version is metadata, which must
+   * never fail a push, and a stored manifest must stay readable. A review never prints it raw —
+   * every surface shows it on one line through `reviewLine` or a quote (#2322).
    */
-  version: z
-    .string()
-    .min(1)
-    .max(200)
-    .refine((v) => !hasInvisible(v), { message: 'a migration version holds no control or invisible character' }),
+  version: z.string().min(1).max(200),
   sql: z.string(),
   /**
    * The migration's declared data losses (#2322), exactly as `SqlMigration.moves` and

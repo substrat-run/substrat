@@ -210,9 +210,9 @@ describe('MigrationDiffView: declared moves and discards (#2322)', () => {
 
   it('shows a newline in an id or a target as a mark, and reads CRLF SQL as its lines (#2322 r2)', () => {
     const html = view(
-      migrationsOnTop([{ moduleId: 'desk', version: '0007\nmoves x', sql: 'SELECT 1;\r\nSELECT 2;\rX', discards: { 'a\nmoves b': 'why' } }], undefined),
+      migrationsOnTop([{ moduleId: 'desk', version: `0007\nmoves x\t${String.fromCodePoint(0x200b, 0x202e)}y`, sql: 'SELECT 1;\r\nSELECT 2;\rX', discards: { 'a\nmoves b': 'why' } }], undefined),
     );
-    expect(html).toContain('desk@0007&lt;U+000A&gt;moves x');
+    expect(html).toContain('desk@0007&lt;U+000A&gt;moves x&lt;U+0009&gt;&lt;U+200B&gt;&lt;U+202E&gt;y');
     expect(html).toContain('a&lt;U+000A&gt;moves b');
     expect(html).toContain('SELECT 1;\nSELECT 2;&lt;U+000D&gt;X');
   });

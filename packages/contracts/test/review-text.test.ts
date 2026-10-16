@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { blankReason, clipReviewText, hasInvisible, reviewLine, reviewSql, reviewText, REVIEW_TEXT_SHOWN_LINES, REVIEW_TEXT_SHOWN_MAX } from '../src/index.js';
+import { blankReason, clipReviewText, reviewLine, reviewSql, reviewText, REVIEW_TEXT_SHOWN_LINES, REVIEW_TEXT_SHOWN_MAX } from '../src/index.js';
 
 // Every test character is built with String.fromCodePoint, so this file holds none of them raw.
 const c = (...points: number[]) => String.fromCodePoint(...points);
@@ -71,7 +71,7 @@ describe('clipReviewText (#2322)', () => {
   });
 });
 
-describe('reviewLine, reviewSql and hasInvisible (#2322 r2)', () => {
+describe('reviewLine and reviewSql (#2322 r2)', () => {
   it('reviewLine makes a newline and a tab visible too, so a one-line position cannot forge a line', () => {
     expect(reviewLine(`0007\n+ helpdesk 0008-harmless\tx${c(0x202e)}`)).toBe('0007<U+000A>+ helpdesk 0008-harmless<U+0009>x<U+202E>');
     expect(reviewLine('plain-id_0001')).toBe('plain-id_0001');
@@ -81,10 +81,7 @@ describe('reviewLine, reviewSql and hasInvisible (#2322 r2)', () => {
     expect(reviewSql('SELECT 1;\rDROP')).toBe('SELECT 1;<U+000D>DROP');
     expect(reviewSql(`a${c(0x1b)}\r\n`)).toBe('a<U+001B>\n');
   });
-  it('hasInvisible is true for anything reviewText would mark, newline and tab included', () => {
-    expect(hasInvisible('0001-init')).toBe(false);
-    for (const p of [0x0a, 0x09, 0x1b, 0x9b, 0x200b, 0x2028, 0x3164]) expect(hasInvisible(`a${c(p)}`), p.toString(16)).toBe(true);
-  });
+
   it('blankReason counts the blank-rendering letters as nothing', () => {
     expect(blankReason(c(0x115f, 0x1160, 0x3164, 0xffa0, 0x17b4, 0x17b5, 0x2800))).toBe(true);
   });

@@ -139,6 +139,18 @@ describe('version migrations stored apart (#1764)', () => {
       expect(versionMigrationsOf(sql, 'v')?.migrations).toEqual(named);
     });
 
+    it('a version holding a newline, tab, zero-width or bidi character is stored and read back as it is (#2322 r3)', () => {
+      const version = `0007\n+ x\t${String.fromCodePoint(0x200b, 0x202e)}y`;
+      const odd = [{ ...migrations[0]!, version }];
+      // Split from a push, and from a stored pre-#1764 manifest the backfill has not reached.
+      const { sql } = fresh();
+      split(sql, 'v', odd);
+      expect(versionMigrationsOf(sql, 'v')?.migrations).toEqual(odd);
+      expect(splitManifestMigrations(manifest({ migrations: odd }), 'push').migrations).toEqual(odd);
+      legacy(sql, 'old', manifest({ migrations: odd }));
+      expect(versionMigrationsOf(sql, 'old')?.migrations).toEqual(odd);
+    });
+
     it('a stored row naming __proto__ makes the version not available, as the push boundary refuses it', () => {
       const { sql } = fresh();
       split(sql, 'v', migrations);

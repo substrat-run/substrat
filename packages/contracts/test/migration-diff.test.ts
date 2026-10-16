@@ -222,13 +222,19 @@ describe('deployManifest.migrations refuses keys a record would drop, and an inv
     const diff = migrationsOnTop([r.data!], [{ moduleId: 'm', version: '1', sql: '' }]);
     expect(diff.changed[0]).toMatchObject({ edited: 'declarations', discards: { constructor: 'why', prototype: 'why' } });
   });
-  it('refuses a migration version holding a newline, tab or any other invisible character (#2322 r2)', () => {
-    const at = (version: string) => parse(JSON.stringify({ moduleId: 'm', version, sql: '' }));
-    expect(at('0007-split-notes')).toBe(true);
-    for (const p of [0x0a, 0x09, 0x0d, 0x1b, 0x7f, 0x9b, 0x202e, 0x200b, 0x2028, 0x3164]) {
-      expect(at(`0007${String.fromCodePoint(p)}x`), p.toString(16)).toBe(false);
-    }
+  it('accepts a version with a newline, tab, zero-width or bidi character, pushed and stored alike (#2322 r3)', () => {
+    // A version is metadata the kernel journals as it is: it never fails a push, and every review
+    // surface prints it escaped on one line instead.
+    const version = `0007\n+ x\t${String.fromCodePoint(0x200b, 0x202e)}y`;
+    const migration = { moduleId: 'm', version, sql: '' };
+    expect(parse(JSON.stringify(migration))).toBe(true);
+    const stored = storedDeployManifest.parse({
+      version: '1.0.0', entry: 'index.js', compatibilityDate: '2026-07-01',
+      digests: { manifest: 'm', permission: 'p', migration: 'g' }, migrations: [migration],
+    });
+    expect(stored.migrations?.[0]?.version).toBe(version);
   });
+
   it('refuses a reason of only invisible characters, and keeps one with some text', () => {
     const zw = String.fromCodePoint(0x200b, 0xfeff, 0x2060);
     expect(parse(JSON.stringify({ moduleId: 'm', version: '1', sql: '', discards: { b: zw } }))).toBe(false);

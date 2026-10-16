@@ -321,6 +321,15 @@ describe('flattenDeclaredMigrations carries the declarations (#2322)', () => {
   });
 });
 
+describe.runIf(built)('a migration version is metadata, which never fails a push (#2322 r3)', () => {
+  it('a version with a newline, tab, zero-width or bidi character is carried as it is, and the push goes through', () => {
+    const version = `0007\n+ x\t${String.fromCodePoint(0x200b, 0x202e)}y`;
+    // `pushed` throws unless the upload happened, so its manifest is parseManifest's own output.
+    const m = pushed(vertical([{ id: 'helpdesk', migrations: [{ ...INIT, version }] }]));
+    expect(m.migrations).toEqual([{ moduleId: 'helpdesk', ...INIT, version }]);
+  });
+});
+
 describe.runIf(built)('push carries the declarations in the manifest it sends (#2322)', () => {
   it('a declared migration arrives with them, and a declaration-only change moves the digest', () => {
     const before = pushed(vertical([{ id: 'helpdesk', migrations: [INIT, ADD] }]));
