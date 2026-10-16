@@ -10,9 +10,11 @@
  * migration it gives every table a row with every column holding a value, so every migration
  * meets a populated scope. An undeclared loss is red here, naming the declaration to add.
  *
- * It runs the kernel's `runMigrationStatements` — the function both adapters run — so there is
- * one rule and this is not a copy of it. Kernel-derived DDL runs too, unfenced, as the hosts run
- * it, because a later authored migration may name what it made.
+ * The replay is the kernel's own `replayMigrations` (`packages/kernel/src/migration-replay.ts`),
+ * the one `substrat push` runs through a vertical's pinned kernel before upload (#2321), and it
+ * judges with `runMigrationStatements` — the function both adapters run — so there is one rule
+ * and this is not a copy of it. Kernel-derived DDL runs too, unfenced, as the hosts run it,
+ * because a later authored migration may name what it made.
  *
  * Read off the same registrations `lint:permissions` reads: every `demos/*` and `apps/*` that
  * declares `substrat.permissions`, every engine on its own (an engine composed by no vertical is
@@ -32,103 +34,42 @@ import { DatabaseSync } from 'node:sqlite';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import {
-  fencedTables,
-  moduleMigrations,
-  runMigrationStatements,
-  type ScopedSql,
-  type SqlMigration,
-  type SqlValue,
-} from '../packages/kernel/dist/index.js';
+import { replayMigrations, type ReplayModule, type SqlMigration, type SqlValue } from '../packages/kernel/dist/index.js';
 import { SCOPE_SPINE_DDL } from '../packages/adapter-sqlite/dist/index.js';
-// The same judge `tools/vitest/sql-limits.cjs` loads by path: node's SQLite does not enforce a
-// Durable Object's limits, and the fence's measuring queries must stay inside them.
-import { assertWithinSqlLimits } from '../packages/kernel/dist/sql-limits.js';
 import { syncTemplate } from './template-sync.mjs';
 
-interface ModuleLike {
-  manifest: { id: string };
-  migrations?: SqlMigration[];
-}
-type Registration = Parameters<typeof moduleMigrations>[0] & ModuleLike;
+type Registration = ReplayModule & { manifest: { id: string } };
 
 const isRegistration = (m: unknown): m is Registration =>
-  typeof m === 'object' && m !== null && typeof (m as ModuleLike).manifest?.id === 'string';
+  typeof m === 'object' && m !== null && typeof (m as Registration).manifest?.id === 'string';
 
 /** The template's permissions entry: it has no committed package.json (see lint:schedule-sweeper). */
 const TEMPLATE_PERMISSIONS_ENTRY = 'src/provision.ts';
-
-const quote = (n: string): string => `"${n.replace(/"/g, '""')}"`;
-
-/** A value of the column's affinity, unique per table, column and row so no UNIQUE collides. */
-function valueFor(type: string, table: string, column: string, n: number): SqlValue {
-  if (/int/i.test(type)) return 1_000_000 + n;
-  if (/real|floa|doub/i.test(type)) return n + 0.5;
-  return `${table}.${column}#${n}`;
-}
-
-/**
- * Give every table the fence measures a row, and every column a value, so the next migration
- * meets a populated scope. The kernel's own list, so the replay fills exactly what is judged.
- */
-function populate(db: DatabaseSync, sql: ScopedSql): void {
-  let n = 0;
-  for (const name of fencedTables(sql)) {
-    const columns = db.prepare('SELECT name, type FROM pragma_table_info(?)').all(name) as { name: string; type: string }[];
-    const rows = (db.prepare(`SELECT COUNT(*) AS n FROM ${quote(name)}`).get() as { n: number }).n;
-    if (rows === 0) {
-      db.prepare(
-        `INSERT INTO ${quote(name)} (${columns.map((c) => quote(c.name)).join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
-      ).run(...columns.map((c) => valueFor(c.type, name, c.name, ++n)));
-      continue;
-    }
-    for (const c of columns) {
-      const held = (db.prepare(`SELECT COUNT(${quote(c.name)}) AS n FROM ${quote(name)}`).get() as { n: number }).n;
-      if (held === 0) db.prepare(`UPDATE ${quote(name)} SET ${quote(c.name)} = ?`).run(valueFor(c.type, name, c.name, ++n));
-    }
-  }
-}
 
 interface Outcome {
   readonly failures: string[];
   readonly declared: string[];
 }
 
-/** Replay one vertical's modules, in order, against a populated scope. */
+/** Replay one vertical's modules, in order, against a populated in-memory scope. */
 export function replay(label: string, modules: readonly Registration[]): Outcome {
-  const db = new DatabaseSync(':memory:', { enableForeignKeyConstraints: false });
-  db.exec('PRAGMA ignore_check_constraints = ON');
-  db.exec(SCOPE_SPINE_DDL);
-  const sql: ScopedSql = {
-    query: <T>(q: string, p: readonly SqlValue[] = []) => {
-      assertWithinSqlLimits(q);
-      return db.prepare(q).all(...(p as never[])) as T[];
+  const db = new DatabaseSync(':memory:');
+  const outcome = replayMigrations(
+    {
+      exec: (q) => db.exec(q),
+      query: <T>(q: string, p: readonly SqlValue[] = []) => db.prepare(q).all(...(p as never[])) as T[],
+      run: (q, p = []) => ({ changes: Number(db.prepare(q).run(...(p as never[])).changes) }),
     },
-    exec: (q: string, p: readonly SqlValue[] = []) => ({ changes: Number(db.prepare(q).run(...(p as never[])).changes) }),
+    modules,
+    { spineDdl: SCOPE_SPINE_DDL },
+  );
+  // In this repository a migration that cannot be replayed is as red as one that is refused: the
+  // gate's job is to have judged every one.
+  const stopped = outcome.refused ?? outcome.failed;
+  return {
+    failures: stopped ? [`${label}: ${stopped.message}`] : [],
+    declared: outcome.declared.map((line) => `${label}: ${line}`),
   };
-  const failures: string[] = [];
-  const declared: string[] = [];
-  for (const mod of modules) {
-    const authored = new Set((mod.migrations ?? []).map((m) => m.version));
-    for (const migration of moduleMigrations(mod)) {
-      const key = `${mod.manifest.id}@${migration.version}`;
-      const isAuthored = authored.has(migration.version);
-      db.exec('BEGIN');
-      try {
-        if (isAuthored) populate(db, sql);
-        runMigrationStatements(sql, migration, (st) => db.exec(st), { key, authored: isAuthored });
-        db.exec('COMMIT');
-      } catch (err) {
-        db.exec('ROLLBACK');
-        failures.push(`${label}: ${(err as Error).message}`);
-        // The rest of this vertical would replay against a schema it never had: stop here.
-        return { failures, declared };
-      }
-      for (const [from, to] of Object.entries(migration.moves ?? {})) declared.push(`${label}: ${key} moves ${from} → ${to} (verified)`);
-      for (const [target, why] of Object.entries(migration.discards ?? {})) declared.push(`${label}: ${key} discards ${target}: ${why}`);
-    }
-  }
-  return { failures, declared };
 }
 
 /** Every vertical's registrations, the engines on their own, and the template. */

@@ -51,6 +51,7 @@ import {
   maskSource,
 } from '@substrat-run/boundary-lint';
 import { walkPages } from '@substrat-run/control-plane-client';
+import { checkMigrationDataLoss, type DataLossCheck, type ReplayInputs } from './data-loss-check.js';
 import { parseJsonBody } from './http.js';
 import { planeFor } from './plane.js';
 import { failureMessage } from './problem.js';
@@ -367,6 +368,8 @@ export interface DeclaredSurface {
   /** True when any module declares an attachment target (#1995): the push then declares the
    *  platform's attachment blob store itself — see `withAttachmentBlobStore`. */
   readonly declaresAttachments: boolean;
+  /** What the data-loss check replays (#2321) — see `checkMigrationDataLoss`. */
+  readonly replay: ReplayInputs;
 }
 
 export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurface> {
@@ -398,7 +401,13 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
   // immediately after import. The unique name avoids the ESM import cache across pushes.
   const out = join(dir, `.substrat.permissions.${Date.now()}.mjs`);
   try {
-    let mod: { permissions?: PermissionsInput; envSpec?: unknown; __substratKernel?: { moduleMigrations?: unknown } | null };
+    let mod: {
+      permissions?: PermissionsInput;
+      envSpec?: unknown;
+      __substratKernel?: { moduleMigrations?: unknown } | null;
+      __substratSpine?: () => Promise<unknown>;
+      __substratKernelUrl?: string | null;
+    };
     try {
       await build({
         // The entry, plus the vertical's OWN kernel (#1677), imported where the vertical
@@ -411,7 +420,12 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
         stdin: {
           contents:
             `export * from ${JSON.stringify(resolve(entryPath))};\n` +
-            `export const __substratKernel = await import('@substrat-run/kernel').catch(() => null);\n`,
+            `export const __substratKernel = await import('@substrat-run/kernel').catch(() => null);\n` +
+            // The spine the data-loss replay builds first (#2321), from the vertical's own
+            // adapter-sqlite — imported only when a replay runs, since it loads a native driver.
+            `export const __substratSpine = () => import('@substrat-run/adapter-sqlite').then((m) => m.SCOPE_SPINE_DDL, () => undefined);\n` +
+            // Where that kernel resolves, for the replay's own process to import (#2321).
+            `export const __substratKernelUrl = (() => { try { return import.meta.resolve('@substrat-run/kernel'); } catch { return null; } })();\n`,
           resolveDir: resolve(dir),
           sourcefile: 'substrat-surface.mjs',
           loader: 'js',
@@ -425,11 +439,7 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
       });
       // @vite-ignore: this is a real filesystem path imported at runtime, never a bundler input —
       // the comment keeps vitest/vite from trying to resolve it through their transform pipeline.
-      mod = (await import(/* @vite-ignore */ pathToFileURL(out).href)) as {
-        __substratKernel?: { moduleMigrations?: unknown } | null;
-        permissions?: PermissionsInput;
-        envSpec?: unknown;
-      };
+      mod = (await import(/* @vite-ignore */ pathToFileURL(out).href)) as typeof mod;
     } catch (e) {
       // The third silent-until-deploy failure (#1205): the entry exists and exports the right
       // name, but cannot be read OUTSIDE the vertical's runtime — a worker-only import, a
@@ -482,6 +492,15 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
           ? (mod.__substratKernel.moduleMigrations as ModuleMigrationsFn)
           : undefined,
       ),
+      replay: {
+        kernel: mod.__substratKernel ?? null,
+        kernelUrl: typeof mod.__substratKernelUrl === 'string' ? mod.__substratKernelUrl : null,
+        modules: mod.permissions.modules,
+        spineDdl: async () => {
+          const ddl = await mod.__substratSpine?.();
+          return typeof ddl === 'string' ? ddl : undefined;
+        },
+      },
     };
   } finally {
     rmSync(out, { force: true });
@@ -588,8 +607,14 @@ export interface PermissionSurface {
  * an entry that cannot be imported outside the vertical's runtime. The CLI's top-level handler
  * turns each into a non-zero exit, which is what makes this usable as a gate.
  */
-export async function checkPermissionSurface(dir: string): Promise<PermissionSurface> {
-  const { registry, envSpec: derived, schedules } = await deriveDeclaredSurface(dir);
+export async function checkPermissionSurface(
+  dir: string,
+  dataLoss: { readonly require?: boolean; readonly log?: (message: string) => void } = {},
+): Promise<PermissionSurface> {
+  const { registry, envSpec: derived, schedules, replay } = await deriveDeclaredSurface(dir);
+  // The data-loss replay (#2321) a push makes, so `--check` is still the whole local gate. Its
+  // narration goes where the caller's other notes go (stderr under `--json`).
+  await checkMigrationDataLoss(replay, { require: dataLoss.require, log: dataLoss.log });
   // The envSpec drift check (#1206) runs here too, so `--check` in CI refuses exactly what a
   // push would. The duplicate-copy note is push-time chatter, not part of the check artifact.
   const envSpec = resolveDeclaredEnvSpec(derived, readVerticalMeta(dir).envSpec, () => {});
@@ -1355,6 +1380,11 @@ export interface PushOptions {
    */
   skipLint?: boolean;
   /**
+   * Refuse a push whose data-loss check (#2321) was skipped or incomplete — the CLI's
+   * --require-data-loss-check. A refusal by the fence itself refuses every push regardless.
+   */
+  requireDataLossCheck?: boolean;
+  /**
    * The receipt from a check the caller already ran on THIS directory (#955) — the CLI's
    * pre-flight, which gates before the registry round-trip so a violation never costs a
    * network call first. Anything else, including a receipt for another directory, lints.
@@ -1527,7 +1557,7 @@ export function generatedConfigPath(dir: string): string {
 
 export async function push(
   opts: PushOptions,
-): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] }> {
+): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[]; dataLoss: DataLossCheck }> {
   // The layer rules, before anything is built or uploaded (#955). First, because it reads
   // the source tree and needs nothing else — a violation is refused in a second rather than
   // after a wrangler build whose output was never going to be admissible. Skipped only for
@@ -1610,7 +1640,12 @@ export async function push(
     declaredEventsTruncated,
     migrations,
     declaresAttachments,
+    replay,
   } = await deriveDeclaredSurface(opts.dir);
+  // #2321: the vertical's migrations, replayed against a populated in-memory scope through its own
+  // kernel's data-loss fence — before anything is uploaded, so a migration that would close every
+  // populated scope at promote is refused here instead. Throws on a refusal.
+  const dataLoss = await checkMigrationDataLoss(replay, { require: opts.requireDataLossCheck });
   // #1995: attachment bytes need a per-tenant bucket, and no vertical should have to remember
   // to ask for one — a module declaring an attachment target IS the request.
   const stores = manifestStoresOf(needs, declaresAttachments);
@@ -1794,11 +1829,12 @@ export async function push(
     form.set(part, new Blob([a.content], { type: a.entry.contentType }), part);
   }
 
-  return uploadVersion(
+  const uploaded = await uploadVersion(
     opts,
     form,
     `${entry} (+${modules.length - 1} modules${assets.length ? `, ${assets.length} assets` : ''})`,
   );
+  return { ...uploaded, dataLoss };
 }
 
 /**

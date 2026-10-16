@@ -45,6 +45,7 @@ import { setListing, requestPublish } from './listing.js';
 import { isReleaseSha, packedFilesOf, packStoreDriverDir, rollBackStoreDriver, sourceCommitOf, rollOutStoreDriver, storeDriverStatus, storeDriverStatusLines, uploadStoreDriverRelease } from './store-driver.js';
 import { fetchWhoami } from './whoami.js';
 import { planeFor } from './plane.js';
+import { dataLossCheckRequired, formatDataLossCheck } from './data-loss-check.js';
 import { cliVersion, warnIfDistStale } from './version.js';
 import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerticalServing, provisionScope, rebindScopeVertical, bindScopeVersion, scopeStatus } from './scope.js';
 import { printInstalls } from './installs.js';
@@ -132,12 +133,25 @@ Usage:
                                                defineScopeSweeperDO are refused — they
                                                would never fire; --allow-unswept-schedules
                                                pushes them anyway
+                                               Authored migrations are replayed against a
+                                               populated in-memory scope through the
+                                               vertical's own kernel's data-loss fence;
+                                               one that would lose undeclared data is
+                                               refused (declare it: moves / discards).
+                                               A check skipped (no node:sqlite, Node
+                                               < 22.13) or incomplete (a migration that
+                                               cannot run on made-up rows, or runs past
+                                               30 s) is a warning;
+                                               --require-data-loss-check (or
+                                               SUBSTRAT_REQUIRE_DATA_LOSS_CHECK=1/true/yes)
+                                               makes it a refusal
                                                A host the code names as a literal that
                                                package.json substrat.outbound does not
                                                declare is warned about with the line to add
                                                (best effort); --strict makes it an error
   substrat push     [dir] --check [--json]     run the push's LOCAL gate and stop: the layer
-                                               rules, the entity model this tree would ship
+                                               rules, the data-loss migration replay, the
+                                               entity model this tree would ship
                                                (or a note that it would ship none), then the
                                                declared permission surface — resolve
                                                "substrat": { "permissions" }, import it,
@@ -231,7 +245,8 @@ Usage:
                                               re-forks from prod. --ttl is the GC backstop
                                               (default 72h; 'none' pins the preview until deleted).
                                               Takes push's own overrides too: --skip-lint,
-                                              --allow-unserved-ui and --allow-unswept-schedules
+                                              --allow-unserved-ui, --allow-unswept-schedules
+                                              and --require-data-loss-check
   substrat preview delete --tag <tag> [--slug <s>]  reap a preview (idempotent)
   substrat preview ls [--slug <s>]            list a vertical's active previews
   substrat model view [dir|model.json]        render the entity model as a self-contained
@@ -406,7 +421,10 @@ async function cmdPush(): Promise<void> {
   // rules above have already run, which makes `substrat push --check` the whole local gate.
   // Every failure throws (main() prints it and exits non-zero) — that is the gate.
   if (argv.includes('--check')) {
-    const surface = await checkPermissionSurface(dir);
+    const surface = await checkPermissionSurface(dir, {
+      require: dataLossCheckRequired(argv),
+      log: jsonCheck ? console.error : console.log,
+    });
     // The schedule check (#1646) the push would make — `--check` is the whole local gate, so
     // a vertical whose schedules nothing would run is refused here too. A tree with no deploy
     // config has no bindings to judge; the push itself names that refusal.
@@ -496,6 +514,8 @@ async function cmdPush(): Promise<void> {
     // does not scan the same tree twice.
     skipLint: argv.includes('--skip-lint'),
     linted,
+    // A data-loss replay (#2321) that was skipped or incomplete is a loud warning; this makes it a refusal.
+    requireDataLossCheck: dataLossCheckRequired(argv),
     envSpec: meta.envSpec,
     ownerGrants: meta.ownerGrants,
     entitlements: meta.entitlements,
@@ -511,6 +531,7 @@ async function cmdPush(): Promise<void> {
     controlPlaneUrl, authHeader: header,
   });
   console.log(`✓ pushed ${v.verticalSlug ?? slug}. version ${v.id} (${version}) is ${v.admission}; deploymentRef=${v.deploymentRef}`);
+  console.log(`  ${formatDataLossCheck(v.dataLoss)}`);
   // Advisory, same spirit as the permission-surface gate: a bound surface the new
   // version stopped declaring keeps serving, but probably not what its users expect.
   for (const w of v.warnings ?? []) console.warn(`⚠ ${w}`);
@@ -1021,6 +1042,8 @@ async function cmdPreview(): Promise<void> {
       allowUnservedUi: argv.includes('--allow-unserved-ui'),
       // …and the same schedule check (#1646): a preview's schedules need a sweeper too.
       allowUnsweptSchedules: argv.includes('--allow-unswept-schedules'),
+      // …and the same data-loss replay (#2321), which a preview's migrations meet too.
+      requireDataLossCheck: dataLossCheckRequired(argv),
       linted,
       envSpec: meta.envSpec,
       ownerGrants: meta.ownerGrants,

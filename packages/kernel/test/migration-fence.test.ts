@@ -413,6 +413,32 @@ describe('the data-loss fence (#115)', () => {
     });
   });
 
+  describe('ATTACH and DETACH (#2321)', () => {
+    const setup = `CREATE TABLE a (id TEXT); INSERT INTO a VALUES ('1'), ('2');`;
+    it.each([
+      ["ATTACH DATABASE ':memory:' AS x"],
+      ["attach ':memory:' as x"],
+      ['DETACH DATABASE x'],
+      ['detach x'],
+    ])('an authored migration that runs one is refused before anything runs: %s', (stmt) => {
+      const s = scope(setup);
+      let message = '';
+      try {
+        s.migrate({ sql: `${stmt}; DROP TABLE a;` });
+      } catch (err) {
+        expect(errorCodeOf(err)).toBe('validation_failed');
+        message = (err as Error).message;
+      }
+      expect(message).toContain('attaches or detaches a database');
+      expect(s.rows('SELECT id FROM a')).toHaveLength(2);
+      expect(s.rows("SELECT name FROM pragma_database_list WHERE name = 'x'")).toEqual([]);
+    });
+
+    it('a table or column merely named attach is not one', () => {
+      scope(setup).migrate({ sql: 'CREATE TABLE "attach" (detach TEXT); ALTER TABLE a ADD COLUMN attach TEXT;' });
+    });
+  });
+
   describe('TEMP objects (#115 r4)', () => {
     const setup = `CREATE TABLE a (id TEXT); INSERT INTO a VALUES ('1'), ('2'); CREATE TABLE b (id TEXT); INSERT INTO b VALUES ('x'), ('y'), ('z');`;
     const invalid = (sql: string): string => {

@@ -58,6 +58,11 @@
  * unqualified statement after it. An authored migration that makes one is refused before it runs,
  * on both adapters, and every measuring read names `main` so nothing else can answer for a table.
  *
+ * **ATTACH and DETACH are refused** for the same first reason (#2321): a Durable Object refuses
+ * them, so the migration could never run hosted. And an attached database is a FILE, which the
+ * fence does not measure and a replay outside a host (`substrat push`) would otherwise create on
+ * the machine running it. Refused before anything runs, on both adapters.
+ *
  * Kernel-derived DDL is exempt: its tables are indexes, rebuilt from the data this protects.
  */
 import { blankReason, namesSpineTable, substratError, tokenizeSql } from '@substrat-run/contracts';
@@ -387,6 +392,12 @@ function createsTemp(statement: string): boolean {
   return w[at] !== undefined && schemaAndName(w[at]!).schema === 'temp';
 }
 
+/** A statement that attaches or detaches a database: `ATTACH [DATABASE] …`, `DETACH [DATABASE] …`. */
+function attaches(statement: string): boolean {
+  const w = words(statement);
+  return w[0] !== undefined && !w[0].quoted && (w[0].text === 'attach' || w[0].text === 'detach');
+}
+
 /**
  * What a declaration counts: a column's values per class, or a table's rows — carried in one
  * class slot so a move compares tables and columns with the same loop.
@@ -484,6 +495,16 @@ export function fenceMigration(sql: ScopedSql, migration: SqlMigration, key: str
         'cannot run on the hosted adapter, and a TEMP table shadows the scope\'s own tables for every unqualified statement ' +
         'after it. Use a regular table and DROP it before the migration ends',
       'migration_temp',
+    );
+  }
+  const attach = statements.find(attaches);
+  if (attach !== undefined) {
+    throw declarationError(
+      key,
+      `it attaches or detaches a database (\`${attach.slice(0, 80)}\`). A Durable Object refuses ATTACH and DETACH, so this ` +
+        'migration cannot run on the hosted adapter, and an attached database is a file outside the scope the fence protects. ' +
+        "Keep the migration inside the scope's own database",
+      'migration_attach',
     );
   }
   const moves = Object.entries(migration.moves ?? {});
