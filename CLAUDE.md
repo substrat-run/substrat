@@ -122,7 +122,13 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   wins. A warm `dist` hides it locally.
 - `pnpm lint:tests` — a scenario suite must not read the emitted model to decide what to
   assert. A test that does agrees with the generator rather than with the vertical, so a
-  wrong model passes its own test.
+  wrong model passes its own test. It also refuses a **bare RegExp as a `toMatchObject`
+  value** (#2313): a RegExp has no own keys, so `toMatchObject({ detail: /zzz/ })` matches
+  any value and asserts nothing (22 such assertions hid in the scope-store suites). Write
+  `expect.stringMatching(/zzz/)`. Only `toMatchObject` has the flaw — `toEqual`,
+  `toHaveProperty` and `expect.objectContaining({ a: /re/ })` apply the pattern — so
+  those are not refused (`tools/bare-regexp.mjs`, fixtures via `pnpm test:bare-regexp`).
+  A pattern reached through a variable is out of its sight; write it inline.
 - **Every node suite runs with a Durable Object's `LIKE`/`GLOB` pattern limit on** (#1655).
   A DO's SQLite refuses a pattern over **50 bytes** (`LIKE or GLOB pattern too complex`);
   node's allows 50 000, so a 92-byte `GLOB` passed every suite and failed every hosted

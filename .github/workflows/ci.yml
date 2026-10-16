@@ -320,6 +320,9 @@ jobs:
       # A scenario suite must not read the emitted model to decide what to assert — it
       # would then agree with the generator rather than with the vertical, and a wrong
       # model would pass its own test. The check existed and ran nowhere (#989).
+      # `lint:tests` also refuses a bare RegExp as a `toMatchObject` value (#2313); its
+      # scanner is held by its own fixtures first.
+      - run: pnpm test:bare-regexp
       - run: pnpm lint:tests
       # No promise in a workerd suite floats (#2131). A forgotten `await` is a rejection nobody
       # handles, and the workerd setup file fails a test on one only when the test drives that

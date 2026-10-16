@@ -70,3 +70,12 @@ test('a slash inside a regex character class does not end the literal', () => {
 test('reports the line of the pattern, not of the call', () => {
   assert.deepEqual(lines('\n\nexpect(x).toMatchObject({\n  a: 1,\n  b: /z/,\n});'), [5]);
 });
+
+test('a division after ) or ] is a division, not the start of a pattern', () => {
+  assert.deepEqual(findBareRegExps('expect(x).toMatchObject({ a: (n) / 2, b: arr[0] / 3 });'), []);
+});
+
+test('only a toMatchObject CALL is read, not a mention of the name', () => {
+  assert.deepEqual(findBareRegExps('const m = { toMatchObject: 1, a: /z/ };'), []);
+  assert.deepEqual(findBareRegExps('expect(m.toMatchObject).toBeDefined(); const r = { a: /z/ };'), []);
+});
