@@ -583,7 +583,9 @@ export function storeDriverRebuildIn(db: SwitchSql, driver: string): StoreDriver
  * `restart`, a rebuild already `done` at this fingerprint starts over too (a re-verification: a
  * script uploaded since by a control plane still building from older inputs is found and rebuilt).
  * With `attestedBy` (a person attesting no control-plane deploy is rolling out), the rebuild starts
- * over whatever its state, and the new walk carries the attestation; any other start clears it.
+ * over and the new walk carries the attestation, unless a walk this attestation (any person's, at
+ * this fingerprint) already started is under way: that walk is continued, so repeating an attested
+ * run finishes a fleet larger than one run. Any other start clears it.
  */
 export function claimStoreDriverRebuildIn(
   db: SwitchSql,
@@ -593,7 +595,14 @@ export function claimStoreDriverRebuildIn(
   const row = rebuildRowOf(db, input.driver);
   if (row && row.holder !== null && row.holder !== input.holder && Number(row.lease_expires_at) > input.nowMs) return null;
   const lease = input.nowMs + input.ttlMs;
-  if (!row || row.fingerprint !== input.fingerprint || (input.restart && row.state === 'done') || input.attestedBy !== undefined) {
+  // An attested walk under way at these lists is the attestation's own: continued, never restarted.
+  const attestedUnderway = row?.fingerprint === input.fingerprint && row.state === 'running' && row.attested_by !== null;
+  if (
+    !row ||
+    row.fingerprint !== input.fingerprint ||
+    (input.restart && row.state === 'done') ||
+    (input.attestedBy !== undefined && !attestedUnderway)
+  ) {
     db.run(
       `INSERT INTO store_driver_rebuilds (driver, fingerprint, fingerprint_since, cursor, failures, state, holder, lease_expires_at, started_at, attested_by, verified_at, updated_at, finished_at)
        VALUES (?, ?, ?, NULL, '[]', 'running', ?, ?, ?, ?, NULL, ?, NULL)

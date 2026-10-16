@@ -425,6 +425,41 @@ describe('the fleet rebuild (#2309)', () => {
     expect(storeRebuildStatus(await host.admin.storeDriverRebuild(staff, 'graph'), fc, ['va', 'vb'])).toMatchObject({ current: false });
   });
 
+  it('finishes a fleet larger than one run when the attested run is repeated (review round 3)', async () => {
+    for (const v of ['va', 'vb', 'vc']) await declare(v);
+    expect((await rollOut(s1, keysA)).complete).toBe(true);
+    const fingerprint = await storePlatformFingerprint({ callerPublicKeys: [keysB.caller], platformPublicKeys: [keysB.platform] });
+    // What the staff route runs with --deploy-finished, at a budget of two scripts a run.
+    const attested = async () =>
+      (
+        await runStoreFleetRebuild({
+          admin: host.admin, actor: staff, drivers: [registration], fingerprint, bytes,
+          ensure: ensureWith(keysB), ensureCanary: canaryWith(keysB), budget: 2, reverify: 'always',
+          now: () => Date.parse(clock.read()), attestedBy: staff,
+        })
+      )[0]!;
+    expect(await attested()).toMatchObject({ outcome: 'paused', walked: ['-canary', 'va'] });
+    expect(await attested()).toMatchObject({ outcome: 'done', walked: ['vb', 'vc'] });
+    expect(storeRebuildStatus(await host.admin.storeDriverRebuild(staff, 'graph'), fingerprint, ['va', 'vb', 'vc'])).toMatchObject({ current: true });
+    for (const v of ['va', 'vb', 'vc']) expect(binding(scriptOf(v), CALLER_KEYS)).toBe(keysB.caller);
+  });
+
+  it('never reads current (re-verifying) over a walk that proved nothing (review round 3)', async () => {
+    for (const v of ['va', 'vb']) await declare(v);
+    expect((await rollOut(s1, keysA)).complete).toBe(true);
+    const fingerprint = await storePlatformFingerprint({ callerPublicKeys: [keysB.caller], platformPublicKeys: [keysB.platform] });
+    const status = async () => storeRebuildStatus(await host.admin.storeDriverRebuild(staff, 'graph'), fingerprint, ['va', 'vb']);
+    // A walk inside the window ends done but proves nothing; an older control plane then re-uploads vb.
+    expect(await pass(keysB)).toMatchObject({ outcome: 'done' });
+    await push('vb', keysA);
+    // After the window the re-walk starts and pauses before vb: vb is stale, and status must say so.
+    clock.advance(STORE_REBUILD_SETTLE_MS);
+    expect(await pass(keysB, 1)).toMatchObject({ outcome: 'paused', walked: ['-canary'] });
+    expect(binding(scriptOf('vb'), CALLER_KEYS)).toBe(keysA.caller);
+    expect(await status()).toMatchObject({ current: false, pending: expect.arrayContaining(['vb']) });
+    expect((await status()).reverifying).toBeUndefined();
+  });
+
   it('takes its settle window from the control plane, so a deploy that rolls out longer can be waited out', async () => {
     await declare('va');
     expect((await rollOut(s1, keysA)).complete).toBe(true);
