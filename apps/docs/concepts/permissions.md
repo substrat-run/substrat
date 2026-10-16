@@ -499,7 +499,9 @@ peers: [
   reconcile in between. The grant an earlier version wrote stays in the scope as a record, but it
   counts for nothing, and switching the peer off and on again does not bring it back. Declare
   the permission again and the peer holds it again. A permission a tenant took away stays
-  taken away whichever way the declaration moves.
+  taken away whichever way the declaration moves. The calling app's panel follows the same
+  rule: a peer that holds no permission the running version declares reads as refused at the
+  door, not as active.
 - **It may invoke only what is listed.** Any other operation is refused `forbidden` before it
   runs. `operations: []` declares a peer that holds its permissions and invokes nothing. That
   is the shape for an app that only receives from this one.
