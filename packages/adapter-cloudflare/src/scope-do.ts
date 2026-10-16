@@ -5840,9 +5840,15 @@ export function defineScopeDO(
                 let steps: TableStep[];
                 this.revisionSuspended = true;
                 try {
-                  steps = runMigrationStatements(doSpineSql(this.sql), migration.sql, (stmt) => {
-                    this.sql.exec(stmt);
-                  });
+                  // #115: an authored one is also held to the data-loss fence, inside this transaction.
+                  steps = runMigrationStatements(
+                    doSpineSql(this.sql),
+                    migration,
+                    (stmt) => {
+                      this.sql.exec(stmt);
+                    },
+                    { key, authored },
+                  );
                   // #2090: the state columns this migration must have left, and after the last of
                   // the pass, the triggers and indexes a create-copy-rename rebuild dropped.
                   const last = i === pending.length - 1;

@@ -149,6 +149,65 @@ A version is badged **code-only** or **schema-change** at publish, so you know w
 touches the schema. A code-only update just re-points; a schema-change update runs migrations, so
 it wants its migration diff acknowledged first.
 
+## A migration cannot quietly lose data
+
+Migrations run forward against production data, so the kernel refuses one that would lose some
+of it. Before and after each migration you wrote, inside the same transaction, it counts what the
+scope holds: rows per table, and values per column, by storage class. A migration made only of
+`CREATE …` and `ALTER TABLE … ADD …` is not counted, because it cannot remove anything. Any other
+migration is refused if it leaves a table that held rows gone or with fewer rows, or a column
+that held values gone, holding fewer values, or holding them as a different type (`'1.50'` turned
+into `1`). Renames (`ALTER TABLE … RENAME TO`, `RENAME COLUMN`) are followed, and so is the usual
+create-copy-drop-rename rebuild. A table that holds nothing yet can be dropped or reshaped freely:
+before there is data, there is nothing to protect.
+
+A refused migration rolls back whole. The scope fails closed, exactly as it does for any failed
+migration, with its data where it was. You recover by promoting the previous version back (the
+migration never ran, so the old code still fits the schema) or by shipping a fixed one.
+
+When losing or moving data is the point, say so on the migration, beside its SQL, where the
+migration diff is reviewed:
+
+```ts
+{
+  version: '0007-retire-drafts',
+  sql: `INSERT INTO notes (id, body, written_by) SELECT id, body, author FROM drafts;
+        DROP TABLE drafts;
+        ALTER TABLE notes DROP COLUMN legacy_flag;`,
+  // Verified: `notes` gains every row `drafts` held, and each of drafts' columns arrives in a
+  // `notes` column of the same name (`id`, `body`) or is moved by name (`author`).
+  moves: { drafts: 'notes', 'drafts.author': 'notes.written_by' },
+  // Given up on purpose. The reason is required; it is what the reviewer reads.
+  discards: { 'notes.legacy_flag': 'the flag was never read after the 0004 redesign' },
+}
+```
+
+A move goes table to table or `table.column` to `table.column`, and it is checked: if the target
+gains less than its sources held, the migration is still refused. A table moved whole must also
+bring each of its columns that held values, into a target column of the same name; a column that
+arrives under another name is moved by name, and one left behind is discarded by name, or the
+migration is refused. A declaration that names a table or column the scope does not hold is
+refused as a typo. Migrations the model planner generates never need either: it refuses to write
+a destructive change in the first place.
+
+The check counts values; it does not compare them. So it reports any change of a value's storage
+type, including a faithful widening (`5` becoming `5.0` when a column moves to `REAL`), because a
+count cannot tell that from `5` becoming `0.05`: a widening you mean is declared with `discards`,
+naming the column and saying what changed. And it cannot see values rewritten in place at the same
+count and type, rows replaced by as many other rows, or a column dropped, re-added and refilled. Nor
+a table dropped and its name then taken by a new table holding at least as many rows, filled from
+somewhere else (`DROP TABLE a; CREATE TABLE a AS SELECT * FROM b`), even if that new table is
+renamed again afterwards: that looks exactly like a rebuild, or a rebuild and a rename. Nor which
+source a move's target gained from. In the other direction, data copied under another table's name
+is refused until `moves` declares it.
+
+A migration that creates a TEMP table, view, index or trigger is refused before it runs. A Durable
+Object does not allow TEMP objects, so it could never run in production; use a regular table and
+drop it before the migration ends.
+
+In this repository `pnpm lint:migration-fence` replays every migration against a scope that holds
+data, so an undeclared loss fails in the pull request that adds it.
+
 ## Previews: run a version against a copy of the data
 
 Before a promotion whose *migrations* changed, you often want to see the new version run against

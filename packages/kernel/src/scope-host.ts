@@ -1022,6 +1022,23 @@ export interface SqlMigration {
   /** Ordered, unique per module, e.g. '0001-init'. Journaled per (module, version). */
   version: string;
   sql: string;
+  /**
+   * Data this migration MOVES, verified (#115): `{ source: target }`, both `table` or both
+   * `table.column`. The kernel refuses a migration that loses rows or values a scope holds
+   * (`migration-fence.ts`); a move excuses the source's loss only when the target gained at least
+   * what the source held, and a table moved whole only when each of its columns that held values
+   * arrives under the same name or is declared by name. Reviewed in the migration diff beside the SQL, and not part of the
+   * SQL's digest. The planner never writes it: a generated migration loses nothing.
+   */
+  moves?: Readonly<Record<string, string>>;
+  /**
+   * Data this migration deliberately LOSES (#115): `{ target: why }`, where target is `table`
+   * (its rows, or the table itself) or `table.column` (its values, or their storage class — a
+   * deliberate retype, a widening included, is declared here). The
+   * reason is required and is what a reviewer reads. Anything lost and not declared here or in
+   * `moves` refuses the migration in a scope that holds it.
+   */
+  discards?: Readonly<Record<string, string>>;
 }
 
 /**

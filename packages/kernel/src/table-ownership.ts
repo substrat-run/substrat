@@ -28,7 +28,8 @@
  * means the erasure refuses that table — the conservative answer, never a guess.
  */
 import { namesSpineTable, substratError, tokenizeSql, type SqlToken } from '@substrat-run/contracts';
-import type { ScopedSql } from './scope-host.js';
+import { fenceMigration } from './migration-fence.js';
+import type { ScopedSql, SqlMigration } from './scope-host.js';
 import { executableSqlStatements, splitSqlStatements } from './sql-statements.js';
 
 /** The ledger's name — also what an authored migration may never name. */
@@ -194,16 +195,27 @@ export interface TableStep {
  * afterwards (`recordOwnershipSteps`), so the journal's `rows_changed` counts the migration's
  * own writes and none of the kernel's bookkeeping.
  */
-export function runMigrationStatements(sql: ScopedSql, migrationSql: string, exec: (statement: string) => void): TableStep[] {
+export function runMigrationStatements(
+  sql: ScopedSql,
+  migration: SqlMigration,
+  exec: (statement: string) => void,
+  step: { readonly key: string; readonly authored: boolean },
+): TableStep[] {
   const steps: TableStep[] = [];
-  let tables = moduleTableNames(sql);
-  // Comment-blanked text, at the same boundaries: what SQLite stores is what a later ALTER rewrites.
-  for (const statement of executableSqlStatements(migrationSql)) {
-    exec(statement);
-    const after = moduleTableNames(sql);
-    if (after.size !== tables.size || [...after].some((t) => !tables.has(t))) steps.push({ before: tables, after });
-    tables = after;
-  }
+  const run = (): void => {
+    let tables = moduleTableNames(sql);
+    // Comment-blanked text, at the same boundaries: what SQLite stores is what a later ALTER rewrites.
+    for (const statement of executableSqlStatements(migration.sql)) {
+      exec(statement);
+      const after = moduleTableNames(sql);
+      if (after.size !== tables.size || [...after].some((t) => !tables.has(t))) steps.push({ before: tables, after });
+      tables = after;
+    }
+  };
+  // #115: an authored migration may not lose data the scope holds unless it declares the loss.
+  // Kernel-derived DDL builds indexes over that data and is not held to it.
+  if (step.authored) fenceMigration(sql, migration, step.key, run);
+  else run();
   return steps;
 }
 

@@ -1299,6 +1299,12 @@ const KERNEL_DDL = `
   ${OUTBOX_ENTITY_INDEX}
 `;
 
+/**
+ * The scope spine a fresh scope gets, for a tool that replays a vertical's migrations outside a
+ * host — `pnpm lint:migration-fence` (#115), whose reviewed spine migrations read and write it.
+ */
+export const SCOPE_SPINE_DDL: string = KERNEL_DDL;
+
 /** An executor or a connector — same journal and retry, different argument. */
 type RegisteredEffector =
   | {
@@ -13593,7 +13599,8 @@ export class SqliteScopeHost implements ScopeHost {
               assertMigrationLeavesLedgerAlone(migration.sql, `migration ${key}`);
               // #2068: one statement at a time, keeping the table set either side of each — the
               // same splitter the Durable Object runs, so both hosts execute identical statements.
-              const steps = runMigrationStatements(spineSql(rt.db), migration.sql, (stmt) => rt.db.exec(stmt));
+              // #115: an authored one is also held to the data-loss fence, inside this transaction.
+              const steps = runMigrationStatements(spineSql(rt.db), migration, (stmt) => rt.db.exec(stmt), { key, authored });
               assertTablesWithinColumnLimit(rt.db);
               // #2090: the state columns this migration must have left, and after the last of the
               // pass, the triggers and indexes a create-copy-rename rebuild dropped.

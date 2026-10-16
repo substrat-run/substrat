@@ -494,6 +494,7 @@ export {
 } from './table-ownership.js';
 export type { OwnerStore, TableChange, TableStatement, TableStep } from './table-ownership.js';
 export { blankSqlComments, executableSqlStatements, splitSqlStatements } from './sql-statements.js';
+export { fencedTables } from './migration-fence.js';
 export type {
   ModuleErasureCounts,
   ModuleErasurePlan,
