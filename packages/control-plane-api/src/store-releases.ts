@@ -308,8 +308,8 @@ export async function runStoreDriverRollout(deps: StoreDriverRolloutDeps): Promi
 
     const budget = deps.perRequest ?? ROLLOUT_VERTICALS_PER_REQUEST;
     const moved: string[] = [];
-    // Every vertical this request reached. A request that pauses stopped at none, so a paused end
-    // records exactly the verticals whose ensure answered.
+    // Every vertical this request reached. A request that pauses failed at none of them, so its
+    // paused end records exactly the verticals whose ensure answered.
     const reached: StoreDriverRolloutTarget[] = [];
     for (const target of page.verticals) {
       if (moved.length >= budget) break;

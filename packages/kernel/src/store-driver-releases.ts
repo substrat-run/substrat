@@ -572,6 +572,10 @@ function targetsOf(rows: readonly DeclarationRow[]): StoreDriverRolloutTarget[] 
   return [...byVertical].map(([vertical, stores]) => ({ vertical, stores }));
 }
 
+const assertLimit = (limit: number) => {
+  if (!(Number.isInteger(limit) && limit > 0)) throw substratError('validation_failed', 'a rollout page needs a positive limit');
+};
+
 /** A declaration the attempt walked: the ledger row of the same vertical, binding and first version. */
 const WALKED = `EXISTS (SELECT 1 FROM store_driver_rollout_walks AS w
   WHERE w.driver = s.driver AND w.attempt = ? AND w.vertical_slug = s.vertical_slug
@@ -590,7 +594,7 @@ export function storeDriverRolloutPendingIn(
   db: SwitchSql,
   input: { driver: string; sha256: string; action: StoreDriverRolloutAction; limit: number },
 ): { verticals: StoreDriverRolloutTarget[]; pending: number; walked: number; unreadable: string[] } {
-  if (!(Number.isInteger(input.limit) && input.limit > 0)) throw substratError('validation_failed', 'a rollout page needs a positive limit');
+  assertLimit(input.limit);
   // Indexes every vertical not indexed yet, and names the ones that cannot say what they declare.
   const { unreadable } = driverDeclarationsOf(db, input.driver);
   const next = Number((db.all('SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM store_driver_rollouts WHERE driver = ?', input.driver)[0] as { next: number }).next);
@@ -614,7 +618,7 @@ export function storeDriverRolloutWalkedIn(
   db: SwitchSql,
   input: { driver: string; seq: number; limit: number },
 ): { verticals: StoreDriverRolloutTarget[]; walked: number } {
-  if (!(Number.isInteger(input.limit) && input.limit > 0)) throw substratError('validation_failed', 'a rollout page needs a positive limit');
+  assertLimit(input.limit);
   const row = rolloutAt(db, input.driver, input.seq);
   if (!row) throw substratError('not_found', `'${input.driver}' has no rollout ${input.seq}`);
   const attempt = attemptOf(db, input.driver, input.seq, row.sha256, row.action);
