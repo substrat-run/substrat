@@ -299,10 +299,25 @@ interface SigningKey {
   readonly kid: string;
 }
 
-/** Import a PKCS8 Ed25519 private key (base64url) and derive its key id from its public half. */
+/**
+ * The DER prefix of an Ed25519 PKCS8 v1 private key (RFC 8410 §7): SEQUENCE, version 0, the
+ * Ed25519 algorithm identifier, then a 34-byte OCTET STRING wrapping the 32-byte seed. With the
+ * seed it is exactly 48 bytes, the form WebCrypto exports and `generateScopeStoreKeyPair` writes.
+ */
+const PKCS8_V1_ED25519_PREFIX = [0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20];
+
+/**
+ * Import a PKCS8 Ed25519 private key (base64url) and derive its key id from its public half.
+ * Only the canonical 48-byte v1 form is accepted: a DER parser may tolerate trailing bytes or
+ * another encoding of the same seed, and whether it does differs between runtimes, so a key a
+ * tool accepts here could otherwise be one the deployed signer refuses.
+ */
 async function signingKey(pkcs8: string): Promise<SigningKey & { readonly publicKey: string }> {
   const bytes = base64UrlToBytes(pkcs8);
   if (!bytes) throw new ScopeStoreKeyError('the store signing key is not base64url', 'encoding');
+  if (bytes.length !== 48 || PKCS8_V1_ED25519_PREFIX.some((byte, i) => bytes[i] !== byte)) {
+    throw new ScopeStoreKeyError('the store signing key is not a 48-byte Ed25519 PKCS8 v1 key', 'not-pkcs8-v1');
+  }
   let key: CryptoKey;
   let x: unknown;
   try {
@@ -329,7 +344,7 @@ export async function scopeStoreSignerPublicKey(pkcs8: string): Promise<{ readon
 }
 
 /** Why a signing key cannot be used. */
-export type ScopeStoreKeyProblem = 'encoding' | 'not-ed25519' | 'no-public-half' | 'small-order';
+export type ScopeStoreKeyProblem = 'encoding' | 'not-pkcs8-v1' | 'not-ed25519' | 'no-public-half' | 'small-order';
 
 /** A signing key that is present but cannot be used. Its message never carries the key. */
 export class ScopeStoreKeyError extends Error {

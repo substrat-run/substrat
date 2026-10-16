@@ -21,8 +21,7 @@
  * Every key judgement is made by `@substrat-run/contracts`' envelope module, the same code a
  * store script and both signers run, so this tool cannot accept a key a store would refuse.
  */
-import { closeSync, fstatSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -74,6 +73,7 @@ const PUBLIC_KEY_PROBLEM: Readonly<Record<ScopeStorePublicKeyProblem, string>> =
 
 const SIGNER_PROBLEM: Readonly<Record<ScopeStoreKeyProblem, string>> = {
   encoding: 'is not base64url',
+  'not-pkcs8-v1': 'is not a 48-byte Ed25519 PKCS8 v1 key (the form generate writes)',
   'not-ed25519': 'is not an Ed25519 PKCS8 key',
   'no-public-half': 'has no public half',
   'small-order': 'is a small-order point',
@@ -352,9 +352,29 @@ interface WriteFs {
 const nodeFs: WriteFs = { openSync, writeSync, fstatSync, closeSync, unlinkSync };
 
 /**
- * Refuse an output path a private key must not land at: inside this repository or any git
- * work tree (checked on the resolved parent, so a symlink into one is caught), in a directory
- * other users can read or write, or over an existing file.
+ * The git work tree (or repository) `dir` is inside: the nearest ancestor holding a `.git` entry,
+ * a directory or a worktree's file. Walked on disk rather than asked of git, so it cannot fail
+ * open when git is missing or `GIT_DIR` points elsewhere. An ancestor it cannot inspect throws.
+ */
+function enclosingWorkTree(dir: string): string | undefined {
+  for (let at = dir; ; at = dirname(at)) {
+    try {
+      lstatSync(join(at, '.git'));
+      return at;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+        throw new StoreKeysError(`refusing: cannot tell whether ${at} is in a git work tree (${code ?? 'error'})`);
+      }
+    }
+    if (dirname(at) === at) return undefined;
+  }
+}
+
+/**
+ * Refuse an output path a private key must not land at: inside this repository or any git work
+ * tree (checked on the resolved parent, so a symlink into one is caught), in a directory group
+ * members can write or other users can reach at all, or over an existing file.
  */
 export function assertPrivateOutPath(out: string, repoRoot = ROOT): string {
   const path = resolve(out);
@@ -369,13 +389,17 @@ export function assertPrivateOutPath(out: string, repoRoot = ROOT): string {
   if (inside(realRoot, realParent) || inside(resolve(repoRoot), parent)) {
     throw new StoreKeysError(`refusing: ${path} is inside this repository's work tree; a private key never goes there`);
   }
-  const git = spawnSync('git', ['-C', realParent, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
-  if (git.status === 0) {
-    throw new StoreKeysError(`refusing: ${path} is inside the git work tree ${git.stdout.trim()}; a private key never goes there`);
+  const workTree = enclosingWorkTree(realParent);
+  if (workTree !== undefined) {
+    throw new StoreKeysError(`refusing: ${path} is inside the git work tree ${workTree}; a private key never goes there`);
   }
+  // Group write lets a group member swap the 0600 file for one holding a key they made, before
+  // the operator copies it; any access for others is refused outright. 0750 and 0700 pass.
   const parentMode = statSync(realParent).mode;
-  if ((parentMode & 0o007) !== 0) {
-    throw new StoreKeysError(`refusing: ${realParent} is open to other users (mode ${(parentMode & 0o777).toString(8)}); use a directory only you can read`);
+  if ((parentMode & 0o027) !== 0) {
+    throw new StoreKeysError(
+      `refusing: ${realParent} is writable by its group or reachable by other users (mode ${(parentMode & 0o777).toString(8)}); use a directory only you can write`,
+    );
   }
   return join(realParent, relative(parent, path));
 }

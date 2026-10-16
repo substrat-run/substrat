@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import { chmodSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { scopeStoreSignerPublicKey } from '../packages/contracts/src/scope-store-envelope.ts';
 import { MANIFEST } from '../scripts/secrets.mjs';
@@ -138,9 +138,12 @@ test('doctor: one private key for both audiences is an error', async () => {
 });
 
 test('doctor: an unusable private key is an error naming the check', async () => {
+  const der = Buffer.from(A.private, 'base64url');
   for (const [value, expected] of [
     ['not*base64', /STORE_CALLER_KEY is not base64url/],
-    [A.public, /STORE_CALLER_KEY is not an Ed25519 PKCS8 key/],
+    [A.public, /STORE_CALLER_KEY is not a 48-byte Ed25519 PKCS8 v1 key/],
+    // Same seed, a trailing byte: a lenient DER parser derives A's kid, so doctor must refuse it itself.
+    [Buffer.concat([der, Buffer.alloc(1)]).toString('base64url'), /STORE_CALLER_KEY is not a 48-byte Ed25519 PKCS8 v1 key/],
   ] as const) {
     const found = await errors({ ...good, STORE_CALLER_KEY: value });
     assert.ok(found.some((f) => expected.test(f)), found.join('\n'));
@@ -240,12 +243,49 @@ test('generate --out: refuses a path in any other git work tree', () => {
   assert.throws(() => assertPrivateOutPath(join(repo, 'sub', 'k.key')), /inside the git work tree/);
 });
 
-test('generate --out: refuses a directory other users can read or write; the twin passes', () => {
+test('generate --out: refuses a directory its group can write or others can reach; the twins pass', () => {
   const dir = privateDir();
-  chmodSync(dir, 0o755);
-  assert.throws(() => assertPrivateOutPath(join(dir, 'k.key')), /open to other users/);
-  chmodSync(dir, 0o750);
-  assert.equal(assertPrivateOutPath(join(dir, 'k.key')).endsWith('k.key'), true);
+  for (const mode of [0o755, 0o707, 0o770, 0o720]) {
+    chmodSync(dir, mode);
+    assert.throws(() => assertPrivateOutPath(join(dir, 'k.key')), /writable by its group or reachable by other users/, mode.toString(8));
+  }
+  for (const mode of [0o750, 0o700]) {
+    chmodSync(dir, mode);
+    assert.equal(assertPrivateOutPath(join(dir, 'k.key')).endsWith('k.key'), true, mode.toString(8));
+  }
+});
+
+test('generate --out: a linked worktree\'s .git file counts as a work tree too', () => {
+  const tree = privateDir();
+  writeFileSync(join(tree, '.git'), 'gitdir: /elsewhere/.git/worktrees/x\n');
+  mkdirSync(join(tree, 'deep', 'er'), { recursive: true, mode: 0o700 });
+  assert.throws(() => assertPrivateOutPath(join(tree, 'deep', 'er', 'k.key')), /inside the git work tree/);
+});
+
+test('generate --out: an ancestor it cannot inspect is a refusal, not a pass', { skip: process.getuid?.() === 0 }, () => {
+  const dir = privateDir();
+  const locked = join(dir, 'locked');
+  mkdirSync(locked, { mode: 0o700 });
+  chmodSync(locked, 0o400); // readable, not searchable: lstat of locked/.git is EACCES
+  try {
+    assert.throws(() => assertPrivateOutPath(join(locked, 'k.key')), /cannot tell whether .* is in a git work tree \(EACCES\)/);
+  } finally {
+    chmodSync(locked, 0o700);
+  }
+});
+
+test('generate --out: the work-tree refusal holds with git off PATH and GIT_DIR pointing elsewhere', () => {
+  const repo = privateDir();
+  assert.equal(spawnSync('git', ['init', '-q', repo]).status, 0);
+  mkdirSync(join(repo, 'sub'), { mode: 0o700 });
+  const run = spawnSync(process.execPath, ['--import', 'tsx', join(ROOT, 'tools/store-keys.mts'), 'generate', '--audience', 'caller', '--out', join(repo, 'sub', 'k.key')], {
+    encoding: 'utf8',
+    cwd: ROOT,
+    env: { ...process.env, PATH: dirname(process.execPath), GIT_DIR: join(privateDir(), 'not-a-repo') },
+  });
+  assert.equal(run.status, 1, run.stderr);
+  assert.match(run.stderr, /inside the git work tree/);
+  assert.equal(existsSync(join(repo, 'sub', 'k.key')), false);
 });
 
 test('generate --out: refuses a missing directory', () => {

@@ -17,7 +17,7 @@ leaks. The tool is `pnpm store-keys` (`tools/store-keys.mts`).
 
 | Env file key | What it is | Secret | Held by |
 |---|---|---|---|
-| `STORE_CALLER_KEY` | The `caller` private key: PKCS8 Ed25519, base64url | **yes** | the router alone |
+| `STORE_CALLER_KEY` | The `caller` private key: Ed25519 in the 48-byte PKCS8 v1 form, base64url | **yes** | the router alone |
 | `STORE_PLATFORM_KEY` | The `platform` private key, same format | **yes** | the control plane alone |
 | `STORE_CALLER_PUBLIC_KEYS` | The `caller` public keys: raw 32-byte Ed25519, base64url, comma-separated | no | the control plane, which writes it into every store script |
 | `STORE_PLATFORM_PUBLIC_KEYS` | The `platform` public keys, same format | no | the same |
@@ -31,11 +31,16 @@ The rules the store enforces, and `doctor` checks before a deploy does:
 - one key per audience; the same key may never sign for both;
 - a key in **both** lists makes every store refuse every call (its holder could sign `substrat.erase` with the `caller` key);
 - a small-order point, a key that is not 32 bytes, a non-canonical spelling (base64url whose unused trailing bits are set, so a second text names the same bytes), and a key listed twice are all refused;
+- a private key must be exactly the 48-byte PKCS8 v1 form `generate` writes. A DER parser may
+  accept trailing bytes, or another encoding of the same seed, and derive the same kid, and
+  runtimes differ on that. The envelope module checks the form itself before any parser sees the
+  key, so `doctor`, the router and the control plane refuse the same values;
 - a key id (*kid*) is base64url of the first 8 bytes of SHA-256 over the raw public key. A signer whose kid is not in its audience's list is refused on every call.
 
 ## Where the private keys live
 
-In the deployment's secrets manager and nowhere else. The source of truth is the password-manager
+In the deployment's secrets manager, on the one worker that signs with each, and, while you work,
+in the gitignored env file. The source of truth is the password-manager
 copy of `secrets/platform.<env>.env` (see [README.md](./README.md)). From there,
 `node scripts/secrets.mjs push` puts each key on its one worker as a Cloudflare secret, and
 Cloudflare never gives it back. Never in the repository, a commit, an issue, a PR, a chat or a log.
@@ -44,7 +49,8 @@ Cloudflare never gives it back. Never in the repository, a commit, an issue, a P
 
 - to a **new** file you name with `--out`, created with mode 0600. It refuses a path inside
   this repository or any git work tree (judged on the resolved directory, so a symlink into one
-  is refused too), a directory other users can read or write, an existing file, and a file that
+  is refused too), a directory its group can write or other users can reach at all
+  (0750 and 0700 pass), an existing file, and a file that
   came out readable by anyone else; or
 - to stdout with `--stdout`, which it refuses while stdout is a terminal unless you also pass
   `--yes-print-to-terminal`.
@@ -55,17 +61,24 @@ tool will not write there.
 
 ## First provisioning
 
-Public keys go out before private keys, so no signer is ever live with a key a store does not know.
+Public keys go out before private keys, so no signer is ever live with a key a store does not
+know. That takes two pushes, in this order.
 
 1. For each audience, generate a pair:
    `pnpm store-keys generate --audience caller --out ~/keys/store-caller.key`
    and the same for `platform`. Stderr shows each public key and its kid.
-2. Put both public keys in the env file: `STORE_CALLER_PUBLIC_KEYS=<caller public key>`,
-   `STORE_PLATFORM_PUBLIC_KEYS=<platform public key>`.
-3. Paste each generated line in as `STORE_CALLER_KEY=` / `STORE_PLATFORM_KEY=`, then delete
-   the generated files.
-4. `pnpm store-keys doctor --env <env>` must print `✓ ok`.
-5. `node scripts/secrets.mjs push --env <env>`, then deploy the control plane and the router.
+2. Put **only** the two public keys in the env file:
+   `STORE_CALLER_PUBLIC_KEYS=<caller public key>`, `STORE_PLATFORM_PUBLIC_KEYS=<platform public key>`.
+   Leave `STORE_CALLER_KEY=` and `STORE_PLATFORM_KEY=` blank for now.
+   `pnpm store-keys doctor --env <env> --key-file ~/keys/store-caller.key --key-file ~/keys/store-platform.key`
+   reports the two private keys as unset, which is expected here, and must report nothing else.
+3. Push and deploy the lists: `node scripts/secrets.mjs push --env <env> --only control-plane`,
+   then deploy the control plane. Every store script uploaded from now on carries them (a script
+   uploaded earlier gets them only on its next upload, #2309).
+4. Paste each generated line in as `STORE_CALLER_KEY=` / `STORE_PLATFORM_KEY=`, then delete
+   the generated files. `pnpm store-keys doctor --env <env>` must now print `✓ ok`.
+5. Push and deploy the signers: `node scripts/secrets.mjs push --env <env>`, then deploy the
+   router and the control plane.
 
 Until a store driver is served, all four are optional and an unset key simply refuses store calls.
 
