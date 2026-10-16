@@ -70,26 +70,35 @@ function* sequences<T>(items: readonly T[], max: number, prefix: T[] = []): Gene
 }
 
 describe('the data-loss fence agrees with ground truth on every short migration (#115)', () => {
-  it('table level: drops, creates, renames, copies and deletes over three populated tables', () => {
-    const N = ['a', 'b', 'c'];
+  /**
+   * Table level: `names` are the tables a statement may name; the first three exist and hold rows
+   * (2, 3 and 1), any further one starts free. `kinds` picks the statements. Every sequence up to
+   * `max`, in two catalogue orders.
+   */
+  const tableLevel = (names: readonly string[], kinds: readonly string[], max: number) => {
+    const N = names.slice(0, 3);
     const ROWS: Record<string, number> = { a: 2, b: 3, c: 1 };
     const tags = (t: string) => Array.from({ length: ROWS[t]! }, (_, i) => `${t}${i + 1}`);
     const create = (t: string) => `CREATE TABLE ${t} (tag TEXT); INSERT INTO ${t} VALUES ${tags(t).map((g) => `('${g}')`).join(', ')};`;
     const setups = [N.map(create).join('\n'), [...N].reverse().map(create).join('\n')];
 
     const statements: string[] = [];
-    for (const x of N) {
-      statements.push(`DROP TABLE ${x}`, `CREATE TABLE ${x} (tag TEXT)`, `DELETE FROM ${x}`);
-      for (const y of N) {
+    for (const x of names) {
+      if (kinds.includes('drop')) statements.push(`DROP TABLE ${x}`);
+      if (kinds.includes('create')) statements.push(`CREATE TABLE ${x} (tag TEXT)`);
+      if (kinds.includes('delete')) statements.push(`DELETE FROM ${x}`);
+      for (const y of names) {
         if (x === y) continue;
-        statements.push(`ALTER TABLE ${x} RENAME TO ${y}`, `INSERT INTO ${x} SELECT * FROM ${y}`, `CREATE TABLE ${x} AS SELECT * FROM ${y}`);
+        if (kinds.includes('rename')) statements.push(`ALTER TABLE ${x} RENAME TO ${y}`);
+        if (kinds.includes('copy')) statements.push(`INSERT INTO ${x} SELECT * FROM ${y}`);
+        if (kinds.includes('create-as')) statements.push(`CREATE TABLE ${x} AS SELECT * FROM ${y}`);
       }
     }
 
     let checked = 0;
     const unexplained: string[] = [];
     for (const setup of setups) {
-      for (const seq of sequences(statements, 3)) {
+      for (const seq of sequences(statements, max)) {
         const truth = raw(setup, seq);
         if (!truth) continue;
         checked += 1;
@@ -116,7 +125,8 @@ describe('the data-loss fence agrees with ground truth on every short migration 
           const at = identityOf(t);
           return at !== undefined && tags(t).every((g) => rowsOf(at).includes(g));
         };
-        const explained = (t: string): string | undefined => {
+        // The residual classes, by name: what counting cannot tell from a lossless migration.
+        const explained = (t: string): 'in-place' | 'recreated' | undefined => {
           const at = identityOf(t);
           if (at !== undefined && !dropped.has(t) && rowsOf(at).length >= ROWS[t]!) return 'in-place';
           if (dropped.has(t) && tablesOf(truth).includes(t) && rowsOf(t).length >= ROWS[t]!) return 'recreated';
@@ -127,12 +137,24 @@ describe('the data-loss fence agrees with ground truth on every short migration 
         if (verdict === 'applied') {
           for (const t of lost) if (!explained(t)) unexplained.push(`applied but ${t} lost rows: ${label}`);
         } else if (lost.length === 0 && N.every(preserved)) {
+          // Anything else refused without a loss is `copied`: rows living under another identity.
           unexplained.push(`refused though every table kept its rows: ${label}`);
         }
       }
     }
+    return { checked, unexplained };
+  };
+
+  it('table level: drops, creates, renames, copies and deletes over three populated tables', () => {
+    const { checked, unexplained } = tableLevel(['a', 'b', 'c'], ['drop', 'create', 'delete', 'rename', 'copy', 'create-as'], 3);
     expect(unexplained).toEqual([]);
     expect(checked).toBeGreaterThan(3_000);
+  });
+
+  it('table level: drops, renames and rebuilds with a free fourth name', () => {
+    const { checked, unexplained } = tableLevel(['a', 'b', 'c', 'd'], ['drop', 'rename', 'create-as'], 3);
+    expect(unexplained).toEqual([]);
+    expect(checked).toBeGreaterThan(1_000);
   });
 
   it('column level: drops, adds and renames of columns, with the table moved aside and back', () => {
