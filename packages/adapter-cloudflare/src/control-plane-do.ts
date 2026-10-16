@@ -84,10 +84,11 @@ import {
   VERSION_MIGRATIONS_DDL,
   VERTICAL_SCOPE_STORES_DDL,
   STORE_DRIVER_RELEASES_DDL,
+  legacyStoreDriverRenames,
   beginStoreDriverRolloutIn,
   finishStoreDriverRolloutIn,
   holdStoreDriverIn,
-  kindDeclarationsOf,
+  driverDeclarationsOf,
   recordStoreDriverReleaseIn,
   releaseStoreDriverHoldIn,
   storeDriverReleaseIn,
@@ -1596,6 +1597,11 @@ export class ControlPlaneDO extends DurableObject {
    * creates each table with its backfill; `holdFences` does the same for #1184's removal fence.
    */
   private buildDirectorySchema({ holdSwitchRecords, holdFences = false }: { holdSwitchRecords: readonly SwitchKind[]; holdFences?: boolean }): void {
+    // A directory built before the store driver rename keeps its rows under the old names, and
+    // the DDL below would only create empty tables beside them. Probed, not attempted: an empty
+    // `SELECT` reads the columns here, and an emptied directory (a restore) has nothing to move.
+    const tables = (this.sql.exec(`SELECT name FROM sqlite_master WHERE type = 'table'`).toArray() as unknown as { name: string }[]).map((t) => t.name);
+    for (const stmt of legacyStoreDriverRenames(tables, (table) => doBuiltColumnsOf(this.sql, table))) this.sql.exec(stmt);
     const held = holdSwitchRecords.map(switchesTableOf);
     for (const stmt of DIRECTORY_DDL_PLAN.loop) {
       if (held.some((table) => stmt.includes(table))) continue;
@@ -2316,35 +2322,35 @@ export class ControlPlaneDO extends DurableObject {
   // Kernel code over the directory (store-driver-releases.ts), shared with the SQLite host. Each
   // call is one transaction, and the object runs one at a time, so a hold is taken atomically.
 
-  recordStoreDriverRelease(input: { kind: string; sha256: string; sourceCommit: string; actor: string; at: string }): {
+  recordStoreDriverRelease(input: { driver: string; sha256: string; sourceCommit: string; actor: string; at: string }): {
     record: StoreDriverReleaseRecord;
     created: boolean;
   } {
     return this.ctx.storage.transactionSync(() => recordStoreDriverReleaseIn(this.kernelSql, input));
   }
 
-  getStoreDriverRelease(kind: string, sha256: string): StoreDriverReleaseRecord | undefined {
-    return storeDriverReleaseIn(this.kernelSql, kind, sha256);
+  getStoreDriverRelease(driver: string, sha256: string): StoreDriverReleaseRecord | undefined {
+    return storeDriverReleaseIn(this.kernelSql, driver, sha256);
   }
 
-  storeDriverState(kind: string): StoreDriverState {
-    return this.ctx.storage.transactionSync(() => storeDriverStateIn(this.kernelSql, kind, Date.now()));
+  storeDriverState(driver: string): StoreDriverState {
+    return this.ctx.storage.transactionSync(() => storeDriverStateIn(this.kernelSql, driver, Date.now()));
   }
 
-  storeDriverDeclarations(kind: string): { verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] } {
-    return this.ctx.storage.transactionSync(() => kindDeclarationsOf(this.kernelSql, kind));
+  storeDriverDeclarations(driver: string): { verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] } {
+    return this.ctx.storage.transactionSync(() => driverDeclarationsOf(this.kernelSql, driver));
   }
 
-  holdStoreDriver(input: { kind: string; holder: string; mode: StoreDriverHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): boolean {
+  holdStoreDriver(input: { driver: string; holder: string; mode: StoreDriverHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): boolean {
     return this.ctx.storage.transactionSync(() => holdStoreDriverIn(this.kernelSql, { ...input, nowMs: Date.now() }));
   }
 
-  releaseStoreDriverHold(input: { kind: string; holder: string }): void {
+  releaseStoreDriverHold(input: { driver: string; holder: string }): void {
     releaseStoreDriverHoldIn(this.kernelSql, input);
   }
 
   beginStoreDriverRollout(input: {
-    kind: string;
+    driver: string;
     sha256: string;
     action: StoreDriverRolloutAction;
     holder: string;
@@ -2355,7 +2361,7 @@ export class ControlPlaneDO extends DurableObject {
   }
 
   finishStoreDriverRollout(input: {
-    kind: string;
+    driver: string;
     seq: number;
     holder: string;
     state: Exclude<StoreDriverRolloutState, 'rolling'>;

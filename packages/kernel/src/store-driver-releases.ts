@@ -27,7 +27,7 @@ import type { SwitchSql } from './system-switch.js';
 /** Interpolated into both adapters' directory DDL, so `lint:spine-ddl` sees one spelling on each side. */
 export const STORE_DRIVER_RELEASES_DDL = `
   CREATE TABLE IF NOT EXISTS store_driver_releases (
-    driver          TEXT NOT NULL,
+    driver        TEXT NOT NULL,
     sha256        TEXT NOT NULL,
     source_commit TEXT NOT NULL,
     uploaded_by   TEXT NOT NULL,
@@ -35,7 +35,7 @@ export const STORE_DRIVER_RELEASES_DDL = `
     PRIMARY KEY (driver, sha256)
   );
   CREATE TABLE IF NOT EXISTS store_driver_rollouts (
-    driver                 TEXT NOT NULL,
+    driver               TEXT NOT NULL,
     seq                  INTEGER NOT NULL,
     sha256               TEXT NOT NULL,
     action               TEXT NOT NULL,
@@ -51,18 +51,91 @@ export const STORE_DRIVER_RELEASES_DDL = `
     PRIMARY KEY (driver, seq)
   );
   CREATE TABLE IF NOT EXISTS store_driver_current (
-    driver   TEXT PRIMARY KEY,
+    driver TEXT PRIMARY KEY,
     sha256 TEXT NOT NULL,
     seq    INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS store_driver_holds (
-    driver       TEXT NOT NULL,
+    driver     TEXT NOT NULL,
     holder     TEXT NOT NULL,
     mode       TEXT NOT NULL,
     expires_at INTEGER NOT NULL,
     PRIMARY KEY (driver, holder)
   );
 `;
+
+/**
+ * The directory's names from before a store's code was called a driver (K-53's rename): the four
+ * release tables were `store_kind_*`, and they and `vertical_scope_stores` keyed by a `kind`
+ * column. The values are the same ids, so only names move.
+ */
+const LEGACY_STORE_DRIVER_TABLES: Readonly<Record<string, string>> = {
+  store_kind_releases: 'store_driver_releases',
+  store_kind_rollouts: 'store_driver_rollouts',
+  store_kind_current: 'store_driver_current',
+  store_kind_holds: 'store_driver_holds',
+};
+const DRIVER_KEYED_TABLES = [...Object.values(LEGACY_STORE_DRIVER_TABLES), 'vertical_scope_stores'];
+
+/**
+ * The statements that move a directory built before the rename onto its names, to run before
+ * the directory's DDL on every start: that DDL is all `IF NOT EXISTS`, so it would leave an old
+ * table as it is and create an empty one beside it. Renames keep every row, a release uploaded
+ * before its pin included. Empty once moved, so a later start does nothing. A legacy table whose
+ * new name already exists is left where it is rather than merged: nothing is dropped.
+ *
+ * `tables` is every table the directory holds; `columnsOf` answers a table's columns.
+ */
+export function legacyStoreDriverRenames(
+  tables: readonly string[],
+  columnsOf: (table: string) => readonly string[] | undefined,
+): string[] {
+  const held = new Set(tables.map((t) => t.toLowerCase()));
+  const statements: string[] = [];
+  const renamed = new Set<string>();
+  for (const [from, to] of Object.entries(LEGACY_STORE_DRIVER_TABLES)) {
+    if (held.has(from) && !held.has(to)) {
+      statements.push(`ALTER TABLE ${from} RENAME TO ${to}`);
+      renamed.add(to);
+    }
+  }
+  for (const table of DRIVER_KEYED_TABLES) {
+    const columns = renamed.has(table) ? ['kind'] : held.has(table) ? (columnsOf(table) ?? []) : [];
+    const lowered = columns.map((c) => c.toLowerCase());
+    if (lowered.includes('kind') && !lowered.includes('driver')) {
+      statements.push(`ALTER TABLE ${table} RENAME COLUMN kind TO driver`);
+    }
+  }
+  return statements;
+}
+
+/**
+ * A directory dump's tables with the pre-rename names mapped onto this code's (see
+ * {@link legacyStoreDriverRenames}), so a copy taken before the rename restores: the dump's rows
+ * go in by name, and a restore refuses a table it does not build. A dump that carries both a
+ * legacy table and its new name is refused, since loading both would merge two histories.
+ */
+export function mapLegacyStoreDriverDump<T extends { readonly name: string; readonly columns: readonly string[] }>(
+  tables: readonly T[],
+): T[] {
+  const names = new Set(tables.map((t) => t.name.toLowerCase()));
+  return tables.map((t) => {
+    const lower = t.name.toLowerCase();
+    const to = LEGACY_STORE_DRIVER_TABLES[lower];
+    if (to !== undefined && names.has(to)) {
+      throw substratError(
+        'validation_failed',
+        `restore refused: the dump carries both ${t.name} and ${to}, the same table before and after ` +
+          `the store driver rename. Nothing was changed.`,
+      );
+    }
+    const name = to ?? t.name;
+    if (!DRIVER_KEYED_TABLES.includes(name.toLowerCase())) return t;
+    const columns = t.columns.map((c) => c.toLowerCase());
+    const keepsKind = columns.includes('kind') && !columns.includes('driver');
+    return { ...t, name, columns: keepsKind ? t.columns.map((c) => (c.toLowerCase() === 'kind' ? 'driver' : c)) : t.columns };
+  });
+}
 
 /** A stored release: its bytes are kept elsewhere under `<driver>/<sha256>`. */
 export interface StoreDriverReleaseRecord {

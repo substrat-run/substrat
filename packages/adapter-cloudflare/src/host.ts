@@ -677,22 +677,22 @@ interface ControlPlaneStub {
       tenant_id: string;
       vertical: string;
       binding: string;
-      kind: string;
+      driver: string;
       ref: string;
       created_at: string;
     }[]
   >;
-  recordStoreDriverRelease(input: { kind: string; sha256: string; sourceCommit: string; actor: string; at: string }): Promise<{
+  recordStoreDriverRelease(input: { driver: string; sha256: string; sourceCommit: string; actor: string; at: string }): Promise<{
     record: StoreDriverReleaseRecord;
     created: boolean;
   }>;
-  getStoreDriverRelease(kind: string, sha256: string): Promise<StoreDriverReleaseRecord | undefined>;
-  storeDriverState(kind: string): Promise<StoreDriverState>;
-  storeDriverDeclarations(kind: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
-  holdStoreDriver(input: { kind: string; holder: string; mode: StoreDriverHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): Promise<boolean>;
-  releaseStoreDriverHold(input: { kind: string; holder: string }): Promise<void>;
+  getStoreDriverRelease(driver: string, sha256: string): Promise<StoreDriverReleaseRecord | undefined>;
+  storeDriverState(driver: string): Promise<StoreDriverState>;
+  storeDriverDeclarations(driver: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
+  holdStoreDriver(input: { driver: string; holder: string; mode: StoreDriverHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): Promise<boolean>;
+  releaseStoreDriverHold(input: { driver: string; holder: string }): Promise<void>;
   beginStoreDriverRollout(input: {
-    kind: string;
+    driver: string;
     sha256: string;
     action: StoreDriverRolloutAction;
     holder: string;
@@ -2855,7 +2855,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;
     this.scopeStoreVertical = options.scopeStores?.vertical;
-    this.scopeStoreDrivers = options.scopeStores?.kinds ?? {};
+    this.scopeStoreDrivers = options.scopeStores?.drivers ?? {};
     this.scopeStoreTransport = scopeStoreTransportOf(options);
     this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
     this.scopeStoreLifecycle = scopeStoreLifecycleOf(this.scopeStoreRunners);
@@ -3928,7 +3928,7 @@ export class CloudflareScopeHost implements ScopeHost {
   async scopeStoreImportLocal(
     tenantId: TenantId,
     scopeId: ScopeId,
-    stores: { binding: string; kind?: string; tables: ScopeDumpTable[] }[],
+    stores: { binding: string; driver?: string; tables: ScopeDumpTable[] }[],
   ): Promise<void> {
     this.refuseUnusableScopeStores(stores);
     await this.importScopeStores(tenantId, scopeId, stores);
@@ -5089,27 +5089,27 @@ export class CloudflareScopeHost implements ScopeHost {
     return erasures;
   }
 
-  /** A runner's kind, or the kind declared for an ambient binding. Never invented. */
+  /** A runner's driver, or the driver declared for an ambient binding. Never invented. */
   private scopeStoreDriver(binding: string): string {
-    const kind = this.scopeStoreRunners.get(binding)?.kind ?? this.scopeStoreDrivers[binding];
-    if (!kind) {
-      throw substratError('unavailable', `scope store '${binding}' has no declared kind`);
+    const driver = this.scopeStoreRunners.get(binding)?.driver ?? this.scopeStoreDrivers[binding];
+    if (!driver) {
+      throw substratError('unavailable', `scope store '${binding}' has no declared driver`);
     }
-    return kind;
+    return driver;
   }
 
   /**
    * A dump's stores this host cannot load are refused before any write (#2211, L8): a
-   * binding that is not bound, a kind other than the bound one, or any store at all for
+   * binding that is not bound, a driver other than the bound one, or any store at all for
    * a destination with no vertical (no store object can be named for it, so loading would
    * drop them), or a destination on a vertical other than the one this host is pinned to.
    * `vertical` undefined is a caller that cannot read the destination here;
    * `importScopeStores` then refuses a scope with no vertical itself, still before a store
-   * write. A store with no `kind` is refused: the dump contract requires one, and an
-   * unparsed dump would otherwise skip the kind comparison.
+   * write. A store with no `driver` is refused: the dump contract requires one, and an
+   * unparsed dump would otherwise skip the driver comparison.
    */
   private refuseUnusableScopeStores(
-    stores: readonly { binding: string; kind?: string }[] | undefined,
+    stores: readonly { binding: string; driver?: string }[] | undefined,
     vertical?: string | null,
   ): void {
     const listed = stores ?? [];
@@ -5128,14 +5128,14 @@ export class CloudflareScopeHost implements ScopeHost {
       if (!bound.has(store.binding)) {
         throw substratError('not_found', `dump names scope store '${store.binding}', which is not bound`);
       }
-      if (!store.kind) {
-        throw substratError('validation_failed', `dump's scope store '${store.binding}' names no kind`);
+      if (!store.driver) {
+        throw substratError('validation_failed', `dump's scope store '${store.binding}' names no driver`);
       }
-      const kind = this.scopeStoreRunners.get(store.binding)?.kind ?? this.scopeStoreDrivers[store.binding];
-      if (store.kind !== kind) {
+      const driver = this.scopeStoreRunners.get(store.binding)?.driver ?? this.scopeStoreDrivers[store.binding];
+      if (store.driver !== driver) {
         throw substratError(
           'conflict',
-          `dump's scope store '${store.binding}' is kind '${store.kind}', and this host binds kind '${kind ?? 'undeclared'}'`,
+          `dump's scope store '${store.binding}' is driver '${store.driver}', and this host binds driver '${driver ?? 'undeclared'}'`,
         );
       }
     }
@@ -5144,19 +5144,19 @@ export class CloudflareScopeHost implements ScopeHost {
   private async exportScopeStores(
     tenantId: TenantId,
     scopeId: ScopeId,
-  ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
+  ): Promise<{ binding: string; driver: string; tables: ScopeDumpTable[] }[]> {
     // No binding is no store, answered before the directory read: a host with no control
     // plane cannot make that read, and a deployment with no store must not fail an export.
     const bindings = this.scopeStoreBindingNames();
     if (bindings.length === 0) return [];
     const vertical = await this.lifecycleStoreVertical(tenantId, scopeId);
     if (!vertical) return [];
-    const stores: { binding: string; kind: string; tables: ScopeDumpTable[] }[] = [];
+    const stores: { binding: string; driver: string; tables: ScopeDumpTable[] }[] = [];
     for (const binding of bindings) {
       const exported = await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.export');
       stores.push({
         binding,
-        kind: this.scopeStoreDriver(binding),
+        driver: this.scopeStoreDriver(binding),
         tables: exported.tables,
       });
     }
@@ -8504,19 +8504,19 @@ export class CloudflareScopeHost implements ScopeHost {
         if (created) await this.recordAdmin(actor, 'uploadStoreDriverRelease', { tenantId: null }, null, record);
         return record;
       },
-      getStoreDriverRelease: async (actor, kind, sha256) => {
-        const record = await this.cp.getStoreDriverRelease(kind, sha256);
-        await this.recordAccess(actor, 'getStoreDriverRelease', { tenantId: null }, { kind, sha256 }, record ? 1 : 0);
+      getStoreDriverRelease: async (actor, driver, sha256) => {
+        const record = await this.cp.getStoreDriverRelease(driver, sha256);
+        await this.recordAccess(actor, 'getStoreDriverRelease', { tenantId: null }, { driver, sha256 }, record ? 1 : 0);
         return record;
       },
-      storeDriverState: async (actor, kind) => {
-        const state = await this.cp.storeDriverState(kind);
-        await this.recordAccess(actor, 'storeDriverState', { tenantId: null }, { kind }, state.rollouts.length);
+      storeDriverState: async (actor, driver) => {
+        const state = await this.cp.storeDriverState(driver);
+        await this.recordAccess(actor, 'storeDriverState', { tenantId: null }, { driver }, state.rollouts.length);
         return state;
       },
-      storeDriverDeclarations: async (actor, kind) => {
-        const declared = await this.directory('storeDriverDeclarations', kind);
-        await this.recordAccess(actor, 'storeDriverDeclarations', { tenantId: null }, { kind }, declared.verticals.length);
+      storeDriverDeclarations: async (actor, driver) => {
+        const declared = await this.directory('storeDriverDeclarations', driver);
+        await this.recordAccess(actor, 'storeDriverDeclarations', { tenantId: null }, { driver }, declared.verticals.length);
         return declared;
       },
       holdStoreDriver: async (_actor, input) => this.directory('holdStoreDriver', input),

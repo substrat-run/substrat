@@ -34,7 +34,7 @@ export const VERTICAL_SCOPE_STORES_DDL = `
   CREATE TABLE IF NOT EXISTS vertical_scope_stores (
     vertical_slug    TEXT NOT NULL,
     binding          TEXT NOT NULL,
-    driver             TEXT NOT NULL,
+    driver           TEXT NOT NULL,
     -- The version that declared the binding first.
     first_version_id TEXT NOT NULL,
     PRIMARY KEY (vertical_slug, binding)

@@ -28,12 +28,12 @@ type StoreEntryEnv = Record<string, unknown> & {
   [STORE_OBJECT_BINDING]: DurableObjectNamespace;
 };
 
-interface KindObject {
+interface DriverObject {
   fetch(request: Request): Promise<Response>;
   alarm?(alarmInfo?: AlarmInvocationInfo): void | Promise<void>;
 }
 
-const Driver = driverModule['__SUBSTRAT_STORE_CLASS__'] as new (ctx: DurableObjectState, env: Record<string, unknown>) => KindObject;
+const Driver = driverModule['__SUBSTRAT_STORE_CLASS__'] as new (ctx: DurableObjectState, env: Record<string, unknown>) => DriverObject;
 
 const text = (status: number, message: string) => new Response(message, { status });
 
@@ -49,10 +49,10 @@ async function verified(request: Request, body: string, env: StoreEntryEnv): Pro
 }
 
 export class SubstratStoreObject extends DurableObject<StoreEntryEnv> {
-  #driver: KindObject | undefined;
+  #driver: DriverObject | undefined;
 
   /** Constructed once per object instance, on first use, so the driver keeps its in-memory state. */
-  #driverObject(): KindObject {
+  #driverObject(): DriverObject {
     this.#driver ??= new Driver(this.ctx, driverEnvOf(this.env));
     return this.#driver;
   }

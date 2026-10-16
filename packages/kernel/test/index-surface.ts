@@ -342,7 +342,7 @@ export const INDEX_VALUE_EXPORTS = [
   'jobRunListLimit',
   'jobRunOf',
   'kernelJobFor',
-  'kindDeclarationsOf',
+  'driverDeclarationsOf',
   'lifecycleReceipt',
   'lifecycleRefusal',
   'listConnectLinks',

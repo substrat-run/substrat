@@ -56,7 +56,7 @@ interface HostnameReader {
 
 export type RouteResolver = (hostname: string) => Promise<RouteTarget | undefined>;
 
-function scopeStoresOf(json: string | null | undefined): { binding: string; kind: string }[] {
+function scopeStoresOf(json: string | null | undefined): { binding: string; driver: string }[] {
   if (!json) return [];
   try {
     const parsed = JSON.parse(json) as unknown;
@@ -64,7 +64,7 @@ function scopeStoresOf(json: string | null | undefined): { binding: string; kind
     return parsed.flatMap((entry) => {
       if (typeof entry !== 'object' || entry === null) return [];
       const binding = Reflect.get(entry, 'binding');
-      const kind = Reflect.get(entry, 'kind');
+      const driver = Reflect.get(entry, 'driver');
       return typeof binding === 'string' && typeof kind === 'string' ? [{ binding, kind }] : [];
     });
   } catch {

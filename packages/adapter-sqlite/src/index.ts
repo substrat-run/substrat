@@ -501,9 +501,10 @@ import {
   VERTICAL_SCOPE_STORES_DDL,
   forgetVerticalScopeStores,
   indexVersionScopeStores,
-  kindDeclarationsOf,
+  driverDeclarationsOf,
   verticalScopeStoresOf,
   STORE_DRIVER_RELEASES_DDL,
+  legacyStoreDriverRenames,
   beginStoreDriverRolloutIn,
   finishStoreDriverRolloutIn,
   holdStoreDriverIn,
@@ -2729,6 +2730,10 @@ export class SqliteScopeHost implements ScopeHost {
    * it inside its transaction onto an emptied directory, before loading any row.
    */
   private buildDirectorySchema(): void {
+    // A directory built before the store driver rename keeps its rows under the old names, and
+    // `applyDirectorySchema` would only create empty tables beside them.
+    const tables = (this.directory.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as { name: string }[]).map((t) => t.name);
+    for (const stmt of legacyStoreDriverRenames(tables, (table) => builtColumnsOf(this.directory, table))) this.directory.exec(stmt);
     // #1764: `VERSION_MIGRATIONS_DDL` indexes these two columns, so a directory created
     // before them needs them before `applyDirectorySchema` reaches that statement.
     if (this.directory.prepare('PRAGMA table_info(vertical_versions)').all().length > 0) {
@@ -4439,13 +4444,13 @@ export class SqliteScopeHost implements ScopeHost {
 
   /**
    * A dump's stores this host cannot load are refused before any write (#2211, L8): a
-   * binding that is not bound, a store with no kind or a kind other than the bound runner's,
+   * binding that is not bound, a store with no driver or a driver other than the bound runner's,
    * any store at all for a destination with no vertical (no store object can be named for
    * it, so loading would drop them), or a destination on a vertical other than the one this
    * host is pinned to.
    */
   private refuseUnusableScopeStores(
-    stores: readonly { binding: string; kind?: string }[] | undefined,
+    stores: readonly { binding: string; driver?: string }[] | undefined,
     vertical: string | null,
   ): void {
     const listed = stores ?? [];
@@ -4464,13 +4469,13 @@ export class SqliteScopeHost implements ScopeHost {
       if (!runner) {
         throw substratError('not_found', `dump names scope store '${store.binding}', which is not bound`);
       }
-      if (!store.kind) {
-        throw substratError('validation_failed', `dump's scope store '${store.binding}' names no kind`);
+      if (!store.driver) {
+        throw substratError('validation_failed', `dump's scope store '${store.binding}' names no driver`);
       }
-      if (store.kind !== runner.kind) {
+      if (store.driver !== runner.driver) {
         throw substratError(
           'conflict',
-          `dump's scope store '${store.binding}' is kind '${store.kind}', and this host binds kind '${runner.kind}'`,
+          `dump's scope store '${store.binding}' is driver '${store.driver}', and this host binds driver '${runner.driver}'`,
         );
       }
     }
@@ -4479,17 +4484,17 @@ export class SqliteScopeHost implements ScopeHost {
   private async exportScopeStores(
     tenantId: TenantId,
     scopeId: ScopeId,
-  ): Promise<{ binding: string; kind: string; tables: ScopeDumpTable[] }[]> {
+  ): Promise<{ binding: string; driver: string; tables: ScopeDumpTable[] }[]> {
     const bindings = [...this.scopeStoreRunners.keys()];
     if (bindings.length === 0) return [];
     const vertical = this.scopeStoreVerticalIfPresent(scopeId);
     if (!vertical) return [];
-    const stores: { binding: string; kind: string; tables: ScopeDumpTable[] }[] = [];
+    const stores: { binding: string; driver: string; tables: ScopeDumpTable[] }[] = [];
     for (const binding of bindings) {
       const runner = this.scopeStoreRunners.get(binding);
       if (!runner) throw substratError('not_found', `no scope store is bound for '${binding}'`);
       const exported = await this.invokeReservedStore({ tenantId, vertical, scopeId, binding }, 'substrat.export');
-      stores.push({ binding, kind: runner.kind, tables: exported.tables });
+      stores.push({ binding, driver: runner.driver, tables: exported.tables });
     }
     return stores;
   }
@@ -10532,19 +10537,19 @@ export class SqliteScopeHost implements ScopeHost {
         if (created) this.recordAdmin(actor, 'uploadStoreDriverRelease', { tenantId: null }, null, record, at);
         return record;
       },
-      getStoreDriverRelease: async (actor, kind, sha256) => {
-        const record = storeDriverReleaseIn(switchSqlOf(this.directory), kind, sha256);
-        this.recordAccess(actor, 'getStoreDriverRelease', { tenantId: null }, { kind, sha256 }, record ? 1 : 0);
+      getStoreDriverRelease: async (actor, driver, sha256) => {
+        const record = storeDriverReleaseIn(switchSqlOf(this.directory), driver, sha256);
+        this.recordAccess(actor, 'getStoreDriverRelease', { tenantId: null }, { driver, sha256 }, record ? 1 : 0);
         return record;
       },
-      storeDriverState: async (actor, kind) => {
-        const state = storeDriverStateIn(switchSqlOf(this.directory), kind, Date.parse(this.clock()));
-        this.recordAccess(actor, 'storeDriverState', { tenantId: null }, { kind }, state.rollouts.length);
+      storeDriverState: async (actor, driver) => {
+        const state = storeDriverStateIn(switchSqlOf(this.directory), driver, Date.parse(this.clock()));
+        this.recordAccess(actor, 'storeDriverState', { tenantId: null }, { driver }, state.rollouts.length);
         return state;
       },
-      storeDriverDeclarations: async (actor, kind) => {
-        const declared = this.directory.transaction(() => kindDeclarationsOf(switchSqlOf(this.directory), kind))();
-        this.recordAccess(actor, 'storeDriverDeclarations', { tenantId: null }, { kind }, declared.verticals.length);
+      storeDriverDeclarations: async (actor, driver) => {
+        const declared = this.directory.transaction(() => driverDeclarationsOf(switchSqlOf(this.directory), driver))();
+        this.recordAccess(actor, 'storeDriverDeclarations', { tenantId: null }, { driver }, declared.verticals.length);
         return declared;
       },
       holdStoreDriver: async (_actor, input) =>

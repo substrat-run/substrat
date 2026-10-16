@@ -642,7 +642,7 @@ export {
   VERTICAL_SCOPE_STORES_DDL,
   forgetVerticalScopeStores,
   indexVersionScopeStores,
-  kindDeclarationsOf,
+  driverDeclarationsOf,
   verticalScopeStoresOf,
   type VerticalScopeStore,
 } from './vertical-scope-stores.js';
@@ -651,6 +651,7 @@ export {
   beginStoreDriverRolloutIn,
   finishStoreDriverRolloutIn,
   holdStoreDriverIn,
+  legacyStoreDriverRenames,
   recordStoreDriverReleaseIn,
   releaseStoreDriverHoldIn,
   storeDriverReleaseIn,
