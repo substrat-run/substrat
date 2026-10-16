@@ -456,6 +456,24 @@ roles and grant shapes that changed, and each migration the promote adds, with i
 first. That is the migration / permission checkpoint, applied at the deploy boundary. The
 dashboard's promote dialog shows the same two diffs before it promotes.
 
+Under each migration the review lists what it declares it may lose
+([the data-loss fence](/concepts/deploying#a-migration-cannot-quietly-lose-data)): each `moves`
+entry as source → target, which the kernel verifies when the migration runs, and each
+`discards` entry with its reason, quoted exactly as the author wrote it. When any migration in
+the promote discards data, the review starts by saying how many places. A migration whose SQL is
+unchanged but whose declarations were edited after it shipped is listed apart as
+"declarations edited": a scope that already ran it is unaffected, and one that has not is held to
+the new declarations.
+
+```text
+! this promote deliberately discards data in 1 place; each reason is the migration author's own
++ helpdesk 0007-retire-drafts
+    discards "notes.legacy_flag": "the flag was never read after the 0004 redesign"
+    moves "drafts" → "notes" (verified at apply)
+    INSERT INTO notes (id, body, written_by) SELECT id, body, author FROM drafts;
+    …
+```
+
 The migration digest covers the app's Durable-Object classes, not its SQL, so a change to SQL
 migrations alone is not refused yet ([#1754](https://github.com/substrat-run/substrat/issues/1754)).
 The dashboard asks you to acknowledge one anyway.

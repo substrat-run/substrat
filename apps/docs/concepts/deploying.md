@@ -208,6 +208,22 @@ drop it before the migration ends.
 In this repository `pnpm lint:migration-fence` replays every migration against a scope that holds
 data, so an undeclared loss fails in the pull request that adds it.
 
+The declarations also travel with the version. `substrat push` carries each migration's `moves` and
+`discards` beside its SQL, and the promote review (the dashboard's promote dialog and
+`substrat promote`) lists them under the migration: every move as source → target, every discard
+with its reason word for word. A promote that discards anything says so first. The reason is the
+migration author's own text, so the review shows it as plain text, with any bidirectional-control
+character made visible, and cuts a long one behind a "show all". A version pushed before
+declarations were carried, or a migration that declares none, shows none.
+
+Declarations are not part of the SQL, so they do not change the digest a scope journals for the
+migration, and editing one on a shipped migration does not make a scope that already ran it fail
+closed. They are part of the version's migration digest, so a promote that adds, removes or
+rewords a declaration asks for the migration acknowledgement like a SQL change does. That digest
+is computed by the pushing CLI and nothing on the platform recomputes it. What the review shows is
+read from the declarations the control plane stored, never inferred from the digest, so a client
+that hashed something else still cannot hide a declared discard from the review.
+
 ## Previews: run a version against a copy of the data
 
 Before a promotion whose *migrations* changed, you often want to see the new version run against
