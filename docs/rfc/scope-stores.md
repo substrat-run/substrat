@@ -16,7 +16,7 @@ description: A platform-run object per scope, declared as a driver and reached t
 that several verticals of one tenant connect to (not decided)
 
 **Naming:** the code and docs say *driver* for the platform-registered, pinned code that backs
-a store (K-53, renamed in #RENAME_PR). The ratified records K-49, K-50 and D-63 and the proposed
+a store (K-53, renamed in #2324). The ratified records K-49, K-50 and D-63 and the proposed
 K-52 keep the word *kind*, and mean the same thing by it.
 
 A vertical can hold state in four shapes, and none of them is a service with its own runtime.

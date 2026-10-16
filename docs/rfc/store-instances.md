@@ -10,7 +10,7 @@ description: A tenant-level store instance that several verticals of one tenant 
 recorded as [K-53](../decisions/K-053-a-tenant-level-store-is-a-named-instance-that-a-tenant-s-verticals-connect-to-explicitly.md);
 open: the background-write record of Q14, the K-52 amendment for tenant-grain envelopes and
 the `reader` audience, the quota numbers, and the isolation requirements of §11.1; the rename
-of "kind" to "driver" in the code landed in #RENAME_PR). It weighs an alternative to the per-scope store of
+of "kind" to "driver" in the code landed in #2324). It weighs an alternative to the per-scope store of
 [scope-stores.md](scope-stores.md) (K-49, K-50, D-63) for one requirement that the per-scope
 store cannot meet.
 
@@ -1039,7 +1039,7 @@ All 22 questions were answered on 2026-10-15. The load-bearing ones are recorded
 [K-53](../decisions/K-053-a-tenant-level-store-is-a-named-instance-that-a-tenant-s-verticals-connect-to-explicitly.md).
 The answers use the maintainer's new word **driver** for what this RFC first called a kind: the
 platform-registered, pinned code that backs a store. The code and this RFC's body say driver
-since #RENAME_PR; the ratified K-49, K-50 and D-63 text and the proposed K-52 keep the word kind.
+since #2324; the ratified K-49, K-50 and D-63 text and the proposed K-52 keep the word kind.
 Nothing these answers decide is built yet.
 
 | Q | Topic | Answer |
