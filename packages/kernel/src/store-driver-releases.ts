@@ -81,23 +81,37 @@ const DRIVER_KEYED_TABLES = [...LEGACY_STORE_DRIVER_TABLES.values(), 'vertical_s
  * The statements that move a directory built before the rename onto its names, to run before
  * the directory's DDL on every start: that DDL is all `IF NOT EXISTS`, so it would leave an old
  * table as it is and create an empty one beside it. Renames keep every row, a release uploaded
- * before its pin included. Empty once moved, so a later start does nothing. A legacy table whose
- * new name already exists is left where it is rather than merged: nothing is dropped.
+ * before its pin included. Empty once moved, so a later start does nothing.
  *
- * `tables` is every table the directory holds; `columnsOf` answers a table's columns.
+ * A directory can hold both names: code from before the rename, run again after it (a rollback),
+ * creates the old tables empty beside the moved ones, and writes to them while it runs. Then the
+ * name that holds no rows is dropped, and the one that holds them ends under the new name. When
+ * both hold rows, both are left where they are: nothing is merged, and nothing with rows is
+ * dropped.
+ *
+ * `tables` is every table the directory holds; `columnsOf` answers a table's columns, and
+ * `hasRows` whether it holds any.
  */
 export function legacyStoreDriverRenames(
   tables: readonly string[],
   columnsOf: (table: string) => readonly string[] | undefined,
+  hasRows: (table: string) => boolean,
 ): string[] {
   const held = new Set(tables.map((t) => t.toLowerCase()));
   const statements: string[] = [];
   const renamed = new Set<string>();
   for (const [from, to] of LEGACY_STORE_DRIVER_TABLES) {
-    if (held.has(from) && !held.has(to)) {
-      statements.push(`ALTER TABLE ${from} RENAME TO ${to}`);
-      renamed.add(to);
+    if (!held.has(from)) continue;
+    if (held.has(to)) {
+      if (!hasRows(from)) {
+        statements.push(`DROP TABLE ${from}`);
+        continue;
+      }
+      if (hasRows(to)) continue;
+      statements.push(`DROP TABLE ${to}`);
     }
+    statements.push(`ALTER TABLE ${from} RENAME TO ${to}`);
+    renamed.add(to);
   }
   for (const table of DRIVER_KEYED_TABLES) {
     const columns = renamed.has(table) ? ['kind'] : held.has(table) ? (columnsOf(table) ?? []) : [];
@@ -112,24 +126,31 @@ export function legacyStoreDriverRenames(
 /**
  * A directory dump's tables with the pre-rename names mapped onto this code's (see
  * {@link legacyStoreDriverRenames}), so a copy taken before the rename restores: the dump's rows
- * go in by name, and a restore refuses a table it does not build. A dump that carries both a
- * legacy table and its new name is refused, since loading both would merge two histories.
+ * go in by name, and a restore refuses a table it does not build. A dump that carries a table
+ * under both names keeps the one that holds rows, the way a start does; one where both hold rows
+ * is refused, since loading both would merge two histories.
  */
-export function mapLegacyStoreDriverDump<T extends { readonly name: string; readonly columns: readonly string[] }>(
-  tables: readonly T[],
-): T[] {
-  const names = new Set(tables.map((t) => t.name.toLowerCase()));
-  return tables.map((t) => {
-    const lower = t.name.toLowerCase();
-    const to = LEGACY_STORE_DRIVER_TABLES.get(lower);
-    if (to !== undefined && names.has(to)) {
+export function mapLegacyStoreDriverDump<
+  T extends { readonly name: string; readonly columns: readonly string[]; readonly rows: readonly unknown[] },
+>(tables: readonly T[]): T[] {
+  const byName = new Map(tables.map((t) => [t.name.toLowerCase(), t]));
+  const dropped = new Set<T>();
+  for (const [from, to] of LEGACY_STORE_DRIVER_TABLES) {
+    const legacy = byName.get(from);
+    const current = byName.get(to);
+    if (!legacy || !current) continue;
+    if (legacy.rows.length === 0) dropped.add(legacy);
+    else if (current.rows.length === 0) dropped.add(current);
+    else {
       throw substratError(
         'validation_failed',
-        `restore refused: the dump carries both ${t.name} and ${to}, the same table before and after ` +
-          `the store driver rename. Nothing was changed.`,
+        `restore refused: the dump carries rows in both ${legacy.name} and ${current.name}, the same table ` +
+          `before and after the store driver rename. Nothing was changed.`,
       );
     }
-    const name = to ?? t.name;
+  }
+  return tables.filter((t) => !dropped.has(t)).map((t) => {
+    const name = LEGACY_STORE_DRIVER_TABLES.get(t.name.toLowerCase()) ?? t.name;
     if (!DRIVER_KEYED_TABLES.includes(name.toLowerCase())) return t;
     const columns = t.columns.map((c) => c.toLowerCase());
     const keepsKind = columns.includes('kind') && !columns.includes('driver');

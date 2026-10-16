@@ -140,6 +140,7 @@ export {
   type ConnectorCall,
 } from './connector-fixture.js';
 export { directoryRestoreSuite, type DirectoryRestoreHarness, type RestorableDirectory } from './directory-restore-suite.js';
+export { STORE_KIND_RELEASES_DDL_BEFORE_RENAME } from './directory-shapes.js';
 export { SPLIT_CASES } from './split-cases.js';
 export { migrationCommentsContractSuite } from './migration-comments-suite.js';
 export { commentedDdlMod } from './migration-comments.js';

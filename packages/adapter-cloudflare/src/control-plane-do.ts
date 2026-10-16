@@ -1597,11 +1597,13 @@ export class ControlPlaneDO extends DurableObject {
    * creates each table with its backfill; `holdFences` does the same for #1184's removal fence.
    */
   private buildDirectorySchema({ holdSwitchRecords, holdFences = false }: { holdSwitchRecords: readonly SwitchKind[]; holdFences?: boolean }): void {
-    // A directory built before the store driver rename keeps its rows under the old names, and
+    // A directory built before the store driver rename keeps its rows under the old names (and one
+    // that ran pre-rename code again, a rollback, holds both names), and
     // the DDL below would only create empty tables beside them. Probed, not attempted: an empty
     // `SELECT` reads the columns here, and an emptied directory (a restore) has nothing to move.
     const tables = (this.sql.exec(`SELECT name FROM sqlite_master WHERE type = 'table'`).toArray() as unknown as { name: string }[]).map((t) => t.name);
-    for (const stmt of legacyStoreDriverRenames(tables, (table) => doBuiltColumnsOf(this.sql, table))) this.sql.exec(stmt);
+    const hasRows = (table: string) => this.sql.exec(`SELECT 1 FROM "${table}" LIMIT 1`).toArray().length > 0;
+    for (const stmt of legacyStoreDriverRenames(tables, (table) => doBuiltColumnsOf(this.sql, table), hasRows)) this.sql.exec(stmt);
     const held = holdSwitchRecords.map(switchesTableOf);
     for (const stmt of DIRECTORY_DDL_PLAN.loop) {
       if (held.some((table) => stmt.includes(table))) continue;

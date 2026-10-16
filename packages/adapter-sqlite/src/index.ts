@@ -2730,10 +2730,12 @@ export class SqliteScopeHost implements ScopeHost {
    * it inside its transaction onto an emptied directory, before loading any row.
    */
   private buildDirectorySchema(): void {
-    // A directory built before the store driver rename keeps its rows under the old names, and
+    // A directory built before the store driver rename keeps its rows under the old names (and one
+    // that ran pre-rename code again, a rollback, holds both names), and
     // `applyDirectorySchema` would only create empty tables beside them.
     const tables = (this.directory.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as { name: string }[]).map((t) => t.name);
-    for (const stmt of legacyStoreDriverRenames(tables, (table) => builtColumnsOf(this.directory, table))) this.directory.exec(stmt);
+    const hasRows = (table: string) => this.directory.prepare(`SELECT 1 FROM "${table}" LIMIT 1`).get() !== undefined;
+    for (const stmt of legacyStoreDriverRenames(tables, (table) => builtColumnsOf(this.directory, table), hasRows)) this.directory.exec(stmt);
     // #1764: `VERSION_MIGRATIONS_DDL` indexes these two columns, so a directory created
     // before them needs them before `applyDirectorySchema` reaches that statement.
     if (this.directory.prepare('PRAGMA table_info(vertical_versions)').all().length > 0) {

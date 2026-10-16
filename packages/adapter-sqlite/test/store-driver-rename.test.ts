@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { platformActorId } from '@substrat-run/contracts';
+import { STORE_KIND_RELEASES_DDL_BEFORE_RENAME } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
 
 const staff = platformActorId.parse('01JZ00000000000000000000ST');
@@ -99,5 +100,73 @@ describe('a directory built before the store driver rename (K-53)', () => {
     } finally {
       await host.close();
     }
+  });
+
+  // A rollback across the rename and forward again: the code before it creates its tables, empty,
+  // beside the moved ones, and may write to them while it runs. Without the cleanup every later
+  // directory dump carries both names, and a restore of it is refused.
+  describe('a rollback across the rename, then forward again', () => {
+    /** A moved directory holding a release, with the pre-rename DDL run over it, as that code's start does. */
+    const rolledBack = async (rollback: (db: Database.Database) => void = () => {}) => {
+      const dir = await legacyDirectory();
+      await new SqliteScopeHost({ dir }).close();
+      const db = new Database(join(dir, '_directory.sqlite'));
+      try {
+        db.exec(STORE_KIND_RELEASES_DDL_BEFORE_RENAME);
+        rollback(db);
+      } finally {
+        db.close();
+      }
+      return dir;
+    };
+    const names = (dir: string) => {
+      const db = new Database(join(dir, '_directory.sqlite'), { readonly: true });
+      try {
+        return (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((t) => t.name);
+      } finally {
+        db.close();
+      }
+    };
+
+    it('is staged for real: both names exist after the rollback', async () => {
+      const all = names(await rolledBack());
+      expect(all).toEqual(expect.arrayContaining(['store_kind_releases', 'store_driver_releases']));
+    });
+
+    it('drops the empty old tables on the next start, keeps the rows, and a dump of it restores', async () => {
+      const dir = await rolledBack();
+      const host = new SqliteScopeHost({ dir });
+      try {
+        expect(names(dir).filter((n) => n.startsWith('store_kind_'))).toEqual([]);
+        expect(await host.admin.getStoreDriverRelease(staff, 'graph', SHA)).toMatchObject({ driver: 'graph' });
+        const dump = await host.admin.exportDirectory(staff);
+        expect(dump.tables.map((t) => t.name).filter((n) => n.startsWith('store_kind_'))).toEqual([]);
+        await host.admin.restoreDirectory(staff, dump);
+        expect(await host.admin.getStoreDriverRelease(staff, 'graph', SHA)).toMatchObject({ driver: 'graph' });
+      } finally {
+        await host.close();
+      }
+    });
+
+    it('keeps what the rolled-back code wrote: its rows move over the empty new table', async () => {
+      const other = 'c'.repeat(64);
+      const dir = await rolledBack((db) => {
+        db.prepare('INSERT INTO store_kind_holds (kind, holder, mode, expires_at) VALUES (?, ?, ?, ?)').run('graph', 'h1', 'shared', 1);
+        // A table both sides wrote to holds rows under both names, and is left as it is.
+        db.prepare(
+          'INSERT INTO store_kind_releases (kind, sha256, source_commit, uploaded_by, uploaded_at) VALUES (?, ?, ?, ?, ?)',
+        ).run('graph', other, 'd'.repeat(40), staff, '2026-10-16T00:00:00.000Z');
+      });
+      await new SqliteScopeHost({ dir }).close();
+      const db = new Database(join(dir, '_directory.sqlite'), { readonly: true });
+      try {
+        expect(db.prepare('SELECT driver, holder FROM store_driver_holds').all()).toEqual([{ driver: 'graph', holder: 'h1' }]);
+        expect(names(dir)).toEqual(expect.arrayContaining(['store_kind_releases', 'store_driver_releases']));
+        expect(db.prepare('SELECT sha256 FROM store_kind_releases').all()).toEqual([{ sha256: other }]);
+        expect(db.prepare('SELECT sha256 FROM store_driver_releases').all()).toEqual([{ sha256: SHA }]);
+      } finally {
+        db.close();
+      }
+    });
   });
 });
