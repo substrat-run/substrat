@@ -1636,8 +1636,8 @@ interface ScopeStubRpc {
   ): Promise<DoReply<AttachmentRecord>>;
   /** #2314: the scope side of an orphan-sweep pass — condemn (or, dry, only read) the rowless ids. */
   orphanAttachmentsReply(ids: string[], now: string, tenantId: TenantId, condemn: boolean, vouched?: boolean): Promise<DoReply<string[]>>;
-  /** #2314: the tenant this scope's provision receipt names, or null; read without migrating. */
-  provisionReceipt(): Promise<string | null>;
+  /** #2314: the receipt's tenant (or null) and whether any attachment row is held; read without migrating. */
+  sweepFenceFacts(): Promise<{ tenant: string | null; holdsAttachments: boolean }>;
   /** Look an upload link up without spending it; `target` is judged before its state. */
   uploadLinkInspectReply(
     secret: string,
@@ -4041,12 +4041,19 @@ export class CloudflareScopeHost implements ScopeHost {
    * #2314: write the orphan sweep's restore fence for a scope whose state is about to be
    * replaced, into the tenant's attachment bucket, so no pass deletes its bytes while a row the
    * replacement takes away can still be restored. The tenant is the one named, else the scope's
-   * own provision receipt; a scope whose tenant is neither is refused, because its bucket cannot
-   * be found. A tenant this script holds no bucket for has no bytes here, so nothing is fenced.
-   * Throws when the fence cannot be written: the caller refuses the replacement.
+   * own provision receipt. A scope whose tenant is neither holds no row the replacement could
+   * take from it unless it holds an attachment row (a fresh scope, a clean-room preview), and
+   * only then is it refused, because its bucket cannot be found. A tenant this script holds no
+   * bucket for has no bytes here, so nothing is fenced. Throws when the fence cannot be written:
+   * the caller refuses the replacement.
    */
   private async fenceOrphanSweep(scopeId: ScopeId, named?: TenantId): Promise<void> {
-    const tenantId = named ?? ((await this.scopeStub(scopeId).provisionReceipt()) as TenantId | null);
+    let tenantId: TenantId | null = named ?? null;
+    if (!tenantId) {
+      const facts = await this.scopeStub(scopeId).sweepFenceFacts();
+      if (!facts.tenant && !facts.holdsAttachments) return;
+      tenantId = facts.tenant as TenantId | null;
+    }
     if (!tenantId) {
       throw new Error(
         `the tenant of scope ${scopeId} is unknown (no provision receipt, and none was named), so the ` +

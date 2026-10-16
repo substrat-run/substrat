@@ -6573,8 +6573,15 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     }
   });
 
-  it('a rewind of a scope whose tenant is unknown is refused, and one that names its tenant fences it', async () => {
+  it('a rewind of a scope that holds files and whose tenant is unknown is refused, and one that names its tenant fences it', async () => {
     const s = await newScope();
+    await (await host.attachments(owner, t, s)).upload({
+      entity: { entityType: 'udoc', entityId: 'doc-1' },
+      filename: 'a.txt',
+      contentType: 'text/plain',
+      visibility: 'internal',
+      body: new TextEncoder().encode('kept'),
+    });
     await raw(s, (sql) => sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`));
     await armRewind(env.SCOPE, s);
     const err = await host.rewindScopeLocal(s, 'bm', { force: true }).then(() => undefined, (e: unknown) => e);
@@ -6582,6 +6589,15 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     expect(objs.has(attachmentSweepFenceKey(s))).toBe(false);
     await host.rewindScopeLocal(s, 'bm', { force: true, tenantId: t });
     expect(objs.has(attachmentSweepFenceKey(s))).toBe(true);
+    await awaitRestart(env.SCOPE, s);
+  });
+
+  it('the twin: a scope with no tenant on record and no file is rewound unfenced, as it has nothing to lose', async () => {
+    const s = await newScope();
+    await raw(s, (sql) => sql.exec(`DELETE FROM _substrat_meta WHERE key = 'provisioned_for'`));
+    await armRewind(env.SCOPE, s);
+    await host.rewindScopeLocal(s, 'bm', { force: true });
+    expect(objs.has(attachmentSweepFenceKey(s))).toBe(false);
     await awaitRestart(env.SCOPE, s);
   });
 

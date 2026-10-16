@@ -3894,9 +3894,17 @@ export function defineScopeDO(
       });
     }
 
-    /** #2314: the tenant this scope's provision receipt names, or null. Read without migrating. */
-    async provisionReceipt(): Promise<string | null> {
-      return this.provisionedFor();
+    /**
+     * #2314: what the orphan sweep's fence needs from this storage, read without migrating: the
+     * tenant its provision receipt names (or null), and whether it holds any attachment row.
+     */
+    async sweepFenceFacts(): Promise<{ tenant: string | null; holdsAttachments: boolean }> {
+      return {
+        tenant: this.provisionedFor(),
+        holdsAttachments:
+          this.hasTable('_substrat_attachments') &&
+          this.sql.exec('SELECT 1 FROM _substrat_attachments LIMIT 1').toArray().length > 0,
+      };
     }
 
     /** #2314: why this copy may not judge which attachment bytes are orphans, as a refusal. */
