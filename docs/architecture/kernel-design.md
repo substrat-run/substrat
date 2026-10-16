@@ -564,9 +564,14 @@ shared across a tenant's verticals is §13 question 21.
   migration, with the data intact; `pnpm lint:migration-fence` replays every migration in the
   repo against populated scopes through the same function, so an in-repo refusal is red in
   its pull request first. Kernel-derived DDL is exempt, and a kernel column (`_substrat_*`)
-  leaving is #2090's check to refuse. Not seen, because it counts: values rewritten in place at
-  the same count and storage class, rows replaced by as many other rows, and which source a
-  move's target gained from.
+  leaving is #2090's check to refuse. Not seen, because it counts: in-place replacement (values
+  rewritten at the same count and storage class, rows replaced by as many other rows, a column
+  dropped, re-added and refilled); a dropped table whose name is made again holding at least as
+  many rows (`DROP TABLE a; CREATE TABLE a AS SELECT * FROM b`), which counts cannot tell from the
+  rebuild idiom; and which source a move's target gained from. Refused by design: data copied under
+  another table's name, until `moves` declares it. A bounded property test
+  (`migration-fence.property.test.ts`) replays every short migration of a small grammar against
+  ground truth and allows exactly these classes.
 - **Large backfills are jobs, not migrations.** The migration adds the shape; a chunked
   job (alarm-driven) backfills and marks completion in the journal separately. Backfill
   writes are flagged so they don't pollute the event spine as fake user activity.

@@ -32,9 +32,16 @@
  * storage class is reported, and one made on purpose is declared with `discards`. `NOT NULL`
  * without a default needs no rule: SQLite refuses it itself.
  *
- * **What it does not see**, because it counts: values rewritten in place at the same count and
- * class; rows replaced by as many other rows; and which source a move's target gained from — a
- * target is credited with everything it gained.
+ * **What it does not see**, because it counts — the residual classes, each named in the property
+ * test (`migration-fence.property.test.ts`) that holds the rest to ground truth:
+ * - in-place replacement: values rewritten at the same count and class (`UPDATE`), rows replaced
+ *   by as many other rows (`DELETE` + `INSERT`), or a column dropped, re-added and refilled;
+ * - a dropped table whose name is made again holding at least as many rows (`DROP TABLE a; CREATE
+ *   TABLE a AS SELECT * FROM b`): counts cannot tell it from the create-copy-drop-rename rebuild
+ *   the fence must accept;
+ * - which source a move's target gained from: a target is credited with everything it gained.
+ * And one refusal by design: data copied under another table's name is refused until `moves`
+ * declares it.
  *
  * **Declared losses pass.** `SqlMigration.moves` names data that went elsewhere, and is verified:
  * the target must GAIN at least what its sources held, per class — and for a table moved whole,
