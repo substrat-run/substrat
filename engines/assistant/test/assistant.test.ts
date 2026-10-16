@@ -742,7 +742,8 @@ describe('engine-assistant', () => {
           const settled = await Promise.allSettled([claimExecution(ctx, go), claimExecution(ctx, go)]);
           return settled.map((s) => (s.status === 'fulfilled' ? 'ok' : (s.reason as { extensions?: { reason?: string } }).extensions?.reason));
         }, [PERM.use, PERM.run]);
-        expect(outcome).toEqual(['ok', 'already_executed']);
+        // The property is that exactly one claim wins, not which: the two promises race.
+        expect([...outcome].sort()).toEqual(['already_executed', 'ok']);
       });
 
       it('is claimed once: a restarted loop cannot run the write twice', async () => {
