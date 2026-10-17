@@ -22,7 +22,7 @@ The platform now runs the orphan-attachment sweep on its scheduled pass. The swe
 
 **The control plane decides before any deployment judges.** For each scope it checks four things in its own directory: the scope is active and primary, it is bound to a vertical, its tenant is active, and every copy-ledger entry for it is `done`. Only then does it call `POST /internal/attachment-sweep` on the script the directory routes the scope to: its serving script, else its bound version's. There is no fallback to another script, and the control plane never asks its own host. The route requires `dryRun` and `copiesSettled: true`. It takes no instant from the body, and it answers 501 on a host built before it.
 
-**A deployment with no attachment store answers so.** A pass whose deployment holds no attachment store for the tenant now returns `bucket: 'none'`, after every refusal the scope's copy makes, instead of failing. A store that held nothing still answers without the marker.
+**A deployment with no attachment store answers so.** A pass whose deployment holds no attachment store for the tenant now returns `bucket: 'none'`, after every refusal the scope's copy makes, instead of failing. It does so only when the scope holds no attachment row either. A scope that holds files but has no store has a missing store binding, and its pass still fails. A store that held nothing answers without the marker.
 
 The control plane's mode is `ORPHAN_ATTACHMENT_SWEEP`, with the values `off` (the default), `dry-run` and `delete`, and its window size is `ORPHAN_ATTACHMENT_SWEEP_BATCH`. `docs/architecture/orphan-attachment-sweep.md` has the rollout.
 

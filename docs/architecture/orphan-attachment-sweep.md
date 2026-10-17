@@ -58,13 +58,19 @@ deployment's side.
   - `refused`: the directory or the deployment said no, for example an unsettled copy or a
     suspended tenant.
   - `unsupported`: the deployment predates the route (501, or a route miss) and needs a redeploy.
-  - `noStore`: the deployment holds no attachment store for the tenant (`bucket: 'none'`). A
-    vertical that keeps no files answers this way. A vertical that does keep files should never
-    answer it: if one does, its store binding is missing.
+  - `noStore`: the deployment holds no attachment store for the tenant, and the scope holds no
+    attachment row (`bucket: 'none'`): a vertical that keeps no files. A scope that does hold an
+    attachment row but has no store has a missing store binding. That is not `noStore`: it fails,
+    and lands in `errors`.
 
   None of the three is an error, so the failure digest does not repeat them every pass. Anything
   else that fails is an `attachment-sweep` error.
-- The tail logs the phase's counts whenever it found, deleted or could not judge anything.
+- The tail logs the phase's counts whenever it found or deleted an orphan, or a scope was refused
+  or unsupported. `noStore` alone does not print it, since file-less verticals answer that on every
+  visit.
+- If the admin-log row cannot be written after a pass deleted anything, the pass logs a line with
+  the scope, the counts and every deleted key, and records an `attachment-sweep` error. The bytes
+  are gone by then, and that line is the record of which ones.
 
 ## The admin log
 
@@ -106,10 +112,32 @@ The phase is **off** by default. Turn it on in this order, one step at a time:
    seven days are swept for real, up to 500 deletes per scope per pass. The rest are dry-run
    first. Keep reading the admin log: every delete row lists the keys that were deleted.
 
+   **In delete mode the licence is issued by the sweep itself, with no person in between.** A
+   scope that step 2 never reached, or whose dry-run row has aged past seven days, gets a dry run
+   on its first visit. If that run finds orphans, it writes the row, and the scope's next visit
+   deletes, possibly 15 minutes later. Your step 3 review covered only the scopes step 2 reached.
+   For every other scope the dry run is a mechanical delay, not a review. Part A's guards still
+   hold every committed row's bytes. The delete set can also include objects that crossed the age
+   floor after the dry run (see Known limits).
+
+   **To stop deleting at any time**, set `ORPHAN_ATTACHMENT_SWEEP` back to `dry-run` (report only)
+   or `off`, and deploy the control plane. The next pass deletes nothing. A pass already running
+   finishes the scope it is on.
+
 To pause without turning the phase off, set `ORPHAN_ATTACHMENT_SWEEP_BATCH=0`. The phase still
 counts the eligible scopes and visits none. To go back, set the mode to `dry-run` or `off`. A
 condemned object that was not yet deleted stays condemned, and an upload of that id stays
 refused. Nothing un-condemns an id, because the bytes behind it are already gone or going.
+
+## Cost
+
+Per visited scope, the control plane's reach reads the scope's record, its tenant and, when it is
+not on a serving script, its version. Each is a directory read, and each writes one access-log
+row (K-24). In delete mode the licence read adds one more. At the default batch of 25 and the
+15-minute cron, that is 4,800 to 7,200 rows a day, plus 2,400 in delete mode. The access-log drain
+ships up to 500 rows per pass (48,000 a day) to Tier 2 before it prunes them. The licence read
+stays an audited read on purpose: one per pass for the whole window would carry a week of rows
+with up to 500 keys each.
 
 ## Known limits
 
