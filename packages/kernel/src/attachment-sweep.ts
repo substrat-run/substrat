@@ -225,7 +225,7 @@ export const ORPHAN_SWEEP_LICENCE_CAP = 1000;
 const LICENCE_SKEW_MS = 60_000;
 
 const hasLicenceTable = (sql: ScopedSql): boolean =>
-  sql.query(`SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = '${ATTACHMENT_SWEEP_LICENCE_TABLE}'`).length > 0;
+  sql.query(`SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = '_substrat_attachment_sweep_licence'`).length > 0;
 
 /**
  * When the scope's licence was recorded, if it holds one in force at `now`, else null. A licence
@@ -234,7 +234,7 @@ const hasLicenceTable = (sql: ScopedSql): boolean =>
  */
 export function orphanSweepLicensedAt(sql: ScopedSql, now: string): string | null {
   if (!hasLicenceTable(sql)) return null;
-  const [row] = sql.query<{ at: string | null }>(`SELECT MIN(licensed_at) AS at FROM ${ATTACHMENT_SWEEP_LICENCE_TABLE}`);
+  const [row] = sql.query<{ at: string | null }>(`SELECT MIN(licensed_at) AS at FROM _substrat_attachment_sweep_licence`);
   const at = row?.at ?? null;
   if (at === null) return null;
   const atMs = Date.parse(at);
@@ -263,7 +263,7 @@ export function refuseUnlicensedOrphanSweep(sql: ScopedSql, now: string): void {
  */
 export function recordOrphanSweepLicence(sql: ScopedSql, ids: readonly string[], now: string): boolean {
   const next = [...new Set(ids)].slice(0, ORPHAN_SWEEP_LICENCE_CAP);
-  const held = sql.query<{ id: string; licensed_at: string }>(`SELECT id, licensed_at FROM ${ATTACHMENT_SWEEP_LICENCE_TABLE}`);
+  const held = sql.query<{ id: string; licensed_at: string }>(`SELECT id, licensed_at FROM _substrat_attachment_sweep_licence`);
   if (held.length === 0 && next.length === 0) return false;
   if (held.length === next.length && held.length > 0) {
     const heldIds = new Set(held.map((r) => r.id));
@@ -272,10 +272,10 @@ export function recordOrphanSweepLicence(sql: ScopedSql, ids: readonly string[],
     const fresh = Number.isFinite(age) && age >= -LICENCE_SKEW_MS && age <= ORPHAN_SWEEP_DRY_RUN_WINDOW_MS / 2;
     if (fresh && next.every((id) => heldIds.has(id))) return false;
   }
-  sql.exec(`DELETE FROM ${ATTACHMENT_SWEEP_LICENCE_TABLE}`);
+  sql.exec(`DELETE FROM _substrat_attachment_sweep_licence`);
   if (next.length > 0) {
     sql.exec(
-      `INSERT INTO ${ATTACHMENT_SWEEP_LICENCE_TABLE} (id, licensed_at) SELECT value, ? FROM json_each(?)`,
+      `INSERT INTO _substrat_attachment_sweep_licence (id, licensed_at) SELECT value, ? FROM json_each(?)`,
       [now, JSON.stringify(next)],
     );
   }
@@ -292,7 +292,7 @@ export function condemnLicensedOrphanAttachments(sql: ScopedSql, ids: readonly s
   const licensed = sql
     .query<{ value: string }>(
       `SELECT j.value AS value FROM json_each(?) AS j
-        WHERE EXISTS (SELECT 1 FROM ${ATTACHMENT_SWEEP_LICENCE_TABLE} l WHERE l.id = j.value)
+        WHERE EXISTS (SELECT 1 FROM _substrat_attachment_sweep_licence l WHERE l.id = j.value)
         ORDER BY j.value`,
       [JSON.stringify(ids)],
     )
@@ -308,16 +308,16 @@ export function consumeOrphanSweepLicence(sql: ScopedSql, ids: readonly string[]
   if (ids.length === 0 || !hasLicenceTable(sql)) return;
   const json = JSON.stringify(ids);
   const held = sql.query(
-    `SELECT 1 AS hit FROM ${ATTACHMENT_SWEEP_LICENCE_TABLE} WHERE id IN (SELECT value FROM json_each(?)) LIMIT 1`,
+    `SELECT 1 AS hit FROM _substrat_attachment_sweep_licence WHERE id IN (SELECT value FROM json_each(?)) LIMIT 1`,
     [json],
   );
   if (held.length === 0) return;
-  sql.exec(`DELETE FROM ${ATTACHMENT_SWEEP_LICENCE_TABLE} WHERE id IN (SELECT value FROM json_each(?))`, [json]);
+  sql.exec(`DELETE FROM _substrat_attachment_sweep_licence WHERE id IN (SELECT value FROM json_each(?))`, [json]);
 }
 
 /** Drop the whole licence: every dump load does, so a restored, carried or forked store starts with none. */
 export function clearOrphanSweepLicence(sql: ScopedSql): void {
-  if (hasLicenceTable(sql)) sql.exec(`DELETE FROM ${ATTACHMENT_SWEEP_LICENCE_TABLE}`);
+  if (hasLicenceTable(sql)) sql.exec(`DELETE FROM _substrat_attachment_sweep_licence`);
 }
 
 /**
