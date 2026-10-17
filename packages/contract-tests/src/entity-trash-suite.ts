@@ -470,6 +470,27 @@ export function entityTrashContractSuite(
         expect(deleted.authorization?.map((a) => a.permission)).toEqual(['box:delete']);
       });
 
+      it('every purge of one run is stamped with the run\'s one invocation id, so it joins the run (#2192)', async () => {
+        const s = await freshScope();
+        const a = await dueBox(s);
+        const b = await dueBox(s);
+        await sweep(s);
+        const idOf = async (boxId: string) => {
+          const { entries } = (await (await stub(alice, s)).invoke('trash/history', { boxId })) as { entries: HistoryEntry[] };
+          return entries.find((e) => e.type === 'trashbox.deleted')!.invocationId;
+        };
+        const [first, second] = [await idOf(a), await idOf(b)];
+        expect(first).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+        // Two calls, two transactions, one run: before, each purge minted an id no line named.
+        expect(second).toBe(first);
+        // Twin: the next run is a new id.
+        await rearmIfFailed(s);
+        await raw(t, s, `UPDATE _substrat_schedule_state SET last_run_at = '2020-01-01T00:00:00.000Z' WHERE schedule_op = 'trash/delete-box'`);
+        const c = await dueBox(s);
+        await sweep(s);
+        expect(await idOf(c)).not.toBe(first);
+      });
+
       it('a purge that fails rolls back alone: the rest commit, it stays in the bin, the pass reports it', async () => {
         const s = await freshScope();
         const a = await dueBox(s);

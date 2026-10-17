@@ -5816,7 +5816,8 @@ export class SqliteScopeHost implements ScopeHost {
       try {
         if (schedule.purge) {
           // #119: a purge horizon's schedule runs its operation once per due entity, never once.
-          const pass = await this.runPurgeSweep(moduleId, tenantId, scopeId, schedule.operation);
+          // #2192: under the run's own id, so the purges and their deliveries join this run's line.
+          const pass = await this.runPurgeSweep(moduleId, tenantId, scopeId, schedule.operation, invocationId);
           stillDue = purgeStillDue(pass);
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
           report.errors.push(...outcome.errors);
@@ -5888,7 +5889,14 @@ export class SqliteScopeHost implements ScopeHost {
    * through a purge stub (`openSystemScope`) that never leaves this method, each in its own
    * transaction and under the cutoff the host re-checks inside it (`refuseTrashedTarget`).
    */
-  private async runPurgeSweep(moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId, operation: string): Promise<PurgePass> {
+  private async runPurgeSweep(
+    moduleId: ModuleId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    operation: string,
+    /** #2192: the schedule run this pass belongs to; every purge in it runs under that id. */
+    runInvocationId: string,
+  ): Promise<PurgePass> {
     const entityType = this.modules
       .get(moduleId)
       ?.schedules.find((s) => s.operation === operation && s.purge)?.purge?.entityType;
@@ -5917,7 +5925,7 @@ export class SqliteScopeHost implements ScopeHost {
       operation,
       due,
       async (entityId) => {
-        await stub.invoke(operation, { [due.idFrom]: entityId }, { invocationId: ulid() });
+        await stub.invoke(operation, { [due.idFrom]: entityId }, { invocationId: runInvocationId });
       },
       (write) => rt.actor.turn(() => write(spineSql(rt.db))),
     );
