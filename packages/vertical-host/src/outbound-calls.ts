@@ -62,19 +62,25 @@ const REDACTED = '[redacted]';
 /** A path longer than this is cut, after redaction. */
 const PATH_MAX = 200;
 
-/** Lowercase words, joined by `-` or `_`, each at most 16 letters: `messages`, `oauth_token`. */
-const WORDS = /^[a-z]{1,16}(?:[-_][a-z]{1,16})*$/;
+/**
+ * Lowercase words, at most 4 of them joined by `-` or `_`, each at most 16 letters:
+ * `messages`, `oauth_token`, `access-token`. Past four parts a segment is a token chunked by
+ * dashes, not a name.
+ */
+const WORDS = /^[a-z]{1,16}(?:[-_][a-z]{1,16}){0,3}$/;
 /** The same words with a short file extension: `me.json`, `token.json`, `clip.mp4`. */
-const WORDS_WITH_EXTENSION = /^[a-z]{1,16}(?:[-_][a-z]{1,16})*\.[a-z][a-z0-9]{0,4}$/;
+const WORDS_WITH_EXTENSION = /^[a-z]{1,16}(?:[-_][a-z]{1,16}){0,3}\.[a-z][a-z0-9]{0,4}$/;
+/** No kept segment is longer than this, whatever it is made of. */
+const SEGMENT_MAX = 40;
 /** An integer of at most 10 digits: a page number, a small numeric id. */
 const SMALL_INTEGER = /^[0-9]{1,10}$/;
 /** A version: `v1`, `v2.1`, `v10.0.3`. */
 const VERSION = /^v[0-9]{1,3}(?:\.[0-9]{1,3}){0,2}$/;
 
 /**
- * Whether one path segment is kept as it is. Default-deny: a segment is kept ONLY when it is
- * lowercase words (each at most 16 letters, joined by `-` or `_`), optionally with a short file
- * extension, an integer of at most 10 digits, or a version token (`v1`, `v2.1`). Everything else
+ * Whether one path segment is kept as it is. Default-deny: a segment of at most 40 characters
+ * is kept ONLY when it is lowercase words (at most 4, each at most 16 letters, joined by `-` or
+ * `_`), optionally with a short file extension, an integer of at most 10 digits, or a version token (`v1`, `v2.1`). Everything else
  * is redacted — every UUID and ULID, any segment mixing letters and digits (`oauth2`, `abc1234`),
  * anything with an uppercase letter (an owner or a repository named `Acme`), and any longer
  * number. An id in a path is not needed to diagnose a failed call: the host, the method, the
@@ -84,6 +90,7 @@ const VERSION = /^v[0-9]{1,3}(?:\.[0-9]{1,3}){0,2}$/;
  * integer of up to 10 digits are written as they are, whatever they mean to the destination.
  */
 export function keepsSegment(segment: string): boolean {
+  if (segment.length > SEGMENT_MAX) return false;
   return (
     segment === '' ||
     WORDS.test(segment) ||

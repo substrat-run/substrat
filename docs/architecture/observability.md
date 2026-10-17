@@ -306,8 +306,8 @@ headers, and its offset from the request's start (`atMs`, which places it on the
 axis without comparing two clocks). A `failed` call names its error's class (`TypeError`),
 never its message, which can carry a URL. Never a header, a body, a query string, a fragment
 or userinfo. The path is redacted segment by segment, and the rule is default-deny: a segment
-is kept only when it is lowercase words (each part at most 16 letters, joined by `-` or `_`),
-optionally with a short file extension (`me.json`), an integer of at most 10 digits, or a
+is kept only when it is at most 40 characters and lowercase words (at most 4 parts, each at most
+16 letters, joined by `-` or `_`), optionally with a short file extension (`me.json`), an integer of at most 10 digits, or a
 version token (`v1`, `v2.1`). Everything else is written `[redacted]`: every UUID and ULID, any
 segment that mixes letters and digits (`oauth2`, a capability-URL token like `ab1cd2e`), any
 segment with an uppercase letter, so a mixed-case or digit-bearing owner or repository name
@@ -318,6 +318,7 @@ to diagnose a failed call; the host, method, status, outcome and the path's shap
 - the host, always, so a secret carried in a subdomain survives;
 - a lowercase-letter word of up to 16 letters per part, whatever it means to the destination
   (`deadbeefcafebabe` reads as a word);
+- such words with a short extension, whose up to 5 characters may hold digits (`token.ab123`);
 - an integer of up to 10 digits.
 
 Calls to the scope-store transport are already named in `storeCalls` and are not recorded

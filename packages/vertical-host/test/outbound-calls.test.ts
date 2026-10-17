@@ -27,6 +27,8 @@ describe('redactOutboundPath — default-deny: a segment is kept only when it is
     ['an OAuth token endpoint', '/oauth/token'],
     ['a dotted file name', '/api/me.json'],
     ['underscore- and hyphen-joined words', '/v2.1/oauth_token/access-tokens'],
+    ['an OAuth path with a joined word', '/v1/oauth/access-token'],
+    ['four joined words, the most kept', '/refresh-access-token_grant'],
     ['an integer of 10 digits', '/chats/1234567890'],
     ['the root', '/'],
     ['a lowercase owner and repository', '/repos/owner/name'],
@@ -55,6 +57,9 @@ describe('redactOutboundPath — default-deny: a segment is kept only when it is
     ['a percent-encoded segment', '/files/a%2Fb', '/files/[redacted]'],
     ['an @ segment', '/mail/user@example', '/mail/[redacted]'],
     ['a word part past 16 letters', '/authorizationcodes', '/[redacted]'],
+    ['five joined words', '/a-b-c-d-e', '/[redacted]'],
+    ['a 30-part dash-chunked lowercase token', '/x/' + Array.from({ length: 30 }, () => 'ab').join('-'), '/x/[redacted]'],
+    ['joined words past 40 characters', '/abcdefghijklmnop-abcdefghijklmnop-abcdefg', '/[redacted]'],
   ];
   it.each(redacted)('redacts %s', (_what, path, written) => {
     expect(redactOutboundPath(path)).toBe(written);
@@ -65,6 +70,8 @@ describe('redactOutboundPath — default-deny: a segment is kept only when it is
     expect(keepsSegment('hunterhunterhunt')).toBe(true);
     // Even one that is all hex letters: the rule cannot tell it from a word.
     expect(keepsSegment('deadbeefcafebabe')).toBe(true);
+    // And a short extension, which may hold digits.
+    expect(keepsSegment('token.ab123')).toBe(true);
     expect(keepsSegment('hunterhunterhunte')).toBe(false);
     expect(keepsSegment('1234567890')).toBe(true);
   });
