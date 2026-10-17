@@ -6575,6 +6575,33 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     ).rejects.toThrow(/runs version .*, not 01JTESTVRSN00000000000OTHR/);
   });
 
+  it("a destructive pass that condemns nothing leaves the scope's write revision alone; one that condemns moves it", async () => {
+    const revisionOf = async (s: ScopeId) => (await host.exportScopeStampedLocal(s)).revision;
+    // (a) A scope with nothing under its prefix.
+    const empty = await newScope();
+    const before = await revisionOf(empty);
+    expect((await sweep(empty)).deleted).toBe(0);
+    expect(await revisionOf(empty)).toBe(before);
+    // (b) A scope whose only old object has its row: judged, condemned nothing.
+    const live = await newScope();
+    await (await host.attachments(owner, t, live)).upload({
+      entity: { entityType: 'udoc', entityId: 'doc-1' },
+      filename: 'a.txt',
+      contentType: 'text/plain',
+      visibility: 'internal',
+      body: new TextEncoder().encode('kept'),
+    });
+    const held = await revisionOf(live);
+    const judged = await sweep(live);
+    expect(judged).toMatchObject({ orphans: 0, deleted: 0 });
+    expect(judged.candidates).toBeGreaterThan(0);
+    expect(await revisionOf(live)).toBe(held);
+    // The twin: an orphan condemned is a write, and the revision moves.
+    const orphan = plant(live);
+    expect((await sweep(live)).keys).toEqual([orphan]);
+    expect(await revisionOf(live)).not.toBe(held);
+  });
+
   it('with no directory, a pass needs its caller to have read the copy ledger', async () => {
     const s = await newScope();
     const orphan = plant(s);

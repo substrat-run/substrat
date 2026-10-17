@@ -175,8 +175,13 @@ export function condemnOrphanAttachments(sql: ScopedSql, ids: readonly string[],
       [id, now],
     );
   }
-  const horizon = new Date(Date.parse(now) - ORPHAN_TOMBSTONE_RETENTION_MS).toISOString();
-  sql.exec('DELETE FROM _substrat_attachment_condemned WHERE condemned_at < ?', [horizon]);
+  // Only a call that condemned something writes at all, so a pass that finds nothing leaves the
+  // scope's write revision where it was (a carry or a kept-copy release is fenced on it). The prune
+  // still never reaches this call's own tombstones, stamped `now`, past a horizon well before it.
+  if (rowless.length > 0) {
+    const horizon = new Date(Date.parse(now) - ORPHAN_TOMBSTONE_RETENTION_MS).toISOString();
+    sql.exec('DELETE FROM _substrat_attachment_condemned WHERE condemned_at < ?', [horizon]);
+  }
   return rowless;
 }
 
