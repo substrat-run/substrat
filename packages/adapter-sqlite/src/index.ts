@@ -440,6 +440,7 @@ import {
   type RoleBound,
   type ScopeRoleHolder,
   admitPeer,
+  boundToPeerDeclarations,
   peerCallerAt,
   collectPeers,
   peerSeats,
@@ -2068,7 +2069,8 @@ export class SqliteScopeHost implements ScopeHost {
       this.directory.pragma('journal_mode = WAL');
       this.ensureDirectorySchema();
       this.loadRoles();
-      this.checker =
+      // #2263: whichever checker evaluates, a peer holds only what the running declaration names.
+      this.checker = boundToPeerDeclarations(
         customChecker ??
         createTupleChecker({
           directory: this.directory,
@@ -2078,7 +2080,9 @@ export class SqliteScopeHost implements ScopeHost {
           // scripted one can actually expire a grant. A caller-supplied `checker`
           // keeps its own time source — this only binds the built-in one.
           clock: () => this.clock(),
-        });
+        }),
+        () => this.peerDeclarations(),
+      );
       this.admin = this.buildAdmin();
       this.owner = owner;
     } catch (err) {
@@ -3063,6 +3067,7 @@ export class SqliteScopeHost implements ScopeHost {
     }
     // #1705: validated whole and kept only if it passes, so a refused module leaves nothing.
     this.crossVertical.register(manifest, registration.imports);
+    this.peerUnion = undefined; // #2263: the next check reads the new module set's declarations
     this.modules.set(manifest.id, {
       id: manifest.id,
       // The order the kernel writes once (#1677): authored, then search, then list indexes.
@@ -5213,10 +5218,15 @@ export class SqliteScopeHost implements ScopeHost {
     return this.buildAttachments(rt, { kind: 'capability-session', hash }, store);
   }
 
-  /** Every registered module's `peers`, as one declaration per peer vertical (#1706). */
+  /**
+   * Every registered module's `peers`, as one declaration per peer vertical (#1706). Built once
+   * per registered module set and dropped by `registerModule` (#2263): the checker reads it on
+   * every check, so it must be a lookup, never a rebuild.
+   */
   private peerDeclarations(): PeerDeclarations {
-    return collectPeers(this.modules.values());
+    return (this.peerUnion ??= collectPeers(this.modules.values()));
   }
+  private peerUnion: PeerDeclarations | undefined;
 
   /**
    * The peer door (#1706) — mirror of the connection, system and capability doors. The caller is
@@ -8311,7 +8321,7 @@ export class SqliteScopeHost implements ScopeHost {
       }
       const rt = this.runtime(tenantId, scopeId);
       const states: PeerGrantsRow[] = await rt.actor.turn(() =>
-        peerGrantsStatus(switchSqlOf(rt.db), new Date().toISOString()),
+        peerGrantsStatus(switchSqlOf(rt.db), new Date().toISOString(), this.peerDeclarations()),
       );
       const offPeers = new Set(states.filter((p) => p.calls === 'off').map((p) => p.vertical));
       const explanations =

@@ -48,6 +48,8 @@ import {
   type VerticalResolution,
 } from '@substrat-run/contracts';
 import { isPrimaryScope } from './scope-identity.js';
+import type { PermissionChecker } from './permission-checker.js';
+import { inheritTupleTrust } from './permission-eval.js';
 import {
   PEER_SUBJECT_PREFIX,
   SYSTEM_SWITCH_OFF_RELATION,
@@ -130,6 +132,89 @@ export function peerSeats(peers: PeerDeclarations, scopeId: string): PeerSeat[] 
 }
 
 /**
+ * The checker a host evaluates every check through, bounded by the RUNNING peer declaration
+ * (#2263): a `vertical:<slug>` subject holds a key only when the code serving the scope declares
+ * that key for that peer, AND the inner checker finds it held. Every other subject is the inner
+ * checker's, untouched — the same object methods, called with the same arguments.
+ *
+ * Why it is needed: a peer's keys are materialised as scope tuples by `peerSeats`, and a seat
+ * only ever adds (`seatScopeTuple`). A version that narrows a peer (drops a key) or drops the peer
+ * altogether left every scope holding the old keys live, so the narrowing a reviewer approved in
+ * the permission diff never took effect, and `peerCovers` (#1705's exported-event gate) answered
+ * `held` for a peer the running code no longer declares. Retiring the tuples at reconcile is not
+ * the answer: a tombstone would block the seat the day the key is declared again (#1659 leaves
+ * tombstones alone, by design), a DELETE would erase K-21 evidence, and either would only land
+ * on the next reconcile. Bounding the evaluation lands with the version, on its first call.
+ *
+ * So the stale tuple stays as evidence and is inert. A key declared again is held again through
+ * the tuple still there; an operator's tombstone stays a tombstone; the kill switch's OFF/ON moves
+ * the tuples as before and can never give back more than the declaration names.
+ *
+ * Fail closed: when `declarations` throws or answers nothing, a peer subject holds nothing — the
+ * raw tuples are never consulted on their own. `declarations` is read on every call and must be
+ * O(1) (a cached map, rebuilt only when the registered module set changes); the lookup in it is
+ * a `Map.get`.
+ */
+export function boundToPeerDeclarations(
+  inner: PermissionChecker,
+  declarations: () => PeerDeclarations | undefined,
+): PermissionChecker {
+  /** The keys `vertical` may hold under the running code; empty when unknown or unreadable. */
+  const declaredKeys = (vertical: string): ReadonlySet<string> => {
+    try {
+      return declarations()?.get(vertical)?.permissions ?? NO_KEYS;
+    } catch {
+      return NO_KEYS;
+    }
+  };
+  const bounded: PermissionChecker = {
+    check: (subject, permission, node, entity) => {
+      if (subject.kind === 'vertical' && !declaredKeys(subject.id).has(permission)) {
+        return Promise.resolve({ allowed: false, checked: permission, node });
+      }
+      return inner.check(subject, permission, node, entity);
+    },
+    covers: async (subject, required, node) => {
+      if (subject.kind !== 'vertical') return inner.covers(subject, required, node);
+      const keys = declaredKeys(subject.id);
+      const asked = required.filter((p) => keys.has(p));
+      const answer = await inner.covers(subject, asked, node);
+      const innerMissing = new Set<string>(answer.covered ? [] : answer.missing);
+      const missing = required.filter((p) => !keys.has(p) || innerMissing.has(p));
+      return missing.length === 0 ? { covered: true, missing: [] } : { covered: false, missing };
+    },
+  };
+  if (inner.holdings) {
+    const holdings = inner.holdings.bind(inner);
+    bounded.holdings = async (subject, node) => {
+      const held = await holdings(subject, node);
+      if (subject.kind !== 'vertical') return held;
+      const keys = declaredKeys(subject.id);
+      return {
+        permissions: held.permissions.filter((p) => keys.has(p)),
+        // A role is authority by expansion; a peer is declared keys, never a role.
+        roles: [],
+        granted: held.granted.filter((p) => keys.has(p)),
+        narrowed: held.narrowed.filter((n) => keys.has(n.permission)),
+      };
+    };
+  }
+  if (inner.grantedEntities) {
+    const grantedEntities = inner.grantedEntities.bind(inner);
+    bounded.grantedEntities = (subject, permission, node, entityType, checkEntity, options) => {
+      if (subject.kind === 'vertical' && !declaredKeys(subject.id).has(permission)) {
+        return Promise.resolve({ kind: 'ids', ids: [], nextCursor: null });
+      }
+      return grantedEntities(subject, permission, node, entityType, checkEntity, options);
+    };
+  }
+  // Only narrows, so the built-in evaluator's node-wide `all` still holds for it.
+  return inheritTupleTrust(inner, bounded);
+}
+
+const NO_KEYS: ReadonlySet<string> = new Set<string>();
+
+/**
  * The door's admission (#1706), run inside the scope's own serialized task on every call, so a
  * switch pulled between two calls refuses the second. Throws `forbidden` — a door refusal, never
  * a K-35 denial: no permission was checked, exactly as for a capability's allowlist. Returns the
@@ -202,12 +287,16 @@ export interface PeerGrantsRow {
  * fact the DIRECTORY holds, not this storage, and the surfaces above join the two.
  *
  * Then `subjectGrantState` per subject: the SAME predicate `admitPeer` refuses on, so the
- * status a tenant reads and the answer the next call gets cannot disagree.
+ * status a tenant reads and the answer the next call gets cannot disagree. And (#2263) the same
+ * bound the checker applies (`boundToPeerDeclarations`): `on` needs a live grant of a key the
+ * RUNNING declaration names, so a peer the code no longer declares, or whose only live grants
+ * are keys it dropped, reads `ungranted` — what its next call meets. An OFF position stays `off`:
+ * it was put there on purpose and is still recorded, whatever the declaration says.
  *
  * `substr` rather than `LIKE`, as everywhere on this table: `LIKE` is case-insensitive in
  * SQLite and a Durable Object caps its patterns (#1655).
  */
-export function peerGrantsStatus(db: SwitchSql, now: string): PeerGrantsRow[] {
+export function peerGrantsStatus(db: SwitchSql, now: string, declarations: PeerDeclarations): PeerGrantsRow[] {
   const rows = db.all(
     `SELECT DISTINCT subject FROM _substrat_tuples
       WHERE substr(subject, 1, ${PEER_SUBJECT_PREFIX.length}) = '${PEER_SUBJECT_PREFIX}'
@@ -216,8 +305,22 @@ export function peerGrantsStatus(db: SwitchSql, now: string): PeerGrantsRow[] {
   ) as { subject: string }[];
   return rows.map((row) => {
     const vertical = row.subject.slice(PEER_SUBJECT_PREFIX.length);
-    return { vertical, calls: subjectGrantState(db, row.subject, now) };
+    const calls = subjectGrantState(db, row.subject, now);
+    return { vertical, calls: calls === 'on' && !holdsDeclaredKey(db, row.subject, now, declarations.get(vertical)) ? 'ungranted' : calls };
   });
+}
+
+/** Does `subject` hold a live, unexpired grant of a key `declared` names? The status read's bound. */
+function holdsDeclaredKey(db: SwitchSql, subject: string, now: string, declared: PeerDeclaration | undefined): boolean {
+  if (!declared) return false;
+  const live = db.all(
+    `SELECT relation FROM _substrat_tuples
+      WHERE subject = ? AND substr(relation, 1, 8) = 'granted:'
+        AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)`,
+    subject,
+    now,
+  ) as { relation: string }[];
+  return live.some((row) => declared.permissions.has(row.relation.slice('granted:'.length)));
 }
 
 /**

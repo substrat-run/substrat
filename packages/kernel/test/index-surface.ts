@@ -220,6 +220,8 @@ export const INDEX_VALUE_EXPORTS = [
   'boundEverOf',
   'boundShapesColumn',
   'boundShapesOfColumn',
+  // #2263: a peer holds only what the running declaration names; both adapters wrap their checker.
+  'boundToPeerDeclarations',
   'callReservedStoreOperation',
   'callScopeStore',
   'capabilitiesForLoad',

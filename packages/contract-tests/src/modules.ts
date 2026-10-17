@@ -2801,6 +2801,21 @@ export const peerMod: ModuleRegistration = {
   }),
 };
 
+/**
+ * #2263: `peerMod` as a later version would ship it — `PEER_CALLER` narrowed to `peer:read`, or
+ * dropped altogether — so a suite can run the narrower code over storage the wider one seated.
+ */
+const peerModWith = (peers: NonNullable<typeof peerModManifest.peers>): ModuleRegistration => ({
+  ...peerMod,
+  manifest: { ...peerModManifest, peers },
+});
+export const peerModNarrowed: ModuleRegistration = peerModWith(
+  peerModManifest.peers!.map((p) => (p.vertical === PEER_CALLER ? { ...p, permissions: [PEER_READ] } : p)),
+);
+export const peerModWithoutCaller: ModuleRegistration = peerModWith(
+  peerModManifest.peers!.filter((p) => p.vertical !== PEER_CALLER),
+);
+
 // -- #1746: what an invocation emitted ----------------------------------------
 
 export const emittedModManifest = moduleManifest.parse({

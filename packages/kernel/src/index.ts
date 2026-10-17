@@ -677,6 +677,7 @@ export {
   collectPeers,
   peerGrantsStatus,
   peerSeats,
+  boundToPeerDeclarations,
   peerSubjectRef,
   resolveVerticalInstanceFrom,
   switchPeer,

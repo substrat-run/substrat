@@ -57,5 +57,8 @@ declare namespace Cloudflare {
     SPINE_DROP_SCOPE: DurableObjectNamespace;
     /** #113: a wiped carried copy whose module set has no migrations — attachments.test.ts. */
     WIPED_COPY_SCOPE: DurableObjectNamespace;
+    /** #2263: peerMod narrowed / without the caller — peer-local.test.ts. */
+    NARROWED_PEER_SCOPE: DurableObjectNamespace;
+    REMOVED_PEER_SCOPE: DurableObjectNamespace;
   }
 }
