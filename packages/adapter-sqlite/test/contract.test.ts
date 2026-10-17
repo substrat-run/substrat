@@ -20,6 +20,8 @@ import {
   capabilityAttachmentContractSuite,
   uploadLinkContractSuite,
   orphanSweepContractSuite,
+  uploadLinkReplayContractSuite,
+  type OrphanSweepFixture,
   attachmentRefusalContractSuite,
   attachmentTextContractSuite,
   capabilityContractSuite,
@@ -457,7 +459,7 @@ uploadLinkContractSuite('adapter-sqlite', attachmentHostFixture);
 
 // #2314: the orphan-byte sweep over the per-tenant directory, with each put observable so a test
 // can hold an upload between its bytes and its row.
-orphanSweepContractSuite('adapter-sqlite', async () => {
+const orphanSweepFixture = async (): Promise<OrphanSweepFixture> => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-orphan-sweep-'));
   let hook: ((key: string) => Promise<void>) | null = null;
   let ahead = 0;
@@ -511,7 +513,10 @@ orphanSweepContractSuite('adapter-sqlite', async () => {
       rmSync(dir, { recursive: true, force: true });
     },
   };
-});
+};
+orphanSweepContractSuite('adapter-sqlite', orphanSweepFixture);
+// #2315: a retry of a redemption with its Idempotency-Key, against the same held, raw store.
+uploadLinkReplayContractSuite('adapter-sqlite', orphanSweepFixture);
 
 // #113: an attachment refusal reaches the caller typed — the pure adapter's half of the parity.
 attachmentRefusalContractSuite('adapter-sqlite', attachmentHostFixture);

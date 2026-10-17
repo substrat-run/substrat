@@ -93,6 +93,12 @@ const MANIFEST = {
       OIDC_CLIENT_ID: 'CP_OIDC_CLIENT_ID',
       OIDC_CLIENT_SECRET: 'CP_OIDC_CLIENT_SECRET',
       SESSION_SECRET: 'CP_SESSION_SECRET',
+      // Optional second issuer (`/api/auth/login?idp=alt`): all three or none. The client pair is
+      // THIS worker's client at that issuer; the issuer URL is shared. Blanking them does not
+      // switch it off (push skips blanks, deletes nothing): `wrangler secret delete` the three.
+      OIDC_ALT_ISSUER: 'OIDC_ALT_ISSUER',
+      OIDC_ALT_CLIENT_ID: 'CP_OIDC_ALT_CLIENT_ID',
+      OIDC_ALT_CLIENT_SECRET: 'CP_OIDC_ALT_CLIENT_SECRET',
       SERVICE_TOKEN: 'SERVICE_TOKEN',
       PLATFORM_SECRET: 'PLATFORM_SECRET',
       ROUTER_SECRET: 'ROUTER_SECRET',
@@ -165,6 +171,12 @@ const MANIFEST = {
       OIDC_CLIENT_ID: 'BUILDER_OIDC_CLIENT_ID',
       OIDC_CLIENT_SECRET: 'BUILDER_OIDC_CLIENT_SECRET',
       SESSION_SECRET: 'BUILDER_SESSION_SECRET',
+      // Optional second issuer (`/api/auth/login?idp=alt`): all three or none. The client pair is
+      // THIS worker's client at that issuer; the issuer URL is shared. Blanking them does not
+      // switch it off (push skips blanks, deletes nothing): `wrangler secret delete` the three.
+      OIDC_ALT_ISSUER: 'OIDC_ALT_ISSUER',
+      OIDC_ALT_CLIENT_ID: 'BUILDER_OIDC_ALT_CLIENT_ID',
+      OIDC_ALT_CLIENT_SECRET: 'BUILDER_OIDC_ALT_CLIENT_SECRET',
       // The control plane's SERVICE_TOKEN, under the studio's name for it —
       // membership lookups (/internal/builder/identity-tenants), dashboard-style.
       CP_SERVICE_TOKEN: 'SERVICE_TOKEN',
@@ -197,6 +209,12 @@ const MANIFEST = {
       OIDC_CLIENT_ID: 'DASH_OIDC_CLIENT_ID',
       OIDC_CLIENT_SECRET: 'DASH_OIDC_CLIENT_SECRET',
       SESSION_SECRET: 'DASH_SESSION_SECRET',
+      // Optional second issuer (`/api/auth/login?idp=alt`): all three or none. The client pair is
+      // THIS worker's client at that issuer; the issuer URL is shared. Blanking them does not
+      // switch it off (push skips blanks, deletes nothing): `wrangler secret delete` the three.
+      OIDC_ALT_ISSUER: 'OIDC_ALT_ISSUER',
+      OIDC_ALT_CLIENT_ID: 'DASH_OIDC_ALT_CLIENT_ID',
+      OIDC_ALT_CLIENT_SECRET: 'DASH_OIDC_ALT_CLIENT_SECRET',
       // The control plane's SERVICE_TOKEN, under the dashboard's name for it.
       CP_SERVICE_TOKEN: 'SERVICE_TOKEN',
       SECRET_BOX_KEY: 'SECRET_BOX_KEY',

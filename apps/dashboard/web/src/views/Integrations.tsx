@@ -1,11 +1,12 @@
 import { Fragment, useEffect, useState } from 'react';
-import { Button, Dialog, Input, Select } from '@substrat-run/ui';
+import { Button, Checkbox, Dialog, Input, Select } from '@substrat-run/ui';
 import {
   api,
   ApiError,
   type AccountIntegration,
   type AppIntegration,
   type AppRow,
+  type CertificateView,
   type ConnectionActivityView,
   type ConnectionFact,
   type ConnectionIntentView,
@@ -412,26 +413,24 @@ function IntegrationDetail({
             private key never leaves the plane — and the tenant's next step until it is uploaded. */}
         {activity?.certificate && (
           <div>
-            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>
-              Certificate
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '4px 12px', fontSize: 12 }}>
-              <span style={{ color: 'var(--text-tertiary)' }}>Thumbprint</span>
-              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
-                {activity.certificate.thumbprint}
-              </span>
-              <span style={{ color: 'var(--text-tertiary)' }}>Expires</span>
-              <span style={{ color: 'var(--text-secondary)' }}>{activity.certificate.notAfter.slice(0, 10)}</span>
-            </div>
-            <div style={{ marginTop: 6 }}>
-              <Button variant="secondary" size="sm" onClick={() => downloadCertificate(activity.certificate!.pem, provider.provider)}>
-                Download certificate (.cer)
-              </Button>
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>
-              Upload it to your app registration under Certificates &amp; secrets, then test the connection. The
-              thumbprint Entra shows should match the one above. The private key stays with the platform.
-            </div>
+            <CertificateCard
+              title="Certificate"
+              certificate={activity.certificate}
+              download="Download certificate (.cer)"
+              filename={provider.provider}
+              note="Upload it to your app registration under Certificates & secrets, then test the connection. The thumbprint Entra shows should match the one above. The private key stays with the platform."
+            />
+            {activity.certificate.next && (
+              <div style={{ marginTop: 10 }}>
+                <CertificateCard
+                  title="New certificate"
+                  certificate={activity.certificate.next}
+                  download="Download new certificate (.cer)"
+                  filename={`${provider.provider}-new`}
+                  note={`Upload it beside the current one before ${activity.certificate.notAfter.slice(0, 10)}, then save the connection: it switches to the new certificate once Entra accepts it, and you can then remove the old one from the app registration. Until then the current certificate keeps signing.`}
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -806,17 +805,26 @@ function ConnectDialog({
         )}
 
         {(!redirect || manual) &&
-          provider.fields.map((f) => (
-            <Input
-              key={f.key}
-              label={f.optional ? `${f.label} (optional)` : f.label}
-              type={f.secret ? 'password' : 'text'}
-              placeholder={f.placeholder ?? (f.secret ? '••••••••' : '')}
-              value={values[f.key] ?? ''}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-              mono
-            />
-          ))}
+          provider.fields.map((f) =>
+            f.toggle ? (
+              <Checkbox
+                key={f.key}
+                label={f.label}
+                checked={values[f.key] === 'yes'}
+                onChange={(on) => setValues((v) => ({ ...v, [f.key]: on ? 'yes' : '' }))}
+              />
+            ) : (
+              <Input
+                key={f.key}
+                label={f.optional ? `${f.label} (optional)` : f.label}
+                type={f.secret ? 'password' : 'text'}
+                placeholder={f.placeholder ?? (f.secret ? '••••••••' : '')}
+                value={values[f.key] ?? ''}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                mono
+              />
+            ),
+          )}
         {redirect && (
           <div>
             <Button variant="ghost" size="sm" onClick={() => setManual((m) => !m)}>
@@ -1204,6 +1212,41 @@ export function Integrations() {
         />
       )}
     </Page>
+  );
+}
+
+/** One public certificate: its thumbprint and end, a download, and what to do with it. */
+function CertificateCard({
+  title,
+  certificate,
+  download,
+  filename,
+  note,
+}: {
+  title: string;
+  certificate: CertificateView;
+  download: string;
+  filename: string;
+  note: string;
+}) {
+  return (
+    <>
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>{title}</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '4px 12px', fontSize: 12 }}>
+        <span style={{ color: 'var(--text-tertiary)' }}>Thumbprint</span>
+        <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
+          {certificate.thumbprint}
+        </span>
+        <span style={{ color: 'var(--text-tertiary)' }}>Expires</span>
+        <span style={{ color: 'var(--text-secondary)' }}>{certificate.notAfter.slice(0, 10)}</span>
+      </div>
+      <div style={{ marginTop: 6 }}>
+        <Button variant="secondary" size="sm" onClick={() => downloadCertificate(certificate.pem, filename)}>
+          {download}
+        </Button>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>{note}</div>
+    </>
   );
 }
 

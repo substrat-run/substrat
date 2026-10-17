@@ -1136,6 +1136,15 @@ export interface ProviderField {
   placeholder?: string;
   /** #2100: may be left empty — an alternative, not part of the credential's set. */
   optional?: boolean;
+  /** A checkbox: sent as `'yes'` when ticked, left out otherwise. */
+  toggle?: boolean;
+}
+
+/** A public certificate a connection signs in with (#2100). */
+export interface CertificateView {
+  pem: string;
+  thumbprint: string;
+  notAfter: string;
 }
 
 /** One provider connection, metadata only — the row cannot carry its secret. */
@@ -1335,7 +1344,10 @@ export interface ConnectionActivityView {
    * #2100: the public certificate the connection signs in with, for the tenant to upload on
    * the provider's side. Absent or null when the provider or this connection uses none.
    */
-  certificate?: { pem: string; thumbprint: string; notAfter: string } | null;
+  certificate?: (CertificateView & {
+    /** The successor being rotated in; the fields above stay the certificate in use until it is uploaded. */
+    next?: CertificateView;
+  }) | null;
   /**
    * The platform's dispatch record for this provider (#618) — newest first, empty on a plane
    * too old to serve it (the read is best-effort so a missing journal never costs the activity).
@@ -2311,6 +2323,8 @@ export const api = {
  * Auth is a full-page redirect — the OIDC round-trip needs a real navigation.
  * `returnTo` is a same-origin path the callback returns to (e.g. an invite link);
  * `loginHint` prefills the email at the IdP; `screenHint` opens sign-up vs log-in.
+ * Opening the dashboard as `/?idp=alt` signs in through the alternate issuer instead of
+ * the default one (the server accepts that one value and ignores any other).
  */
 export const signIn = (
   opts: { returnTo?: string; loginHint?: string; screenHint?: 'signup' | 'login' } = {},
@@ -2319,6 +2333,7 @@ export const signIn = (
   if (opts.returnTo) p.set('returnTo', opts.returnTo);
   if (opts.loginHint) p.set('login_hint', opts.loginHint);
   if (opts.screenHint) p.set('screen_hint', opts.screenHint);
+  if (new URLSearchParams(window.location.search).get('idp') === 'alt') p.set('idp', 'alt');
   const qs = p.toString();
   window.location.href = `/api/auth/login${qs ? `?${qs}` : ''}`;
 };

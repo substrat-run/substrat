@@ -15,7 +15,9 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import {
   UPLOAD_LINK_PATH_PREFIX,
+  UPLOAD_LINK_REPLAY_GRACE_SECONDS,
   UPLOAD_LINK_SECRET_PREFIX,
+  instant,
   platformActorId,
   principalId,
   scopeId,
@@ -439,6 +441,130 @@ describe('mountUploadLinkRedeem — an upload link, over HTTP', () => {
       // @ts-expect-error -- `path` was removed: a custom mount would match no minted URL, and escape the redaction.
       mountUploadLinkRedeem(new Hono(), { host: () => host, node: () => node, path: '/elsewhere/:entityType/:entityId/:secret' });
     });
+  });
+});
+
+describe('mountUploadLinkRedeem — a lost reply is retryable with Idempotency-Key (#2315)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-upl-replay-'));
+  // The host's own clock, stepped by a case: the far end of the replay window is a clock fact.
+  let ahead = 0;
+  const host = new SqliteScopeHost({ dir, clock: () => instant.parse(new Date(Date.now() + ahead).toISOString()) });
+  const t1 = tenantId.parse(ulid());
+  const s1 = scopeId.parse(ulid());
+  const alice = principalId.parse(ulid());
+  const staff = platformActorId.parse(ulid());
+  const node = { tenantId: t1, scopeId: s1 };
+  const calls = { host: 0 };
+  const app = new Hono();
+  mountUploadLinkRedeem(app, {
+    host: () => {
+      calls.host++;
+      return host;
+    },
+    node: () => node,
+  });
+
+  let n = 0;
+  const target = (): EntityRef => ({ entityType: 'udoc', entityId: `replay-doc-${++n}` });
+  const key = (): string => `key-${ulid()}`;
+  const mint = async (entity: EntityRef): Promise<MintedUploadLink> =>
+    (await host.getScope(alice, t1, s1)).invoke<MintedUploadLink>('upl/mint', { entity });
+  const put = (path: string, body: string, headers: Record<string, string> = {}): Promise<Response> =>
+    Promise.resolve(app.request(`http://crm.test${path}?filename=a.txt`, { method: 'PUT', body, headers }));
+  const filesOf = async (entity: EntityRef) => (await host.attachments(alice, t1, s1)).list(entity);
+  /** Everything a client can read off an answer: the status, every header, the body. */
+  const seen = async (res: Response) => ({
+    status: res.status,
+    headers: [...res.headers.entries()].sort(([a], [b]) => a.localeCompare(b)),
+    body: await res.text(),
+  });
+
+  beforeAll(async () => {
+    host.registerModule(uploadLinkMod);
+    await host.admin.createTenant(staff, { id: t1, slug: 'upl-replay', name: 'Upload replay' });
+    await host.admin.grantEntitlement(staff, t1, 'upl');
+    await host.provisionScope(staff, { tenantId: t1, scopeId: s1, vertical: 'upl-vertical' });
+    await host.admin.activateScope(staff, t1, s1);
+    await host.provisionBlobStore(staff, { tenantId: t1, vertical: 'upl-vertical', binding: 'ATTACHMENTS' });
+    await host.admin.defineRole(staff, t1, { key: 'owner', permissions: [UPL_READ, UPL_WRITE], source: 'vertical' });
+    await host.admin.assignRole(staff, { principalId: alice, roleKey: 'owner', node: { tenantId: t1, scopeId: null } });
+  });
+
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('the retry answers 200 with the same body the lost 201 carried, and stores nothing more', async () => {
+    const entity = target();
+    const k = key();
+    const minted = await mint(entity);
+    const first = await put(minted.path, 'hello', { 'Idempotency-Key': k });
+    expect(first.status).toBe(201);
+    const stored = await first.text();
+    const again = await put(minted.path, 'hello', { 'Idempotency-Key': k });
+    expect(again.status).toBe(200);
+    expect(await again.text()).toBe(stored);
+    expect(again.headers.get('cache-control')).toBe('no-store');
+    expect(again.headers.get('x-content-type-options')).toBe('nosniff');
+    // The structured-field spelling of the same key is the same key.
+    expect((await put(minted.path, 'hello', { 'Idempotency-Key': `"${k}"` })).status).toBe(200);
+    expect(await filesOf(entity)).toHaveLength(1);
+  });
+
+  it('a retry with other bytes under the key is 422, and stores nothing', async () => {
+    const entity = target();
+    const k = key();
+    const minted = await mint(entity);
+    expect((await put(minted.path, 'hello', { 'Idempotency-Key': k })).status).toBe(201);
+    const other = await put(minted.path, 'hellp', { 'Idempotency-Key': k });
+    expect(other.status).toBe(422);
+    expect(((await other.json()) as { reason?: string }).reason).toBe('upload_link_replay_mismatch');
+    expect(await filesOf(entity)).toHaveLength(1);
+  });
+
+  it('no key, another key, past the window and a removed file are the same 410: status, headers and body', async () => {
+    const entity = target();
+    const k = key();
+    const minted = await mint(entity);
+    const created = (await (await put(minted.path, 'hello', { 'Idempotency-Key': k })).json()) as { id: string };
+    const noKey = await seen(await put(minted.path, 'hello'));
+    expect(noKey.status).toBe(410);
+    const wrongKey = await seen(await put(minted.path, 'hello', { 'Idempotency-Key': key() }));
+
+    // A second link, its replay judged at the far end of the window.
+    const late = target();
+    const lateLink = await mint(late);
+    expect((await put(lateLink.path, 'hello', { 'Idempotency-Key': k })).status).toBe(201);
+    ahead = (600 + UPLOAD_LINK_REPLAY_GRACE_SECONDS) * 1000 - 5_000;
+    expect((await put(lateLink.path, 'hello', { 'Idempotency-Key': k })).status).toBe(200);
+    ahead = (600 + UPLOAD_LINK_REPLAY_GRACE_SECONDS) * 1000 + 5_000;
+    let pastWindow;
+    try {
+      pastWindow = await seen(await put(lateLink.path, 'hello', { 'Idempotency-Key': k }));
+    } finally {
+      ahead = 0;
+    }
+    const lateNoKey = await seen(await put(lateLink.path, 'hello'));
+
+    await (await host.attachments(alice, t1, s1)).remove(created.id);
+    const removed = await seen(await put(minted.path, 'hello', { 'Idempotency-Key': k }));
+
+    for (const answer of [wrongKey, removed]) expect(answer).toEqual(noKey);
+    expect(pastWindow).toEqual(lateNoKey);
+    expect(lateNoKey).toEqual(noKey);
+  });
+
+  it('a malformed key is 400 before the host is asked, and spends nothing', async () => {
+    const entity = target();
+    const minted = await mint(entity);
+    const before = calls.host;
+    for (const bad of ['short', 'x'.repeat(256), 'has a space in it', '"unterminated-quoted-key', '"has\\backslash-in-it-x"']) {
+      const res = await put(minted.path, 'hello', { 'Idempotency-Key': bad });
+      expect(res.status, bad).toBe(400);
+    }
+    expect(calls.host).toBe(before);
+    expect((await put(minted.path, 'hello', { 'Idempotency-Key': key() })).status).toBe(201);
   });
 });
 

@@ -42,6 +42,7 @@ import {
   type ScopeId,
   type TenantId,
   type ModelUsageLine,
+  unheldMigrationDigest,
 } from '@substrat-run/contracts';
 import {
   INERT_SCOPE_REASON,
@@ -73,6 +74,7 @@ import {
   victimModManifest,
 } from './modules.js';
 import { testOperations } from './test-operations.js';
+import { derivedDigestOf, heldMigrations } from './held-migrations.js';
 
 export interface ScopeHostFixture {
   host: ScopeHost;
@@ -4583,7 +4585,7 @@ export function scopeHostContractSuite(
             version,
             manifestDigest: `man-${version}`,
             permissionDigest: 'p',
-            migrationDigest: mig,
+            ...(await heldMigrations(mig)),
             deploymentRef: null,
           });
           await host.admin.admitVersion(staff, id);
@@ -6817,7 +6819,9 @@ export function scopeHostContractSuite(
         const id = ulid();
         await host.admin.publishVersion(staff, {
           id, verticalSlug: 'migrationsapart', version: `1.0.${id.toLowerCase()}`, manifestDigest: 'm',
-          permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
+          permissionDigest: 'p', deploymentRef: null,
+          // #2339: a set it carries is hashed as the host derives it; the others store none to check.
+          migrationDigest: typeof manifest === 'string' || !Array.isArray(manifest.migrations) ? 'g' : await derivedDigestOf(manifest),
           manifestJson: typeof manifest === 'string' ? manifest : JSON.stringify(manifest),
         });
         return id;
@@ -6868,6 +6872,53 @@ export function scopeHostContractSuite(
       // A declaration the push boundary refuses (a discard with no reason) carries no SQL at all.
       const reasonless = await publish({ ...base, migrations: [{ ...migrations[0]!, discards: { a: '' } }] });
       expect(await host.admin.versionMigrations(staff, 'migrationsapart', reasonless)).toBeNull();
+    });
+
+    it("derives a version's migration digest from what it stores, and refuses a publish whose digest is not that (#2339)", async () => {
+      const slug = `acme/digest-${ulid().slice(-8).toLowerCase()}`;
+      await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+      const A = [{ moduleId: 'helpdesk', version: '0001-init', sql: 'CREATE TABLE a (id TEXT);' }];
+      const B = [...A, { moduleId: 'helpdesk', version: '0002-drop', sql: 'DROP TABLE a;' }];
+      const declaredA = [{ ...A[0]!, discards: { 'a.id': 'nothing reads it' } }];
+      const publish = async (migrationDigest: string, migrations?: unknown[], doClasses?: string[]) => {
+        const id = ulid();
+        await host.admin.publishVersion(staff, {
+          id, verticalSlug: slug, version: `1.0.${id.toLowerCase()}`, manifestDigest: 'm', permissionDigest: 'p',
+          migrationDigest, deploymentRef: null,
+          ...(migrations ? { manifestJson: JSON.stringify({ migrations, ...(doClasses ? { doClasses } : {}) }) } : {}),
+        });
+        return id;
+      };
+      const digestOfA = await derivedDigestOf({ migrations: A });
+      const a = await publish(digestOfA, A);
+      expect((await host.admin.getVersion(staff, a, slug))?.migrationDigest).toBe(digestOfA);
+
+      // The base's digest over other SQL, over the same SQL with a declared loss added, or over other
+      // store classes: refused, and nothing is stored.
+      for (const [migrations, doClasses] of [[B, undefined], [declaredA, undefined], [A, ['OtherDO']]] as const) {
+        const before = (await host.admin.listVersions(staff, slug)).length;
+        await expectRefusal(publish(digestOfA, [...migrations], doClasses ? [...doClasses] : undefined), 'validation_failed', /is not the digest of the migrations it carries/);
+        expect(await host.admin.listVersions(staff, slug)).toHaveLength(before);
+      }
+
+      // Its positive twin: the digest B's own migrations give is stored, and a promote over A asks.
+      const b = await publish(await derivedDigestOf({ migrations: B }), B);
+      await host.admin.admitVersion(staff, a);
+      await host.admin.admitVersion(staff, b);
+      await host.admin.promoteVersion(staff, slug, 'prod', a);
+      await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', b), 'conflict', /changes migrations/);
+
+      // A version that stores none cannot be checked: never refused, and it equals no other version.
+      const bare = await publish(digestOfA);
+      expect((await host.admin.getVersion(staff, bare, slug))?.migrationDigest).toBe(unheldMigrationDigest(bare));
+      // The admin log records the digest the registry holds, not the one the push sent; so does a held one's.
+      const published = async (id: string) =>
+        ((await host.admin.auditLog(staff, {})).find((e) => e.action === 'publishVersion' && (e.after as { id?: string } | null)?.id === id)
+          ?.after as { migrationDigest?: string } | undefined)?.migrationDigest;
+      expect(await published(bare)).toBe(unheldMigrationDigest(bare));
+      expect(await published(a)).toBe(digestOfA);
+      await host.admin.admitVersion(staff, bare);
+      await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', bare), 'conflict', /holds no migrations the platform can compare/);
     });
 
     it('an archived scope blocks the delete naming the reap step; a reaped tombstone never blocks', async () => {
@@ -7000,7 +7051,7 @@ export function scopeHostContractSuite(
         version,
         manifestDigest: `man-${version}`,
         permissionDigest: digests.perm,
-        migrationDigest: digests.mig,
+        ...(await heldMigrations(digests.mig)),
         deploymentRef: null,
       });
       await host.admin.admitVersion(staff, id);
@@ -7115,8 +7166,11 @@ export function scopeHostContractSuite(
           const id = ulid();
           await host.admin.publishVersion(staff, {
             id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
-            permissionDigest: perm, migrationDigest: mig, deploymentRef: null,
-            ...(migrations ? { manifestJson: JSON.stringify({ migrations }) } : {}),
+            // #2339: the digest is the one the stored migrations give; `mig` names the set without them.
+            permissionDigest: perm, deploymentRef: null,
+            ...(migrations
+              ? { migrationDigest: await derivedDigestOf({ migrations }), manifestJson: JSON.stringify({ migrations }) }
+              : { migrationDigest: mig }),
           });
           await host.admin.admitVersion(staff, id);
           return id;
@@ -7290,8 +7344,8 @@ export function scopeHostContractSuite(
         const id = ulid();
         await host.admin.publishVersion(staff, {
           id, verticalSlug: slug, version: `3.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
-          permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
-          manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants } }),
+          permissionDigest: 'p', deploymentRef: null,
+          ...(await heldMigrations('g', { registry: { permissions: [], roles: [], entityGrants } })),
         });
         if (admit) await host.admin.admitVersion(staff, id);
         return id;
@@ -7812,7 +7866,7 @@ export function scopeHostContractSuite(
         version,
         manifestDigest: `man-${version}`,
         permissionDigest: digests?.perm ?? 'pp',
-        migrationDigest: digests?.mig ?? 'gg',
+        ...(await heldMigrations(digests?.mig ?? 'gg')),
         deploymentRef: null,
       });
       return id;

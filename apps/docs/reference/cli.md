@@ -310,7 +310,9 @@ marketplace gate). A promote whose permission or migration digest differs from w
 refused until you acknowledge the diff (`--ack-permissions` / `--ack-migrations`). The refusal
 prints the permission diff and each migration the version adds on top of the live one, with its
 SQL, so the flag answers something you have read. A version pushed before migrations were carried
-in the manifest says its SQL is not available.
+in the manifest says its SQL is not available, and so does one whose push left its SQL out because it
+is over what a manifest carries: the platform has no migrations to compare for either, so a promote
+to or over it always asks for `--ack-migrations`.
 
 The refusal also prints a `--review <token>`: the review those diffs are, bound to the version prod
 pointed at when they were read. Re-run with it. If prod moved since, the promote is refused as

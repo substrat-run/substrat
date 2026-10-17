@@ -38,6 +38,8 @@ import {
   capabilityAttachmentContractSuite,
   uploadLinkContractSuite,
   orphanSweepContractSuite,
+  uploadLinkReplayContractSuite,
+  type OrphanSweepFixture,
   uploadLinkMod,
   UPL_READ,
   UPL_WRITE,
@@ -81,6 +83,7 @@ import {
   idempotencyContractSuite,
   listContractSuite,
   migrationDigestContractSuite,
+  heldVersion,
   entityStateContractSuite,
   entityStateMigrationContractSuite,
   entityTrashContractSuite,
@@ -538,7 +541,7 @@ uploadLinkContractSuite('adapter-cloudflare', attachmentHostFixture);
 // #2314: the orphan-byte sweep, judged by the real ScopeDO (the tombstone, the insert's and the
 // load's refusals, the copy refusal) over a bucket whose puts a test can hold. Its listing
 // ignores the prefix, as the shared fake's does, so the sweep's own key filter is what is held.
-orphanSweepContractSuite('adapter-cloudflare', async () => {
+const orphanSweepFixture = async (): Promise<OrphanSweepFixture> => {
   const objs = new Map<string, { body: Uint8Array; contentType?: string }>();
   let hook: ((key: string) => Promise<void>) | null = null;
   let ahead = 0;
@@ -597,7 +600,10 @@ orphanSweepContractSuite('adapter-cloudflare', async () => {
     },
     cleanup: async () => host.close(),
   };
-});
+};
+orphanSweepContractSuite('adapter-cloudflare', orphanSweepFixture);
+// #2315: a retry of a redemption with its Idempotency-Key, against the same held, raw store.
+uploadLinkReplayContractSuite('adapter-cloudflare', orphanSweepFixture);
 
 // #113: an attachment refusal crosses the ScopeDO hop as data, so it reaches the caller typed.
 attachmentRefusalContractSuite('adapter-cloudflare', attachmentHostFixture);
@@ -1043,21 +1049,21 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
     const publish = async (permissions: string[], retired?: string[]) => {
       const id = ulid();
       const shape = { entityType: 'contact', permissions, ...(retired ? { retired } : {}), bootstrap: true, holder: HOLDER, bind: { permission: 'contact:invite' } };
-      await host.admin.publishVersion(staff, {
+      await host.admin.publishVersion(staff, await heldVersion({
         id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
         permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
         manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [shape] } }),
-      });
+      }));
       await host.admin.admitVersion(staff, id);
       return id;
     };
     const binds = await publish(['contact:read-own']);
     const retired = await publish([], ['contact:read-own']);
     const dropped = ulid();
-    await host.admin.publishVersion(staff, {
+    await host.admin.publishVersion(staff, await heldVersion({
       id: dropped, verticalSlug: slug, version: '9.0.0', manifestDigest: 'm-d', permissionDigest: 'p', migrationDigest: 'g',
       deploymentRef: null, manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [] } }),
-    });
+    }));
     await host.admin.admitVersion(staff, dropped);
     await host.admin.bindScopeVersion(staff, t, s, binds);
     await host.admin.markScopeProvisioned(staff, t, s, binds, { retirementsFinished: true });
@@ -6218,11 +6224,11 @@ describe('#2185 — wedge risk: the retirements-finished column added to an exis
     });
     const publish = async (slug: string, entityGrants: object[]) => {
       const id = ulid();
-      await host.admin.publishVersion(staff, {
+      await host.admin.publishVersion(staff, await heldVersion({
         id, verticalSlug: slug, version: `1.0.${id.slice(-6).toLowerCase()}`, manifestDigest: `m-${id}`,
         permissionDigest: `p-${id}`, migrationDigest: 'g', deploymentRef: null,
         manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants } }),
-      });
+      }));
       await host.admin.admitVersion(staff, id);
       return id;
     };
@@ -6377,11 +6383,11 @@ describe('#2184 — wedge risk: the bound-shapes column added to an existing dir
     const shape = (permissions: string[]) => ({ entityType: 'contact', permissions, bootstrap: true, holder: HOLDER });
     const publish = async (slug: string, entityGrants: object[]) => {
       const id = ulid();
-      await host.admin.publishVersion(staff, {
+      await host.admin.publishVersion(staff, await heldVersion({
         id, verticalSlug: slug, version: `1.0.${id.slice(-6).toLowerCase()}`, manifestDigest: `m-${id}`,
         permissionDigest: `p-${id}`, migrationDigest: 'g', deploymentRef: null,
         manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants } }),
-      });
+      }));
       await host.admin.admitVersion(staff, id);
       return id;
     };

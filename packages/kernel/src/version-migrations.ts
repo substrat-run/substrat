@@ -21,11 +21,20 @@
  *   bounded batch at a time, and until it reaches a version the read falls back to that
  *   version's manifest. The fallback is only for those rows. A version published by this code
  *   is split on the way in.
+ * - `migration_digest_derived` (#2339): 1 once `migration_digest` is the one the control plane
+ *   derives from these rows and the manifest's `doClasses`, never the one the push sent. NULL is
+ *   a version stored before this, whose digest is still the pushed one: a backfill re-derives
+ *   those a batch at a time, and a read of one derives it first.
  */
 import {
   declaredMigrationDeclarations,
   deployManifest,
+  migrationDigestOf,
+  reviewLine,
   storedDeployManifest,
+  substratError,
+  UNHELD_MIGRATION_DIGEST_PREFIX,
+  unheldMigrationDigest,
   type DeclaredMigration,
   type ModuleId,
 } from '@substrat-run/contracts';
@@ -57,6 +66,9 @@ export const VERSION_MIGRATIONS_DDL = `
   );
   CREATE INDEX IF NOT EXISTS vertical_versions_unsplit
     ON vertical_versions (id) WHERE migrations_split IS NULL;
+  -- #2339: versions whose migration_digest is still the pushed one, not yet re-derived.
+  CREATE INDEX IF NOT EXISTS vertical_versions_underived
+    ON vertical_versions (id) WHERE migration_digest_derived IS NULL;
 `;
 
 /** A manifest with its SQL taken out, and the SQL. */
@@ -266,4 +278,158 @@ export function versionMigrationsOf(
     migrations.push({ moduleId: r.module_id as ModuleId, version: r.version, sql: r.sql, ...declared });
   }
   return { verticalSlug: row.vertical_slug, migrations };
+}
+
+/**
+ * The `reason` on a push refused because its `digests.migration` is not the one the control plane
+ * derives from the migrations it carries (#2339).
+ */
+export const MIGRATION_DIGEST_MISMATCH_REASON = 'migration_digest_mismatch';
+
+/** The manifest's `doClasses` as the stored parser reads them (absent is `[]`), or null when they do not read. */
+function doClassesOf(raw: unknown): string[] | null {
+  const result = storedDeployManifest.shape.doClasses.safeParse(raw);
+  return result.success ? result.data : null;
+}
+
+/**
+ * A version's migration digest as the control plane derives it (#2339): `migrationDigestOf`
+ * over the manifest's `doClasses` and the migrations the version stores, with what each
+ * declares. A version that stores no migrations to derive it from (`migrations` null), or whose
+ * `doClasses` do not read, gets `unheldMigrationDigest`, which equals no other version's.
+ */
+export async function derivedMigrationDigest(
+  versionId: string,
+  doClasses: unknown,
+  migrations: readonly DeclaredMigration[] | null,
+): Promise<string> {
+  const classes = doClassesOf(doClasses);
+  if (migrations === null || classes === null) return unheldMigrationDigest(versionId);
+  return migrationDigestOf({ doClasses: classes, migrations });
+}
+
+/**
+ * The migration digest a publish stores (#2339): the one derived from what it stores, never the
+ * one pushed. A push that carries its migrations and pushed another digest is refused
+ * (`validation_failed`, reason {@link MIGRATION_DIGEST_MISMATCH_REASON}): either its CLI hashes
+ * something other than what it sent, or it hashes less than the platform compares. One that
+ * carries none is not refused, since nothing can check it, and stores the unheld digest.
+ */
+export async function publishedMigrationDigest(input: {
+  id: string;
+  migrationDigest: string;
+  manifestJson: string | null;
+  migrations: readonly DeclaredMigration[] | null;
+}): Promise<string> {
+  let doClasses: unknown;
+  if (input.manifestJson !== null) {
+    try {
+      doClasses = (JSON.parse(input.manifestJson) as { doClasses?: unknown } | null)?.doClasses;
+    } catch {
+      doClasses = null;
+    }
+  }
+  const derived = await derivedMigrationDigest(
+    input.id,
+    input.manifestJson === null ? null : doClasses,
+    input.migrations,
+  );
+  if (input.migrations !== null && derived !== input.migrationDigest) {
+    throw substratError(
+      'validation_failed',
+      `the push's migration digest (${input.migrationDigest}) is not the digest of the migrations it carries ` +
+        `(${derived}). The platform derives the digest a promote compares from the migrations and their declared ` +
+        'moves and discards itself, so a push must hash exactly those: upgrade to a CLI release whose push digest ' +
+        'covers its SQL migrations and their declarations (npm i -g @substrat-run/cli), and push again',
+      { reason: MIGRATION_DIGEST_MISMATCH_REASON },
+    );
+  }
+  return derived;
+}
+
+/** The two reads that find versions whose digest is not derived yet, answered from `vertical_versions_underived`. */
+export const UNDERIVED_IDS_SQL =
+  'SELECT id FROM vertical_versions WHERE migration_digest_derived IS NULL ORDER BY id LIMIT ?';
+export const UNDERIVED_PROBE_SQL = 'SELECT 1 AS present FROM vertical_versions WHERE migration_digest_derived IS NULL LIMIT 1';
+
+/** How many versions one digest batch derives at most. Each reads at most the push's 512 KiB of SQL. */
+const DIGEST_BATCH_VERSIONS = 10;
+
+/**
+ * Derive one stored version's migration digest from its stored rows and record it (#2339),
+ * unless it is derived already. Returns the digest the version now holds, or undefined when
+ * there is no such version.
+ *
+ * Two statements, not a transaction: the digest is computed between them (Web Crypto is
+ * asynchronous), and the write is guarded on the row still being underived, so two derivations
+ * racing write once. A version's migrations and `doClasses` never change after it is published,
+ * so both derive the same value, and what was read is what is recorded.
+ */
+export async function deriveVersionMigrationDigest(db: SwitchSql, versionId: string): Promise<string | undefined> {
+  const row = db.all(
+    `SELECT migration_digest, migration_digest_derived,
+            CASE WHEN manifest_json IS NULL THEN 0 ELSE 1 END AS has_manifest,
+            CASE WHEN json_valid(manifest_json) THEN json_extract(manifest_json, '$.doClasses') END AS do_classes
+       FROM vertical_versions WHERE id = ?`,
+    versionId,
+  )[0] as
+    | { migration_digest: string; migration_digest_derived: number | null; has_manifest: number; do_classes: string | null }
+    | undefined;
+  if (!row) return undefined;
+  if (row.migration_digest_derived !== null) return row.migration_digest;
+  let doClasses: unknown = null;
+  if (row.has_manifest === 1) {
+    try {
+      // `json_extract` answers an array as its JSON text, and NULL for a manifest without the key.
+      doClasses = row.do_classes === null ? undefined : JSON.parse(row.do_classes);
+    } catch {
+      doClasses = null;
+    }
+  }
+  const digest = await derivedMigrationDigest(versionId, doClasses, versionMigrationsOf(db, versionId)?.migrations ?? null);
+  db.run(
+    'UPDATE vertical_versions SET migration_digest = ?, migration_digest_derived = 1 WHERE id = ? AND migration_digest_derived IS NULL',
+    digest, versionId,
+  );
+  return digest;
+}
+
+/**
+ * Re-derive the next versions stored before #2339, whose migration digest is still the one their
+ * push sent: at most `limit` of them. Returns how many it derived, and whether any are left.
+ * Resumable and idempotent on #1764's terms: each version is marked as it is derived, and a
+ * derived one is never selected again. Until the backfill reaches a version, a read of it
+ * derives it first (`deriveVersionMigrationDigest`), so no gate compares a pushed digest.
+ */
+export async function deriveMigrationDigestsBatch(
+  db: SwitchSql,
+  limit: number = DIGEST_BATCH_VERSIONS,
+): Promise<{ derived: number; more: boolean }> {
+  const ids = db.all(UNDERIVED_IDS_SQL, limit) as { id: string }[];
+  for (const { id } of ids) await deriveVersionMigrationDigest(db, id);
+  return { derived: ids.length, more: versionsAwaitDigest(db) };
+}
+
+/** Whether any version's migration digest still waits to be derived. One probe of the partial index. */
+export function versionsAwaitDigest(db: SwitchSql): boolean {
+  return db.all(UNDERIVED_PROBE_SQL).length > 0;
+}
+
+/**
+ * The promote gate's refusal when the migration digest moved and the change was not acknowledged.
+ * A side whose digest is unheld (#2339) is named with why it always asks, so a vertical whose
+ * pushes leave their SQL out of the manifest is not surprised that every promote does.
+ */
+export function migrationChangeRefusal(outgoing: string, incoming: string): string {
+  const unheld = [outgoing, incoming]
+    .filter((d) => d.startsWith(UNHELD_MIGRATION_DIGEST_PREFIX))
+    .map((d) => d.slice(UNHELD_MIGRATION_DIGEST_PREFIX.length));
+  return (
+    `promotion changes migrations (${outgoing} → ${incoming}) — acknowledge it explicitly to promote` +
+    (unheld.length === 0
+      ? ''
+      : `. ${unheld.length === 1 ? `Version ${reviewLine(unheld[0]!)} holds` : `Versions ${unheld.map((id) => reviewLine(id)).join(' and ')} hold`} ` +
+        'no migrations the platform can compare: the push left them out of the manifest (over the size a manifest ' +
+        'carries, or from before manifests carried them), so a promote to or over it always asks for this acknowledgement')
+  );
 }

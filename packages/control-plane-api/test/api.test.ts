@@ -4,10 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
-import { PLATFORM_SWEEP_HOST_KEY, assetHash, deployManifest, connectionId, denialFilter, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeId, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
+import { PLATFORM_SWEEP_HOST_KEY, assetHash, deployManifest, migrationDigestOf, connectionId, denialFilter, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeId, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
 import { PROBLEM_CONTENT_TYPE, problemForStatus } from '@substrat-run/contracts';
 import { denialLogQuery } from '../src/api.js';
 import { takeNonProblemRefusals } from './setup/problem-tripwire.js';
+import { heldManifest, heldVersion } from './held-manifest.js';
 import {
   createControlPlaneApi,
   ControlPlaneError,
@@ -1460,6 +1461,34 @@ describe('control-plane API', () => {
     expect((await req(`/tenants/${t1}/connections/${created.connectionId}/certificate`)).status).toBe(404);
   });
 
+  it('serves the successor a certificate rotation adds, beside the certificate in use (#2100)', async () => {
+    const sNext = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sNext, vertical: 'cert-next-vert' });
+    await host.admin.activateScope(staff, t1, sNext);
+    const PEM = '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n';
+    const NEXT = { pem: PEM.replace('AAAA', 'BBBB'), thumbprint: '123456', notAfter: '2028-09-07T12:00:00.000Z' };
+    const rotating = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      connectionInspectors: {
+        mailbox: {
+          certificate: async () => ({ pem: PEM, thumbprint: 'ABCDEF', notAfter: '2027-10-07T12:00:00.000Z' as never, next: NEXT as never }),
+        },
+      },
+    });
+    const rreq = (path: string, init?: RequestInit) => rotating.request(path, { headers: auth, ...init });
+    const created = (await (
+      await rreq(`/tenants/${t1}/connections`, {
+        method: 'POST',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ scopeId: sNext, provider: 'mailbox', secret: { clientId: 'c' }, createdBy: principalId.parse(ulid()) }),
+      })
+    ).json()) as { connectionId: string };
+    const cert = await rreq(`/tenants/${t1}/connections/${created.connectionId}/certificate`);
+    expect(cert.status).toBe(200);
+    expect(await cert.json()).toEqual({ pem: PEM, thumbprint: 'ABCDEF', notAfter: '2027-10-07T12:00:00.000Z', next: NEXT });
+  });
+
   // -- per-instance config delivery (vertical-auth-detach.md §2.2) -----------
 
   it('delivers per-instance config through the vertical that owns the scope', async () => {
@@ -1767,11 +1796,11 @@ describe('control-plane API', () => {
     await host.admin.registerVertical(staff, { slug: 'snap-vert', name: 'Snap Vert', source: 'builtin' });
     const pub = async (version: string, mig: string) => {
       const id = ulid();
-      await host.admin.publishVersion(staff, {
+      await host.admin.publishVersion(staff, await heldVersion({
         id, verticalSlug: 'snap-vert', version,
         manifestDigest: `m-${version}`, permissionDigest: 'p', migrationDigest: mig,
         deploymentRef: null,
-      });
+      }));
       await host.admin.admitVersion(staff, id);
       return id;
     };
@@ -4365,6 +4394,7 @@ describe('control-plane API — vertical registry', () => {
   // Two versions of one vertical: v2 changes the permission surface, v1 does not.
   const v1 = ulid();
   const v2 = ulid();
+  const v3 = ulid();
   const version = (id: string, over: Record<string, unknown> = {}) => ({
     id,
     verticalSlug: 'fsm',
@@ -4375,6 +4405,18 @@ describe('control-plane API — vertical registry', () => {
     deploymentRef: null,
     ...over,
   });
+  // #2339: v1 and v2 hold the same migration set, so the checkpoint between them is the
+  // permission change alone. A version with no migrations differs from every other.
+  const held = (id: string, over: Record<string, unknown> = {}) =>
+    heldVersion(version(id, {
+      manifestJson: JSON.stringify({
+        version: id.slice(-6),
+        entry: 'index.js',
+        compatibilityDate: '2026-07-01',
+        digests: { manifest: 'man-1', permission: over.permissionDigest ?? 'perm-1', migration: 'mig-1' },
+      }),
+      ...over,
+    }));
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'cp-reg-'));
@@ -4399,7 +4441,7 @@ describe('control-plane API — vertical registry', () => {
   });
 
   it('publishes a version pending — a push is not a deploy', async () => {
-    const res = await json('/verticals/fsm/versions', 'POST', version(v1));
+    const res = await json('/verticals/fsm/versions', 'POST', await held(v1));
     expect(res.status).toBe(201);
     expect(await res.json()).toMatchObject({ id: v1, admission: 'pending', deploymentRef: null });
   });
@@ -4428,7 +4470,7 @@ describe('control-plane API — vertical registry', () => {
   });
 
   it('refuses a non-admitted version at both bind and promote', async () => {
-    await json('/verticals/fsm/versions', 'POST', version(v2, { permissionDigest: 'perm-2' }));
+    await json('/verticals/fsm/versions', 'POST', await held(v2, { permissionDigest: 'perm-2' }));
     // v2 is still pending.
     const promote = await json('/verticals/fsm/channels/prod/promote', 'POST', { versionId: v2 });
     expect(promote.status).toBe(409);
@@ -4519,7 +4561,6 @@ describe('control-plane API — vertical registry', () => {
   });
 
   it('rejects a fresh pending version, and admitting it afterward conflicts', async () => {
-    const v3 = ulid();
     await json('/verticals/fsm/versions', 'POST', version(v3));
     expect((await json(`/verticals/fsm/versions/${v3}/reject`, 'POST', { note: 'no' })).status).toBe(200);
     expect((await json(`/verticals/fsm/versions/${v3}/admit`, 'POST')).status).toBe(409);
@@ -4665,8 +4706,9 @@ describe('control-plane API — vertical registry', () => {
     expect(withField.status).toBe(200);
     // freshness rides the same read (#1232) — null here, since v5 declared none.
     expect(await withField.json()).toEqual({ schedules, freshness: null });
-    // v1 retained no manifest at all — null, never an invented empty list.
-    const without = await get(`/verticals/fsm/versions/${v1}/schedules`);
+    // v3 retained no manifest at all — null, never an invented empty list. (#2339: v1 holds
+    // migrations, so it carries a manifest.)
+    const without = await get(`/verticals/fsm/versions/${v3}/schedules`);
     expect(await without.json()).toEqual({ schedules: null, freshness: null });
   });
 
@@ -4754,10 +4796,10 @@ describe('control-plane API — vertical registry', () => {
       calls: null,
     });
 
-    // ABSENT: v1 retained no manifest at all — null, never an invented empty list.
+    // ABSENT: v3 retained no manifest at all — null, never an invented empty list.
     // `declaredEvents` and `calls` keep absence distinct from an explicit empty list:
     // no graph was declared, and legacy calls are unenforced (#1706).
-    expect(await (await get(`/verticals/fsm/versions/${v1}/flow`)).json()).toEqual({
+    expect(await (await get(`/verticals/fsm/versions/${v3}/flow`)).json()).toEqual({
       declaredEvents: null,
       declaredEventsTruncated: false,
       requires: [],
@@ -4768,8 +4810,8 @@ describe('control-plane API — vertical registry', () => {
   });
 
   it('returns a null registry for a version that retained no manifest (pre-#286)', async () => {
-    // v1 was published from the bare `version()` fixture — no manifestJson.
-    const res = await get(`/verticals/fsm/versions/${v1}/registry`);
+    // v3 was published from the bare `version()` fixture — no manifestJson.
+    const res = await get(`/verticals/fsm/versions/${v3}/registry`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ registry: null });
   });
@@ -4887,6 +4929,23 @@ describe('control-plane API — deploy', () => {
     expect(deployed.at(-1)!.bundle.versionId).toBe(version.id);
     const verticals = (await (await app.request('/verticals', { headers: auth })).json()).entries;
     expect(verticals).toContainEqual(expect.objectContaining({ slug: 'fsm', source: 'cli' }));
+  });
+
+  it('refuses a push whose migration digest is not the one its migrations give, before anything is uploaded (#2339)', async () => {
+    const migrations = [{ moduleId: 'fsm', version: '0001-init', sql: 'CREATE TABLE a (id TEXT);' }];
+    const other = [{ ...migrations[0]!, sql: 'DROP TABLE a;' }];
+    const theirs = await migrationDigestOf({ doClasses: ['ScopeDO'], migrations });
+    const before = deployed.length;
+    const res = await push('fsm-digest', form(manifest({ migrations: other, digests: { manifest: 'm1', permission: 'p1', migration: theirs } })));
+    expect(res.status).toBe(400);
+    expect(await res.text()).toMatch(/is not the digest of the migrations it carries/);
+    expect(deployed).toHaveLength(before);
+    expect((await host.admin.listVerticals(staff)).map((v) => v.slug)).not.toContain('fsm-digest');
+    // Its twin: the same migrations under their own digest upload and store that digest.
+    const ok = await push('fsm-digest', form(manifest({ migrations, digests: { manifest: 'm1', permission: 'p1', migration: theirs } })));
+    expect(ok.status).toBe(201);
+    expect(deployed).toHaveLength(before + 1);
+    expect((await ok.json()).migrationDigest).toBe(theirs);
   });
 
   /** #1902: the sweeper decision is the push's, made once and recorded with the version. */
@@ -6977,9 +7036,9 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
   // A staff push pinned to a tenant registers `<tenantSlug>/crm` owned + auto-admitted
   // (private) — a dispatch-backed vertical, so `deploymentRef` is set and the serve path
   // engages. The pin isolates each test on its own prefixed vertical.
-  const push = (pinTenantSlug: string, m: Record<string, unknown>, body = 'export default {}') => {
+  const push = async (pinTenantSlug: string, m: Record<string, unknown>, body = 'export default {}') => {
     const fd = new FormData();
-    fd.set('manifest', JSON.stringify(m));
+    fd.set('manifest', JSON.stringify(await heldManifest(m)));
     fd.set('tenant', pinTenantSlug);
     fd.set('worker.js', new Blob([body], { type: 'application/javascript+module' }), 'worker.js');
     return app.request('/verticals/crm/deploy', { method: 'POST', headers: auth, body: fd });
@@ -7056,7 +7115,9 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     // A version pushed before the decision existed: its manifest records none, and its config
     // binds SWEEPER to another class — a half-match a push today refuses. Promoting it must
     // neither refuse nor quietly start supplying a sweeper it never had.
-    const first = await (await push('oldshape-co', manifest())).json();
+    // #2339: the DO classes are part of the migration digest the platform derives, so the first
+    // version declares the same two the old one does — the promotes below are not migration changes.
+    const first = await (await push('oldshape-co', manifest({ doClasses: ['ScopeDO', 'Timer'] }))).json();
     const slug: string = first.verticalSlug;
     const id = ulid();
     const schedules = [{ moduleId: 'crm', operation: 'crm/tick', cadence: { everyMinutes: 5 } }];
@@ -7066,7 +7127,7 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
       doClasses: ['ScopeDO', 'Timer'],
       bindings: [...manifest().bindings, { type: 'durable_object_namespace', name: 'SWEEPER', class_name: 'Timer' }],
     });
-    await host.admin.publishVersion(staff, {
+    await host.admin.publishVersion(staff, await heldVersion({
       id,
       verticalSlug: slug,
       version: '0.0.9',
@@ -7075,7 +7136,7 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
       migrationDigest: 'g1',
       deploymentRef: deploymentRefFor(slug, id),
       manifestJson: JSON.stringify(old),
-    });
+    }));
     await host.admin.admitVersion(staff, id);
     expect((await promote(slug, id)).status).toBe(200);
     expect(uploads.at(-1)).toMatchObject({ ref: stableDeploymentRefFor(slug) });

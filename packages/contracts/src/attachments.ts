@@ -88,6 +88,29 @@ export const UPLOAD_LINK_MAX_BYTES_CEILING = 25 * 1024 * 1024;
 /** Where a vertical mounts the redemption (`mountUploadLinkRedeem` in `@substrat-run/vertical-host`). */
 export const UPLOAD_LINK_PATH_PREFIX = '/api/attachment-uploads';
 
+/**
+ * #2315: the request header a redeemer names its own redemption with, so a retry after a lost
+ * reply gets the stored file back instead of 410. The id authorises nothing alone: it is
+ * honoured only with the link's secret, only for the redemption that spent the link, and only
+ * until `UPLOAD_LINK_REPLAY_GRACE_SECONDS` after the link's expiry.
+ */
+export const UPLOAD_LINK_IDEMPOTENCY_HEADER = 'Idempotency-Key';
+/**
+ * 16 to 255 visible ASCII characters other than `"` and `\`, no space: a UUID or a ULID fits.
+ * The floor is there because whoever holds the secret but not the id must not be able to guess the
+ * id and learn that the file arrived. The two characters left out keep a structured-field string
+ * (`"…"`, which the route unwraps) from ever being read as a key of its own.
+ */
+export const UPLOAD_LINK_IDEMPOTENCY_KEY_SHAPE = /^[\x21\x23-\x5b\x5d-\x7e]{16,255}$/;
+/** Is `key` a well-formed idempotency key? Says nothing about whether any redemption carried it. */
+export const isUploadLinkIdempotencyKey = (key: unknown): key is string =>
+  typeof key === 'string' && UPLOAD_LINK_IDEMPOTENCY_KEY_SHAPE.test(key);
+/**
+ * How long after a link's expiry a redemption it spent can still be replayed: a link redeemed in
+ * its last second must still be retryable.
+ */
+export const UPLOAD_LINK_REPLAY_GRACE_SECONDS = 600;
+
 /** A media type (`application/pdf`) or a family (`image/*`), lowercase, no parameters. */
 export const uploadLinkContentType = z
   .string()

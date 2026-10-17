@@ -34,6 +34,7 @@ import {
 } from '@substrat-run/kernel';
 import { expectAnswered, expectSettledUnknown, withRefusedOutcome, type AdminRowFault } from './switch-audit-fault.js';
 import { testOperations } from './test-operations.js';
+import { heldMigrations } from './held-migrations.js';
 
 // -- the two fixture verticals ------------------------------------------------
 //
@@ -1483,9 +1484,8 @@ export function verticalEventsContractSuite(
           version: `1.0.${id.slice(-4).toLowerCase()}`,
           manifestDigest: `m-${id}`,
           permissionDigest: perm,
-          migrationDigest: 'g',
           deploymentRef: null,
-          manifestJson,
+          ...(await heldMigrations('g', JSON.parse(manifestJson) as Record<string, unknown>)),
         });
         await fx.consumer.admin.admitVersion(staff, id);
         return id;
@@ -1547,11 +1547,12 @@ export function verticalEventsContractSuite(
       registryJson(v === null ? {} : { exports: [{ type: BIND_TYPE, schemaVersion: v, readPermission: 'customer:read', declaredBy: ['@test/x'] }] });
     const importingJson = (from: string) =>
       registryJson({ imports: [{ from, type: BIND_TYPE, schemaVersion: 1, declaredBy: ['@test/y'] }] });
-    const publishManifest = async (slug: string, manifestJson: string, migrationDigest = 'g') => {
+    const publishManifest = async (slug: string, manifestJson: string, migrations = 'g') => {
       const id = ulid();
       await fx.consumer.admin.publishVersion(staff, {
         id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
-        permissionDigest: 'p', migrationDigest, deploymentRef: null, manifestJson,
+        permissionDigest: 'p', deploymentRef: null,
+        ...(await heldMigrations(migrations, JSON.parse(manifestJson) as Record<string, unknown>)),
       });
       await fx.consumer.admin.admitVersion(staff, id);
       return id;

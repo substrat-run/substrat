@@ -8,6 +8,7 @@ import {
   webCryptoSecretBox, type CopyRestoreFence, type LoadMarker,
 } from '@substrat-run/kernel';
 import { platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
+import { heldVersion } from './held-manifest.js';
 import {
   ControlPlaneError,
   createControlPlaneApi,
@@ -188,10 +189,10 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
     for (const v of ['v1', 'v2'] as const) {
       const id = ulid();
       const ref = `${slug}-${id.toLowerCase()}`;
-      await host.admin.publishVersion(staff, {
+      await host.admin.publishVersion(staff, await heldVersion({
         id, verticalSlug: slug, version: v === 'v1' ? '1.0.0' : '1.0.1', manifestDigest: `m-${v}`,
         permissionDigest: 'p', migrationDigest: 'g', deploymentRef: ref,
-      });
+      }));
       refOf.set(id, ref);
       versions[v] = id;
     }
@@ -361,10 +362,10 @@ describe('a crashed carry is settled by the copy-ledger sweep (#1722)', () => {
       await host.admin.setVerticalServing(staff, slug, { ref: SERVING, versionId: versions.v2, doClasses: [], migrationTag: 't1' });
       await host.admin.registerVertical(staff, { slug: TARGET, name: 'Crash Dst', source: 'cli', ownerTenant: t });
       const id = ulid();
-      await host.admin.publishVersion(staff, {
+      await host.admin.publishVersion(staff, await heldVersion({
         id, verticalSlug: TARGET, version: '1.0.0', manifestDigest: 'm-dst', permissionDigest: 'p', migrationDigest: 'g',
         deploymentRef: `${TARGET}-${id.toLowerCase()}`,
-      });
+      }));
       await host.admin.setVerticalServing(staff, TARGET, { ref: TARGET_SERVING, versionId: id, doClasses: [], migrationTag: 't1' });
     })());
   })();

@@ -19,7 +19,8 @@
  * (`prepareMicrosoft365Candidate`), seals the private key with the rest of the credential, and
  * serves the certificate for the tenant to upload. The connection is saved before the tenant
  * can upload it, so "the certificate is not on the app registration yet" is an inconclusive
- * probe, never a refusal.
+ * probe, never a refusal. A certificate is rotated before it lapses by a second keypair beside
+ * the first, promoted once Entra accepts it (`prepareMicrosoft365Candidate`).
  */
 import {
   instant,
@@ -30,7 +31,17 @@ import {
   type ConnectionProbe,
 } from '@substrat-run/contracts';
 import { settleConnectionUse, type FetchLike, type HostAdmin, type MailSender, type ScopeHost } from '@substrat-run/kernel';
-import { acquireToken, authMethodOf, microsoft365Secret, sendersOf, type Microsoft365Secret } from './credential.js';
+import {
+  acquireToken,
+  authMethodOf,
+  microsoft365Secret,
+  prepareMicrosoft365Candidate,
+  requestToken,
+  sendersOf,
+  signingCredential,
+  withNextOnly,
+  type Microsoft365Secret,
+} from './credential.js';
 import { GraphError, readSite, sendMail, type GraphClient } from './graph.js';
 import { certificatePem, thumbprintSha1Hex } from './x509.js';
 
@@ -39,6 +50,8 @@ export {
   microsoft365Secret,
   sendersOf,
   classifyTokenError,
+  ROTATE_FIELD,
+  ROTATION_WINDOW_DAYS,
   LOGIN_BASE,
   GRAPH_BASE,
 } from './credential.js';
@@ -103,14 +116,34 @@ async function probeWith(
   secret: Microsoft365Secret,
   options: Microsoft365Options,
 ): Promise<ConnectionProbe> {
+  // The certificate that signs a send right now, and no fallback: before a lapse that is the current
+  // one, and the successor is judged by `successorFacts`, unrecorded, so a rotation's expected "not
+  // uploaded yet" never lands in the connection's health. After a lapse the successor IS what
+  // signs, so it is the probe's own sign-in and asked about once.
+  const now = nowOf(options);
+  const signing = signingCredential(secret, now);
+  const lapsed = signing !== secret;
+  const [token, successor] = await Promise.all([
+    requestToken(fetchImpl, signing, { now, ...loginOf(options) }),
+    lapsed ? [] : successorFacts(secret, options),
+  ]);
   const facts = [
     { label: 'Signs in with', value: authMethodOf(secret) === 'certificate' ? 'certificate' : 'client secret' },
     { label: 'Sends as', value: sendersOf(secret).join(', ').slice(0, 400) },
     ...(secret.certificateNotAfter
       ? [{ label: 'Certificate expires', value: secret.certificateNotAfter.slice(0, 10) }]
       : []),
+    ...successor,
+    ...(lapsed
+      ? [
+          { label: 'New certificate expires', value: signing.certificateNotAfter!.slice(0, 10) },
+          {
+            label: 'Certificate',
+            value: 'lapsed — signing with the new certificate; save the connection to switch to it for good',
+          },
+        ]
+      : []),
   ];
-  const token = await acquireToken(fetchImpl, secret, { now: nowOf(options), ...loginOf(options) });
   if (!token.ok) return probeOf({ ok: false, refused: token.refused, error: token.error, facts });
   try {
     const site = await readSite(graph(fetchImpl, token.accessToken, options), secret.siteUrl);
@@ -136,6 +169,26 @@ async function probeWith(
     }
     return probeOf({ ok: false, refused: false, error: e instanceof Error ? e.message : String(e), facts });
   }
+}
+
+/**
+ * What the probe says about a successor certificate being rotated in: whether Entra accepts it
+ * yet. Asked through the UNRECORDED fetch, because a successor not uploaded yet is the expected
+ * state of a rotation, not a failure of the connection, and must not read as one in its health.
+ */
+async function successorFacts(secret: Microsoft365Secret, options: Microsoft365Options) {
+  const next = withNextOnly(secret);
+  if (!next) return [];
+  const token = await acquireToken(options.fetch, next, { now: nowOf(options), ...loginOf(options) });
+  return [
+    { label: 'New certificate expires', value: next.certificateNotAfter!.slice(0, 10) },
+    {
+      label: 'New certificate',
+      value: token.ok
+        ? 'on the app registration — save the connection to switch to it'
+        : `not accepted yet: ${token.error}`.slice(0, 400),
+    },
+  ];
 }
 
 /** The stored credential, reduced: identifiers whole, the client secret masked, no key. */
@@ -165,6 +218,21 @@ export async function microsoft365CredentialSummary(
       value: secret.certificateNotAfter ?? 'unknown',
       masked: false,
     });
+    const next = withNextOnly(secret);
+    if (next) {
+      fields.push({
+        key: 'nextCertificate',
+        label: 'New certificate thumbprint',
+        value: await thumbprintSha1Hex(next.certificate!),
+        masked: false,
+      });
+      fields.push({
+        key: 'nextCertificateNotAfter',
+        label: 'New certificate expires',
+        value: next.certificateNotAfter!,
+        masked: false,
+      });
+    }
   }
   return { fields };
 }
@@ -176,10 +244,33 @@ export async function microsoft365Certificate(
 ): Promise<ConnectionCertificate | null> {
   const { secret } = await openSecret(host.admin, connection);
   if (authMethodOf(secret) !== 'certificate' || !secret.certificate || !secret.certificateNotAfter) return null;
-  return {
-    pem: certificatePem(secret.certificate),
-    thumbprint: await thumbprintSha1Hex(secret.certificate),
-    notAfter: instant.parse(secret.certificateNotAfter),
+  const next = withNextOnly(secret);
+  const [view, nextView] = await Promise.all([
+    certificateView(secret.certificate, secret.certificateNotAfter),
+    next ? certificateView(next.certificate!, next.certificateNotAfter!) : undefined,
+  ]);
+  return { ...view, ...(nextView ? { next: nextView } : {}) };
+}
+
+const certificateView = async (certificate: string, notAfter: string) => ({
+  pem: certificatePem(certificate),
+  thumbprint: await thumbprintSha1Hex(certificate),
+  notAfter: instant.parse(notAfter),
+});
+
+/**
+ * The platform's half of a candidate credential (`ConnectionInspector.prepareCandidate`): the
+ * keypair, and its rotation. A pending successor is promoted on a save once Entra accepts it, so
+ * the sign-in here goes to Microsoft, unrecorded: it checks a certificate, not the connection.
+ */
+export function prepareMicrosoft365(options: Microsoft365Options & { commonName: string }) {
+  return (candidate: Record<string, string>, previous: Record<string, string> | undefined) => {
+    const now = nowOf(options);
+    return prepareMicrosoft365Candidate(candidate, previous, {
+      now,
+      commonName: options.commonName,
+      signIn: (secret) => acquireToken(options.fetch, secret, { now, ...loginOf(options) }),
+    });
   };
 }
 
@@ -189,7 +280,12 @@ export function microsoft365MailSender(options: Microsoft365Options): MailSender
     senders: async (host, connection) => sendersOf((await openSecret(host.admin, connection)).secret),
     send: async (host, connection, mail) => {
       const conn = await openMicrosoft365Connection(host.admin, options, connection);
-      const token = await acquireToken(conn.fetch, conn.secret, { now: nowOf(options), ...loginOf(options) });
+      // One sign-in is one use: mid-rotation it may take two requests (the current certificate,
+      // then its successor), and only the attempt that decided the answer is recorded.
+      const signIn = conn.signInFetch();
+      const token = await acquireToken(signIn.fetch, conn.secret, { now: nowOf(options), ...loginOf(options) }).finally(
+        signIn.record,
+      );
       if (!token.ok) throw new Error(`Microsoft 365 sign-in failed: ${token.error}`);
       try {
         return await sendMail(graph(conn.fetch, token.accessToken, options), mail);
@@ -249,24 +345,34 @@ async function openSecret(admin: HostAdmin, connection: ConnectionRef) {
 async function openMicrosoft365Connection(admin: HostAdmin, options: Microsoft365Options, connection: ConnectionRef) {
   const { open, secret } = await openSecret(admin, connection);
   const timeoutMs = options.timeoutMs ?? 15_000;
-  const fetchImpl: FetchLike = async (input, init) => {
-    const started = Date.now();
-    try {
-      const res = await options.fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
-      await admin.recordConnectionUse(
-        open.id,
-        settleConnectionUse(MICROSOFT365_PROVIDER, Date.now() - started, { response: res }),
-      );
-      return res;
-    } catch (err) {
-      await admin.recordConnectionUse(
-        open.id,
-        settleConnectionUse(MICROSOFT365_PROVIDER, Date.now() - started, { error: err }),
-      );
-      throw err;
-    }
+  type Settled = Parameters<typeof settleConnectionUse>[2];
+  const record = (durationMs: number, settled: Settled) =>
+    admin.recordConnectionUse(open.id, settleConnectionUse(MICROSOFT365_PROVIDER, durationMs, settled));
+  /** The fetch, timed out, reporting each settlement (with its duration) to `settle`. */
+  const timed =
+    (settle: (durationMs: number, settled: Settled) => Promise<void> | void): FetchLike =>
+    async (input, init) => {
+      const started = Date.now();
+      try {
+        const res = await options.fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+        await settle(Date.now() - started, { response: res });
+        return res;
+      } catch (err) {
+        await settle(Date.now() - started, { error: err });
+        throw err;
+      }
+    };
+  /** A fetch for one sign-in: every attempt is held, and `record` writes only the last. */
+  const signInFetch = () => {
+    let last: [number, Settled] | undefined;
+    return {
+      fetch: timed((ms, settled) => void (last = [ms, settled])),
+      record: async () => {
+        if (last) await record(...last);
+      },
+    };
   };
-  return { secret, fetch: fetchImpl };
+  return { secret, fetch: timed(record), signInFetch };
 }
 
 function probeOf(p: {

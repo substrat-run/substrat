@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
+import { heldManifest } from './held-manifest.js';
 import {
   blobStoreBindingName,
   platformActorId,
@@ -92,9 +93,9 @@ describe('control-plane API — per-tenant stores (#301)', () => {
     registry: { permissions: [], roles: [], entityGrants: [] },
     ...over,
   });
-  const push = (pin: string, m: Record<string, unknown>) => {
+  const push = async (pin: string, m: Record<string, unknown>) => {
     const fd = new FormData();
-    fd.set('manifest', JSON.stringify(m));
+    fd.set('manifest', JSON.stringify(await heldManifest(m)));
     fd.set('tenant', pin);
     fd.set('worker.js', new Blob(['export default {}'], { type: 'application/javascript+module' }), 'worker.js');
     return app.request('/verticals/authy/deploy', { method: 'POST', headers: auth, body: fd });

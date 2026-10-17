@@ -28,6 +28,15 @@ describe('parseProviderSecret with an optional field (#2100)', () => {
     expect(() => parseProviderSecret(m365, { ...filled, senders: '' })).toThrow(/senders/);
   });
 
+  it("a toggle is stored as 'yes' when ticked and left out otherwise, never as typed", () => {
+    expect(parseProviderSecret(m365, { ...filled, rotateCertificate: 'yes' }).rotateCertificate).toBe('yes');
+    for (const v of ['', 'no', 'true', ' yes', 1, true]) {
+      expect(parseProviderSecret(m365, { ...filled, rotateCertificate: v })).toEqual(filled);
+    }
+    // A toggle is never required.
+    expect(parseProviderSecret(m365, filled)).toEqual(filled);
+  });
+
   it('the door says the connection sends mail and carries a certificate', () => {
     expect(m365).toMatchObject({ sendsMail: true, certificate: true, grants: [] });
   });

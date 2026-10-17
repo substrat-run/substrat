@@ -1,5 +1,6 @@
 export { testOperations, type RawDerivedMaps } from './test-operations.js';
 export { scopeHostContractSuite } from './scope-host-suite.js';
+export { derivedDigestOf, heldMigrations, heldVersion } from './held-migrations.js';
 export type { ScopeHostFixture, ScopeHostSuiteOptions } from './scope-host-suite.js';
 export { permissionContractSuite } from './permission-suite.js';
 export { atomicContractSuite } from './atomic-suite.js';
@@ -9,6 +10,7 @@ export { becomeMintContractSuite, type BecomeMintVerbs } from './become-mint-sui
 export { bindingInviteContractSuite, type BindingVerbs } from './binding-invite-suite.js';
 export { UPL_CONTENT_TYPES, UPL_MAX_BYTES, UPL_READ, UPL_WRITE, uploadLinkMod } from './upload-link-module.js';
 export { uploadLinkContractSuite } from './upload-link-suite.js';
+export { uploadLinkReplayContractSuite } from './upload-link-replay-suite.js';
 export { orphanSweepContractSuite, type OrphanSweepFixture } from './orphan-sweep-suite.js';
 export { BIND_INVITE, BIND_MEMBER, BIND_SHAPE, bindMod } from './bind-module.js';
 export { capabilityAttachmentContractSuite } from './capability-attachment-suite.js';

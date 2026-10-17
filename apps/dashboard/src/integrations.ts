@@ -34,6 +34,12 @@ export interface ProviderField {
    * purpose; a provider credential is normally a set, every field of it required.
    */
   optional?: true;
+  /**
+   * A yes/no instruction rather than part of the credential: a checkbox, sent as `'yes'` when
+   * ticked and left out otherwise, so it is always optional. Microsoft 365's "rotate the
+   * certificate now" is one; the connector reads it and never stores it.
+   */
+  toggle?: true;
 }
 
 export interface ProviderSpec {
@@ -187,6 +193,8 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
       { key: 'senders', label: 'Sender addresses (comma-separated)', secret: false, placeholder: 'noreply@example.com' },
       { key: 'siteUrl', label: 'SharePoint site URL', secret: false, placeholder: 'https://example.sharepoint.com/sites/Team' },
       { key: 'clientSecret', label: 'Client secret', secret: true, optional: true, placeholder: 'leave empty to use a certificate' },
+      // `ROTATE_FIELD` in the connector. Without it, a save within 30 days of the certificate's end rotates anyway.
+      { key: 'rotateCertificate', label: 'Generate a new certificate now', secret: false, optional: true, toggle: true },
     ],
     // Mail lands nothing in a scope, so no standing grant (`MICROSOFT365_CONNECTION_GRANTS`).
     grants: [],
@@ -202,6 +210,11 @@ export function parseProviderSecret(spec: ProviderSpec, raw: unknown): Record<st
   const missing: string[] = [];
   for (const f of spec.fields) {
     const v = body[f.key];
+    // A toggle is `'yes'` or absent; anything else is left out, never stored as typed.
+    if (f.toggle) {
+      if (v === 'yes') secret[f.key] = 'yes';
+      continue;
+    }
     if (typeof v === 'string' && v.trim() !== '') secret[f.key] = v.trim();
     else if (!f.optional) missing.push(f.key);
   }

@@ -1,7 +1,7 @@
 import { URLSearchParams } from 'node:url';
 import { X509Certificate, constants, createPrivateKey, createPublicKey, createSign, createVerify, verify } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { Connection } from '@substrat-run/contracts';
+import { connectionCertificate, type Connection } from '@substrat-run/contracts';
 import type { FetchLike, ScopeHost } from '@substrat-run/kernel';
 import {
   MAX_ATTACHMENT_BYTES,
@@ -10,11 +10,15 @@ import {
   microsoft365Certificate,
   microsoft365CredentialSummary,
   microsoft365MailSender,
+  prepareMicrosoft365,
   prepareMicrosoft365Candidate,
+  probeMicrosoft365Connection,
   probeMicrosoft365Secret,
   sitePath,
   thumbprintS256,
+  type Microsoft365Secret,
 } from '../src/index.js';
+import { acquireToken } from '../src/credential.js';
 import { certificateMatchesKey, integer } from '../src/x509.js';
 
 /**
@@ -69,6 +73,34 @@ const entraError = (codes: number[], status = 400): Routes => ({
 
 const withCert = async () =>
   (await prepareMicrosoft365Candidate(base, undefined, { now: NOW, commonName: 'Substrat test' })).secret;
+
+const conn = {
+  id: '01CONN',
+  tenantId: '01HZZZZZZZZZZZZZZZZZZZZZZZ',
+  vertical: 'desk',
+  provider: 'microsoft365',
+} as unknown as Connection;
+/** A host whose live connection holds `secret`, recording each use the connector settles. */
+const hostWith = (secret: Record<string, string>) => {
+  const uses: { ok: boolean }[] = [];
+  const host = {
+    admin: {
+      openConnection: async () => ({ ...conn, secret }),
+      recordConnectionUse: async (_id: string, u: { ok: boolean }) => void uses.push(u),
+    },
+  } as unknown as ScopeHost;
+  return { host, uses };
+};
+const mail = (over: object = {}) => ({
+  from: { email: 'office@acme.example', name: 'Acme' },
+  to: [{ email: 'customer@example.com' }],
+  subject: 'Your offer',
+  html: '<p>Attached.</p>',
+  text: 'Attached.',
+  headers: { 'X-Ref': 'abc', 'List-Unsubscribe': '<mailto:x>' },
+  attachments: [{ filename: 'offer.pdf', contentType: 'application/pdf', content: new Uint8Array([1, 2, 3]) }],
+  ...over,
+});
 
 describe('the generated certificate', () => {
   it('is a real self-signed X.509 certificate for the stated year', async () => {
@@ -374,32 +406,6 @@ describe('what the probe says', () => {
 });
 
 describe('a connection: summary, certificate and mail', () => {
-  const conn = {
-    id: '01CONN',
-    tenantId: '01HZZZZZZZZZZZZZZZZZZZZZZZ',
-    vertical: 'desk',
-    provider: 'microsoft365',
-  } as unknown as Connection;
-  const hostWith = (secret: Record<string, string>) => {
-    const uses: unknown[] = [];
-    const host = {
-      admin: {
-        openConnection: async () => ({ ...conn, secret }),
-        recordConnectionUse: async (_id: string, u: unknown) => void uses.push(u),
-      },
-    } as unknown as ScopeHost;
-    return { host, uses };
-  };
-  const mail = (over: object = {}) => ({
-    from: { email: 'office@acme.example', name: 'Acme' },
-    to: [{ email: 'customer@example.com' }],
-    subject: 'Your offer',
-    html: '<p>Attached.</p>',
-    text: 'Attached.',
-    headers: { 'X-Ref': 'abc', 'List-Unsubscribe': '<mailto:x>' },
-    attachments: [{ filename: 'offer.pdf', contentType: 'application/pdf', content: new Uint8Array([1, 2, 3]) }],
-    ...over,
-  });
 
   it('the summary never shows key material, and shows the thumbprint Entra shows', async () => {
     const secret = await withCert();
@@ -469,6 +475,396 @@ describe('a connection: summary, certificate and mail', () => {
     await expect(
       microsoft365MailSender({ fetch: microsoft({}).fetchImpl }).senders(hostWith(await withCert()).host, other),
     ).rejects.toThrow(/not the live/);
+  });
+});
+
+/**
+ * Rotation: a successor keypair beside the current one, so mail never stops while the tenant swaps
+ * certificates. The scripted Entra here decides by the assertion's `x5t#S256`, so "the tenant has
+ * uploaded this certificate" is a set of thumbprints the test controls.
+ */
+describe('rotating the certificate before it lapses', () => {
+  const prepare = (
+    candidate: Record<string, string>,
+    previous: Record<string, string> | undefined,
+    now: Date,
+    signIn?: Parameters<typeof prepareMicrosoft365Candidate>[2]['signIn'],
+  ) => prepareMicrosoft365Candidate(candidate, previous, { now, commonName: 'x', ...(signIn ? { signIn } : {}) });
+  // 30 days written out, not ROTATION_WINDOW_DAYS: it is the window the docs promise, so a changed constant must fail here.
+  const windowOpens = (s: Record<string, string>) => new Date(Date.parse(s.certificateNotAfter!) - 30 * 86_400_000);
+  /** A connection mid-rotation: the current certificate, and a successor minted inside the window. */
+  const rotating = async () => {
+    const first = await withCert();
+    const { secret } = await prepare(base, first, windowOpens(first));
+    return { first, secret, at: windowOpens(first) };
+  };
+
+  /** Entra, as the tenant's app registration sees it: only `registered` thumbprints sign in. */
+  const entra = (registered: string[], extra: Routes = {}) => {
+    const rest = microsoft(extra);
+    const signedWith: string[] = [];
+    const fetchImpl: FetchLike = async (input, init) => {
+      const body = String(init?.body ?? '');
+      if (input.includes('/oauth2/v2.0/token')) {
+        const assertion = new URLSearchParams(body).get('client_assertion') ?? '';
+        const x5t = JSON.parse(Buffer.from(assertion.split('.')[0]!, 'base64url').toString())['x5t#S256'] as string;
+        signedWith.push(x5t);
+        const ok = registered.includes(x5t);
+        const r = ok ? { status: 200, body: { access_token: `TOKEN-${x5t.slice(0, 6)}` } } : entraError([700027], 401)['/oauth2/v2.0/token']!;
+        return { ok, status: r.status, json: async () => r.body, text: async () => JSON.stringify(r.body) } as never;
+      }
+      return rest.fetchImpl(input, init);
+    };
+    return { calls: rest.calls, signedWith, fetchImpl };
+  };
+
+  describe('when a successor is minted', () => {
+    it('a save exactly 30 days before the end mints one beside the current, which keeps signing', async () => {
+      const first = await withCert();
+      const { secret, expiresAt } = await prepare(base, first, windowOpens(first));
+      expect(secret.privateKey).toBe(first.privateKey);
+      expect(secret.certificate).toBe(first.certificate);
+      expect(secret.nextCertificate).toBeTruthy();
+      expect(secret.nextCertificate).not.toBe(first.certificate);
+      expect(await certificateMatchesKey(secret.nextCertificate!, secret.nextPrivateKey!)).toBe(true);
+      // The deadline is still the current certificate's.
+      expect(expiresAt).toBe(first.certificateNotAfter);
+    });
+
+    it('a save a millisecond before the window opens mints none', async () => {
+      const first = await withCert();
+      const { secret } = await prepare(base, first, new Date(windowOpens(first).getTime() - 1));
+      expect(secret.nextCertificate).toBeUndefined();
+      expect(secret.nextPrivateKey).toBeUndefined();
+    });
+
+    it("the rotate flag mints one outside the window, and is never stored; only 'yes' asks", async () => {
+      const first = await withCert();
+      const asked = (await prepare({ ...base, rotateCertificate: 'yes' }, first, NOW)).secret;
+      expect(asked.nextCertificate).toBeTruthy();
+      expect(asked.rotateCertificate).toBeUndefined();
+      expect(asked.certificate).toBe(first.certificate);
+      for (const v of ['true', ' yes', 'YES']) {
+        const notAsked = (await prepare({ ...base, rotateCertificate: v }, first, NOW)).secret;
+        expect(notAsked.nextCertificate).toBeUndefined();
+        expect(notAsked.rotateCertificate).toBeUndefined();
+      }
+    });
+
+    it('the rotate flag on a first save mints one certificate, not two', async () => {
+      const { secret } = await prepare({ ...base, rotateCertificate: 'yes' }, undefined, NOW);
+      expect(secret.certificate).toBeTruthy();
+      expect(secret.nextCertificate).toBeUndefined();
+    });
+
+    it('a pending successor is kept, not re-minted, by another save or another rotate flag', async () => {
+      const { secret, at } = await rotating();
+      const again = (await prepare({ ...base, rotateCertificate: 'yes' }, secret, at)).secret;
+      expect(again.nextCertificate).toBe(secret.nextCertificate);
+      expect(again.nextPrivateKey).toBe(secret.nextPrivateKey);
+      expect(again.certificate).toBe(secret.certificate);
+    });
+
+    it("never takes a successor from the caller, with or without one of ours pending", async () => {
+      const first = await withCert();
+      const attacker = { nextPrivateKey: 'ATTACKER', nextCertificate: 'ATTACKER', nextCertificateNotAfter: '2099-01-01T00:00:00Z' };
+      const fresh = (await prepare({ ...base, ...attacker }, first, NOW)).secret;
+      expect(fresh.nextPrivateKey).toBeUndefined();
+      expect(fresh.nextCertificate).toBeUndefined();
+
+      const { secret, at } = await rotating();
+      const kept = (await prepare({ ...base, ...attacker }, secret, at)).secret;
+      expect(kept.nextPrivateKey).toBe(secret.nextPrivateKey);
+      expect(kept.nextCertificate).toBe(secret.nextCertificate);
+    });
+
+    it('a malformed successor is dropped and, inside the window, minted again', async () => {
+      const { secret, at } = await rotating();
+      const broken = { ...secret, nextCertificate: secret.certificate! }; // not the successor key's certificate
+      const healed = (await prepare(base, broken, at)).secret;
+      expect(healed.certificate).toBe(secret.certificate);
+      expect(healed.nextCertificate).not.toBe(secret.certificate);
+      expect(await certificateMatchesKey(healed.nextCertificate!, healed.nextPrivateKey!)).toBe(true);
+    });
+
+    it('switching to a client secret drops both keypairs', async () => {
+      const { secret, at } = await rotating();
+      const { secret: s, expiresAt } = await prepare({ ...base, clientSecret: 'S' }, secret, at);
+      expect(Object.keys(s).filter((k) => /privateKey|certificate/i.test(k))).toEqual([]);
+      expect(expiresAt).toBeNull();
+    });
+  });
+
+  describe('when a successor is promoted', () => {
+    it('a save promotes it once Entra accepts it, and drops the old key', async () => {
+      const { first, secret, at } = await rotating();
+      const ms = entra([await thumbprintS256(secret.nextCertificate!)]);
+      const signIn = (s: Microsoft365Secret) => acquireToken(ms.fetchImpl, s, { now: at });
+      const { secret: promoted, expiresAt } = await prepare(base, secret, at, signIn);
+      expect(promoted.privateKey).toBe(secret.nextPrivateKey);
+      expect(promoted.certificate).toBe(secret.nextCertificate);
+      expect(promoted.certificateNotAfter).toBe(secret.nextCertificateNotAfter);
+      expect(expiresAt).toBe(secret.nextCertificateNotAfter);
+      expect(promoted.nextCertificate).toBeUndefined();
+      expect(JSON.stringify(promoted)).not.toContain(first.privateKey!);
+      // It asked with the successor, and only with it.
+      expect(ms.signedWith).toEqual([await thumbprintS256(secret.nextCertificate!)]);
+    });
+
+    it('the hook the control plane registers (prepareMicrosoft365) promotes it too, through its own sign-in', async () => {
+      const { secret, at } = await rotating();
+      const ms = entra([await thumbprintS256(secret.nextCertificate!)]);
+      const hook = prepareMicrosoft365({ fetch: ms.fetchImpl, now: () => at, commonName: 'x' });
+      const { secret: promoted, expiresAt } = await hook(base, secret);
+      expect(promoted.certificate).toBe(secret.nextCertificate);
+      expect(promoted.privateKey).toBe(secret.nextPrivateKey);
+      expect(promoted.nextCertificate).toBeUndefined();
+      expect(expiresAt).toBe(secret.nextCertificateNotAfter);
+      // It signed in with the successor, through the fetch it was built with.
+      expect(ms.signedWith).toEqual([await thumbprintS256(secret.nextCertificate!)]);
+    });
+
+    it('the save that promotes mints no new successor, even with rotation asked for; the next save may', async () => {
+      const { secret, at } = await rotating();
+      const ms = entra([await thumbprintS256(secret.nextCertificate!)]);
+      const signIn = (s: Microsoft365Secret) => acquireToken(ms.fetchImpl, s, { now: at });
+      const promoted = (await prepare({ ...base, rotateCertificate: 'yes' }, secret, at, signIn)).secret;
+      expect(promoted.certificate).toBe(secret.nextCertificate);
+      expect(promoted.nextCertificate).toBeUndefined();
+      // The same holds when a lapse promotes it.
+      const lapsed = new Date(Date.parse(secret.certificateNotAfter!) + 1000);
+      const byLapse = (await prepare({ ...base, rotateCertificate: 'yes' }, secret, lapsed)).secret;
+      expect(byLapse.certificate).toBe(secret.nextCertificate);
+      expect(byLapse.nextCertificate).toBeUndefined();
+      // Asked for again on a later save, it is minted beside the promoted certificate.
+      const later = (await prepare({ ...base, rotateCertificate: 'yes' }, promoted, at, signIn)).secret;
+      expect(later.certificate).toBe(promoted.certificate);
+      expect(later.nextCertificate).toBeTruthy();
+    });
+
+    it('a successor Entra refuses leaves both exactly as they were', async () => {
+      const { secret, at } = await rotating();
+      const ms = entra([await thumbprintS256(secret.certificate!)]);
+      const { secret: after, expiresAt } = await prepare(base, secret, at, (s) => acquireToken(ms.fetchImpl, s, { now: at }));
+      expect(after).toEqual(secret);
+      expect(expiresAt).toBe(secret.certificateNotAfter);
+    });
+
+    it('an incomplete candidate mid-rotation is not asked about, and does not throw', async () => {
+      const { secret, at } = await rotating();
+      const { siteUrl: _missing, ...incomplete } = base;
+      const after = await prepare(incomplete, secret, at, async () => {
+        throw new Error('must not be asked');
+      });
+      expect(after.secret.certificate).toBe(secret.certificate);
+      expect(after.secret.nextCertificate).toBe(secret.nextCertificate);
+    });
+
+    it('a sign-in that throws, or no sign-in at all, leaves both exactly as they were', async () => {
+      const { secret, at } = await rotating();
+      const threw = await prepare(base, secret, at, async () => {
+        throw new Error('network down');
+      });
+      expect(threw.secret).toEqual(secret);
+      expect((await prepare(base, secret, at)).secret).toEqual(secret);
+    });
+
+    it('once the current certificate has lapsed, the successor takes its place without asking', async () => {
+      const { secret } = await rotating();
+      const lapsed = new Date(Date.parse(secret.certificateNotAfter!) + 1000);
+      const { secret: after, expiresAt } = await prepare(base, secret, lapsed, async () => {
+        throw new Error('must not be asked');
+      });
+      expect(after.certificate).toBe(secret.nextCertificate);
+      expect(after.privateKey).toBe(secret.nextPrivateKey);
+      expect(after.nextCertificate).toBeUndefined();
+      expect(expiresAt).toBe(secret.nextCertificateNotAfter);
+    });
+  });
+
+  describe('signing in mid-rotation', () => {
+    it('the current certificate signs while it is registered; the successor is not tried', async () => {
+      const { secret, at } = await rotating();
+      const ms = entra([await thumbprintS256(secret.certificate!)]);
+      expect(await acquireToken(ms.fetchImpl, secret as Microsoft365Secret, { now: at })).toMatchObject({ ok: true });
+      expect(ms.signedWith).toEqual([await thumbprintS256(secret.certificate!)]);
+    });
+
+    it('when the tenant has removed the current one, the successor signs', async () => {
+      const { secret, at } = await rotating();
+      const ms = entra([await thumbprintS256(secret.nextCertificate!)]);
+      expect(await acquireToken(ms.fetchImpl, secret as Microsoft365Secret, { now: at })).toMatchObject({ ok: true });
+      expect(ms.signedWith).toEqual([await thumbprintS256(secret.certificate!), await thumbprintS256(secret.nextCertificate!)]);
+    });
+
+    it("when neither is registered, the answer is the current certificate's", async () => {
+      const { secret, at } = await rotating();
+      const out = await acquireToken(entra([]).fetchImpl, secret as Microsoft365Secret, { now: at });
+      expect(out).toMatchObject({ ok: false, refused: false });
+      expect((out as { error: string }).error).toContain('not on the app registration yet');
+    });
+
+    it("once the current certificate is unregistered, a successor that fails differently gives the answer", async () => {
+      const { secret, at } = await rotating();
+      let n = 0;
+      const fetchImpl: FetchLike = async () => {
+        const r = n++ === 0 ? entraError([700027], 401)['/oauth2/v2.0/token']! : { status: 400, body: { error: 'invalid_client', error_codes: [700016] } };
+        return { ok: false, status: r.status, json: async () => r.body, text: async () => '' } as never;
+      };
+      const out = await acquireToken(fetchImpl, secret as Microsoft365Secret, { now: at });
+      expect(n).toBe(2);
+      expect(out).toMatchObject({ ok: false, refused: true });
+      expect((out as { error: string }).error).toContain('no application');
+    });
+
+    it('a send whose successor cannot be reached after a 700027 throws and records the same attempt', async () => {
+      const { secret, at } = await rotating();
+      let n = 0;
+      const fetchImpl: FetchLike = async () => {
+        if (n++ === 0) {
+          const r = entraError([700027], 401)['/oauth2/v2.0/token']!;
+          return { ok: false, status: r.status, json: async () => r.body, text: async () => '' } as never;
+        }
+        throw new TypeError('network down');
+      };
+      const h = hostWith(secret);
+      await expect(microsoft365MailSender({ fetch: fetchImpl, now: () => at }).send(h.host, conn, mail())).rejects.toThrow(
+        /could not be reached: network down/,
+      );
+      expect(h.uses).toEqual([expect.objectContaining({ ok: false, error: 'network down' })]);
+    });
+
+    it('a refusal other than "not registered" is not retried with the successor', async () => {
+      const { secret, at } = await rotating();
+      const ms = microsoft(entraError([700016]));
+      expect(await acquireToken(ms.fetchImpl, secret as Microsoft365Secret, { now: at })).toMatchObject({ ok: false, refused: true });
+      expect(ms.calls).toHaveLength(1);
+    });
+
+    it('after the current one lapses, only the successor signs', async () => {
+      const { secret } = await rotating();
+      const lapsed = new Date(Date.parse(secret.certificateNotAfter!) + 1000);
+      const ms = entra([await thumbprintS256(secret.certificate!), await thumbprintS256(secret.nextCertificate!)]);
+      expect(await acquireToken(ms.fetchImpl, secret as Microsoft365Secret, { now: lapsed })).toMatchObject({ ok: true });
+      expect(ms.signedWith).toEqual([await thumbprintS256(secret.nextCertificate!)]);
+    });
+  });
+
+  describe('what the connection shows mid-rotation', () => {
+    it('the certificate route keeps the current certificate on top and adds the successor as next', async () => {
+      const { secret } = await rotating();
+      const cert = await microsoft365Certificate(hostWith(secret).host, conn);
+      expect(new X509Certificate(cert!.pem).fingerprint.replace(/:/g, '')).toBe(cert!.thumbprint);
+      expect(cert!.notAfter).toBe(secret.certificateNotAfter);
+      expect(Buffer.from(cert!.next!.pem.replace(/-----[A-Z ]+-----|\n/g, ''), 'base64').toString('base64')).toBe(secret.nextCertificate);
+      expect(new X509Certificate(cert!.next!.pem).fingerprint.replace(/:/g, '')).toBe(cert!.next!.thumbprint);
+      expect(cert!.next!.notAfter).toBe(secret.nextCertificateNotAfter);
+      // What the control plane serves is the contract's parse, which must keep `next`.
+      expect(connectionCertificate.parse(cert)).toEqual(cert);
+      expect(JSON.stringify(cert)).not.toContain(secret.nextPrivateKey!);
+
+      const settled = await microsoft365Certificate(hostWith(await withCert()).host, conn);
+      expect(settled).not.toHaveProperty('next');
+    });
+
+    it('the summary names both thumbprints and both ends, and no key', async () => {
+      const { secret } = await rotating();
+      const summary = await microsoft365CredentialSummary(hostWith(secret).host, conn);
+      const field = (k: string) => summary.fields.find((f) => f.key === k)?.value;
+      expect(field('nextCertificate')).toMatch(/^[0-9A-F]{40}$/);
+      expect(field('nextCertificate')).not.toBe(field('certificate'));
+      expect(field('nextCertificateNotAfter')).toBe(secret.nextCertificateNotAfter);
+      expect(JSON.stringify(summary)).not.toContain(secret.nextPrivateKey!);
+      expect(JSON.stringify(summary)).not.toContain(secret.privateKey!);
+    });
+
+    it('the probe stays ok on the current certificate and says the successor is not accepted yet — without marking the connection unhealthy', async () => {
+      const { secret, at } = await rotating();
+      const ms = entra([await thumbprintS256(secret.certificate!)], siteOk);
+      const h = hostWith(secret);
+      const p = await probeMicrosoft365Connection(h.host, conn, { fetch: ms.fetchImpl, now: () => at });
+      expect(p.ok).toBe(true);
+      expect(p.facts.find((f) => f.label === 'New certificate')?.value).toContain('not accepted yet');
+      // Only the current certificate's calls are recorded as the connection's health, and all were fine.
+      expect(h.uses.length).toBeGreaterThan(0);
+      expect(h.uses.every((u) => u.ok)).toBe(true);
+    });
+
+    it('with the current certificate removed, the probe reports the current one and asks the successor once, unrecorded', async () => {
+      const { secret, at } = await rotating();
+      const [cur, nxt] = [await thumbprintS256(secret.certificate!), await thumbprintS256(secret.nextCertificate!)];
+      const ms = entra([nxt], siteOk);
+      const h = hostWith(secret);
+      const p = await probeMicrosoft365Connection(h.host, conn, { fetch: ms.fetchImpl, now: () => at });
+      // The probe is about the certificate in use, which Entra no longer has.
+      expect(p).toMatchObject({ ok: false, refused: false });
+      expect(p.error).toContain('not on the app registration yet');
+      expect(p.facts.find((f) => f.label === 'New certificate')?.value).toContain('on the app registration');
+      // One sign-in each: the current one (recorded), the successor (not).
+      expect([...ms.signedWith].sort()).toEqual([cur, nxt].sort());
+      expect(h.uses).toEqual([expect.objectContaining({ ok: false, status: 401 })]);
+    });
+
+    it('a second after the current certificate lapses, Test connection signs with the successor, as a send does', async () => {
+      const { secret } = await rotating();
+      const lapsed = new Date(Date.parse(secret.certificateNotAfter!) + 1000);
+      const nxt = await thumbprintS256(secret.nextCertificate!);
+      const ms = entra([nxt], siteOk);
+      const h = hostWith(secret);
+      const p = await probeMicrosoft365Connection(h.host, conn, { fetch: ms.fetchImpl, now: () => lapsed });
+      expect(p).toMatchObject({ ok: true, accountLabel: 'Team' });
+      expect(p.facts.find((f) => f.label === 'Certificate')?.value).toContain('save the connection');
+      // The successor, asked once, as the probe's own (recorded, healthy) sign-in.
+      expect(ms.signedWith).toEqual([nxt]);
+      expect(h.uses.length).toBeGreaterThan(0);
+      expect(h.uses.every((u) => u.ok)).toBe(true);
+    });
+
+    it('lapsed with a successor not uploaded, Test connection says to upload it', async () => {
+      const { secret } = await rotating();
+      const lapsed = new Date(Date.parse(secret.certificateNotAfter!) + 1000);
+      const p = await probeMicrosoft365Connection(hostWith(secret).host, conn, { fetch: entra([]).fetchImpl, now: () => lapsed });
+      expect(p).toMatchObject({ ok: false, refused: false });
+      expect(p.error).toContain('not on the app registration yet');
+    });
+
+    it('a send that falls back to the successor records one sign-in, the one that decided it', async () => {
+      const { secret, at } = await rotating();
+      const ms = entra([await thumbprintS256(secret.nextCertificate!)], { '/sendMail': { status: 202, body: {} } });
+      const h = hostWith(secret);
+      await microsoft365MailSender({ fetch: ms.fetchImpl, now: () => at }).send(h.host, conn, mail());
+      expect(ms.signedWith).toEqual([await thumbprintS256(secret.certificate!), await thumbprintS256(secret.nextCertificate!)]);
+      // The successor's token and the sendMail; the current certificate's expected 401 is not one of them.
+      expect(h.uses).toHaveLength(2);
+      expect(h.uses.every((u) => u.ok)).toBe(true);
+    });
+
+    it('a sign-in that fails is still recorded, once', async () => {
+      const { secret, at } = await rotating();
+      const h = hostWith(secret);
+      await expect(
+        microsoft365MailSender({ fetch: entra([]).fetchImpl, now: () => at }).send(h.host, conn, mail()),
+      ).rejects.toThrow(/sign-in failed/);
+      expect(h.uses).toEqual([expect.objectContaining({ ok: false, status: 401 })]);
+    });
+
+    it('the probe says when the successor is on the app registration', async () => {
+      const { secret, at } = await rotating();
+      const ms = entra([await thumbprintS256(secret.certificate!), await thumbprintS256(secret.nextCertificate!)], siteOk);
+      const p = await probeMicrosoft365Secret(secret, { fetch: ms.fetchImpl, now: () => at });
+      expect(p.ok).toBe(true);
+      expect(p.facts.find((f) => f.label === 'New certificate')?.value).toContain('on the app registration');
+    });
+
+    it('a send after the current certificate lapses goes out signed with the successor', async () => {
+      const { secret } = await rotating();
+      const lapsed = new Date(Date.parse(secret.certificateNotAfter!) + 1000);
+      const ms = entra([await thumbprintS256(secret.nextCertificate!)], { '/sendMail': { status: 202, body: {} } });
+      const sender = microsoft365MailSender({ fetch: ms.fetchImpl, now: () => lapsed });
+      await sender.send(hostWith(secret).host, conn, mail());
+      expect(ms.signedWith).toEqual([await thumbprintS256(secret.nextCertificate!)]);
+      expect(ms.calls.some((c) => c.url.endsWith('/sendMail'))).toBe(true);
+    });
   });
 });
 
