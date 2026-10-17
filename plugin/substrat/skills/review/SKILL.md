@@ -17,12 +17,17 @@ rules, and any other runner should follow this same procedure against the same f
 ## Procedure
 
 1. **Find the change.** Everything that would land, committed or not:
-   `git diff $(git merge-base origin/main HEAD)` covers commits, staged and unstaged work
-   against the branch you will merge into (not against `HEAD`). Add untracked files from
+   run `git fetch origin` first (a stale base drags in other people's merged commits), then
+   `git diff $(git merge-base origin/main HEAD)`: commits, staged and unstaged work against
+   the branch you will merge into (not against `HEAD`). If there is no `origin/main`, find the
+   default branch (`git symbolic-ref refs/remotes/origin/HEAD`) and use that; if the merge-base
+   command prints nothing, stop and say the base is unknown rather than reviewing a bare
+   `git diff`. Add untracked files from
    `git ls-files --others --exclude-standard`; they are in no diff, so open them. If the base
    is not `main`, say which you used. If all of that is empty, say so and stop.
-2. **Run the gates the checklist names**, in the vertical's own project, and read their
-   output. A gate that cannot run here (not built, dependency missing) is reported as *not
+2. **Run the gates the checklist names that exist here**, in the vertical's own project, in
+   their read-only `--check` form only, and read their output. Which gates exist depends on
+   whether this is a scaffolded project or the monorepo; the checklist says which. A gate that cannot run here (not built, dependency missing) is reported as *not
    run*. Do not guess its answer.
 3. **Read the change against each item.** Open the changed files, not only the hunks.
    Whether an operation checks a permission is not visible in the line that was added.

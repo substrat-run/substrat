@@ -1,7 +1,7 @@
 # Substrat review checklist
 
-One rule set, any runner: the `review` skill (run it locally before you push) reads
-it today, and a runner the platform hosts would read the same file. Edit the rules **here
+One rule set, any runner: the `review` skill (run it locally before you push) reads it
+today, and a runner the platform hosts is meant to read the same file. Edit the rules **here
 and nowhere else**. No runner carries its own copy.
 
 This checklist exists because the failures it names *look like success*: they compile, the
@@ -14,6 +14,14 @@ Substrat's rules can see.
 - Review **the change**, not the whole tree. A finding must point at a line the change adds
   or alters (`file:line`), quote it, and say how it fails. Pre-existing problems are out of
   scope unless the change makes them reachable.
+- **Run gates read-only.** Only the `--check` form of a gate, and only a gate that has one:
+  a bare `lint:model`, `lint:permissions` or `lint:agent-rules` rewrites files, which a
+  review must not do. A gate with no read-only form is not run.
+- **Which gates exist depends on where you are.** In a project made by `npm create substrat`
+  there are three: `npm run lint:boundaries`, `npm run typecheck`, `npm test`. The rest named
+  below (`tools/…`, `pnpm lint:…`) exist in the Substrat monorepo, where the demos live. If a
+  gate is not there, say *not available here* and review that item by reading; do not report
+  a missing script as a failure.
 - **A gate that already refuses it is not your job to repeat.** Each item names the
   mechanical check, where there is one. Run it, and report its failure instead of
   re-deriving it. Spend your reading on the part no gate can see, which the item's *Look
@@ -35,8 +43,8 @@ see. Where a gate exists it is the first thing to run.
 
 Tenant data is reached through `ctx.sql`, inside an operation, and nowhere else.
 
-- *Gate:* `node tools/boundary-lint.mjs` (`pnpm lint:boundaries` in a scaffolded project).
-  Red: report it and stop on this item.
+- *Gate:* `npm run lint:boundaries` in a scaffolded project; `node tools/boundary-lint.mjs`
+  in the monorepo. Red: report it and stop on this item.
 - *Reader:* spellings a linter cannot see: another module's table named in SQL, a binding or
   stub that reaches a different scope, `fetch` in module code.
 
@@ -69,8 +77,8 @@ the permissions source.
 
 ### S5 · Personal data is classified and erasable: blocking
 
-- *Gate:* `pnpm lint:model --check` and the compiler refuse the structural cases (erasable
-  fields in an event payload, `erasable` with no `erasure`).
+- *Gate:* the compiler refuses an `erasable` field in an event payload. `pnpm lint:model`
+  (monorepo) only *warns* on `erasable` with no `erasure`, so a clean run does not settle it.
 - *Reader:* what counts as personal data is yours to judge. A new field holding a person's
   name, email, phone, address or free text they wrote must be in `erasable`; list each field
   you judged and why.
@@ -95,8 +103,11 @@ the permissions source.
 - *Reader:* an operation added with no scenario calling it, or only a happy path where it
   has a permission failure and a not-found.
 
-Event, clock and id rules (fat events, `ctx.now()`, `ulid()`, money as strings) are enforced
-by boundary-lint and the contract helpers, not listed here.
+## Not listed here
+
+Event, clock and id rules (fat events, `ctx.now()`, `ulid()`, money as strings) and catching
+an engine error without `ctx.atomic` are enforced by boundary-lint (R6, R7) and the contract
+helpers.
 
 ## Report shape
 
@@ -111,5 +122,8 @@ finding, most severe first:
 ```
 
 A blocking item you could not settle is listed as `[S5 unconfirmed]` with what you could not
-see. Close with `Checked clean:` (item ids with no finding) and `Gates run:` (the commands
-and their exit status). A gate you did not run is listed as *not run*, never as passed.
+see. Close with three lists. `Checked clean:` is items you read the change against and found
+nothing. `Not applicable:` is items the change gave nothing to apply to (no operation, no
+migration). `Gates run:` is the commands and their exit status; a gate you did not run is
+*not run* or *not available here*, never passed. Present a checkpoint diff (S2, S4) in the
+report body, under its own heading.
