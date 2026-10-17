@@ -16,17 +16,25 @@ rules, and any other runner should follow this same procedure against the same f
 
 ## Procedure
 
-1. **Find the diff.** Against the branch the change will merge into, not against `HEAD`:
-   `git diff $(git merge-base origin/main HEAD)...HEAD`, plus uncommitted work
-   (`git status --short`). If the base is not `main`, say which you used. An empty diff is
-   a result: say so and stop.
+1. **Find the change.** Everything that would land, committed or not:
+   `git diff $(git merge-base origin/main HEAD)` covers commits, staged and unstaged work
+   against the branch you will merge into (not against `HEAD`). Add untracked files from
+   `git ls-files --others --exclude-standard`; they are in no diff, so open them. If the base
+   is not `main`, say which you used. If all of that is empty, say so and stop.
 2. **Run the gates the checklist names**, in the vertical's own project, and read their
    output. A gate that cannot run here (not built, dependency missing) is reported as *not
    run*. Do not guess its answer.
-3. **Read the diff against each item.** Open the changed files, not only the hunks. Whether
-   an operation checks a permission is not visible in the line that was added.
-4. **Report in the checklist's shape**, every finding with `file:line`, and the clean items
-   and gates run listed at the end.
+3. **Read the change against each item.** Open the changed files, not only the hunks.
+   Whether an operation checks a permission is not visible in the line that was added.
+   Write down candidate findings; do not report them yet.
+4. **Try to disprove each candidate.** For every one, reopen the code and look for the thing
+   that would make it wrong: a check done by a caller or a derived handler, a gate that
+   already covers it, a declaration elsewhere in the model. Keep it only if you can quote
+   the offending line and state the concrete way it fails. Drop it otherwise, or, for a
+   blocking item you could not settle either way, report it as *unconfirmed* and say what
+   you could not see.
+5. **Report in the checklist's shape**: surviving findings with `file:line`, the clean
+   items, and the gates run.
 
 ## What you do not do
 
@@ -35,6 +43,6 @@ rules, and any other runner should follow this same procedure against the same f
 - **Do not pass a checkpoint.** If the change touches migrations or permissions, present
   the diff the way the checklist says and leave `--ack-migrations` / `--ack-permissions` to a
   person. Never pass them yourself or tell a subagent to.
-- **Do not widen the scope.** Code the diff did not touch is not this review's business.
-- **Do not soften a blocking item.** If you are unsure whether something is a violation,
-  report it as one, say what you could not confirm, and let the author answer.
+- **Do not widen the scope.** Code the change did not touch is not this review's business.
+- **Do not pad.** No finding is a valid result. A finding you could not tie to a quoted line
+  is not one.
