@@ -62,6 +62,7 @@ import {
   FIELD_COVERAGE_HEADER,
   INVOCATION_RECORD_HEADER,
   invocationLevelOf,
+  parentRequestIdOf,
   REQUEST_ID_HEADER,
 } from '@substrat-run/contracts/invocation-record';
 import type { EmittedReport, ScopeStoreStubOptions } from '@substrat-run/kernel';
@@ -526,6 +527,64 @@ function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, opti
     ...(record.storeCallsDropped ? { storeCallsDropped: record.storeCallsDropped } : {}),
   });
   console.log(JSON.stringify(line));
+}
+
+/** What a platform call's route knows about the call it served (#2192). */
+export interface PlatformCallLine {
+  /** The tenant and scope of the platform-verified BODY — never a header. */
+  tenantId: string;
+  scopeId: string;
+  vertical: string | null;
+  method: string;
+  url: string;
+  env: unknown;
+  invocationId: string;
+  /** Through {@link parentRequestIdOf} before it gets here; anything else is dropped. */
+  parentInvocationId: string | undefined;
+  status: number;
+  problemCode: string | null;
+  principalKind: string;
+  operation: string;
+  emitted: EmittedReport | undefined;
+  started: number;
+}
+
+/**
+ * #2192: the line for a call the PLATFORM made into this worker behind its secret — a peer
+ * call's `/internal/vertical-invoke` — where no router assertion names a tenant, so the stamp's
+ * own writer stays silent. Called by the route, after the `/internal/*` gate verified the
+ * secret, with the tenant and scope of the body that gate admitted: one line per call, the same
+ * grammar as every other, carrying the calling request's id as `parentInvocationId`. Never a
+ * throw, like the stamp's writer.
+ */
+export function writePlatformCallLine(call: PlatformCallLine): void {
+  try {
+    const parent = parentRequestIdOf(call.parentInvocationId);
+    console.log(
+      JSON.stringify(
+        invocationLine({
+          tenantId: call.tenantId,
+          scopeId: call.scopeId,
+          vertical: call.vertical,
+          method: call.method,
+          path: pathOf(call.url),
+          status: call.status,
+          threw: false,
+          durationMs: Date.now() - call.started,
+          invocationId: call.invocationId,
+          level: invocationLevelOf(call.status, false, call.problemCode),
+          operation: call.operation,
+          problemCode: call.problemCode,
+          principalKind: call.principalKind,
+          ...(call.emitted ? { emitted: call.emitted } : {}),
+          versionId: versionIdOf(call.env),
+          ...(parent ? { parentInvocationId: parent } : {}),
+        }),
+      ),
+    );
+  } catch {
+    /* one missing line, never a failed call */
+  }
 }
 
 /**

@@ -27,12 +27,14 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { classifyError, messageOf, problemOf, withRequestIdMember } from './errors.js';
 import { externalInput, externalJson } from './wire.js';
+import { requestIdOf, writePlatformCallLine } from './invocation-log.js';
 import {
   type CarriedAway,
   type KeptCopy,
   type LoadMarker,
   type CopyRestoreFence,
   type InvokeOptions,
+  type EmittedReport,
   type AppliedMigration,
   type SwitchedOff,
   type UndrainedEvents,
@@ -127,6 +129,7 @@ import {
   type Page,
   queryScopeInput,
   errorCodeOf,
+  PARENT_REQUEST_ID_HEADER,
   type ScopeId,
   type TenantId,
   type PrincipalId,
@@ -1824,16 +1827,55 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.verticalInvokeLocal) {
       return c.json({ error: 'this deployment cannot take peer calls (#1706) — redeploy it' }, 501);
     }
-    const result = await host.verticalInvokeLocal(
-      body.caller,
-      body.tenantId,
-      body.scopeId,
-      body.operation,
-      externalInput(body.input),
-      body.idempotencyKey !== undefined ? { idempotencyKey: body.idempotencyKey } : undefined,
-    );
-    // #2073: through the egress every transport shares (`wire.ts`).
-    return externalJson(c, { result: result ?? null });
+    // #2192: the call runs under this request's own id, so its events are stamped, and is
+    // written as one line naming the calling request. The tenant is the body's, which the gate
+    // above admitted behind the platform secret; the parent is the caller's claim, passed on by
+    // the router and dropped unless it is one ULID.
+    const invocationId = requestIdOf(c);
+    const started = Date.now();
+    let emitted: EmittedReport | undefined;
+    let status = 200;
+    let problemCode: string | null = null;
+    try {
+      const result = await host.verticalInvokeLocal(
+        body.caller,
+        body.tenantId,
+        body.scopeId,
+        body.operation,
+        externalInput(body.input),
+        {
+          ...(body.idempotencyKey !== undefined ? { idempotencyKey: body.idempotencyKey } : {}),
+          ...(invocationId !== undefined ? { invocationId } : {}),
+          onEmitted: (report) => (emitted = report),
+        },
+      );
+      // #2073: through the egress every transport shares (`wire.ts`).
+      return externalJson(c, { result: result ?? null });
+    } catch (e) {
+      // The status the envelope below answers with, so the line agrees with the caller.
+      status = deps.mapError?.(e)?.status ?? classifyError(e)?.status ?? 400;
+      problemCode = errorCodeOf(e) ?? null;
+      throw e;
+    } finally {
+      if (invocationId !== undefined) {
+        writePlatformCallLine({
+          tenantId: body.tenantId,
+          scopeId: body.scopeId,
+          vertical: c.req.header('x-substrat-vertical') ?? null,
+          method: c.req.method,
+          url: c.req.url,
+          env: c.env,
+          invocationId,
+          parentInvocationId: c.req.header(PARENT_REQUEST_ID_HEADER),
+          status,
+          problemCode,
+          principalKind: 'vertical',
+          operation: body.operation,
+          emitted,
+          started,
+        });
+      }
+    }
   });
 
   // The peer kill switch's far end (#1706), for a scope served HERE — the mirror of
