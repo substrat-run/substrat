@@ -135,7 +135,9 @@ const commonChange = {
  * - `content`: the bytes landed as `attachment` on the entity the upsert named. `replaces` is the
  *   attachment the previous content landed as, if any — the vertical decides whether to keep it.
  * - `delete`: the item is gone from the folder — `deleted` in Teams, or `moved-out` of the folder
- *   (where it went is not said: outside the folder is not the binding's to report).
+ *   (where it went is not said: outside the folder is not the binding's to report). Every delete is
+ *   on that item's own answer, so a folder's delete says nothing about what was in it: an item
+ *   still held under it gets a delete of its own, or none — a vertical must not cascade.
  */
 export const microsoft365ChannelChange = z.discriminatedUnion('change', [
   z.object({

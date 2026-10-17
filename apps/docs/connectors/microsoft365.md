@@ -189,8 +189,17 @@ The connection also needs write access to the attachment target that stores the 
   throttling, the sync stops with nothing deleted and the next one carries on. If Microsoft refuses
   the lookup itself (no access to that file, or a folder above it that cannot be read), the file is
   kept as it was, never reported deleted, and the sync finishes without it, so new changes keep
-  arriving. Such a file is looked up again on later syncs, up to three times, and the binding
-  shows how many files are in that state (a count only).
+  arriving. The binding shows how many files are in that state (a count only).
+- **When a refused file is looked up again.** Only when a later sync has reason to: a full re-read
+  of the library (after Microsoft expires the sync's position), or a change the feed reports about
+  that file. An ordinary sync that does not mention it does not ask again. After three refusals the
+  sync stops asking altogether: the file stays as the app last saw it, even if it has since been
+  moved out of the folder. Nothing is ever deleted on a refusal. Fix the access (or the folder above
+  it) in SharePoint, then bind the scope again, or wait for the next full re-read; either one looks
+  every such file up afresh.
+- **A folder's deletion is not its files'.** The app is told a folder was deleted, or moved out, on
+  that folder's own answer. A file that was in it and could not be looked up stays where the app
+  last saw it; the app should not delete it along with the folder.
 
 ## Limits
 
