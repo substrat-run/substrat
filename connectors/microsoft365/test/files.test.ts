@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import {
   connectionId,
   moduleManifest,
@@ -21,6 +22,7 @@ import {
   bindMicrosoft365Scope,
   listMicrosoft365Bindings,
   microsoft365ChannelChange,
+  microsoft365FilesRequested,
   registerMicrosoft365FilesConnector,
   syncMicrosoft365Scope,
   sweepMicrosoft365Files,
@@ -571,6 +573,314 @@ describe('reads: the sync lands what is in the folder', () => {
 describe('the public contract', () => {
   it('names the write event', () => {
     expect(MICROSOFT365_FILES_EVENT).toBe('microsoft365.channel-files-requested');
+  });
+  // A vertical builds the event with this schema and lands changes with that one: both are frozen
+  // once shipped, so a change to either is a visible diff here, never a silent reshape.
+  it('pins the write event payload', () => {
+    expect(z.toJSONSchema(microsoft365FilesRequested, { io: 'input' })).toMatchInlineSnapshot(`
+      {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "conflict": {
+            "enum": [
+              "replace",
+              "rename",
+              "fail",
+            ],
+            "type": "string",
+          },
+          "directory": {
+            "default": "",
+            "type": "string",
+          },
+          "files": {
+            "items": {
+              "properties": {
+                "attachmentId": {
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "name": {
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "attachmentId",
+              ],
+              "type": "object",
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "type": "array",
+          },
+        },
+        "required": [
+          "files",
+          "conflict",
+        ],
+        "type": "object",
+      }
+    `);
+  });
+  it('pins the change the sync lands', () => {
+    expect(z.toJSONSchema(microsoft365ChannelChange)).toMatchInlineSnapshot(`
+      {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "change": {
+                "const": "upsert",
+                "type": "string",
+              },
+              "connectionId": {
+                "minLength": 1,
+                "type": "string",
+              },
+              "content": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "follows",
+                      "unchanged",
+                      "too-large",
+                    ],
+                    "type": "string",
+                  },
+                  {
+                    "type": "null",
+                  },
+                ],
+              },
+              "contentType": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                  },
+                  {
+                    "type": "null",
+                  },
+                ],
+              },
+              "itemId": {
+                "minLength": 1,
+                "type": "string",
+              },
+              "kind": {
+                "enum": [
+                  "file",
+                  "folder",
+                ],
+                "type": "string",
+              },
+              "lastModifiedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                  },
+                  {
+                    "type": "null",
+                  },
+                ],
+              },
+              "name": {
+                "minLength": 1,
+                "type": "string",
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string",
+              },
+              "previousPath": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                  },
+                  {
+                    "type": "null",
+                  },
+                ],
+              },
+              "size": {
+                "anyOf": [
+                  {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer",
+                  },
+                  {
+                    "type": "null",
+                  },
+                ],
+              },
+              "webUrl": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                  },
+                  {
+                    "type": "null",
+                  },
+                ],
+              },
+            },
+            "required": [
+              "change",
+              "connectionId",
+              "itemId",
+              "kind",
+              "path",
+              "name",
+              "previousPath",
+              "size",
+              "contentType",
+              "lastModifiedAt",
+              "webUrl",
+              "content",
+            ],
+            "type": "object",
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "attachment": {
+                "additionalProperties": false,
+                "properties": {
+                  "contentType": {
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "filename": {
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "id": {
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "sha256": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string",
+                  },
+                  "size": {
+                    "maximum": 9007199254740991,
+                    "minimum": 0,
+                    "type": "integer",
+                  },
+                },
+                "required": [
+                  "id",
+                  "filename",
+                  "contentType",
+                  "size",
+                  "sha256",
+                ],
+                "type": "object",
+              },
+              "change": {
+                "const": "content",
+                "type": "string",
+              },
+              "connectionId": {
+                "minLength": 1,
+                "type": "string",
+              },
+              "itemId": {
+                "minLength": 1,
+                "type": "string",
+              },
+              "kind": {
+                "enum": [
+                  "file",
+                  "folder",
+                ],
+                "type": "string",
+              },
+              "name": {
+                "minLength": 1,
+                "type": "string",
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string",
+              },
+              "replaces": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                  },
+                  {
+                    "type": "null",
+                  },
+                ],
+              },
+            },
+            "required": [
+              "change",
+              "connectionId",
+              "itemId",
+              "kind",
+              "path",
+              "name",
+              "attachment",
+              "replaces",
+            ],
+            "type": "object",
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "change": {
+                "const": "delete",
+                "type": "string",
+              },
+              "connectionId": {
+                "minLength": 1,
+                "type": "string",
+              },
+              "itemId": {
+                "minLength": 1,
+                "type": "string",
+              },
+              "kind": {
+                "enum": [
+                  "file",
+                  "folder",
+                ],
+                "type": "string",
+              },
+              "name": {
+                "minLength": 1,
+                "type": "string",
+              },
+              "path": {
+                "minLength": 1,
+                "type": "string",
+              },
+              "reason": {
+                "enum": [
+                  "deleted",
+                  "moved-out",
+                ],
+                "type": "string",
+              },
+            },
+            "required": [
+              "change",
+              "connectionId",
+              "itemId",
+              "kind",
+              "path",
+              "name",
+              "reason",
+            ],
+            "type": "object",
+          },
+        ],
+      }
+    `);
   });
   it('derives the rename suffix from the event, stable and extension-preserving', () => {
     expect(withSuffix('report.pdf', '1a2b3c4d')).toBe('report (1a2b3c4d).pdf');
