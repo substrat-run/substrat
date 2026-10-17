@@ -152,6 +152,22 @@ describe('recordingFetch — the wrapper in front of the runtime’s fetch', () 
     expect(worker).toContain("[EGRESS_HEADER]: 'refused'");
   });
 
+  it('only a 403 carrying exactly the platform’s mark is a refusal; any other answer with it is the destination’s', async () => {
+    const cases: Array<[number, string, string]> = [
+      [200, 'refused', 'ok'],
+      [403, 'Refused', 'http-error'],
+      [403, 'refused-ish', 'http-error'],
+      [403, 'yes', 'http-error'],
+      [401, 'refused', 'http-error'],
+      [403, 'refused', 'refused'],
+    ];
+    for (const [status, mark, outcome] of cases) {
+      const recording: OutboundRecording = {};
+      await recordingFetch(runtimeFetch(ok(status, { 'x-substrat-egress': mark })).fn, () => recording)('https://api.example.com/a');
+      expect([status, mark, recording.outboundCalls?.[0]?.outcome]).toEqual([status, mark, outcome]);
+    }
+  });
+
   it('a platform refusal is recorded as refused, not as the destination’s 403', async () => {
     const recording: OutboundRecording = {};
     const wrapped = recordingFetch(runtimeFetch(ok(403, { 'x-substrat-egress': 'refused' })).fn, () => recording);

@@ -108,9 +108,14 @@ function errorName(e: unknown): string | undefined {
   return typeof name === 'string' && /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(name) ? name : undefined;
 }
 
-/** How a call that answered ended. */
+/**
+ * How a call that answered ended. `refused` only for the platform's own refusal: a 403 carrying
+ * exactly `x-substrat-egress: refused`. The egress worker strips the mark from every answer it
+ * passes through, and the status is required too, so a destination cannot make its own answer
+ * read as the platform's.
+ */
 function answeredOutcome(response: { status: number; headers?: { get?(name: string): string | null } }): OutboundCallOutcome {
-  if (response.headers?.get?.(EGRESS_REFUSAL_HEADER) === 'refused') return 'refused';
+  if (response.status === 403 && response.headers?.get?.(EGRESS_REFUSAL_HEADER) === 'refused') return 'refused';
   return response.status >= 400 ? 'http-error' : 'ok';
 }
 

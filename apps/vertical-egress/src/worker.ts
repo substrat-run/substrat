@@ -225,7 +225,12 @@ async function passThrough(
   const response = await send(new Request(request, { redirect: 'manual' }));
   const location = response.status >= 300 && response.status < 400 ? response.headers.get('location') : null;
   if (location !== null) meter(env, hostname, 'redirect', locationHost(location, request.url));
-  return response;
+  // #2192: the refusal mark is the platform's alone, so a destination's own copy never reaches the
+  // vertical — it would make the destination's answer read as the platform's refusal.
+  if (!response.headers.has(EGRESS_HEADER) || response.status === 101) return response;
+  const unmarked = new Response(response.body, response);
+  unmarked.headers.delete(EGRESS_HEADER);
+  return unmarked;
 }
 
 /**
