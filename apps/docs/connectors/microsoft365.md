@@ -142,7 +142,9 @@ connection's other fields keeps the same certificate.
 If you remove the old certificate from the app registration before that save, sends switch to the
 new one on their own. If the current certificate lapses before you save, the new one takes its
 place at the next save. A new certificate already waiting is kept when you save again, even with
-the box ticked, so the one you downloaded stays the one to upload.
+the box ticked, so the one you downloaded stays the one to upload. The save that switches to the
+new certificate never generates another one, even with the box ticked: tick it on a later save if
+you want to rotate again.
 
 Switching the connection to a client secret drops both certificates and clears the expiry with
 them, since Microsoft does not report a client secret's end to the app. Disabling or deleting the

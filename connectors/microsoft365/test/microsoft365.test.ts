@@ -624,6 +624,24 @@ describe('rotating the certificate before it lapses', () => {
       expect(ms.signedWith).toEqual([await thumbprintS256(secret.nextCertificate!)]);
     });
 
+    it('the save that promotes mints no new successor, even with rotation asked for; the next save may', async () => {
+      const { secret, at } = await rotating();
+      const ms = entra([await thumbprintS256(secret.nextCertificate!)]);
+      const signIn = (s: Microsoft365Secret) => acquireToken(ms.fetchImpl, s, { now: at });
+      const promoted = (await prepare({ ...base, rotateCertificate: 'yes' }, secret, at, signIn)).secret;
+      expect(promoted.certificate).toBe(secret.nextCertificate);
+      expect(promoted.nextCertificate).toBeUndefined();
+      // The same holds when a lapse promotes it.
+      const lapsed = new Date(Date.parse(secret.certificateNotAfter!) + 1000);
+      const byLapse = (await prepare({ ...base, rotateCertificate: 'yes' }, secret, lapsed)).secret;
+      expect(byLapse.certificate).toBe(secret.nextCertificate);
+      expect(byLapse.nextCertificate).toBeUndefined();
+      // Asked for again on a later save, it is minted beside the promoted certificate.
+      const later = (await prepare({ ...base, rotateCertificate: 'yes' }, promoted, at, signIn)).secret;
+      expect(later.certificate).toBe(promoted.certificate);
+      expect(later.nextCertificate).toBeTruthy();
+    });
+
     it('a successor Entra refuses leaves both exactly as they were', async () => {
       const { secret, at } = await rotating();
       const ms = entra([await thumbprintS256(secret.certificate!)]);

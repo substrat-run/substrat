@@ -91,7 +91,8 @@ export const authMethodOf = (s: Microsoft365Secret): AuthMethod =>
  * - Once the current certificate has lapsed, the successor is all that is left and takes its
  *   place.
  * - A successor already pending is kept, not re-minted, even when rotation is asked for again:
- *   the tenant may have downloaded it already.
+ *   the tenant may have downloaded it already. And the save that promotes one mints no new one,
+ *   even with rotation asked for: a successor to the promoted certificate waits for a later save.
  */
 export async function prepareMicrosoft365Candidate(
   candidate: Record<string, string>,
@@ -115,9 +116,11 @@ export async function prepareMicrosoft365Candidate(
     storedKeypair(previous, 'current', opts.now),
     storedKeypair(previous, 'next', opts.now),
   ]);
+  let promoted = false;
   if (!current && next) {
     current = next;
     next = undefined;
+    promoted = true;
   } else if (current && next && opts.signIn) {
     // An incomplete candidate cannot sign in; the probe after this refuses it, so promotion just waits.
     const asNext = microsoft365Secret.safeParse({ ...secret, ...slot(next, 'current') });
@@ -125,11 +128,14 @@ export async function prepareMicrosoft365Candidate(
     if (outcome?.ok) {
       current = next;
       next = undefined;
+      promoted = true;
     }
   }
   if (!current) {
     current = await mint(opts);
-  } else if (!next && (rotate || rotationDue(current.notAfter, opts.now))) {
+  } else if (!promoted && !next && (rotate || rotationDue(current.notAfter, opts.now))) {
+    // Not on the save that promoted: the certificate it switched to is the one the tenant just
+    // uploaded, so a successor to it is only asked for on a later save.
     next = await mint(opts);
   }
   return {
