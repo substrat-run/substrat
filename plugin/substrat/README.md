@@ -26,7 +26,8 @@ In Claude Desktop: **+** → Plugins → Add plugin.
   to present the permission and migration diffs well, never to click through them.
 - **`/substrat:review`** — checks a change against Substrat's own rules (scope isolation,
   permission checks, generated files, migration losses, personal data, lifecycles, secrets,
-  tests) before you push. One checklist, [`review/checklist.md`](review/checklist.md), read by
+  tests) before you push. It checks Substrat's rules only; run the editor's own review
+  (`/code-review`) first for general bugs. One checklist, [`review/checklist.md`](review/checklist.md), read by
   this skill and by any other runner (a platform-run review, say) alike.
 - **A `SessionStart` hook** — silent in any project that is not a Substrat vertical. In one
   that is, it tells the agent where the rules live and which docs slice describes the kernel

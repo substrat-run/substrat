@@ -48,6 +48,11 @@ rules, and any other runner should follow this same procedure against the same f
 - **Do not pass a checkpoint.** If the change touches migrations or permissions, present
   the diff the way the checklist says and leave `--ack-migrations` / `--ack-permissions` to a
   person. Never pass them yourself or tell a subagent to.
-- **Do not widen the scope.** Code the change did not touch is not this review's business.
+- **Do not report old problems.** A finding has to be about the change. You may open any
+  file, touched or not, to confirm or disprove one: a claim the change makes about another
+  file is checked by reading that file.
+- **Do not stand in for a general review.** Logic bugs, performance and style are the
+  editor's built-in review (`/code-review` in Claude Code), run before this one. Say in the
+  report that you checked Substrat's rules only, so a clean result is not read as "no bugs".
 - **Do not pad.** No finding is a valid result. A finding you could not tie to a quoted line
   is not one.

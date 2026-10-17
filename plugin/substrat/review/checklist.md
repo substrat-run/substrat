@@ -122,7 +122,8 @@ finding, most severe first:
 ```
 
 A blocking item you could not settle is listed as `[S5 unconfirmed]` with what you could not
-see. Close with three lists. `Checked clean:` is items you read the change against and found
+see. Say once, under the headline, that this checks Substrat's rules only and is not a general
+code review. Close with three lists. `Checked clean:` is items you read the change against and found
 nothing. `Not applicable:` is items the change gave nothing to apply to (no operation, no
 migration). `Gates run:` is the commands and their exit status; a gate you did not run is
 *not run* or *not available here*, never passed. Present a checkpoint diff (S2, S4) in the
