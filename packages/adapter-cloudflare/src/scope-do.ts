@@ -5330,6 +5330,13 @@ export function defineScopeDO(
        */
       scopeId: ScopeId,
       systemDoorInstance: string,
+      /**
+       * #2192: the schedule run this pass belongs to. Every purge in it runs under that id, so its
+       * events, denials and deliveries join the run's own line. LAST and optional for the
+       * positional-RPC reason `recordExecutorAttempt` gives; a coordinator without it gets a fresh
+       * id per purge, as before.
+       */
+      runInvocationId?: string,
     ): Promise<PurgePass | SystemDoorMoved> {
       await this.ensureMigrations();
       const schedule = this.purgeSchedules.get(operation);
@@ -5364,7 +5371,7 @@ export function defineScopeDO(
           undefined,
           undefined,
           schedule.moduleId,
-          { invocationId: ulid() },
+          { invocationId: runInvocationId ?? ulid() },
           undefined,
           undefined,
           undefined,

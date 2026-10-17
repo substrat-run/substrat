@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { errorCodeOf, PEER_CALL_URL } from '@substrat-run/contracts';
+import { errorCodeOf, PARENT_REQUEST_ID_HEADER, PEER_CALL_URL, REQUEST_ID_HEADER } from '@substrat-run/contracts';
 import { peerClient } from '../src/peer-client.js';
+import { withInvocationLog } from '../src/invocation-log.js';
 
 /**
  * The client a vertical author writes (#1706).
@@ -94,5 +95,52 @@ describe('peerClient (#1706)', () => {
     });
     const refusal = await client.invoke('customer/list').catch((e: unknown) => e);
     expect(String((refusal as Error).message)).toMatch(/'acme\/crm' was refused \(502\)/);
+  });
+});
+
+describe('peerClient hands on the request it is made from (#2192)', () => {
+  const headersOf = (f: ReturnType<typeof ok>, i = 0) =>
+    new Headers((f.mock.calls[i] as unknown as [string, RequestInit])[1].headers);
+
+  it('sends the stamped request id as the parent, the same id the caller answers with', async () => {
+    const fetchImpl = ok(null);
+    const worker = withInvocationLog({
+      async fetch() {
+        await peerClient('acme/crm', { fetch: fetchImpl as unknown as typeof fetch }).invoke('customer/list');
+        return new Response('ok');
+      },
+    });
+    const res = (await worker.fetch!(new Request('https://app.example/x'), {}, {})) as Response;
+    const sent = headersOf(fetchImpl).get(PARENT_REQUEST_ID_HEADER);
+    expect(sent).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(sent).toBe(res.headers.get(REQUEST_ID_HEADER));
+  });
+
+  it('two concurrent requests each hand on their own id', async () => {
+    const fetchImpl = ok(null);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const worker = withInvocationLog({
+      async fetch() {
+        await gate;
+        await peerClient('acme/crm', { fetch: fetchImpl as unknown as typeof fetch }).invoke('customer/list');
+        return new Response('ok');
+      },
+    });
+    const both = Promise.all([
+      worker.fetch!(new Request('https://app.example/a'), {}, {}),
+      worker.fetch!(new Request('https://app.example/b'), {}, {}),
+    ]);
+    release();
+    const [a, b] = (await both) as unknown as Response[];
+    const sent = [headersOf(fetchImpl, 0).get(PARENT_REQUEST_ID_HEADER), headersOf(fetchImpl, 1).get(PARENT_REQUEST_ID_HEADER)];
+    expect(new Set(sent)).toEqual(new Set([a!.headers.get(REQUEST_ID_HEADER), b!.headers.get(REQUEST_ID_HEADER)]));
+    expect(sent[0]).not.toBe(sent[1]);
+  });
+
+  it('sends no parent outside a stamped request', async () => {
+    const fetchImpl = ok(null);
+    await peerClient('acme/crm', { fetch: fetchImpl as unknown as typeof fetch }).invoke('customer/list');
+    expect(headersOf(fetchImpl).has(PARENT_REQUEST_ID_HEADER)).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PEER_CALL_URL } from '@substrat-run/contracts';
+import { PARENT_REQUEST_ID_HEADER, PEER_CALL_URL } from '@substrat-run/contracts';
 import worker, { type Env, type OutboundPolicy } from '../src/worker.js';
 
 /**
@@ -13,11 +13,11 @@ import worker, { type Env, type OutboundPolicy } from '../src/worker.js';
 
 /** The router's peer entrypoint, recording what it was handed. */
 function peerCalls(outcome: unknown = { ok: true, result: { ok: 1 } }) {
-  const calls: { caller: unknown; request: unknown }[] = [];
+  const calls: { caller: unknown; request: unknown; rest: unknown[] }[] = [];
   return {
     binding: {
-      invoke: async (caller: unknown, request: unknown) => {
-        calls.push({ caller, request });
+      invoke: async (caller: unknown, request: unknown, ...rest: unknown[]) => {
+        calls.push({ caller, request, rest });
         return outcome as never;
       },
     },
@@ -174,5 +174,34 @@ describe('a peer call through egress (#1706)', () => {
     );
     expect(refused.status).toBe(403);
     expect(internet).toHaveBeenCalledOnce();
+  });
+});
+
+describe('a peer call hands on the calling request’s id (#2192)', () => {
+  const PARENT = '01JABCDEFGHJKMNPQRSTVWXYZ0';
+  const callWith = (env: Env, headers: Record<string, string>) =>
+    worker.fetch(
+      new Request(PEER_CALL_URL, { method: 'POST', headers, body: JSON.stringify({ vertical: 'acme/crm', operation: 'customer/list' }) }),
+      env,
+    );
+
+  it('passes a well-formed parent beside the caller, never inside it', async () => {
+    const peer = peerCalls();
+    const res = await callWith(envWith({ PEER_CALLS: peer.binding, OUTBOUND_POLICY: policy() }), { [PARENT_REQUEST_ID_HEADER]: PARENT });
+    expect(res.status).toBe(200);
+    expect(peer.calls[0]!.rest).toEqual([{ parentInvocationId: PARENT }]);
+    expect(peer.calls[0]!.caller).not.toHaveProperty('parentInvocationId');
+  });
+
+  it.each([
+    ['absent', {}],
+    ['repeated', { [PARENT_REQUEST_ID_HEADER]: `${PARENT}, ${PARENT}` }],
+    ['malformed', { [PARENT_REQUEST_ID_HEADER]: 'not-a-ulid' }],
+    ['oversized', { [PARENT_REQUEST_ID_HEADER]: PARENT + 'Z'.repeat(5000) }],
+  ])('passes no context for an %s parent, and the call still goes through', async (_name, headers) => {
+    const peer = peerCalls();
+    const res = await callWith(envWith({ PEER_CALLS: peer.binding, OUTBOUND_POLICY: policy() }), headers);
+    expect(res.status).toBe(200);
+    expect(peer.calls[0]!.rest).toEqual([]);
   });
 });

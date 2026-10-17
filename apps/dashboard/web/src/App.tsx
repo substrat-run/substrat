@@ -16,6 +16,7 @@ import { openRecordInUrl, openRequestInUrl } from './lib/request-url';
 import { MOCK_TIMELINE_TARGETS } from './lib/mock-timeline';
 import { NotificationsPopover } from './components/NotificationsPopover';
 import { PromoteDialog } from './components/PromoteDialog';
+import { failureDetail } from './components/RequestIdNote';
 import { SignIn, Interstitial, InviteBlocked } from './views/SignIn';
 import { Onboarding } from './views/Onboarding';
 import { Apps } from './views/Apps';
@@ -433,7 +434,7 @@ export function App() {
         // The row (if any) is now `failed`, not silently `provisioning` — surface why.
         await reloadApps().catch(() => {});
         go('/apps');
-        setToast({ status: 'danger', title: `Couldn’t create ${name}`, detail: e instanceof Error ? e.message : String(e) });
+        setToast({ status: 'danger', title: `Couldn’t create ${name}`, detail: failureDetail(e) });
       }
     },
     [reloadApps, teamClient],
@@ -500,7 +501,7 @@ export function App() {
         // A retry that still fails re-marks the row failed and surfaces the REAL error.
         await reloadApps().catch(() => {});
         go('/apps');
-        setToast({ status: 'danger', title: 'Retry failed', detail: e instanceof Error ? e.message : String(e) });
+        setToast({ status: 'danger', title: 'Retry failed', detail: failureDetail(e) });
       } finally {
         retryingRef.current = false;
       }
@@ -525,7 +526,7 @@ export function App() {
         // A resume that still can't come up marks the row failed with the REAL error,
         // which unlocks Retry on the card.
         await reloadApps().catch(() => {});
-        setToast({ status: 'danger', title: 'Resume failed', detail: e instanceof Error ? e.message : String(e) });
+        setToast({ status: 'danger', title: 'Resume failed', detail: failureDetail(e) });
       } finally {
         resumingRef.current = false;
       }
@@ -960,6 +961,7 @@ export function App() {
           onTab={(t) => go(`/apps/${openApp.app_scope_id}/${t}`)}
           onDeleted={() => void deleteApp(openApp)}
           authServers={authServers}
+          teamApps={apps.map((a) => a.app_scope_id)}
         />
       ) : route.section === 'apps' && route.app ? (
         // While the first listApps() is in flight — or older pages are still being

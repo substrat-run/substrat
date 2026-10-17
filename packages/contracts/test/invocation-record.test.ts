@@ -4,6 +4,7 @@ import {
   encodeInvocationRecord,
   INVOCATION_RECORD_FIELD_MAX,
   invocationLevelOf,
+  parentRequestIdOf,
 } from '../src/invocation-record.js';
 
 describe('invocation record header (#1904)', () => {
@@ -34,5 +35,24 @@ describe('invocation record header (#1904)', () => {
     expect(invocationLevelOf(404, false)).toBe('warn');
     expect(invocationLevelOf(503, false)).toBe('error');
     expect(invocationLevelOf(200, true)).toBe('error');
+  });
+});
+
+describe('parent request id (#2192)', () => {
+  const id = '01JABCDEFGHJKMNPQRSTVWXYZ0';
+
+  it('passes exactly one ULID on', () => {
+    expect(parentRequestIdOf(id)).toBe(id);
+  });
+
+  it('drops anything else whole: a repeated header, an oversized, lowercased or padded value, a non-string', () => {
+    expect(parentRequestIdOf(`${id}, ${id}`)).toBeUndefined();
+    expect(parentRequestIdOf(`${id}0`)).toBeUndefined();
+    expect(parentRequestIdOf(id.toLowerCase())).toBeUndefined();
+    expect(parentRequestIdOf(` ${id}`)).toBeUndefined();
+    expect(parentRequestIdOf('x'.repeat(10_000))).toBeUndefined();
+    expect(parentRequestIdOf('')).toBeUndefined();
+    expect(parentRequestIdOf(null)).toBeUndefined();
+    expect(parentRequestIdOf(42)).toBeUndefined();
   });
 });

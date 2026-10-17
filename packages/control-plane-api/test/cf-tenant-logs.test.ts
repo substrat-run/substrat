@@ -280,6 +280,17 @@ describe('cf tenant logs', () => {
     expect(events[0]!.message).toContain('/api/orders');
   });
 
+  it('an id read by itself is ANDed onto the tenant, never instead of it — a parent id naming another tenant’s request reaches nothing (#2192)', async () => {
+    const theirs = invocation({ tenantId: '01OTHER', invocationId: '01JABCDEFGHJKMNPQRSTVWXYZ0' });
+    const { reader, sent } = readerOver((f) =>
+      keyed(f, 'tenantId')?.value === '01OTHER' && keyed(f, 'invocationId') ? [theirs] : [],
+    );
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', invocationId: '01JABCDEFGHJKMNPQRSTVWXYZ0', hours: 24, limit: 10 });
+    expect(events).toEqual([]);
+    expect(keyed(sent[0]!, 'tenantId')).toMatchObject({ value: '01TENANT', operation: 'eq' });
+    expect(keyed(sent[0]!, 'invocationId')).toMatchObject({ value: '01JABCDEFGHJKMNPQRSTVWXYZ0', operation: 'eq' });
+  });
+
   it('always binds the tenant, and passes within-tenant narrowing through', async () => {
     const { reader, sent } = readerOver(() => []);
     await reader.tenantLogs!({ tenantId: '01TENANT', scopeId: '01SCOPE', hours: 24, limit: 10 });

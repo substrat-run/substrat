@@ -96,6 +96,8 @@ function useRequestDetail(scopeId: string, invocationId: string, atMs: number): 
     const logsRead = window
       ? api.appTenantLogs(scopeId, { invocationId, since: window.since, until: window.until, limit: 200 })
       : Promise.reject(new Error('no usable time within the 72-hour log window'));
+    // #2192: the related list reads the request's own line too, for the request that called it.
+    const recordRead = logsRead.then(recordFromLogs).catch(() => null);
     logsRead
       .then(async (logs) => {
         const record = recordFromLogs(logs);
@@ -142,7 +144,8 @@ function useRequestDetail(scopeId: string, invocationId: string, atMs: number): 
           r.events.length > EFFECTS_MAX ? `only the first ${EFFECTS_MAX} of ${r.events.length} events were followed` : null,
           allReacting.length > CAUSES_MAX ? `only the first ${CAUSES_MAX} of ${allReacting.length} events that reacted to another were traced back` : null,
         ].filter(Boolean);
-        set({ related: { state: 'ready', value: { requests: relatedRequests(invocationId, trees, causes), incomplete: reasons.length ? reasons.join('; ') : null } } });
+        const record = await recordRead;
+        set({ related: { state: 'ready', value: { requests: relatedRequests(invocationId, trees, causes, record), incomplete: reasons.length ? reasons.join('; ') : null } } });
       })
       .catch((e) => set({ events: { state: 'error', message: errorText(e) }, followUps: { state: 'error', message: errorText(e) }, related: { state: 'error', message: errorText(e) } }));
     return () => {
@@ -157,8 +160,14 @@ export function RequestSlideOver({
   invocationId,
   atMs,
   onClose,
+  teamApps = [],
 }: {
   scopeId: string;
+  /**
+   * #2192: the team's app scope ids, so a related request in ANOTHER of the team's apps (a peer
+   * call's caller) can be opened there. One in an app the team does not hold is shown, not linked.
+   */
+  teamApps?: readonly string[];
   invocationId: string;
   /** When the request happened, epoch ms — what its log read is windowed around. */
   atMs: number;
@@ -281,7 +290,7 @@ export function RequestSlideOver({
           </Section>
 
           <Section title="Related requests" hint={d.related.state === 'ready' && d.related.value.requests.length > 0 ? 'share a cause with this one' : undefined}>
-            <Related part={d.related} scopeId={scopeId} />
+            <Related part={d.related} scopeId={scopeId} teamApps={teamApps} />
           </Section>
 
           <Section title="Log lines" hint={d.logs.state === 'ready' ? `${logs.filter((l) => !isInvocationLine(l)).length} lines` : undefined}>
@@ -616,7 +625,16 @@ function notFoundText(invocationId: string, atMs: number): string {
 
 const RELATION: Record<RelatedRequest['relation'], string> = { 'caused-by': 'Caused by', 'set-off': 'Set off' };
 
-function Related({ part, scopeId }: { part: Detail['related']; scopeId: string }) {
+/**
+ * #2192: the app to open a related request in — this one, or another the team holds — or null
+ * when it is in an app the team does not hold, or one the line did not name.
+ */
+function openIn(r: RelatedRequest, scopeId: string, teamApps: readonly string[]): string | null {
+  if (r.scopeId === undefined || r.scopeId === scopeId) return scopeId;
+  return r.scopeId !== null && teamApps.includes(r.scopeId) ? r.scopeId : null;
+}
+
+function Related({ part, scopeId, teamApps }: { part: Detail['related']; scopeId: string; teamApps: readonly string[] }) {
   if (part.state === 'loading') return <Quiet>Looking for related requests…</Quiet>;
   if (part.state === 'error') return <Quiet tone="danger">Related requests are unavailable ({part.message}).</Quiet>;
   const { requests, incomplete } = part.value;
@@ -628,7 +646,7 @@ function Related({ part, scopeId }: { part: Detail['related']; scopeId: string }
         {partial}
       </>
     ) : (
-      <Quiet>No other request is recorded as sharing a cause with this one. A schedule, peer or MCP call that started another request leaves no link to follow.</Quiet>
+      <Quiet>No other request is recorded as sharing a cause with this one. A schedule's own run, an MCP call or a platform request that started another request leaves no link to follow.</Quiet>
     );
   }
   return (
@@ -640,9 +658,11 @@ function Related({ part, scopeId }: { part: Detail['related']; scopeId: string }
           <span style={mono} title={r.invocationId}>{shortId(r.invocationId)}</span>
           <span style={{ color: 'var(--text-secondary)' }}>{r.via}</span>
           <span style={{ flex: 1 }} />
-          <Button variant="ghost" size="sm" onClick={() => openRequestInUrl(r.invocationId, Date.parse(r.at), scopeId)}>
-            Open
-          </Button>
+          {openIn(r, scopeId, teamApps) !== null && (
+            <Button variant="ghost" size="sm" onClick={() => openRequestInUrl(r.invocationId, Date.parse(r.at), openIn(r, scopeId, teamApps)!)}>
+              Open
+            </Button>
+          )}
         </div>
       ))}
     </div>

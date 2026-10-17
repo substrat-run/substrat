@@ -25,14 +25,16 @@
 import type { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { classifyError, messageOf, problemOf, withRequestIdMember } from './errors.js';
+import { classifyError, messageOf, problemOf, withRequestIdMember, type ErrorClassification } from './errors.js';
 import { externalInput, externalJson } from './wire.js';
+import { requestIdOf, writePlatformCallLine } from './invocation-log.js';
 import {
   type CarriedAway,
   type KeptCopy,
   type LoadMarker,
   type CopyRestoreFence,
   type InvokeOptions,
+  type EmittedReport,
   type AppliedMigration,
   type SwitchedOff,
   type UndrainedEvents,
@@ -129,6 +131,7 @@ import {
   type Page,
   queryScopeInput,
   errorCodeOf,
+  PARENT_REQUEST_ID_HEADER,
   type ScopeId,
   type TenantId,
   type PrincipalId,
@@ -1144,6 +1147,13 @@ export function mountPlatformSurface<Env extends object>(
   registerScopeSweepHost(deps.hostFor as (env: never) => unknown);
 
   // ── ONE gate for the entire surface (replaces the per-route copy-pasted try/catch) ──
+  // The status `onError` below answers a throw with — and the peer route's line with it (#2192).
+  const decideStatus = (err: unknown): ErrorClassification => {
+    const mapped = deps.mapError?.(err);
+    return mapped
+      ? { status: mapped.status as ContentfulStatusCode, message: mapped.message }
+      : (classifyError(err) ?? { status: 400 as ContentfulStatusCode, message: messageOf(err) });
+  };
   app.use('/internal/*', async (c, next) => {
     try {
       assertPlatformCall(c.req.raw.headers, { expectedSecret: deps.platformSecret(c.env) });
@@ -1879,16 +1889,59 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.verticalInvokeLocal) {
       return c.json({ error: 'this deployment cannot take peer calls (#1706) — redeploy it' }, 501);
     }
-    const result = await host.verticalInvokeLocal(
-      body.caller,
-      body.tenantId,
-      body.scopeId,
-      body.operation,
-      externalInput(body.input),
-      body.idempotencyKey !== undefined ? { idempotencyKey: body.idempotencyKey } : undefined,
-    );
-    // #2073: through the egress every transport shares (`wire.ts`).
-    return externalJson(c, { result: result ?? null });
+    // #2192: the call runs under this request's own id, so its events are stamped, and is
+    // written as one line naming the calling request. The tenant is the body's, which the gate
+    // above admitted behind the platform secret; the parent is the caller's claim, passed on by
+    // the router and dropped unless it is one ULID.
+    const invocationId = requestIdOf(c);
+    const started = Date.now();
+    let emitted: EmittedReport | undefined;
+    let status = 200;
+    let problemCode: string | null = null;
+    try {
+      const result = await host.verticalInvokeLocal(
+        body.caller,
+        body.tenantId,
+        body.scopeId,
+        body.operation,
+        externalInput(body.input),
+        {
+          ...(body.idempotencyKey !== undefined ? { idempotencyKey: body.idempotencyKey } : {}),
+          ...(invocationId !== undefined ? { invocationId } : {}),
+          onEmitted: (report) => (emitted = report),
+        },
+      );
+      // #2073: through the egress every transport shares (`wire.ts`).
+      return externalJson(c, { result: result ?? null });
+    } catch (e) {
+      // What the envelope below renders, through the same `problemOf`, so the line names the
+      // status and code the caller got — a scope-gate refusal is the neutral 404 on both.
+      const answered = problemOf(decideStatus(e), e);
+      status = answered.status;
+      problemCode = answered.body.code ?? null;
+      throw e;
+    } finally {
+      if (invocationId !== undefined) {
+        writePlatformCallLine({
+          tenantId: body.tenantId,
+          scopeId: body.scopeId,
+          vertical: c.req.header('x-substrat-vertical') ?? null,
+          method: c.req.method,
+          url: c.req.url,
+          env: c.env,
+          invocationId,
+          parentInvocationId: c.req.header(PARENT_REQUEST_ID_HEADER),
+          // Where the parent's line is: the caller's scope, which the router named in the body.
+          parentScopeId: body.caller.scope,
+          status,
+          problemCode,
+          principalKind: 'vertical',
+          operation: body.operation,
+          emitted,
+          started,
+        });
+      }
+    }
   });
 
   // The peer kill switch's far end (#1706), for a scope served HERE — the mirror of
@@ -2484,13 +2537,7 @@ export function mountPlatformSurface<Env extends object>(
     // claim to be the platform's fault. `mountOperations` answers no-opinion differently.
     // A vertical's own `mapError` outranks it and is rendered the same way, so its
     // answer is a problem document too rather than the last `{ error }` on the surface.
-    const mapped = deps.mapError?.(err);
-    const seen = mapped
-      ? { status: mapped.status as ContentfulStatusCode, message: mapped.message }
-      : (classifyError(err) ?? {
-          status: 400 as ContentfulStatusCode,
-          message: messageOf(err),
-        });
+    const seen = decideStatus(err);
     // An infrastructure fault is the PLATFORM failing, not the request (#559). Defaulting
     // it to 400 taught every layer above to treat a Cloudflare outage as the caller's
     // fault — the control plane relays the status verbatim, and its retry convention
