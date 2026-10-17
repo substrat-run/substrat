@@ -123,12 +123,16 @@ A channel's **Files** tab is a folder in the team site's default document librar
 folder to one scope of your app, and from then on:
 
 - **Your app saves files into the folder.** It names the files and a target directory under the
-  folder, and says what happens when a name is taken: `replace`, `rename` or `fail`. Files of up to
-  4 MB go in one request, larger ones by upload session, up to 50 MB each.
+  folder, states each file's size, and says what happens when a name is taken: `replace`, `rename`
+  or `fail`. Files of up to 4 MB go in one request, larger ones by upload session, up to 50 MB each
+  and 100 MB per request; a request over either is refused before any file is read. Files are sent
+  one at a time.
 - **Files people change in Teams reach the app.** A periodic sync reads the library's change feed
   and passes the app every file and folder added, edited, renamed, moved or deleted inside the
   folder. File contents come in as attachments on the record the app keeps for each file, and are
-  searchable like any other attachment. A file over 50 MB arrives without its contents.
+  searchable like any other attachment. A file over 50 MB, or one whose size Microsoft does not
+  report, arrives without its contents. A large library is read a few pages at a time, so the first
+  sync of one may take several runs before the app has everything.
 
 ### Binding the folder
 
@@ -158,12 +162,19 @@ The connection also needs write access to the attachment target that stores the 
 - **Renaming or moving the folder** inside the library keeps the binding, because it is held by the
   folder's id. **Deleting the folder**, or moving it out of the library, stops the binding: syncs and
   writes refuse until you bind again. The binding never falls back to the whole library.
-- **A file is saved once.** A retried save does not create a second copy. With `rename`, a taken
-  name gets a suffix derived from the request, so a retry aims at the same name. One narrow case
-  remains: if the connection's answer from Microsoft is lost and, in the same minutes, the same app
-  saves another file under the same name, the retry takes that file for its own.
-- **A sync that fails part-way** is read again next time from the same point, and changes the app
-  already received are not sent twice.
+- **A file is saved once.** A retried save does not create a second copy: when Microsoft already
+  holds a file under the name, the retry takes it as its own only if this app wrote it and its
+  contents are exactly the bytes being saved. Anything else is a conflict — `fail` reports it, and
+  `rename` saves under a name with a suffix derived from the request, so a retry aims at the same
+  name. One case remains: SharePoint updates some files as it stores them (Office documents get
+  their properties rewritten), so if Microsoft's answer to such a save is lost, the retry sees
+  different contents — `fail` then reports a conflict, and `rename` saves a second copy.
+- **Changes reach the app at least once.** A sync lands each page of the change feed and records
+  how far it got, so a sync cut off part-way continues from the last page it finished. A change
+  that was being passed on when it stopped is passed on again, so the app's operation must accept
+  the same change, or the same contents, twice for one file — keyed by the file's id, which never
+  changes. A file renamed while the sync is mid-way may be reported at its new place just before it
+  is reported deleted.
 
 ## Limits
 
