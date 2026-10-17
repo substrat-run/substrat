@@ -260,6 +260,7 @@ It carries them as additive top-level fields, which Workers Logs indexes like `t
 | `eventCount`, `eventTypes`, `entities` | `InvokeOptions.onEmitted`: the rows the operation added to the outbox, read after its commit and **before** the consumer drain | not recorded. `0` and `[]` are a fact: the call emitted nothing |
 | `versionId` | the platform's `SUBSTRAT_VERSION_ID` binding | a local run, or a script pushed before the binding existed |
 | `outputFields` | `mountOperations`' field walk (#1331): `{ present, empty, absent }`, the operation's declared output field names split three ways: carried with a value, carried as `null`, or not carried at all | **omitted, not `null`**: the walk runs only on a request the router armed (below), and an unarmed line stays byte-for-byte what it was. Also omitted for a failed call, an empty list, or an operation declaring no output fields. Set by `mountOperations`' routes and by the MCP mount's tool calls alike |
+| `outboundCalls`, `outboundCallsDropped` | the platform entry's wrapped `fetch` (#2192, below): each call the request made, as host, redacted path, method, status, outcome, `durationMs` and `atMs` | **omitted** when the request made no call the recorder saw; `outboundCallsDropped` only when calls past the cap of 16 were counted instead of named |
 
 `outputFields` is the observed half of field coverage, whose declared half (#1321) rides the
 deploy manifest. The walk costs O(declared fields), never O(response): it asks the result
@@ -285,6 +286,42 @@ it came from. Any store built from it must still **aggregate per (operation, fie
 counts over a window, and never keep the per-request buckets. The question field coverage
 asks is "is this field ever returned", and a count answers it without holding a fact about
 any one record.
+
+**Outbound calls (#2192).** A request that failed because of an upstream answer used to show
+one `request` span, with the call that failed nowhere on it. The platform entry now records
+every `fetch` the request makes, the way it records store calls (#2245): the request runs in
+the entry's `AsyncLocalStorage`, and on the first request the entry puts a recorder in front
+of `globalThis.fetch` (`vertical-host`'s `outbound-calls.ts`) that adds each call to whichever
+request is current. Outside a request it hands the call straight on. Inside one it passes the
+arguments on untouched, calls the runtime's `fetch` on `globalThis` (the only receiver workerd
+accepts), and hands back the runtime's own response or rejection; a recorder fault is
+swallowed, never the call's. The egress worker is not involved: it has no request id, and its
+lines are outside the app's script family the tenant read is scoped to. A refusal by the egress
+policy is recognised on the caller's side from `x-substrat-egress: refused` and recorded as
+`refused`, so it no longer reads as the destination's own 403.
+
+What a call records: host (with port), path, method, status (`null` on a rejection), outcome
+(`ok`, `http-error`, `refused`, `timeout`, `aborted`, `failed`), the time to the response
+headers, and its offset from the request's start (`atMs`, which places it on the slide-over's
+axis without comparing two clocks). A `failed` call names its error's class (`TypeError`),
+never its message, which can carry a URL. Never a header, a body, a query string, a fragment
+or userinfo. The path is redacted segment by segment, and redaction is the default: a segment
+is kept only when it is exactly a UUID, a ULID or an integer, a word of letters (with `-`, `_`,
+`.`) under 20 characters, or a letter-and-digit mix of at most 8. Anything 20 characters or
+longer, anything holding `:` `=` `%` `@`, and anything with a run of 16 letters and digits
+(hex, base64url) is written `[redacted]`. **The limit, stated:** the rule is a heuristic. A
+short secret made only of letters, or only of digits, still reads as a word or an id and is
+written as it is; the opposite error, a long plain word redacted, is the accepted cost. Calls to the scope-store transport are already named in
+`storeCalls` and are not recorded twice. Sixteen calls are named and the rest counted, so the
+line grows by at most a few kilobytes; no new store, event or dataset is added.
+
+Not covered: a `fetch` made inside a Durable Object (a consumer, a schedule, the drain — no
+request is current there, the same place the egress worker does not reach); a `fetch` still
+running when the line is written (`waitUntil` work); and a reference to `fetch` that a bundle
+captured while its modules were evaluated, because the vertical's import is evaluated before
+the entry's own code runs. Bare `fetch(…)`, `globalThis.fetch(…)` and the kernel's
+`globalFetch` are all covered. The opt-in response-body snippet for a non-2xx answer the issue
+proposed is not built.
 
 **Arming (#1923).** The walk is armed per request by the router, never by a binding: a
 binding changes only on a push, so turning it off would mean re-pushing every vertical. The

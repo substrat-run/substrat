@@ -240,9 +240,13 @@ with an **app filter** rather than tabs on each app. The app page links into bot
   — a row in Logs › Requests, or a log line's request id — opens in a **panel over the page**:
   the request and its result, the state change it made (linked to the process map and to that
   record's history), its log lines and emitted events on a time axis, the consumers that
-  handled what it emitted and how long after the response, and its full log lines. Database,
-  connector and model calls are not recorded as timings yet, so they do not appear on that
-  axis. The panel is part of the address, so a request can be linked to. A record whose entity
+  handled what it emitted and how long after the response, and its full log lines. The
+  **outbound calls** the request made with `fetch` sit on the same axis and in their own list:
+  host and path, method, status, time to the response, and how the call ended. A call the
+  platform's egress policy refused reads *refused by the platform*, not as the destination's
+  403. Headers, bodies and query strings are never recorded, and a path segment that could be
+  a credential is written `[redacted]`. Calls made inside a Durable Object, or after the
+  response, are not recorded. Database and model calls are not recorded as timings yet. The panel is part of the address, so a request can be linked to. A record whose entity
   declares a lifecycle opens with that lifecycle drawn above its event history: where its time
   went (one segment per state, to scale), and one column per transition naming who moved it and
   by which operation. Each transition opens the request that made it. A record is addressable
