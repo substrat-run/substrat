@@ -14,7 +14,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import {
   permissionKey,
@@ -23,12 +23,14 @@ import {
   scopeId,
   tenantId,
   PLATFORM_SECRET_HEADER,
+  PARENT_REQUEST_ID_HEADER,
+  REQUEST_ID_HEADER,
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { PEER_CALLER, peerMod } from '@substrat-run/contract-tests';
-import { mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
+import { invocationLog, mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
 
 type Env = { PLATFORM_SECRET: string };
 const SECRET = 'sekret';
@@ -177,6 +179,110 @@ describe('/internal/vertical-invoke — the peer door over HTTP (#1706)', () => 
     const before = calls.length;
     expect((await post({ ...body, tenantHeld: 'yes' })).status).toBe(400);
     expect(calls.length).toBe(before);
+  });
+
+  describe('the call is one line, naming the request that made it (#2192)', () => {
+    // As deployed: the request is stamped (here by the middleware, hosted by the platform's
+    // entry), and no router assertion names a tenant, so the stamp's own writer is silent.
+    const logged = new Hono<{ Bindings: Env }>();
+    logged.use('*', invocationLog<Env>({ routerSecret: () => 'router-secret' }));
+    mountPlatformSurface<Env>(logged, {
+      platformSecret: (env) => env.PLATFORM_SECRET,
+      hostFor: () => host,
+      roles: [],
+      ownerRoleKey: 'admin',
+    });
+    const post = (body: unknown, headers: Record<string, string> = {}) =>
+      logged.request(
+        '/internal/vertical-invoke',
+        { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) },
+        ENV,
+      );
+    const PARENT = ulid();
+    let log: ReturnType<typeof vi.spyOn>;
+    const output = () => log.mock.calls.map((c: unknown[]) => String(c[0]));
+    const lines = () =>
+      output()
+        .map((l: string) => { try { return JSON.parse(l) as Record<string, unknown>; } catch { return null; } })
+        .filter((l: Record<string, unknown> | null): l is Record<string, unknown> => l?.['substrat'] === 'invocation');
+    beforeAll(() => {
+      log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    });
+    afterEach(() => log.mockClear());
+    afterAll(() => log.mockRestore());
+
+    it('writes exactly one line: the body’s tenant and scope, its own request id, the caller’s as parent, and its events stamped', async () => {
+      const res = await post(note('lined'), { ...platform, [PARENT_REQUEST_ID_HEADER]: PARENT, 'x-substrat-vertical': 'acme/target' });
+      expect(res.status).toBe(200);
+      const id = res.headers.get(REQUEST_ID_HEADER);
+      expect(lines()).toHaveLength(1);
+      expect(lines()[0]).toMatchObject({
+        tenantId: t,
+        scopeId: s,
+        vertical: 'acme/target',
+        method: 'POST',
+        path: '/internal/vertical-invoke',
+        invocationId: id,
+        parentInvocationId: PARENT,
+        status: 200,
+        level: 'info',
+        operation: 'peer/note',
+        principalKind: 'vertical',
+        eventCount: 1,
+      });
+      // The operation ran under the same id, which is what stamps its events with it.
+      expect((calls.at(-1)![5] as { invocationId?: string }).invocationId).toBe(id);
+    });
+
+    it('a refused call is still one line, with the status the caller got', async () => {
+      const res = await post(
+        { ...note('refused-line'), caller: { vertical: 'acme/stranger', scope: callerScope } },
+        { ...platform, [PARENT_REQUEST_ID_HEADER]: PARENT },
+      );
+      expect(res.status).toBe(403);
+      expect(lines()).toHaveLength(1);
+      expect(lines()[0]).toMatchObject({ status: 403, level: 'warn', problemCode: 'forbidden', parentInvocationId: PARENT });
+    });
+
+    it('the tenant is the verified body’s: a tenant header beside it changes nothing', async () => {
+      const other = tenantId.parse(ulid());
+      const res = await post(note('header-tenant'), { ...platform, 'x-substrat-tenant': other, 'x-substrat-scope': ulid() });
+      expect(res.status).toBe(200);
+      expect(lines()).toHaveLength(1);
+      expect(lines()[0]).toMatchObject({ tenantId: t, scopeId: s });
+      expect(output().join('\n')).not.toContain(other);
+    });
+
+    it('without the platform secret there is no line at all, whatever the body or headers name', async () => {
+      const res = await post(note('no-secret-line'), { [PARENT_REQUEST_ID_HEADER]: PARENT });
+      expect(res.status).toBe(403);
+      expect(lines()).toHaveLength(0);
+    });
+
+    it.each([
+      ['lowercased', PARENT.toLowerCase()],
+      ['repeated', `${PARENT}, ${ulid()}`],
+      ['oversized', `${PARENT}${'Z'.repeat(4000)}`],
+      ['not an id', 'drop table'],
+    ])('a %s parent is dropped: never on the line, never logged raw', async (_name, value) => {
+      const res = await post(note(`bad-parent-${_name}`), { ...platform, [PARENT_REQUEST_ID_HEADER]: value });
+      expect(res.status).toBe(200);
+      expect(lines()).toHaveLength(1);
+      expect(lines()[0]).not.toHaveProperty('parentInvocationId');
+      expect(output().join('\n')).not.toContain(value);
+    });
+
+    it('a call with no parent writes no parent key, so the line is what it was before the field', async () => {
+      await post(note('no-parent'), platform);
+      expect(lines()).toHaveLength(1);
+      expect(lines()[0]).not.toHaveProperty('parentInvocationId');
+    });
+
+    it('an unstamped request (no entry, no middleware) still runs, and writes no line', async () => {
+      const res = await invoke(note('unstamped'), { ...platform, [PARENT_REQUEST_ID_HEADER]: PARENT });
+      expect(res.status).toBe(200);
+      expect(lines()).toHaveLength(0);
+    });
   });
 
   it('a deployment built before the door answers 501 on both routes', async () => {
