@@ -1,5 +1,12 @@
 # @substrat-run/demo-auth-server
 
+## 0.14.4
+
+### Patch Changes
+
+- Updated dependencies [6b22e85]
+  - @substrat-run/oidc-rp@0.13.0
+
 ## 0.14.3
 
 ### Patch Changes
