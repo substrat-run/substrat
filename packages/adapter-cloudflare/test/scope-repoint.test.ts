@@ -11,6 +11,7 @@ import {
   UNSAFE_devPlatformActorAuth,
   type VerticalClient,
 } from '@substrat-run/control-plane-api';
+import { heldVersion } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -282,7 +283,7 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
     for (const v of ['v1', 'v2'] as const) {
       const id = ulid();
       const ref = `repoint-vert-${id.toLowerCase()}`;
-      await dir.admin.publishVersion(staff, {
+      await dir.admin.publishVersion(staff, await heldVersion({
         id, verticalSlug: slug, version: `1.0.${v.slice(1)}`,
         manifestDigest: `m-${v}`, permissionDigest: 'p', migrationDigest: 'g', deploymentRef: ref,
         manifestJson: JSON.stringify({
@@ -292,7 +293,7 @@ describe('preview fork and carry re-point on real DO namespaces (#1869)', () => 
           digests: { manifest: `m-${v}`, permission: 'p', migration: 'g' },
           registry: { permissions: [], roles: [], entityGrants: [] },
         }),
-      });
+      }));
       version[v] = id;
       refOf.set(id, ref);
       hostOf.set(ref, new CloudflareScopeHost({ scope: namespaces[v], controlPlane: env.PC_CONTROL_PLANE, secretBox }));

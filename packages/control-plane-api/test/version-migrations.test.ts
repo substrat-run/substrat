@@ -17,6 +17,7 @@ import {
   SERVICE_TOKEN_HEADER,
   UNSAFE_devPlatformActorAuth,
 } from '../src/index.js';
+import { heldVersion } from './held-manifest.js';
 
 /**
  * `GET /verticals/:slug/versions/:id/migrations` (#1677): the SQL migrations one version
@@ -71,19 +72,24 @@ describe('version migrations route (#1677)', () => {
     await host.admin.createTenant(staff, { id: tB, slug: 'rival', name: 'Rival' });
     await host.admin.registerVertical(staff, { slug: 'acme/app', name: 'Acme App', source: 'cli', ownerTenant: tA });
     await host.admin.registerVertical(staff, { slug: 'rival/app', name: 'Rival App', source: 'cli', ownerTenant: tB });
-    const publish = (id: string, verticalSlug: string, manifestJson?: string) =>
-      host.admin.publishVersion(staff, {
+    const publish = async (id: string, verticalSlug: string, manifestJson?: string) => {
+      const input = {
         id, verticalSlug, version: id.slice(-6),
         manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: `ref-${id}`,
         ...(manifestJson ? { manifestJson } : {}),
-      });
+      };
+      // #2339: a version carrying migrations sends the digest derived from them; preField and
+      // bare carry none, and keep doing so.
+      await host.admin.publishVersion(staff, manifestJson?.includes('"migrations"') ? await heldVersion(input) : input);
+    };
     await publish(v.base, 'acme/app', manifest([INIT]));
     await publish(v.next, 'acme/app', manifest([INIT, ADD]));
     await publish(v.edited, 'acme/app', manifest([{ ...INIT, sql: 'CREATE TABLE secret_ledger (id TEXT PRIMARY KEY, x TEXT);' }]));
     await publish(v.preField, 'acme/app', manifest());
     await publish(v.bare, 'acme/app');
     await publish(v.rival, 'rival/app', manifest([RIVAL]));
-    // #2322: the base's SQL, plus a declared loss — under the SAME client-sent digest as the base.
+    // #2322: the base's SQL, plus a declared loss. (#2339: its digest is derived from both, so it
+    // can no longer be sent under the base's.)
     await publish(v.declared, 'acme/app', manifest([INIT, { ...ADD, discards: { 'secret_ledger.note': 'superseded <by> "memo"' } }]));
 
     const tenant = async (t: string) => ({ [SERVICE_TOKEN_HEADER]: await mintTenantToken(SECRET, { tenantId: t }) });
@@ -184,8 +190,8 @@ describe('version migrations route (#1677)', () => {
   });
 
   it('shows the declarations the control plane stored, whatever digest the pusher sent (#2322)', async () => {
-    // Both versions were published with migrationDigest 'g' and the same digests in their
-    // manifests; the answer is read from the stored migrations, so the discard is there.
+    // The answer is read from the stored migrations, so the discard is there. (#2339: the
+    // pushed digest can no longer disagree with them; the publish refuses one that does.)
     const added = diffOf((await read('acme/app', v.declared, as.tenantA, v.base)).text);
     expect(added?.added).toEqual([{ ...ADD, discards: { 'secret_ledger.note': 'superseded <by> "memo"' } }]);
     // Against a base with the same SQL and no declaration, it is a declarations-only edit.
@@ -217,10 +223,10 @@ describe('version migrations route (#1677)', () => {
     beforeAll(async () => {
       await host.admin.registerVertical(staff, { slug: SLUG, name: 'Embedded', source: 'cli', ownerTenant: tA });
       const put = async (id: string, perm: string, mig: string, migrations: unknown[]) => {
-        await host.admin.publishVersion(staff, {
+        await host.admin.publishVersion(staff, await heldVersion({
           id, verticalSlug: SLUG, version: id.slice(-6), manifestDigest: 'm', permissionDigest: perm, migrationDigest: mig,
           deploymentRef: null, manifestJson: manifest(migrations),
-        });
+        }));
         await host.admin.admitVersion(staff, id);
       };
       await put(e.a, 'pA', 'gA', [INIT]);

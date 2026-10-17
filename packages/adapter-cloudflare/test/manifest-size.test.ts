@@ -17,6 +17,7 @@ import {
   DECLARED_MIGRATIONS_SQL_BYTES_MAX,
   DEPLOY_MANIFEST_BYTES_SAFE,
   deployManifest,
+  migrationDigestOf,
   platformActorId,
   sqlBytes,
 } from '@substrat-run/contracts';
@@ -40,9 +41,21 @@ import {
 } from '../src/control-plane-do.js';
 import { switchSqlOver } from '../src/scope-do.js';
 import { CloudflareScopeHost } from './test-host.js';
+import { derivedDigestOf } from '@substrat-run/contract-tests';
 import { warmControlPlane } from './do-warmup.js';
 
 beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
+
+/** #2339: the digest the host derives for a manifest that carries well-formed migrations ('g' when it carries none). */
+const digestOfJson = async (manifestJson: string): Promise<string> => {
+  let parsed: { migrations?: unknown } | null = null;
+  try {
+    parsed = JSON.parse(manifestJson) as { migrations?: unknown };
+  } catch {
+    return 'g';
+  }
+  return Array.isArray(parsed?.migrations) ? derivedDigestOf(parsed as Record<string, unknown>) : 'g';
+};
 
 describe('the stored manifest size bound (#1677)', () => {
   const host = new CloudflareScopeHost({
@@ -69,7 +82,7 @@ describe('the stored manifest size bound (#1677)', () => {
     const id = ulid();
     await host.admin.publishVersion(staff, {
       id, verticalSlug: vertical, version: `1.0.${id.slice(-6).toLowerCase()}`, manifestDigest: 'm',
-      permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null, manifestJson,
+      permissionDigest: 'p', migrationDigest: await digestOfJson(manifestJson), deploymentRef: null, manifestJson,
     });
     return id;
   };
@@ -201,10 +214,11 @@ describe('the version list reads no manifest (#1677)', () => {
 
   beforeAll(async () => {
     await host.admin.registerVertical(staff, { slug: vertical, name: 'Version list', source: 'builtin' });
-    const publish = (id: string, version: string, manifestJson?: string) =>
+    const publish = async (id: string, version: string, manifestJson?: string) =>
       host.admin.publishVersion(staff, {
         id, verticalSlug: vertical, version, manifestDigest: 'm', permissionDigest: 'p',
-        migrationDigest: 'g', deploymentRef: null, ...(manifestJson ? { manifestJson } : {}),
+        migrationDigest: manifestJson ? await digestOfJson(manifestJson) : 'g', deploymentRef: null,
+        ...(manifestJson ? { manifestJson } : {}),
       });
     await publish(
       ids.big,
@@ -567,7 +581,8 @@ describe('the directory DDL plan holds back exactly #1764\'s statements', () => 
     // and the module-load check refuses it outright.
     const drifted = planDirectoryDdl(extra.join(';\n'));
     expect(drifted.missing).toEqual(executableSqlStatements(VERSION_MIGRATIONS_DDL));
-    expect(() => assertDirectoryDdlPlan(drifted)).toThrow(/does not carry 2 statement/);
+    // Three: the table, the #1764 index, and the #2339 one.
+    expect(() => assertDirectoryDdlPlan(drifted)).toThrow(/does not carry 3 statement/);
     expect(assertDirectoryDdlPlan(plan)).toBe(plan);
   });
 });
@@ -717,6 +732,107 @@ describe('a directory from before #2322: its migration rows predate the declarat
     await inDirectory(async (instance, state) => {
       await instance.importDump(before);
       check(instance, state);
+    });
+  });
+});
+
+/**
+ * #2339 on workerd: versions stored with the migration digest their push sent, before the
+ * control plane derived it. The constructor only probes and arms; each alarm derives a bounded
+ * batch; a read of a version the backfill has not reached derives that version first, so no gate
+ * compares a pushed digest meanwhile. A restore of a dump taken before is derived again.
+ */
+describe('the #2339 digest backfill: bounded, derived on read before it arrives, and again after a restore', () => {
+  type Row = { id: string; migration_digest: string; migration_digest_derived: number | null };
+  type Directory = ControlPlaneDO & {
+    readVersion(id: string): Promise<Row | undefined>;
+    listVersions(slug: string): Promise<Row[]>;
+    backfillArmed: Promise<void>;
+    exportDump(): ScopeDumpTable[];
+    importDump(tables: ScopeDumpTable[]): Promise<void>;
+  };
+  const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`digest-backfill-${ulid()}`));
+  const inDirectory = <R>(fn: (d: Directory, state: DurableObjectState) => R | Promise<R>) =>
+    runInDurableObject(stub, (instance, state) => fn(instance as unknown as Directory, state));
+  const migrationsOf = (i: number) => [{ moduleId: 'helpdesk', version: '0001', sql: `CREATE TABLE t${i % 3} (id TEXT);` }];
+  // 23 versions: three batches of at most ten, the last short. Every push sent the SAME digest,
+  // over three different migration sets; the last version stores none.
+  const ids = Array.from({ length: 23 }, () => ulid()).sort();
+  const bare = ids.length - 1;
+  const underived = (state: DurableObjectState) =>
+    (state.storage.sql.exec('SELECT COUNT(*) AS n FROM vertical_versions WHERE migration_digest_derived IS NULL').one() as { n: number }).n;
+  let want: string[] = [];
+  let before: ScopeDumpTable[] = [];
+
+  beforeAll(async () => {
+    want = await Promise.all(
+      ids.map((id, i) => (i === bare ? `unheld:${id}` : migrationDigestOf({ doClasses: ['TicketDO'], migrations: migrationsOf(i) }))),
+    );
+    await inDirectory(async (instance, state) => {
+      await state.storage.deleteAlarm();
+      state.storage.sql.exec('DROP INDEX vertical_versions_underived');
+      state.storage.sql.exec('ALTER TABLE vertical_versions DROP COLUMN migration_digest_derived');
+      ids.forEach((id, i) => {
+        state.storage.sql.exec(
+          `INSERT INTO vertical_versions (id, vertical_slug, version, manifest_digest, permission_digest,
+             migration_digest, admission, manifest_json, migration_count, migrations_split, created_at)
+           VALUES (?, 'acme', ?, 'm', 'p', 'pushed', 'admitted', ?, ?, 1, '2026-09-01T00:00:00.000Z')`,
+          id, `1.0.${i}`, JSON.stringify({ version: `1.0.${i}`, doClasses: ['TicketDO'] }), i === bare ? null : 1,
+        );
+        if (i !== bare) {
+          const [m] = migrationsOf(i);
+          state.storage.sql.exec(
+            `INSERT INTO vertical_version_migrations (version_id, ordinal, module_id, version, sql) VALUES (?, 0, ?, ?, ?)`,
+            id, m!.moduleId, m!.version, m!.sql,
+          );
+        }
+      });
+      before = instance.exportDump();
+      expect(before.find((t) => t.name === 'vertical_versions')!.columns).not.toContain('migration_digest_derived');
+    });
+  });
+
+  it('constructs over them deriving nothing, arms the alarm, and a read derives the version it reaches', async () => {
+    await inDirectory(async (_instance, state) => {
+      const deployed = new ControlPlaneDO(state, env) as Directory;
+      await deployed.backfillArmed;
+      expect(underived(state)).toBe(ids.length);
+      expect(await state.storage.getAlarm()).not.toBeNull();
+      // A version the backfill has not reached: its read derives it, and records it.
+      expect((await deployed.readVersion(ids[15]!))?.migration_digest).toBe(want[15]);
+      expect(underived(state)).toBe(ids.length - 1);
+      // Two pushes that sent the same digest over different migrations now differ.
+      expect((await deployed.readVersion(ids[0]!))?.migration_digest).not.toBe((await deployed.readVersion(ids[1]!))?.migration_digest);
+      expect(underived(state)).toBe(ids.length - 3);
+    });
+  });
+
+  it('one alarm derives one batch of ten, and the list derives what its page holds', async () => {
+    await inDirectory(async (instance, state) => {
+      await instance.alarm();
+      expect(underived(state)).toBe(ids.length - 3 - 10);
+      expect(await state.storage.getAlarm()).not.toBeNull();
+      expect((await instance.listVersions('acme')).map((r) => r.migration_digest)).toEqual(want);
+      expect(underived(state)).toBe(0);
+    });
+  });
+
+  it('a restore of a dump taken before comes back underived, and the alarms derive it all again', async () => {
+    await inDirectory(async (instance, state) => {
+      await instance.importDump(before);
+      expect(underived(state)).toBe(ids.length);
+      expect(await state.storage.getAlarm()).not.toBeNull();
+    });
+    // 23 versions at ten a batch: three alarms, and then no more.
+    let runs = 0;
+    for (; runs < 10 && (await runDurableObjectAlarm(stub)); runs++);
+    expect(runs).toBe(3);
+    await inDirectory(async (instance, state) => {
+      expect(underived(state)).toBe(0);
+      expect(await state.storage.getAlarm()).toBeNull();
+      const rows = state.storage.sql.exec('SELECT id, migration_digest FROM vertical_versions ORDER BY id').toArray() as Row[];
+      expect(rows.map((r) => r.migration_digest)).toEqual(want);
+      expect((await instance.readVersion(ids[bare]!))?.migration_digest).toBe(`unheld:${ids[bare]}`);
     });
   });
 });

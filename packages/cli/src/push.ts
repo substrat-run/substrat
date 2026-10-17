@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
 import {
+  migrationDigestOf,
   DECLARED_OUTPUT_FIELDS_MAX,
   ASSET_PART_PREFIX,
   assetHash,
@@ -78,12 +79,8 @@ function pushOrigin(): VersionOrigin {
 }
 
 async function sha256(bytes: Uint8Array): Promise<string> {
-  return (await fullSha256(bytes)).slice(0, 32);
-}
-
-async function fullSha256(bytes: Uint8Array): Promise<string> {
   const digest = await webcrypto.subtle.digest('SHA-256', bytes);
-  return Buffer.from(digest).toString('hex');
+  return Buffer.from(digest).toString('hex').slice(0, 32);
 }
 
 /** Deterministic JSON: object keys sorted recursively, array order preserved. Makes the
@@ -289,37 +286,33 @@ function declarationsOf(key: 'moves' | 'discards', value: unknown): Partial<Pick
 }
 
 /**
- * The promotion gate covers store classes and every SQL migration the host would apply.
- * Hash SQL separately so the digest input stays small even for an omitted manifest list.
- *
- * A migration's declared `moves` and `discards` (#2322) join its entry only when it declares
- * any, so a declaration-free entry hashes exactly as it did before them, and adding, removing
- * or rewording a declaration moves the digest — a promote of it then asks for the migration
- * acknowledgement. This digest is computed HERE, by the pushing client, and nothing on the
- * platform re-derives it: the promote review shows the declarations the control plane stored,
- * never what this hash claims, so a client that hashed something else cannot hide one.
+ * The promotion gate covers store classes and every SQL migration the host would apply, with
+ * what each declares (#2322): `migrationDigestOf`, the one function the control plane also
+ * derives the digest with (#2339). It re-derives it from the migrations this push carries and
+ * refuses the push when the two disagree, so it must hash exactly what is sent. The complete set
+ * is hashed even when the manifest leaves it out: the control plane then cannot check the digest,
+ * stores one that equals no other version's, and every promote of the version asks for the
+ * migration acknowledgement.
  */
 export async function migrationDigest(
   doClasses: string[],
   declared: ReturnType<typeof flattenDeclaredMigrations>,
 ): Promise<string> {
-  const sql = await Promise.all(
-    declared.digestMigrations.map(async ({ moduleId, version, sql, moves, discards }) => ({
-      moduleId,
-      version,
-      sqlHash: await fullSha256(Buffer.from(sql)),
-      ...(moves ? { moves } : {}),
-      ...(discards ? { discards } : {}),
-    })),
-  );
-  return sha256(
-    Buffer.from(stableStringify({
-      doClasses,
-      sql,
-      ...(declared.unresolvedIndexes ? { unresolvedIndexes: declared.unresolvedIndexes } : {}),
-    })),
-  );
+  return migrationDigestOf({
+    doClasses,
+    migrations: declared.digestMigrations,
+    ...(declared.unresolvedIndexes ? { unresolvedIndexes: declared.unresolvedIndexes } : {}),
+  });
 }
+
+/**
+ * What a version whose manifest leaves its SQL out means at promote (#2339): the platform derives
+ * the migration digest from the migrations it stores, so it holds none to compare, and every
+ * promote to or over the version asks for the migration acknowledgement.
+ */
+const UNCARRIED_PROMOTE =
+  'the platform cannot compare its migrations, so every promote to or over it asks for the migration ' +
+  'acknowledgement, and the review says the SQL is not available.';
 
 /**
  * The manifest as it is sent: without `migrations` when carrying them would take the whole
@@ -335,7 +328,7 @@ export function boundManifest(manifest: DeployManifest, warn: (message: string) 
   if (bytes <= DEPLOY_MANIFEST_BYTES_SAFE) return manifest;
   warn(
     `⚠ the SQL migrations are not carried in this version's manifest (the manifest would be ${bytes} bytes, over the ` +
-      `${DEPLOY_MANIFEST_BYTES_SAFE} the platform stores) — a promote of it will say the SQL is not available.`,
+      `${DEPLOY_MANIFEST_BYTES_SAFE} the platform stores) — ${UNCARRIED_PROMOTE}`,
   );
   const { migrations: _omitted, ...rest } = manifest;
   return rest;
@@ -1676,8 +1669,7 @@ export async function push(
 
   if (migrations.omitted) {
     console.warn(
-      `⚠ the SQL migrations are not carried in this version's manifest (${migrations.omitted}) — ` +
-        'a promote of it will say the SQL is not available.',
+      `⚠ the SQL migrations are not carried in this version's manifest (${migrations.omitted}) — ${UNCARRIED_PROMOTE}`,
     );
   }
   const envSpec = resolveDeclaredEnvSpec(derivedEnvSpec, opts.envSpec);

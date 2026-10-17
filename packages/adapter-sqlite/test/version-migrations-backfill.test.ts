@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { platformActorId, type DirectoryDump } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost, isStorageFault } from '../src/index.js';
+import { derivedDigestOf } from '@substrat-run/contract-tests';
 
 /**
  * #1764 on the pure adapter: a directory from before the split, opened by this code.
@@ -184,9 +185,11 @@ describe('a directory from before #2322, opened by this code', () => {
       registry: { permissions: [], roles: [], entityGrants: [] },
       digests: { manifest: 'm', permission: 'p', migration: 'g' }, migrations,
     });
-  const publish = (host: SqliteScopeHost, id: string, version: string, migrations: unknown[]) =>
+  const publish = async (host: SqliteScopeHost, id: string, version: string, migrations: unknown[]) =>
     host.admin.publishVersion(staff, {
-      id, verticalSlug: 'acme', version, manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g',
+      // #2339: the digest the host derives from the migrations this version carries.
+      id, verticalSlug: 'acme', version, manifestDigest: 'm', permissionDigest: 'p',
+      migrationDigest: await derivedDigestOf({ migrations }),
       deploymentRef: null, manifestJson: manifest(version, migrations),
     });
 
@@ -218,6 +221,103 @@ describe('a directory from before #2322, opened by this code', () => {
   };
 
   it('opens, adds the column, and reads the older rows as declaring nothing', async () => {
+    await plant();
+    const host = new SqliteScopeHost({ dir: dir! });
+    await check(host);
+    await host.close();
+  });
+
+  it('and a restore of a dump of the older shape does the same', async () => {
+    const before = await plant();
+    const host = new SqliteScopeHost({ dir: dir! });
+    await host.admin.restoreDirectory(staff, before);
+    await check(host);
+    await host.close();
+  });
+});
+
+/**
+ * #2339 on the pure adapter: a directory whose versions carry the migration digest their push
+ * sent, from before the host derived it. Opening it adds the column; a read of such a version
+ * derives its digest from the migrations it stores, so the promote gate compares the derived
+ * values: two versions whose pushes sent the same digest over different migrations differ, and
+ * two whose pushes sent different digests over the same migrations do not.
+ */
+describe('a directory from before #2339, opened by this code', () => {
+  let dir: string | undefined;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+
+  const staff = platformActorId.parse('01JZ00000000000000000000ST');
+  const one = [{ moduleId: 'helpdesk', version: '0001-init', sql: 'CREATE TABLE a (id TEXT);' }];
+  const two = [...one, { moduleId: 'helpdesk', version: '0002-drop', sql: 'DROP TABLE a;' }];
+  // What each version's push SENT. `base` and `lying` sent the same digest over different sets;
+  // `honest` and `twin` sent different digests over the same set.
+  const versions = {
+    base: { migrations: one, pushed: 'same' },
+    lying: { migrations: two, pushed: 'same' },
+    honest: { migrations: one, pushed: 'first' },
+    twin: { migrations: one, pushed: 'second' },
+    bare: { migrations: null, pushed: 'same' },
+  } as const;
+  const ids = Object.fromEntries(Object.keys(versions).map((k) => [k, ulid()])) as Record<keyof typeof versions, string>;
+
+  /** A directory as an older control plane left it, and a dump of it taken then. */
+  const plant = async (): Promise<DirectoryDump> => {
+    dir = mkdtempSync(join(tmpdir(), 'version-digests-'));
+    const host = new SqliteScopeHost({ dir });
+    await host.admin.registerVertical(staff, { slug: 'acme', name: 'Acme', source: 'builtin' });
+    for (const [key, v] of Object.entries(versions)) {
+      const id = ids[key as keyof typeof versions];
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: 'acme', version: `1.0.${key}`, manifestDigest: 'm', permissionDigest: 'p',
+        migrationDigest: v.migrations ? await derivedDigestOf({ migrations: v.migrations }) : 'g', deploymentRef: null,
+        ...(v.migrations ? { manifestJson: JSON.stringify({ version: key, migrations: v.migrations }) } : {}),
+      });
+      await host.admin.admitVersion(staff, id);
+    }
+    await host.close();
+    const db = new Database(join(dir, '_directory.sqlite'));
+    db.exec('DROP INDEX vertical_versions_underived; ALTER TABLE vertical_versions DROP COLUMN migration_digest_derived;');
+    const put = db.prepare('UPDATE vertical_versions SET migration_digest = ? WHERE id = ?');
+    for (const [key, v] of Object.entries(versions)) put.run(v.pushed, ids[key as keyof typeof versions]);
+    const defs = db
+      .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL`)
+      .all() as { name: string; sql: string }[];
+    const tables = defs.map(({ name, sql }) => {
+      const stmt = db.prepare(`SELECT * FROM "${name}"`).raw(true);
+      return { name, ddl: sql, rows: stmt.all() as unknown[][], columns: stmt.columns().map((c) => c.name) };
+    });
+    db.close();
+    return { capturedAt: new Date().toISOString(), tables };
+  };
+  const prodOf = async (host: SqliteScopeHost) =>
+    (await host.admin.listChannels(staff, 'acme')).find((c) => c.channel === 'prod')?.versionId;
+
+  const check = async (host: SqliteScopeHost) => {
+    const derived = { one: await derivedDigestOf({ migrations: one }), two: await derivedDigestOf({ migrations: two }) };
+    // Each read answers the derived digest, whichever read reaches the version first.
+    expect((await host.admin.getVersion(staff, ids.base))?.migrationDigest).toBe(derived.one);
+    const listed = Object.fromEntries((await host.admin.listVersions(staff, 'acme')).map((v) => [v.id, v.migrationDigest]));
+    expect(listed).toEqual({
+      [ids.base]: derived.one, [ids.lying]: derived.two, [ids.honest]: derived.one, [ids.twin]: derived.one,
+      [ids.bare]: `unheld:${ids.bare}`,
+    });
+    // The gate compares them: the same pushed digest over other migrations is a migration change…
+    await host.admin.promoteVersion(staff, 'acme', 'prod', ids.base);
+    await expect(host.admin.promoteVersion(staff, 'acme', 'prod', ids.lying)).rejects.toThrow(/changes migrations/);
+    expect(await prodOf(host)).toBe(ids.base);
+    // …and other pushed digests over the same migrations are none.
+    await host.admin.promoteVersion(staff, 'acme', 'prod', ids.honest);
+    await host.admin.promoteVersion(staff, 'acme', 'prod', ids.twin);
+    expect(await prodOf(host)).toBe(ids.twin);
+    // A version that stores no migrations differs from every other, whatever its push sent.
+    await expect(host.admin.promoteVersion(staff, 'acme', 'prod', ids.bare)).rejects.toThrow(/changes migrations/);
+  };
+
+  it('opens, adds the column, and every read and promote sees the derived digests', async () => {
     await plant();
     const host = new SqliteScopeHost({ dir: dir! });
     await check(host);

@@ -218,6 +218,17 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
       });
     });
 
+    /**
+     * #2339: a version restored from an older dump carries its pushed migration digest until the
+     * digest backfill reaches it. The DO's settle runs that backfill; the pure adapter derives on
+     * the next read instead. Either way the row is the dump's, or the dump's with its digest derived
+     * from what it stores (none here, so unheld).
+     */
+    const digestSettled = (table: string, row: Record<string, unknown>, want: Record<string, unknown>) =>
+      table === 'vertical_versions' && row.migration_digest_derived === 1
+        ? { ...want, migration_digest: `unheld:${String(row.id)}`, migration_digest_derived: 1 }
+        : want;
+
     describe('an older dump of each registry still restores, into today’s table', () => {
       for (const shape of [...CREATED_SHAPES, ...ALTERED_SHAPES]) {
         it(`${shape.table}, ${shape.since}`, async () => {
@@ -229,7 +240,7 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
             expect(shapeOf(after)).toEqual(shapeOf(fresh));
             const [row, ...rest] = recordsOf(find(after, shape.table));
             expect(rest).toEqual([]);
-            expect(row).toMatchObject(expectedRow(shape, today.columns));
+            expect(row).toMatchObject(digestSettled(shape.table, row!, expectedRow(shape, today.columns)));
             // #1764's split still runs over a version the dump stored before it.
             if (shape.table === 'vertical_versions') expect(row!.migrations_split).toBe(1);
           });
@@ -245,7 +256,8 @@ export function directoryRestoreSuite(name: string, harness: DirectoryRestoreHar
           const after = await dir.snapshot();
           expect(shapeOf(after)).toEqual(shapeOf(fresh));
           for (const [table, shape] of first) {
-            expect(recordsOf(find(after, table))).toEqual([expect.objectContaining(expectedRow(shape, find(fresh, table).columns))]);
+            const [row] = recordsOf(find(after, table));
+            expect(recordsOf(find(after, table))).toEqual([expect.objectContaining(digestSettled(table, row!, expectedRow(shape, find(fresh, table).columns)))]);
           }
         });
       });

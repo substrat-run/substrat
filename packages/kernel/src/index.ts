@@ -658,6 +658,13 @@ export type {
 } from './audit-outcome.js';
 export {
   VERSION_MIGRATIONS_DDL,
+  MIGRATION_DIGEST_MISMATCH_REASON,
+  deriveMigrationDigestsBatch,
+  deriveVersionMigrationDigest,
+  derivedMigrationDigest,
+  migrationChangeRefusal,
+  publishedMigrationDigest,
+  versionsAwaitDigest,
   splitManifestMigrations,
   splitVersionMigrationsBatch,
   versionMigrationsOf,

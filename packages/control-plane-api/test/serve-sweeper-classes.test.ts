@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
 import { PLATFORM_SWEEP_HOST_KEY, platformActorId, tenantId } from '@substrat-run/contracts';
+import { heldManifest } from './held-manifest.js';
 import {
   createControlPlaneApi,
   createWfpUploader,
@@ -84,7 +85,7 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
   });
   const push = async (version: string, extra?: Parameters<typeof manifest>[1]): Promise<{ id: string; verticalSlug: string }> => {
     const fd = new FormData();
-    fd.set('manifest', JSON.stringify(manifest(version, extra)));
+    fd.set('manifest', JSON.stringify(await heldManifest(manifest(version, extra))));
     fd.set('tenant', 'sweep-serve');
     // The entry registers the scope host the supplied sweeper runs, as a current vertical-host's does (#1646).
     const entry = `globalThis[Symbol.for("${PLATFORM_SWEEP_HOST_KEY}")] = () => null; export default {}`;
@@ -93,11 +94,22 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
     expect(res.status, await res.clone().text()).toBe(201);
     return res.json();
   };
-  const promote = async (slug: string, versionId: string) => {
+  // #2339: a DO class is part of the migration digest the platform derives, so a promote across
+  // a class change acknowledges it against the review the migrations read shows.
+  const promote = async (slug: string, versionId: string, migrationChange = false) => {
+    let acknowledge: object | undefined;
+    if (migrationChange) {
+      const base = (await host.admin.listChannels(staff, slug)).find((ch) => ch.channel === 'prod')?.versionId;
+      const shown = await app.request(
+        `/verticals/${encodeURIComponent(slug)}/versions/${versionId}/migrations${base ? `?base=${base}` : ''}`,
+        { headers: auth },
+      );
+      acknowledge = { migrationChange: true, review: ((await shown.json()) as { review: object }).review };
+    }
     const res = await app.request(`/verticals/${encodeURIComponent(slug)}/channels/prod/promote`, {
       method: 'POST',
       headers: { ...auth, 'content-type': 'application/json' },
-      body: JSON.stringify({ versionId }),
+      body: JSON.stringify({ versionId, acknowledge }),
     });
     expect(res.status, await res.clone().text()).toBe(200);
   };
@@ -135,13 +147,13 @@ describe('a supplied sweeper on the serving script: one class set, recorded and 
 
     // A later version that adds a class of its own: exactly that class, under the next tag.
     const v3 = await push('0.3.0', [{ type: 'durable_object_namespace', name: 'NOTES', class_name: 'NotesDO' }]);
-    await promote(slug, v3.id);
+    await promote(slug, v3.id, true);
     const grown = await served(slug);
     expect(grown.meta['migrations']).toEqual({ old_tag: 'v1', new_tag: 'v2', new_sqlite_classes: ['NotesDO'] });
     expect(grown.record).toMatchObject({ doClasses: [...BASE, 'NotesDO'], migrationTag: 'v2' });
 
     // …and rolling back past it neither re-declares nor drops anything: the class set only grows.
-    await promote(slug, v1.id);
+    await promote(slug, v1.id, true);
     const back = await served(slug);
     expect(back.meta['migrations']).toBeUndefined();
     expect(back.record).toMatchObject({ doClasses: [...BASE, 'NotesDO'], migrationTag: 'v2', versionId: v1.id });

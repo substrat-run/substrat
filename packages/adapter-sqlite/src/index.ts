@@ -523,6 +523,9 @@ import {
   splitManifestMigrations,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
+  deriveVersionMigrationDigest,
+  publishedMigrationDigest,
+  migrationChangeRefusal,
   writeVersionMigrations,
   type SystemSwitchReassert,
   type SystemSwitchReassertOptions,
@@ -1554,6 +1557,8 @@ interface VersionRow {
   manifest_digest: string;
   permission_digest: string;
   migration_digest: string;
+  /** 1 once `migration_digest` is the derived one (#2339); NULL = still the pushed one. */
+  migration_digest_derived: number | null;
   deployment_ref: string | null;
   admission: string;
   admission_note: string | null;
@@ -2368,6 +2373,9 @@ export class SqliteScopeHost implements ScopeHost {
         migration_count   INTEGER,
         -- 1 once the SQL is out of manifest_json. NULL = stored before #1764, not yet backfilled.
         migrations_split  INTEGER,
+        -- 1 once migration_digest is the one derived from the stored migrations (#2339).
+        -- NULL = stored before, still the pushed digest; derived on its next read.
+        migration_digest_derived INTEGER,
         created_at        TEXT NOT NULL,
         UNIQUE (vertical_slug, version)
       );
@@ -2787,6 +2795,7 @@ export class SqliteScopeHost implements ScopeHost {
     if (this.directory.prepare('PRAGMA table_info(vertical_versions)').all().length > 0) {
       this.ensureColumn(this.directory, 'vertical_versions', 'migration_count', 'migration_count INTEGER');
       this.ensureColumn(this.directory, 'vertical_versions', 'migrations_split', 'migrations_split INTEGER');
+      this.ensureColumn(this.directory, 'vertical_versions', 'migration_digest_derived', 'migration_digest_derived INTEGER');
     }
     this.applyDirectorySchema();
     // #2322: a migration's declared moves and discards, on a table created before they were carried.
@@ -7872,10 +7881,16 @@ export class SqliteScopeHost implements ScopeHost {
         calls: callsOfManifestJson(r.manifest_json),
         createdAt: r.created_at,
       });
-    const readVersion = (id: string): VerticalVersion | undefined => {
-      const r = this.directory
-        .prepare('SELECT * FROM vertical_versions WHERE id = ?')
-        .get(id) as VersionRow | undefined;
+    // #2339: a version stored before the server derived migration digests is derived on its
+    // first read, so no gate here ever compares the digest its push sent.
+    const readVersion = async (id: string): Promise<VerticalVersion | undefined> => {
+      const read = () =>
+        this.directory.prepare('SELECT * FROM vertical_versions WHERE id = ?').get(id) as VersionRow | undefined;
+      let r = read();
+      if (r && r.migration_digest_derived === null) {
+        await deriveVersionMigrationDigest(switchSqlOf(this.directory), id);
+        r = read();
+      }
       return r ? mapVersion(r) : undefined;
     };
 
@@ -7947,8 +7962,8 @@ export class SqliteScopeHost implements ScopeHost {
       });
     // The (version, scope) pair a bind and its impact read both start from, and the refusals
     // that come before any export-break question, in the order the bind makes them (#1756).
-    const bindTarget = (tenantId: string, scopeId: string, versionId: string) => {
-      const v = readVersion(versionId);
+    const bindTarget = async (tenantId: string, scopeId: string, versionId: string) => {
+      const v = await readVersion(versionId);
       if (!v) throw substratError('not_found', `unknown version ${versionId}`);
       const scope = this.directory.prepare('SELECT * FROM scopes WHERE scope_id = ?').get(scopeId) as ScopeRow | undefined;
       if (!scope || scope.tenant_id !== tenantId) {
@@ -9289,14 +9304,18 @@ export class SqliteScopeHost implements ScopeHost {
         // The SQL migrations are stored apart from the manifest (#1764), so no read of the
         // version but the promote review's carries them.
         const split = splitManifestMigrations(manifestJson ?? null, 'push');
+        // #2339: the digest a promote compares is the one derived from what is stored, never the pushed one.
+        const migrationDigest = await publishedMigrationDigest({
+          id: audited.id, migrationDigest: audited.migrationDigest, manifestJson: manifestJson ?? null, migrations: split.migrations,
+        });
         this.directory.transaction(() => {
           this.directory
             .prepare(
               `INSERT INTO vertical_versions
                  (id, vertical_slug, version, manifest_digest, permission_digest,
                   migration_digest, deployment_ref, admission, admission_note, manifest_json,
-                  origin_json, migration_count, migrations_split, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+                  origin_json, migration_count, migrations_split, migration_digest_derived, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)`,
             )
             .run(
               audited.id,
@@ -9304,7 +9323,7 @@ export class SqliteScopeHost implements ScopeHost {
               audited.version,
               audited.manifestDigest,
               audited.permissionDigest,
-              audited.migrationDigest,
+              migrationDigest,
               audited.deploymentRef,
               selfAdmits ? 'admitted' : 'pending',
               selfAdmits ? AUTO_ADMISSION_NOTE : null,
@@ -9319,6 +9338,8 @@ export class SqliteScopeHost implements ScopeHost {
         })();
         this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
           ...audited,
+          // The digest the registry holds, which differs from the pushed one only for an unheld version.
+          migrationDigest,
           ...(origin ? { origin } : {}),
           admission: selfAdmits ? 'admitted' : 'pending',
         });
@@ -9333,14 +9354,19 @@ export class SqliteScopeHost implements ScopeHost {
         const where: string[] = ['vertical_slug = ?'];
         const params: (string | number)[] = [verticalSlug];
         const tail = keysetTail(where, params, 'id', page);
-        const rows = this.directory
-          .prepare(`SELECT * FROM vertical_versions WHERE ${where.join(' AND ')}${tail}`)
-          .all(...params) as VersionRow[];
+        const sql = `SELECT * FROM vertical_versions WHERE ${where.join(' AND ')}${tail}`;
+        let rows = this.directory.prepare(sql).all(...params) as VersionRow[];
+        // #2339: a page holding versions whose digest is still the pushed one derives them first.
+        const underived = rows.filter((r) => r.migration_digest_derived === null);
+        if (underived.length > 0) {
+          for (const r of underived) await deriveVersionMigrationDigest(switchSqlOf(this.directory), r.id);
+          rows = this.directory.prepare(sql).all(...params) as VersionRow[];
+        }
         this.recordAccess(actor, 'listVersions', {}, { verticalSlug }, rows.length);
         return rows.map(mapVersion);
       },
       getVersion: async (actor, versionId: string, verticalSlug?: string) => {
-        const v = readVersion(versionId);
+        const v = await readVersion(versionId);
         // A version of another vertical reads as absent when the caller named one.
         const hit = v && (verticalSlug === undefined || v.verticalSlug === verticalSlug) ? v : undefined;
         this.recordAccess(actor, 'getVersion', {}, { versionId, verticalSlug }, hit ? 1 : 0);
@@ -9356,7 +9382,7 @@ export class SqliteScopeHost implements ScopeHost {
           const prod = this.directory
             .prepare("SELECT version_id FROM vertical_channels WHERE vertical_slug = ? AND channel = 'prod'")
             .get(slug) as { version_id: string } | undefined;
-          const prodVersion = prod ? readVersion(prod.version_id) : undefined;
+          const prodVersion = prod ? await readVersion(prod.version_id) : undefined;
           if (prodVersion?.admissionNote === AUTO_ADMISSION_NOTE) {
             throw substratError(
               'conflict',
@@ -9451,7 +9477,7 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
       admitVersion: async (actor, versionId: string) => {
-        const v = readVersion(versionId);
+        const v = await readVersion(versionId);
         if (!v) throw substratError('not_found', `unknown version ${versionId}`);
         if (v.admission === 'admitted') {
           // Idempotent — except an AUTO-admitted version, which this upgrades to a
@@ -9477,7 +9503,7 @@ export class SqliteScopeHost implements ScopeHost {
         });
       },
       rejectVersion: async (actor, versionId: string, note: string) => {
-        const v = readVersion(versionId);
+        const v = await readVersion(versionId);
         if (!v) throw substratError('not_found', `unknown version ${versionId}`);
         if (v.admission === 'admitted') {
           throw substratError('conflict', `version ${versionId} is already admitted — it may be bound`);
@@ -9492,7 +9518,7 @@ export class SqliteScopeHost implements ScopeHost {
         });
       },
       promotionImpact: async (actor, verticalSlug: string, channel, versionId: string): Promise<ExportBreak[]> => {
-        const incoming = readVersion(versionId);
+        const incoming = await readVersion(versionId);
         if (!incoming || incoming.verticalSlug !== verticalSlug) {
           throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
         }
@@ -9510,7 +9536,7 @@ export class SqliteScopeHost implements ScopeHost {
         versionId: string,
         acknowledge?: PromotionAcknowledgement,
       ) => {
-        const incoming = readVersion(versionId);
+        const incoming = await readVersion(versionId);
         if (!incoming) throw substratError('not_found', `unknown version ${versionId}`);
         if (incoming.verticalSlug !== verticalSlug) {
           throw substratError('conflict', `version ${versionId} belongs to '${incoming.verticalSlug}'`);
@@ -9524,7 +9550,7 @@ export class SqliteScopeHost implements ScopeHost {
         const current = this.directory
           .prepare('SELECT version_id FROM vertical_channels WHERE vertical_slug = ? AND channel = ?')
           .get(verticalSlug, channel) as { version_id: string } | undefined;
-        const outgoing = current ? readVersion(current.version_id) : undefined;
+        const outgoing = current ? await readVersion(current.version_id) : undefined;
         const ack = promotionAcknowledgement.parse(acknowledge ?? {});
 
         // The owning tenant's live scopes a PRIVATE prod promote re-points — below for an embedded
@@ -9581,10 +9607,7 @@ export class SqliteScopeHost implements ScopeHost {
             );
           }
           if (outgoing.migrationDigest !== incoming.migrationDigest && !ack.migrationChange) {
-            throw substratError('conflict',
-              `promotion changes migrations (${outgoing.migrationDigest} → ` +
-                `${incoming.migrationDigest}) — acknowledge it explicitly to promote`,
-            );
+            throw substratError('conflict', migrationChangeRefusal(outgoing.migrationDigest, incoming.migrationDigest));
           }
           // #1705 PR 3: an export an installed consumer imports, dropped or re-versioned.
           if (!ack.exportBreak) {
@@ -9641,7 +9664,7 @@ export class SqliteScopeHost implements ScopeHost {
         // per-version script and keeps the rebind here. See adapter-cloudflare parity.
         for (const s of incoming.deploymentRef ? [] : owned) {
           if (s.vertical_version_id === versionId) continue;
-          const prev = s.vertical_version_id ? readVersion(s.vertical_version_id) : undefined;
+          const prev = s.vertical_version_id ? await readVersion(s.vertical_version_id) : undefined;
           if (prev && prev.migrationDigest !== incoming.migrationDigest) {
             await this.snapshotScope(actor, s.tenant_id as TenantId, s.scope_id as ScopeId);
           }
@@ -9723,7 +9746,7 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
       bindingImpact: async (actor, tenantId, scopeId, versionId: string, opts): Promise<ExportBreak[]> => {
-        const { v, scope } = bindTarget(tenantId, scopeId, versionId);
+        const { v, scope } = await bindTarget(tenantId, scopeId, versionId);
         // #2178: a move no acknowledgement passes is refused here too, so a caller asking first
         // (an adopt, an Update) stops before anything is copied.
         this.assertBindingShapesKept(mapScope(scope), versionId, opts?.servingRef);
@@ -9732,7 +9755,7 @@ export class SqliteScopeHost implements ScopeHost {
         return breaks;
       },
       bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
-        const { v, scope } = bindTarget(tenantId, scopeId, versionId);
+        const { v, scope } = await bindTarget(tenantId, scopeId, versionId);
         if (opts?.expectedVersionId !== undefined && scope.vertical_version_id !== opts.expectedVersionId) {
           throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
         }
@@ -9754,7 +9777,7 @@ export class SqliteScopeHost implements ScopeHost {
         // crosses a migration boundary. Gated on a real digest change — a code-only
         // rebind snapshots nothing — and on the caller opting in (until GC ships).
         if (opts?.snapshot && scope.vertical_version_id) {
-          const outgoing = readVersion(scope.vertical_version_id);
+          const outgoing = await readVersion(scope.vertical_version_id);
           if (outgoing && outgoing.migrationDigest !== v.migrationDigest) {
             await this.snapshotScope(actor, tenantId, scopeId);
           }
@@ -9957,7 +9980,7 @@ export class SqliteScopeHost implements ScopeHost {
         const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
         // #1756: onto (or off) a serving script, the scope runs other code before its pointer
         // moves. Judged here, so no caller that routes first and binds second passes unasked.
-        const bound = scope.vertical_version_id ? readVersion(scope.vertical_version_id) : undefined;
+        const bound = scope.vertical_version_id ? await readVersion(scope.vertical_version_id) : undefined;
         if (bound) this.assertBindingShapesKept(mapScope(scope), bound.id, servingRef);
         if (!ack.exportBreak && bound) {
           const breaks = await this.bindBreaks(actor, mapScope(scope), bound, servingRef);

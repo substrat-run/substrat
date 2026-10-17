@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { migrationDigestOf, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
@@ -85,6 +85,14 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
   const INIT = { moduleId: 'hr', version: '0001-init', sql: 'CREATE TABLE person (id TEXT PRIMARY KEY);' };
   const ADD = { moduleId: 'hr', version: '0002-salary', sql: 'ALTER TABLE person ADD COLUMN salary TEXT;' };
 
+  /**
+   * #2339: the platform derives a version's migration digest from the migrations it carries, so
+   * `digests.m` names a migration set rather than being sent as is. With no SQL, the sets differ
+   * by their Durable-Object classes. A version that carries no migrations stores a digest of its
+   * own; `migDigest` is what each version's digest is, for the refusals that name them.
+   */
+  const DO_CLASSES: Record<string, string[]> = { 'mig-3': ['HrDO'], 'mig-4': ['HrDO', 'ExportDO'] };
+  const migDigest = new Map<string, string>();
   async function publish(
     id: string,
     version: string,
@@ -94,13 +102,15 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
     // pushed before migrations were carried.
     migrations: { moduleId: string; version: string; sql: string }[] | null = [],
   ) {
+    const doClasses = DO_CLASSES[digests.m] ?? [];
+    const migrationDigest = registry && migrations ? await migrationDigestOf({ doClasses, migrations }) : digests.m;
     await host.admin.publishVersion(staff, {
       id,
       verticalSlug: SLUG,
       version,
       manifestDigest: `manifest-${version}`,
       permissionDigest: digests.p,
-      migrationDigest: digests.m,
+      migrationDigest,
       deploymentRef: null,
       ...(registry
         ? {
@@ -108,13 +118,15 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
               version,
               entry: 'index.js',
               compatibilityDate: '2026-07-01',
+              ...(doClasses.length > 0 ? { doClasses } : {}),
               registry,
-              digests: { manifest: `manifest-${version}`, permission: digests.p, migration: digests.m },
+              digests: { manifest: `manifest-${version}`, permission: digests.p, migration: migrationDigest },
               ...(migrations ? { migrations } : {}),
             }),
           }
         : {}),
     });
+    migDigest.set(id, (await host.admin.getVersion(staff, id, SLUG))!.migrationDigest);
   }
 
   beforeEach(async () => {
@@ -142,11 +154,13 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
     await publish(v.v3, '1.2.0', { p: 'perm-1', m: 'mig-3' }, registryOf());
     await publish(v.v4, '2.0.0', { p: 'perm-4', m: 'mig-4' }, registryOf(['hr:admin', 'hr:export']));
     await publish(v.old, '0.1.0', { p: 'perm-0', m: 'mig-0' }, null); // pushed before D-39: no registry
-    // s1 → s2 adds one SQL migration and moves NO digest: two versions pushed by a CLI older than
-    // 0.38.0, whose digest covered only the Durable-Object classes (#1754, fixed for later pushes by #1949).
+    // s1 → s2 adds one SQL migration: once two versions pushed by a CLI older than 0.38.0, whose
+    // digest covered only the Durable-Object classes (#1754, #1949). #2339: the platform derives
+    // the digest now, so the gate sees this change too; the dialog still asks from the SQL first.
     await publish(v.s1, '3.0.0', { p: 'perm-1', m: 'mig-1' }, registryOf(), [INIT]);
     await publish(v.s2, '3.1.0', { p: 'perm-1', m: 'mig-1' }, registryOf(), [INIT, ADD]);
-    // Same digests as v1, and no SQL carried (an older CLI, or over the cap): the gate sees nothing.
+    // Same digests as v1, and no SQL carried (an older CLI, or over the cap). #2339: such a version's
+    // stored digest equals no other's, so the gate now refuses it too; the dialog still asks first.
     await publish(v.noSql, '3.2.0', { p: 'perm-1', m: 'mig-1' }, registryOf(), null);
 
     const plane = tenantPlane(host, staff);
@@ -288,7 +302,7 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
         () => null,
         (err: Error) => err,
       );
-      expect(classifyRefusal(e!.message)).toEqual({ kind: 'migration', digests: 'mig-1 → mig-3' });
+      expect(classifyRefusal(e!.message)).toEqual({ kind: 'migration', digests: `${migDigest.get(v.v1)} → ${migDigest.get(v.v3)}` });
     });
   });
 
@@ -358,7 +372,7 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
       expect(d.shown[0]!.permission).toBeNull();
       // v3 adds no SQL (its digest moved on a Durable-Object class): an empty diff, shown as one.
       expect(d.shown[0]!.migration).toEqual({
-        digests: 'mig-1 → mig-3',
+        digests: `${migDigest.get(v.v1)} → ${migDigest.get(v.v3)}`,
         sql: { baseline: 'version', added: [], changed: [], total: 0, truncated: false },
         enforced: true,
       });
@@ -392,9 +406,9 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
       expect(await prod()).toBe(v.old);
     });
 
-    it('SQL-only → the migrations the gate cannot see are shown and asked for, migrationChange alone', async () => {
+    it('SQL-only → the added migrations are shown and asked for before the gate is reached, migrationChange alone', async () => {
       await promoteTo(v.s1);
-      // The gate itself would let this through with no acknowledgement at all (an old-CLI digest) …
+      // The dialog asks from the SQL before the gate is reached (#2339: which now refuses it too) …
       const declined = drive(v.s2, {});
       expect(await declined.run()).toBe('cancelled');
       expect(declined.shown[0]!.migration).toMatchObject({ enforced: false, sql: { baseline: 'version', added: [ADD], changed: [] } });
@@ -408,7 +422,7 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
       expect(await prod()).toBe(v.s2);
     });
 
-    it('no SQL carried and no digest moved → still asked, as "not available"; the gate alone would not have', async () => {
+    it('no SQL carried → still asked, as "not available", before the gate is reached', async () => {
       await promoteTo(v.v1);
       const declined = drive(v.noSql, {});
       expect(await declined.run()).toBe('cancelled');

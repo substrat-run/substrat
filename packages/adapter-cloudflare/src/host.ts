@@ -478,6 +478,8 @@ import {
   recordConnectorCall,
   settleConnectionUse,
   splitManifestMigrations,
+  publishedMigrationDigest,
+  migrationChangeRefusal,
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
   unknownRoleError,
@@ -7923,8 +7925,13 @@ export class CloudflareScopeHost implements ScopeHost {
         // The SQL migrations are stored apart from the manifest (#1764), so no read of the
         // version but the promote review's carries them.
         const split = splitManifestMigrations(manifestJson ?? null, 'push');
+        // #2339: the digest a promote compares is the one derived from what is stored, never the pushed one.
+        const migrationDigest = await publishedMigrationDigest({
+          id: audited.id, migrationDigest: audited.migrationDigest, manifestJson: manifestJson ?? null, migrations: split.migrations,
+        });
         await this.directory('insertVersion', {
           ...audited,
+          migrationDigest,
           manifestJson: split.manifestJson,
           migrations: split.migrations,
           originJson: origin ? JSON.stringify(origin) : null,
@@ -7934,6 +7941,8 @@ export class CloudflareScopeHost implements ScopeHost {
         });
         await this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
           ...audited,
+          // The digest the registry holds, which differs from the pushed one only for an unheld version.
+          migrationDigest,
           ...(origin ? { origin } : {}),
           admission: selfAdmits ? 'admitted' : 'pending',
         });
@@ -8147,10 +8156,7 @@ export class CloudflareScopeHost implements ScopeHost {
             );
           }
           if (outgoing.migration_digest !== incoming.migration_digest && !ack.migrationChange) {
-            throw substratError('conflict',
-              `promotion changes migrations (${outgoing.migration_digest} → ` +
-                `${incoming.migration_digest}) — acknowledge it explicitly to promote`,
-            );
+            throw substratError('conflict', migrationChangeRefusal(outgoing.migration_digest, incoming.migration_digest));
           }
           // #1705 PR 3: an export an installed consumer imports, dropped or re-versioned.
           if (!ack.exportBreak) {

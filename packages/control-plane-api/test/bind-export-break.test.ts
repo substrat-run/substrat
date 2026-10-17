@@ -19,6 +19,7 @@ import {
   stableDeploymentRefFor,
   type VerticalClient,
 } from '../src/index.js';
+import { heldManifest, heldVersion } from './held-manifest.js';
 
 /**
  * The bind gate over HTTP (#1756): `POST /tenants/:t/scopes/:s/version`.
@@ -110,10 +111,10 @@ describe('the bind gate route (#1756)', () => {
   const publish = async (slug: string, manifestJson: string, migrationDigest = 'g'): Promise<string> => {
     const id = ulid();
     const ref = `${slug.replace('/', '-')}-${id.toLowerCase()}`;
-    await host.admin.publishVersion(staff, {
+    await host.admin.publishVersion(staff, await heldVersion({
       id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
       permissionDigest: 'p', migrationDigest, deploymentRef: ref, manifestJson,
-    });
+    }));
     await host.admin.admitVersion(staff, id);
     refOf.set(id, ref);
     return id;
@@ -520,7 +521,7 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
   });
   const push = async (pin: string, m: object): Promise<{ id: string; verticalSlug: string }> => {
     const fd = new FormData();
-    fd.set('manifest', JSON.stringify(m));
+    fd.set('manifest', JSON.stringify(await heldManifest(m as Record<string, unknown>)));
     fd.set('tenant', pin);
     fd.set('worker.js', new Blob(['export default {}'], { type: 'application/javascript+module' }), 'worker.js');
     const res = await app.request('/verticals/crm/deploy', { method: 'POST', headers: { [DEV_ACTOR_HEADER]: staff }, body: fd });
