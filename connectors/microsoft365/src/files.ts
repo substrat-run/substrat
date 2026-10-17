@@ -885,16 +885,14 @@ export async function syncMicrosoft365Scope(
         // A folder that is gone, or moved out, still held items: each is looked up on its own
         // first, and the folder is answered again after them. What it held is never deleted on its
         // word — the held tree is exactly what a missed enumeration leaves stale.
-        const all = heldUnder(id);
-        const under = all.filter((d) => !unplaced.has(d));
+        // Only what can still be asked: an item set aside this pass, or refused too often, is never
+        // asked again here, so waiting on it would ask the folder for ever.
+        const under = heldUnder(id).filter(askable);
         if (under.length) {
           pass = { ...pass, verify: next([...new Set([...under, ...queue])]) };
-        } else if (all.length) {
-          // It still holds items no lookup could place: it stays held with them.
-          unplaced.add(id);
-          await put(id, { ...held, unplaced: (held.unplaced ?? 0) + 1 });
-          pass = { ...pass, verify: next(queue.slice(1)) };
         } else {
+          // The folder lands on its own answer. Anything it still holds that no lookup could place
+          // stays held — never deleted with it — and is asked again on a later pass, if any are left.
           const reason = found.at === 'gone' ? 'deleted' : 'moved-out';
           await land({ change: 'delete', id, prior: index.get(id)!, reason });
           changes += 1;

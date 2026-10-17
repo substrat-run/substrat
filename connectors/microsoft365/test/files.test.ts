@@ -829,6 +829,47 @@ describe('reads: the sync lands what is in the folder', () => {
       expect(JSON.stringify((await listMicrosoft365Bindings(w.host, w.conn))[0]!.lastSync)).not.toContain(held);
     });
 
+    // r4 #1: a folder holding only items that can no longer be asked is answered on its own.
+    it('a folder moved out while holding an exhausted item converges, keeps the item, and new files land', async () => {
+      const w = await world();
+      const old = w.drive.mkdir(w.general, 'Old');
+      const c = w.drive.put(old, 'c.txt', 'c');
+      await w.bind();
+      await w.sync();
+      w.landed.length = 0;
+      w.drive.failures.push({ when: (call) => call.url.includes(`/items/${c}?`), status: 403 });
+      w.drive.hiddenFromFeed.add(c);
+      w.drive.expiredBefore = Number.MAX_SAFE_INTEGER;
+      for (let n = 0; n < MAX_UNPLACED_ATTEMPTS; n += 1) expect(await w.sync()).toMatchObject({ complete: true });
+      w.drive.expiredBefore = 0;
+      w.drive.move(old, w.leadership);
+      const lookups = () => w.drive.calls.filter((call) => call.url.includes(`/items/${old}?`)).length;
+      const before = lookups();
+      expect(await w.sync()).toMatchObject({ complete: true });
+      expect(lookups() - before).toBe(1);
+      expect(w.landed.filter((x) => x.change === 'delete').map((x) => [x.itemId, x.change === 'delete' && x.reason])).toEqual([[old, 'moved-out']]);
+      const fresh = w.drive.put(w.general, 'fresh.txt', 'fresh');
+      expect(await w.sync()).toMatchObject({ complete: true });
+      expect(w.landed.some((x) => x.change === 'upsert' && x.itemId === fresh)).toBe(true);
+      expect(w.landed.some((x) => x.itemId === c)).toBe(false);
+    });
+
+    it('a folder moved out while holding an item refused in the same pass converges too (the in-pass twin)', async () => {
+      const w = await world();
+      const old = w.drive.mkdir(w.general, 'Old');
+      const c = w.drive.put(old, 'c.txt', 'c');
+      await w.bind();
+      await w.sync();
+      w.landed.length = 0;
+      w.drive.failures.push({ when: (call) => call.url.includes(`/items/${c}?`), status: 403 });
+      w.drive.move(old, w.leadership);
+      const lookups = () => w.drive.calls.filter((call) => call.url.includes(`/items/${old}?`)).length;
+      expect(await w.sync()).toMatchObject({ complete: true });
+      expect(lookups()).toBe(1);
+      expect(w.landed.map((x) => [x.itemId, x.change])).toEqual([[old, 'delete']]);
+      expect((await listMicrosoft365Bindings(w.host, w.conn))[0]!.lastSync).toMatchObject({ unplaced: 1 });
+    });
+
     it('a transient answer (503) still stops the pass with nothing deleted (the twin)', async () => {
       const w = await world();
       const held = w.drive.put(w.general, 'held.txt', 'held');
