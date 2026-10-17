@@ -929,6 +929,29 @@ describe('reads: the sync lands what is in the folder', () => {
       expect((await listMicrosoft365Bindings(w.host, w.conn))[0]!.lastSync?.unplaced).toBeUndefined();
     });
 
+    it('a re-bind asks again about items refused too often, and keeps the cursor otherwise', async () => {
+      const w = await world();
+      const held = w.drive.put(w.general, 'held.txt', 'held');
+      await w.bind();
+      await w.sync();
+      const cursor = (await listMicrosoft365Bindings(w.host, w.conn))[0]!.deltaLink;
+      await w.bind();
+      expect((await listMicrosoft365Bindings(w.host, w.conn))[0]!.deltaLink).toBe(cursor);
+      w.drive.move(held, w.leadership);
+      w.drive.failures.push({ when: (c) => c.url.includes(`/items/${held}?`), status: 403 });
+      w.drive.expiredBefore = Number.MAX_SAFE_INTEGER;
+      for (let n = 0; n < MAX_UNPLACED_ATTEMPTS + 1; n += 1) await w.sync();
+      const lookups = () => w.drive.calls.filter((c) => c.url.includes(`/items/${held}?`)).length;
+      expect(lookups()).toBe(MAX_UNPLACED_ATTEMPTS);
+      // The operator fixes the access in SharePoint and binds again: the item is asked about afresh.
+      w.drive.failures.length = 0;
+      w.drive.expiredBefore = 0;
+      w.landed.length = 0;
+      await w.bind();
+      expect(await w.sync()).toMatchObject({ complete: true, full: true });
+      expect(w.landed).toEqual([expect.objectContaining({ change: 'delete', itemId: held, reason: 'moved-out' })]);
+    });
+
     it('a transient answer (503) still stops the pass with nothing deleted (the twin)', async () => {
       const w = await world();
       const held = w.drive.put(w.general, 'held.txt', 'held');

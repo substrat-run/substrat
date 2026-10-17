@@ -311,11 +311,21 @@ export async function bindMicrosoft365Scope(
     folderItemId: folder.id,
     boundAt: nowOf(options).toISOString(),
   };
-  // The same folder bound again keeps its cursor, so a re-bind does not re-land the folder.
+  // The same folder bound again keeps its cursor, so a re-bind does not re-land the folder —
+  // unless the drive refused lookups of items it holds. Then a re-bind is the operator's "try those
+  // again": their refusal counts are cleared and the next pass re-reads the library in full, which
+  // looks each of them up afresh. Unchanged items still land nothing.
   const prior = await readBinding(host, input.connectionId, input.scopeId);
   if (prior && prior.folderItemId === binding.folderItemId && prior.driveId === binding.driveId) {
-    if (prior.deltaLink) binding.deltaLink = prior.deltaLink;
-    if (prior.pass) binding.pass = prior.pass;
+    const prefix = itemPrefix(binding);
+    const refused = (await host.admin.listConnectorState(input.connectionId, prefix)).filter(
+      (r) => r.value && typeof r.value === 'object' && ((r.value as ItemEntry).unplaced ?? 0) > 0,
+    );
+    for (const r of refused) await host.admin.putConnectorState(input.connectionId, r.key, { ...(r.value as ItemEntry), unplaced: 0 });
+    if (!refused.length) {
+      if (prior.deltaLink) binding.deltaLink = prior.deltaLink;
+      if (prior.pass) binding.pass = prior.pass;
+    }
     if (prior.lastSync) binding.lastSync = prior.lastSync;
   }
   await host.admin.putConnectorState(input.connectionId, bindingKey(input.scopeId), binding);

@@ -194,9 +194,10 @@ The connection also needs write access to the attachment target that stores the 
   of the library (after Microsoft expires the sync's position), or a change the feed reports about
   that file. An ordinary sync that does not mention it does not ask again. After three refusals the
   sync stops asking altogether: the file stays as the app last saw it, even if it has since been
-  moved out of the folder. Nothing is ever deleted on a refusal. Fix the access (or the folder above
-  it) in SharePoint, then bind the scope again, or wait for the next full re-read; either one looks
-  every such file up afresh.
+  moved out of the folder. Nothing is ever deleted on a refusal. To have such files looked up again,
+  fix the access (or the folder above it) in SharePoint, then bind the scope to the same folder
+  again: that clears the refusals and re-reads the library in full, which lands nothing for files
+  that did not change.
 - **A folder's deletion is not its files'.** The app is told a folder was deleted, or moved out, on
   that folder's own answer. A file that was in it and could not be looked up stays where the app
   last saw it; the app should not delete it along with the folder.
