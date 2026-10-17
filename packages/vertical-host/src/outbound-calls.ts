@@ -102,10 +102,16 @@ export function redactOutboundPath(pathname: string): string {
   return path.length > PATH_MAX ? `${path.slice(0, PATH_MAX)}…` : path;
 }
 
-/** A thrown value's class, when it is a plain identifier — never its message. */
-function errorName(e: unknown): string | undefined {
+/**
+ * A thrown value's class, when it reads as one — a capitalised name of letters only, ending in
+ * `Error` or `Exception` (`TypeError`, `TimeoutError`, `DOMException`) — and `Error` otherwise.
+ * Never its message. The name comes from whatever threw, a wrapper library included, so anything
+ * else it holds is not written.
+ */
+const ERROR_CLASS = /^[A-Z][A-Za-z]{0,30}(?:Error|Exception)$/;
+function errorName(e: unknown): string {
   const name = (e as { name?: unknown } | null)?.name;
-  return typeof name === 'string' && /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(name) ? name : undefined;
+  return typeof name === 'string' && ERROR_CLASS.test(name) ? name : 'Error';
 }
 
 /**
@@ -124,7 +130,7 @@ function rejectedOutcome(e: unknown): { outcome: OutboundCallOutcome; reason?: s
   const name = errorName(e);
   if (name === 'TimeoutError') return { outcome: 'timeout' };
   if (name === 'AbortError') return { outcome: 'aborted' };
-  return name ? { outcome: 'failed', reason: name } : { outcome: 'failed' };
+  return { outcome: 'failed', reason: name };
 }
 
 /** The tally a request's calls go on: the invocation record, or anything shaped like it. */
@@ -257,7 +263,7 @@ export function recordingFetch<F extends FetchFn>(original: F, current: CurrentR
         return response;
       },
       (e: unknown) => {
-        let end: { outcome: OutboundCallOutcome; reason?: string } = { outcome: 'failed' };
+        let end: { outcome: OutboundCallOutcome; reason?: string } = { outcome: 'failed', reason: 'Error' };
         try {
           end = rejectedOutcome(e);
         } catch {

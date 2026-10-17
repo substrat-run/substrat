@@ -362,7 +362,7 @@ export interface OutboundCallLine {
   readonly durationMs: number;
   /** Milliseconds from the request's start to the call — where it sits on the timeline. */
   readonly atMs: number;
-  /** A `failed` call's error class (`TypeError`, …) — the name only, never the message. */
+  /** A `failed` call's error class (`TypeError`, …), or `Error` when it reads as none — never the message. */
   readonly reason?: string;
 }
 

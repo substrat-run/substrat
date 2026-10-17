@@ -180,7 +180,11 @@ describe('recordingFetch — the wrapper in front of the runtime’s fetch', () 
       [new DOMException('The operation timed out: https://x/?k=secret', 'TimeoutError'), { outcome: 'timeout' }],
       [new DOMException('aborted', 'AbortError'), { outcome: 'aborted' }],
       [new TypeError('Network connection lost to https://x/?k=secret'), { outcome: 'failed', reason: 'TypeError' }],
-      ['a bare string', { outcome: 'failed' }],
+      ['a bare string', { outcome: 'failed', reason: 'Error' }],
+      [Object.assign(new Error('x'), { name: 'AbCdEfGhIjKlMnOpQrStUv' }), { outcome: 'failed', reason: 'Error' }],
+      [Object.assign(new Error('x'), { name: 'sk_live_51HxError' }), { outcome: 'failed', reason: 'Error' }],
+      [Object.assign(new Error('x'), { name: 'FetchError' }), { outcome: 'failed', reason: 'FetchError' }],
+      [new DOMException('x', 'NetworkError'), { outcome: 'failed', reason: 'NetworkError' }],
     ];
     for (const [error, expected] of cases) {
       const recording: OutboundRecording = {};
