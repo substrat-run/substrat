@@ -100,6 +100,8 @@ export const INDEX_VALUE_EXPORTS = [
   'MEMBERSHIP_REMOVAL_SKEW_MS',
   'MEMBER_ADD_REQUESTED',
   'MEMBER_REMOVE_REQUESTED',
+  // #2349: the uploader's binding name, and the set digest both sides compute.
+  'MIGRATIONS_DIGEST_BINDING',
   'MIGRATION_DIGEST_FENCE_DDL',
   'MIGRATION_DIGEST_MARK_LEGACY',
   'MIGRATION_DIGEST_MISMATCH_REASON',
@@ -401,6 +403,8 @@ export const INDEX_VALUE_EXPORTS = [
   'migrationDivergence',
   'migrationFailedError',
   'migrationProgress',
+  'migrationSetDigest',
+  'migrationSetDivergence',
   'migrationSteps',
   'mintBecomeCapability',
   'mintBecomeCapabilityAsPrincipal',
