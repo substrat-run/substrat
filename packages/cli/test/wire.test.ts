@@ -413,6 +413,7 @@ describe('scope tools', () => {
     target: { vertical: 'acme/crm', versionId: '01T' },
     digestsMatch: false,
     migrations: { added: [{ moduleId: 'crm', version: '0002-notes', sql: 'ALTER TABLE t ADD COLUMN n TEXT;' }], changed: [], total: 1, truncated: false },
+    migrationsWithheld: false,
     review: { base: '01B', digest: DIGEST },
   };
   const reasoned = (status: number, detail: string, reason: string) =>
@@ -444,6 +445,14 @@ describe('scope tools', () => {
       expect(e?.message).toContain(`re-run with --ack-migrations and --review 01B:${DIGEST}`);
     });
   }
+
+  it('a review whose SQL is withheld says so, and still prints the token to acknowledge it with', async () => {
+    plane(reasoned(412, 'unbound', 'rebind_review_unbound'), json({ ...REVIEW, migrations: null, migrationsWithheld: true }));
+    const e = await rebindScopeVertical({ ...base, vertical: 'acme/crm', ackMigrations: true }).then(() => null, (x: Error) => x);
+    expect(e?.message).toContain('the migration digests differ; the SQL is shown only to the owner of both verticals');
+    expect(e?.message).not.toContain('SQL not available');
+    expect(e?.message).toContain(`--review 01B:${DIGEST}`);
+  });
 
   it("a refusal that is not the rebind review's is left alone: no second read", async () => {
     plane(reasoned(412, 'the promote review is stale', 'promote_review_stale'));

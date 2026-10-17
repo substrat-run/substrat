@@ -1129,7 +1129,13 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                     {on.map((s) => s.slug).join(', ')}: {review.base ? `${review.base.vertical} ${review.base.versionId}` : 'no bound version'} →{' '}
                     {review.target.vertical} {review.target.versionId}. The migrations differ; this is what the move applies.
                   </span>
-                  <MigrationDiffView review={migrationReviewOf(review.migrations)} />
+                  {review.migrationsWithheld ? (
+                    <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+                      The SQL is shown only to the owner of both verticals.
+                    </span>
+                  ) : (
+                    <MigrationDiffView review={migrationReviewOf(review.migrations)} />
+                  )}
                 </div>
               ))}
             {move.reviews !== null && reviewsToShow(move.reviews).length > 0 && (

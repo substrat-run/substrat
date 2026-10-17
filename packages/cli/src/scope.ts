@@ -533,7 +533,10 @@ export async function explainRebind(opts: {
         `${idOf(read.target.vertical)} serves ${idOf(read.target.versionId)}.`,
       '',
       'migration changes:',
-      ...formatMigrationDiff(read.migrations, !read.digestsMatch).map((l) => `  ${l}`),
+      ...(read.migrationsWithheld
+        ? ['the migration digests differ; the SQL is shown only to the owner of both verticals']
+        : formatMigrationDiff(read.migrations, !read.digestsMatch)
+      ).map((l) => `  ${l}`),
       '',
       `to acknowledge exactly what is shown above, re-run with --ack-migrations and --review ${idOf(reviewToken(read.review))}`,
     ];

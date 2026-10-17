@@ -6,6 +6,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
 import { platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import type { VerticalClient } from '../src/vertical-client.js';
+import { heldVersion } from './held-manifest.js';
 import {
   createControlPlaneApi,
   tenantTokenAuth,
@@ -68,9 +69,10 @@ describe('the rebind review read (#2347)', () => {
     await host.admin.createTenant(staff, { id: tB, slug: 'rival', name: 'Rival' });
     const version = async (slug: string, serve: boolean) => {
       const id = ulid();
-      await host.admin.publishVersion(staff, {
+      // #2339: the migration digest is derived from stored migrations; the tag names a one-migration set.
+      await host.admin.publishVersion(staff, await heldVersion({
         id, verticalSlug: slug, version: '1.0.0', manifestDigest: 'm', permissionDigest: 'p', migrationDigest: `g-${slug}`, deploymentRef: `${slug.replace('/', '-')}-${id.toLowerCase()}`,
-      });
+      }));
       await host.admin.admitVersion(staff, id);
       if (serve) await host.admin.setVerticalServing(staff, slug, { ref: `serving-${slug.replace('/', '-')}`, versionId: id, doClasses: [], migrationTag: 't' });
       return id;
@@ -135,10 +137,16 @@ describe('the rebind review read (#2347)', () => {
     const mover = await install(tA, 'acme/app');
     const onto = await read(tA, mover, 'shared/app', asA);
     expect(onto.status, await onto.clone().text()).toBe(200);
-    const shown = (await onto.json()) as { digestsMatch: boolean; review: { base: string; digest: string } };
+    const shown = (await onto.json()) as { digestsMatch: boolean; migrations: unknown; migrationsWithheld: boolean; review: { base: string; digest: string } };
+    // Not the owner of the listed vertical: the digests differ, and that is all it is told of the SQL.
     expect(shown.digestsMatch).toBe(false);
-    // Off: an install of the listed vertical, moving onto the tenant's own.
-    expect((await read(tA, onListed, 'acme/next', asA)).status).toBe(200);
+    expect([shown.migrations, shown.migrationsWithheld]).toEqual([null, true]);
+    expect(JSON.stringify(shown)).not.toContain('-- g-shared/app');
+    expect(shown.review.digest).toMatch(/^[0-9a-f]{64}$/);
+    // Off: an install of the listed vertical, moving onto the tenant's own. Withheld too: one side is not its own.
+    const off = await read(tA, onListed, 'acme/next', asA);
+    expect(off.status).toBe(200);
+    expect(((await off.json()) as { migrationsWithheld: boolean }).migrationsWithheld).toBe(true);
     // The rebind bound to that review lands, by a tenant credential with no staff in sight.
     const res = await app.request(`/tenants/${tA}/scopes/${mover}/rebind-vertical`, {
       method: 'POST',
@@ -153,9 +161,15 @@ describe('the rebind review read (#2347)', () => {
   it('reads both sides it owns, with the binding — the positive twin', async () => {
     const res = await read(tA, own, 'acme/next', asA);
     expect(res.status, await res.clone().text()).toBe(200);
-    const body = (await res.json()) as { base: { vertical: string }; target: { vertical: string }; review: { base: string; digest: string } };
+    const body = (await res.json()) as {
+      base: { vertical: string }; target: { vertical: string }; review: { base: string; digest: string };
+      migrations: { changed: { sql: string | null }[] } | null; migrationsWithheld: boolean;
+    };
     expect([body.base.vertical, body.target.vertical]).toEqual(['acme/app', 'acme/next']);
     expect(body.review.digest).toMatch(/^[0-9a-f]{64}$/);
+    // It owns both verticals, so it reads the SQL too.
+    expect(body.migrationsWithheld).toBe(false);
+    expect(body.migrations?.changed.map((m) => m.sql)).toEqual(['-- g-acme/next']);
     // Only once both sides are its own does it learn that a target serves nothing.
     expect((await read(tA, own, 'acme/idle', asA)).status).toBe(409);
   });
@@ -163,6 +177,11 @@ describe('the rebind review read (#2347)', () => {
   it("refuses another tenant's scope at the path pin, and staff read across tenants", async () => {
     expect((await read(tB, theirs, 'rival/app', asA)).status).toBe(403);
     expect((await read(tB, theirs, 'acme/next', staffHeaders)).status).toBe(200);
-    expect((await read(tA, onForeign, 'acme/next', staffHeaders)).status).toBe(200);
+    // Staff own nothing yet read everything, the SQL included.
+    const staffRead = await read(tA, onForeign, 'shared/app', staffHeaders);
+    expect(staffRead.status).toBe(200);
+    const asStaff = (await staffRead.json()) as { migrations: { changed: { sql: string | null }[] } | null; migrationsWithheld: boolean };
+    expect(asStaff.migrationsWithheld).toBe(false);
+    expect(asStaff.migrations?.changed.map((m) => m.sql)).toEqual(['-- g-shared/app']);
   });
 });

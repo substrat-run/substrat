@@ -15,6 +15,7 @@ const result = (digest: string, digestsMatch = false): RebindReviewResult => ({
   target: { vertical: 'acme/new', versionId: 'V2' },
   digestsMatch,
   migrations: null,
+  migrationsWithheld: false,
   review: { base: 'V1', digest },
 });
 const problem = (reason: string) =>

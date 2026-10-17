@@ -6660,6 +6660,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // scope, a scope with no vertical, an unknown target and a vertical the caller cannot read all
   // answer the same 404, so the read is no oracle for another tenant's verticals.
   // Callers: staff, and a tenant credential pinned to the tenant in the path, as the rebind.
+  //
+  // The migration SQL itself stays owner-only, as `/versions/:id/migrations` keeps it: it describes
+  // a schema. A caller that does not own both verticals gets `migrations: null` and
+  // `migrationsWithheld: true`, with everything else: both sides, whether the digests differ, and
+  // the binding, so it can still acknowledge the review and rebind onto a listed vertical.
   app.get('/tenants/:tenantId/scopes/:scopeId/rebind-review', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
@@ -6676,6 +6681,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return refuseStatus(c, 409, `vertical '${target}' has no serving script yet — promote a version to prod first`);
     }
     const { base, target: incoming } = await rebindSidesOf(c, scope, target, serving.versionId);
+    const p = c.get('principal');
+    const withheld = (await notOwned(p, scope.vertical)) || (await notOwned(p, target));
     const review: PromotionReviewBinding = {
       base: scope.verticalVersionId ?? null,
       digest: await rebindReviewDigest(
@@ -6687,7 +6694,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       base: scope.verticalVersionId ? { vertical: scope.vertical, versionId: scope.verticalVersionId } : null,
       target: { vertical: target, versionId: incoming.id },
       digestsMatch: Boolean(base && base.migrationDigest === incoming.migrationDigest),
-      migrations: incoming.migrations === null ? null : migrationsOnTop(incoming.migrations, base ? base.migrations : undefined),
+      migrations: withheld || incoming.migrations === null ? null : migrationsOnTop(incoming.migrations, base ? base.migrations : undefined),
+      migrationsWithheld: withheld,
       review,
     });
   });

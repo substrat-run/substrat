@@ -909,6 +909,8 @@ export interface MoveReviewRow {
   target: { vertical: string; versionId: string };
   digestsMatch: boolean;
   migrations: MigrationDiff | null;
+  /** The SQL is shown only to an owner of both verticals; the digests and the binding still are. */
+  migrationsWithheld: boolean;
   review: PromotionReviewBinding;
 }
 

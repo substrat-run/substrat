@@ -31,6 +31,7 @@ const review = (over: Partial<MoveReviewRow> = {}): MoveReviewRow => ({
   target: { vertical: 'acme/coaching', versionId: 'V-TO' },
   digestsMatch: false,
   migrations: migrations('ALTER TABLE t ADD COLUMN a TEXT;') as MoveReviewRow['migrations'],
+  migrationsWithheld: false,
   review: { base: 'V-FROM', digest: 'a'.repeat(64) },
   ...over,
 });
@@ -98,6 +99,21 @@ describe('Bound scopes — Move acknowledges the review it shows (#2347)', () =>
     await click(moveButton());
     expect(move).toHaveBeenLastCalledWith('acme/courses', {
       scopeIds: ['S1'], target: 'acme/coaching', ackMigrations: true, reviews: { S1: { base: 'V-FROM', digest: 'b'.repeat(64) } },
+    });
+  });
+
+  it('a review whose SQL is withheld says so, and is still acknowledged and bound', async () => {
+    vi.spyOn(api, 'readMoveReview').mockResolvedValue({ scopes: [review({ migrations: null, migrationsWithheld: true })] });
+    const move = vi.spyOn(api, 'moveBoundScopes').mockResolvedValue({ moved: ['S1'], refusal: null });
+    await open();
+    await click(moveButton());
+    expect(dialog().textContent).toContain('Their SQL is shown only to the team that owns both verticals.');
+    expect(dialog().textContent).not.toContain('SQL not available');
+    expect(moveButton().disabled).toBe(true);
+    await click(tick(/I have read the migrations above/)!);
+    await click(moveButton());
+    expect(move).toHaveBeenCalledWith('acme/courses', {
+      scopeIds: ['S1'], target: 'acme/coaching', ackMigrations: true, reviews: { S1: { base: 'V-FROM', digest: 'a'.repeat(64) } },
     });
   });
 

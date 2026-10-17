@@ -209,8 +209,13 @@ export interface RebindReview<M> {
   target: RebindReviewSide;
   /** The two lineages carry the same migration digest, so the rebind needs no acknowledgement. */
   digestsMatch: boolean;
-  /** Null for a target version whose migrations cannot be shown. */
+  /** Null for a target version whose migrations cannot be shown, or when they are withheld. */
   migrations: M | null;
+  /**
+   * The SQL is shown only to an owner of both verticals (staff included): any other caller gets
+   * `migrations: null` with this set, and still the digests-differ fact and the binding.
+   */
+  migrationsWithheld: boolean;
   review: PromoteReviewBinding;
 }
 

@@ -322,9 +322,15 @@ export function BoundScopes({ d, all, onChanged }: { d: Deployment; all: readonl
               <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
                 {plural(installs.length, 'install')} ({installs.map((i) => i.slug).join(', ')}) on{' '}
                 {r.base ? <MonoTag>{r.base.versionId}</MonoTag> : 'no version'} would run{' '}
-                <MonoTag>{r.target.versionId}</MonoTag>, whose migrations differ. These are what the move applies:
+                <MonoTag>{r.target.versionId}</MonoTag>, whose migrations differ{r.migrationsWithheld ? '.' : '. These are what the move applies:'}
               </span>
-              <PromoteMigrations section={{ digests: null, sql: r.migrations, enforced: true }} />
+              {r.migrationsWithheld ? (
+                <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                  The migration histories differ. Their SQL is shown only to the team that owns both verticals.
+                </span>
+              ) : (
+                <PromoteMigrations section={{ digests: null, sql: r.migrations, enforced: true }} />
+              )}
             </div>
           ))}
           {shown.length > 0 && (
