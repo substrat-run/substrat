@@ -196,10 +196,11 @@ export type ModuleMigrationsFn = (registration: PermissionsInput['modules'][numb
  * `migrations` beside the manifest.
  *
  * Through `moduleMigrations`, the kernel's own list, because a host also applies migrations
- * nobody authored: the indexes a module's `searchables` and `lists` declare. Changing those
- * runs real schema SQL. Without the function (a vertical on a kernel older than it, or none
- * resolvable) a module declaring either cannot be carried completely, so the field is left
- * off rather than carried short; one declaring neither has only its authored set.
+ * nobody authored: the indexes a module's `searchables` and `lists` declare, and the archive and
+ * trash columns its `entityStates` declare. Changing those runs real schema SQL. Without the
+ * function (a vertical on a kernel older than it, or none resolvable) a module declaring any of
+ * them cannot be carried completely, so the field is left off rather than carried short; one
+ * declaring none has only its authored set.
  *
  * Each migration's declared `moves` and `discards` (#2322) are carried beside its SQL.
  *

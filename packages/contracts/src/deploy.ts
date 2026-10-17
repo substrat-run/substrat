@@ -1837,8 +1837,8 @@ async function sha256Hex(text: string): Promise<string> {
  * classes and every SQL migration the host would apply: each migration's module, version, the
  * SHA-256 of its SQL and, only when it declares any, its `moves` and `discards` (#2322), so a
  * declaration-free entry hashes as it did before them. `unresolvedIndexes` is the CLI's alone:
- * the searchables and lists a module declares when the vertical's kernel cannot derive their
- * index SQL, a push whose manifest then carries no migrations.
+ * the searchables, lists and (when declared) entityStates a module declares when the vertical's
+ * kernel cannot derive their SQL, a push whose manifest then carries no migrations.
  *
  * One function on both ends: `substrat push` computes it, and the control plane re-derives it
  * from the migrations the push declares in its manifest, which it stores and the promote review
