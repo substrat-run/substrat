@@ -49,6 +49,7 @@ import type {
   PeerBindingAudit,
   ConnectionBindingAudit,
   CopyMarkAudit,
+  OrphanSweepAudit,
   BindHostnameInput,
   AdminLogEntry,
   OpsFailureEntry,
@@ -4495,6 +4496,15 @@ export interface HostAdmin {
    * cannot be written.
    */
   recordCopyMark(actor: PlatformActorId, entry: CopyMarkAudit): Promise<void>;
+
+  /**
+   * Record one pass of the platform's orphan-attachment sweep over one scope (#2314) on the admin
+   * log, as `sweepOrphanAttachments`. The pass runs in the vertical's deployment, so the platform's
+   * sweep writes this after it, when the pass found or deleted an orphan. A dry-run row is also
+   * what licenses a later destructive pass on the scope (`OrphanAttachmentSweepOptions`).
+   * `recordCopyMark`'s shape. Throws when the row cannot be written.
+   */
+  recordOrphanSweep(actor: PlatformActorId, entry: OrphanSweepAudit): Promise<void>;
 
   /**
    * Record one phase of a dashboard member change (#1150) — an invite, a role move or a removal

@@ -281,6 +281,12 @@ export interface OrphanSweepReport {
   /** Set when the restore fence held the pass: the instant until which it holds. */
   fencedUntil?: string;
   dryRun: boolean;
+  /**
+   * `'none'` when the deployment holds no attachment store for the tenant at all, so nothing was
+   * listed (#2314). Set apart from a pass that listed an empty store, so a store binding missing
+   * from a vertical that does keep files cannot pass for a clean sweep.
+   */
+  bucket?: 'none';
 }
 
 /** What the scope side of a pass is: the read for a dry run, the condemnation otherwise. */

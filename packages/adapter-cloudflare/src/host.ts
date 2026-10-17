@@ -149,6 +149,7 @@ import {
   peerBindingAudit,
   connectionBindingAudit,
   copyMarkAudit,
+  orphanSweepAudit,
   type EventEffectsInput,
   type EffectsTree,
   type InvocationEventsInput,
@@ -4158,7 +4159,15 @@ export class CloudflareScopeHost implements ScopeHost {
           'to have found no unsettled copy of it (copiesSettled)',
       );
     }
-    const store = await this.resolveAttachmentStore(tenantId);
+    // A script with no attachment store for the tenant holds none of its bytes: a vertical whose
+    // modules keep no files. Answered as that, marked, after every guard above, rather than the
+    // throw `resolveAttachmentStore` makes for a write, so the platform's pass can tell it from a
+    // failure and from a store that held nothing.
+    const bucket = await this.attachmentBuckets(tenantId);
+    if (!bucket) {
+      return { listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: request.dryRun === true, bucket: 'none' };
+    }
+    const store = r2TenantBlobStore(bucket);
     const stub = this.scopeStub(scopeId);
     const now = this.orphanSweepClock();
     const judge = (condemn: boolean) => async (ids: readonly string[], at: string) =>
@@ -9961,6 +9970,11 @@ export class CloudflareScopeHost implements ScopeHost {
       recordCopyMark: async (actor, entry) => {
         const { tenantId, scopeId, action, ...after } = copyMarkAudit.parse(entry);
         await this.recordAdmin(actor, action === 'mark' ? 'markScopeCopy' : 'clearScopeCopyMark', { tenantId, scopeId }, null, after);
+      },
+      /** #2314: one orphan-attachment pass over a scope, written after the vertical's own pass. */
+      recordOrphanSweep: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = orphanSweepAudit.parse(entry);
+        await this.recordAdmin(actor, 'sweepOrphanAttachments', { tenantId, scopeId }, null, after);
       },
       accessLog: async (actor, filter?: AccessLogFilter): Promise<AccessLogEntry[]> => {
         const rows = await this.cp.accessLog({
