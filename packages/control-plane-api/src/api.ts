@@ -197,6 +197,7 @@ import { openDump, sealDump, type SubjectSealer } from './seal.js';
 import {
   assertSandboxContract,
   verticalUploadBindings,
+  migrationsDigestBindings,
   deployManifest,
   storedDeployManifest,
   pushedPermissionRegistry,
@@ -7850,7 +7851,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         doClasses,
         // #2210: a declared scope store adds no binding to either upload (L1), held at both call
         // sites with a driver registered by upload-scope-store-bindings.test.ts.
-        bindings: verticalUploadBindings({ vertical: slug, manifest, platformBindings: storeBindings }),
+        bindings: verticalUploadBindings({
+          vertical: slug,
+          manifest,
+          // #2349: the served version's stored migrations, which its scopes hold the SQL they apply to.
+          platformBindings: [...storeBindings, ...(await migrationsDigestBindings(await admin.versionMigrations(actor, slug, versionId)))],
+        }),
         // #1242: the version now being served, injected as `SUBSTRAT_VERSION_ID` so the
         // scope host stamps the signals `version` dimension. The serving script is one
         // stable script updated in place, so this refresh is what keeps the binding
@@ -8405,7 +8411,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         compatibilityFlags: manifest.compatibilityFlags,
         modules,
         doClasses: manifest.doClasses,
-        bindings: verticalUploadBindings({ vertical: slug, manifest, platformBindings: [] }),
+        bindings: verticalUploadBindings({
+          vertical: slug,
+          manifest,
+          // #2349: the migrations this push declares, which are the ones the version stores.
+          platformBindings: await migrationsDigestBindings(manifest.migrations ?? null),
+        }),
         // #1242: the freshly minted version id — this archive script IS that version,
         // and a preview routed at it stamps the signals `version` dimension honestly.
         versionId: id,

@@ -163,6 +163,7 @@ import {
   assertMigrationSql,
   migrationDivergence,
   migrationFailedError,
+  migrationSetDivergence,
   migrationSteps,
   planMigrations,
   type MigrationStep,
@@ -464,6 +465,13 @@ export interface ScopeDoEnv {
    * worker, stamps NULL.
    */
   SUBSTRAT_VERSION_ID?: string;
+  /**
+   * The migration set digest of the version this script serves (#2349), injected at upload
+   * beside `SUBSTRAT_VERSION_ID` for a version whose migrations the control plane stores. A pass
+   * with migrations pending applies none unless its registered set matches. Optional: an unheld
+   * version, a script uploaded before the binding, or a test worker compares nothing.
+   */
+  SUBSTRAT_MIGRATIONS_DIGEST?: string;
 }
 
 interface RegisteredModule {
@@ -5873,6 +5881,15 @@ export function defineScopeDO(
         // never run again, so this is what reaches a scope stripped before the pass checked.
         await this.queue.enqueue(async () => this.repairDerived());
         return false;
+      }
+      // #2349: before the bookmark and before any SQL, the registered set is held to the one
+      // stored for the version this script serves. Only here, so a scope with nothing pending
+      // never computes it.
+      const unstored = await migrationSetDivergence(this.modules.values(), this.env.SUBSTRAT_MIGRATIONS_DIGEST);
+      if (unstored) {
+        const key = `${pending[0]!.moduleId}@${pending[0]!.migration.version}`;
+        this.lastFailure = { version: key, error: unstored };
+        throw migrationFailedError(key, unstored);
       }
       this.migrationRuns += 1;
       await this.queue.enqueue(async () => {

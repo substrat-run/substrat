@@ -627,6 +627,7 @@ import {
   assertMigrationSql,
   migrationDivergence,
   migrationFailedError,
+  migrationSetDivergence,
   migrationSteps,
   planMigrations,
   type MigrationPlan,
@@ -1085,6 +1086,13 @@ export interface SqliteScopeHostOptions {
    * schema) that gate cannot see. Omitted, every row reads NULL — unstamped.
    */
   versionId?: string;
+  /**
+   * The migration set digest stored for the version this host runs (#2349) — what the hosted
+   * uploader injects as `SUBSTRAT_MIGRATIONS_DIGEST`. Handed in by the harness, as `versionId`
+   * is. A migration pass with anything pending applies nothing unless the registered set
+   * matches (`migrationSetDivergence`). Omitted, nothing is compared.
+   */
+  migrationsDigest?: string;
 }
 
 /**
@@ -2061,6 +2069,7 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly connectorCalls: ConnectorCallRecorder;
   private readonly clock: Clock;
   private readonly versionId: string | null;
+  private readonly migrationsDigest: string | undefined;
   /** #1746: where `ctx.log` lines go — the console unless a caller (a test) says otherwise. */
   private readonly logSink: ModuleLogSink;
   /** #1901: where async work's invocation lines go. */
@@ -2081,6 +2090,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
     this.versionId = options.versionId ?? null;
+    this.migrationsDigest = options.migrationsDigest;
     this.scopeStoreVertical = options.scopeStores?.vertical;
     this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
     this.scopeStoreLifecycle = scopeStoreLifecycleOf(this.scopeStoreRunners);
@@ -13773,6 +13783,14 @@ export class SqliteScopeHost implements ScopeHost {
     if (pending.length === 0) {
       if (!rt.derivedRepaired) await this.repairDerived(rt);
       return;
+    }
+    // #2349: before any SQL, the registered set is held to the one stored for this version.
+    // Only here, so a scope with nothing pending never computes it.
+    const unstored = await migrationSetDivergence(this.modules.values(), this.migrationsDigest);
+    if (unstored) {
+      const refused = { version: `${pending[0]!.moduleId}@${pending[0]!.migration.version}`, error: unstored };
+      this.recordMigrationState(rt, refused);
+      throw migrationFailedError(refused.version, refused.error);
     }
     // The failing `module@version` and its cause, captured structurally rather than
     // re-parsed out of the thrown message — the directory record has to name both.

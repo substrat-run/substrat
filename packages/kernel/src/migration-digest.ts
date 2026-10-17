@@ -240,6 +240,86 @@ export async function planMigrations(
   return { pending };
 }
 
+/**
+ * The platform binding that carries the migration set digest of the version a script serves
+ * (#2349). The uploader injects it beside `SUBSTRAT_VERSION_ID`, and only for a version whose
+ * migrations the control plane stores: an unheld version gets no binding.
+ */
+export const MIGRATIONS_DIGEST_BINDING = 'SUBSTRAT_MIGRATIONS_DIGEST';
+
+/** How many times this isolate computed a set digest. Read by tests through `@substrat-run/kernel/testing`. */
+let setDigestComputations = 0;
+export const migrationSetDigestComputations = (): number => setDigestComputations;
+
+/** How many registered migrations a set divergence names before it says how many more there are. */
+const DIVERGENCE_LISTED = 20;
+
+async function setDigestOf(entries: { moduleId: string; version: string; sqlDigest: string }[]): Promise<string> {
+  setDigestComputations++;
+  // Modules by id, each module's migrations in the order it applies them: the order the CLI
+  // stores modules in is the permission entry's, and the order a host registers them is its
+  // own, so only the order inside a module is part of the set.
+  const sorted = entries
+    .map((e, i) => ({ e, i }))
+    .sort((a, b) => (a.e.moduleId < b.e.moduleId ? -1 : a.e.moduleId > b.e.moduleId ? 1 : a.i - b.i))
+    .map(({ e }) => [e.moduleId, e.version, e.sqlDigest]);
+  return migrationDigest(JSON.stringify(sorted));
+}
+
+/**
+ * The digest of a set of migrations (#2349): SHA-256 over each migration's module, version and
+ * the SHA-256 of its exact SQL, modules ordered by id. Only the SQL is covered, not what a
+ * migration declares it may lose, nor the store classes: it is what a scope compares with the
+ * SQL it is about to run. The control plane computes it from a version's stored migrations at
+ * upload; a scope host computes it from its registered steps (`migrationSetDivergence`).
+ */
+export async function migrationSetDigest(
+  migrations: readonly { moduleId: string; version: string; sql: string }[],
+): Promise<string> {
+  return setDigestOf(
+    await Promise.all(
+      migrations.map(async (m) => ({ moduleId: m.moduleId, version: m.version, sqlDigest: await cachedDigest(m.sql) })),
+    ),
+  );
+}
+
+/**
+ * An integrity check at apply time (#2349): why a scope host must not apply its pending
+ * migrations, or null when it may. `stored` is the set digest the uploader injected for the
+ * version this script serves (`MIGRATIONS_DIGEST_BINDING`); the registered side is every step
+ * the host's modules register, authored and kernel-derived, which is the set a push stores.
+ *
+ * Called only when a pass has migrations pending, so a scope with nothing to apply never
+ * computes it. Without a stored digest (a version whose migrations the control plane does not
+ * hold, a script uploaded before the binding, local dev) nothing is compared.
+ *
+ * This runs inside the deployed adapter, so it guards against accidental divergence — a build
+ * whose worker registers other migrations than the push declared — not as an isolation boundary.
+ */
+export async function migrationSetDivergence(
+  modules: Iterable<{ readonly id: string; readonly steps: Promise<readonly MigrationStep[]> }>,
+  stored: string | null | undefined,
+): Promise<string | null> {
+  if (!stored) return null;
+  const entries: { moduleId: string; version: string; sqlDigest: string }[] = [];
+  for (const mod of modules) {
+    for (const step of await mod.steps) entries.push({ moduleId: mod.id, version: step.migration.version, sqlDigest: step.digest });
+  }
+  const registered = await setDigestOf(entries);
+  if (registered === stored) return null;
+  const keys = entries.map((e) => `${e.moduleId}@${e.version}`);
+  const listed =
+    keys.length === 0
+      ? 'none'
+      : keys.slice(0, DIVERGENCE_LISTED).join(', ') +
+        (keys.length > DIVERGENCE_LISTED ? ` and ${keys.length - DIVERGENCE_LISTED} more` : '');
+  return (
+    `the migrations this deployment registers are not the ones stored for the version it serves ` +
+    `(registered set sha256 ${registered}, stored ${stored}); registered: ${listed}. Nothing was applied. ` +
+    `Push the version again from the build that is deployed, so the stored migrations are the ones it runs (#2349)`
+  );
+}
+
 /** The error a scope fails closed with when `module@version` cannot be applied or trusted. */
 export function migrationFailedError(key: string, cause: string): Error {
   return new Error(`migration failed for ${key} — scope fails closed: ${cause}`);

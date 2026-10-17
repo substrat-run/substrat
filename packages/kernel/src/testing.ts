@@ -20,3 +20,6 @@ export function forgeBoundOperationsForTest(
 ): BoundOperations {
   return new BoundOperations(MINT, handlers, derived);
 }
+
+/** How many migration set digests this isolate computed (#2349): a scope with nothing pending computes none. */
+export { migrationSetDigestComputations } from './migration-digest.js';
