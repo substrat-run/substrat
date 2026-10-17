@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   SHARED_ISSUER_CONFIG_KEY,
   mcpResourceOf,
+  migrationDigestOf,
   platformActorId,
   principalId,
   scopeId,
@@ -1454,15 +1455,20 @@ describe('Dashboard Phase 4 — a tenant sees only its own deployments', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const publish = async (slug: string, version: string, id: string) => {
+  // #2339: the platform derives a version's migration digest from the migrations it carries, and
+  // one that carries none differs from every other. `migrationTag` makes the version hold a
+  // fixture migration set named by it: same tag, same digest.
+  const publish = async (slug: string, version: string, id: string, migrationTag?: string) => {
+    const migrations = migrationTag === undefined ? null : [{ moduleId: 'fixture', version: '0001-fixture', sql: `-- ${migrationTag}` }];
     await host.admin.publishVersion(staff, {
       id,
       verticalSlug: slug,
       version,
       manifestDigest: 'm',
       permissionDigest: 'p',
-      migrationDigest: 'g',
+      migrationDigest: migrations ? await migrationDigestOf({ doClasses: [], migrations }) : 'g',
       deploymentRef: `${slug}-${id.toLowerCase()}`,
+      ...(migrations ? { manifestJson: JSON.stringify({ migrations }) } : {}),
     });
   };
 
@@ -1521,17 +1527,9 @@ describe('Dashboard Phase 4 — a tenant sees only its own deployments', () => {
     const v1 = ulid();
     const v2 = ulid();
     const v3 = ulid();
-    await publish('meridian', '0.1.0', v1);
-    await publish('meridian', '0.2.0', v2);
-    await host.admin.publishVersion(staff, {
-      id: v3,
-      verticalSlug: 'meridian',
-      version: '0.3.0',
-      manifestDigest: 'm',
-      permissionDigest: 'p',
-      migrationDigest: 'g2', // differs from its predecessor's 'g'
-      deploymentRef: `meridian-${v3.toLowerCase()}`,
-    });
+    await publish('meridian', '0.1.0', v1, 'g');
+    await publish('meridian', '0.2.0', v2, 'g');
+    await publish('meridian', '0.3.0', v3, 'g2'); // differs from its predecessor's 'g'
     await host.admin.admitVersion(staff, v3);
     await host.admin.promoteVersion(staff, 'meridian', 'prod', v3);
 

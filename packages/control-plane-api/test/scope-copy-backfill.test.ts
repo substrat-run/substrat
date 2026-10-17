@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { BACKFILL_MOVE_ID, carriedAwayDump, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId } from '@substrat-run/contracts';
+import { heldVersion } from './held-manifest.js';
 import {
   createControlPlaneApi,
   firstBuilderAuth,
@@ -152,9 +153,9 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
     for (const [name, version, hasRef] of [['v1', '1.0.0', true], ['v2', '1.0.1', true], ['gone', '1.0.2', true], ['bare', '1.0.3', false]] as const) {
       const id = ulid();
       const ref = hasRef ? `${slug}-${id.toLowerCase()}` : null;
-      await host.admin.publishVersion(staff, {
+      await host.admin.publishVersion(staff, await heldVersion({
         id, verticalSlug: slug, version, manifestDigest: `m-${name}`, permissionDigest: 'p', migrationDigest: 'g', deploymentRef: ref,
-      });
+      }));
       versions[name] = { id, ref };
     }
     const v = (name: string) => versions[name]!.id;
@@ -430,10 +431,10 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
     await host.admin.registerVertical(staff, { slug: tie, name: 'Tie Vert', source: 'cli', ownerTenant: t });
     const [first, second] = [ulid(), ulid()];
     for (const [id, version] of [[first, '1.0.0'], [second, '1.0.1']] as const) {
-      await host.admin.publishVersion(staff, {
+      await host.admin.publishVersion(staff, await heldVersion({
         id, verticalSlug: tie, version, manifestDigest: `m-${version}`, permissionDigest: 'p', migrationDigest: 'g',
         deploymentRef: `${tie}-${id.toLowerCase()}`,
-      });
+      }));
     }
     await host.admin.promoteVersion(staff, tie, 'prod', first);
     await tick();
@@ -466,10 +467,10 @@ describe('the copy-ledger backfill records historic copies (#1722)', () => {
     await host.admin.registerVertical(staff, { slug: late, name: 'Late Vert', source: 'cli', ownerTenant: t });
     const [first, second, third] = [ulid(), ulid(), ulid()];
     for (const [id, version] of [[first, '1.0.0'], [second, '1.0.1'], [third, '1.0.2']] as const) {
-      await host.admin.publishVersion(staff, {
+      await host.admin.publishVersion(staff, await heldVersion({
         id, verticalSlug: late, version, manifestDigest: `m-${version}`, permissionDigest: 'p', migrationDigest: 'g',
         deploymentRef: `${late}-${id.toLowerCase()}`,
-      });
+      }));
     }
     await host.admin.promoteVersion(staff, late, 'prod', first);
     await tick();

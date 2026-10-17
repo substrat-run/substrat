@@ -35,6 +35,7 @@ import {
   SERVICE_TOKEN_HEADER,
   UNSAFE_devPlatformActorAuth,
 } from '../src/index.js';
+import { heldVersion } from './held-manifest.js';
 
 /**
  * The replay lever over HTTP (#1705 PR 3): `POST /tenants/:t/scopes/:s/import-cursor`.
@@ -382,7 +383,7 @@ describe('the promote refusal over HTTP: who is named to whom (#1705 PR 3)', () 
   const registry = (extra: object) => JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [], ...extra } });
   const publish = async (slug: string, manifestJson: string) => {
     const id = ulid();
-    await host.admin.publishVersion(staff, {
+    await host.admin.publishVersion(staff, await heldVersion({
       id,
       verticalSlug: slug,
       version: `1.0.${id.slice(-4).toLowerCase()}`,
@@ -391,7 +392,7 @@ describe('the promote refusal over HTTP: who is named to whom (#1705 PR 3)', () 
       migrationDigest: 'g',
       deploymentRef: null,
       manifestJson,
-    });
+    }));
     await host.admin.admitVersion(staff, id);
     return id;
   };

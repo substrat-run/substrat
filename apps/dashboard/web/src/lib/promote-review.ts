@@ -76,10 +76,9 @@ export type PermissionSection =
  *   version's, or when its manifest carries no SQL at all (pushed by an older CLI, or over
  *   the size a manifest carries), so nothing can say whether they changed. `enforced: false`:
  *   the dialog asks before anything is sent. The registry's gate refuses the same change on
- *   its own (#1949), except between versions pushed by a CLI older than 0.38.0, whose digest
- *   covered only the Durable-Object classes, so this acknowledgement is the dialog's own. It is still
- *   required: showing SQL a person may skip — or not showing it — is how a schema change
- *   slips through.
+ *   its own: it derives the migration digest from the stored migrations (#2339), and a version
+ *   that stores none has a digest equal to no other's. Asking here as well is still required:
+ *   showing SQL a person may skip — or not showing it — is how a schema change slips through.
  * - From the gate's own refusal on the migration digest. `enforced: true`, with the digest
  *   pair. `sql` is the review's diff when it has one, and null when the incoming version's
  *   manifest carries no SQL — "not available", and the acknowledgement is still required.
