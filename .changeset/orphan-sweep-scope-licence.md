@@ -10,7 +10,7 @@
 
 The orphan-attachment sweep's dry-run-first rule is now held by the scope's own storage, so it holds whoever asks for a pass.
 
-**What is recorded.** A dry run records the ids it listed (at most 1,000, `ORPHAN_SWEEP_LICENCE_CAP`) in a new spine table, `_substrat_attachment_sweep_licence`, stamped with the host's clock. It writes only when that set differs from the one held, or the one held is older than half the window, so a scope whose orphans stay the same moves no write revision on every pass. A dry run that finds nothing clears the record.
+**What is recorded.** A dry run records the ids it listed (at most 1,000, `ORPHAN_SWEEP_LICENCE_CAP`) in a new spine table, `_substrat_attachment_sweep_licence`, stamped with the host's clock. It writes only when that set differs from the one held, or the one held is older than half the window, so a scope whose orphans stay the same moves no write revision on every pass. A dry run that lists nothing clears the record. A dry run the restore fence holds lists nothing and leaves the record as it was. A destructive pass that deletes objects but cannot take them out of the record afterwards still returns its report, marked `consumeFailed`, and the phase counts it.
 
 **The rule.** A destructive pass is refused with `conflict`, reason `orphan_sweep_unlicensed` (`ORPHAN_SWEEP_UNLICENSED`), unless the scope holds such a record from the last seven days (`ORPHAN_SWEEP_DRY_RUN_WINDOW_MS`). The refusal comes before anything is listed. The pass deletes only ids the record lists, and each id it deletes leaves the record, so one dry run can license several passes that work through a backlog. Every other guard of the pass still applies to each listed id.
 

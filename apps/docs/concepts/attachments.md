@@ -101,6 +101,7 @@ deletes leaves the record, so one dry run can license several passes that work t
 larger than one pass's limit. The rule holds whoever asks for the pass, not only the platform.
 The record only narrows the pass: every guard above still applies to each id it lists. A dry run
 that finds the same orphans again writes nothing, and one that finds none clears the record. A
+dry run the restore fence holds lists nothing and leaves the record as it was. A
 dump never carries the record, and every restore, carry or fork drops it, so the next pass on a
 loaded scope is a dry run.
 

@@ -121,7 +121,9 @@ destructive pass that no dry run of its own licensed.
   `_substrat_attachment_sweep_licence`, each stamped with the host's clock at that run. It writes
   only when that set differs from the one held, or the one held is older than half the window, so
   a scope whose orphans stay the same moves no write revision on every pass (a carry and a
-  kept-copy release are fenced on it). A dry run that finds nothing clears the record.
+  kept-copy release are fenced on it). A dry run that lists nothing clears the record. A dry run
+  the restore fence holds is not one of those: it stops before it lists anything, and leaves the
+  record as it was.
 - **The window.** The record is in force for `ORPHAN_SWEEP_DRY_RUN_WINDOW_MS` (seven days, the
   same window as the admin-log row), judged against the host's clock. A stamp more than a minute
   ahead of the clock (a clock that went back) is not in force.
@@ -136,7 +138,11 @@ destructive pass that no dry run of its own licensed.
   pass's limit therefore drains over consecutive passes after one dry run, as long as the dry run
   listed it (the dry run lists up to its own `limit`). Once the record is empty the next
   destructive pass is refused, and the phase dry-runs the scope again. A pass whose deletes fail,
-  or that a fence stops after the condemnation, consumes nothing.
+  or that a fence stops after the condemnation, consumes nothing. A pass whose deletes succeed but whose
+  consume fails (the scope suspended or carried away mid-pass) still returns its report with every
+  deleted key, marked `consumeFailed`, and logs a line with the scope and the count. The phase counts
+  it in `consumeFailed`, and its admin-log row names the keys as usual. The rows it could not remove
+  name ids that are gone, so they license nothing a later pass could delete.
 - **Restores, carries, forks.** A dump never carries the record's rows, and every load drops them,
   a hand-made dump's included. A loaded scope's next destructive pass is refused and its next pass
   is a dry run. A PITR rewind can bring an older record back. A rewind of a scope that holds files
