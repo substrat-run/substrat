@@ -6568,6 +6568,11 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     }
     expect(objs.has(orphan)).toBe(true);
     expect((await routed(deployed, false)).keys).toEqual([orphan]);
+    // Refused before anything is listed, so a misrouted destructive pass is refused with nothing to condemn too.
+    const empty = await newScope();
+    await expect(
+      host.sweepOrphanAttachments(t, empty, { copiesSettled: true, expectedVersionId: '01JTESTVRSN00000000000OTHR' }),
+    ).rejects.toThrow(/runs version .*, not 01JTESTVRSN00000000000OTHR/);
   });
 
   it('with no directory, a pass needs its caller to have read the copy ledger', async () => {
