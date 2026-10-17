@@ -10,6 +10,7 @@ import {
   microsoft365Certificate,
   microsoft365CredentialSummary,
   microsoft365MailSender,
+  prepareMicrosoft365,
   prepareMicrosoft365Candidate,
   probeMicrosoft365Connection,
   probeMicrosoft365Secret,
@@ -607,6 +608,19 @@ describe('rotating the certificate before it lapses', () => {
       expect(promoted.nextCertificate).toBeUndefined();
       expect(JSON.stringify(promoted)).not.toContain(first.privateKey!);
       // It asked with the successor, and only with it.
+      expect(ms.signedWith).toEqual([await thumbprintS256(secret.nextCertificate!)]);
+    });
+
+    it('the hook the control plane registers (prepareMicrosoft365) promotes it too, through its own sign-in', async () => {
+      const { secret, at } = await rotating();
+      const ms = entra([await thumbprintS256(secret.nextCertificate!)]);
+      const hook = prepareMicrosoft365({ fetch: ms.fetchImpl, now: () => at, commonName: 'x' });
+      const { secret: promoted, expiresAt } = await hook(base, secret);
+      expect(promoted.certificate).toBe(secret.nextCertificate);
+      expect(promoted.privateKey).toBe(secret.nextPrivateKey);
+      expect(promoted.nextCertificate).toBeUndefined();
+      expect(expiresAt).toBe(secret.nextCertificateNotAfter);
+      // It signed in with the successor, through the fetch it was built with.
       expect(ms.signedWith).toEqual([await thumbprintS256(secret.nextCertificate!)]);
     });
 
