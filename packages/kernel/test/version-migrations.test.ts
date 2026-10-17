@@ -1,8 +1,13 @@
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import { moduleId } from '@substrat-run/contracts';
+import { migrationDigestOf, moduleId, unheldMigrationDigest } from '@substrat-run/contracts';
 import {
   VERSION_MIGRATIONS_DDL,
+  MIGRATION_DIGEST_MISMATCH_REASON,
+  deriveMigrationDigestsBatch,
+  deriveVersionMigrationDigest,
+  publishedMigrationDigest,
+  versionsAwaitDigest,
   splitManifestMigrations,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
@@ -10,7 +15,13 @@ import {
   writeVersionMigrations,
   type SwitchSql,
 } from '../src/index.js';
-import { BATCH_MANIFEST_BYTES, UNSPLIT_IDS_SQL, UNSPLIT_PROBE_SQL } from '../src/version-migrations.js';
+import {
+  BATCH_MANIFEST_BYTES,
+  UNDERIVED_IDS_SQL,
+  UNDERIVED_PROBE_SQL,
+  UNSPLIT_IDS_SQL,
+  UNSPLIT_PROBE_SQL,
+} from '../src/version-migrations.js';
 
 /**
  * #1764: a version's SQL migrations, stored apart from its manifest, executed against a real
@@ -22,7 +33,8 @@ describe('version migrations stored apart (#1764)', () => {
     const db = new DatabaseSync(':memory:');
     db.exec(`CREATE TABLE vertical_versions (
       id TEXT PRIMARY KEY, vertical_slug TEXT NOT NULL, manifest_json TEXT,
-      migration_count INTEGER, migrations_split INTEGER
+      migration_count INTEGER, migrations_split INTEGER,
+      migration_digest TEXT NOT NULL DEFAULT 'pushed', migration_digest_derived INTEGER
     )`);
     db.exec(VERSION_MIGRATIONS_DDL);
     const sql: SwitchSql = {
@@ -286,6 +298,141 @@ describe('version migrations stored apart (#1764)', () => {
         // Answered by the index alone: no scan of the table, and no sort for the ORDER BY.
         expect(plan.join(' | ')).not.toMatch(/SCAN vertical_versions(?! USING)|TEMP B-TREE/);
       }
+    });
+  });
+
+  describe('the migration digest is derived from what is stored (#2339)', () => {
+    const doClasses = ['TicketDO'];
+    const declaring = [{ ...migrations[0]!, discards: { 'a.legacy': 'replaced by b' } }, migrations[1]!];
+    /** What a CLI from before the SQL entered the digest sent: the store classes alone. */
+    const preSqlDigest = async (classes: string[]) => {
+      const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(classes)));
+      return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
+    };
+
+    describe('publishedMigrationDigest', () => {
+      const publish = (migrationDigest: string, carried: typeof migrations | null, classes: unknown = doClasses) =>
+        publishedMigrationDigest({
+          id: 'v1',
+          migrationDigest,
+          manifestJson: manifest({ doClasses: classes }),
+          migrations: carried,
+        });
+
+      it("stores the derived digest when the push's agrees with the migrations it carries", async () => {
+        const digest = await migrationDigestOf({ doClasses, migrations: declaring });
+        await expect(publish(digest, declaring)).resolves.toBe(digest);
+      });
+
+      it('refuses an equal digest over different stored migrations, and over different declarations', async () => {
+        const base = await migrationDigestOf({ doClasses, migrations });
+        // The SQL moved, the digest did not.
+        const edited = [migrations[0]!, { ...migrations[1]!, sql: 'DROP TABLE a;' }];
+        await expect(publish(base, edited)).rejects.toMatchObject({
+          code: 'validation_failed',
+          extensions: { reason: MIGRATION_DIGEST_MISMATCH_REASON },
+        });
+        // Only a declared data loss was added: still a different set.
+        await expect(publish(base, declaring)).rejects.toMatchObject({ code: 'validation_failed' });
+        // And the store classes count too.
+        await expect(publish(base, migrations, ['TicketDO', 'OtherDO'])).rejects.toMatchObject({ code: 'validation_failed' });
+      });
+
+      it('a CLI whose digest covers the SQL keeps working; one from before the SQL was hashed is refused, naming no version', async () => {
+        // A CLI that hashes SQL but predates declarations: its migrations carry none, so its digest is the same.
+        await expect(publish(await migrationDigestOf({ doClasses, migrations }), migrations)).resolves.toBeTypeOf('string');
+        const refusal = await publish(await preSqlDigest(doClasses), migrations).catch((e: unknown) => e as Error);
+        expect(refusal).toBeInstanceOf(Error);
+        expect(refusal.message).toMatch(/upgrade to a CLI release whose push digest covers its SQL migrations/);
+        expect(refusal.message).not.toMatch(/\b\d+\.\d+(\.\d+)?\b/);
+      });
+
+      it('a push that carries no migrations is not refused, and stores a digest equal to no other version', async () => {
+        await expect(publish('anything', null)).resolves.toBe(unheldMigrationDigest('v1'));
+        await expect(publishedMigrationDigest({ id: 'v2', migrationDigest: 'x', manifestJson: null, migrations: null }))
+          .resolves.toBe(unheldMigrationDigest('v2'));
+        expect(unheldMigrationDigest('v1')).not.toBe(unheldMigrationDigest('v2'));
+      });
+
+      it('carried migrations beside store classes that do not read are refused, never stored as unheld', async () => {
+        const digest = await migrationDigestOf({ doClasses: [], migrations });
+        await expect(publish(digest, migrations, 'not a list')).rejects.toMatchObject({ code: 'validation_failed' });
+        // An absent `doClasses` reads as none, as the stored parser defaults it.
+        await expect(
+          publishedMigrationDigest({ id: 'v1', migrationDigest: digest, manifestJson: manifest(), migrations }),
+        ).resolves.toBe(digest);
+      });
+    });
+
+    describe('versions stored before it', () => {
+      /** A version as an older control plane stored it: split, with the digest its push sent. */
+      const stored = (sql: SwitchSql, id: string, pushed: string, ms: typeof migrations | null, classes: unknown = doClasses) => {
+        sql.run(
+          `INSERT INTO vertical_versions (id, vertical_slug, manifest_json, migration_count, migrations_split, migration_digest)
+           VALUES (?, 'acme', ?, ?, 1, ?)`,
+          id, manifest({ doClasses: classes }), ms?.length ?? null, pushed,
+        );
+        writeVersionMigrations(sql, id, ms);
+      };
+      const row = (sql: SwitchSql, id: string) =>
+        sql.all('SELECT migration_digest, migration_digest_derived FROM vertical_versions WHERE id = ?', id)[0];
+
+      it('a read derives an underived version: the pushed digest is replaced by the derived one, once', async () => {
+        const { sql } = fresh();
+        const derived = await migrationDigestOf({ doClasses, migrations: declaring });
+        stored(sql, 'honest', derived, declaring);
+        stored(sql, 'lying', 'the-base-digest', declaring);
+        stored(sql, 'pre-sql', await preSqlDigest(doClasses), declaring);
+        for (const id of ['honest', 'lying', 'pre-sql']) {
+          await expect(deriveVersionMigrationDigest(sql, id)).resolves.toBe(derived);
+          expect(row(sql, id)).toEqual({ migration_digest: derived, migration_digest_derived: 1 });
+        }
+        // Derived rows are left alone, whatever they hold.
+        sql.run("UPDATE vertical_versions SET migration_digest = 'kept' WHERE id = 'honest'");
+        await expect(deriveVersionMigrationDigest(sql, 'honest')).resolves.toBe('kept');
+        await expect(deriveVersionMigrationDigest(sql, 'missing')).resolves.toBeUndefined();
+      });
+
+      it('a version with no stored migrations, or no manifest, becomes unheld; one still unsplit derives from its manifest', async () => {
+        const { sql } = fresh();
+        stored(sql, 'none', 'pushed', null);
+        sql.run("INSERT INTO vertical_versions (id, vertical_slug, migration_digest) VALUES ('bare', 'acme', 'pushed')");
+        legacy(sql, 'unsplit', manifest({ doClasses, migrations }));
+        await expect(deriveVersionMigrationDigest(sql, 'none')).resolves.toBe(unheldMigrationDigest('none'));
+        await expect(deriveVersionMigrationDigest(sql, 'bare')).resolves.toBe(unheldMigrationDigest('bare'));
+        await expect(deriveVersionMigrationDigest(sql, 'unsplit')).resolves.toBe(await migrationDigestOf({ doClasses, migrations }));
+        // A manifest whose JSON does not read, or whose classes do not, is unheld too.
+        legacy(sql, 'garbled', 'not json');
+        stored(sql, 'odd-classes', 'pushed', migrations, 'nope');
+        await expect(deriveVersionMigrationDigest(sql, 'garbled')).resolves.toBe(unheldMigrationDigest('garbled'));
+        await expect(deriveVersionMigrationDigest(sql, 'odd-classes')).resolves.toBe(unheldMigrationDigest('odd-classes'));
+      });
+
+      it('the backfill derives a bounded batch per call, reads agree before and after, and it ends', async () => {
+        const { sql } = fresh();
+        const derived = await migrationDigestOf({ doClasses, migrations });
+        const ids = Array.from({ length: 25 }, (_, i) => `v${String(i).padStart(2, '0')}`);
+        for (const id of ids) stored(sql, id, 'pushed', migrations);
+        expect(versionsAwaitDigest(sql)).toBe(true);
+        // A version the backfill has not reached yet: its read derives it first.
+        await expect(deriveVersionMigrationDigest(sql, 'v24')).resolves.toBe(derived);
+        expect(await deriveMigrationDigestsBatch(sql)).toEqual({ derived: 10, more: true });
+        expect(await deriveMigrationDigestsBatch(sql)).toEqual({ derived: 10, more: true });
+        // 24 left minus the 20, the 25th was derived on read: four, and nothing after.
+        expect(await deriveMigrationDigestsBatch(sql)).toEqual({ derived: 4, more: false });
+        expect(await deriveMigrationDigestsBatch(sql)).toEqual({ derived: 0, more: false });
+        expect(versionsAwaitDigest(sql)).toBe(false);
+        expect(new Set(ids.map((id) => row(sql, id)!.migration_digest))).toEqual(new Set([derived]));
+      });
+
+      it('the two reads that find underived versions are answered from the partial index, not a scan', () => {
+        const { sql } = fresh();
+        for (const [query, params] of [[UNDERIVED_IDS_SQL, [10]], [UNDERIVED_PROBE_SQL, []]] as const) {
+          const plan = (sql.all(`EXPLAIN QUERY PLAN ${query}`, ...params) as { detail: string }[]).map((p) => p.detail);
+          expect(plan.join(' | ')).toMatch(/USING (COVERING )?INDEX vertical_versions_underived/);
+          expect(plan.join(' | ')).not.toMatch(/SCAN vertical_versions(?! USING)|TEMP B-TREE/);
+        }
+      });
     });
   });
 });
