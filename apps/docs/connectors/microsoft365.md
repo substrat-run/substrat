@@ -125,14 +125,18 @@ folder to one scope of your app, and from then on:
 - **Your app saves files into the folder.** It names the files and a target directory under the
   folder, states each file's size, and says what happens when a name is taken: `replace`, `rename`
   or `fail`. Files of up to 4 MB go in one request, larger ones by upload session, up to 50 MB each
-  and 100 MB per request; a request over either is refused before any file is read. Files are sent
-  one at a time.
+  and 100 MB per request; a request over either, by the sizes it states, is refused before any file
+  is read. Files are sent one at a time. A stated size that is not the file's own is refused too,
+  but only once that file has been read: the platform hands the connector a file's bytes whole, so
+  the check cannot come sooner.
 - **Files people change in Teams reach the app.** A periodic sync reads the library's change feed
   and passes the app every file and folder added, edited, renamed, moved or deleted inside the
   folder. File contents come in as attachments on the record the app keeps for each file, and are
   searchable like any other attachment. A file over 50 MB, or one whose size Microsoft does not
-  report, arrives without its contents. A large library is read a few pages at a time, so the first
-  sync of one may take several runs before the app has everything.
+  report, arrives without its contents. A large library is read a few pages at a time, and a folder
+  that arrives with contents of its own (one moved in, or the first sync of a nested folder) is read
+  a page at a time too, so the first sync of a large or deep folder may take several runs before the
+  app has everything.
 
 ### Binding the folder
 
@@ -173,8 +177,13 @@ The connection also needs write access to the attachment target that stores the 
   how far it got, so a sync cut off part-way continues from the last page it finished. A change
   that was being passed on when it stopped is passed on again, so the app's operation must accept
   the same change, or the same contents, twice for one file — keyed by the file's id, which never
-  changes. A file renamed while the sync is mid-way may be reported at its new place just before it
-  is reported deleted.
+  changes.
+- **Nothing is reported deleted or moved out on the feed's word alone**, unless the feed itself says
+  the file, or a folder above it, was deleted. A file the feed shows somewhere the sync cannot place
+  yet (a folder it has not reached), and a file a full re-read never mentions, is looked up in the
+  library when the sync reaches the end of the feed: gone is reported deleted, outside the folder
+  is reported moved out, and still inside stays (and is reported where it now is). If the lookup
+  fails, nothing is deleted and the next sync tries again.
 
 ## Limits
 

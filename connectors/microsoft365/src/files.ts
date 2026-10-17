@@ -81,7 +81,9 @@ export const MAX_EVENT_BYTES = 100 * 1024 * 1024;
  * delivery is the authority to read them, so no standing grant is needed and none is consulted.
  *
  * Each file states its `size` (the attachment record's), so the caps are checked before a byte is
- * read; the dispatch refuses a file whose attachment turns out to be another size.
+ * read. The dispatch refuses a file whose attachment turns out to be another size — but only once
+ * it is read, since `openAttachment` hands over the bytes whole and says nothing first; a dishonest
+ * declaration costs its own delivery one oversized read, and is refused there.
  */
 export const microsoft365FilesRequested = z.object({
   /** The folder under the channel folder to write into; `''` (the default) is the channel folder itself. */
