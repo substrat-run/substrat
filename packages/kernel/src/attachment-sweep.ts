@@ -45,7 +45,9 @@ declare const TextDecoder: new () => { decode(input: Uint8Array): string };
  * The instant a pass judges age and the fence against is the HOST's clock, never a caller's
  * (`OrphanSweepRequest` carries none), so no caller can step past guard 2 or guard 3.
  *
- * A dry run condemns nothing and deletes nothing: it reports what a pass would condemn.
+ * A dry run condemns nothing and deletes nothing: it reports what a pass would condemn, and the
+ * scope records that as its licence (#2350). A destructive pass needs one in force, and deletes only
+ * what it lists (`ATTACHMENT_SWEEP_LICENCE_DDL`).
  */
 
 /** The tombstone table, shared by both adapters so the two cannot part company. */

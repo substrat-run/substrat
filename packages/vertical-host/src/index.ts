@@ -1505,6 +1505,8 @@ export function mountPlatformSurface<Env extends object>(
   // must carry it. `dryRun` is required, so a destructive pass is always asked for in so many words.
   // No instant is taken from the body (a `now` is stripped by the parse): the host judges the age
   // floor and the restore fence against its own clock. Metadata only crosses back: counts and keys.
+  // A destructive pass also needs the scope's own dry-run licence (#2350), whoever calls: without one
+  // the host refuses with `orphan_sweep_unlicensed`, and the platform's phase dry-runs the scope.
   app.post('/internal/attachment-sweep', async (c) => {
     const body = z
       .object({
