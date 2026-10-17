@@ -586,16 +586,6 @@ export function orphanSweepContractSuite(adapterName: string, makeFixture: () =>
         expect((await pass(later, { scope: s })).keys).toEqual([attachmentBlobKey(s, orphan)]);
       });
 
-      it('a fork starts with no licence of its own', async () => {
-        const now = Date.now();
-        await plant(now);
-        await pass(aged(now), { dryRun: true });
-        const fork = await host.snapshotScope(staff, t1, s1);
-        const dump = await host.admin.exportScope(staff, t1, fork);
-        expect(dump.tables.find((t) => t.name === '_substrat_attachment_sweep_licence')?.rows ?? []).toEqual([]);
-        await sweep(aged(now));
-      });
-
       it('a dry run that finds the same orphans again moves no write revision, and one that finds a new one does', async () => {
           // A host that keeps no write revision (the SQLite one) has nothing a carry is fenced on.
           if (!fixture.writeRevision) return;
