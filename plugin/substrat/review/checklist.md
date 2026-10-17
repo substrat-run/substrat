@@ -17,6 +17,9 @@ Substrat's rules can see.
 - **Run gates read-only.** Only the `--check` form of a gate, and only a gate that has one:
   a bare `lint:model`, `lint:permissions` or `lint:agent-rules` rewrites files, which a
   review must not do. A gate with no read-only form is not run.
+- **Gate invocation.** In the monorepo, pass `--check` through `pnpm run`
+  (`pnpm run lint:migrations --check`). `pnpm lint:migration-fence` has no `--check` form but
+  only replays and reports, so it is safe to run.
 - **Which gates exist depends on where you are.** In a project made by `npm create substrat`
   there are three: `npm run lint:boundaries`, `npm run typecheck`, `npm test`. The rest named
   below (`tools/…`, `pnpm lint:…`) exist in the Substrat monorepo, where the demos live. If a
@@ -57,7 +60,10 @@ the permissions source.
   `PERMISSIONS.md` was not re-emitted. Name every widened role in the report. This is the
   **permission-diff checkpoint**: present it, and stop there.
 - *Reader:* an operation with no check; a check on a key that grants less than the operation
-  does; a scope-wide key where the operation addresses one entity.
+  does; a scope-wide key where the operation addresses one entity. No gate sees a handler
+  that checks a weaker key than the model declares, because the declaration did not change:
+  for every operation the change touches, open `spec/model.ts` and compare the key it
+  declares with the key the handler checks.
 
 ### S3 · Generated files and kernel packages are not edited by hand: blocking
 
@@ -121,7 +127,9 @@ finding, most severe first:
   fix: first line of the handler: assertAllowed(await ctx.check(PERMS.invoiceVoid))
 ```
 
-A blocking item you could not settle is listed as `[S5 unconfirmed]` with what you could not
+A problem you noticed that fits no item (a logic bug, say) is not filed under the nearest
+item. List it under `Outside this checklist:` in one line each, and leave it to the general
+review. A blocking item you could not settle is listed as `[S5 unconfirmed]` with what you could not
 see. Say once, under the headline, that this checks Substrat's rules only and is not a general
 code review. Close with three lists. `Checked clean:` is items you read the change against and found
 nothing. `Not applicable:` is items the change gave nothing to apply to (no operation, no
