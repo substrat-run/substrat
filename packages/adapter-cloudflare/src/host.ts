@@ -513,6 +513,8 @@ import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, S
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import type {
   StoreDriverHoldMode,
+  StoreDriverRebuildFailure,
+  StoreDriverRebuildRecord,
   StoreDriverReleaseRecord,
   StoreDriverRolloutAction,
   StoreDriverRolloutRecord,
@@ -720,6 +722,20 @@ interface ControlPlaneStub {
     walked?: readonly StoreDriverRolloutTarget[];
     at: string;
   }): Promise<StoreDriverRolloutRecord>;
+  storeDriverRebuild(driver: string): Promise<StoreDriverRebuildRecord | undefined>;
+  claimStoreDriverRebuild(input: { driver: string; fingerprint: string; holder: string; ttlMs: number; at: string; restart?: boolean; attestedBy?: string }): Promise<StoreDriverRebuildRecord | null>;
+  advanceStoreDriverRebuild(input: {
+    driver: string;
+    fingerprint: string;
+    holder: string;
+    cursor: string | null;
+    failures: readonly StoreDriverRebuildFailure[];
+    done: boolean;
+    verified?: boolean;
+    ttlMs: number;
+    release?: boolean;
+    at: string;
+  }): Promise<StoreDriverRebuildRecord>;
   getBlobStore(
     tenantId: string,
     vertical: string,
@@ -8692,6 +8708,16 @@ export class CloudflareScopeHost implements ScopeHost {
         const row = await this.directory('finishStoreDriverRollout', { ...input, at: new Date().toISOString() });
         await this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, row);
         return row;
+      },
+      storeDriverRebuild: async (actor, driver) => {
+        const rebuild = await this.cp.storeDriverRebuild(driver);
+        await this.recordAccess(actor, 'storeDriverRebuild', { tenantId: null }, { driver }, rebuild ? 1 : 0);
+        return rebuild;
+      },
+      claimStoreDriverRebuild: async (_actor, input) => this.directory('claimStoreDriverRebuild', { ...input, at: new Date().toISOString() }),
+      advanceStoreDriverRebuild: async (_actor, input) => this.directory('advanceStoreDriverRebuild', { ...input, at: new Date().toISOString() }),
+      recordStoreDriverRebuildRun: async (actor, entry) => {
+        await this.recordAdmin(actor, 'rebuildStoreDriver', { tenantId: null }, null, entry);
       },
       listScopeTables: async (actor, tenantId, scopeId): Promise<ScopeTable[]> => {
         // K-3 cross-check on the shared directory BEFORE reaching the scope DO: a pair

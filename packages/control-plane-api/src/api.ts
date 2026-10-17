@@ -178,7 +178,8 @@ import { mintTenantToken } from './tenant-token.js';
 import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
-import type { ScopeStoreEnsurerOptions } from './store-script.js';
+import type { ScopeStoreEnsurerOptions, StoreCanaryTarget } from './store-script.js';
+import { STORE_REBUILD_REQUEST_SUBREQUESTS, runStoreFleetRebuild, storeRebuildBudget, storeRebuildStatus, type StoreDriverRebuildPass } from './store-rebuild.js';
 import { PUSH_HOLD_TTL_MS, runStoreDriverRollout, storeDriverRelease, storedReleaseLoader, type CanaryCall, type StoreReleaseBytes } from './store-releases.js';
 import { assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, listAllScopeScriptCopies, recordStrandedStorage } from './scope-copy-cleanup.js';
 import { BACKFILL_PAGE_MAX, backfillScopeScriptCopies } from './scope-copy-backfill.js';
@@ -432,6 +433,8 @@ export interface ControlPlaneApiOptions {
     stores: readonly ScopeStoreNeed[];
     /** The release a rollout moves the scripts to; a push or serve passes none (#2300). */
     to?: string;
+    /** The fleet rebuild (#2309): rebuild a script that exists, and create none. */
+    existingOnly?: boolean;
     loadRelease: ScopeStoreEnsurerOptions['loadRelease'];
     /** How many scripts it uploaded; absent counts as some. */
   }) => Promise<void | { uploaded: number }>;
@@ -442,8 +445,15 @@ export interface ControlPlaneApiOptions {
    */
   storeReleases?: {
     bytes: StoreReleaseBytes;
-    ensureCanary(input: { driver: string; to: string; loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }): Promise<{ scriptName: string }>;
+    ensureCanary(input: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }): Promise<{ scriptName: string; uploaded: boolean }>;
     callCanary: CanaryCall;
+    /**
+     * What the platform builds every store script from now (`storePlatformFingerprint`, #2309).
+     * Absent ⇒ no fleet rebuild: the status reports none and the rebuild route answers 501.
+     */
+    fingerprint?: () => Promise<string>;
+    /** The rebuild's settle window (`STORE_REBUILD_SETTLE_MS` by default). */
+    settleMs?: number;
   };
   /**
    * The actor a request's credential names when that credential is a person's staff session,
@@ -10473,10 +10483,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   };
 
+  /** Where the platform's rebuild of every script of the driver stands (#2309), if it rebuilds them. */
+  const rebuildView = async (admin: HostAdmin, actor: PlatformActorId, driver: string, known?: string) => {
+    const fingerprint = known ?? (await options.storeReleases?.fingerprint?.());
+    if (!fingerprint) return undefined;
+    const [walk, declared] = await Promise.all([admin.storeDriverRebuild(actor, driver), admin.storeDriverDeclarations(actor, driver)]);
+    const verticals = [...new Set([...declared.verticals.map((v) => v.vertical), ...declared.unreadable])].sort();
+    return { fingerprint, ...storeRebuildStatus(walk, fingerprint, verticals, options.storeReleases?.settleMs), walk: walk ?? null };
+  };
+
   app.get('/store-drivers/:driver', async (c) => {
     const registration = registeredDriver(c.req.param('driver'));
     const state = await c.var.admin.storeDriverState(c.get('actor'), registration.driver);
-    return c.json({ driver: registration.driver, pins: registration.releases, ...state });
+    const rebuild = await rebuildView(c.var.admin, c.get('actor'), registration.driver);
+    return c.json({ driver: registration.driver, pins: registration.releases, ...state, ...(rebuild ? { rebuild } : {}) });
   });
 
   // Store a release's bytes, before or after its pin lands (D-63). Idempotent per bundle.
@@ -10513,6 +10533,69 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const pin = await pinOf(c, registration, rollbackTarget);
     assertSchemaKept(registration, current.sha256, pin);
     return rollOut(c, registration, rollbackTarget, 'rollback');
+  });
+
+  // Run a pass of the platform's rebuild of every script of the driver now (#2309): the scheduled
+  // pass does the same every quarter hour, and this is for when that is too slow, after a key is
+  // revoked. Same lease and hold as the scheduled pass, so the two never walk the driver at once,
+  // and a rollout or rollback excludes both. Rebuilds at the release each script runs; moves none.
+  app.post('/store-drivers/:driver/rebuild', async (c) => {
+    const registration = registeredDriver(c.req.param('driver'));
+    const actor = await byAPerson(c);
+    // `deployFinished`: the person attests that no control-plane deploy is rolling out, so the walk
+    // this run starts proves every script current once done, without waiting out the settle window.
+    const text = await c.req.text();
+    let raw: unknown = {};
+    if (text.trim() !== '') {
+      try {
+        raw = JSON.parse(text);
+      } catch {
+        throw new ControlPlaneError(422, 'the body is not JSON');
+      }
+    }
+    const body = z.object({ deployFinished: z.boolean().optional() }).strict().parse(raw);
+    const { flow, ensureScopeStores } = releaseFlow();
+    if (!flow.fingerprint) throw new ControlPlaneError(501, 'this control plane does not rebuild store scripts');
+    let fingerprint: string | undefined;
+    let ran: Omit<StoreDriverRebuildPass, 'rebuild'> & { deployFinished?: true } = {
+      driver: registration.driver,
+      outcome: 'error',
+      walked: [],
+      uploaded: [],
+      ...(body.deployFinished ? { deployFinished: true as const } : {}),
+    };
+    try {
+      // Inside the audited path: lists that cannot be read refuse the run, and that refusal is audited too.
+      fingerprint = await flow.fingerprint();
+      const [pass] = await runStoreFleetRebuild({
+        admin: c.var.admin,
+        actor,
+        drivers: [registration],
+        fingerprint,
+        bytes: flow.bytes,
+        ensure: ensureScopeStores,
+        ensureCanary: flow.ensureCanary,
+        budget: storeRebuildBudget(STORE_REBUILD_REQUEST_SUBREQUESTS),
+        // A person asking re-walks a driver that is done: after a control plane deploy has finished
+        // rolling out, that walk is the proof no script kept the older lists.
+        reverify: 'always',
+        ...(flow.settleMs === undefined ? {} : { settleMs: flow.settleMs }),
+        ...(body.deployFinished ? { attestedBy: actor } : {}),
+      });
+      const { rebuild: _row, ...result } = pass!;
+      ran = { ...ran, ...result };
+    } catch (e) {
+      ran = { ...ran, error: e instanceof Error ? e.message : String(e) };
+      throw e;
+    } finally {
+      // Written however the pass ended, a refused one included: a staff request reached the fleet.
+      await c.var.admin.recordStoreDriverRebuildRun(actor, ran);
+    }
+    if (ran.outcome === 'error') throw new ControlPlaneError(502, `the rebuild of '${registration.driver}' failed: ${ran.error}`);
+    const rebuild = (await rebuildView(c.var.admin, actor, registration.driver, fingerprint))!;
+    // Scripts remain, or another holder has the driver: post again.
+    const again = ran.outcome === 'paused' || ran.outcome === 'held' || ran.outcome === 'busy';
+    return c.json({ pass: ran, rebuild }, again ? 202 : 200);
   });
 
   return app;

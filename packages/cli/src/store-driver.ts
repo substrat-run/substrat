@@ -18,7 +18,7 @@ import { spawnSync } from 'node:child_process';
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { STORE_RELEASE_MAX_BYTES, type StoreDriverReleaseUpload } from '@substrat-run/contracts';
-import type { StoreDriverView } from '@substrat-run/control-plane-client';
+import type { StoreDriverRebuildView, StoreDriverView } from '@substrat-run/control-plane-client';
 import { planeFor } from './plane.js';
 
 const DRIVER_MODULE = /^driver_[a-z0-9_]+\/(?:[A-Za-z_][A-Za-z0-9_]*\/)*[A-Za-z_][A-Za-z0-9_]*\.py$/;
@@ -120,6 +120,44 @@ export const rollBackStoreDriver = (input: Plane & { driver: string }) =>
 export const storeDriverStatus = (input: Plane & { driver: string }) =>
   planeFor(input.controlPlaneUrl, input.header).getStoreDriver(input.driver);
 
+export const rebuildStoreDriver = (input: Plane & { driver: string; deployFinished?: boolean }) =>
+  planeFor(input.controlPlaneUrl, input.header).rebuildStoreDriver(input.driver, { deployFinished: input.deployFinished === true });
+
+/**
+ * Whether every script of the driver is built from what the control plane builds from now (#2309).
+ * An old key is revoked only once this reads `current`: until then a script on the list below may
+ * still accept it.
+ */
+export function storeDriverRebuildLines(rebuild: StoreDriverRebuildView): string[] {
+  const walk = rebuild.walk;
+  // Why it reads as it does: when these lists were first walked towards, and when the next automatic walk is.
+  const timing = walk && walk.fingerprint === rebuild.fingerprint
+    ? [`    first walked towards ${walk.fingerprintSince}${rebuild.nextWalk ? `; next automatic re-walk ${rebuild.nextWalk}` : ''}`]
+    : [];
+  if (rebuild.current && rebuild.reverifying) {
+    return [`  scripts: current (re-verifying: a walk since ${walk?.startedAt} re-checks every script; last proved ${walk?.verifiedAt})`, ...timing];
+  }
+  if (rebuild.current) {
+    const by = walk?.attestedBy ? `, deploy attested finished by ${walk.attestedBy}` : '';
+    return [`  scripts: current (every script is built from ${rebuild.fingerprint.slice(0, 12)}, walk finished ${walk?.finishedAt}${by})`, ...timing];
+  }
+  if (rebuild.settling) {
+    return [
+      `  scripts: settling: every script was current when walked (${walk?.finishedAt ?? 'just now'}), but the control plane's deploy may still`,
+      `    have been rolling out then. It is walked again from ${rebuild.settling}; once the deploy serves only the new version,`,
+      `    \`substrat store-driver rebuild --driver <driver> --deploy-finished\` walks it at once and attests that.`,
+      ...timing,
+    ];
+  }
+  const shown = rebuild.pending.slice(0, 10);
+  return [
+    `  scripts: NOT current: ${rebuild.pending.length} may still be built from older keys or code (target ${rebuild.fingerprint.slice(0, 12)})`,
+    ...(shown.length ? [`    pending: ${shown.join(', ')}${rebuild.pending.length > shown.length ? `, … ${rebuild.pending.length - shown.length} more` : ''}`] : []),
+    ...(walk?.failures ?? []).slice(0, 10).map((f) => `    failed: ${f.vertical}: ${f.detail}`),
+    ...timing,
+  ];
+}
+
 /**
  * What `store-driver status` prints. "Rolls back to" is the server's `rollbackTarget`, never the
  * current release's previous good one: after a diverged or paused rollout it is the current
@@ -132,5 +170,6 @@ export function storeDriverStatusLines(driver: string, view: StoreDriverView): s
       ? [`  a rollback to ${view.unfinishedRollback} stopped part way: run \`substrat store-driver rollback\` again to finish it`]
       : []),
     ...view.rollouts.slice(-10).map((r) => `  #${r.seq} ${r.action} ${r.sha256} ${r.state}${r.detail ? ` — ${r.detail}` : ''}`),
+    ...(view.rebuild ? storeDriverRebuildLines(view.rebuild) : []),
   ];
 }

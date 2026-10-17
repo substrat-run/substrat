@@ -828,8 +828,12 @@ block it.
    It rebuilds the script at the release it runs only when what the script was built from
    changed (the entry, the verifier, a key list). The sha256 covers the module the entry imports
    as well as every module's name and bytes, so the same modules under another entry are another
-   release. A rebuild happens only on that vertical's next push or serve, so a removed key or a
-   verifier fix does not reach a script whose vertical is not pushed again: #2309.
+   release. On #2309 the control plane also rebuilds every existing script itself, at the release
+   it runs, whenever what the platform builds a script from changes (one digest, its
+   fingerprint): a bounded walk on its quarter-hourly pass, resumable from a per-driver cursor,
+   under the same shared hold a push takes, and on demand by a person (`substrat store-driver
+   rebuild`). So a removed key or a verifier fix reaches every script without a push, and
+   `store-driver status` names the scripts it has not reached yet.
    On #2300: a release's bytes are stored by a person (a human staff sign-in, never the service
    token), named by that sha256, before or after the pin lands. A rollout of a stored, pinned
    release holds the driver exclusively, against every push and serve of a vertical that declares

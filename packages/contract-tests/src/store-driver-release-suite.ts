@@ -362,6 +362,101 @@ export function storeDriverReleaseContractSuite(adapterName: string, makeFixture
       expect(after.verticals).toEqual(declared.verticals);
     });
 
+    it('leases a fleet rebuild to one holder, keeps its cursor and failures, and starts over at a new fingerprint (#2309)', async () => {
+      const driver = freshDriver();
+      const [a, b] = [ulid(), ulid()];
+      expect(await host.admin.storeDriverRebuild(staff, driver)).toBeUndefined();
+      const first = await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f1', holder: a, ttlMs: 60_000 });
+      expect(first).toMatchObject({ driver, fingerprint: 'f1', cursor: null, failures: [], state: 'running', finishedAt: null });
+      expect(first!.fingerprintSince).toBe(first!.startedAt);
+      // While A's lease lives, B gets nothing, and cannot write.
+      expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f1', holder: b, ttlMs: 60_000 })).toBeNull();
+      const failed = [{ vertical: 'acme', detail: 'upload failed (500)' }];
+      await expectRefusal(
+        host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f1', holder: b, cursor: 'acme', failures: [], done: false, ttlMs: 60_000 }),
+        'conflict',
+      );
+      // A records progress; a write towards another fingerprint is refused, and so is `done` with a failure left.
+      const moved = await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f1', holder: a, cursor: 'acme', failures: failed, done: false, ttlMs: 60_000 });
+      expect(moved).toMatchObject({ cursor: 'acme', failures: failed, state: 'running' });
+      await expectRefusal(
+        host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f2', holder: a, cursor: 'zz', failures: [], done: false, ttlMs: 60_000 }),
+        'conflict',
+      );
+      await expectRefusal(
+        host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f1', holder: a, cursor: 'acme', failures: failed, done: true, ttlMs: 60_000 }),
+        'validation_failed',
+      );
+      // A releases its lease: B takes it, and the walk resumes where A stopped.
+      await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f1', holder: a, cursor: 'acme', failures: failed, done: false, ttlMs: 60_000, release: true });
+      const resumed = await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f1', holder: b, ttlMs: 60_000 });
+      expect(resumed).toMatchObject({ cursor: 'acme', failures: failed, startedAt: first!.startedAt });
+      // The lapsed holder writes nothing once B holds it.
+      await expectRefusal(
+        host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f1', holder: a, cursor: 'zz', failures: [], done: true, ttlMs: 60_000 }),
+        'conflict',
+      );
+      const done = await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f1', holder: b, cursor: 'zz', failures: [], done: true, ttlMs: 60_000, release: true });
+      expect(done).toMatchObject({ state: 'done', cursor: 'zz', failures: [] });
+      expect(done.finishedAt).not.toBeNull();
+      // The same fingerprint again keeps it done; a new one starts over, whatever was walked.
+      expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f1', holder: a, ttlMs: 60_000 })).toMatchObject({ state: 'done', cursor: 'zz' });
+      await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f1', holder: a, cursor: 'zz', failures: [], done: true, ttlMs: 60_000, release: true });
+      const restarted = await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f2', holder: a, ttlMs: 60_000 });
+      expect(restarted).toMatchObject({ fingerprint: 'f2', cursor: null, failures: [], state: 'running', finishedAt: null });
+      expect(await host.admin.storeDriverRebuild(staff, driver)).toEqual(restarted);
+      // A restart starts a done rebuild over at the same fingerprint, and leaves a running one where it is.
+      await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f2', holder: a, cursor: 'q', failures: [], done: true, ttlMs: 60_000, release: true });
+      const reverified = await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f2', holder: b, ttlMs: 60_000, restart: true });
+      expect(reverified).toMatchObject({ cursor: null, state: 'running', finishedAt: null });
+      // A restart keeps when the fingerprint first appeared; only a new fingerprint moves it.
+      expect(reverified!.fingerprintSince).toBe(restarted!.fingerprintSince);
+      await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f2', holder: b, cursor: 'm', failures: [], done: false, ttlMs: 60_000, release: true });
+      expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f2', holder: a, ttlMs: 60_000, restart: true })).toMatchObject({ cursor: 'm', state: 'running' });
+      // Another driver's rebuild is its own row.
+      expect(await host.admin.storeDriverRebuild(staff, freshDriver())).toBeUndefined();
+      await expectRefusal(host.admin.claimStoreDriverRebuild(staff, { driver: freshDriver(), fingerprint: 'f', holder: a, ttlMs: 0 }), 'validation_failed');
+    });
+
+    it('keeps a fleet rebuild\'s proof across a restart at the same lists, and carries a person\'s attestation only on the walk it starts (#2309)', async () => {
+      const driver = freshDriver();
+      const [a, b] = [ulid(), ulid()];
+      const first = await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: a, ttlMs: 60_000 });
+      expect(first).toMatchObject({ attestedBy: null, verifiedAt: null });
+      // Proof is recorded only with done.
+      await expectRefusal(
+        host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: a, cursor: 'm', failures: [], done: false, verified: true, ttlMs: 60_000 }),
+        'validation_failed',
+      );
+      const proved = await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: a, cursor: 'z', failures: [], done: true, verified: true, ttlMs: 60_000, release: true });
+      expect(proved.verifiedAt).toBe(proved.finishedAt);
+      // A restart at the same lists keeps the proof; the walk it starts is not attested.
+      const again = await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: b, ttlMs: 60_000, restart: true });
+      expect(again).toMatchObject({ state: 'running', cursor: null, verifiedAt: proved.verifiedAt, attestedBy: null });
+      // An attestation starts the walk over even while one runs, and carries the person.
+      await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: b, cursor: 'm', failures: [], done: false, ttlMs: 60_000, release: true });
+      const attested = await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: a, ttlMs: 60_000, attestedBy: staff });
+      expect(attested).toMatchObject({ cursor: null, attestedBy: staff, verifiedAt: proved.verifiedAt });
+      // A pass that continues it keeps the attestation; a walk started without one clears it.
+      await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: a, cursor: 'q', failures: [], done: false, ttlMs: 60_000, release: true });
+      expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: b, ttlMs: 60_000 })).toMatchObject({ cursor: 'q', attestedBy: staff });
+      await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: b, cursor: 'z', failures: [], done: true, ttlMs: 60_000, release: true });
+      expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: a, ttlMs: 60_000, restart: true })).toMatchObject({ attestedBy: null });
+      // New lists clear the proof: nothing at them is proved.
+      await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: a, cursor: 'z', failures: [], done: true, ttlMs: 60_000, release: true });
+      expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'g', holder: b, ttlMs: 60_000 })).toMatchObject({ verifiedAt: null, attestedBy: null });
+    });
+
+    it('audits a staff-run rebuild pass as rebuildStoreDriver (#2309)', async () => {
+      const driver = freshDriver();
+      await host.admin.recordStoreDriverRebuildRun(staff, { driver, outcome: 'paused', walked: ['acme'], uploaded: [] });
+      const rows = (await host.admin.auditLog(staff, { action: 'rebuildStoreDriver' })).filter(
+        (r) => (r.after as { driver?: string } | null)?.driver === driver,
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ actor: staff, after: { driver, outcome: 'paused', walked: ['acme'], uploaded: [] } });
+    });
+
     describe('a rollout paged over several requests walks from its ledger (#2312)', () => {
       /** Three verticals declaring `driver`, in slug order, and the version each first declared it in. */
       const fleetOf = async (driver: string) => {
@@ -510,6 +605,25 @@ export function storeDriverHoldExpiryContractSuite(adapterName: string, makeFixt
       expect(state.rollouts.map((r) => r.state)).toEqual(['diverged', 'rolling']);
       // A lifetime that is not positive is no hold.
       await expectRefusal(host.admin.holdStoreDriver(staff, { driver: freshDriver(), holder: push, mode: 'shared', ttlMs: 0 }), 'validation_failed');
+    });
+
+    it("lapses a fleet rebuild's lease on the host's clock: another pass takes it over and the lapsed holder writes nothing (#2309)", async () => {
+      const { host, clock } = fixture;
+      const driver = freshDriver();
+      const [crashed, next] = [ulid(), ulid()];
+      await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: crashed, ttlMs: 60_000 });
+      clock.advance(59_999);
+      expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: next, ttlMs: 60_000 })).toBeNull();
+      clock.advance(1);
+      // Lapsed, and nobody has claimed it: what the holder did is still recorded (and its lease renewed).
+      await host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: crashed, cursor: 'm', failures: [], done: false, ttlMs: 60_000 });
+      expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: next, ttlMs: 60_000 })).toBeNull();
+      clock.advance(60_000);
+      expect(await host.admin.claimStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: next, ttlMs: 60_000 })).toMatchObject({ cursor: 'm', state: 'running' });
+      await expectRefusal(
+        host.admin.advanceStoreDriverRebuild(staff, { driver, fingerprint: 'f', holder: crashed, cursor: 'z', failures: [], done: true, ttlMs: 60_000 }),
+        'conflict',
+      );
     });
   });
 }

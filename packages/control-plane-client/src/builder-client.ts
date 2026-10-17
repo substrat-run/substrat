@@ -26,6 +26,8 @@ import type {
   StoreDriverReleaseView,
   StoreDriverRolloutResultView,
   StoreDriverView,
+  StoreDriverRebuildPassView,
+  StoreDriverRebuildView,
   VersionRow,
   Whoami,
 } from './builder-types.js';
@@ -261,5 +263,17 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
   /** Return the driver to the immediately previous good release. */
   rollBackStoreDriver(driver: string): Promise<StoreDriverRolloutResultView> {
     return this.read(`/store-drivers/${seg(driver)}/rollback`, this.write('POST'));
+  }
+
+  /**
+   * Run one pass of the platform's rebuild of every script of the driver now (#2309), rather than
+   * waiting for the scheduled pass: after a key is revoked. Post again while it answers `paused`.
+   * `deployFinished`: the caller attests that no control-plane deploy is rolling out.
+   */
+  rebuildStoreDriver(
+    driver: string,
+    options: { deployFinished?: boolean } = {},
+  ): Promise<{ pass: StoreDriverRebuildPassView; rebuild: StoreDriverRebuildView }> {
+    return this.read(`/store-drivers/${seg(driver)}/rebuild`, this.write('POST', options.deployFinished ? { deployFinished: true } : undefined));
   }
 }

@@ -510,6 +510,9 @@ import {
   beginStoreDriverRolloutIn,
   finishStoreDriverRolloutIn,
   holdStoreDriverIn,
+  advanceStoreDriverRebuildIn,
+  claimStoreDriverRebuildIn,
+  storeDriverRebuildIn,
   recordStoreDriverReleaseIn,
   releaseStoreDriverHoldIn,
   storeDriverReleaseIn,
@@ -10717,6 +10720,26 @@ export class SqliteScopeHost implements ScopeHost {
         )();
         this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, row, at);
         return row;
+      },
+      storeDriverRebuild: async (actor, driver) => {
+        const rebuild = storeDriverRebuildIn(switchSqlOf(this.directory), driver);
+        this.recordAccess(actor, 'storeDriverRebuild', { tenantId: null }, { driver }, rebuild ? 1 : 0);
+        return rebuild;
+      },
+      claimStoreDriverRebuild: async (_actor, input) => {
+        const at: string = this.clock();
+        return this.directory.transaction(() =>
+          claimStoreDriverRebuildIn(switchSqlOf(this.directory), { ...input, at, nowMs: Date.parse(at) }),
+        )();
+      },
+      advanceStoreDriverRebuild: async (_actor, input) => {
+        const at: string = this.clock();
+        return this.directory.transaction(() =>
+          advanceStoreDriverRebuildIn(switchSqlOf(this.directory), { ...input, at, nowMs: Date.parse(at) }),
+        )();
+      },
+      recordStoreDriverRebuildRun: async (actor, entry) => {
+        this.recordAdmin(actor, 'rebuildStoreDriver', { tenantId: null }, null, entry, this.clock());
       },
       getScopeRecord: async (actor, tenantId: TenantId, scopeId: ScopeId): Promise<Scope | undefined> => {
         const r = this.directory.prepare('SELECT * FROM scopes WHERE scope_id = ?').get(scopeId) as

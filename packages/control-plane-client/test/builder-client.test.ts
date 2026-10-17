@@ -68,6 +68,7 @@ const WIRE: Record<string, [(c: ControlPlaneBuilderClient) => Promise<unknown>, 
   uploadStoreDriverRelease: [(c) => c.uploadStoreDriverRelease('graph', { entry: 'x' }), 'PUT', '/store-drivers/graph/releases', '{"entry":"x"}'],
   rollOutStoreDriver: [(c) => c.rollOutStoreDriver('graph', 'ab'), 'POST', '/store-drivers/graph/rollouts', '{"sha256":"ab"}'],
   rollBackStoreDriver: [(c) => c.rollBackStoreDriver('graph'), 'POST', '/store-drivers/graph/rollback', undefined],
+  rebuildStoreDriver: [(c) => c.rebuildStoreDriver('graph'), 'POST', '/store-drivers/graph/rebuild', undefined],
   requestPublish: [(c) => c.requestPublish('v'), 'POST', '/verticals/v/publish-request', '{}'],
   adoptVerticalServing: [
     (c) => c.adoptVerticalServing('v', { acknowledge: { exportBreak: true } }),

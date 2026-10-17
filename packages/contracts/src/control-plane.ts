@@ -247,6 +247,9 @@ export const adminAction = z.enum([
   'uploadStoreDriverRelease',
   'rollOutStoreDriver',
   'rollBackStoreDriver',
+  // #2309 — a staff request ran a pass of the platform's rebuild of every script of a driver at the
+  // release it runs (after a key list changed). Names the driver and what the pass walked.
+  'rebuildStoreDriver',
   // Historic, never written: the same three actions as #2300 wrote them, before K-53 renamed a
   // store's code its driver. Kept so a log that already holds one still reads.
   ...HISTORIC_ADMIN_ACTIONS,
