@@ -7,6 +7,7 @@
 '@substrat-run/vertical-host': patch
 '@substrat-run/control-plane-api': patch
 '@substrat-run/control-plane': patch
+'@substrat-run/dashboard-web': patch
 '@substrat-run/docs': patch
 ---
 
@@ -24,3 +25,5 @@ The platform now runs the orphan-attachment sweep on its scheduled pass. The swe
 **A deployment with no attachment store answers so.** A pass whose deployment holds no attachment store for the tenant now returns `bucket: 'none'`, after every refusal the scope's copy makes, instead of failing. A store that held nothing still answers without the marker.
 
 The control plane's mode is `ORPHAN_ATTACHMENT_SWEEP`, with the values `off` (the default), `dry-run` and `delete`, and its window size is `ORPHAN_ATTACHMENT_SWEEP_BATCH`. `docs/architecture/orphan-attachment-sweep.md` has the rollout.
+
+The dashboard's activity view reads the new admin-log rows as "swept orphan attachments".
