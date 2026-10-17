@@ -598,6 +598,11 @@ const orphanSweepFixture = async (): Promise<OrphanSweepFixture> => {
         );
       });
     },
+    // Read twice: the first export of a store stamps it, a write of its own (#1722).
+    writeRevision: async (_tenant, scope) => {
+      await host.exportScopeStampedLocal(scope);
+      return (await host.exportScopeStampedLocal(scope)).revision;
+    },
     cleanup: async () => host.close(),
   };
 };

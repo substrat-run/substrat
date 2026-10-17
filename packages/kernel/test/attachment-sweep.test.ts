@@ -387,9 +387,11 @@ describe('the orphan sweep licence on SQLite (#2350)', () => {
     expect(recordOrphanSweepLicence(sql, ['A', 'B'], at(NOW))).toBe(true);
     expect(licensed(sql)).toEqual(['A', 'B']);
     expect(() => refuseUnlicensedOrphanSweep(sql, at(NOW + ORPHAN_SWEEP_DRY_RUN_WINDOW_MS))).not.toThrow();
-    // Past the window, and stamped later than the clock reads (a clock that went back): not in force.
+    // Past the window, and stamped well after the clock reads (a clock that went back): not in force.
+    // A clock read a moment behind the stamp (two reads' jitter) is still in force.
     expect(orphanSweepLicensedAt(sql, at(NOW + ORPHAN_SWEEP_DRY_RUN_WINDOW_MS + 1))).toBeNull();
-    expect(orphanSweepLicensedAt(sql, at(NOW - 1))).toBeNull();
+    expect(orphanSweepLicensedAt(sql, at(NOW - 60_001))).toBeNull();
+    expect(orphanSweepLicensedAt(sql, at(NOW - 5))).toBe(at(NOW));
     expect(() => refuseUnlicensedOrphanSweep(sql, at(NOW + ORPHAN_SWEEP_DRY_RUN_WINDOW_MS + 1))).toThrow(/no orphan-sweep dry run/);
   });
 

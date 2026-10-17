@@ -218,12 +218,19 @@ export const ORPHAN_SWEEP_DRY_RUN_WINDOW_MS = 7 * 86_400_000;
 /** The most ids one licence holds. A dry run that lists more licenses its first this many. */
 export const ORPHAN_SWEEP_LICENCE_CAP = 1000;
 
+/**
+ * How far past `now` a licence's stamp may read and still be in force: the jitter between two
+ * reads of a host's clock. Beyond it the clock went back, and the licence is not in force.
+ */
+const LICENCE_SKEW_MS = 60_000;
+
 const hasLicenceTable = (sql: ScopedSql): boolean =>
   sql.query(`SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = '${ATTACHMENT_SWEEP_LICENCE_TABLE}'`).length > 0;
 
 /**
  * When the scope's licence was recorded, if it holds one in force at `now`, else null. A licence
- * stamped later than `now` (a clock that went back) is not in force: the next pass is a dry run.
+ * stamped more than a minute later than `now` (a clock that went back) is not in force: the next
+ * pass is a dry run.
  */
 export function orphanSweepLicensedAt(sql: ScopedSql, now: string): string | null {
   if (!hasLicenceTable(sql)) return null;
@@ -232,7 +239,7 @@ export function orphanSweepLicensedAt(sql: ScopedSql, now: string): string | nul
   if (at === null) return null;
   const atMs = Date.parse(at);
   const nowMs = Date.parse(now);
-  if (!Number.isFinite(atMs) || atMs > nowMs || nowMs - atMs > ORPHAN_SWEEP_DRY_RUN_WINDOW_MS) return null;
+  if (!Number.isFinite(atMs) || atMs > nowMs + LICENCE_SKEW_MS || nowMs - atMs > ORPHAN_SWEEP_DRY_RUN_WINDOW_MS) return null;
   return at;
 }
 
@@ -261,7 +268,8 @@ export function recordOrphanSweepLicence(sql: ScopedSql, ids: readonly string[],
   if (held.length === next.length && held.length > 0) {
     const heldIds = new Set(held.map((r) => r.id));
     const oldest = Math.min(...held.map((r) => Date.parse(r.licensed_at)));
-    const fresh = Number.isFinite(oldest) && Date.parse(now) - oldest <= ORPHAN_SWEEP_DRY_RUN_WINDOW_MS / 2 && oldest <= Date.parse(now);
+    const age = Date.parse(now) - oldest;
+    const fresh = Number.isFinite(age) && age >= -LICENCE_SKEW_MS && age <= ORPHAN_SWEEP_DRY_RUN_WINDOW_MS / 2;
     if (fresh && next.every((id) => heldIds.has(id))) return false;
   }
   sql.exec(`DELETE FROM ${ATTACHMENT_SWEEP_LICENCE_TABLE}`);
