@@ -21,6 +21,7 @@ import {
   MICROSOFT365_FILES_EVENT,
   bindMicrosoft365Scope,
   listMicrosoft365Bindings,
+  MAX_UNPLACED_ATTEMPTS,
   unbindMicrosoft365Scope,
   SYNC_TIMEOUT_MS,
   microsoft365ChannelChange,
@@ -801,6 +802,45 @@ describe('reads: the sync lands what is in the folder', () => {
         [out, 'moved-out'],
       ]);
       expect(w.drive.calls.some((c) => c.url.includes(`/items/${y}?`))).toBe(true);
+    });
+
+    // r3 #2: a lookup refused the same way every time does not stop the binding.
+    it('an item whose lookup is always refused is kept, never deleted, and does not block new files', async () => {
+      const w = await world();
+      const held = w.drive.put(w.general, 'held.txt', 'held');
+      await w.bind();
+      await w.sync();
+      w.landed.length = 0;
+      w.drive.move(held, w.leadership);
+      w.drive.failures.push({ when: (c) => c.url.includes(`/items/${held}?`), status: 403 });
+      const lookups = () => w.drive.calls.filter((c) => c.url.includes(`/items/${held}?`)).length;
+      const fresh: string[] = [];
+      for (let n = 0; n < MAX_UNPLACED_ATTEMPTS + 4; n += 1) {
+        fresh.push(w.drive.put(w.general, `new${n}.txt`, `new ${n}`));
+        // Alternate incremental passes and resyncs, which look the held item up again.
+        w.drive.expiredBefore = n % 2 ? Number.MAX_SAFE_INTEGER : 0;
+        expect(await w.sync()).toMatchObject({ complete: true });
+      }
+      expect(w.landed.filter((c) => c.change === 'upsert').map((c) => c.itemId).sort()).toEqual([...fresh].sort());
+      expect(w.landed.filter((c) => c.change === 'delete')).toEqual([]);
+      expect(lookups()).toBe(MAX_UNPLACED_ATTEMPTS);
+      expect((await listMicrosoft365Bindings(w.host, w.conn))[0]!.lastSync).toMatchObject({ unplaced: 1 });
+      // A count, never what it is.
+      expect(JSON.stringify((await listMicrosoft365Bindings(w.host, w.conn))[0]!.lastSync)).not.toContain(held);
+    });
+
+    it('a transient answer (503) still stops the pass with nothing deleted (the twin)', async () => {
+      const w = await world();
+      const held = w.drive.put(w.general, 'held.txt', 'held');
+      await w.bind();
+      await w.sync();
+      w.landed.length = 0;
+      w.drive.move(held, w.leadership);
+      w.drive.failures.push({ when: (c) => c.url.includes(`/items/${held}?`), status: 503, once: true });
+      await expect(w.sync()).rejects.toThrow(/injected 503/);
+      expect(w.landed).toEqual([]);
+      await w.sync();
+      expect(w.landed).toEqual([expect.objectContaining({ change: 'delete', itemId: held, reason: 'moved-out' })]);
     });
 
     it('a verification that cannot reach the drive stops the pass and deletes nothing', async () => {

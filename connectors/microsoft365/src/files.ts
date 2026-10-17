@@ -196,7 +196,12 @@ export interface Microsoft365Binding {
    * there instead of starting over.
    */
   pass?: SyncPass;
-  lastSync?: { syncedAt: string; changes: number };
+  /**
+   * `unplaced` counts held items the last pass could not look up for a reason that will not pass
+   * by itself (the drive refuses the item, or a folder above it): they are kept, never deleted, and
+   * looked up again on later passes up to {@link MAX_UNPLACED_ATTEMPTS} times. A count only.
+   */
+  lastSync?: { syncedAt: string; changes: number; unplaced?: number };
   /** Set when the folder is gone; the binding refuses until it is bound again. */
   folderMissing?: { since: string };
 }
@@ -213,7 +218,7 @@ interface SyncPass {
    * the drive, one by one, before anything about them lands. `deltaLink` is saved only once the
    * queue is empty. In-folder item ids only.
    */
-  verify?: { deltaLink: string; queue: string[]; collectUnseen?: boolean };
+  verify?: { deltaLink: string; queue: string[]; collectUnseen?: boolean; unplaced?: string[] };
   /**
    * Held items a page showed outside the folder without showing why: their new parent is in
    * neither the page nor the held state. It may be a folder a later page presents, so nothing lands
@@ -238,6 +243,8 @@ interface ItemEntry {
   attachmentId: string | null;
   /** The last pass that presented this item — how a full pass finds what it never saw. */
   seenIn?: string;
+  /** How many lookups of this item were refused in a way that does not pass by itself. */
+  unplaced?: number;
 }
 
 /**
@@ -537,6 +544,12 @@ export const SYNC_PAGES_PER_CALL = 20;
 /** How many items one call reads back from the drive to check an unaccounted-for held item. */
 export const SYNC_VERIFY_PER_CALL = 50;
 /**
+ * How many passes look up a held item the drive keeps refusing (403, a folder above it that cannot
+ * be read, a chain too deep) before they stop asking. The item stays held either way: a refusal is
+ * not an answer about whether it exists.
+ */
+export const MAX_UNPLACED_ATTEMPTS = 3;
+/**
  * A sync's per-request timeout: long enough for a file at {@link MAX_FILE_BYTES} to download. The
  * connection's 15-second default would time out on the same large file every pass, and the pass
  * would never get past it.
@@ -707,7 +720,10 @@ export async function syncMicrosoft365Scope(
    * error: both are thrown, so the pass stops and deletes nothing it could not confirm.
    */
   let gets = 0;
-  const locate = async (id: string, pending: ReadonlySet<string>) => {
+  const locate = async (
+    id: string,
+    pending: ReadonlySet<string>,
+  ): Promise<{ at: 'gone' } | { at: 'outside' } | { at: 'unplaced' } | { at: 'inside'; chain: DriveItem[] }> => {
     const chain: DriveItem[] = [];
     let at = id;
     for (let depth = 0; depth < 64; depth += 1) {
@@ -716,21 +732,21 @@ export async function syncMicrosoft365Scope(
         gets += 1;
         item = await itemById(client, binding.driveId, at);
       } catch (e) {
-        if (depth === 0 && e instanceof GraphError && (e.status === 404 || e.status === 410)) return { at: 'gone' as const };
-        throw e;
+        if (!(e instanceof GraphError)) throw e;
+        if (e.status === 404 || e.status === 410) return depth === 0 ? { at: 'gone' } : { at: 'unplaced' };
+        // A refusal that will be the same next time: kept, set aside, and asked again later.
+        if (e.status === 400 || e.status === 403) return { at: 'unplaced' };
+        throw e; // 401, 429, 5xx: transient or the connection's — stop, delete nothing
       }
-      if (item.deleted) {
-        if (depth === 0) return { at: 'gone' as const };
-        throw new Error('a folder above a held item is deleted while the item itself is not');
-      }
-      if (item.parentReference?.driveId && item.parentReference.driveId !== binding.driveId) return { at: 'outside' as const };
+      if (item.deleted) return depth === 0 ? { at: 'gone' } : { at: 'unplaced' };
+      if (item.parentReference?.driveId && item.parentReference.driveId !== binding.driveId) return { at: 'outside' };
       chain.push(item);
       const parent = item.parentReference?.id;
-      if (!parent || item.root) return { at: 'outside' as const };
-      if (parent === binding.folderItemId || (index.has(parent) && !pending.has(parent))) return { at: 'inside' as const, chain };
+      if (!parent || item.root) return { at: 'outside' };
+      if (parent === binding.folderItemId || (index.has(parent) && !pending.has(parent))) return { at: 'inside', chain };
       at = parent;
     }
-    throw new Error(`could not place a held item: its parent chain is deeper than 64 folders`);
+    return { at: 'unplaced' }; // deeper than 64 folders
   };
 
   /**
@@ -828,33 +844,56 @@ export async function syncMicrosoft365Scope(
       // Deepest first: an item is answered before the folder that held it, and a folder's answer is
       // never taken for what it held (below).
       const depth = (id: string) => index.get(id)?.path.split('/').length ?? 0;
-      const queue = pass.verify.queue.filter((id) => index.has(id)).sort((x, y) => depth(y) - depth(x));
+      const unplaced = new Set(pass.verify.unplaced ?? []);
+      const askable = (id: string) => {
+        const e = index.get(id);
+        return e !== undefined && !unplaced.has(id) && (e.unplaced ?? 0) < MAX_UNPLACED_ATTEMPTS;
+      };
+      const queue = pass.verify.queue.filter(askable).sort((x, y) => depth(y) - depth(x));
+      const next = (q: string[]) => ({ deltaLink, queue: q, ...(unplaced.size ? { unplaced: [...unplaced] } : {}) });
       if (!queue.length) {
+        const stillUnplaced = [...index.values()].filter((e) => (e.unplaced ?? 0) > 0).length;
         const saved = await save(
-          { deltaLink, lastSync: { syncedAt: nowOf(options).toISOString(), changes: pass.changes } },
+          {
+            deltaLink,
+            lastSync: { syncedAt: nowOf(options).toISOString(), changes: pass.changes, ...(stillUnplaced ? { unplaced: stillUnplaced } : {}) },
+          },
           { endPass: true },
         );
         if (!saved) return superseded(pages, changes, pass.full);
         return { scopeId: binding.scopeId, changes, full: pass.full, pages, complete: true };
       }
       if (gets >= maxVerify) {
-        pass = { ...pass, verify: { deltaLink, queue } };
+        pass = { ...pass, verify: next(queue) };
         if (!(await save({ pass }))) return superseded(pages, changes, pass.full);
         return incomplete();
       }
       const id = queue[0]!;
       const found = await locate(id, new Set(queue));
-      pass = { ...pass, verify: { deltaLink, queue: queue.slice(1) } };
-      if (found.at === 'inside') {
+      pass = { ...pass, verify: next(queue.slice(1)) };
+      const held = index.get(id)!;
+      if (found.at === 'unplaced') {
+        // Not an answer about the item: kept, out of this pass so the pass can finish, and counted.
+        unplaced.add(id);
+        await put(id, { ...held, unplaced: (held.unplaced ?? 0) + 1 });
+        pass = { ...pass, verify: next(queue.slice(1)) };
+      } else if (found.at === 'inside') {
         // Still in the folder: the feed only failed to say so. Land it where it is, if that moved.
+        if (held.unplaced) await put(id, { ...held, unplaced: 0 });
         carry(await landChanges(new Map(found.chain.map((i) => [i.id, i]))));
       } else {
         // A folder that is gone, or moved out, still held items: each is looked up on its own
         // first, and the folder is answered again after them. What it held is never deleted on its
         // word — the held tree is exactly what a missed enumeration leaves stale.
-        const under = heldUnder(id);
+        const all = heldUnder(id);
+        const under = all.filter((d) => !unplaced.has(d));
         if (under.length) {
-          pass = { ...pass, verify: { deltaLink, queue: [...new Set([...under, ...queue])] } };
+          pass = { ...pass, verify: next([...new Set([...under, ...queue])]) };
+        } else if (all.length) {
+          // It still holds items no lookup could place: it stays held with them.
+          unplaced.add(id);
+          await put(id, { ...held, unplaced: (held.unplaced ?? 0) + 1 });
+          pass = { ...pass, verify: next(queue.slice(1)) };
         } else {
           const reason = found.at === 'gone' ? 'deleted' : 'moved-out';
           await land({ change: 'delete', id, prior: index.get(id)!, reason });

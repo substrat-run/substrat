@@ -87,6 +87,7 @@ export {
   SYNC_PAGES_PER_CALL,
   SYNC_TIMEOUT_MS,
   SYNC_VERIFY_PER_CALL,
+  MAX_UNPLACED_ATTEMPTS,
   sweepMicrosoft365Files,
   withSuffix,
 } from './files.js';
