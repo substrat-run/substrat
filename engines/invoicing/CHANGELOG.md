@@ -1,5 +1,33 @@
 # @substrat-run/engine-invoicing
 
+## 0.11.33
+
+### Patch Changes
+
+- eda31d1: A migration you wrote can no longer quietly lose data a scope holds. Before and after each authored migration, inside its transaction, the kernel counts each table's rows and each column's values by storage class. It refuses a migration that leaves a table that held rows gone or shorter, or a column that held values gone, emptier or retyped. Renames and the usual create-copy-drop-rename rebuild are followed; a table that holds nothing may be dropped or reshaped freely. A refusal fails the scope closed like any failed migration, with its data intact. When the loss is intended, declare it on the migration beside its SQL: `moves: { source: target }`, verified by the counts, or `discards: { target: reason }`, with a required reason. Neither changes the migration's digest. The invoicing engine's `0002-split-line-provenance` now declares the provenance it moves. `@substrat-run/adapter-sqlite` exports `SCOPE_SPINE_DDL` for tools that replay migrations outside a host. `tokenizeSql` tokens carry `parts`, a qualified name's parts as SQLite reads them, so `main.n` (a schema and a name) and `"main.n"` (one name holding a dot) are told apart.
+- Updated dependencies [98f09fe]
+- Updated dependencies [0292dc0]
+- Updated dependencies [b190e40]
+- Updated dependencies [eda31d1]
+- Updated dependencies [af096c6]
+- Updated dependencies [39ccfea]
+- Updated dependencies [6f5f12b]
+- Updated dependencies [754fc62]
+- Updated dependencies [c7eb5fa]
+- Updated dependencies [1df1b93]
+- Updated dependencies [6c1e359]
+- Updated dependencies [439efc1]
+- Updated dependencies [e550dec]
+- Updated dependencies [4574ab8]
+- Updated dependencies [3025154]
+- Updated dependencies [9ae6644]
+- Updated dependencies [d6ba289]
+- Updated dependencies [2e503da]
+- Updated dependencies [3608db6]
+- Updated dependencies [9ceb545]
+  - @substrat-run/kernel@0.149.0
+  - @substrat-run/contracts@0.149.0
+
 ## 0.11.32
 
 ### Patch Changes
@@ -1993,7 +2021,7 @@ immutable)` instead of naming the Swedish _fakturaunderlag_, and the protocol
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

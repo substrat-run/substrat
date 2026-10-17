@@ -1,5 +1,50 @@
 # @substrat-run/console
 
+## 0.14.63
+
+### Patch Changes
+
+- 5aaf0f5: A second sign-in issuer, reached by asking for it. Set `OIDC_ALT_ISSUER`, `OIDC_ALT_CLIENT_ID` and `OIDC_ALT_CLIENT_SECRET` on an app that mounts `mountOidcRoutes`, and `/api/auth/login?idp=alt` signs in through that issuer while a plain login stays on `OIDC_ISSUER`. The choice is carried in the signed flow cookie, so the callback verifies the ID token against the issuer the person was sent to, and sign-out ends the session at the issuer that made it. Asking for `alt` where the three values are not all set is refused rather than falling back to the default. The Console, the Dashboard and the builder studio pass `?idp=alt` from the address they were opened at on to the login route. `beginLogin` takes an optional `idp`; `envForIdp` and `idpOf` are exported.
+- c7eb5fa: A promote acknowledgement now answers one review. The review a promote shows is computed against the version prod points at when it is read, and a promote by someone else in between used to leave the acknowledgement standing for a diff that was no longer the one applied. The migrations read (`/versions/:id/migrations?base=`) now answers a `review` binding beside the diff it shows: the base version and a digest of the stored rows the review was computed from (each side's id, permission and migration digests, and every stored migration with its declared moves and discards). A promote carries it as `acknowledge.review`, and the control plane recomputes the digest from its own rows and refuses, as `precondition_failed` with reason `promote_review_stale`, when prod no longer points at that base or the digest differs. The sent digest is only compared, never read as the diff. The channel pointer now moves by compare-and-set, in one transaction with its history row: of two promotes judged against the same base, one moves the channel and the other is refused as stale and records nothing, where both used to land.
+
+  **Behaviour change:** a migration acknowledgement without a binding is refused when the migration digest moved (`precondition_failed`, reason `promote_review_unbound`), because it is the acknowledgement that lets a migration, and any data loss it declares, reach live data. An older `substrat promote --ack-migrations` is refused that way, and the refusal says to upgrade to a CLI release whose `substrat promote` supports `--review` (this one). A permission-only acknowledgement without one is still honoured, so an older client keeps promoting where no migration changes; a binding, when sent, covers the permission diff too.
+
+  `substrat promote` prints a `--review <token>` with every refusal that prints the diffs, and takes it back with `--review`; a stale or unbound refusal prints the diffs as they stand now, with the new token. The dashboard's promote dialog sends the binding with every promote, and when prod moved it reads the review again and asks again from scratch, saying so, with nothing ticked carried over. The console's promote dialog binds its acknowledgement to the review it read and, refused as stale, reloads the channel and shows the new review. The refusal's header line in `substrat promote` now quotes a version id that is not a plain id, as the migration listing already did.
+
+- 1df1b93: The promote review now shows what each migration declares it may lose. `substrat push` carries a migration's `moves` and `discards` beside its SQL, the control plane stores them with the version, and the dashboard's promote dialog, the console and `substrat promote` list every move as source → target and every discard with its reason, quoted as the author wrote it. A promote that discards data says how many places before anything else. Everything the review shows from the version (reasons, table and column names, migration ids and their SQL) is plain text with every control, format and bidirectional character made visible as `<U+XXXX>`, so nothing a vertical wrote can drive a terminal or reorder what is read; a long or many-line reason is cut behind "show all", and the count says "at least" when the list is cut. A migration whose SQL is unchanged but whose declarations were edited after it shipped is listed apart as a declarations edit. Declarations join the version's migration digest only when a migration has any, so a version without them keeps the digest it had; adding, removing or rewording one asks for the migration acknowledgement at promote. They still do not change the digest a scope journals for the migration's SQL. A version pushed before this, or a migration declaring nothing, shows none. A discard whose reason is empty once whitespace and invisible characters are removed is refused at the push boundary and by the kernel's data-loss fence alike (the fence used to accept a reason of only zero-width characters), a declaration naming `__proto__` is refused at the push and by the fence (`constructor` and `prototype` stay ordinary table names), a migration id or `version` is shown on one line with a newline or tab in it made visible too, and the CLI leaves the migrations off a push whose declarations it cannot carry, saying why, rather than failing the push.
+
+  The promote dialog, the docs and `substrat promote` no longer say a change to SQL migrations alone goes unrefused: since CLI 0.38.0 the registry refuses it, and only between two versions pushed by an older CLI does the dialog ask on its own.
+
+- 439efc1: A scope rebind's migration acknowledgement now answers one review, as a promote's does. `GET /tenants/:tenantId/scopes/:scopeId/rebind-review?vertical=<target>` returns what the rebind would apply: the target vertical's serving version over the version the scope is bound to, each migration with its SQL and declared moves and discards. Beside it is a `review` binding: the scope's bound version, and a digest of both sides' stored rows that is taken under its own tag, so a promote's binding is never accepted as a rebind's, or the reverse. `POST …/rebind-vertical` takes it as `acknowledge.review`. The control plane recomputes the digest from its own rows and refuses with `precondition_failed`, reason `rebind_review_stale`, when the scope is no longer bound to that version or a promote on either vertical has moved what the review showed. The read follows exactly the rebind's own visibility. It is one shared rule: a workspace credential needs to be able to read both verticals (its own, or a listed one), and everything else answers the same 404, for the read and for the rebind. The migration SQL itself is shown only to staff and to an owner of both verticals; anyone else gets `migrations: null` and `migrationsWithheld: true`, with the digests-differ fact and the binding, so a workspace can still acknowledge and rebind onto a listed vertical.
+
+  A rebind now moves the scope's route and its version pointer in one write. That write is conditional on the scope still being bound to the judged version and on the target still serving the judged version, on both adapters (`bindScopeVersion` gains the additive options `servingRef` and `expectedServing`). Before, these were two writes, and a promote on the target landing between them left the route on the new script and the pointer on the old vertical. A promote that lands while the data is being copied now refuses the rebind as stale; the scope keeps serving from where it was, and both copies are kept.
+
+  **Behaviour change:** an `ackMigrations` without a binding is refused when the two migration digests differ (`precondition_failed`, reason `rebind_review_unbound`). The refusal says to upgrade to a CLI release whose `substrat scope rebind` supports `--review`, which this one does. `substrat scope rebind` prints the migrations and a `--review <token>` with every digest, stale or unbound refusal, and takes it back with `--review`. The dashboard's and the console's Move dialogs now read the review before they ask and show the migrations. They send each install's binding, and when a version changes under them they read the review again and ask again from scratch.
+
+- Updated dependencies [98f09fe]
+- Updated dependencies [0292dc0]
+- Updated dependencies [b190e40]
+- Updated dependencies [eda31d1]
+- Updated dependencies [af096c6]
+- Updated dependencies [39ccfea]
+- Updated dependencies [6f5f12b]
+- Updated dependencies [754fc62]
+- Updated dependencies [c7eb5fa]
+- Updated dependencies [1df1b93]
+- Updated dependencies [6c1e359]
+- Updated dependencies [439efc1]
+- Updated dependencies [e550dec]
+- Updated dependencies [4574ab8]
+- Updated dependencies [3025154]
+- Updated dependencies [9ae6644]
+- Updated dependencies [d6ba289]
+- Updated dependencies [2e503da]
+- Updated dependencies [3608db6]
+- Updated dependencies [9ceb545]
+  - @substrat-run/kernel@0.149.0
+  - @substrat-run/control-plane-api@0.149.0
+  - @substrat-run/contracts@0.149.0
+
 ## 0.14.62
 
 ### Patch Changes

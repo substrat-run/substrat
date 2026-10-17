@@ -1,5 +1,43 @@
 # @substrat-run/demo-hr
 
+## 0.7.62
+
+### Patch Changes
+
+- eda31d1: A migration you wrote can no longer quietly lose data a scope holds. Before and after each authored migration, inside its transaction, the kernel counts each table's rows and each column's values by storage class. It refuses a migration that leaves a table that held rows gone or shorter, or a column that held values gone, emptier or retyped. Renames and the usual create-copy-drop-rename rebuild are followed; a table that holds nothing may be dropped or reshaped freely. A refusal fails the scope closed like any failed migration, with its data intact. When the loss is intended, declare it on the migration beside its SQL: `moves: { source: target }`, verified by the counts, or `discards: { target: reason }`, with a required reason. Neither changes the migration's digest. The invoicing engine's `0002-split-line-provenance` now declares the provenance it moves. `@substrat-run/adapter-sqlite` exports `SCOPE_SPINE_DDL` for tools that replay migrations outside a host. `tokenizeSql` tokens carry `parts`, a qualified name's parts as SQLite reads them, so `main.n` (a schema and a name) and `"main.n"` (one name holding a dot) are told apart.
+- Updated dependencies [98f09fe]
+- Updated dependencies [0292dc0]
+- Updated dependencies [b190e40]
+- Updated dependencies [eda31d1]
+- Updated dependencies [af096c6]
+- Updated dependencies [39ccfea]
+- Updated dependencies [6f5f12b]
+- Updated dependencies [754fc62]
+- Updated dependencies [c7eb5fa]
+- Updated dependencies [1df1b93]
+- Updated dependencies [6c1e359]
+- Updated dependencies [439efc1]
+- Updated dependencies [e550dec]
+- Updated dependencies [4574ab8]
+- Updated dependencies [3025154]
+- Updated dependencies [9ae6644]
+- Updated dependencies [d6ba289]
+- Updated dependencies [2e503da]
+- Updated dependencies [3608db6]
+- Updated dependencies [9ceb545]
+  - @substrat-run/kernel@0.149.0
+  - @substrat-run/adapter-sqlite@0.149.0
+  - @substrat-run/adapter-cloudflare@0.149.0
+  - @substrat-run/control-plane-api@0.149.0
+  - @substrat-run/contracts@0.149.0
+  - @substrat-run/vertical-host@0.149.0
+  - @substrat-run/connector-scrive@0.14.55
+  - @substrat-run/engine-absence@0.6.33
+  - @substrat-run/engine-protocol@0.13.34
+  - @substrat-run/attachment-extractors@0.2.10
+  - @substrat-run/vertical-auth@0.24.4
+  - @substrat-run/dev-issuer@0.2.31
+
 ## 0.7.61
 
 ### Patch Changes
