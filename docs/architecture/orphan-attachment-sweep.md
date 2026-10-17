@@ -136,13 +136,17 @@ destructive pass that no dry run of its own licensed.
   it.
 - **Consumption.** Each id a destructive pass deletes leaves the record. A backlog larger than one
   pass's limit therefore drains over consecutive passes after one dry run, as long as the dry run
-  listed it (the dry run lists up to its own `limit`). Once the record is empty the next
-  destructive pass is refused, and the phase dry-runs the scope again. A pass whose deletes fail,
-  or that a fence stops after the condemnation, consumes nothing. A pass whose deletes succeed but whose
-  consume fails (the scope suspended or carried away mid-pass) still returns its report with every
-  deleted key, marked `consumeFailed`, and logs a line with the scope and the count. The phase counts
-  it in `consumeFailed`, and its admin-log row names the keys as usual. The rows it could not remove
-  name ids that are gone, so they license nothing a later pass could delete.
+  listed it (the dry run lists up to its own `limit`). The same pass also takes out every licensed
+  id whose object its listing no longer holds, gone some other way, even when it deletes nothing.
+  So a record that lists nothing deletable does not keep the scope licensed until it expires. Once
+  the record is empty the next destructive pass is refused, and the phase dry-runs the scope again.
+  A pass whose deletes fail, or that a fence stops after the condemnation, changes nothing in the
+  record. A pass that cannot bring the record up to date afterwards (the scope suspended or carried
+  away mid-pass) still returns its report with every deleted key, marked `consumeFailed`, and logs
+  a line with the scope and the count. The deployment's own log line for the pass carries the
+  marker too. The phase counts it in `consumeFailed`, and its admin-log row names the keys as usual.
+  The rows it could not remove name ids that are gone, so they license nothing a later pass could
+  delete, and the next pass that brings the record up to date takes them out.
 - **Restores, carries, forks.** A dump never carries the record's rows, and every load drops them,
   a hand-made dump's included. A loaded scope's next destructive pass is refused and its next pass
   is a dry run. A PITR rewind can bring an older record back. A rewind of a scope that holds files

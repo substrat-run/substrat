@@ -98,7 +98,8 @@ records the ids it listed in the scope's own storage, at most 1,000, stamped wit
 A destructive pass is refused with `conflict` (`orphan_sweep_unlicensed`) unless the scope holds
 such a record from the last seven days, and it deletes only ids that record lists. Each id it
 deletes leaves the record, so one dry run can license several passes that work through a backlog
-larger than one pass's limit. The rule holds whoever asks for the pass, not only the platform.
+larger than one pass's limit. A licensed id whose object is gone some other way leaves it too, so a
+record with nothing left to delete sends the scope back to a dry run. The rule holds whoever asks for the pass, not only the platform.
 The record only narrows the pass: every guard above still applies to each id it lists. A dry run
 that finds the same orphans again writes nothing, and one that finds none clears the record. A
 dry run the restore fence holds lists nothing and leaves the record as it was. A
