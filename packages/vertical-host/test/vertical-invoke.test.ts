@@ -25,6 +25,8 @@ import {
   PLATFORM_SECRET_HEADER,
   PARENT_REQUEST_ID_HEADER,
   REQUEST_ID_HEADER,
+  SCOPE_GATE_REASONS,
+  substratError,
   type PrincipalId,
 } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
@@ -242,6 +244,31 @@ describe('/internal/vertical-invoke — the peer door over HTTP (#1706)', () => 
       expect(res.status).toBe(403);
       expect(lines()).toHaveLength(1);
       expect(lines()[0]).toMatchObject({ status: 403, level: 'warn', problemCode: 'forbidden', parentInvocationId: PARENT });
+    });
+
+    it('names the status and code the caller got: a suspended scope is the neutral 404 not_found on both', async () => {
+      const gated = new Hono<{ Bindings: Env }>();
+      gated.use('*', invocationLog<Env>({ routerSecret: () => 'router-secret' }));
+      mountPlatformSurface<Env>(gated, {
+        platformSecret: (env) => env.PLATFORM_SECRET,
+        hostFor: () =>
+          ({
+            verticalInvokeLocal: async () => {
+              throw substratError('conflict', `scope not active (status: suspended): ${s}`, { reason: SCOPE_GATE_REASONS.notActive });
+            },
+          }) as unknown as VerticalScopeHost,
+        roles: [],
+        ownerRoleKey: 'admin',
+      });
+      const res = await gated.request(
+        '/internal/vertical-invoke',
+        { method: 'POST', headers: { 'content-type': 'application/json', ...platform }, body: JSON.stringify(note('suspended')) },
+        ENV,
+      );
+      expect(res.status).toBe(404);
+      expect(((await res.json()) as { code?: string }).code).toBe('not_found');
+      expect(lines()).toHaveLength(1);
+      expect(lines()[0]).toMatchObject({ status: 404, problemCode: 'not_found', level: 'warn' });
     });
 
     it('the tenant is the verified body’s: a tenant header beside it changes nothing', async () => {

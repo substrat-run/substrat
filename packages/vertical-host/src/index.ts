@@ -25,7 +25,7 @@
 import type { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { classifyError, messageOf, problemOf, withRequestIdMember } from './errors.js';
+import { classifyError, messageOf, problemOf, withRequestIdMember, type ErrorClassification } from './errors.js';
 import { externalInput, externalJson } from './wire.js';
 import { requestIdOf, writePlatformCallLine } from './invocation-log.js';
 import {
@@ -1139,6 +1139,13 @@ export function mountPlatformSurface<Env extends object>(
   registerScopeSweepHost(deps.hostFor as (env: never) => unknown);
 
   // ── ONE gate for the entire surface (replaces the per-route copy-pasted try/catch) ──
+  // The status `onError` below answers a throw with — and the peer route's line with it (#2192).
+  const decideStatus = (err: unknown): ErrorClassification => {
+    const mapped = deps.mapError?.(err);
+    return mapped
+      ? { status: mapped.status as ContentfulStatusCode, message: mapped.message }
+      : (classifyError(err) ?? { status: 400 as ContentfulStatusCode, message: messageOf(err) });
+  };
   app.use('/internal/*', async (c, next) => {
     try {
       assertPlatformCall(c.req.raw.headers, { expectedSecret: deps.platformSecret(c.env) });
@@ -1852,9 +1859,11 @@ export function mountPlatformSurface<Env extends object>(
       // #2073: through the egress every transport shares (`wire.ts`).
       return externalJson(c, { result: result ?? null });
     } catch (e) {
-      // The status the envelope below answers with, so the line agrees with the caller.
-      status = deps.mapError?.(e)?.status ?? classifyError(e)?.status ?? 400;
-      problemCode = errorCodeOf(e) ?? null;
+      // What the envelope below renders, through the same `problemOf`, so the line names the
+      // status and code the caller got — a scope-gate refusal is the neutral 404 on both.
+      const answered = problemOf(decideStatus(e), e);
+      status = answered.status;
+      problemCode = answered.body.code ?? null;
       throw e;
     } finally {
       if (invocationId !== undefined) {
@@ -2471,13 +2480,7 @@ export function mountPlatformSurface<Env extends object>(
     // claim to be the platform's fault. `mountOperations` answers no-opinion differently.
     // A vertical's own `mapError` outranks it and is rendered the same way, so its
     // answer is a problem document too rather than the last `{ error }` on the surface.
-    const mapped = deps.mapError?.(err);
-    const seen = mapped
-      ? { status: mapped.status as ContentfulStatusCode, message: mapped.message }
-      : (classifyError(err) ?? {
-          status: 400 as ContentfulStatusCode,
-          message: messageOf(err),
-        });
+    const seen = decideStatus(err);
     // An infrastructure fault is the PLATFORM failing, not the request (#559). Defaulting
     // it to 400 taught every layer above to treat a Cloudflare outage as the caller's
     // fault — the control plane relays the status verbatim, and its retry convention
