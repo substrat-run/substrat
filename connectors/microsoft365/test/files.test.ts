@@ -333,6 +333,29 @@ describe('writes: a vertical puts files in the channel', () => {
     expect(await w.ledgers()).toEqual([expect.objectContaining({ status: 'pending', files: [] })]);
   });
 
+  // r2 #4: each adoption condition holds a test on its own.
+  it("a redelivery never adopts a person's file, even with identical bytes (fail)", async () => {
+    const w = await world();
+    await w.bind();
+    w.drive.put(w.general, 'report.pdf', 'same bytes');
+    const a = await w.attach('report.pdf', 'same bytes');
+    await w.send({ files: [{ attachmentId: a.id, size: a.size }], conflict: 'fail' });
+    await w.host.drainDue(w.t, w.s);
+    expect(w.drive.childrenNamed(w.general)).toEqual(['report.pdf']);
+    expect(await w.ledgers()).toEqual([expect.objectContaining({ status: 'pending', files: [] })]);
+  });
+
+  it('a redelivery does not adopt a file whose reported size is not the bytes sent (fail)', async () => {
+    const w = await world();
+    await w.bind();
+    const a = await w.attach('report.pdf', 'as sent');
+    w.drive.lostAnswers.push({ when: (c) => c.method === 'PUT', once: true });
+    w.drive.misreportedSize.set('report.pdf', a.size + 1);
+    await w.send({ files: [{ attachmentId: a.id, size: a.size }], conflict: 'fail' });
+    await w.host.drainDue(w.t, w.s);
+    expect(await w.ledgers()).toEqual([expect.objectContaining({ status: 'pending', files: [] })]);
+  });
+
   it('replace overwrites, and says so in the event', async () => {
     const w = await world();
     await w.bind();

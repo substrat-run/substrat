@@ -59,6 +59,8 @@ export class FakeDrive {
   expiredBefore = 0;
   /** Called before each request is answered — how a test lets something else happen mid-pass. */
   onRequest: ((c: Call) => Promise<void> | void) | null = null;
+  /** Sizes the drive reports instead of the true one, by item name — to tell size from hash. */
+  misreportedSize = new Map<string, number>();
   /** Items whose size the drive leaves out, as Graph may. */
   sizeless = new Set<string>();
   /** Items per delta page — small, so every test pages. */
@@ -319,7 +321,7 @@ export class FakeDrive {
         : i.kind === 'folder'
           ? { folder: { childCount: 0 } }
           : { file: { mimeType: i.mimeType, hashes: { quickXorHash: quickXorHash(i.content) } } }),
-      ...(this.sizeless.has(i.id) ? {} : { size: i.content.byteLength }),
+      ...(this.sizeless.has(i.id) ? {} : { size: this.misreportedSize.get(i.name) ?? i.content.byteLength }),
       eTag: `"{${i.id}},${i.version}"`,
       cTag: `"c:{${i.id}},${i.contentVersion}"`,
       lastModifiedDateTime: this.now.toISOString(),
