@@ -93,6 +93,20 @@ A pass lists only the scope's own attachment keys (`scope/<scopeId>/att/<ulid>`)
 keys, other features' keys and anything malformed in the same bucket are never judged. A dry run
 condemns and deletes nothing and reports the keys a pass would delete.
 
+**A destructive pass needs a dry run first, and the scope holds that rule itself.** A dry run
+records the ids it listed in the scope's own storage, at most 1,000, stamped with the host's clock.
+A destructive pass is refused with `conflict` (`orphan_sweep_unlicensed`) unless the scope holds
+such a record from the last seven days, and it deletes only ids that record lists. Each id it
+deletes leaves the record, so one dry run can license several passes that work through a backlog
+larger than one pass's limit. A licensed id whose object is gone some other way leaves it too, so a
+record with nothing left to delete sends the scope back to a dry run. The rule holds whoever asks for the pass, not only the platform.
+The record only narrows the pass: every guard above still applies to each id it lists. A dry run
+that finds the same orphans again writes nothing until the record is half the window old, when it
+refreshes the record's stamp; one that finds none clears the record. A
+dry run the restore fence holds lists nothing and leaves the record as it was. A
+dump never carries the record, and every restore, carry or fork drops it, so the next pass on a
+loaded scope is a dry run.
+
 **A restore refuses when its fence cannot be written.** This is a deliberate trade of
 availability for safety: a rewind or a restore whose fence did not land could hand the sweep a
 state that lacks rows a later restore brings back. The refusal says so, and nothing has been

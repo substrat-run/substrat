@@ -318,6 +318,8 @@ export function uploadLinkReplayContractSuite(
         if (!host.sweepOrphanAttachments) throw new Error('host has no sweepOrphanAttachments');
         fixture.clockAhead(ORPHAN_SWEEP_GRACE_MS + DAY);
         try {
+          // The dry run that licenses the pass (#2350), then the pass, with the redemption still held.
+          expect((await host.sweepOrphanAttachments(t1, s1, { copiesSettled: true, dryRun: true })).keys).toContain(condemnedKey);
           const report = await host.sweepOrphanAttachments(t1, s1, { copiesSettled: true });
           expect(report.keys).toContain(condemnedKey);
         } finally {
