@@ -249,6 +249,7 @@ import {
   createAttachmentVerbs,
   inspectUploadLink,
   redeemUploadLinkInTransaction,
+  redeemOrReplayUploadLink,
   COPY_ORIGIN_DDL,
   ENTITY_STATE_MOVES_DDL,
   CAPABILITY_EXCHANGE_OPERATION,
@@ -809,7 +810,7 @@ import {
   type AuditedOperationSqlRow,
   type SettleIntentRow,
 } from '@substrat-run/kernel';
-import { INERT_SCOPE_REASON, isPrimaryScopeRow, normalizeUploadMediaType, type UploadLinkRedeemInput, type UploadTarget } from '@substrat-run/kernel';
+import { INERT_SCOPE_REASON, isPrimaryScopeRow, normalizeUploadMediaType, type RedeemedUploadLink, type UploadLinkRedeemInput, type UploadTarget } from '@substrat-run/kernel';
 import {
   COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
@@ -3649,10 +3650,17 @@ export class SqliteScopeHost implements ScopeHost {
     return uploadLinks ? { write: gate.write, uploadLinks } : { write: gate.write };
   }
 
-  async inspectUploadLink(tenantId: TenantId, scopeId: ScopeId, secret: string, target?: EntityRef): Promise<UploadLinkView> {
+  async inspectUploadLink(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    target?: EntityRef,
+    idempotencyKey?: string,
+  ): Promise<UploadLinkView> {
     const rt = await this.openActiveScope(tenantId, scopeId);
     return rt.actor.enqueue(
-      async () => (await inspectUploadLink({ sql: spineSql(rt.db), now: this.clock() }, secret, target)).view,
+      async () =>
+        (await inspectUploadLink({ sql: spineSql(rt.db), now: this.clock() }, secret, target, idempotencyKey)).view,
     );
   }
 
@@ -3713,30 +3721,34 @@ export class SqliteScopeHost implements ScopeHost {
     scopeId: ScopeId,
     secret: string,
     input: UploadLinkRedeemInput,
-  ): Promise<AttachmentRecord> {
+  ): Promise<RedeemedUploadLink> {
     const rt = await this.openActiveScope(tenantId, scopeId);
-    // The target first (the kernel judges it before the state), so a wrong path never reads as gone.
-    const { view, mintedBy } = await rt.actor.enqueue(() =>
-      inspectUploadLink({ sql: spineSql(rt.db), now: this.clock() }, secret, input.entity),
-    );
-    // The write is made AS the minter: the same gates `attachments()` puts in front of a person.
-    await this.getScope(mintedBy, tenantId, scopeId);
-    const scopeRow = this.directory
-      .prepare('SELECT vertical FROM scopes WHERE scope_id = ?')
-      .get(scopeId) as { vertical: string | null } | undefined;
-    const files = this.buildAttachments(
-      rt,
-      asPrincipal(mintedBy),
-      this.attachmentStore(tenantId, scopeRow?.vertical ?? null),
-      { uploadLinkSecret: secret },
-    );
-    return files.upload({
-      entity: view.entity,
-      filename: view.filename ?? input.filename,
-      // Recorded as it is judged: the essence, never a parameter or a stray space.
-      contentType: normalizeUploadMediaType(input.contentType),
-      visibility: view.visibility,
-      body: input.body,
+    // The target first (the kernel judges it before the state), so a wrong path never reads as
+    // gone; a replay (#2315) is answered from the inspection and never reaches the write.
+    const inspect = () =>
+      rt.actor.enqueue(() =>
+        inspectUploadLink({ sql: spineSql(rt.db), now: this.clock() }, secret, input.entity, input.idempotencyKey),
+      );
+    return redeemOrReplayUploadLink(inspect, input, async ({ view, mintedBy }) => {
+      // The write is made AS the minter: the same gates `attachments()` puts in front of a person.
+      await this.getScope(mintedBy, tenantId, scopeId);
+      const scopeRow = this.directory
+        .prepare('SELECT vertical FROM scopes WHERE scope_id = ?')
+        .get(scopeId) as { vertical: string | null } | undefined;
+      const files = this.buildAttachments(
+        rt,
+        asPrincipal(mintedBy),
+        this.attachmentStore(tenantId, scopeRow?.vertical ?? null),
+        { uploadLink: { secret, idempotencyKey: input.idempotencyKey } },
+      );
+      return files.upload({
+        entity: view.entity,
+        filename: view.filename ?? input.filename,
+        // Recorded as it is judged: the essence, never a parameter or a stray space.
+        contentType: normalizeUploadMediaType(input.contentType),
+        visibility: view.visibility,
+        body: input.body,
+      });
     });
   }
 
@@ -3771,7 +3783,11 @@ export class SqliteScopeHost implements ScopeHost {
     rt: ScopeRuntime,
     authority: CheckSubject | CapabilitySessionAuthority,
     store: TenantBlobStore,
-    opts: { reentrant?: boolean; admitByEvent?: string; uploadLinkSecret?: string } = {},
+    opts: {
+      reentrant?: boolean;
+      admitByEvent?: string;
+      uploadLink?: { secret: string; idempotencyKey: string | undefined };
+    } = {},
   ): ScopeAttachments {
     // #1686: a capability session is resolved per CALL, inside the call's own actor task —
     // the invoke door's discipline, so a revoke or an expiry refuses the next read on a
@@ -3944,11 +3960,12 @@ export class SqliteScopeHost implements ScopeHost {
             enqueueAttachmentText(spineSql(rt.db), record.id, ulid(), this.clock());
             // An upload-link redemption spends its link HERE, in the same transaction as the
             // row it produced: a refusal anywhere above or below rolls the spend back.
-            if (opts.uploadLinkSecret !== undefined) {
+            if (opts.uploadLink !== undefined) {
               await redeemUploadLinkInTransaction(
                 { sql: spineSql(rt.db), now: this.clock(), emit: (event) => kernelEmit(ctx, event) },
-                opts.uploadLinkSecret,
+                opts.uploadLink.secret,
                 record,
+                opts.uploadLink.idempotencyKey,
               );
             }
             return record;
@@ -14066,6 +14083,9 @@ export class SqliteScopeHost implements ScopeHost {
     // #2009: the copy classification on a scope DB built before it (NULL reads as a copy; see
     // `COPY_ORIGIN_DDL`).
     this.ensureColumn(db, '_substrat_copy_origin', 'is_copy', 'is_copy INTEGER');
+    // #2315: the hash of the key a redemption carried, on a scope DB built before it. NULL = the
+    // spending request carried none, the honest reading of every link already spent.
+    this.ensureColumn(db, '_substrat_upload_links', 'redeemed_key_hash', 'redeemed_key_hash TEXT');
     // #1237: `readInvocation`'s lookup — WHERE invocation_id = ? ORDER BY id — over an outbox
     // that is never pruned. No index leads with invocation_id, so without this one SQLite
     // walks the PRIMARY KEY from the oldest event until it reaches the call, and reading a

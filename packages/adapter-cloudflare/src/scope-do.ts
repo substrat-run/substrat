@@ -323,6 +323,7 @@ import {
   createAttachmentVerbs,
   inspectUploadLink,
   redeemUploadLinkInTransaction,
+  type UploadLinkInspection,
   COPY_ORIGIN_DDL,
   ENTITY_STATE_MOVES_DDL,
   SWITCH_FENCES_DDL,
@@ -3862,9 +3863,13 @@ export function defineScopeDO(
       secret: string,
       tenantId: TenantId,
       scopeId: ScopeId,
+      idempotencyKey?: string,
     ): Promise<DoReply<AttachmentRecord>> {
       return replyOf(() =>
-        this.addAttachment(record, record.createdBy as PrincipalId, tenantId, scopeId, undefined, secret),
+        this.addAttachment(record, record.createdBy as PrincipalId, tenantId, scopeId, undefined, {
+          secret,
+          idempotencyKey,
+        }),
       );
     }
 
@@ -3942,11 +3947,17 @@ export function defineScopeDO(
       _tenantId: TenantId,
       _scopeId: ScopeId,
       target?: EntityRef,
-    ): Promise<DoReply<{ view: UploadLinkView; mintedBy: PrincipalId }>> {
+      idempotencyKey?: string,
+    ): Promise<DoReply<UploadLinkInspection>> {
       return replyOf(async () => {
         await this.ensureMigrations();
         return await this.queue.enqueue(() =>
-          inspectUploadLink({ sql: doSpineSql(this.sql), now: instant.parse(new Date().toISOString()) }, secret, target),
+          inspectUploadLink(
+            { sql: doSpineSql(this.sql), now: instant.parse(new Date().toISOString()) },
+            secret,
+            target,
+            idempotencyKey,
+          ),
         );
       });
     }
@@ -3994,8 +4005,9 @@ export function defineScopeDO(
       // #476: when set, the gate is checked as this CONNECTION (not `principal`, which is
       // then only the ctx.principal placeholder the connector door passes).
       connectionId?: string,
-      // An upload-link redemption: the link is spent in this same transaction.
-      uploadLinkSecret?: string,
+      // An upload-link redemption: the link is spent in this same transaction, recording the
+      // hash of the request's idempotency key (#2315).
+      uploadLink?: { secret: string; idempotencyKey: string | undefined },
     ): Promise<AttachmentRecord> {
       await this.ensureMigrations();
       const parsed = attachmentRecord.parse(record);
@@ -4040,15 +4052,16 @@ export function defineScopeDO(
             // #1575: queue its text extraction in the same transaction — a `pending` row
             // and a job run. Nothing is extracted here, so nothing here can fail the upload.
             enqueueAttachmentText(doSpineSql(this.sql), parsed.id, ulid(), new Date().toISOString());
-            if (uploadLinkSecret !== undefined) {
+            if (uploadLink !== undefined) {
               await redeemUploadLinkInTransaction(
                 {
                   sql: doSpineSql(this.sql),
                   now: instant.parse(new Date().toISOString()),
                   emit: (event) => kernelEmit(ctx, event),
                 },
-                uploadLinkSecret,
+                uploadLink.secret,
                 parsed,
+                uploadLink.idempotencyKey,
               );
             }
           });
@@ -6746,6 +6759,9 @@ export function defineScopeDO(
         // #2009: the copy classification on a scope DO built before it (NULL reads as a copy;
         // see `COPY_ORIGIN_DDL`).
         'ALTER TABLE _substrat_copy_origin ADD COLUMN is_copy INTEGER',
+        // #2315: the hash of the key a redemption carried, on a scope DO built before it. NULL = the
+        // spending request carried none, the honest reading of every link already spent.
+        'ALTER TABLE _substrat_upload_links ADD COLUMN redeemed_key_hash TEXT',
       ]) {
         try {
           this.sql.exec(alter);

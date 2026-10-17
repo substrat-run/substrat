@@ -282,6 +282,9 @@ import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
   attachmentBlobKey,
   normalizeUploadMediaType,
+  redeemOrReplayUploadLink,
+  type RedeemedUploadLink,
+  type UploadLinkInspection,
   type UploadLinkRedeemInput,
   attachmentSha256,
   entitlementDenial,
@@ -1661,18 +1664,24 @@ interface ScopeStubRpc {
     secret: string,
     tenantId: TenantId,
     scopeId: ScopeId,
+    /** #2315: recorded (as its hash) beside the spend, so a retry carrying it is a replay. */
+    idempotencyKey?: string,
   ): Promise<DoReply<AttachmentRecord>>;
   /** #2314: the scope side of an orphan-sweep pass — condemn (or, dry, only read) the rowless ids. */
   orphanAttachmentsReply(ids: string[], now: string, tenantId: TenantId, condemn: boolean, vouched?: boolean): Promise<DoReply<string[]>>;
   /** #2314: the receipt's tenant (or null) and whether any attachment row is held; read without migrating. */
   sweepFenceFacts(): Promise<{ tenant: string | null; holdsAttachments: boolean }>;
-  /** Look an upload link up without spending it; `target` is judged before its state. */
+  /**
+   * Look an upload link up without spending it; `target` is judged before its state. With
+   * `idempotencyKey`, a link spent by a redemption that carried it answers `replay` (#2315).
+   */
   uploadLinkInspectReply(
     secret: string,
     tenantId: TenantId,
     scopeId: ScopeId,
     target?: EntityRef,
-  ): Promise<DoReply<{ view: UploadLinkView; mintedBy: PrincipalId }>>;
+    idempotencyKey?: string,
+  ): Promise<DoReply<UploadLinkInspection>>;
   attachmentListReply(
     entity: EntityRef,
     principal: PrincipalId,
@@ -4525,10 +4534,18 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.buildAttachmentSurface({ principal }, tenantId, scopeId, store);
   }
 
-  async inspectUploadLink(tenantId: TenantId, scopeId: ScopeId, secret: string, target?: EntityRef): Promise<UploadLinkView> {
+  async inspectUploadLink(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    target?: EntityRef,
+    idempotencyKey?: string,
+  ): Promise<UploadLinkView> {
     await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
-    return unwrapReply(await this.scopeStub(scopeId).uploadLinkInspectReply(secret, tenantId, scopeId, target)).view;
+    return unwrapReply(
+      await this.scopeStub(scopeId).uploadLinkInspectReply(secret, tenantId, scopeId, target, idempotencyKey),
+    ).view;
   }
 
   async redeemUploadLink(
@@ -4536,36 +4553,43 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     secret: string,
     input: UploadLinkRedeemInput,
-  ): Promise<AttachmentRecord> {
+  ): Promise<RedeemedUploadLink> {
     await this.assertLive(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     const stub = this.scopeStub(scopeId);
-    // The target first (the kernel judges it before the state), so a wrong path never reads as gone.
-    const { view, mintedBy } = unwrapReply(await stub.uploadLinkInspectReply(secret, tenantId, scopeId, input.entity));
-    const store = await this.resolveAttachmentStore(tenantId);
-    const id = ulid();
-    const key = attachmentBlobKey(scopeId, id);
-    const filename = view.filename ?? input.filename;
-    // Recorded as it is judged: the essence, never a parameter or a stray space.
-    const contentType = normalizeUploadMediaType(input.contentType);
-    const record = attachmentRecord.parse({
-      id,
-      entity: view.entity,
-      filename,
-      contentType,
-      size: input.body.byteLength,
-      sha256: await attachmentSha256(input.body),
-      visibility: view.visibility,
-      createdBy: mintedBy,
-      createdAt: new Date().toISOString(),
+    // The target first (the kernel judges it before the state), so a wrong path never reads as
+    // gone; a replay (#2315) is answered from the inspection and never reaches the write.
+    const inspect = async () =>
+      unwrapReply(await stub.uploadLinkInspectReply(secret, tenantId, scopeId, input.entity, input.idempotencyKey));
+    return redeemOrReplayUploadLink(inspect, input, async ({ view, mintedBy }) => {
+      const store = await this.resolveAttachmentStore(tenantId);
+      // A fresh id per request, so its key is its own: compensating a refusal can never remove
+      // the bytes of the redemption that won the link.
+      const id = ulid();
+      const key = attachmentBlobKey(scopeId, id);
+      const filename = view.filename ?? input.filename;
+      // Recorded as it is judged: the essence, never a parameter or a stray space.
+      const contentType = normalizeUploadMediaType(input.contentType);
+      const record = attachmentRecord.parse({
+        id,
+        entity: view.entity,
+        filename,
+        contentType,
+        size: input.body.byteLength,
+        sha256: await attachmentSha256(input.body),
+        visibility: view.visibility,
+        createdBy: mintedBy,
+        createdAt: new Date().toISOString(),
+      });
+      // Bytes first, row second, exactly as an upload: a refusal (size, type, a lost key, a link
+      // someone else spent first) compensates the object away, and the link is unspent with it.
+      // A lost reply keeps the bytes (`compensatingRefusal`), and a retry carrying the same
+      // `Idempotency-Key` is answered as a replay (#2315).
+      await store.put(key, input.body, { contentType });
+      return unwrapReply(await compensatingRefusal(store, key, () =>
+        stub.attachmentRedeemUploadLinkReply(record, secret, tenantId, scopeId, input.idempotencyKey),
+      ));
     });
-    // Bytes first, row second, exactly as an upload: a refusal (size, type, a lost key, a link
-    // someone else spent first) compensates the object away, and the link is unspent with it.
-    // A lost reply keeps the bytes (`compensatingRefusal`); retrying the link is #2315.
-    await store.put(key, input.body, { contentType });
-    return unwrapReply(await compensatingRefusal(store, key, () =>
-      stub.attachmentRedeemUploadLinkReply(record, secret, tenantId, scopeId),
-    ));
   }
 
   async getSystemAttachments(

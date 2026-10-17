@@ -4,7 +4,9 @@ import {
   ATTACHMENT_UPLOAD_LINK_REVOKED,
   UPLOAD_LINK_DEFAULT_TTL_SECONDS,
   UPLOAD_LINK_MAX_BYTES_CEILING,
+  UPLOAD_LINK_REPLAY_GRACE_SECONDS,
   UPLOAD_LINK_SECRET_PREFIX,
+  isUploadLinkIdempotencyKey,
   isUploadLinkSecretShape,
   principalId as principalIdSchema,
   substratError,
@@ -28,10 +30,11 @@ import {
   type UploadLinkView,
   type Visibility,
 } from '@substrat-run/contracts';
+import { attachmentRecordOfRow, type AttachmentRowShape } from './attachment-text.js';
 import { toBase64url } from './base64url.js';
 import { capabilityTokenHash } from './capability.js';
 import { assertAllowed } from './permission-checker.js';
-import type { ScopedSql, SqlValue } from './scope-host.js';
+import { attachmentSha256, type RedeemedUploadLink, type ScopedSql, type SqlValue } from './scope-host.js';
 import { ulid } from './ulid.js';
 
 /**
@@ -87,6 +90,10 @@ export const UPLOAD_LINK_DDL = `
     redeemed_at TEXT,
     -- The attachment this link produced.
     attachment_id TEXT,
+    -- #2315: SHA-256 hex of the \`Idempotency-Key\` the spending request carried, or NULL when it
+    -- carried none. A retry of that redemption with the same key gets the same attachment back;
+    -- the key itself is stored nowhere.
+    redeemed_key_hash TEXT,
     -- Tombstone, never a delete: a link that was minted is evidence of why a file arrived.
     revoked_at TEXT,
     revoked_by TEXT
@@ -103,6 +110,8 @@ export const UPLOAD_LINK_GONE = 'upload_link_gone';
 export const UPLOAD_LINK_TOO_LARGE = 'upload_link_too_large';
 export const UPLOAD_LINK_TYPE_REFUSED = 'upload_link_type_refused';
 export const UPLOAD_LINK_WRONG_TARGET = 'upload_link_wrong_target';
+/** A replay whose bytes are not the bytes the redemption stored (#2315). */
+export const UPLOAD_LINK_REPLAY_MISMATCH = 'upload_link_replay_mismatch';
 
 interface UploadLinkRow {
   id: string;
@@ -451,11 +460,45 @@ const wrongTarget = () =>
   substratError('not_found', 'This upload link is not valid for that target.', { reason: UPLOAD_LINK_WRONG_TARGET });
 
 /**
+ * The hash a redemption's idempotency key is recorded and matched as, or `undefined` for none.
+ * Judged before the link is looked up, so a malformed key is the same refusal whatever the link's
+ * state, and a well-formed one costs the same hash whether it will match or not.
+ */
+async function idempotencyKeyHash(key: string | undefined): Promise<string | undefined> {
+  if (key === undefined) return undefined;
+  if (!isUploadLinkIdempotencyKey(key)) {
+    throw substratError(
+      'validation_failed',
+      'An Idempotency-Key is 16 to 255 visible ASCII characters with no space, such as a UUID.',
+    );
+  }
+  return capabilityTokenHash(key);
+}
+
+/** What a secret resolved to: a link still usable, or the redemption it already made, to replay. */
+interface ResolvedLink {
+  row: UploadLinkRow;
+  replay?: AttachmentRecord;
+}
+
+/**
  * The link a secret names, if it is still usable for `target`. The target is judged BEFORE the
  * state, so a request naming another entity is the same 404 whether the link is pending, used,
  * expired or revoked: the path decides, never the link's history. Nothing here spends it.
+ *
+ * With `keyHash`, a SPENT link is a replay (#2315) when the redemption that spent it carried the
+ * same key, the link's expiry plus `UPLOAD_LINK_REPLAY_GRACE_SECONDS` has not passed, and the
+ * attachment it produced is still there and not condemned by the orphan sweep (#2314). Every
+ * other spent link, and a key that matches nothing, is the same `goneLink()` as no key at all:
+ * a holder of the secret without the key learns nothing about the redemption.
  */
-async function liveRow(sql: ScopedSql, now: Instant, secret: unknown, target?: EntityRef): Promise<UploadLinkRow> {
+async function resolveLink(
+  sql: ScopedSql,
+  now: Instant,
+  secret: unknown,
+  target?: EntityRef,
+  keyHash?: string,
+): Promise<ResolvedLink> {
   if (!isUploadLinkSecretShape(secret)) throw unknownLink();
   const row = sql.query<UploadLinkRow>(
     `SELECT ${COLUMNS} FROM _substrat_upload_links WHERE token_hash = ?`,
@@ -463,28 +506,54 @@ async function liveRow(sql: ScopedSql, now: Instant, secret: unknown, target?: E
   )[0];
   if (!row) throw unknownLink();
   if (target && (row.entity_type !== target.entityType || row.entity_id !== target.entityId)) throw wrongTarget();
-  if (stateOf(row, now) !== 'pending') throw goneLink();
-  return row;
+  const state = stateOf(row, now);
+  if (state === 'pending') return { row };
+  if (keyHash !== undefined && row.redeemed_at !== null && now < replayHorizon(row)) {
+    // The key is compared in SQL, as the secret is: a hash of it is all the row holds.
+    const attachment = sql.query<AttachmentRowShape>(
+      `SELECT a.id, a.entity_type, a.entity_id, a.filename, a.content_type, a.size, a.sha256,
+              a.visibility, a.created_by, a.created_at
+         FROM _substrat_upload_links l
+         JOIN _substrat_attachments a ON a.id = l.attachment_id
+        WHERE l.id = ? AND l.redeemed_key_hash = ?
+          AND NOT EXISTS (SELECT 1 FROM _substrat_attachment_condemned c WHERE c.id = a.id)`,
+      [row.id, keyHash],
+    )[0];
+    if (attachment) return { row, replay: attachmentRecordOfRow(attachment) };
+  }
+  throw goneLink();
 }
+
+/** Until when a spent link's redemption may be replayed: its expiry, plus the grace. */
+const replayHorizon = (row: UploadLinkRow): Instant =>
+  new Date(Date.parse(row.expires_at) + UPLOAD_LINK_REPLAY_GRACE_SECONDS * MS_PER_SECOND).toISOString() as Instant;
 
 /** What the route needs before it reads a byte, and who the write is made as. */
 export interface UploadLinkInspection {
   view: UploadLinkView;
   mintedBy: PrincipalId;
+  /**
+   * #2315: the attachment the link already produced, when this request is a replay of the
+   * redemption that spent it. Nothing is to be written then: `judgeUploadLinkReplay` the body.
+   */
+  replay?: AttachmentRecord;
 }
 
 /**
  * Look a secret up without spending it: `not_found` for one that names nothing, `not_found`
  * with reason `upload_link_wrong_target` for one minted for another target than `target`
  * (whatever its state), `conflict` with reason `upload_link_gone` for one that is used,
- * expired or revoked.
+ * expired or revoked — unless `idempotencyKey` is the key the spending redemption carried, and
+ * then the answer carries `replay`. A malformed key is `validation_failed`, before the lookup.
  */
 export async function inspectUploadLink(
   deps: { sql: ScopedSql; now: Instant },
   secret: unknown,
   target?: EntityRef,
+  idempotencyKey?: string,
 ): Promise<UploadLinkInspection> {
-  const row = await liveRow(deps.sql, deps.now, secret, target);
+  const keyHash = await idempotencyKeyHash(idempotencyKey);
+  const { row, replay } = await resolveLink(deps.sql, deps.now, secret, target, keyHash);
   const r = recordOf(row, deps.now);
   return {
     view: {
@@ -495,7 +564,53 @@ export async function inspectUploadLink(
       visibility: r.visibility,
     },
     mintedBy: r.mintedBy,
+    ...(replay ? { replay } : {}),
   };
+}
+
+/**
+ * A replay's answer (#2315): the stored record, when `body` is the file it recorded — the same
+ * size and the same SHA-256. Anything else is refused with `conflict`, reason
+ * `upload_link_replay_mismatch`: the key named another request than this one. Writes nothing.
+ */
+async function judgeUploadLinkReplay(replay: AttachmentRecord, body: Uint8Array): Promise<AttachmentRecord> {
+  if (body.byteLength !== replay.size || (await attachmentSha256(body)) !== replay.sha256) {
+    throw substratError(
+      'conflict',
+      'This Idempotency-Key was used for another file: the bytes do not match the file it stored.',
+      { reason: UPLOAD_LINK_REPLAY_MISMATCH },
+    );
+  }
+  return replay;
+}
+
+/**
+ * The host's redemption sequence, written once for both adapters (#2315): inspect, replay or
+ * write, and — for a request carrying a key that lost the spend to the request it retries —
+ * inspect again and answer that redemption. `inspect` is the host's `inspectUploadLink` with the
+ * request's key; `write` puts the bytes under a fresh id and runs the row's transaction, removing
+ * its own bytes on a refusal. A replay never reaches `write`, so it puts nothing.
+ */
+export async function redeemOrReplayUploadLink(
+  inspect: () => Promise<UploadLinkInspection>,
+  input: { body: Uint8Array; idempotencyKey?: string },
+  write: (inspection: UploadLinkInspection) => Promise<AttachmentRecord>,
+): Promise<RedeemedUploadLink> {
+  const replayed = async (replay: AttachmentRecord): Promise<RedeemedUploadLink> => ({
+    ...(await judgeUploadLinkReplay(replay, input.body)),
+    replayed: true,
+  });
+  const inspection = await inspect();
+  if (inspection.replay) return replayed(inspection.replay);
+  try {
+    return await write(inspection);
+  } catch (err) {
+    const reason = (err as { extensions?: { reason?: unknown } } | null)?.extensions?.reason;
+    if (input.idempotencyKey === undefined || reason !== UPLOAD_LINK_GONE) throw err;
+    const again = await inspect().catch(() => undefined);
+    if (again?.replay) return replayed(again.replay);
+    throw err;
+  }
 }
 
 /**
@@ -511,9 +626,12 @@ export async function redeemUploadLinkInTransaction(
   },
   secret: unknown,
   record: AttachmentRecord,
+  idempotencyKey?: string,
 ): Promise<void> {
-  // The path named another entity than the link was minted for: nothing is spent.
-  const row = await liveRow(deps.sql, deps.now, secret, record.entity);
+  const keyHash = await idempotencyKeyHash(idempotencyKey);
+  // The path named another entity than the link was minted for: nothing is spent. No key is
+  // passed: a spend needs a pending link, and a replay is the host's to answer before it writes.
+  const { row } = await resolveLink(deps.sql, deps.now, secret, record.entity);
   if (record.createdBy !== row.minted_by) {
     throw substratError('internal', 'an upload link was redeemed as someone other than its minter');
   }
@@ -532,9 +650,9 @@ export async function redeemUploadLinkInTransaction(
     throw substratError('internal', 'an upload link with a fixed file name was redeemed under another');
   }
   const spent = deps.sql.exec(
-    `UPDATE _substrat_upload_links SET redeemed_at = ?, attachment_id = ?
+    `UPDATE _substrat_upload_links SET redeemed_at = ?, attachment_id = ?, redeemed_key_hash = ?
      WHERE id = ? AND redeemed_at IS NULL AND revoked_at IS NULL`,
-    [deps.now, record.id, row.id],
+    [deps.now, record.id, keyHash ?? null, row.id],
   );
   if (spent.changes !== 1) throw goneLink();
   const payload: AttachmentUploadLinkRedeemedPayload = {
