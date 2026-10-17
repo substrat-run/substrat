@@ -215,7 +215,7 @@ describe('writes: a vertical puts files in the channel', () => {
     await w.bind();
     const a = await w.attach('offer.pdf', 'the offer');
     const b = await w.attach('terms.txt', 'the terms');
-    await w.send({ directory: 'Offers/2026', files: [{ attachmentId: a.id }, { attachmentId: b.id, name: 'Terms.txt' }], conflict: 'fail' });
+    await w.send({ directory: 'Offers/2026', files: [{ attachmentId: a.id, size: a.size }, { attachmentId: b.id, size: b.size, name: 'Terms.txt' }], conflict: 'fail' });
     const offers = w.drive.childrenNamed(w.general);
     expect(offers).toEqual(['Offers']);
     expect(await w.ledgers()).toEqual([expect.objectContaining({ status: 'done', files: expect.arrayContaining([expect.anything(), expect.anything()]) })]);
@@ -234,7 +234,7 @@ describe('writes: a vertical puts files in the channel', () => {
       // Graph writes the file and the answer is lost: the window between the upload and the
       // ledger row that records it.
       w.drive.lostAnswers.push({ when: (c) => c.method === 'PUT', once: true });
-      await w.send({ files: [{ attachmentId: a.id }], conflict });
+      await w.send({ files: [{ attachmentId: a.id, size: a.size }], conflict });
       expect(w.drive.childrenNamed(w.general)).toEqual(['report.pdf']);
       expect(await w.ledgers()).toEqual([expect.objectContaining({ status: 'pending', files: [] })]);
       await w.host.drainDue(w.t, w.s);
@@ -250,7 +250,7 @@ describe('writes: a vertical puts files in the channel', () => {
     const a = await w.attach('report.pdf', 'ours');
     // The suffixed write lands and its answer is lost.
     w.drive.lostAnswers.push({ when: (c) => c.method === 'PUT' && c.url.includes('report%20('), once: true });
-    await w.send({ files: [{ attachmentId: a.id }], conflict: 'rename' });
+    await w.send({ files: [{ attachmentId: a.id, size: a.size }], conflict: 'rename' });
     await w.host.drainDue(w.t, w.s);
     const names = w.drive.childrenNamed(w.general);
     expect(names).toHaveLength(2);
@@ -267,7 +267,7 @@ describe('writes: a vertical puts files in the channel', () => {
     await w.bind();
     w.drive.put(w.general, 'report.pdf', "a person's report");
     const a = await w.attach('report.pdf', 'ours');
-    await w.send({ files: [{ attachmentId: a.id }], conflict: 'fail' });
+    await w.send({ files: [{ attachmentId: a.id, size: a.size }], conflict: 'fail' });
     await w.host.drainDue(w.t, w.s);
     expect(w.drive.text(w.general, 'report.pdf')).toBe("a person's report");
     expect(w.drive.childrenNamed(w.general)).toEqual(['report.pdf']);
@@ -279,9 +279,9 @@ describe('writes: a vertical puts files in the channel', () => {
     const w = await world();
     await w.bind();
     const a = await w.attach('report.pdf', 'from event A');
-    await w.send({ files: [{ attachmentId: a.id }], conflict: 'fail' });
+    await w.send({ files: [{ attachmentId: a.id, size: a.size }], conflict: 'fail' });
     const b = await w.attach('report.pdf', 'from event B');
-    await w.send({ files: [{ attachmentId: b.id }], conflict: 'fail' });
+    await w.send({ files: [{ attachmentId: b.id, size: b.size }], conflict: 'fail' });
     await w.host.drainDue(w.t, w.s);
     await w.host.drainDue(w.t, w.s);
     expect(w.drive.childrenNamed(w.general)).toEqual(['report.pdf']);
@@ -294,11 +294,11 @@ describe('writes: a vertical puts files in the channel', () => {
     const w = await world();
     await w.bind();
     const a = await w.attach('report.pdf', 'from event A');
-    await w.send({ files: [{ attachmentId: a.id }], conflict: 'rename' });
+    await w.send({ files: [{ attachmentId: a.id, size: a.size }], conflict: 'rename' });
     const b = await w.attach('report.pdf', 'from event B');
     // B's suffixed PUT is throttled once: no write happens, and the retry must still write B.
     w.drive.failures.push({ when: (c) => c.method === 'PUT' && c.url.includes('report%20('), status: 503, once: true });
-    await w.send({ files: [{ attachmentId: b.id }], conflict: 'rename' });
+    await w.send({ files: [{ attachmentId: b.id, size: b.size }], conflict: 'rename' });
     await w.host.drainDue(w.t, w.s);
     const names = w.drive.childrenNamed(w.general);
     expect(names).toHaveLength(2);
@@ -313,7 +313,7 @@ describe('writes: a vertical puts files in the channel', () => {
     await w.bind();
     const a = await w.attach('report.pdf', 'as sent');
     w.drive.lostAnswers.push({ when: (c) => c.method === 'PUT', once: true });
-    await w.send({ files: [{ attachmentId: a.id }], conflict: 'fail' });
+    await w.send({ files: [{ attachmentId: a.id, size: a.size }], conflict: 'fail' });
     // As SharePoint does to an Office document: the stored bytes are no longer the sent ones.
     w.drive.tamper(w.general, 'report.pdf', 'as stored');
     await w.host.drainDue(w.t, w.s);
@@ -326,7 +326,7 @@ describe('writes: a vertical puts files in the channel', () => {
     await w.bind();
     w.drive.put(w.general, 'report.pdf', 'old');
     const a = await w.attach('report.pdf', 'new');
-    await w.send({ files: [{ attachmentId: a.id }], conflict: 'replace' });
+    await w.send({ files: [{ attachmentId: a.id, size: a.size }], conflict: 'replace' });
     expect(w.drive.text(w.general, 'report.pdf')).toBe('new');
   });
 
@@ -335,7 +335,7 @@ describe('writes: a vertical puts files in the channel', () => {
     await w.bind();
     const big = new Uint8Array(5 * 1024 * 1024).fill(7);
     const a = await w.attach('drawing.bin', big);
-    await w.send({ files: [{ attachmentId: a.id }], conflict: 'fail' });
+    await w.send({ files: [{ attachmentId: a.id, size: a.size }], conflict: 'fail' });
     const chunks = w.drive.calls.filter((c) => c.url.startsWith('https://upload.example/'));
     expect(chunks.length).toBeGreaterThan(1);
     for (const c of chunks) expect(c.headers.authorization).toBeUndefined();
@@ -347,7 +347,7 @@ describe('writes: a vertical puts files in the channel', () => {
     await w.bind();
     const a = await w.attach('drawing.bin', new Uint8Array(5 * 1024 * 1024).fill(9));
     w.drive.failures.push({ when: (c) => c.url.startsWith('https://upload.example/') && c.method === 'PUT' && c.headers['content-range']?.startsWith('bytes 3276800-') === true, status: 503, once: true });
-    await w.send({ files: [{ attachmentId: a.id }], conflict: 'fail' });
+    await w.send({ files: [{ attachmentId: a.id, size: a.size }], conflict: 'fail' });
     expect(w.drive.calls.some((c) => c.method === 'DELETE' && c.url.startsWith('https://upload.example/'))).toBe(true);
     expect(w.drive.openSessions()).toBe(0);
     expect(w.drive.childrenNamed(w.general)).toEqual([]);
@@ -360,7 +360,7 @@ describe('writes: a vertical puts files in the channel', () => {
     await w.bind();
     const a = await w.attach('huge.bin', new Uint8Array(MAX_FILE_BYTES + 1));
     const before = w.drive.calls.length;
-    await w.send({ files: [{ attachmentId: a.id }], conflict: 'fail' });
+    await w.send({ files: [{ attachmentId: a.id, size: a.size }], conflict: 'fail' });
     expect(w.drive.calls.length).toBe(before);
     expect(await w.ledgers()).toEqual([]);
   });
@@ -376,9 +376,9 @@ describe('writes: a vertical puts files in the channel', () => {
       body: new TextEncoder().encode('x'),
     });
     // The event names doc d1; the delivery is authority for d1's attachments only.
-    await w.send({ files: [{ attachmentId: elsewhere.id }], conflict: 'fail' });
+    await w.send({ files: [{ attachmentId: elsewhere.id, size: elsewhere.size }], conflict: 'fail' });
     expect(w.drive.graphCalls().filter((c) => c.method === 'PUT')).toEqual([]);
-    expect(await w.ledgers()).toEqual([]);
+    expect(await w.ledgers()).toEqual([expect.objectContaining({ status: 'pending', files: [] })]);
   });
 
   describe('the fence refuses before Graph is called', () => {
@@ -409,7 +409,7 @@ describe('writes: a vertical puts files in the channel', () => {
       const before = w.drive.calls.length;
       await w.send({
         ...(over.directory === undefined ? {} : { directory: over.directory }),
-        files: [{ attachmentId: a.id, ...(over.name === undefined ? {} : { name: over.name }) }],
+        files: [{ attachmentId: a.id, size: a.size, ...(over.name === undefined ? {} : { name: over.name }) }],
         conflict: 'replace',
       });
       expect(w.drive.calls.length).toBe(before);
@@ -421,7 +421,7 @@ describe('writes: a vertical puts files in the channel', () => {
       const w = await world();
       await w.bind();
       const a = await w.attach('Café menu.txt', 'x');
-      await w.send({ directory: 'Kök/2026', files: [{ attachmentId: a.id }], conflict: 'fail' });
+      await w.send({ directory: 'Kök/2026', files: [{ attachmentId: a.id, size: a.size }], conflict: 'fail' });
       expect(w.drive.childrenNamed(w.general)).toEqual(['Kök']);
     });
   });
@@ -429,7 +429,7 @@ describe('writes: a vertical puts files in the channel', () => {
   it('refuses a write when no folder is bound', async () => {
     const w = await world();
     const a = await w.attach('ok.txt', 'x');
-    await w.send({ files: [{ attachmentId: a.id }], conflict: 'fail' });
+    await w.send({ files: [{ attachmentId: a.id, size: a.size }], conflict: 'fail' });
     expect(w.drive.graphCalls().filter((c) => c.method === 'PUT')).toEqual([]);
   });
 });
@@ -586,7 +586,7 @@ describe('reads: the sync lands what is in the folder', () => {
     expect(sweep.failed).toEqual([{ scopeId: w.s, error: expect.stringMatching(/no longer exists/) }]);
     expect(w.drive.calls.length).toBe(before);
     const a = await w.attach('ok.txt', 'x');
-    await w.send({ files: [{ attachmentId: a.id }], conflict: 'fail' });
+    await w.send({ files: [{ attachmentId: a.id, size: a.size }], conflict: 'fail' });
     expect(w.drive.calls.length).toBe(before);
   });
 
@@ -651,9 +651,15 @@ describe('the public contract', () => {
                   "minLength": 1,
                   "type": "string",
                 },
+                "size": {
+                  "maximum": 52428800,
+                  "minimum": 0,
+                  "type": "integer",
+                },
               },
               "required": [
                 "attachmentId",
+                "size",
               ],
               "type": "object",
             },

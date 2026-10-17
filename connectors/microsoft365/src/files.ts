@@ -66,6 +66,11 @@ export const MICROSOFT365_FILES_EVENT = 'microsoft365.channel-files-requested';
 export const MAX_FILES_PER_EVENT = 20;
 /** The largest file either direction moves. A bigger one is refused on write, and lands without bytes on read. */
 export const MAX_FILE_BYTES = 50 * 1024 * 1024;
+/**
+ * The most bytes one write event may move, all its files together. A dispatch holds one file at a
+ * time, so this bounds how long a delivery runs, not its memory; the per-file cap bounds that.
+ */
+export const MAX_EVENT_BYTES = 100 * 1024 * 1024;
 
 /**
  * The payload of {@link MICROSOFT365_FILES_EVENT}, as this connector reads it. A vertical builds
@@ -74,6 +79,9 @@ export const MAX_FILE_BYTES = 50 * 1024 * 1024;
  * `conflict` is required: what happens when the name is taken is the vertical's choice, said in
  * the event, never a default. The attachments must belong to the entity the event names — the
  * delivery is the authority to read them, so no standing grant is needed and none is consulted.
+ *
+ * Each file states its `size` (the attachment record's), so the caps are checked before a byte is
+ * read; the dispatch refuses a file whose attachment turns out to be another size.
  */
 export const microsoft365FilesRequested = z.object({
   /** The folder under the channel folder to write into; `''` (the default) is the channel folder itself. */
@@ -84,10 +92,15 @@ export const microsoft365FilesRequested = z.object({
         attachmentId: z.string().min(1),
         /** The file's name in the channel. Defaults to the attachment's filename. */
         name: z.string().min(1).optional(),
+        /** The attachment's size in bytes, as its record states it. */
+        size: z.number().int().nonnegative().max(MAX_FILE_BYTES),
       }),
     )
     .min(1)
-    .max(MAX_FILES_PER_EVENT),
+    .max(MAX_FILES_PER_EVENT)
+    .refine((files) => files.reduce((n, f) => n + f.size, 0) <= MAX_EVENT_BYTES, {
+      message: `the files come to more than ${MAX_EVENT_BYTES} bytes, the most one event may move`,
+    }),
   conflict: z.enum(['replace', 'rename', 'fail']),
 });
 export type Microsoft365FilesRequested = z.input<typeof microsoft365FilesRequested>;
@@ -318,7 +331,8 @@ interface WriteLedger {
 export function microsoft365FilesConnector(options: Microsoft365Options): ConnectorHandler {
   return async (ctx, event: DomainEvent) => {
     const payload = microsoft365FilesRequested.parse(event.payload);
-    // The fence, before anything else: a refused path costs no Graph call and no ledger row.
+    // The caps (in the parse, on the declared sizes) and the fence, before anything else: a refused
+    // event costs no read, no Graph call and no ledger row.
     const directory = fencedPath(payload.directory, { allowEmpty: true });
     for (const f of payload.files) if (f.name !== undefined) fencedSegment(f.name);
 
@@ -330,39 +344,33 @@ export function microsoft365FilesConnector(options: Microsoft365Options): Connec
     const key = writeKey(event.id);
     const prior = (await ctx.admin.getConnectorState(conn.id, key)) as WriteLedger | undefined;
     if (prior?.status === 'done') return;
-
-    // Every attachment is read and checked BEFORE the first upload, so a missing or oversized one
-    // refuses the whole event instead of leaving half of it in the channel.
-    const files = [];
-    for (const f of payload.files) {
-      const opened = await conn.openAttachment(f.attachmentId);
-      if (!opened) throw new Error(`attachment ${f.attachmentId} is not one this event's entity holds`);
-      if (opened.body.byteLength > MAX_FILE_BYTES) {
-        throw new Error(`attachment ${f.attachmentId} is ${opened.body.byteLength} bytes; the channel takes at most ${MAX_FILE_BYTES}`);
-      }
-      const name = f.name ?? opened.record.filename;
-      fencedSegment(name);
-      files.push({ attachmentId: f.attachmentId, name, body: opened.body, contentType: opened.contentType });
-    }
-
     const ledger: WriteLedger = prior ?? { status: 'pending', startedAt: nowOf(options).toISOString(), files: [] };
     if (!prior) await ctx.admin.putConnectorState(conn.id, key, ledger);
     const redelivery = prior !== undefined;
 
     const secret = microsoft365Secret.parse(conn.secret);
     const client = await signedInGraphWith(conn.fetch, secret, options);
-    for (const file of files) {
-      if (ledger.files.some((f) => f.attachmentId === file.attachmentId)) continue;
+    // One file at a time: opened, uploaded, recorded, and let go before the next is read, so a
+    // delivery holds at most one file's bytes. The caps were checked on the declared sizes above;
+    // a file refused here leaves the ones before it written, and the ledger says which.
+    for (const f of payload.files) {
+      if (ledger.files.some((done) => done.attachmentId === f.attachmentId)) continue;
+      const opened = await conn.openAttachment(f.attachmentId);
+      if (!opened) throw new Error(`attachment ${f.attachmentId} is not one this event's entity holds`);
+      if (opened.record.size !== f.size || opened.body.byteLength !== f.size) {
+        throw new Error(`attachment ${f.attachmentId} is not the ${f.size} bytes the event declared`);
+      }
+      const name = f.name ?? opened.record.filename;
+      fencedSegment(name);
+      const file = { name, body: opened.body, contentType: opened.contentType };
       const written = await writeOne(client, binding, {
         directory,
         file,
         conflict: payload.conflict,
-        adopt: redelivery
-          ? { clientId: secret.clientId, size: file.body.byteLength, quickXorHash: quickXorHash(file.body) }
-          : null,
-        suffix: await suffixOf(event.id, file.attachmentId),
+        adopt: redelivery ? { clientId: secret.clientId, size: f.size, quickXorHash: quickXorHash(opened.body) } : null,
+        suffix: await suffixOf(event.id, f.attachmentId),
       });
-      ledger.files.push({ attachmentId: file.attachmentId, itemId: written.id, name: written.name ?? file.name });
+      ledger.files.push({ attachmentId: f.attachmentId, itemId: written.id, name: written.name ?? name });
       await ctx.admin.putConnectorState(conn.id, key, ledger);
     }
     await ctx.admin.putConnectorState(conn.id, key, { ...ledger, status: 'done' });

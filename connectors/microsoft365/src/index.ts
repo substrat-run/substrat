@@ -74,6 +74,7 @@ export {
   MICROSOFT365_FILES_EVENT,
   MAX_FILES_PER_EVENT,
   MAX_FILE_BYTES,
+  MAX_EVENT_BYTES,
   microsoft365FilesRequested,
   microsoft365ChannelChange,
   bindMicrosoft365Scope,
