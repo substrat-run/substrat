@@ -72,6 +72,8 @@ import {
   matchesOutboundHost,
   parsePlatformBaseDomains,
   peerCallRequest,
+  PARENT_REQUEST_ID_HEADER,
+  parentRequestIdOf,
   RELAY_CALLER_HEADER,
 } from '@substrat-run/contracts';
 
@@ -128,7 +130,8 @@ export interface Env {
    */
   // `unknown` on both arguments deliberately: the router PARSES them (`peerCaller`,
   // `peerCallRequest`), so this worker cannot be the place that decides a caller is valid.
-  PEER_CALLS?: { invoke(caller: unknown, request: unknown): Promise<PeerCallOutcome> };
+  /** #2192: `context` carries the calling request's id; a router that predates it ignores it. */
+  PEER_CALLS?: { invoke(caller: unknown, request: unknown, context?: unknown): Promise<PeerCallOutcome> };
   /**
    * The router's scope-store entrypoint (#2207). Same shape as `PEER_CALLS`: the
    * caller is this dispatch's parameters, and the body names only the call.
@@ -386,6 +389,9 @@ async function peerCall(request: Request, hostname: string, env: Env): Promise<R
   if (!parsed.success) {
     return problem(400, 'peer call refused: the body names a target vertical and an operation (#1706)');
   }
+  // #2192: the calling request's id, so the target's line can name it as its parent. The
+  // caller's claim, never part of WHO is calling: passed beside the caller, and only as one ULID.
+  const parent = parentRequestIdOf(request.headers.get(PARENT_REQUEST_ID_HEADER));
   const outcome = await env.PEER_CALLS.invoke(
     {
       vertical: policy.slug,
@@ -395,6 +401,7 @@ async function peerCall(request: Request, hostname: string, env: Env): Promise<R
       depth: policy.depth ?? 0,
     },
     parsed.data,
+    ...(parent ? [{ parentInvocationId: parent }] : []),
   );
   if (!outcome.ok) return problem(outcome.status, outcome.message);
   return new Response(JSON.stringify({ result: outcome.result ?? null }), {
