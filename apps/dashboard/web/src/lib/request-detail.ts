@@ -1,4 +1,7 @@
 import type { CauseChain, EffectsTree, EmittedLifecycle, HistoryEntry } from '@substrat-run/contracts';
+import { outboundCallsOf, type OutboundCall } from '@substrat-run/control-plane-api/browser';
+
+export type { OutboundCall };
 
 /** A log line, as far as this file reads one — the client's `LogLine` is assignable. */
 export interface LogLine {
@@ -39,6 +42,13 @@ export interface RequestRecord {
   eventId?: string | null;
   attempt?: number | null;
   latenessMs?: number | null;
+  /**
+   * #2192: the outbound `fetch` calls the request made, as its line names them, and how many
+   * past the line's cap were counted instead. Optional: a plane older than #2192 sends neither,
+   * and a row without them made no call the line recorded.
+   */
+  outboundCalls?: OutboundCall[];
+  outboundCallsDropped?: number;
 }
 
 /** #1901: a line's kind, absent read as `request`. */
@@ -115,6 +125,8 @@ export function recordFromLogs(logs: LogLine[]): RequestRecord | null {
       eventId: str(source['eventId']),
       attempt: num(source['attempt']),
       latenessMs: num(source['latenessMs']),
+      outboundCalls: outboundCallsOf(source['outboundCalls']),
+      outboundCallsDropped: num(source['outboundCallsDropped']) ?? 0,
     };
   }
   return null;
@@ -131,9 +143,11 @@ export function isInvocationLine(e: LogLine): boolean {
 }
 
 export interface TimelineMark {
-  kind: 'log' | 'event';
+  kind: 'log' | 'event' | 'call';
   /** Milliseconds from the start of the request; may fall past its end (work after the response). */
   offsetMs: number;
+  /** #2192: an outbound call's time to its response, drawn as a bar from `offsetMs`. */
+  durationMs?: number;
   level: 'debug' | 'info' | 'warn' | 'error';
   label: string;
 }
@@ -167,9 +181,35 @@ export function requestTimeline(
     const at = Date.parse(e.occurredAt);
     if (Number.isFinite(at)) marks.push({ kind: 'event', offsetMs: at - startMs, level: 'info', label: e.type });
   }
+  // #2192: the line measures each call from the request's own start, so no clock is compared.
+  for (const c of record.outboundCalls ?? []) {
+    marks.push({ kind: 'call', offsetMs: c.atMs, durationMs: c.durationMs, level: outboundCallLevel(c), label: outboundCallLabel(c) });
+  }
   marks.sort((a, b) => a.offsetMs - b.offsetMs || (a.kind === b.kind ? 0 : a.kind === 'event' ? 1 : -1));
-  const axisMs = Math.max(durationMs, ...marks.map((m) => m.offsetMs), 1);
+  const axisMs = Math.max(durationMs, ...marks.map((m) => m.offsetMs + (m.durationMs ?? 0)), 1);
   return { startMs, durationMs, marks, axisMs };
+}
+
+/**
+ * #2192: how an outbound call reads on the timeline. A refusal, a timeout, a failure and a 5xx
+ * are what broke the request, so they are errors; any other 4xx is a warning.
+ */
+export function outboundCallLevel(c: OutboundCall): TimelineMark['level'] {
+  if (c.outcome === 'ok') return 'info';
+  if (c.outcome === 'http-error' && c.status !== null && c.status < 500) return 'warn';
+  return 'error';
+}
+
+/** #2192: what an outbound call answered, in a word: its status, or how it ended without one. */
+export function outboundCallResult(c: OutboundCall): string {
+  if (c.outcome === 'refused') return `${c.status ?? 403} refused by the platform`;
+  if (c.status !== null) return String(c.status);
+  return c.reason ? `${c.outcome} (${c.reason})` : c.outcome;
+}
+
+/** #2192: `POST api.example.com/oauth2/token → 403 refused by the platform`. */
+export function outboundCallLabel(c: OutboundCall): string {
+  return `${c.method} ${c.host}${c.path} → ${outboundCallResult(c)}`;
 }
 
 /** `conversation:01J…` → its type and id. The type is before the FIRST colon: ids may hold colons, types do not. */

@@ -243,6 +243,7 @@ export type {
   RequestFacets,
   RequestFacetValue,
   RequestRecord,
+  OutboundCall,
   InvocationKind,
   LogPattern,
   LogPatterns,
@@ -256,6 +257,7 @@ export {
   LOG_PATTERN_TOP,
   INVOCATION_KINDS,
   invocationKindOf,
+  outboundCallsOf,
 } from './observability.js';
 export {
   STORAGE_PAGE_DEFAULT,

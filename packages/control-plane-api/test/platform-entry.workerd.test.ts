@@ -56,10 +56,10 @@ afterAll(async () => {
 });
 
 /** Upload the vertical the way the platform does, with these declared flags, and serve one request. */
-async function served(compatibilityFlags: string[], compatibilityDate = RUNTIME_BASELINE) {
+async function served(compatibilityFlags: string[], compatibilityDate = RUNTIME_BASELINE, source = vertical, path = '/api/things') {
   const uploaded = withPlatformEntry({
     entry: 'worker.js',
-    modules: [{ name: 'worker.js', content: new TextEncoder().encode(vertical), contentType: 'application/javascript+module' }],
+    modules: [{ name: 'worker.js', content: new TextEncoder().encode(source), contentType: 'application/javascript+module' }],
     compatibilityFlags,
   });
   const lines: string[] = [];
@@ -69,14 +69,20 @@ async function served(compatibilityFlags: string[], compatibilityDate = RUNTIME_
     compatibilityDate,
     compatibilityFlags: uploaded.compatibilityFlags,
     bindings: { ROUTER_SECRET: SECRET },
+    // #2192: the network, answered here — a host named `undeclared` the way the egress worker
+    // answers one a vertical never declared, everything else 200.
+    outboundService: (request: Request) =>
+      new URL(request.url).hostname.startsWith('undeclared')
+        ? new Response('{}', { status: 403, headers: { 'x-substrat-egress': 'refused' } })
+        : new Response('{}', { status: 200 }),
     handleRuntimeStdio(stdout) {
       stdout.on('data', (chunk: Buffer) => lines.push(...chunk.toString().split('\n')));
     },
   });
   runtimes.push(mf);
   expect(uploaded.entry).toBe(PLATFORM_ENTRY_MODULE);
-  const res = await mf.dispatchFetch('https://acme.example/api/things', { headers: routed });
-  const body = (await res.json()) as { storeCalls: Array<{ operation: string }> | null };
+  const res = await mf.dispatchFetch(`https://acme.example${path}`, { headers: routed });
+  const body = (await res.json()) as { storeCalls: Array<{ operation: string }> | null; outboundCalls?: unknown };
   return { flags: uploaded.compatibilityFlags, status: res.status, body, lines };
 }
 
@@ -140,5 +146,54 @@ describe('the platform entry, uploaded and run on workerd (#2245)', () => {
     } finally {
       await mf.dispose().catch(() => undefined);
     }
+  });
+});
+
+/**
+ * #2192: the vertical's outbound calls, on workerd. The runtime's `fetch` throws `Illegal
+ * invocation` when called on any receiver but `globalThis` (#1291), which node never does — so
+ * whether the wrapper the entry installs hands each call on correctly is a workerd fact. The
+ * vertical calls `fetch` bare, through an object (`obj.fetch(…)`, the receiver that broke
+ * #1291), and with a streamed body, and answers with what each call returned.
+ */
+const CALLER = `
+export default {
+  async fetch(request) {
+    const client = { fetch };
+    const a = await fetch('https://api.example.com/v1/users/42/0123456789abcdef0123456789abcdef?token=sekret');
+    const b = await client.fetch('https://undeclared.example.com/oauth/token', { method: 'POST' });
+    const body = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('chunk')); c.close(); } });
+    const c = await globalThis.fetch(new Request('https://api.example.com/upload', { method: 'PUT', body, duplex: 'half' }));
+    const stamp = globalThis[Symbol.for('substrat.invocation-stamp')]?.get(request);
+    return Response.json({ statuses: [a.status, b.status, c.status], outboundCalls: stamp?.record.outboundCalls ?? null });
+  },
+};`;
+
+describe('the platform entry records a vertical’s outbound calls, on workerd (#2192)', () => {
+  it('every call reaches the network with the receiver workerd needs, and the line names each one', async () => {
+    const run = await served([], RUNTIME_BASELINE, CALLER);
+    expect(run.status).toBe(200);
+    const body = run.body as unknown as { statuses: number[]; outboundCalls: unknown };
+    expect(body.statuses).toEqual([200, 403, 200]);
+    const named = [
+      { host: 'api.example.com', path: '/v1/users/42/[redacted]', method: 'GET', status: 200, outcome: 'ok', durationMs: expect.any(Number), atMs: expect.any(Number) },
+      { host: 'undeclared.example.com', path: '/oauth/token', method: 'POST', status: 403, outcome: 'refused', durationMs: expect.any(Number), atMs: expect.any(Number) },
+      { host: 'api.example.com', path: '/upload', method: 'PUT', status: 200, outcome: 'ok', durationMs: expect.any(Number), atMs: expect.any(Number) },
+    ];
+    expect(body.outboundCalls).toEqual(named);
+    await expect.poll(() => lineOf(run.lines)?.outboundCalls).toEqual(named);
+    // Redacted on the way to the line, in the entry as it is uploaded.
+    expect(run.lines.join('\n')).not.toContain('sekret');
+    expect(run.lines.join('\n')).not.toContain('0123456789abcdef0123456789abcdef');
+  });
+
+  it('a script that opts out of AsyncLocalStorage still makes its calls; its line names none', async () => {
+    // No recorder is installed here, so the runtime's own `fetch` is reached directly, and it
+    // still refuses an object receiver: the call is made bare.
+    const run = await served(['no_nodejs_als'], RUNTIME_BASELINE, CALLER.replace('client.fetch(', 'fetch('));
+    expect(run.status).toBe(200);
+    const body = run.body as unknown as { statuses: number[]; outboundCalls: unknown };
+    expect(body.statuses).toEqual([200, 403, 200]);
+    expect(body.outboundCalls).toBeNull();
   });
 });
