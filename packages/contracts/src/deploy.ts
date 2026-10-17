@@ -1814,6 +1814,77 @@ export function sqlBytes(migrations: readonly { sql: string; moves?: Readonly<Re
   return migrations.reduce((n, m) => n + utf8Length(m.sql) + declarationBytes(m), 0);
 }
 
+/** Deterministic JSON: object keys sorted recursively, array order preserved. */
+function stableJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(',')}]`;
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${stableJson(o[k])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(v);
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', utf8.encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * `digests.migration` (#1949, #2339): what the promotion gate compares. It covers the store
+ * classes and every SQL migration the host would apply: each migration's module, version, the
+ * SHA-256 of its SQL and, only when it declares any, its `moves` and `discards` (#2322), so a
+ * declaration-free entry hashes as it did before them. `unresolvedIndexes` is the CLI's alone:
+ * the searchables and lists a module declares when the vertical's kernel cannot derive their
+ * index SQL, a push whose manifest then carries no migrations.
+ *
+ * One function on both ends: `substrat push` computes it, and the control plane re-derives it
+ * from the migrations it stores for the version and refuses a push whose digest disagrees, so
+ * the gate never trusts a value only the client computed.
+ */
+export async function migrationDigestOf(input: {
+  doClasses: readonly string[];
+  migrations: readonly {
+    moduleId: string;
+    version: string;
+    sql: string;
+    moves?: Readonly<Record<string, string>>;
+    discards?: Readonly<Record<string, string>>;
+  }[];
+  unresolvedIndexes?: readonly unknown[];
+}): Promise<string> {
+  const sql = await Promise.all(
+    input.migrations.map(async ({ moduleId, version, sql, moves, discards }) => ({
+      moduleId,
+      version,
+      sqlHash: await sha256Hex(sql),
+      ...(moves ? { moves } : {}),
+      ...(discards ? { discards } : {}),
+    })),
+  );
+  const framed = stableJson({
+    doClasses: input.doClasses,
+    sql,
+    ...(input.unresolvedIndexes ? { unresolvedIndexes: input.unresolvedIndexes } : {}),
+  });
+  return (await sha256Hex(framed)).slice(0, 32);
+}
+
+/**
+ * The stored migration digest of a version whose migrations the control plane does not hold
+ * (#2339): pushed before manifests carried them, over the caps a manifest carries, or with no
+ * manifest at all. Nothing can re-derive its digest, and the gate never trusts the pushed one,
+ * so it is stored as a value that equals no other version's: a promote to or over it always asks
+ * for the migration acknowledgement, and the review shows its SQL as not available. Not hex, so
+ * it can never collide with a derived digest.
+ */
+export function unheldMigrationDigest(versionId: string): string {
+  return `${UNHELD_MIGRATION_DIGEST_PREFIX}${versionId}`;
+}
+export const UNHELD_MIGRATION_DIGEST_PREFIX = 'unheld:';
+
 export const deployManifest = z.object({
   version: z.string().min(1),
   /** Display name for a first-time register; defaults to the slug. */
