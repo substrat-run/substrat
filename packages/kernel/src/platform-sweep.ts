@@ -32,6 +32,10 @@ import type { ScheduleSweepReport } from './schedule-state.js';
 import { isPrimaryScope, runningVersionOf, servingPointersFor } from './scope-identity.js';
 import { mapBounded, message } from './map-bounded.js';
 import { runningImportsOf } from './export-break.js';
+import type { OrphanSweepReport } from './attachment-sweep.js';
+
+// #2314: the one record of deleted keys when the admin log could not take it.
+declare const console: { error(message: string): void };
 
 // setTimeout/clearTimeout are web-standard (Node, Workers, browsers) but the
 // kernel pulls in no platform lib typings; declared locally, returning an opaque
@@ -285,6 +289,12 @@ export interface PlatformSweepOptions {
    */
   storageGauge?: StorageGaugeSweepOptions;
   /**
+   * Collect attachment bytes no row names (#2314), a bounded window of scopes per pass. UNSET (the
+   * default) skips the phase: the sweep deletes tenant bytes, so a deployment opts in, and opts in
+   * to a dry run first. See {@link OrphanAttachmentSweepOptions}.
+   */
+  orphanAttachments?: OrphanAttachmentSweepOptions;
+  /**
    * Also reap tenants past their grace window (control-plane.md §4.8): any tenant in
    * `deleting` whose `deletingAt` is older than this many days has every scope reaped
    * and its PII/config directory rows cleared, moving it to `reaped` (a tombstone).
@@ -478,6 +488,8 @@ export interface PlatformSweepReport {
   findings?: FindingPruneReport | null;
   /** What the storage-gauge phase sampled and pruned (#1524). Null when the phase is off. */
   storage?: StorageGaugeSweepReport | null;
+  /** What the orphan-attachment phase did (#2314). Null when the phase is off. */
+  orphanAttachments?: OrphanAttachmentSweepReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
   errors: {
     kind:
@@ -504,7 +516,10 @@ export interface PlatformSweepReport {
       // and the failure digest must not re-send it every tick.
       | 'vertical-events'
       // #1524: one scope's size read failed. Its last stored reading stands.
-      | 'storage';
+      | 'storage'
+      // #2314: one scope's orphan-attachment pass failed. Nothing it had not condemned is deleted,
+      // and a condemned object is finished by a later pass.
+      | 'attachment-sweep';
     id: string;
     error: string;
   }[];
@@ -626,6 +641,84 @@ export interface StorageGaugeSweepReport {
   recorded: number;
   /** Samples past retention deleted. */
   pruned: number;
+}
+
+/**
+ * One scope's orphan-attachment pass as the platform's reach answers it (#2314):
+ * - `swept`: the deployment that serves the scope ran the pass, and this is its report;
+ * - `refused`: the scope is not one the pass may judge now (a copy, not active, an unsettled copy
+ *   in another script, no deployment serves it). A standing condition, counted, never an error;
+ * - `unsupported`: the deployment serving the scope was built before the pass existed. Standing
+ *   until it is redeployed, counted, never an error.
+ * A throw is a failure, and lands in `errors`.
+ */
+export type OrphanAttachmentOutcome =
+  | { swept: OrphanSweepReport }
+  | { refused: string }
+  | { unsupported: string };
+
+/**
+ * How the orphan-attachment phase runs (#2314).
+ *
+ * It takes a window of at most `batch` active primary scopes per pass, starting at `rng()` of the
+ * way round the id order and wrapping (the provision reconcile's rule, #1653), so a scope that
+ * fails on every pass cannot hold a slot for good and every scope is reached over enough passes.
+ *
+ * `mode: 'delete'` is not enough on its own to delete a scope's bytes. A scope is swept for real
+ * only when the admin log holds a DRY-RUN row for it (`sweepOrphanAttachments`, `dryRun: true`)
+ * from within `dryRunWindowMs`, and such a row is written only by a dry run that found orphans.
+ * Any other scope gets a dry run instead, which writes that row when it finds anything. So every
+ * delete follows a recorded report of what the scope's orphans were, in that window.
+ */
+export interface OrphanAttachmentSweepOptions {
+  /** `'dry-run'` reports and changes nothing; `'delete'` condemns and deletes, per the rule above. */
+  mode: 'dry-run' | 'delete';
+  /** One scope's pass, reached wherever the scope is served. */
+  sweepScopeFn: (tenantId: TenantId, scopeId: ScopeId, opts: { dryRun: boolean }) => Promise<OrphanAttachmentOutcome>;
+  /** The most scopes one pass visits. Default {@link ORPHAN_ATTACHMENT_SWEEP_BATCH}. `0` pauses the phase. */
+  batch?: number;
+  /** Where the window starts, in [0, 1). `Math.random` unless given, and injectable to test reach. */
+  rng?: () => number;
+  /** How recent a scope's dry-run row must be for a delete. Default {@link ORPHAN_SWEEP_DRY_RUN_WINDOW_MS}. */
+  dryRunWindowMs?: number;
+  /** The instant the dry-run window is judged against. Default the wall clock. */
+  now?: () => string;
+}
+
+/** The orphan-attachment phase's per-pass bound when `batch` is unset (#2314). */
+export const ORPHAN_ATTACHMENT_SWEEP_BATCH = 25;
+
+/** How recent a scope's dry-run row must be before a pass deletes its bytes, by default (#2314). */
+export const ORPHAN_SWEEP_DRY_RUN_WINDOW_MS = 7 * 86_400_000;
+
+/** How many scope ids each standing-condition count of the report carries; the count stays exact. */
+const ORPHAN_ATTACHMENT_REPORTED_IDS = 50;
+
+/** What the orphan-attachment phase did in one pass (#2314). */
+export interface OrphanAttachmentSweepReport {
+  mode: 'dry-run' | 'delete';
+  /** Active primary scopes the phase could visit. Always `visited + deferred`. */
+  eligible: number;
+  /** Of those, the ones in this pass's window. */
+  visited: number;
+  /** Of those, the ones past this pass's `batch`. */
+  deferred: number;
+  /** Passes run, by kind: a dry run, and a real one. */
+  dryRuns: number;
+  deletes: number;
+  /** Delete-mode scopes given a dry run because the log held no recent dry-run row for them. */
+  awaitingDryRun: number;
+  /** Passes whose deployment holds no attachment store for the tenant (`bucket: 'none'`). */
+  noStore: { count: number; scopeIds: string[] };
+  /** Passes the restore fence held. */
+  fenced: number;
+  /** Orphans found, and objects deleted, summed over the passes. */
+  orphans: number;
+  deleted: number;
+  /** Scopes the pass may not judge now. Standing, never an error. */
+  refused: { count: number; scopeIds: string[] };
+  /** Scopes whose deployment predates the pass. Standing, never an error. */
+  unsupported: { count: number; scopeIds: string[] };
 }
 
 /** One pass of the access-log drain (K-24, control-plane.md §4.4). */
@@ -878,6 +971,13 @@ function assertSweepBatches(options: PlatformSweepOptions): void {
   if (gauge?.batch !== undefined && !(Number.isInteger(gauge.batch) && gauge.batch >= 0)) {
     throw substratError('validation_failed', `storageGauge.batch must be a non-negative integer, got ${String(gauge.batch)}`);
   }
+  const orphans = options.orphanAttachments;
+  if (orphans?.batch !== undefined && !(Number.isInteger(orphans.batch) && orphans.batch >= 0)) {
+    throw substratError('validation_failed', `orphanAttachments.batch must be a non-negative integer, got ${String(orphans.batch)}`);
+  }
+  if (orphans && orphans.mode !== 'dry-run' && orphans.mode !== 'delete') {
+    throw substratError('validation_failed', `orphanAttachments.mode must be 'dry-run' or 'delete', got ${String(orphans.mode)}`);
+  }
 }
 
 export async function runPlatformSweep(
@@ -904,6 +1004,7 @@ export async function runPlatformSweep(
     telemetry: null,
     findings: null,
     storage: null,
+    orphanAttachments: null,
     errors: [],
   };
 
@@ -1263,6 +1364,16 @@ export async function runPlatformSweep(
         }
       });
     }
+  }
+
+  // -- orphan attachment bytes (#2314) ------------------------------------------
+  // After the migration phase and skipping what failed there, like every phase that reaches a
+  // vertical. Opt-in, and its own window per pass: it lists a bucket prefix and wakes a scope.
+  if (options.orphanAttachments) {
+    const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
+      (s) => isPrimaryScope(s) && !failedThisPass.has(s.id),
+    );
+    report.orphanAttachments = await sweepOrphanAttachmentWindow(host, options, options.orphanAttachments, scopes, report);
   }
 
   if (options.gcSnapshots !== false) {
@@ -2476,5 +2587,120 @@ async function sweepStorageGauge(
     // the next pass finds the same scopes due.
     report.errors.push({ kind: 'storage', id: 'directory', error: message(err) });
   }
+  return out;
+}
+
+const pushCapped = (bucket: { count: number; scopeIds: string[] }, id: string): void => {
+  bucket.count += 1;
+  if (bucket.scopeIds.length < ORPHAN_ATTACHMENT_REPORTED_IDS) bucket.scopeIds.push(id);
+};
+
+/**
+ * Whether the admin log holds a dry-run row for the scope from within the window: the licence for
+ * a destructive pass (`OrphanAttachmentSweepOptions`). A delete row in the same window is not one.
+ *
+ * One read per visited scope, in delete mode only, and on a host that records directory reads it is
+ * one more access-log row each (K-24): at the default batch and a 15-minute cron, 2,400 a day. The
+ * control plane's reach already reads the scope, its tenant, and its serving pointer or its bound
+ * version per visit, which is three such rows, so this adds a quarter. It stays an audited
+ * read on purpose: a quiet read of the admin log would be the one platform read K-24 does not see.
+ * One read per pass for the whole window is not cheaper, since a row carries up to the pass's limit
+ * of keys and the window holds a week of them.
+ */
+async function hasRecentDryRun(
+  host: ScopeHost,
+  actor: PlatformActorId,
+  scope: Scope,
+  since: string,
+): Promise<boolean> {
+  const rows = await host.admin.auditLog(actor, {
+    tenantId: scope.tenantId,
+    scopeId: scope.id,
+    action: 'sweepOrphanAttachments',
+    since,
+    order: 'desc',
+    limit: 100,
+  });
+  return rows.some((r) => (r.after as { dryRun?: unknown } | null)?.dryRun === true);
+}
+
+/** The orphan-attachment phase (#2314): one window of scopes, each swept where it is served. */
+async function sweepOrphanAttachmentWindow(
+  host: ScopeHost,
+  options: PlatformSweepOptions,
+  phase: OrphanAttachmentSweepOptions,
+  scopes: readonly Scope[],
+  report: PlatformSweepReport,
+): Promise<OrphanAttachmentSweepReport> {
+  const batch = phase.batch ?? ORPHAN_ATTACHMENT_SWEEP_BATCH;
+  const out: OrphanAttachmentSweepReport = {
+    mode: phase.mode,
+    eligible: scopes.length,
+    visited: 0,
+    deferred: 0,
+    dryRuns: 0,
+    deletes: 0,
+    awaitingDryRun: 0,
+    noStore: { count: 0, scopeIds: [] },
+    fenced: 0,
+    orphans: 0,
+    deleted: 0,
+    refused: { count: 0, scopeIds: [] },
+    unsupported: { count: 0, scopeIds: [] },
+  };
+  const window = reconcileWindow(scopes, batch, phase.rng ?? Math.random);
+  out.visited = window.length;
+  out.deferred = scopes.length - window.length;
+  const nowMs = Date.parse(phase.now?.() ?? new Date().toISOString());
+  const since = new Date(nowMs - (phase.dryRunWindowMs ?? ORPHAN_SWEEP_DRY_RUN_WINDOW_MS)).toISOString();
+  await mapBounded(window, options.concurrency ?? 8, async (s) => {
+    try {
+      let dryRun = true;
+      if (phase.mode === 'delete') {
+        dryRun = !(await hasRecentDryRun(host, options.actor, s, since));
+        if (dryRun) out.awaitingDryRun += 1;
+      }
+      const outcome = await phase.sweepScopeFn(s.tenantId, s.id, { dryRun });
+      if ('refused' in outcome) return pushCapped(out.refused, s.id);
+      if ('unsupported' in outcome) return pushCapped(out.unsupported, s.id);
+      const r = outcome.swept;
+      // The deployment's word on what it did, never the mode asked for: a deployment that ignored
+      // the flag is reported as what it was.
+      if (r.dryRun) out.dryRuns += 1;
+      else out.deletes += 1;
+      if (r.bucket === 'none') pushCapped(out.noStore, s.id);
+      if (r.fencedUntil !== undefined) out.fenced += 1;
+      out.orphans += r.orphans;
+      out.deleted += r.deleted;
+      if (r.orphans > 0 || r.deleted > 0) {
+        const entry = {
+          tenantId: s.tenantId,
+          scopeId: s.id,
+          dryRun: r.dryRun,
+          listed: r.listed,
+          candidates: r.candidates,
+          orphans: r.orphans,
+          deleted: r.deleted,
+          keys: r.keys,
+          ...(r.fencedUntil !== undefined ? { fencedUntil: r.fencedUntil } : {}),
+        };
+        try {
+          await host.admin.recordOrphanSweep(options.actor, entry);
+        } catch (err) {
+          // The bytes are already gone when a real pass deleted any: this line is then the only
+          // record of which ones, so it carries the whole entry, keys and all, before the error.
+          if (r.deleted > 0) {
+            console.error(`orphan-attachment sweep: deleted ${r.deleted} object(s) but the admin-log row was not written: ${JSON.stringify(entry)}`);
+          }
+          throw new Error(
+            `the admin-log row was not written (${message(err)})` +
+              (r.deleted > 0 ? `; ${r.deleted} object(s) were deleted, and the log line names them` : ''),
+          );
+        }
+      }
+    } catch (err) {
+      report.errors.push({ kind: 'attachment-sweep', id: s.id, error: message(err) });
+    }
+  });
   return out;
 }

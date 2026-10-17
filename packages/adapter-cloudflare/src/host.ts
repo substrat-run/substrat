@@ -149,6 +149,7 @@ import {
   peerBindingAudit,
   connectionBindingAudit,
   copyMarkAudit,
+  orphanSweepAudit,
   type EventEffectsInput,
   type EffectsTree,
   type InvocationEventsInput,
@@ -511,7 +512,7 @@ import {
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
-import { fenceAttachmentSweep, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
+import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
@@ -1670,7 +1671,7 @@ interface ScopeStubRpc {
     idempotencyKey?: string,
   ): Promise<DoReply<AttachmentRecord>>;
   /** #2314: the scope side of an orphan-sweep pass — condemn (or, dry, only read) the rowless ids. */
-  orphanAttachmentsReply(ids: string[], now: string, tenantId: TenantId, condemn: boolean, vouched?: boolean): Promise<DoReply<string[]>>;
+  orphanAttachmentsReply(ids: string[], now: string, tenantId: TenantId, condemn: boolean, vouched?: boolean, expectedVersionId?: string): Promise<DoReply<string[]>>;
   /** #2314: the receipt's tenant (or null) and whether any attachment row is held; read without migrating. */
   sweepFenceFacts(): Promise<{ tenant: string | null; holdsAttachments: boolean }>;
   /**
@@ -4169,11 +4170,26 @@ export class CloudflareScopeHost implements ScopeHost {
           'to have found no unsettled copy of it (copiesSettled)',
       );
     }
-    const store = await this.resolveAttachmentStore(tenantId);
     const stub = this.scopeStub(scopeId);
     const now = this.orphanSweepClock();
+    const expected = request.expectedVersionId;
     const judge = (condemn: boolean) => async (ids: readonly string[], at: string) =>
-      unwrapReply(await stub.orphanAttachmentsReply([...ids], at, tenantId, condemn, vouched));
+      unwrapReply(await stub.orphanAttachmentsReply([...ids], at, tenantId, condemn, vouched, expected));
+    // The scope's copy gives its verdict first, with no ids: every refusal it makes, and whether this
+    // script is the one the platform routed the pass to, in the pass's own mode. So a destructive
+    // pass routed to the wrong script is refused even when there is nothing to condemn.
+    await judge(request.dryRun !== true)([], now);
+    // A script with no attachment store for the tenant holds none of its bytes: a vertical whose
+    // modules keep no files. Answered as that, marked, rather than the throw `resolveAttachmentStore`
+    // makes for a write, so the platform's pass can tell it from a failure and from a store that held
+    // nothing. A scope that holds an attachment row does keep files, so its missing store is a
+    // misconfiguration, and it fails.
+    const bucket = await this.attachmentBuckets(tenantId);
+    if (!bucket) {
+      if ((await stub.sweepFenceFacts()).holdsAttachments) throw missingAttachmentStore(tenantId, scopeId);
+      return { listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: request.dryRun === true, bucket: 'none' };
+    }
+    const store = r2TenantBlobStore(bucket);
     return sweepOrphanAttachments(store, scopeId, {
       rowless: (ids) => judge(false)(ids, now),
       condemn: judge(true),
@@ -9991,6 +10007,11 @@ export class CloudflareScopeHost implements ScopeHost {
       recordCopyMark: async (actor, entry) => {
         const { tenantId, scopeId, action, ...after } = copyMarkAudit.parse(entry);
         await this.recordAdmin(actor, action === 'mark' ? 'markScopeCopy' : 'clearScopeCopyMark', { tenantId, scopeId }, null, after);
+      },
+      /** #2314: one orphan-attachment pass over a scope, written after the vertical's own pass. */
+      recordOrphanSweep: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = orphanSweepAudit.parse(entry);
+        await this.recordAdmin(actor, 'sweepOrphanAttachments', { tenantId, scopeId }, null, after);
       },
       accessLog: async (actor, filter?: AccessLogFilter): Promise<AccessLogEntry[]> => {
         const rows = await this.cp.accessLog({

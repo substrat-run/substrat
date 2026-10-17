@@ -45,7 +45,8 @@ export type {
 // The console's staff surface (#971). Browser-safe, so it is ALSO a subpath of its own
 // (`./browser`): a bundler resolving the root entry would pull the whole server.
 export * from './browser.js';
-export { VerticalClient, AUDITED_CALL_DEADLINE_MS } from './vertical-client.js';
+export { VerticalClient, AUDITED_CALL_DEADLINE_MS, isRouteMiss } from './vertical-client.js';
+export { sweepScopeAttachments, type AttachmentSweepReach } from './attachment-sweep.js';
 export {
   assertNoUnreachableScopeCopies, claimScopeScriptReap, drainScopeScriptCopies, retryScopeScriptCopy, retryScopeScriptCopies, reapScopeScriptCopies,
   settleExpiredScopeScriptCopies, sweepScopeScriptCopies,

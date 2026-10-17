@@ -203,6 +203,22 @@ export function orphanSweepContractSuite(adapterName: string, makeFixture: () =>
       for (const key of foreign) await store.delete(key);
     });
 
+    it("records a pass on the admin log as `sweepOrphanAttachments`, with the actor, the scope and the pass's counts", async () => {
+      const keys = [attachmentBlobKey(s1, idAt(Date.now()))];
+      await host.admin.recordOrphanSweep(staff, { tenantId: t1, scopeId: s1, dryRun: true, listed: 3, candidates: 2, orphans: 1, deleted: 0, keys });
+      const [row] = await host.admin.auditLog(staff, { tenantId: t1, scopeId: s1, action: 'sweepOrphanAttachments' });
+      expect(row).toMatchObject({
+        action: 'sweepOrphanAttachments',
+        actor: staff,
+        tenantId: t1,
+        scopeId: s1,
+        after: { dryRun: true, listed: 3, candidates: 2, orphans: 1, deleted: 0, keys },
+      });
+      await expect(
+        host.admin.recordOrphanSweep(staff, { tenantId: t1, scopeId: s1, dryRun: true, listed: -1, candidates: 0, orphans: 0, deleted: 0, keys: [] }),
+      ).rejects.toThrow();
+    });
+
     it('a dry run deletes nothing and condemns nothing, and names what a pass would delete', async () => {
       const now = Date.now();
       const orphan = await plant(now);
