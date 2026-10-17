@@ -125,7 +125,7 @@ describe('the rebind review read (#2347)', () => {
       app.request(`/tenants/${tA}/scopes/${sc}/rebind-vertical`, {
         method: 'POST', headers: { ...asA, 'content-type': 'application/json' }, body: JSON.stringify({ vertical: target }),
       });
-    for (const [sc, target] of [[own, 'rival/app'], [own, 'nobody/none'], [onForeign, 'acme/next']] as const) {
+    for (const [sc, target] of [[own, 'rival/app'], [own, 'nobody/none'], [onForeign, 'acme/next'], [ulid(), 'acme/next']] as const) {
       expect(await seen(await rebind(sc, target))).toEqual(refusals[0]);
     }
   });

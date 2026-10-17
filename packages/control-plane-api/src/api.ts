@@ -6633,7 +6633,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // another tenant's private vertical, which a confined caller must not even learn exists
     // (404, as `GET /verticals/:slug` answers it). #2347: the one rule its review read shares.
     const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
-    if (await crossingHidden(c.get('principal'), scope?.vertical ?? null, vertical)) return crossingNotFound(c);
+    // An unknown scope answers the same bytes as a hidden crossing, so the two cannot be told apart.
+    if (!scope || (await crossingHidden(c.get('principal'), scope.vertical ?? null, vertical))) return crossingNotFound(c);
     try {
       const r = await rebindScopeOntoVertical(c, tenantId, scopeId, vertical, {
         ackMigrations,
