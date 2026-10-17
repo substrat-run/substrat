@@ -2699,7 +2699,8 @@ export interface HostAdmin {
    * that carries none that can be shown (pushed before #1677, or over the push's caps), which
    * a reader must show as "not available", never as "no migrations". `[]` is a version whose
    * modules ship none. Refuses a version of another vertical, like `versionManifest`.
-   * Access-logged: an owner read for the promote review, never a bulk or background path.
+   * Access-logged. Read by the promote review, and by every serving upload, which injects the
+   * digest of the served version's migrations (#2349) — one read per upload, never a scan.
    */
   versionMigrations(
     actor: PlatformActorId,

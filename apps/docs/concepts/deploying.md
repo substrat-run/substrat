@@ -76,6 +76,16 @@ What the platform hands back differs by capability, and the difference is worth 
   observability views group by. An in-place promote refreshes it to the version now being served
   rather than inheriting the outgoing one. Read it from `env.SUBSTRAT_VERSION_ID` if you need it;
   never declare it, or anything else under that prefix — admission refuses the namespace, as above.
+- **The version's migrations, as a digest.** When the platform holds the SQL migrations a push
+  declared, both uploads also carry `SUBSTRAT_MIGRATIONS_DIGEST`: one digest over the migrations
+  your modules authored (the index and archive/trash migrations the platform derives from your
+  declarations are left out). Before a scope applies a pending migration, the scope host compares
+  it with the authored migrations the deployed code registers, and if they differ it applies nothing and fails that
+  scope closed with a `migration failed … scope fails closed` record naming both digests. The
+  fix is to push again from the build that is deployed. It is an integrity check: it catches a
+  build whose worker registers other migrations than the push declared. A scope with nothing to
+  apply is never checked, and a version pushed without its migrations in the manifest carries no
+  digest and is not checked.
 
 Either way, "how a vertical gets a dependency" is: declare the request, get it granted, call what
 the platform hands over — never bind the raw resource yourself.

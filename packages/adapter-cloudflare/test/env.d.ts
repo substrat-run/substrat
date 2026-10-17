@@ -60,5 +60,7 @@ declare namespace Cloudflare {
     /** #2263: peerMod narrowed / without the caller — peer-local.test.ts. */
     NARROWED_PEER_SCOPE: DurableObjectNamespace;
     REMOVED_PEER_SCOPE: DurableObjectNamespace;
+    /** #2349: scopes held to the stored migration set digest a test sets — migration-set-check.test.ts. */
+    SET_CHECK_SCOPE: DurableObjectNamespace;
   }
 }

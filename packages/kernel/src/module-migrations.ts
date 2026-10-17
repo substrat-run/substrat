@@ -13,9 +13,9 @@ import type { SqlMigration } from './scope-host.js';
  *
  * The one place that order is written. Both hosts store what this returns as a module's
  * migrations, and `substrat push` calls it (from the vertical's own kernel) to carry the SQL a
- * promote would run (#1677). A module changing only its `searchables` or `lists` runs real
- * schema SQL, so a reader that saw only the authored set would show a promote as changing
- * nothing.
+ * promote would run (#1677). A module changing only its `searchables`, `entityStates` or `lists`
+ * runs real schema SQL, so a reader that saw only the authored set would show a promote as
+ * changing nothing.
  *
  * Structural, so a `ModuleRegistration` fits and so does a module read back as data.
  */

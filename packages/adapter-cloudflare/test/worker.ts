@@ -23,6 +23,7 @@ import {
   spineParentMod,
   journalFenceDropMod,
   journalWriteMod,
+  listMod,
   spineDropMod,
   spineShadowMod,
 } from '@substrat-run/contract-tests';
@@ -282,6 +283,25 @@ export const WipedCopyScopeDO = defineScopeDO([wipedCopyMod], {});
  * its code-time module set, so each version is its own class; peer-local.test.ts provisions it
  * through a host that registers the WIDER `peerMod`, which is the storage an earlier version left.
  */
+/**
+ * #2349: the stored migration set digest a test sets for `SET_CHECK_SCOPE`. Hosted, it is a
+ * plain_text binding the uploader injects per version; env is script-wide here, so the test
+ * hands the value through this key and the class reads it whenever a pass checks.
+ */
+export const SET_CHECK_DIGEST = Symbol.for('substrat.test.migrations-digest');
+const SetCheckBase = defineScopeDO([listMod], {});
+export class SetCheckScopeDO extends SetCheckBase {
+  constructor(ctx: DurableObjectState, env: ScopeDoEnv) {
+    super(
+      ctx,
+      Object.defineProperty({ ...env }, 'SUBSTRAT_MIGRATIONS_DIGEST', {
+        enumerable: true,
+        get: () => (globalThis as Record<symbol, string | undefined>)[SET_CHECK_DIGEST],
+      }),
+    );
+  }
+}
+
 export const NarrowedPeerScopeDO = defineScopeDO([peerModNarrowed], {});
 export const RemovedPeerScopeDO = defineScopeDO([peerModWithoutCaller], {});
 
