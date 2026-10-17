@@ -1509,13 +1509,28 @@ export function mountPlatformSurface<Env extends object>(
     if (!host.sweepOrphanAttachments) {
       return c.json({ error: 'this deployment cannot sweep orphan attachments (#2314). Redeploy it' }, 501);
     }
-    return c.json(
-      await host.sweepOrphanAttachments(body.tenantId, body.scopeId, {
-        dryRun: body.dryRun,
-        copiesSettled: true,
-        ...(body.limit !== undefined ? { limit: body.limit } : {}),
-      }),
-    );
+    const report = await host.sweepOrphanAttachments(body.tenantId, body.scopeId, {
+      dryRun: body.dryRun,
+      copiesSettled: true,
+      ...(body.limit !== undefined ? { limit: body.limit } : {}),
+    });
+    // A destructive pass leaves its own line in this deployment's log, whoever asked for it: the
+    // scope, the counts and the keys deleted (as many as the pass's limit, never more). The platform
+    // also writes an admin-log row, and this line is what remains on this side when it does not.
+    if (!body.dryRun) {
+      console.log(JSON.stringify({
+        host: 'orphan-attachment-sweep',
+        tenantId: body.tenantId,
+        scopeId: body.scopeId,
+        listed: report.listed,
+        candidates: report.candidates,
+        orphans: report.orphans,
+        deleted: report.deleted,
+        ...(report.fencedUntil !== undefined ? { fencedUntil: report.fencedUntil } : {}),
+        keys: report.keys,
+      }));
+    }
+    return c.json(report);
   });
 
   // Scope stores are not reached through this script (#2207). The control plane

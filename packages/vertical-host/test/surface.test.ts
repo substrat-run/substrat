@@ -600,16 +600,29 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect(await ok.json()).toEqual(report);
     expect(seen).toEqual([[TENANT, SCOPE, { dryRun: true, copiesSettled: true }]]);
 
-    const destructive = await post(host, { ...body, dryRun: false, limit: 10 });
+    // A destructive pass writes its own log line, keys and all; a dry run writes none.
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    let destructive: Response;
+    try {
+      await post(host, body);
+      expect(logged).not.toHaveBeenCalled();
+      destructive = await post(host, { ...body, dryRun: false, limit: 10 });
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(logged.mock.calls[0]![0]))).toEqual({
+        host: 'orphan-attachment-sweep', tenantId: TENANT, scopeId: SCOPE, listed: 1, candidates: 1, orphans: 1, deleted: 0, keys: ['k'],
+      });
+    } finally {
+      logged.mockRestore();
+    }
     expect(destructive.status).toBe(200);
-    expect(seen[1]).toEqual([TENANT, SCOPE, { dryRun: false, copiesSettled: true, limit: 10 }]);
+    expect(seen[2]).toEqual([TENANT, SCOPE, { dryRun: false, copiesSettled: true, limit: 10 }]);
 
     expect((await post(host, body, {})).status).toBe(403);
     // A pass whose mode is not said, or that does not carry the platform's word on the ledger, is refused.
     expect((await post(host, { tenantId: TENANT, scopeId: SCOPE, copiesSettled: true })).status).toBe(400);
     expect((await post(host, { ...body, copiesSettled: false })).status).toBe(400);
     expect((await post(host, { tenantId: TENANT, scopeId: SCOPE, dryRun: true })).status).toBe(400);
-    expect(seen).toHaveLength(2);
+    expect(seen).toHaveLength(3);
 
     const refused = await post(fakeHost(), body);
     expect(refused.status).toBe(501);
