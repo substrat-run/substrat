@@ -21,6 +21,8 @@ import {
   MICROSOFT365_FILES_EVENT,
   bindMicrosoft365Scope,
   listMicrosoft365Bindings,
+  unbindMicrosoft365Scope,
+  SYNC_TIMEOUT_MS,
   microsoft365ChannelChange,
   microsoft365FilesRequested,
   registerMicrosoft365FilesConnector,
@@ -609,6 +611,52 @@ describe('reads: the sync lands what is in the folder', () => {
       while (!r.complete) r = await w.sync(1);
       expect(w.landed).toEqual([expect.objectContaining({ change: 'delete', itemId: gone, reason: 'deleted' })]);
       expect(w.landed.some((c) => c.itemId === keep)).toBe(false);
+    });
+
+    // CodeRabbit on #2353: a pass in flight must not write back a binding the operator changed.
+    it('an unbind while a pass runs stays unbound', async () => {
+      const w = await world();
+      for (let i = 0; i < 8; i += 1) w.drive.put(w.general, `f${i}.txt`, 'x');
+      await w.bind();
+      let once = true;
+      w.drive.onRequest = async (c) => {
+        if (once && c.url.includes('/root/delta') && c.url.includes('skip=')) {
+          once = false;
+          await unbindMicrosoft365Scope(w.host, w.conn, w.s);
+        }
+      };
+      expect(await w.sync()).toMatchObject({ complete: false, superseded: true });
+      expect(await listMicrosoft365Bindings(w.host, w.conn)).toEqual([]);
+    });
+
+    it('a re-bind to another folder while a pass runs keeps the new folder', async () => {
+      const w = await world();
+      for (let i = 0; i < 8; i += 1) w.drive.put(w.general, `f${i}.txt`, 'x');
+      const other = w.drive.mkdir('root', 'Other');
+      await w.bind();
+      let once = true;
+      w.drive.onRequest = async (c) => {
+        if (once && c.url.includes('/root/delta') && c.url.includes('skip=')) {
+          once = false;
+          w.drive.onRequest = null;
+          await w.bind('Other');
+        }
+      };
+      expect(await w.sync()).toMatchObject({ superseded: true });
+      const [binding] = await listMicrosoft365Bindings(w.host, w.conn);
+      expect(binding).toMatchObject({ folder: 'Other', folderItemId: other });
+      expect(binding!.pass).toBeUndefined();
+      expect(binding!.deltaLink).toBeUndefined();
+    });
+
+    it('gives a sync request time for a file at the cap, not the connection default', async () => {
+      const w = await world();
+      w.drive.put(w.general, 'a.txt', 'a');
+      await w.bind();
+      const timeout = vi.spyOn(AbortSignal, 'timeout');
+      await w.sync();
+      expect(timeout).toHaveBeenCalled();
+      expect(new Set(timeout.mock.calls.map(([ms]) => ms))).toEqual(new Set([SYNC_TIMEOUT_MS]));
     });
 
     it('a file the feed presents before its folder still lands', async () => {

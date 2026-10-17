@@ -57,6 +57,8 @@ export class FakeDrive {
   lostAnswers: { when: (c: Call) => boolean; once?: boolean }[] = [];
   /** Delta tokens older than this answer 410 (Graph's "resync required"). */
   expiredBefore = 0;
+  /** Called before each request is answered — how a test lets something else happen mid-pass. */
+  onRequest: ((c: Call) => Promise<void> | void) | null = null;
   /** Items whose size the drive leaves out, as Graph may. */
   sizeless = new Set<string>();
   /** Items per delta page — small, so every test pages. */
@@ -160,6 +162,7 @@ export class FakeDrive {
       bodyBytes: typeof body === 'string' ? body.length : (body?.byteLength ?? 0),
     };
     this.calls.push(call);
+    await this.onRequest?.(call);
     const failure = this.failures.find((f) => f.when(call));
     if (failure) {
       if (failure.once) this.failures.splice(this.failures.indexOf(failure), 1);

@@ -85,6 +85,7 @@ export {
   declareMicrosoft365FilesConnector,
   syncMicrosoft365Scope,
   SYNC_PAGES_PER_CALL,
+  SYNC_TIMEOUT_MS,
   sweepMicrosoft365Files,
   withSuffix,
 } from './files.js';

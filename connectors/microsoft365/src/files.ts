@@ -505,10 +505,21 @@ export interface Microsoft365SyncResult {
   pages: number;
   /** False when the pass stopped at its page budget; the next call resumes where it stopped. */
   complete: boolean;
+  /**
+   * Set when the binding was unbound or bound again while this call ran: the call stopped without
+   * writing the binding back, so the operator's change stands.
+   */
+  superseded?: true;
 }
 
 /** How many pages of the change feed one call reads before it stops and leaves the rest to the next. */
 export const SYNC_PAGES_PER_CALL = 20;
+/**
+ * A sync's per-request timeout: long enough for a file at {@link MAX_FILE_BYTES} to download. The
+ * connection's 15-second default would time out on the same large file every pass, and the pass
+ * would never get past it.
+ */
+export const SYNC_TIMEOUT_MS = 120_000;
 
 /**
  * Sync ONE bound scope: read the change feed a page at a time, keep what is in the folder, land
@@ -526,22 +537,39 @@ export async function syncMicrosoft365Scope(
   options: Microsoft365Options & { maxPages?: number },
 ): Promise<Microsoft365SyncResult> {
   if (binding.folderMissing) throw folderMissingError();
-  const conn = await openMicrosoft365Connection(host.admin, options, {
+  const timed = { ...options, timeoutMs: options.timeoutMs ?? SYNC_TIMEOUT_MS };
+  const conn = await openMicrosoft365Connection(host.admin, timed, {
     id: connectionId,
     tenantId: binding.tenantId,
     vertical: binding.vertical,
   });
-  const client = await signedInGraph(conn, options);
-  let current = binding;
-  const save = async (next: Microsoft365Binding) => {
-    current = next;
+  const client = await signedInGraph(conn, timed);
+  /**
+   * Write the binding back — onto what is stored NOW, and only while it is still the binding this
+   * call started from. An unbind or a re-bind that happened meanwhile wins: the call stops rather
+   * than resurrect the folder the operator moved away from. `false` means it stopped.
+   */
+  const save = async (patch: Partial<Microsoft365Binding>, opts: { endPass?: boolean } = {}) => {
+    const stored = await readBinding(host, connectionId, binding.scopeId);
+    if (!stored || stored.boundAt !== binding.boundAt || stored.folderItemId !== binding.folderItemId) return false;
+    const next: Microsoft365Binding = { ...stored, ...patch };
+    if (opts.endPass) delete next.pass;
     await host.admin.putConnectorState(connectionId, bindingKey(binding.scopeId), next);
+    return true;
   };
+  const superseded = (pages: number, changes: number, full: boolean): Microsoft365SyncResult => ({
+    scopeId: binding.scopeId,
+    changes,
+    full,
+    pages,
+    complete: false,
+    superseded: true,
+  });
 
   // The folder first: gone (or no longer a folder in this drive) marks the binding and stops,
   // before the feed is read. Never a fall back to the library root.
   const markMissing = async (): Promise<never> => {
-    await save({ ...current, folderMissing: { since: nowOf(options).toISOString() } });
+    await save({ folderMissing: { since: nowOf(options).toISOString() } });
     throw folderMissingError();
   };
   try {
@@ -564,7 +592,7 @@ export async function syncMicrosoft365Scope(
     startedAt: nowOf(options).toISOString(),
     changes: 0,
   });
-  let pass = current.pass ?? freshPass(!current.deltaLink, current.deltaLink ?? null);
+  let pass = binding.pass ?? freshPass(!binding.deltaLink, binding.deltaLink ?? null);
 
   const scopeRef = scopeIdSchema.parse(binding.scopeId);
   const scope = await host.getConnectorScope(connectionId, scopeRef);
@@ -646,7 +674,7 @@ export async function syncMicrosoft365Scope(
       // what is held, so unchanged items land nothing and what it never presents lands as deleted.
       if (!(e instanceof GraphError && e.status === 410) || (pass.full && pass.next === null)) throw e;
       pass = freshPass(true, null);
-      await save({ ...current, pass });
+      if (!(await save({ pass }))) return superseded(pages, changes, true);
       continue;
     }
 
@@ -689,14 +717,16 @@ export async function syncMicrosoft365Scope(
         changes += unseen.length;
         pass = { ...pass, changes: pass.changes + unseen.length };
       }
-      const done: Microsoft365Binding = { ...current, deltaLink: page.delta, lastSync: { syncedAt: nowOf(options).toISOString(), changes: pass.changes } };
-      delete done.pass;
-      await save(done);
+      const saved = await save(
+        { deltaLink: page.delta, lastSync: { syncedAt: nowOf(options).toISOString(), changes: pass.changes } },
+        { endPass: true },
+      );
+      if (!saved) return superseded(pages, changes, pass.full);
       return { scopeId: binding.scopeId, changes, full: pass.full, pages, complete: true };
     }
     if (!page.next) throw new GraphError(502, undefined, 'the change feed ended without a delta link');
     pass = { ...pass, next: page.next };
-    await save({ ...current, pass });
+    if (!(await save({ pass }))) return superseded(pages, changes, pass.full);
     if (pages >= maxPages) return { scopeId: binding.scopeId, changes, full: pass.full, pages, complete: false };
   }
 }
