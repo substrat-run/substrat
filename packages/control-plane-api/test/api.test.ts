@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
-import { PLATFORM_SWEEP_HOST_KEY, assetHash, deployManifest, connectionId, denialFilter, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeId, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
+import { PLATFORM_SWEEP_HOST_KEY, assetHash, deployManifest, migrationDigestOf, connectionId, denialFilter, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeId, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
 import { PROBLEM_CONTENT_TYPE, problemForStatus } from '@substrat-run/contracts';
 import { denialLogQuery } from '../src/api.js';
 import { takeNonProblemRefusals } from './setup/problem-tripwire.js';
@@ -4901,6 +4901,23 @@ describe('control-plane API — deploy', () => {
     expect(deployed.at(-1)!.bundle.versionId).toBe(version.id);
     const verticals = (await (await app.request('/verticals', { headers: auth })).json()).entries;
     expect(verticals).toContainEqual(expect.objectContaining({ slug: 'fsm', source: 'cli' }));
+  });
+
+  it('refuses a push whose migration digest is not the one its migrations give, before anything is uploaded (#2339)', async () => {
+    const migrations = [{ moduleId: 'fsm', version: '0001-init', sql: 'CREATE TABLE a (id TEXT);' }];
+    const other = [{ ...migrations[0]!, sql: 'DROP TABLE a;' }];
+    const theirs = await migrationDigestOf({ doClasses: ['ScopeDO'], migrations });
+    const before = deployed.length;
+    const res = await push('fsm-digest', form(manifest({ migrations: other, digests: { manifest: 'm1', permission: 'p1', migration: theirs } })));
+    expect(res.status).toBe(400);
+    expect(await res.text()).toMatch(/is not the digest of the migrations it carries/);
+    expect(deployed).toHaveLength(before);
+    expect((await host.admin.listVerticals(staff)).map((v) => v.slug)).not.toContain('fsm-digest');
+    // Its twin: the same migrations under their own digest upload and store that digest.
+    const ok = await push('fsm-digest', form(manifest({ migrations, digests: { manifest: 'm1', permission: 'p1', migration: theirs } })));
+    expect(ok.status).toBe(201);
+    expect(deployed).toHaveLength(before + 1);
+    expect((await ok.json()).migrationDigest).toBe(theirs);
   });
 
   /** #1902: the sweeper decision is the push's, made once and recorded with the version. */
