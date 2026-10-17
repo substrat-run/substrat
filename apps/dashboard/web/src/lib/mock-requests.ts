@@ -112,6 +112,20 @@ function fixture(now = Date.now()): RequestRecord[] {
       entities: eventCount > 0 ? [`ticket:${id}`] : [],
       versionId: t >= deploy ? 'ticket0@2.15.0' : 'ticket0@2.14.3',
       kind: 'request',
+      // #2192: the assistant calls its model provider; a failed call is one whose upstream
+      // answered 503, and on the older version the platform refused an undeclared host.
+      ...(operation === 'ticket0/assistant-answer' || failed
+        ? {
+            outboundCalls: failed
+              ? t >= deploy
+                ? [{ host: 'api.mail.example', path: '/v3/messages', method: 'POST', status: 503, outcome: 'http-error', durationMs: 31, atMs: 12 }]
+                : [{ host: 'hooks.example.net', path: '/v1/[redacted]', method: 'POST', status: 403, outcome: 'refused', durationMs: 4, atMs: 9 }]
+              : [
+                  { host: 'api.models.example', path: '/v1/embeddings', method: 'POST', status: 200, outcome: 'ok', durationMs: 12, atMs: 6 },
+                  { host: 'api.models.example', path: '/v1/messages', method: 'POST', status: 200, outcome: 'ok', durationMs: 24, atMs: 20 },
+                ],
+          }
+        : {}),
     });
     // #1901: a reply's notification goes out through an executor, under the reply's call id;
     // the mail provider refuses a few, which retry and now and then dead-letter.

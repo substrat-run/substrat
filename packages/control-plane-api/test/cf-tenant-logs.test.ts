@@ -1065,6 +1065,20 @@ describe('cf tenant logs — async work (#1901)', () => {
     expect(requests.map((r) => r.kind)).toEqual(['request']);
   });
 
+  it('#2192: a request row carries the outbound calls its line names, and only entries of the line’s shape', async () => {
+    const refused = { host: 'undeclared.example.com', path: '/oauth2/token', method: 'POST', status: 403, outcome: 'refused', durationMs: 7, atMs: 3 };
+    const failed = { host: 'api.example.com', path: '/v1', method: 'GET', status: null, outcome: 'failed', durationMs: 1, atMs: 9, reason: 'TypeError' };
+    const { reader } = readerOver(() => [
+      invocation({ invocationId: 'with-calls', outboundCalls: [refused, { host: 'x' }, 'junk', failed], outboundCallsDropped: 3 }, '01RQ'),
+      invocation({ invocationId: 'without' }, '01RR'),
+    ]);
+    const rows = await reader.tenantRequests!({ tenantId: '01TENANT', from: 0, to: 10_000, limit: 10 });
+    const byId = new Map(rows.map((r) => [r.invocationId, r]));
+    expect(byId.get('with-calls')).toMatchObject({ outboundCalls: [refused, failed], outboundCallsDropped: 3 });
+    // A line that names none — or predates the field — reads as no calls, not as missing data.
+    expect(byId.get('without')).toMatchObject({ outboundCalls: [], outboundCallsDropped: 0 });
+  });
+
   /** The backend, as far as these filters go: leaves ANDed, groups ORed, then the limit. */
   const matches = (source: Record<string, unknown>, f: Record<string, unknown>): boolean => {
     if (f['kind'] === 'group') {

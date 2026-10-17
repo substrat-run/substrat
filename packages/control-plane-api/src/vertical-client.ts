@@ -117,9 +117,37 @@ import {
   PLATFORM_SECRET_HEADER,
   WRITE_REVISION_HEADER,
 } from '@substrat-run/contracts';
-import type { CopyRestoreFence, KeptCopy, LoadMarker, OpenedAttachment, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
+import type { CopyRestoreFence, KeptCopy, LoadMarker, OpenedAttachment, OrphanSweepReport, SubjectRedactionCounts, UndrainedEvents, UndrainedRead } from '@substrat-run/kernel';
 import { undrainedEventsOf } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
+
+/**
+ * A 404 the vertical's router answered because it has no such route: a non-empty body that is
+ * not JSON (Hono's miss is plain text). vertical-host's `classifyError` and a vertical's own
+ * `mapError` also answer 404, for a scope or row it could not find, and those come as the JSON
+ * envelope. A 404 whose body is empty or could not be read proves nothing, so it is not a miss.
+ */
+export function isRouteMiss(err: ControlPlaneError): boolean {
+  if (err.status !== 404 || !err.body?.trim()) return false;
+  try {
+    JSON.parse(err.body);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** The orphan-attachment report as it crosses the wire (#2314): `OrphanSweepReport`, checked. */
+const orphanSweepReportWire = z.object({
+  listed: z.number().int().nonnegative(),
+  candidates: z.number().int().nonnegative(),
+  orphans: z.number().int().nonnegative(),
+  deleted: z.number().int().nonnegative(),
+  keys: z.array(z.string()),
+  fencedUntil: z.string().optional(),
+  dryRun: z.boolean(),
+  bucket: z.literal('none').optional(),
+});
 
 /** `routeAnswer`'s word for a deployment that predates the route it was asked (#1722, #2010). */
 const PREDATES = Symbol('predates');
@@ -1751,6 +1779,31 @@ export class VerticalClient {
       throw new ControlPlaneError(502, `vertical answered database-size without a size for scope ${scopeId}`);
     }
     return answer.bytes;
+  }
+
+  /**
+   * One orphan-attachment pass over a scope this deployment serves (#2314). The caller is the
+   * platform's sweep, and only after it read the directory and the whole copy ledger itself and
+   * found nothing unsettled: `copiesSettled: true` is that word, never a person's. The deployment
+   * judges age and the restore fence by its own clock. A 200 whose report does not parse is a wire
+   * disagreement and throws, so a garbled answer is never counted as a clean pass.
+   */
+  async sweepOrphanAttachments(input: {
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    dryRun: boolean;
+    copiesSettled: true;
+    /** The version the scope runs, by the directory: the deployment refuses the pass if it is not it. */
+    expectedVersionId: string;
+    limit?: number;
+  }): Promise<OrphanSweepReport> {
+    const answer = await this.postInternal<unknown>('/internal/attachment-sweep', input, 'attachment-sweep');
+    const parsed = orphanSweepReportWire.safeParse(answer);
+    if (!parsed.success) {
+      throw new ControlPlaneError(502, `vertical answered attachment-sweep without a report for scope ${input.scopeId}`);
+    }
+    const { fencedUntil, bucket, ...rest } = parsed.data;
+    return { ...rest, ...(fencedUntil !== undefined ? { fencedUntil } : {}), ...(bucket !== undefined ? { bucket } : {}) };
   }
 
   /**

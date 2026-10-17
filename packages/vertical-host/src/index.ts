@@ -40,6 +40,8 @@ import {
   type UndrainedEvents,
   type ScopeRoleHolder,
   type SubjectRedactionCounts,
+  type OrphanSweepReport,
+  type OrphanSweepRequest,
 } from '@substrat-run/kernel';
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
 import { platformSweeperOf, registerScopeSweepHost } from './scope-sweep-host.js';
@@ -366,6 +368,12 @@ export interface VerticalScopeHost {
    * without it, and the route answers 501 rather than 0, which a sum would add.
    */
   databaseSizeLocal?(scopeId: ScopeId): Promise<number>;
+  /**
+   * One orphan-attachment pass over a scope this deployment holds (#2314). OPTIONAL for the reason
+   * `databaseSizeLocal` is: a host built before it satisfies this interface without it, and the
+   * route answers 501, which the platform counts as a deployment to redeploy, not as a clean pass.
+   */
+  sweepOrphanAttachments?(tenantId: TenantId, scopeId: ScopeId, request?: OrphanSweepRequest): Promise<OrphanSweepReport>;
   /**
    * Each scope store's size in this deployment (#2207). OPTIONAL for the same reason
    * as `databaseSizeLocal`: a host built before it satisfies this interface without
@@ -1489,6 +1497,53 @@ export function mountPlatformSurface<Env extends object>(
       return c.json({ error: 'this deployment cannot read a database size (#1524). Redeploy it' }, 501);
     }
     return c.json({ bytes: await host.databaseSizeLocal(scope) });
+  });
+
+  // #2314: one orphan-attachment pass over a scope this deployment holds. The platform calls it
+  // only for the deployment that SERVES the scope, after reading the directory and the copy ledger
+  // itself, which a script holding the scope cannot do: `copiesSettled` is that word, and the body
+  // must carry it. `dryRun` is required, so a destructive pass is always asked for in so many words.
+  // No instant is taken from the body (a `now` is stripped by the parse): the host judges the age
+  // floor and the restore fence against its own clock. Metadata only crosses back: counts and keys.
+  app.post('/internal/attachment-sweep', async (c) => {
+    const body = z
+      .object({
+        tenantId: tenantIdOf,
+        scopeId: scopeIdOf,
+        dryRun: z.boolean(),
+        limit: z.number().int().min(0).max(1000).optional(),
+        copiesSettled: z.literal(true),
+        // The version the platform routed this pass to; the host refuses it in a script deployed as another.
+        expectedVersionId: z.string().min(1),
+      })
+      .parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    if (!host.sweepOrphanAttachments) {
+      return c.json({ error: 'this deployment cannot sweep orphan attachments (#2314). Redeploy it' }, 501);
+    }
+    const report = await host.sweepOrphanAttachments(body.tenantId, body.scopeId, {
+      dryRun: body.dryRun,
+      copiesSettled: true,
+      expectedVersionId: body.expectedVersionId,
+      ...(body.limit !== undefined ? { limit: body.limit } : {}),
+    });
+    // A destructive pass leaves its own line in this deployment's log, whoever asked for it: the
+    // scope, the counts and the keys deleted (as many as the pass's limit, never more). The platform
+    // also writes an admin-log row, and this line is what remains on this side when it does not.
+    if (!body.dryRun) {
+      console.log(JSON.stringify({
+        host: 'orphan-attachment-sweep',
+        tenantId: body.tenantId,
+        scopeId: body.scopeId,
+        listed: report.listed,
+        candidates: report.candidates,
+        orphans: report.orphans,
+        deleted: report.deleted,
+        ...(report.fencedUntil !== undefined ? { fencedUntil: report.fencedUntil } : {}),
+        keys: report.keys,
+      }));
+    }
+    return c.json(report);
   });
 
   // Scope stores are not reached through this script (#2207). The control plane

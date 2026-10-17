@@ -234,6 +234,7 @@ import {
   peerBindingAudit,
   connectionBindingAudit,
   copyMarkAudit,
+  orphanSweepAudit,
   redrainEventsInput,
   REDRAIN_BATCH,
   type OperationTarget,
@@ -652,6 +653,7 @@ import {
   refuseCondemnedInDump,
   rowlessAttachmentIds,
   sweepOrphanAttachments,
+  missingAttachmentStore,
   SETTLED_COPY_STATES,
   unsettledCopyRefusal,
   type OrphanSweepReport,
@@ -3699,6 +3701,20 @@ export class SqliteScopeHost implements ScopeHost {
     if (unsettled) throw unsettled;
     // Only an active scope: an archived or reaped one is not this pass's to judge.
     const rt = await this.openActiveScope(tenantId, scopeId);
+    // A scope with no blob store holds no bytes: answered as that, marked, after every guard above,
+    // so the platform's pass tells it from a failure and from a store that held nothing.
+    const stores = row?.vertical
+      ? (this.directory.prepare('SELECT 1 FROM blob_stores WHERE tenant_id = ? AND vertical = ? LIMIT 1').get(tenantId, row.vertical) as unknown)
+      : undefined;
+    if (!stores) {
+      // A scope that holds an attachment row does keep files: its missing store is a misconfiguration.
+      const holds = await rt.actor.enqueue(() => {
+        const table = rt.db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_substrat_attachments'`).get();
+        return table !== undefined && rt.db.prepare('SELECT 1 FROM _substrat_attachments LIMIT 1').get() !== undefined;
+      });
+      if (holds) throw missingAttachmentStore(tenantId, scopeId);
+      return { listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: request.dryRun === true, bucket: 'none' };
+    }
     const store = this.attachmentStore(tenantId, row?.vertical ?? null);
     return sweepOrphanAttachments(store, scopeId, {
       rowless: async (ids) => rt.actor.enqueue(() => rowlessAttachmentIds(spineSql(rt.db), ids)),
@@ -12246,6 +12262,11 @@ export class SqliteScopeHost implements ScopeHost {
       recordCopyMark: async (actor, entry) => {
         const { tenantId, scopeId, action, ...after } = copyMarkAudit.parse(entry);
         this.recordAdmin(actor, action === 'mark' ? 'markScopeCopy' : 'clearScopeCopyMark', { tenantId, scopeId }, null, after);
+      },
+      /** #2314: one orphan-attachment pass over a scope, written after the vertical's own pass. */
+      recordOrphanSweep: async (actor, entry) => {
+        const { tenantId, scopeId, ...after } = orphanSweepAudit.parse(entry);
+        this.recordAdmin(actor, 'sweepOrphanAttachments', { tenantId, scopeId }, null, after);
       },
       accessLog: async (actor, filter?: AccessLogFilter): Promise<AccessLogEntry[]> => {
         const where: string[] = [];

@@ -15,6 +15,7 @@ import {
   refuseCondemnedAttachment,
   fenceAttachmentSweep,
   sweepOrphanAttachments,
+  orphanSweepVersionRefusal,
   type OrphanSweepScope,
 } from '../src/attachment-sweep.js';
 import { attachmentBlobKey, type ScopedSql, type SqlValue, type TenantBlobStore } from '../src/scope-host.js';
@@ -282,5 +283,27 @@ describe('condemnOrphanAttachments on SQLite (#2314)', () => {
     condemnOrphanAttachments(sql, ['OLD'], at(NOW - ORPHAN_TOMBSTONE_RETENTION_MS - DAY));
     condemnOrphanAttachments(sql, ['NEW'], at(NOW));
     expect(tombstones(sql).map((r) => r.id)).toEqual(['NEW']);
+  });
+});
+
+describe('orphanSweepVersionRefusal (#2314)', () => {
+  const V = '01JTESTVRSN0000000000000AA';
+  const W = '01JTESTVRSN0000000000000BB';
+  it('a script deployed as the routed version passes, in either mode', () => {
+    expect(orphanSweepVersionRefusal(V, V, true)).toBeNull();
+    expect(orphanSweepVersionRefusal(V, V, false)).toBeNull();
+  });
+  it('a script deployed as another version refuses, in either mode', () => {
+    for (const destructive of [true, false]) {
+      expect(orphanSweepVersionRefusal(W, V, destructive)).toMatchObject({ code: 'conflict', message: expect.stringMatching(/runs version .*BB, not .*AA/) });
+    }
+  });
+  it('a deployed script with no version identity refuses a destructive pass and lets a dry run through', () => {
+    expect(orphanSweepVersionRefusal(null, V, true)).toMatchObject({ code: 'conflict', message: expect.stringMatching(/no version identity/) });
+    expect(orphanSweepVersionRefusal(null, V, false)).toBeNull();
+  });
+  it('a pass the platform did not route asks nothing (a self-host)', () => {
+    expect(orphanSweepVersionRefusal(null, undefined, true)).toBeNull();
+    expect(orphanSweepVersionRefusal(W, undefined, true)).toBeNull();
   });
 });

@@ -440,7 +440,7 @@ export function scopeStoreContractSuite(
     });
 
     it('with no observer, a call lands on the request now running; a passed one wins (#2245)', async () => {
-      // The platform entry installs this slot (vertical-host's `runRecordingStoreCalls`);
+      // The platform entry installs this slot (vertical-host's `runRecording`);
       // here a fixed tally stands in for the request's record.
       const key = Symbol.for(STORE_CALL_SINK_KEY);
       const g = globalThis as unknown as Record<symbol, unknown>;

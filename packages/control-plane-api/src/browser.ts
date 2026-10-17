@@ -32,6 +32,10 @@ export type {
   SystemSwitchesQuery,
   TenantStores,
 } from './staff-client.js';
+// #2192: one reading of a request line's outbound calls, for the control plane's request list
+// and the dashboard's slide-over alike. `observability.ts` imports nothing.
+export { outboundCallsOf } from './observability.js';
+export type { OutboundCall } from './observability.js';
 // The client package's whole surface, so a caller of either entry reaches it from here and
 // no existing import moved (#971). `test/reexports.test.ts` pins that nothing is missing.
 export * from '@substrat-run/control-plane-client';

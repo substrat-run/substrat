@@ -364,6 +364,8 @@ export {
   rowlessAttachmentIds,
   sweepOrphanAttachments,
   unsettledCopyRefusal,
+  missingAttachmentStore,
+  orphanSweepVersionRefusal,
 } from './attachment-sweep.js';
 export type { OrphanSweepOptions, OrphanSweepReport, OrphanSweepRequest, OrphanSweepScope } from './attachment-sweep.js';
 export {
@@ -846,6 +848,8 @@ export {
   StorageReadUnsupported,
   PROVISION_RECONCILE_BATCH,
   CROSS_VERTICAL_CONSUMERS_PER_PASS,
+  ORPHAN_ATTACHMENT_SWEEP_BATCH,
+  ORPHAN_SWEEP_DRY_RUN_WINDOW_MS,
   runCrossVerticalFrom,
   registryImportCandidates,
   crossVerticalHealth,
@@ -873,6 +877,9 @@ export type {
   CrossVerticalReach,
   CrossVerticalReport,
   ProvisionReconcileReport,
+  OrphanAttachmentOutcome,
+  OrphanAttachmentSweepOptions,
+  OrphanAttachmentSweepReport,
 } from './platform-sweep.js';
 // #1653: which scopes are the real install, and which version runs on them — shared so
 // every receipt writer and the sweep answer both questions the same way.

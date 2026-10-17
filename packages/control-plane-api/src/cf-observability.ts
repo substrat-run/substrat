@@ -17,7 +17,7 @@ import type {
   RequestRecord,
   TenantRequestScope,
 } from './observability.js';
-import { TENANT_METRICS_LIMIT, REQUEST_FACET_KEYS, INVOCATION_KINDS, invocationKindOf } from './observability.js';
+import { TENANT_METRICS_LIMIT, REQUEST_FACET_KEYS, INVOCATION_KINDS, invocationKindOf, outboundCallsOf } from './observability.js';
 
 /**
  * An HTTP method as RFC 9110 §9.1 defines it: a `token` (§5.6.2), one or more `tchar`.
@@ -208,6 +208,8 @@ function requestRecordOf(e: Record<string, unknown>): RequestRecord {
     eventId: str(source['eventId']),
     attempt: num(source['attempt']),
     latenessMs: num(source['latenessMs']),
+    outboundCalls: outboundCallsOf(source['outboundCalls']),
+    outboundCallsDropped: num(source['outboundCallsDropped']) ?? 0,
   };
 }
 

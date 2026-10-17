@@ -150,6 +150,7 @@ How the platform works **today** — present tense. A document here may not open
 | [observability.md](architecture/observability.md) | `built` | Piggyback Cloudflare; stamp only what Cloudflare cannot know. |
 | [oidc-only-demos.md](architecture/oidc-only-demos.md) | `built` | Remove the credential store from the verticals. |
 | [orchestration.md](architecture/orchestration.md) | `built` | Portal-driven vertical deploy. Superseded in part by D-37/K-33. |
+| [orphan-attachment-sweep.md](architecture/orphan-attachment-sweep.md) | `built` | How the platform collects attachment bytes no row names, and the runbook for turning it on. |
 | [permission-registry-enforcement.md](architecture/permission-registry-enforcement.md) | `built` | The permission registry, derived from TypeScript. Logged as D-47. |
 | [platform-intents.md](architecture/platform-intents.md) | `built` | How a sandbox-clean vertical requests a privileged platform action. |
 | [platform-neutral-surface.md](architecture/platform-neutral-surface.md) | `built` | What Substrat exposes, minus Cloudflare. |
