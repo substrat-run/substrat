@@ -26,3 +26,21 @@ export async function derivedDigestOf(manifest: Record<string, unknown>): Promis
     migrations: manifest.migrations as Parameters<typeof migrationDigestOf>[0]['migrations'],
   });
 }
+
+/**
+ * A `publishVersion` input whose `migrationDigest` tag becomes a held migration set: its
+ * `manifestJson` (when it has one) gains the fixture migration unless it carries its own, and
+ * `migrationDigest` (and the manifest's `digests.migration`) become the derived digest.
+ */
+export async function heldVersion<V extends { migrationDigest: string; manifestJson?: string | null }>(input: V): Promise<V> {
+  const manifest = input.manifestJson ? (JSON.parse(input.manifestJson) as Record<string, unknown>) : {};
+  const { migrations, ...rest } = manifest;
+  const { manifestJson, migrationDigest } = await heldMigrations(
+    input.migrationDigest,
+    Array.isArray(migrations) ? manifest : rest,
+  );
+  const held = JSON.parse(manifestJson) as Record<string, unknown>;
+  const digests = held.digests as Record<string, unknown> | undefined;
+  if (digests) held.digests = { ...digests, migration: migrationDigest };
+  return { ...input, migrationDigest, manifestJson: JSON.stringify(held) };
+}

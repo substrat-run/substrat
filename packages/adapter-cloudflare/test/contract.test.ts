@@ -74,6 +74,7 @@ import {
   idempotencyContractSuite,
   listContractSuite,
   migrationDigestContractSuite,
+  heldVersion,
   entityStateContractSuite,
   entityStateMigrationContractSuite,
   entityTrashContractSuite,
@@ -972,21 +973,21 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
     const publish = async (permissions: string[], retired?: string[]) => {
       const id = ulid();
       const shape = { entityType: 'contact', permissions, ...(retired ? { retired } : {}), bootstrap: true, holder: HOLDER, bind: { permission: 'contact:invite' } };
-      await host.admin.publishVersion(staff, {
+      await host.admin.publishVersion(staff, await heldVersion({
         id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
         permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
         manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [shape] } }),
-      });
+      }));
       await host.admin.admitVersion(staff, id);
       return id;
     };
     const binds = await publish(['contact:read-own']);
     const retired = await publish([], ['contact:read-own']);
     const dropped = ulid();
-    await host.admin.publishVersion(staff, {
+    await host.admin.publishVersion(staff, await heldVersion({
       id: dropped, verticalSlug: slug, version: '9.0.0', manifestDigest: 'm-d', permissionDigest: 'p', migrationDigest: 'g',
       deploymentRef: null, manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [] } }),
-    });
+    }));
     await host.admin.admitVersion(staff, dropped);
     await host.admin.bindScopeVersion(staff, t, s, binds);
     await host.admin.markScopeProvisioned(staff, t, s, binds, { retirementsFinished: true });
@@ -6147,11 +6148,11 @@ describe('#2185 — wedge risk: the retirements-finished column added to an exis
     });
     const publish = async (slug: string, entityGrants: object[]) => {
       const id = ulid();
-      await host.admin.publishVersion(staff, {
+      await host.admin.publishVersion(staff, await heldVersion({
         id, verticalSlug: slug, version: `1.0.${id.slice(-6).toLowerCase()}`, manifestDigest: `m-${id}`,
         permissionDigest: `p-${id}`, migrationDigest: 'g', deploymentRef: null,
         manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants } }),
-      });
+      }));
       await host.admin.admitVersion(staff, id);
       return id;
     };
@@ -6306,11 +6307,11 @@ describe('#2184 — wedge risk: the bound-shapes column added to an existing dir
     const shape = (permissions: string[]) => ({ entityType: 'contact', permissions, bootstrap: true, holder: HOLDER });
     const publish = async (slug: string, entityGrants: object[]) => {
       const id = ulid();
-      await host.admin.publishVersion(staff, {
+      await host.admin.publishVersion(staff, await heldVersion({
         id, verticalSlug: slug, version: `1.0.${id.slice(-6).toLowerCase()}`, manifestDigest: `m-${id}`,
         permissionDigest: `p-${id}`, migrationDigest: 'g', deploymentRef: null,
         manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants } }),
-      });
+      }));
       await host.admin.admitVersion(staff, id);
       return id;
     };

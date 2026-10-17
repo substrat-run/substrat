@@ -12,6 +12,7 @@ import {
   stableDeploymentRefFor,
   type VerticalClient,
 } from '@substrat-run/control-plane-api';
+import { heldVersion } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 
@@ -239,7 +240,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     for (const v of ['v1', 'v2', 'v3'] as const) {
       const id = ulid();
       const ref = `carry-vert-${id.toLowerCase()}`;
-      await dir.admin.publishVersion(staff, {
+      await dir.admin.publishVersion(staff, await heldVersion({
         id, verticalSlug: slug, version: `1.0.${v.slice(1)}`,
         manifestDigest: `m-${v}`, permissionDigest: 'p', migrationDigest: 'g', deploymentRef: ref,
         manifestJson: JSON.stringify({
@@ -249,7 +250,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
           digests: { manifest: `m-${v}`, permission: 'p', migration: 'g' },
           registry: { permissions: [], roles: [], entityGrants: [] },
         }),
-      });
+      }));
       version[v] = id;
       refOf.set(id, ref);
       hostOf.set(ref, new CloudflareScopeHost({ scope: namespaces[v], controlPlane: env.PC_CONTROL_PLANE, secretBox }));
@@ -1868,10 +1869,12 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       targetLineage ??= (async () => {
         await dir.admin.registerVertical(staff, { slug: target, name: 'Carry Dst', source: 'cli', ownerTenant: t });
         const id = ulid();
-        await dir.admin.publishVersion(staff, {
+        await dir.admin.publishVersion(staff, await heldVersion({
           id, verticalSlug: target, version: '1.0.0', manifestDigest: 'm-dst', permissionDigest: 'p', migrationDigest: 'g',
           deploymentRef: `${target}-${id.toLowerCase()}`,
-        });
+          // #2339: the same migration set as the source lineage, so the crossing is not a migration change.
+          manifestJson: JSON.stringify({ doClasses: ['ScopeDO'] }),
+        }));
         await dir.admin.setVerticalServing(staff, target, { ref: targetServing, versionId: id, doClasses: [], migrationTag: 't1' });
       })();
       await targetLineage;
@@ -1962,10 +1965,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       await dir.admin.bindScopeVersion(staff, t, sid, version.v2);
       // A version with no script of its own: the log names it, and no ref can be read from it.
       bare = ulid();
-      await dir.admin.publishVersion(staff, {
+      await dir.admin.publishVersion(staff, await heldVersion({
         id: bare, verticalSlug: slug, version: '1.0.9', manifestDigest: 'm-bare', permissionDigest: 'p', migrationDigest: 'g',
         deploymentRef: null,
-      });
+      }));
       await dir.admin.bindScopeVersion(staff, t, sid, bare);
       await dir.admin.bindScopeVersion(staff, t, sid, version.v2);
       // A scope whose v3 copy a wipe already emptied: its tombstone is the proof.
