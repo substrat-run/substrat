@@ -333,7 +333,7 @@ describe('writes: a vertical puts files in the channel', () => {
   });
 
   describe('the fence refuses before Graph is called', () => {
-    const outside: [string, Partial<Microsoft365FilesRequested>][] = [
+    const outside: [string, { directory?: string; name?: string }][] = [
       ['a dot-dot directory', { directory: '..' }],
       ['dot-dot inside the directory', { directory: 'Offers/../../Leadership' }],
       ['an encoded dot-dot', { directory: '%2e%2e' }],
@@ -348,16 +348,21 @@ describe('writes: a vertical puts files in the channel', () => {
       ['a trailing dot', { directory: 'Offers.' }],
       ['a trailing space', { directory: 'Offers ' }],
       ['a name that is not NFC', { directory: 'Café' }],
-      ['a dot-dot file name', { files: [{ attachmentId: 'x', name: '..' }] }],
-      ['a file name with a slash', { files: [{ attachmentId: 'x', name: '../secret.txt' }] }],
-      ['a reserved device name', { files: [{ attachmentId: 'x', name: 'CON.txt' }] }],
+      ['a dot-dot file name', { name: '..' }],
+      ['a file name with a slash', { name: '../secret.txt' }],
+      ['a reserved device name', { name: 'CON.txt' }],
+      ['a file name with a colon', { name: 'a:b.txt' }],
     ];
     it.each(outside)('%s', async (_label, over) => {
       const w = await world();
       await w.bind();
       const a = await w.attach('ok.txt', 'x');
       const before = w.drive.calls.length;
-      await w.send({ files: [{ attachmentId: a.id }], conflict: 'replace', ...over });
+      await w.send({
+        ...(over.directory === undefined ? {} : { directory: over.directory }),
+        files: [{ attachmentId: a.id, ...(over.name === undefined ? {} : { name: over.name }) }],
+        conflict: 'replace',
+      });
       expect(w.drive.calls.length).toBe(before);
       expect(await w.ledgers()).toEqual([]);
       expect(w.drive.childrenNamed('root')).toEqual(['General', 'Leadership']);
