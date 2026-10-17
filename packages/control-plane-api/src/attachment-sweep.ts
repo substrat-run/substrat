@@ -1,6 +1,6 @@
 import type { PlatformActorId, ScopeId, TenantId } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
-import { isPrimaryScope, runningVersionOf, unsettledCopyRefusal, type HostAdmin, type OrphanAttachmentOutcome } from '@substrat-run/kernel';
+import { ORPHAN_SWEEP_UNLICENSED, isPrimaryScope, runningVersionOf, unsettledCopyRefusal, type HostAdmin, type OrphanAttachmentOutcome } from '@substrat-run/kernel';
 import { listAllScopeScriptCopies, routeOfScope } from './scope-copy-cleanup.js';
 import { isRouteMiss, type VerticalClient } from './vertical-client.js';
 
@@ -25,7 +25,8 @@ export interface AttachmentSweepReach {
  *   bound version's), with no fallback to another script and never to a host here, whose scope
  *   namespace holds none of the scope's rows and would judge every object an orphan.
  * Each of those is a `refused` outcome, a standing condition the sweep counts. A deployment built
- * before the route (501, or a route miss) is `unsupported`. Anything else throws.
+ * before the route (501, or a route miss) is `unsupported`. A destructive pass the scope refuses
+ * for want of its own dry-run licence (#2350) is `unlicensed`. Anything else throws.
  */
 export async function sweepScopeAttachments(
   reach: AttachmentSweepReach,
@@ -59,11 +60,23 @@ export async function sweepScopeAttachments(
       if (err.status === 501 || isRouteMiss(err)) {
         return { unsupported: `the deployment serving scope ${scopeId} predates the orphan-attachment sweep (${err.status}); redeploy it` };
       }
+      // #2350: the scope's own storage holds no dry-run licence in force, so the phase dry-runs it.
+      if (err.status === 409 && problemReasonOf(err.body) === ORPHAN_SWEEP_UNLICENSED) return { unlicensed: err.message };
       // The deployment's own guards (a copy marker, a lifecycle it holds, a receipt naming another
       // tenant, a version that is not the one routed to, as a promote mid-pass leaves it) refuse with
       // a conflict or a not-found: the same standing kind as the ones above, and never a licence.
       if (err.status === 409 || err.status === 404) return { refused: err.message };
     }
     throw err;
+  }
+}
+
+/** The `reason` a refusal's problem document carries, or undefined. */
+function problemReasonOf(body: string | undefined): string | undefined {
+  try {
+    const reason = (JSON.parse(body ?? '') as { reason?: unknown } | null)?.reason;
+    return typeof reason === 'string' ? reason : undefined;
+  } catch {
+    return undefined;
   }
 }

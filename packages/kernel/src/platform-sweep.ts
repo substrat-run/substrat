@@ -32,7 +32,7 @@ import type { ScheduleSweepReport } from './schedule-state.js';
 import { isPrimaryScope, runningVersionOf, servingPointersFor } from './scope-identity.js';
 import { mapBounded, message } from './map-bounded.js';
 import { runningImportsOf } from './export-break.js';
-import type { OrphanSweepReport } from './attachment-sweep.js';
+import { ORPHAN_SWEEP_DRY_RUN_WINDOW_MS, type OrphanSweepReport } from './attachment-sweep.js';
 
 // #2314: the one record of deleted keys when the admin log could not take it.
 declare const console: { error(message: string): void };
@@ -650,12 +650,16 @@ export interface StorageGaugeSweepReport {
  *   in another script, no deployment serves it). A standing condition, counted, never an error;
  * - `unsupported`: the deployment serving the scope was built before the pass existed. Standing
  *   until it is redeployed, counted, never an error.
+ * - `unlicensed`: a destructive pass the scope refused because its own storage holds no dry run in
+ *   force (#2350): a restore or a carry dropped it, it aged out, or the deployment never recorded
+ *   one. The phase runs the dry run in the same visit.
  * A throw is a failure, and lands in `errors`.
  */
 export type OrphanAttachmentOutcome =
   | { swept: OrphanSweepReport }
   | { refused: string }
-  | { unsupported: string };
+  | { unsupported: string }
+  | { unlicensed: string };
 
 /**
  * How the orphan-attachment phase runs (#2314).
@@ -669,6 +673,12 @@ export type OrphanAttachmentOutcome =
  * from within `dryRunWindowMs`, and such a row is written only by a dry run that found orphans.
  * Any other scope gets a dry run instead, which writes that row when it finds anything. So every
  * delete follows a recorded report of what the scope's orphans were, in that window.
+ *
+ * The scope's own storage holds the same rule (#2350), so it holds whoever asks for a pass: a
+ * deployment that has it refuses a destructive pass without a dry-run licence of its own, and
+ * deletes only ids that dry run listed. Such a refusal (`unlicensed`) gets a dry run in the same
+ * visit, counted as `awaitingDryRun`. The admin-log row stays the operator's record, and the
+ * licence for a deployment pushed before the scope held one.
  */
 export interface OrphanAttachmentSweepOptions {
   /** `'dry-run'` reports and changes nothing; `'delete'` condemns and deletes, per the rule above. */
@@ -688,8 +698,11 @@ export interface OrphanAttachmentSweepOptions {
 /** The orphan-attachment phase's per-pass bound when `batch` is unset (#2314). */
 export const ORPHAN_ATTACHMENT_SWEEP_BATCH = 25;
 
-/** How recent a scope's dry-run row must be before a pass deletes its bytes, by default (#2314). */
-export const ORPHAN_SWEEP_DRY_RUN_WINDOW_MS = 7 * 86_400_000;
+/**
+ * How recent a scope's dry-run row must be before a pass deletes its bytes, by default (#2314). The
+ * scope's own licence (#2350) is in force for the same window.
+ */
+export { ORPHAN_SWEEP_DRY_RUN_WINDOW_MS };
 
 /** How many scope ids each standing-condition count of the report carries; the count stays exact. */
 const ORPHAN_ATTACHMENT_REPORTED_IDS = 50;
@@ -706,7 +719,10 @@ export interface OrphanAttachmentSweepReport {
   /** Passes run, by kind: a dry run, and a real one. */
   dryRuns: number;
   deletes: number;
-  /** Delete-mode scopes given a dry run because the log held no recent dry-run row for them. */
+  /**
+   * Delete-mode scopes given a dry run because the log held no recent dry-run row for them, or
+   * because the scope's own storage held no dry-run licence (#2350).
+   */
   awaitingDryRun: number;
   /** Passes whose deployment holds no attachment store for the tenant (`bucket: 'none'`). */
   noStore: { count: number; scopeIds: string[] };
@@ -2660,8 +2676,13 @@ async function sweepOrphanAttachmentWindow(
         dryRun = !(await hasRecentDryRun(host, options.actor, s, since));
         if (dryRun) out.awaitingDryRun += 1;
       }
-      const outcome = await phase.sweepScopeFn(s.tenantId, s.id, { dryRun });
-      if ('refused' in outcome) return pushCapped(out.refused, s.id);
+      let outcome = await phase.sweepScopeFn(s.tenantId, s.id, { dryRun });
+      // The scope's own licence is missing or spent (#2350): its next pass is the dry run, now.
+      if ('unlicensed' in outcome && !dryRun) {
+        out.awaitingDryRun += 1;
+        outcome = await phase.sweepScopeFn(s.tenantId, s.id, { dryRun: true });
+      }
+      if ('refused' in outcome || 'unlicensed' in outcome) return pushCapped(out.refused, s.id);
       if ('unsupported' in outcome) return pushCapped(out.unsupported, s.id);
       const r = outcome.swept;
       // The deployment's word on what it did, never the mode asked for: a deployment that ignored

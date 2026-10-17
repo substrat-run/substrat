@@ -647,7 +647,13 @@ import {
   type AttachmentTextBounds,
   ATTACHMENT_TEXT_DDL,
   ATTACHMENT_CONDEMNED_DDL,
-  condemnOrphanAttachments,
+  ATTACHMENT_SWEEP_LICENCE_DDL,
+  ATTACHMENT_SWEEP_LICENCE_TABLE,
+  clearOrphanSweepLicence,
+  condemnLicensedOrphanAttachments,
+  consumeOrphanSweepLicence,
+  recordOrphanSweepLicence,
+  refuseUnlicensedOrphanSweep,
   fenceAttachmentSweep,
   refuseCondemnedAttachment,
   refuseCondemnedInDump,
@@ -1331,6 +1337,9 @@ const KERNEL_DDL = `
   -- #2314: the orphan sweep's tombstones, shared from @substrat-run/kernel. An id here
   -- never takes an attachment row again: the insert path refuses it.
   ${ATTACHMENT_CONDEMNED_DDL}
+  -- #2350: the orphan sweep's dry-run licence, shared from @substrat-run/kernel. Store-local:
+  -- never dumped, and every load drops it.
+  ${ATTACHMENT_SWEEP_LICENCE_DDL}
   -- #901: an entity's version is the ULID of the last event about it (a state move
   -- excepted, #2191), so the newest id per (entity_type, entity_id) is the read. The id
   -- column sits last so SQLite walks the matched range backwards instead of aggregating.
@@ -3701,6 +3710,10 @@ export class SqliteScopeHost implements ScopeHost {
     if (unsettled) throw unsettled;
     // Only an active scope: an archived or reaped one is not this pass's to judge.
     const rt = await this.openActiveScope(tenantId, scopeId);
+    const now = this.clock();
+    // #2350: a destructive pass needs the scope's own dry-run licence, asked before anything is
+    // listed, so a pass with nothing to condemn is refused all the same.
+    if (request.dryRun !== true) await rt.actor.enqueue(() => refuseUnlicensedOrphanSweep(spineSql(rt.db), now));
     // A scope with no blob store holds no bytes: answered as that, marked, after every guard above,
     // so the platform's pass tells it from a failure and from a store that held nothing.
     const stores = row?.vertical
@@ -3718,11 +3731,15 @@ export class SqliteScopeHost implements ScopeHost {
     const store = this.attachmentStore(tenantId, row?.vertical ?? null);
     return sweepOrphanAttachments(store, scopeId, {
       rowless: async (ids) => rt.actor.enqueue(() => rowlessAttachmentIds(spineSql(rt.db), ids)),
-      condemn: async (ids, now) =>
-        rt.actor.enqueue(() => rt.db.transaction(() => condemnOrphanAttachments(spineSql(rt.db), ids, now))()),
+      condemn: async (ids, at) =>
+        rt.actor.enqueue(() => rt.db.transaction(() => condemnLicensedOrphanAttachments(spineSql(rt.db), ids, at))()),
+      license: async (ids, at) => {
+        await rt.actor.enqueue(() => rt.db.transaction(() => recordOrphanSweepLicence(spineSql(rt.db), ids, at))());
+      },
+      consume: async (ids) => rt.actor.enqueue(() => rt.db.transaction(() => consumeOrphanSweepLicence(spineSql(rt.db), ids))()),
     }, {
       // The host's own clock, never a caller's: no request can step past the floor or the fence.
-      now: this.clock(),
+      now,
       ...(request.dryRun ? { dryRun: true } : {}),
       ...(request.limit !== undefined ? { limit: request.limit } : {}),
     });
@@ -4214,6 +4231,10 @@ export class SqliteScopeHost implements ScopeHost {
         const stmt = db.prepare(insert);
         for (const row of t.rows) stmt.run(...(row as unknown[]));
       }
+      // #2350: the orphan sweep's licence describes this store's last dry run, never the dump's.
+      // A dump does not carry it; a hand-made one that does is dropped here all the same, so a
+      // loaded store's next pass is a dry run.
+      clearOrphanSweepLicence(spineSql(db));
       // #827 / #119 / #811: the search triggers, the archive/trash guard triggers, the purge
       // sweep's index and the derived list indexes went with the dropped tables, and the search index points at rows that are
       // gone. Put back, and the search index rebuilt, AFTER the rows — which may legitimately
@@ -10982,7 +11003,10 @@ export class SqliteScopeHost implements ScopeHost {
           // `.raw(true)` gives positional rows; cells stay as-is (blobs are Buffers, not
           // nulled as in a UI read) so the dump is byte-faithful. The name is from the live
           // schema, never user input, so the quoted identifier is safe.
-          const stmt = db.prepare(`SELECT * FROM "${name}"`).raw(true);
+          // #2350: the orphan sweep's licence is this store's own, so its rows never leave in a dump.
+          const stmt = db
+            .prepare(name === ATTACHMENT_SWEEP_LICENCE_TABLE ? `SELECT * FROM "${name}" WHERE 0` : `SELECT * FROM "${name}"`)
+            .raw(true);
           const rows = stmt.all() as unknown[][];
           const columns = stmt.columns().map((c) => c.name);
           return { name, ddl: sql, columns, rows };

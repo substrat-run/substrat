@@ -1674,6 +1674,7 @@ interface ScopeStubRpc {
   ): Promise<DoReply<AttachmentRecord>>;
   /** #2314: the scope side of an orphan-sweep pass — condemn (or, dry, only read) the rowless ids. */
   orphanAttachmentsReply(ids: string[], now: string, tenantId: TenantId, condemn: boolean, vouched?: boolean, expectedVersionId?: string): Promise<DoReply<string[]>>;
+  orphanSweepLicenceReply(op: 'record' | 'consume', ids: string[], now: string, tenantId: TenantId, vouched?: boolean, expectedVersionId?: string): Promise<DoReply<null>>;
   /** #2314: the receipt's tenant (or null) and whether any attachment row is held; read without migrating. */
   sweepFenceFacts(): Promise<{ tenant: string | null; holdsAttachments: boolean }>;
   /**
@@ -4192,9 +4193,14 @@ export class CloudflareScopeHost implements ScopeHost {
       return { listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: request.dryRun === true, bucket: 'none' };
     }
     const store = r2TenantBlobStore(bucket);
+    const licence = (op: 'record' | 'consume') => async (ids: readonly string[]) => {
+      unwrapReply(await stub.orphanSweepLicenceReply(op, [...ids], now, tenantId, vouched, expected));
+    };
     return sweepOrphanAttachments(store, scopeId, {
       rowless: (ids) => judge(false)(ids, now),
       condemn: judge(true),
+      license: licence('record'),
+      consume: licence('consume'),
     }, { now, ...(request.dryRun ? { dryRun: true } : {}), ...(request.limit !== undefined ? { limit: request.limit } : {}) });
   }
 

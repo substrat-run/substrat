@@ -186,6 +186,133 @@ export function condemnOrphanAttachments(sql: ScopedSql, ids: readonly string[],
 }
 
 /**
+ * The dry-run-first licence (#2350), held by the scope's own storage so the rule holds whoever asks
+ * for a pass: one row per attachment id the scope's last dry run listed, stamped with the host's
+ * clock at that run. A destructive pass is refused without one in force
+ * (`refuseUnlicensedOrphanSweep`), condemns only ids it lists (`condemnLicensedOrphanAttachments`),
+ * and takes each id it deleted out of it (`consumeOrphanSweepLicence`).
+ *
+ * It only ever NARROWS what a pass may delete: every guard of the pass still runs on the ids it
+ * lists. So a licence that a rewind brought back, or that outlived the rows it was judged against,
+ * can permit nothing the pass would not permit without it. A dump never carries its rows and every
+ * load drops them, so a restore, a carry or a fork leaves the next pass a dry run.
+ */
+export const ATTACHMENT_SWEEP_LICENCE_DDL = `
+  CREATE TABLE IF NOT EXISTS _substrat_attachment_sweep_licence (
+    -- An attachment id the scope's last orphan-sweep dry run listed, and that no destructive
+    -- pass has deleted since (#2350). Store-local: never dumped, and cleared by every load.
+    id TEXT PRIMARY KEY,
+    licensed_at TEXT NOT NULL
+  );
+`;
+
+/** The licence table's name, for the dump export that leaves its rows out and the load that drops them. */
+export const ATTACHMENT_SWEEP_LICENCE_TABLE = '_substrat_attachment_sweep_licence';
+
+/** The refusal reason a destructive pass meets when the scope holds no dry-run licence in force. */
+export const ORPHAN_SWEEP_UNLICENSED = 'orphan_sweep_unlicensed';
+
+/** How long a scope's dry-run licence stays in force, judged against the host's clock: seven days. */
+export const ORPHAN_SWEEP_DRY_RUN_WINDOW_MS = 7 * 86_400_000;
+
+/** The most ids one licence holds. A dry run that lists more licenses its first this many. */
+export const ORPHAN_SWEEP_LICENCE_CAP = 1000;
+
+const hasLicenceTable = (sql: ScopedSql): boolean =>
+  sql.query(`SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = '${ATTACHMENT_SWEEP_LICENCE_TABLE}'`).length > 0;
+
+/**
+ * When the scope's licence was recorded, if it holds one in force at `now`, else null. A licence
+ * stamped later than `now` (a clock that went back) is not in force: the next pass is a dry run.
+ */
+export function orphanSweepLicensedAt(sql: ScopedSql, now: string): string | null {
+  if (!hasLicenceTable(sql)) return null;
+  const [row] = sql.query<{ at: string | null }>(`SELECT MIN(licensed_at) AS at FROM ${ATTACHMENT_SWEEP_LICENCE_TABLE}`);
+  const at = row?.at ?? null;
+  if (at === null) return null;
+  const atMs = Date.parse(at);
+  const nowMs = Date.parse(now);
+  if (!Number.isFinite(atMs) || atMs > nowMs || nowMs - atMs > ORPHAN_SWEEP_DRY_RUN_WINDOW_MS) return null;
+  return at;
+}
+
+/** Refuse a destructive pass over a scope that holds no dry-run licence in force at `now`. */
+export function refuseUnlicensedOrphanSweep(sql: ScopedSql, now: string): void {
+  if (orphanSweepLicensedAt(sql, now) !== null) return;
+  throw substratError(
+    'conflict',
+    `refused: this scope holds no orphan-sweep dry run from the last ` +
+      `${ORPHAN_SWEEP_DRY_RUN_WINDOW_MS / 86_400_000} days, so a destructive pass has nothing it may delete. Run a dry run first`,
+    { reason: ORPHAN_SWEEP_UNLICENSED },
+  );
+}
+
+/**
+ * Record what a dry run found as the scope's licence, inside the caller's scope transaction: the
+ * first `ORPHAN_SWEEP_LICENCE_CAP` of `ids`, stamped `now`. Writes only when that set differs from
+ * the one held, or the one held is older than half the window, so a dry run that keeps finding the
+ * same orphans moves no write revision (a carry and a kept-copy release are fenced on it). An empty
+ * set clears a held licence, and writes nothing when there is none. Returns whether it wrote.
+ */
+export function recordOrphanSweepLicence(sql: ScopedSql, ids: readonly string[], now: string): boolean {
+  const next = [...new Set(ids)].slice(0, ORPHAN_SWEEP_LICENCE_CAP);
+  const held = sql.query<{ id: string; licensed_at: string }>(`SELECT id, licensed_at FROM ${ATTACHMENT_SWEEP_LICENCE_TABLE}`);
+  if (held.length === 0 && next.length === 0) return false;
+  if (held.length === next.length && held.length > 0) {
+    const heldIds = new Set(held.map((r) => r.id));
+    const oldest = Math.min(...held.map((r) => Date.parse(r.licensed_at)));
+    const fresh = Number.isFinite(oldest) && Date.parse(now) - oldest <= ORPHAN_SWEEP_DRY_RUN_WINDOW_MS / 2 && oldest <= Date.parse(now);
+    if (fresh && next.every((id) => heldIds.has(id))) return false;
+  }
+  sql.exec(`DELETE FROM ${ATTACHMENT_SWEEP_LICENCE_TABLE}`);
+  if (next.length > 0) {
+    sql.exec(
+      `INSERT INTO ${ATTACHMENT_SWEEP_LICENCE_TABLE} (id, licensed_at) SELECT value, ? FROM json_each(?)`,
+      [now, JSON.stringify(next)],
+    );
+  }
+  return true;
+}
+
+/**
+ * `condemnOrphanAttachments` over only the ids in `ids` the scope's licence lists, while it is in
+ * force at `now`: a destructive pass deletes nothing its dry run did not list. Inside the caller's
+ * scope transaction, so a load that dropped the licence meanwhile leaves nothing to condemn.
+ */
+export function condemnLicensedOrphanAttachments(sql: ScopedSql, ids: readonly string[], now: string): string[] {
+  if (ids.length === 0 || orphanSweepLicensedAt(sql, now) === null) return [];
+  const licensed = sql
+    .query<{ value: string }>(
+      `SELECT j.value AS value FROM json_each(?) AS j
+        WHERE EXISTS (SELECT 1 FROM ${ATTACHMENT_SWEEP_LICENCE_TABLE} l WHERE l.id = j.value)
+        ORDER BY j.value`,
+      [JSON.stringify(ids)],
+    )
+    .map((r) => r.value);
+  return condemnOrphanAttachments(sql, licensed, now);
+}
+
+/**
+ * Take the ids a destructive pass deleted out of the licence, so its next pass in the window goes
+ * on with the ids it has not reached, and never back to what is gone. Writes only when one is held.
+ */
+export function consumeOrphanSweepLicence(sql: ScopedSql, ids: readonly string[]): void {
+  if (ids.length === 0 || !hasLicenceTable(sql)) return;
+  const json = JSON.stringify(ids);
+  const held = sql.query(
+    `SELECT 1 AS hit FROM ${ATTACHMENT_SWEEP_LICENCE_TABLE} WHERE id IN (SELECT value FROM json_each(?)) LIMIT 1`,
+    [json],
+  );
+  if (held.length === 0) return;
+  sql.exec(`DELETE FROM ${ATTACHMENT_SWEEP_LICENCE_TABLE} WHERE id IN (SELECT value FROM json_each(?))`, [json]);
+}
+
+/** Drop the whole licence: every dump load does, so a restored, carried or forked store starts with none. */
+export function clearOrphanSweepLicence(sql: ScopedSql): void {
+  if (hasLicenceTable(sql)) sql.exec(`DELETE FROM ${ATTACHMENT_SWEEP_LICENCE_TABLE}`);
+}
+
+/**
  * The copy-ledger states (#1722) in which another script's copy of a scope can no longer hold a
  * row the serving copy lacks, nor discover one. An ALLOWLIST: every other state, a future one
  * included, holds the pass. Only `done` qualifies: the copy was wiped (or found already wiped),
@@ -336,10 +463,18 @@ export interface OrphanSweepReport {
   bucket?: 'none';
 }
 
-/** What the scope side of a pass is: the read for a dry run, the condemnation otherwise. */
+/**
+ * What the scope side of a pass is: the read for a dry run, and the licence it records; the
+ * licensed condemnation otherwise, and the consumption of the licence by what was deleted.
+ */
 export interface OrphanSweepScope {
   rowless(ids: readonly string[]): Promise<string[]>;
+  /** Condemn the ids the scope's licence lists (`condemnLicensedOrphanAttachments`). */
   condemn(ids: readonly string[], now: string): Promise<string[]>;
+  /** Record what a dry run found as the scope's licence (`recordOrphanSweepLicence`). */
+  license(ids: readonly string[], now: string): Promise<void>;
+  /** Take what a destructive pass deleted out of the licence (`consumeOrphanSweepLicence`). */
+  consume(ids: readonly string[]): Promise<void>;
 }
 
 /** The smallest grace a caller may ask for: an upload is one request, never a day. */
@@ -409,16 +544,24 @@ export async function sweepOrphanAttachments(
   const doomed = orphans.slice(0, limit);
   if (dryRun) {
     report.keys = doomed.map((id) => attachmentBlobKey(scopeId, id));
+    // The licence a destructive pass needs (#2350): what this run listed, nothing more.
+    await scope.license(doomed, opts.now);
     return report;
   }
   if (doomed.length === 0) return report;
   // Guard 3 again, after the condemnation: a rewind that armed mid-pass wrote its fence first.
   if (await fenced()) return report;
+  const gone: string[] = [];
   for (const id of doomed) {
     const key = attachmentBlobKey(scopeId, id);
     await store.delete(key);
+    gone.push(id);
     report.keys.push(key);
     report.deleted++;
   }
+  // Only what was deleted leaves the licence, so a backlog past `limit` drains over the next passes
+  // in the window. A delete that throws ends the pass before this, so every id stays licensed and
+  // condemned, and the next pass deletes them again (a delete of what is gone is a no-op).
+  await scope.consume(gone);
   return report;
 }

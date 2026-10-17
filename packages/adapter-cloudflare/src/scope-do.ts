@@ -178,7 +178,13 @@ import {
   type SearchOptions,
   ATTACHMENT_TEXT_DDL,
   ATTACHMENT_CONDEMNED_DDL,
-  condemnOrphanAttachments,
+  ATTACHMENT_SWEEP_LICENCE_DDL,
+  ATTACHMENT_SWEEP_LICENCE_TABLE,
+  clearOrphanSweepLicence,
+  condemnLicensedOrphanAttachments,
+  consumeOrphanSweepLicence,
+  recordOrphanSweepLicence,
+  refuseUnlicensedOrphanSweep,
   refuseCondemnedAttachment,
   refuseCondemnedInDump,
   rowlessAttachmentIds,
@@ -875,6 +881,9 @@ const KERNEL_DDL = `
   -- #2314: the orphan sweep's tombstones, shared from @substrat-run/kernel. An id here
   -- never takes an attachment row again: the insert path refuses it.
   ${ATTACHMENT_CONDEMNED_DDL}
+  -- #2350: the orphan sweep's dry-run licence, shared from @substrat-run/kernel. Store-local:
+  -- never dumped, and every load drops it.
+  ${ATTACHMENT_SWEEP_LICENCE_DDL}
   -- #901: an entity's version is the ULID of the last event about it (a state move
   -- excepted, #2191), so the newest id per (entity_type, entity_id) is the read. The id
   -- column sits last so SQLite walks the matched range backwards instead of aggregating.
@@ -3901,13 +3910,47 @@ export function defineScopeDO(
         if (misrouted) throw misrouted;
         await this.refuseOrphanJudgement(tenantId, vouched);
         // The verdict alone (no ids, the host's first call) changes nothing: no migration, no repair.
-        if (ids.length === 0) return [];
+        // A destructive pass's verdict also asks for this store's own dry-run licence (#2350), so a
+        // pass with nothing to condemn is refused all the same.
+        if (ids.length === 0) {
+          if (condemn) await this.queue.enqueue(async () => refuseUnlicensedOrphanSweep(doSpineSql(this.sql), now));
+          return [];
+        }
         await this.ensureMigrations();
         return this.queue.enqueue(async () => {
           await this.refuseOrphanJudgement(tenantId, vouched);
           if (!condemn) return rowlessAttachmentIds(doSpineSql(this.sql), ids);
-          return this.revision.transaction(async () => condemnOrphanAttachments(doSpineSql(this.sql), ids, now));
+          return this.revision.transaction(async () => condemnLicensedOrphanAttachments(doSpineSql(this.sql), ids, now));
         });
+      });
+    }
+
+    /**
+     * #2350: the licence half of a pass, behind the same refusals as the judgement. `record` keeps
+     * what a dry run listed as this store's licence; `consume` takes what a destructive pass deleted
+     * out of it. Each writes only when it changes the licence, so a dry run that keeps finding the
+     * same orphans leaves the write revision where it was.
+     */
+    orphanSweepLicenceReply(
+      op: 'record' | 'consume',
+      ids: string[],
+      now: string,
+      tenantId: TenantId,
+      vouched = false,
+      expectedVersionId?: string,
+    ): Promise<DoReply<null>> {
+      return replyOf(async () => {
+        const misrouted = orphanSweepVersionRefusal(this.env.SUBSTRAT_VERSION_ID ?? null, expectedVersionId, op === 'consume');
+        if (misrouted) throw misrouted;
+        await this.ensureMigrations();
+        await this.queue.enqueue(async () => {
+          await this.refuseOrphanJudgement(tenantId, vouched);
+          await this.revision.transaction(async () => {
+            if (op === 'record') recordOrphanSweepLicence(doSpineSql(this.sql), ids, now);
+            else consumeOrphanSweepLicence(doSpineSql(this.sql), ids);
+          });
+        });
+        return null;
       });
     }
 
@@ -6646,7 +6689,10 @@ export function defineScopeDO(
                 `SELECT * FROM "${name}" WHERE key NOT IN (${STORE_LOCAL_META_KEYS.map(() => '?').join(', ')})`,
                 ...STORE_LOCAL_META_KEYS,
               )
-            : this.sql.exec(`SELECT * FROM "${name}"`);
+            : // #2350: the orphan sweep's licence is this store's own, so its rows never leave in a dump.
+              name === ATTACHMENT_SWEEP_LICENCE_TABLE
+              ? this.sql.exec(`SELECT * FROM "${name}" WHERE 0`)
+              : this.sql.exec(`SELECT * FROM "${name}"`);
         const columns = cursor.columnNames;
         const rows = Array.from(cursor.raw(), (row) => row as unknown[]);
         return { name, ddl: sql, columns, rows };
@@ -7054,6 +7100,10 @@ export function defineScopeDO(
           // from before a suspension does not lift it; a copy keeps only its own.
           settleLifecycleAfterLoad(this.switchSql(), lifecycleBefore, markCopy === true || isCopyLoad(destScopeId, sourceScopeId));
           reconcileAttachmentText(doSpineSql(this.sql), ulid, now);
+          // #2350: the orphan sweep's licence describes this store's last dry run, never the dump's.
+          // A dump does not carry it; a hand-made one that does is dropped here all the same, so a
+          // loaded store's next pass is a dry run.
+          clearOrphanSweepLicence(doSpineSql(this.sql));
           // Re-point the restored grants at THIS scope (after the spine exists, so a dump
           // that carried no tuples table still finds one here).
           if (destScopeId) {
