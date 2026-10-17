@@ -75,6 +75,7 @@ import {
   ControlPlaneTransport,
   SERVICE_TOKEN_HEADER,
   TENANT_HEADER,
+  type RebindReview as ClientRebindReview,
 } from '@substrat-run/control-plane-client';
 
 // One class, owned by the package that throws it from its own client (#971).
@@ -261,6 +262,9 @@ class TenantTransport extends ControlPlaneTransport {
     return this.send(path, init);
   }
 }
+
+/** #2347: a rebind review as the plane answers it (`GET …/scopes/:id/rebind-review`). */
+export type RebindReview = ClientRebindReview<MigrationDiff>;
 
 export class TenantNarrowedControlPlane {
   private readonly transport: TenantTransport;
@@ -748,25 +752,45 @@ export class TenantNarrowedControlPlane {
    * update-rebind, data first: the target's serving script receives the data and the
    * source script keeps its copy, which is the backout.
    *
-   * The plane's route is staff-only and this seam holds the staff-level service token, so
-   * the narrowing is the caller's to do — and `bound-scopes.ts` does it: the scope must be
-   * one this tenant has bound to the vertical being left, and the target must be a
-   * vertical this tenant owns. This method pins the TENANT (the path), not the target.
+   * This seam sends the tenant credential it holds, pinned to the tenant in the path; the plane
+   * judges the crossing by the one rule it shares with the review read (both verticals readable
+   * by the tenant: its own, or listed), and answers anything else with the same 404. The
+   * dashboard narrows further in `bound-scopes.ts`: the scope must be one this tenant has bound
+   * to the vertical being left, and the target must be a vertical this tenant owns.
    *
-   * `ackMigrations` is the operator's statement that they have read both lineages'
-   * migration surfaces; without it the plane refuses a crossing whose digests differ.
+   * `ackMigrations` is the operator's statement that they have read what the crossing applies;
+   * without it the plane refuses a crossing whose digests differ. #2347: `review` names the
+   * rebind review it answers (`rebindReview`), which the plane requires beside it and refuses
+   * once a promote on either lineage has moved what was shown.
    * `abandonData` is deliberately not exposed: it rebinds the directory and leaves the
    * data behind, which is a staff repair, not something to offer from a button.
    */
   rebindScopeVertical(
     scopeId: ScopeId,
     vertical: string,
-    opts: { ackMigrations?: boolean } = {},
+    opts: { ackMigrations?: boolean; review?: PromotionReviewBinding } = {},
   ): Promise<void> {
     return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/rebind-vertical`, {
       vertical,
       ...(opts.ackMigrations ? { ackMigrations: true } : {}),
+      ...(opts.review ? { acknowledge: { review: opts.review } } : {}),
     });
+  }
+
+  /**
+   * #2347: what rebinding one of this tenant's scopes onto `vertical` would apply — the target's
+   * serving version over the version the scope is bound to — and the binding an acknowledgement
+   * of it carries, read in one answer. Pinned to the tenant by the path; the plane answers it only
+   * where the rebind itself would be allowed (both verticals this tenant's own, or listed).
+   */
+  async rebindReview(scopeId: ScopeId, vertical: string): Promise<RebindReview> {
+    const res = await this.call<RebindReview | undefined>(
+      `/tenants/${this.tenantId}/scopes/${scopeId}/rebind-review?vertical=${encodeURIComponent(vertical)}`,
+    );
+    if (!res || typeof res !== 'object' || !('review' in res)) {
+      throw new ControlPlaneError(502, `the rebind review of scope ${scopeId} could not be read`);
+    }
+    return res;
   }
 
   /**
@@ -2072,7 +2096,7 @@ export class TenantNarrowedControlPlane {
    * for reconciling the dashboard's own install row against it (#424 case 4: a
    * retried install can leave the dashboard row at 'provisioning' forever while the
    * directory has been 'active' all along). Carries the scope's `vertical` too — a
-   * staff rebind-vertical moves a scope onto a different lineage and only the
+   * rebind-vertical moves a scope onto a different lineage and only the
    * directory knows (#389); the read-path reconcile heals the row's slug from it.
    * `null` when the scope can't be read — callers treat that as "unknown, change nothing".
    */

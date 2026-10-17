@@ -7,6 +7,7 @@ import {
   createControlPlaneApi,
   mintTenantToken,
   tenantTokenAuth,
+  SERVICE_TOKEN_HEADER,
   type ControlPlaneApiOptions,
 } from '@substrat-run/control-plane-api';
 import {
@@ -26,6 +27,7 @@ import {
   isRetireArmed,
   moveBoundScopes,
   readBoundScopes,
+  readMoveReview,
   retireBoundScopes,
 } from '../src/bound-scopes.js';
 import { MODULES, provisionDashboard } from '../src/index.js';
@@ -50,8 +52,9 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
   const B = tenantId.parse(ulid());
 
   /** Every rebind the dashboard asked the plane for, answered 200 unless `refuseRebind` says otherwise. */
-  let rebinds: Array<{ scopeId: string; body: { vertical: string; ackMigrations?: boolean } }>;
-  let refuseRebind: ((scopeId: string) => string | null) | null;
+  let rebinds: Array<{ scopeId: string; body: { vertical: string; ackMigrations?: boolean; acknowledge?: unknown } }>;
+  /** A refusal's sentence (409), or a whole problem answer (#2347: a review refusal carries its reason). */
+  let refuseRebind: ((scopeId: string) => string | { status: number; body: Record<string, unknown> } | null) | null;
   let calls: string[];
 
   /** The kind of backup store a deployed plane holds: enough to satisfy `backup: true`. */
@@ -115,6 +118,9 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
           const body = JSON.parse(String(init?.body)) as { vertical: string; ackMigrations?: boolean };
           rebinds.push({ scopeId: rebind[1]!, body });
           const refusal = refuseRebind?.(rebind[1]!) ?? null;
+          if (refusal !== null && typeof refusal === 'object') {
+            return new Response(JSON.stringify(refusal.body), { status: refusal.status, headers: { 'content-type': 'application/problem+json' } });
+          }
           return refusal === null
             ? new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
             : new Response(JSON.stringify({ error: refusal }), { status: 409, headers: { 'content-type': 'application/json' } });
@@ -462,6 +468,80 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
     });
   });
 
+  describe('a Move acknowledges the review it was shown (#2347)', () => {
+    /** Both lineages with a version each, the target serving; installs bound to the source's. */
+    const lineages = async () => {
+      await vertical('acme/courses');
+      await vertical('acme/coaching');
+      const put = async (slug: string, digest: string) => {
+        const id = ulid();
+        await host.admin.publishVersion(staff, { id, verticalSlug: slug, version: '1.0.0', manifestDigest: 'm', permissionDigest: 'p', migrationDigest: digest, deploymentRef: null });
+        await host.admin.admitVersion(staff, id);
+        return id;
+      };
+      const from = await put('acme/courses', 'g1');
+      const to = await put('acme/coaching', 'g2');
+      await host.admin.setVerticalServing(staff, 'acme/coaching', { ref: 'coaching-serving', versionId: to, doClasses: [], migrationTag: 't' });
+      const bound = async (handle: string) => {
+        const id = await install(A, 'acme/courses', handle);
+        await host.admin.bindScopeVersion(staff, A, id, from);
+        return id;
+      };
+      return { from, to, bound };
+    };
+
+    it('reads each install’s review from the plane, validated as the move is', async () => {
+      const { from, to, bound } = await lineages();
+      const [s1, s2] = [await bound('hr'), await bound('sales')];
+      const { scopes } = await readMoveReview(planeFor(A), { vertical: 'acme/courses', scopeIds: [s1, s2], target: 'acme/coaching' });
+      expect(scopes.map((r) => [r.scopeId, r.slug, r.base?.versionId, r.target.versionId, r.digestsMatch])).toEqual([
+        [s1, 'hr', from, to, false],
+        [s2, 'sales', from, to, false],
+      ]);
+      expect(scopes[0]!.review).toEqual({ base: from, digest: expect.stringMatching(/^[0-9a-f]{64}$/) });
+      // The same guards as the move: another tenant's scope is refused before any review is read.
+      const foreign = await install(B, 'acme/courses', 'b-one');
+      calls.length = 0;
+      await expect(readMoveReview(planeFor(A), { vertical: 'acme/courses', scopeIds: [s1, foreign], target: 'acme/coaching' }))
+        .rejects.toMatchObject({ status: 404 });
+      expect(calls.some((c) => c.includes('rebind-review'))).toBe(false);
+    });
+
+    it('sends each install’s own binding with the acknowledgement, and hands back a review refusal’s reason', async () => {
+      const { bound } = await lineages();
+      const [s1, s2] = [await bound('hr'), await bound('sales')];
+      const { scopes } = await readMoveReview(planeFor(A), { vertical: 'acme/courses', scopeIds: [s1, s2], target: 'acme/coaching' });
+      const reviews = Object.fromEntries(scopes.map((r) => [r.scopeId, r.review]));
+      refuseRebind = (id) => (id === s2
+        ? { status: 412, body: { type: 'about:blank', title: 'precondition_failed', status: 412, code: 'precondition_failed', detail: 'the rebind review is stale: …', reason: 'rebind_review_stale' } }
+        : null);
+      const outcome = await moveBoundScopes(planeFor(A), { vertical: 'acme/courses', scopeIds: [s1, s2], target: 'acme/coaching', ackMigrations: true, reviews });
+      expect(rebinds.map((r) => r.body)).toEqual([
+        { vertical: 'acme/coaching', ackMigrations: true, acknowledge: { review: reviews[s1] } },
+        { vertical: 'acme/coaching', ackMigrations: true, acknowledge: { review: reviews[s2] } },
+      ]);
+      expect(outcome).toEqual({ moved: [s1], refusal: { scopeId: s2, message: expect.stringContaining('stale'), reason: 'rebind_review_stale' } });
+    });
+
+    it('over the real plane, an unbound acknowledgement is refused with its reason, and a bound one passes the gate', async () => {
+      const { bound } = await lineages();
+      const s1 = await bound('hr');
+      const plane = planeFor(A);
+      // `planeFor` intercepts the rebind itself, so the real plane's gate is asked directly here.
+      const real = api();
+      const token = await tokenFor(A)();
+      const ask = (body: unknown) => real.request(`/tenants/${A}/scopes/${s1}/rebind-vertical`, {
+        method: 'POST', headers: { [SERVICE_TOKEN_HEADER]: token, 'content-type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const refused = await ask({ vertical: 'acme/coaching', ackMigrations: true });
+      expect([refused.status, ((await refused.json()) as { reason?: string }).reason]).toEqual([412, 'rebind_review_unbound']);
+      const { review } = await plane.rebindReview(s1, 'acme/coaching');
+      // Past the gate: this host has no dispatch namespace to move bytes into, which is the next refusal.
+      const passed = await ask({ vertical: 'acme/coaching', ackMigrations: true, acknowledge: { review } });
+      expect(passed.status).toBe(501);
+    });
+  });
+
   // -- the seam ---------------------------------------------------------------
 
   it('the two new authority calls are pinned to the tenant and carry what the plane needs', async () => {
@@ -517,6 +597,18 @@ describe('bound scopes — what a refused delete was counting (#1592)', () => {
 // -- the browser's half ---------------------------------------------------------
 
 describe('the browser helpers agree with the worker’s guard', () => {
+  it('a Move shows one review per distinct diff, sends every install its own binding, and re-asks only on a review refusal (#2347)', () => {
+    const r = (scopeId: string, digest: string, digestsMatch = false) => ({ scopeId, digestsMatch, review: { base: 'V1', digest } });
+    const rows = [r('S1', 'd1'), r('S2', 'd1'), r('S3', 'd2'), r('S4', 'd3', true)];
+    expect(web.reviewsToShow(rows).map((g) => [g.review.review.digest, g.installs.map((i) => i.scopeId)])).toEqual([
+      ['d1', ['S1', 'S2']],
+      ['d2', ['S3']],
+    ]);
+    expect(web.reviewsToShow([r('S4', 'd3', true)])).toEqual([]);
+    expect(Object.keys(web.moveBindings(rows))).toEqual(['S1', 'S2', 'S3', 'S4']);
+    expect(['rebind_review_stale', 'rebind_review_unbound', 'promote_review_stale', undefined].map(web.reviewMoved)).toEqual([true, true, false, false]);
+  });
+
   it('isRetireArmed is the same rule on both sides of the wire', () => {
     const cases: Array<[string, number]> = [
       ['3', 3], [' 3 ', 3], ['03', 3], ['3.0', 3], ['', 3], ['2', 3], ['4', 3], ['three', 3],

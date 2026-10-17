@@ -34,6 +34,7 @@ The package has no runtime dependencies and ships web-standard + `node:*` only. 
 | `substrat versions <slug>` | List a vertical's versions + whether `prod` points at each. |
 | `substrat preview create [dir] --tag <t>` | Run a version against a fork of prod (or `--empty` clean room) at its own URL — the non-prod environment primitive. |
 | `substrat scope bind <scopeId> --version <id>` | Pin **one** scope to a version of the same vertical — the per-scope rollout primitive (canary, test env). |
+| `substrat scope rebind <scopeId> --to <vertical>` | Move **one** scope onto another vertical's serving version, data carried. |
 | `substrat scope domain <scopeId> --domain <d>` | Bind a custom domain to **any** owned scope (a prod app, a preview, a test env). |
 | `substrat publish <slug>` | Request a listing on the public marketplace (a staff operator reviews). |
 | `substrat unpublish <slug>` | Remove a vertical from the public marketplace (staff). |
@@ -377,6 +378,27 @@ environment forked from one, has its data copied before binding when routing mov
 version deployments and the host has a per-version resolver. Unchanged routing and co-located
 incoming versions need no copy. Writes during a copy may be lost. A pending (unadmitted) version
 is refused unless the scope is a preview.
+
+### `scope rebind`
+
+```bash
+substrat scope rebind <scopeId> --to <vertical> --ack-migrations --review 01J…:5f3c…
+```
+
+Moves **one** scope onto a different vertical's serving version: the data is exported from the
+script the scope runs on, restored onto the target's serving script, and then the route and the
+version pointer move together. The old copy is deleted once the move is confirmed, so take a
+snapshot first if you want a way back. Staff may rebind any scope; a workspace's own credential may rebind
+one of its own scopes, between verticals it can see (its own, or listed). A CI push token cannot.
+
+The two verticals' migration histories are independent. When their migration digests differ, the
+rebind is refused and prints what it would apply: each migration the target's serving version
+carries over the version the scope is bound to, with its SQL and what it declares it moves or
+discards (the SQL only when you own both verticals; otherwise it says the digests differ). It also
+prints a `--review <token>`. Re-run with `--ack-migrations` and that token. If
+either vertical has been promoted since, the rebind is refused as stale and prints the current
+migrations with a new token. `--ack-migrations` without a token is refused; see
+[A rebind answers one review](/guide/deploying#a-rebind-answers-one-review).
 
 ### `scope domain`
 

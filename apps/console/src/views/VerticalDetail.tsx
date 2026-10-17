@@ -14,9 +14,11 @@ import { Badge, Button, Card, Checkbox, Dialog, Input, Select, SelectBox, Table,
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
 import type { Api, EgressReport } from '../lib/api';
+import { moveScopes, readMoveReviews, reviewsToShow, type ScopeMoveReview } from '../lib/rebind';
 import {
   boundAcknowledgement,
   exportBreakAckNeeded,
+  migrationReviewOf,
   promoteAckSatisfied,
   readReview,
   type ImpactState,
@@ -119,8 +121,16 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   const [bulkBusy, setBulkBusy] = useState(false);
   // Move-to-vertical (the #389 update-rebind): target lineages come from the registry,
   // loaded when the dialog opens. `ack` is the migration-digest override the control
-  // plane demands when the two lineages' migration histories differ.
-  const [move, setMove] = useState<{ targets: { slug: string; name: string }[]; choice: string; ack: boolean } | null>(null);
+  // plane demands when the two lineages' migration histories differ — bound (#2347) to
+  // `reviews`, what each scope's crossing would apply, read before the dialog asks.
+  // `reviewMoved`: a version changed since the review was first shown, so it asks again.
+  const [move, setMove] = useState<{
+    targets: { slug: string; name: string }[];
+    choice: string;
+    ack: boolean;
+    reviews: ScopeMoveReview[] | null;
+    reviewMoved?: boolean;
+  } | null>(null);
   // Bulk retire: every selected scope with the hostnames each will release, armed by
   // typing the count (the Scopes-view convention for storage-wiping bulk actions).
   const [bulkRetire, setBulkRetire] = useState<{ scopes: Scope[]; hostnames: Map<ScopeId, string[]> } | null>(null);
@@ -273,7 +283,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
         onToast('No target verticals', 'The registry has no other lineage to move onto.', 'danger');
         return;
       }
-      setMove({ targets, choice: targets[0]!.slug, ack: false });
+      setMove({ targets, choice: targets[0]!.slug, ack: false, reviews: null });
     } catch (e) {
       onToast('Failed to load verticals', (e as Error).message, 'danger');
     } finally {
@@ -288,25 +298,37 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   async function confirmMove() {
     if (!move) return;
     setBulkBusy(true);
-    let ok = 0;
-    let refusal: string | null = null;
-    for (const s of movableScopes) {
+    // #2347: the review first. Where a crossing's migrations differ, it is shown and the dialog
+    // asks; every rebind then carries its own scope's binding.
+    let reviews = move.reviews;
+    if (reviews === null) {
       try {
-        await api.rebindScopeVertical(s.tenantId, s.id, move.choice, move.ack ? { ackMigrations: true } : {});
-        ok++;
+        reviews = await readMoveReviews(api, movableScopes, move.choice);
       } catch (e) {
-        refusal = `${s.slug}: ${(e as Error).message}`;
-        break;
+        setBulkBusy(false);
+        onToast('Review unavailable', (e as Error).message, 'danger');
+        return;
+      }
+      if (reviewsToShow(reviews).length > 0) {
+        setMove({ ...move, reviews, ack: false });
+        setBulkBusy(false);
+        return;
       }
     }
-    // On a refusal the dialog stays open WITH the selection, so the operator can read
-    // the message, tick the acknowledgement, and retry the remainder — scopes that did
-    // move drop out of the selection naturally when the reload removes them from the
-    // bound list.
-    if (refusal === null) {
+    const run = await moveScopes(api, reviews, move.choice, move.ack);
+    const ok = run.moved.length;
+    if (run.reviewMoved) {
+      // What the move would apply changed under the acknowledgement: read it again for the scopes
+      // left, and ask again from scratch.
+      const left = reviews.filter((r) => !run.moved.includes(r.scope.id)).map((r) => r.scope);
+      setMove({ ...move, reviews: await readMoveReviews(api, left, move.choice).catch(() => null), ack: false, reviewMoved: true });
+    } else if (run.refusal === null) {
       setMove(null);
       setSelectedIds(new Set());
     }
+    // On a refusal the dialog stays open WITH the selection, so the operator can read the
+    // message, tick the acknowledgement, and retry the remainder — scopes that did move drop
+    // out of the selection naturally when the reload removes them from the bound list.
     onChanged();
     await loadDetail(vertical.slug);
     // Busy is released only once the re-walk has landed: a dialog that frees its confirm
@@ -314,8 +336,8 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
     setBulkBusy(false);
     onToast(
       `${ok} scope${ok === 1 ? '' : 's'} moved to ${move.choice}`,
-      refusal ?? undefined,
-      refusal ? 'danger' : 'success',
+      run.reviewMoved ? 'A version changed while you were reviewing — this is what the move would apply now.' : (run.refusal ?? undefined),
+      run.refusal ? 'danger' : 'success',
     );
   }
 
@@ -1066,7 +1088,9 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
         title={`Move ${movableScopes.length} scope${movableScopes.length === 1 ? '' : 's'} to another vertical`}
         description="Rebinds each scope onto the target lineage's serving script, data first. The source script is kept as the backout. Refused per scope when the migration digests differ, unless acknowledged."
         confirmLabel="Move scopes"
-        confirmDisabled={!move?.choice || movableScopes.length === 0}
+        confirmDisabled={
+          !move?.choice || movableScopes.length === 0 || (move.reviews !== null && reviewsToShow(move.reviews).length > 0 && !move.ack)
+        }
         busy={bulkBusy}
         onConfirm={() => void confirmMove()}
         onCancel={() => setMove(null)}
@@ -1089,15 +1113,39 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
             <Select
               label="Target vertical"
               value={move.choice}
-              onChange={(e) => setMove({ ...move, choice: e.target.value })}
+              onChange={(e) => setMove({ ...move, choice: e.target.value, ack: false, reviews: null, reviewMoved: false })}
               options={move.targets.map((t) => ({ value: t.slug, label: `${t.name} — ${t.slug}` }))}
             />
-            <Checkbox
-              label="Migration histories differ — I have read both"
-              description="Only needed when the scope's bound version and the target's serving version carry different migration digests; the control plane refuses the crossing otherwise."
-              checked={move.ack}
-              onChange={(v) => setMove({ ...move, ack: v })}
-            />
+            {move.reviewMoved && (
+              <span role="status" style={{ fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
+                A version changed while you were reviewing this move, so what it would apply changed too. This is the review as it
+                stands now — read it again; nothing ticked before carries over.
+              </span>
+            )}
+            {move.reviews !== null &&
+              reviewsToShow(move.reviews).map(({ review, scopes: on }) => (
+                <div key={review.review.digest} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+                    {on.map((s) => s.slug).join(', ')}: {review.base ? `${review.base.vertical} ${review.base.versionId}` : 'no bound version'} →{' '}
+                    {review.target.vertical} {review.target.versionId}. The migrations differ; this is what the move applies.
+                  </span>
+                  {review.migrationsWithheld ? (
+                    <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+                      The SQL is shown only to the owner of both verticals.
+                    </span>
+                  ) : (
+                    <MigrationDiffView review={migrationReviewOf(review.migrations)} />
+                  )}
+                </div>
+              ))}
+            {move.reviews !== null && reviewsToShow(move.reviews).length > 0 && (
+              <Checkbox
+                label="I have read the migrations above and acknowledge them"
+                description="The acknowledgement answers exactly this review; if a version changes before the move lands, the control plane refuses it and this dialog asks again."
+                checked={move.ack}
+                onChange={(v) => setMove({ ...move, ack: v })}
+              />
+            )}
           </div>
         )}
       </Dialog>
