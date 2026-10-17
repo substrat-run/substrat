@@ -516,6 +516,7 @@ import type {
   StoreDriverRolloutAction,
   StoreDriverRolloutRecord,
   StoreDriverRolloutState,
+  StoreDriverRolloutTarget,
   StoreDriverState,
 } from '@substrat-run/kernel';
 import {
@@ -692,6 +693,13 @@ interface ControlPlaneStub {
   getStoreDriverRelease(driver: string, sha256: string): Promise<StoreDriverReleaseRecord | undefined>;
   storeDriverState(driver: string): Promise<StoreDriverState>;
   storeDriverDeclarations(driver: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
+  storeDriverRolloutPending(input: { driver: string; sha256: string; action: StoreDriverRolloutAction; limit: number }): Promise<{
+    verticals: StoreDriverRolloutTarget[];
+    pending: number;
+    walked: number;
+    unreadable: string[];
+  }>;
+  storeDriverRolloutWalked(input: { driver: string; seq: number; limit: number }): Promise<{ verticals: StoreDriverRolloutTarget[]; walked: number }>;
   holdStoreDriver(input: { driver: string; holder: string; mode: StoreDriverHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): Promise<boolean>;
   releaseStoreDriverHold(input: { driver: string; holder: string }): Promise<void>;
   beginStoreDriverRollout(input: {
@@ -708,6 +716,7 @@ interface ControlPlaneStub {
     holder: string;
     state: Exclude<StoreDriverRolloutState, 'rolling'>;
     detail: string | null;
+    walked?: readonly StoreDriverRolloutTarget[];
     at: string;
   }): Promise<StoreDriverRolloutRecord>;
   getBlobStore(
@@ -8539,6 +8548,16 @@ export class CloudflareScopeHost implements ScopeHost {
         const declared = await this.directory('storeDriverDeclarations', driver);
         await this.recordAccess(actor, 'storeDriverDeclarations', { tenantId: null }, { driver }, declared.verticals.length);
         return declared;
+      },
+      storeDriverRolloutPending: async (actor, input) => {
+        const page = await this.directory('storeDriverRolloutPending', input);
+        await this.recordAccess(actor, 'storeDriverRolloutPending', { tenantId: null }, { driver: input.driver, sha256: input.sha256, action: input.action }, page.verticals.length);
+        return page;
+      },
+      storeDriverRolloutWalked: async (actor, input) => {
+        const walked = await this.directory('storeDriverRolloutWalked', input);
+        await this.recordAccess(actor, 'storeDriverRolloutWalked', { tenantId: null }, { driver: input.driver, seq: input.seq }, walked.verticals.length);
+        return walked;
       },
       holdStoreDriver: async (_actor, input) => this.directory('holdStoreDriver', input),
       releaseStoreDriverHold: async (_actor, input) => {

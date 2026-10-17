@@ -664,11 +664,14 @@ export {
   releaseStoreDriverHoldIn,
   storeDriverReleaseIn,
   storeDriverStateIn,
+  storeDriverRolloutPendingIn,
+  storeDriverRolloutWalkedIn,
   type StoreDriverHoldMode,
   type StoreDriverReleaseRecord,
   type StoreDriverRolloutAction,
   type StoreDriverRolloutRecord,
   type StoreDriverRolloutState,
+  type StoreDriverRolloutTarget,
   type StoreDriverState,
 } from './store-driver-releases.js';
 export type { SplitManifest } from './version-migrations.js';

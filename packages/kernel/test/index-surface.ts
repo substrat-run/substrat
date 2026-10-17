@@ -549,6 +549,8 @@ export const INDEX_VALUE_EXPORTS = [
   'startPlatformSweeper',
   'statefulTablesOf',
   'storeDriverReleaseIn',
+  'storeDriverRolloutPendingIn',
+  'storeDriverRolloutWalkedIn',
   'storeDriverStateIn',
   'strandJudgmentsOf',
   'subjectErasureClaimParams',
