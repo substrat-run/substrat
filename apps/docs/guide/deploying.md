@@ -441,6 +441,9 @@ Who may read the review is exactly who may make the rebind: staff, and a workspa
 for a scope of its own when it can see both verticals, which means each is either its own or listed on
 the marketplace. Anything else, whether a vertical that does not exist, another workspace's private
 vertical, or a scope that runs one, is answered with the same `404`, by the read and by the rebind alike.
+The migration SQL is shown only to staff and to a workspace that owns both verticals. Anyone else who
+may rebind, for example onto a listed vertical, sees both versions, that their migration digests
+differ, and the token to acknowledge with, but not the SQL.
 
 The dashboard's and the console's Move dialogs read the same review before they ask, show the
 migrations, and send each install's token with the acknowledgement. When a version changes under

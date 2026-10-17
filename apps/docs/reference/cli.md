@@ -394,7 +394,8 @@ one of its own scopes, between verticals it can see (its own, or listed). A CI p
 The two verticals' migration histories are independent. When their migration digests differ, the
 rebind is refused and prints what it would apply: each migration the target's serving version
 carries over the version the scope is bound to, with its SQL and what it declares it moves or
-discards. It also prints a `--review <token>`. Re-run with `--ack-migrations` and that token. If
+discards (the SQL only when you own both verticals; otherwise it says the digests differ). It also
+prints a `--review <token>`. Re-run with `--ack-migrations` and that token. If
 either vertical has been promoted since, the rebind is refused as stale and prints the current
 migrations with a new token. `--ack-migrations` without a token is refused; see
 [A rebind answers one review](/guide/deploying#a-rebind-answers-one-review).
