@@ -512,7 +512,8 @@ function OutboundCalls({ record }: { record: RequestRecord }) {
   if (calls.length === 0 && !record.outboundCallsDropped) {
     return (
       <Quiet>
-        No outbound call was recorded. Calls made inside a Durable Object, after the response, or by a version pushed before calls were recorded do not appear here.
+        No outbound call was recorded. Calls made inside a Durable Object, after the response, through a fetch the app saved while it was loading, or by a version
+        pushed before calls were recorded do not appear here.
       </Quiet>
     );
   }

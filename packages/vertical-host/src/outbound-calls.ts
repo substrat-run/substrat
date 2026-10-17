@@ -29,6 +29,10 @@
  * - A reference to `fetch` a bundle captured while its modules were evaluated: the entry
  *   installs the wrapper after that, because the vertical's import is evaluated first.
  *
+ * And one property to know: a call is attributed to the request whose `AsyncLocalStorage`
+ * context it runs in, as a store call is. A call a promise shared across requests makes lands on
+ * the line of the request it runs under.
+ *
  * ## It cannot fail the call
  *
  * Outside a request the wrapper hands the call straight to the runtime's `fetch`, and inside

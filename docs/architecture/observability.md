@@ -328,7 +328,10 @@ Not covered: a `fetch` made inside a Durable Object (a consumer, a schedule, the
 request is current there, the same place the egress worker does not reach); a `fetch` still
 running when the line is written (`waitUntil` work); and a reference to `fetch` that a bundle
 captured while its modules were evaluated, because the vertical's import is evaluated before
-the entry's own code runs. Bare `fetch(…)`, `globalThis.fetch(…)` and the kernel's
+the entry's own code runs. A call is attributed to the request whose `AsyncLocalStorage`
+context it runs in, the same property store calls have: a call that one request started and
+another request's code continues (a promise shared across requests in module state) lands on
+the line of the request it ran under. Bare `fetch(…)`, `globalThis.fetch(…)` and the kernel's
 `globalFetch` are all covered. The opt-in response-body snippet for a non-2xx answer the issue
 proposed is not built.
 

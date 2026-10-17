@@ -244,9 +244,12 @@ with an **app filter** rather than tabs on each app. The app page links into bot
   **outbound calls** the request made with `fetch` sit on the same axis and in their own list:
   host and path, method, status, time to the response, and how the call ended. A call the
   platform's egress policy refused reads *refused by the platform*, not as the destination's
-  403. Headers, bodies and query strings are never recorded, and a path segment that could be
-  a credential is written `[redacted]`. Calls made inside a Durable Object, or after the
-  response, are not recorded. Database and model calls are not recorded as timings yet. The panel is part of the address, so a request can be linked to. A record whose entity
+  403. Headers, bodies and query strings are never recorded, and only path segments that are
+  plain lowercase words, small numbers or versions are kept; every other segment, ids included,
+  is written `[redacted]`. Not recorded: calls made inside a Durable Object, calls still running
+  after the response, and calls through a `fetch` the app's code saved while it was loading.
+  Database and model calls are not recorded as timings yet. The panel is part of the address,
+  so a request can be linked to. A record whose entity
   declares a lifecycle opens with that lifecycle drawn above its event history: where its time
   went (one segment per state, to scale), and one column per transition naming who moved it and
   by which operation. Each transition opens the request that made it. A record is addressable
