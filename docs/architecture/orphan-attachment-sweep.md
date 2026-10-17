@@ -114,8 +114,11 @@ The phase is **off** by default. Turn it on in this order, one step at a time:
    of the fleet.
 3. **Read the admin log.** Filter by `sweepOrphanAttachments`. For each row, check that the keys
    look like `scope/<scopeId>/att/<ulid>`, that the scope is one you expect to hold files, and
-   that the counts are plausible next to the scope's attachments. Also look at the tail:
-   - a `noStore` scope whose vertical does keep files has a missing store binding;
+   that the counts are plausible next to the scope's attachments. Also look at the tail and the
+   pass's errors:
+   - an `attachment-sweep` error saying a scope "holds attachment rows" but has no store is a
+     missing store binding: re-push that vertical. (`noStore` is a vertical that keeps no files,
+     and is not printed on its own);
    - an `unsupported` scope needs its vertical redeployed;
    - `refused` names the scopes held by an unsettled copy (#1722), which need settling before
      they are swept.
@@ -138,7 +141,8 @@ The phase is **off** by default. Turn it on in this order, one step at a time:
    finishes the scope it is on.
 
 To pause without turning the phase off, set `ORPHAN_ATTACHMENT_SWEEP_BATCH=0`. The phase still
-counts the eligible scopes and visits none. To go back, set the mode to `dry-run` or `off`. A
+counts the eligible scopes and visits none. To resume, remove the override or set it above zero:
+while it is `0`, no mode visits any scope. To turn the phase off instead, set the mode to `off`. A
 condemned object that was not yet deleted stays condemned, and an upload of that id stays
 refused. Nothing un-condemns an id, because the bytes behind it are already gone or going.
 
