@@ -310,13 +310,13 @@ as argued; where this section disagrees with one of them, it says so.
   two tables, not one").
 - **§13.1 now states twelve limits, not six.** Limit 3 still names no processor, so §3.2 holds.
 - **`CONNECTORS` is four, not three**: scrive, fortnox, planima and microsoft365
-  (`apps/control-plane/src/connectors.ts:431`). **Only Scrive declares `dispatch`**
-  (`connectors.ts:252`). Fortnox, Planima and microsoft365 each say "no dispatch" in their own
-  headers, so they never receive an event. microsoft365 declares `mail` (#2098) instead, and
-  sends a vertical's message as the tenant through the email relay, outside the event journal.
-  Since #2101 microsoft365 also declares `dispatch`, for `microsoft365.channel-files-requested`:
-  it uploads the attachments the event names to the tenant's own SharePoint channel folder, and its
-  sweep lands that folder's changes through the vertical's operation as the connection.
+  (`apps/control-plane/src/connectors.ts`). **Scrive and microsoft365 declare `dispatch`**;
+  Fortnox and Planima say "no dispatch" in their own headers, so they never receive an event.
+  microsoft365 declares `mail` (#2098) too, and sends a vertical's message as the tenant through
+  the email relay, outside the event journal. Its `dispatch` (#2101) answers
+  `microsoft365.channel-files-requested`: it uploads the attachments the event names to the
+  tenant's own SharePoint channel folder, and its sweep lands that folder's changes through the
+  vertical's operation as the connection.
 - **The email relay still writes no subject-keyed row** (`/internal/email/send`,
   `apps/control-plane/src/worker.ts`). F4's finding stands.
 
