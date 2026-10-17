@@ -751,6 +751,32 @@ describe('reads: the sync lands what is in the folder', () => {
       for (const name of OUTSIDE_NAMES) expect(await w.state()).not.toContain(name);
     });
 
+    // r2 #3: a new folder's subtree is read a page at a time, under the same budget as the feed.
+    it('a nested subtree lands a page per call, never the whole tree in one', async () => {
+      const w = await world();
+      const a = w.drive.mkdir(w.general, 'A');
+      const b = w.drive.mkdir(a, 'B');
+      for (let i = 0; i < 30; i += 1) w.drive.put(b, `f${i}.txt`, `file ${i}`);
+      await w.bind();
+      const content = () => w.drive.calls.filter((c) => /\/items\/[^/]+\/content$/.test(new URL(c.url).pathname)).length;
+      let calls = 0;
+      for (;;) {
+        const landedBefore = w.landed.filter((c) => c.change === 'upsert').length;
+        const downloadsBefore = content();
+        const r = await w.sync(1);
+        calls += 1;
+        expect(w.landed.filter((c) => c.change === 'upsert').length - landedBefore).toBeLessThanOrEqual(w.drive.pageSize);
+        expect(content() - downloadsBefore).toBeLessThanOrEqual(w.drive.pageSize);
+        if (r.complete) break;
+        expect(calls).toBeLessThan(80);
+      }
+      const counts = new Map<string, number>();
+      for (const c of w.landed) if (c.change === 'upsert') counts.set(c.itemId, (counts.get(c.itemId) ?? 0) + 1);
+      expect(counts.size).toBe(32);
+      expect([...counts.values()].every((n) => n === 1)).toBe(true);
+      expect(w.landed.some((c) => c.change === 'delete')).toBe(false);
+    });
+
     it('a file the feed presents before its folder still lands', async () => {
       const w = await world();
       const late = w.drive.mkdir(w.general, 'Late');

@@ -46,7 +46,7 @@ import { fencedPath, fencedSegment } from './fence.js';
 import { quickXorHash } from './quickxor.js';
 import {
   GraphError,
-  childrenOf,
+  childrenPage,
   contentOf,
   deltaPage,
   folderAtPath,
@@ -211,13 +211,19 @@ interface SyncPass {
    * the drive, one by one, before anything about them lands. `deltaLink` is saved only once the
    * queue is empty. In-folder item ids only.
    */
-  verify?: { deltaLink: string; queue: string[] };
+  verify?: { deltaLink: string; queue: string[]; collectUnseen?: boolean };
   /**
    * Held items a page showed outside the folder without showing why: their new parent is in
    * neither the page nor the held state. It may be a folder a later page presents, so nothing lands
    * for them until the end of the pass checks them (`verify`). In-folder item ids only.
    */
   pending?: string[];
+  /**
+   * Folders newly inside whose children still have to be read — moved in from outside (the feed
+   * presents a moved folder alone), or met before their children on a full pass. Read a page at a
+   * time under the same budget as the feed; `next` is the head folder's next page. In-folder ids.
+   */
+  walk?: { queue: string[]; next: string | null };
 }
 
 interface ItemEntry {
@@ -721,55 +727,133 @@ export async function syncMicrosoft365Scope(
     throw new Error(`could not place a held item: its parent chain is deeper than 64 folders`);
   };
 
+  /**
+   * Land what `changed` says, judged against the held state. A held item it shows outside without
+   * showing why (its new parent is unknown here) is not landed as moved-out: it is returned to be
+   * checked at the end of the pass, since a later page may present it inside. Folders it newly
+   * brings inside are returned too, to have their children read.
+   */
+  const landChanges = async (changed: Map<string, DriveItem>) => {
+    const deferred: string[] = [];
+    const placed: string[] = [];
+    const folders: string[] = [];
+    const plan = planChanges(binding.folderItemId, changed, index, fenceOf(binding.folderItemId, changed, index)).filter((p) => {
+      if (p.change === 'delete' && p.reason === 'moved-out') {
+        deferred.push(p.id);
+        return false;
+      }
+      return true;
+    });
+    for (const p of plan) {
+      await land(p);
+      if (p.change !== 'upsert') continue;
+      placed.push(p.item.id);
+      if (p.entry.kind === 'folder' && !p.prior) folders.push(p.item.id);
+    }
+    changes += plan.length;
+    pass = { ...pass, changes: pass.changes + plan.length };
+    return { deferred, placed, folders };
+  };
+  /** Fold one landing's leftovers into the pass: what to check later, and which folders to read. */
+  const carry = (r: Awaited<ReturnType<typeof landChanges>>) => {
+    const pending = new Set(pass.pending ?? []);
+    for (const id of r.deferred) pending.add(id);
+    for (const id of r.placed) pending.delete(id);
+    const walk = pass.walk ?? { queue: [], next: null };
+    pass = {
+      ...pass,
+      pending: [...pending],
+      ...(r.folders.length || pass.walk ? { walk: { ...walk, queue: [...walk.queue, ...r.folders] } } : {}),
+    };
+    if (pass.verify) {
+      const queue = pass.verify.queue.filter((id) => !r.placed.includes(id));
+      for (const id of r.deferred) if (!queue.includes(id)) queue.push(id);
+      pass = { ...pass, verify: { ...pass.verify, queue } };
+    }
+  };
+
+  /** On a full pass, mark every held item `changed` presents as seen by it, changed or not. */
+  const stamp = async (changed: Map<string, DriveItem>) => {
+    if (!pass.full) return;
+    for (const id of changed.keys()) {
+      const entry = index.get(id);
+      if (entry && entry.seenIn !== pass.id) await put(id, { ...entry, seenIn: pass.id });
+    }
+  };
+
   const maxPages = options.maxPages ?? SYNC_PAGES_PER_CALL;
   const maxVerify = options.maxVerify ?? SYNC_VERIFY_PER_CALL;
   let pages = 0;
   let changes = 0;
   const incomplete = (): Microsoft365SyncResult => ({ scopeId: binding.scopeId, changes, full: pass.full, pages, complete: false });
+  // One bounded unit per turn — a page of a folder's children, one item checked, or a page of the
+  // feed — each landed and saved before the next, so a call stops anywhere and the next resumes.
   for (;;) {
+    if (pass.walk?.queue.length) {
+      if (pages >= maxPages) return incomplete();
+      const [folder, ...rest] = pass.walk.queue;
+      let children: Awaited<ReturnType<typeof childrenPage>>;
+      try {
+        children = await childrenPage(client, binding.driveId, folder!, pass.walk.next);
+      } catch (e) {
+        // Gone since it was queued: the feed reports that on its own.
+        if (!(e instanceof GraphError && e.status === 404)) throw e;
+        children = { items: [], next: null };
+      }
+      pages += 1;
+      const listed = new Map(children.items.map((i) => [i.id, i]));
+      const r = await landChanges(listed);
+      await stamp(listed);
+      pass = { ...pass, walk: children.next ? { queue: [folder!, ...rest], next: children.next } : { queue: rest, next: null } };
+      carry(r);
+      if (!(await save({ pass }))) return superseded(pages, changes, pass.full);
+      continue;
+    }
+
+    if (pass.verify?.collectUnseen) {
+      // The feed and every walk it caused are done: what a full pass still has not presented is
+      // checked with the rest. An enumeration spanning minutes can miss a live item.
+      const unseen = [...index.entries()].filter(([, e]) => e.seenIn !== pass.id).map(([id]) => id);
+      pass = { ...pass, verify: { deltaLink: pass.verify.deltaLink, queue: [...new Set([...pass.verify.queue, ...unseen])] } };
+      if (!(await save({ pass }))) return superseded(pages, changes, pass.full);
+    }
     if (pass.verify) {
       const { deltaLink } = pass.verify;
       // Shallowest first: a folder's answer settles everything held under it.
       const depth = (id: string) => index.get(id)?.path.split('/').length ?? 0;
-      let queue = pass.verify.queue.filter((id) => index.has(id)).sort((x, y) => depth(x) - depth(y));
-      while (queue.length) {
-        if (gets >= maxVerify) {
-          pass = { ...pass, verify: { deltaLink, queue } };
-          if (!(await save({ pass }))) return superseded(pages, changes, pass.full);
-          return incomplete();
-        }
-        const id = queue[0]!;
-        const found = await locate(id, new Set(queue));
-        let landed = 0;
-        if (found.at === 'inside') {
-          // Still in the folder: the feed only failed to say so. Land it where it is, if that moved.
-          const changed = new Map(found.chain.map((i) => [i.id, i]));
-          const later: string[] = [];
-          const plan = planChanges(binding.folderItemId, changed, index, fenceOf(binding.folderItemId, changed, index)).filter((p) => {
-            if (p.change !== 'delete' || p.reason !== 'moved-out') return true;
-            later.push(p.id); // the same rule as a page's: checked, never taken on this read's word
-            return false;
-          });
-          for (const p of plan) await land(p);
-          landed = plan.length;
-          queue = [...queue.slice(1), ...later.filter((l) => !queue.includes(l))];
-        } else {
-          const reason = found.at === 'gone' ? 'deleted' : 'moved-out';
-          const settled = [...heldUnder(id), id];
-          for (const gone of settled) await land({ change: 'delete', id: gone, prior: index.get(gone)!, reason });
-          landed = settled.length;
-          queue = queue.filter((q) => !settled.includes(q));
-        }
-        changes += landed;
-        pass = { ...pass, changes: pass.changes + landed, verify: { deltaLink, queue } };
-        if (!(await save({ pass }))) return superseded(pages, changes, pass.full);
+      const queue = pass.verify.queue.filter((id) => index.has(id)).sort((x, y) => depth(x) - depth(y));
+      if (!queue.length) {
+        const saved = await save(
+          { deltaLink, lastSync: { syncedAt: nowOf(options).toISOString(), changes: pass.changes } },
+          { endPass: true },
+        );
+        if (!saved) return superseded(pages, changes, pass.full);
+        return { scopeId: binding.scopeId, changes, full: pass.full, pages, complete: true };
       }
-      const saved = await save(
-        { deltaLink, lastSync: { syncedAt: nowOf(options).toISOString(), changes: pass.changes } },
-        { endPass: true },
-      );
-      if (!saved) return superseded(pages, changes, pass.full);
-      return { scopeId: binding.scopeId, changes, full: pass.full, pages, complete: true };
+      if (gets >= maxVerify) {
+        pass = { ...pass, verify: { deltaLink, queue } };
+        if (!(await save({ pass }))) return superseded(pages, changes, pass.full);
+        return incomplete();
+      }
+      const id = queue[0]!;
+      const found = await locate(id, new Set(queue));
+      pass = { ...pass, verify: { deltaLink, queue: queue.slice(1) } };
+      if (found.at === 'inside') {
+        // Still in the folder: the feed only failed to say so. Land it where it is, if that moved.
+        carry(await landChanges(new Map(found.chain.map((i) => [i.id, i]))));
+      } else {
+        const reason = found.at === 'gone' ? 'deleted' : 'moved-out';
+        const settled = [...heldUnder(id), id];
+        for (const gone of settled) await land({ change: 'delete', id: gone, prior: index.get(gone)!, reason });
+        changes += settled.length;
+        pass = {
+          ...pass,
+          changes: pass.changes + settled.length,
+          verify: { deltaLink, queue: pass.verify!.queue.filter((q) => !settled.includes(q)) },
+        };
+      }
+      if (!(await save({ pass }))) return superseded(pages, changes, pass.full);
+      continue;
     }
 
     if (pages >= maxPages) return incomplete();
@@ -784,54 +868,18 @@ export async function syncMicrosoft365Scope(
       if (!(await save({ pass }))) return superseded(pages, changes, true);
       continue;
     }
+    pages += 1;
 
     // This page, and nothing past it. Items outside the folder live in this map for one page.
     const changed = new Map(page.items.map((i) => [i.id, i]));
     if (changed.get(binding.folderItemId)?.deleted) await markMissing();
-    // A folder newly inside arrives without its descendants — moved in from outside, or met before
-    // its children on a full pass. Read them, so the order of the feed never decides what lands.
-    const fenced = fenceOf(binding.folderItemId, changed, index);
-    const walk = [...changed.values()].filter((i) => i.folder && !i.deleted && !index.has(i.id) && fenced.inside(i.id));
-    while (walk.length) {
-      const f = walk.shift()!;
-      for (const child of await childrenOf(client, binding.driveId, f.id)) {
-        if (changed.has(child.id)) continue;
-        changed.set(child.id, child);
-        if (child.folder) walk.push(child);
-      }
-    }
-    const fence = fenceOf(binding.folderItemId, changed, index);
-    // A held item that only LOOKS outside — moved somewhere this page cannot place — is not landed
-    // as moved-out on this page's word. It waits for the end-of-pass check; if a later page
-    // presents it inside first, it lands there and leaves the queue.
-    const pending = new Set(pass.pending ?? []);
-    const plan = planChanges(binding.folderItemId, changed, index, fence).filter((p) => {
-      if (p.change === 'delete' && p.reason === 'moved-out') {
-        pending.add(p.id);
-        return false;
-      }
-      if (p.change === 'upsert') pending.delete(p.item.id);
-      return true;
-    });
-    for (const p of plan) await land(p);
-    changes += plan.length;
-    // An item a full pass presents unchanged still has to be marked seen by it.
-    if (pass.full) {
-      for (const id of changed.keys()) {
-        const entry = index.get(id);
-        if (entry && entry.seenIn !== pass.id) await put(id, { ...entry, seenIn: pass.id });
-      }
-    }
-    pages += 1;
-    pass = { ...pass, changes: pass.changes + plan.length, pending: [...pending] };
+    carry(await landChanges(changed));
+    await stamp(changed);
 
     if (page.delta) {
-      // A full enumeration that never presented a held item has not shown it is gone: an
-      // enumeration spanning minutes can miss one. Each is checked before anything lands, with the
-      // items pages could not place.
-      const unseen = pass.full ? [...index.entries()].filter(([, e]) => e.seenIn !== pass.id).map(([id]) => id) : [];
-      const queue = [...new Set([...pending, ...unseen])];
-      pass = { ...pass, pending: [], verify: { deltaLink: page.delta, queue } };
+      // The end of the feed: what pages could not place is checked before anything lands for it,
+      // and on a full pass so is whatever it never presented (collected once the walks are done).
+      pass = { ...pass, pending: [], verify: { deltaLink: page.delta, queue: pass.pending ?? [], ...(pass.full ? { collectUnseen: true } : {}) } };
       if (!(await save({ pass }))) return superseded(pages, changes, pass.full);
       continue;
     }

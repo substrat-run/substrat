@@ -245,16 +245,11 @@ export async function deltaPage(client: GraphClient, driveId: string, link: stri
   return { items: body.value, next: body['@odata.nextLink'] ?? null, delta: body['@odata.deltaLink'] ?? null };
 }
 
-/** Every child of a folder, paged. */
-export async function childrenOf(client: GraphClient, driveId: string, itemId: string): Promise<DriveItem[]> {
-  const out: DriveItem[] = [];
-  let url: string | null = `${graphRoot(client)}/drives/${enc(driveId)}/items/${enc(itemId)}/children?$select=${SELECT}`;
-  while (url) {
-    const body = page.parse(await (await send(client, 'GET', url)).json());
-    out.push(...body.value);
-    url = body['@odata.nextLink'] ?? null;
-  }
-  return out;
+/** One page of a folder's children; `link` is the previous page's `nextLink`, `null` the first. */
+export async function childrenPage(client: GraphClient, driveId: string, itemId: string, link: string | null) {
+  const url = link ?? `${graphRoot(client)}/drives/${enc(driveId)}/items/${enc(itemId)}/children?$select=${SELECT}`;
+  const body = page.parse(await (await send(client, 'GET', url)).json());
+  return { items: body.value, next: body['@odata.nextLink'] ?? null };
 }
 
 /**

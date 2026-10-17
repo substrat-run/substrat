@@ -201,7 +201,14 @@ export class FakeDrive {
 
     m = /^drives\/drive-1\/items\/([^/:]+)\/children$/.exec(path);
     if (m && method === 'GET') {
-      return respond(200, { value: this.live().filter((i) => i.parentId === m![1]).map((i) => this.view(i)) });
+      const parent = this.must(m[1]!);
+      const all = this.live().filter((i) => i.parentId === parent.id);
+      const skip = Number(u.searchParams.get('skip') ?? '0');
+      const more = skip + this.pageSize < all.length;
+      return respond(200, {
+        value: all.slice(skip, skip + this.pageSize).map((i) => this.view(i)),
+        ...(more ? { '@odata.nextLink': `${GRAPH}/v1.0/drives/${DRIVE}/items/${parent.id}/children?skip=${skip + this.pageSize}` } : {}),
+      });
     }
     m = /^drives\/drive-1\/items\/([^/:]+)\/content$/.exec(path);
     if (m && method === 'GET') {
