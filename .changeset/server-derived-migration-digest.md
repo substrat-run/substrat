@@ -9,7 +9,7 @@
 "@substrat-run/docs": patch
 ---
 
-The control plane now derives a version's migration digest itself, from the migrations it stores for the version (with their declared moves and discards) and the store classes in its manifest, instead of storing the digest the push sent. The promote gate, the bind snapshot and the lineage rebind compare the derived value, so a push can no longer present the live version's digest over different migrations. `migrationDigestOf` in `@substrat-run/contracts` is the one implementation: `substrat push` hashes with it, and the control plane re-derives with it.
+The control plane now derives a version's migration digest itself, instead of storing the digest the push sent. It derives it from the migrations the push declares in its manifest, with their declared moves and discards, and from the manifest's store classes. Those migrations are what the platform stores and what the promote review shows. The promote gate, the bind snapshot and the lineage rebind compare the derived value, so the digest they compare and the migrations the review shows are always the same set. `migrationDigestOf` in `@substrat-run/contracts` is the one implementation: `substrat push` hashes with it, and the control plane re-derives with it.
 
 **Behaviour change, at push:** a push that carries its migrations under a digest that is not theirs is refused before anything is uploaded (`validation_failed`, reason `migration_digest_mismatch`), on `/verticals/:slug/deploy` and on the raw version publish alike. A CLI whose push digest covers the SQL and its declarations is unaffected. One from before the SQL entered the digest is refused, and the refusal says to upgrade the CLI.
 

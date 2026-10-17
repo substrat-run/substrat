@@ -479,9 +479,10 @@ the new declarations.
 The migration digest covers the app's Durable-Object classes and every SQL migration the host
 would run, with its declared moves and discards, so a change to any of them is refused until you
 acknowledge it, from the CLI, the API and the dashboard alike. The control plane derives that digest
-itself, from the migrations it stores for the version and the store classes in its manifest, and a
-push whose own digest is not that one is refused before anything is uploaded: the gate never rests on
-a value only the pushing client computed. A CLI whose digest covers the SQL and its declarations is
+itself, from the migrations the push declares in its manifest, which it stores and the review shows,
+and the store classes in the manifest. A push whose own digest is not that one is refused before
+anything is uploaded, so the digest a promote compares, the stored migrations and the migrations the
+review shows always agree. A CLI whose digest covers the SQL and its declarations is
 unaffected; one from before the SQL was hashed is refused at push, and the refusal says to upgrade
 it. Versions stored before the control plane derived the digest are derived the same way when they
 are next read, so a promote compares derived digests on both sides.

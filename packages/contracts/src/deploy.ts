@@ -1841,8 +1841,9 @@ async function sha256Hex(text: string): Promise<string> {
  * index SQL, a push whose manifest then carries no migrations.
  *
  * One function on both ends: `substrat push` computes it, and the control plane re-derives it
- * from the migrations it stores for the version and refuses a push whose digest disagrees, so
- * the gate never trusts a value only the client computed.
+ * from the migrations the push declares in its manifest, which it stores and the promote review
+ * shows, and refuses a push whose digest disagrees. The digest a promote compares and the
+ * migrations it shows are then always the same set.
  */
 export async function migrationDigestOf(input: {
   doClasses: readonly string[];
