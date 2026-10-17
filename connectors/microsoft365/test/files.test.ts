@@ -274,6 +274,53 @@ describe('writes: a vertical puts files in the channel', () => {
     expect(await w.ledgers()).toEqual([expect.objectContaining({ status: 'pending', files: [] })]);
   });
 
+  // r1 blocker: the app's OWN earlier file, from another event, is not this event's lost upload.
+  it("fail keeps refusing the app's own earlier file from another event, on every redelivery", async () => {
+    const w = await world();
+    await w.bind();
+    const a = await w.attach('report.pdf', 'from event A');
+    await w.send({ files: [{ attachmentId: a.id }], conflict: 'fail' });
+    const b = await w.attach('report.pdf', 'from event B');
+    await w.send({ files: [{ attachmentId: b.id }], conflict: 'fail' });
+    await w.host.drainDue(w.t, w.s);
+    await w.host.drainDue(w.t, w.s);
+    expect(w.drive.childrenNamed(w.general)).toEqual(['report.pdf']);
+    expect(w.drive.text(w.general, 'report.pdf')).toBe('from event A');
+    const statuses = (await w.ledgers()).map((l) => l.status).sort();
+    expect(statuses).toEqual(['done', 'pending']);
+  });
+
+  it("rename writes its own copy after a throttled retry, never adopting the app's earlier file", async () => {
+    const w = await world();
+    await w.bind();
+    const a = await w.attach('report.pdf', 'from event A');
+    await w.send({ files: [{ attachmentId: a.id }], conflict: 'rename' });
+    const b = await w.attach('report.pdf', 'from event B');
+    // B's suffixed PUT is throttled once: no write happens, and the retry must still write B.
+    w.drive.failures.push({ when: (c) => c.method === 'PUT' && c.url.includes('report%20('), status: 503, once: true });
+    await w.send({ files: [{ attachmentId: b.id }], conflict: 'rename' });
+    await w.host.drainDue(w.t, w.s);
+    const names = w.drive.childrenNamed(w.general);
+    expect(names).toHaveLength(2);
+    const second = names.find((n) => n !== 'report.pdf')!;
+    expect(w.drive.text(w.general, 'report.pdf')).toBe('from event A');
+    expect(w.drive.text(w.general, second)).toBe('from event B');
+    expect((await w.ledgers()).map((l) => l.status)).toEqual(['done', 'done']);
+  });
+
+  it('a redelivery whose lost upload came back changed is a conflict, not adopted (fail)', async () => {
+    const w = await world();
+    await w.bind();
+    const a = await w.attach('report.pdf', 'as sent');
+    w.drive.lostAnswers.push({ when: (c) => c.method === 'PUT', once: true });
+    await w.send({ files: [{ attachmentId: a.id }], conflict: 'fail' });
+    // As SharePoint does to an Office document: the stored bytes are no longer the sent ones.
+    w.drive.tamper(w.general, 'report.pdf', 'as stored');
+    await w.host.drainDue(w.t, w.s);
+    expect(w.drive.childrenNamed(w.general)).toEqual(['report.pdf']);
+    expect(await w.ledgers()).toEqual([expect.objectContaining({ status: 'pending', files: [] })]);
+  });
+
   it('replace overwrites, and says so in the event', async () => {
     const w = await world();
     await w.bind();

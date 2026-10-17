@@ -171,7 +171,9 @@ export const driveItem = z.object({
   id: z.string().min(1),
   name: z.string().optional(),
   parentReference: z.object({ id: z.string().optional(), driveId: z.string().optional(), path: z.string().optional() }).optional(),
-  file: z.object({ mimeType: z.string().optional() }).optional(),
+  file: z
+    .object({ mimeType: z.string().optional(), hashes: z.object({ quickXorHash: z.string().optional() }).optional() })
+    .optional(),
   folder: z.object({ childCount: z.number().optional() }).optional(),
   root: z.object({}).passthrough().optional(),
   deleted: z.object({ state: z.string().optional() }).optional(),

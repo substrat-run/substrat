@@ -43,6 +43,7 @@ import {
 } from './connection.js';
 import { microsoft365Secret } from './credential.js';
 import { fencedPath, fencedSegment } from './fence.js';
+import { quickXorHash } from './quickxor.js';
 import {
   GraphError,
   childrenOf,
@@ -292,13 +293,6 @@ interface WriteLedger {
 }
 
 /**
- * How far before a pending row a file may have been created and still be this event's. Covers
- * clock skew between the platform and SharePoint; the application id is the sharper half of the
- * check.
- */
-const ADOPT_SKEW_MS = 5 * 60_000;
-
-/**
  * The dispatch: put each named attachment in the bound folder.
  *
  * **Idempotency.** A ledger row keyed on the event id is written `pending` before the first upload
@@ -307,16 +301,19 @@ const ADOPT_SKEW_MS = 5 * 60_000;
  *
  * - `replace` re-uploads the same bytes over the same name — the same file either way.
  * - `fail` and `rename` upload with Graph's `fail`, so a retry meets the file its earlier attempt
- *   wrote as a conflict. On a redelivery (the row was already `pending`) a conflicting item that
- *   THIS app created after the row was written is taken as that attempt's and adopted, not
- *   duplicated or refused.
+ *   wrote as a conflict. On a redelivery (the row was already `pending`) a conflicting item is
+ *   adopted as that attempt's only when it IS these bytes: THIS app created it, and its size and
+ *   QuickXorHash are the attachment's. Anything else is a conflict — `fail` reports it, and
+ *   `rename` moves on to its own name.
  * - `rename` never asks Graph to pick a name. On a conflict it writes `name (xxxxxxxx).ext`, the
  *   suffix derived from the event and the attachment, so a retry aims at the same second name and
  *   the adoption above applies to it too. Only if that name is also taken by something else does
  *   the write fail.
  *
- * The residual: another write by the same app, of the same name, inside the window, would be
- * adopted as this one's. The ledger closes the common case; this narrows the rest to that.
+ * The residual is the other direction: SharePoint rewrites some files as it stores them (Office
+ * documents get their properties updated), so the item a lost answer left may no longer hash to
+ * the bytes sent. Then `fail` reports a conflict and `rename` writes a second copy under its own
+ * name. Adopting on anything weaker than the content would take another event's file instead.
  */
 export function microsoft365FilesConnector(options: Microsoft365Options): ConnectorHandler {
   return async (ctx, event: DomainEvent) => {
@@ -360,7 +357,9 @@ export function microsoft365FilesConnector(options: Microsoft365Options): Connec
         directory,
         file,
         conflict: payload.conflict,
-        adopt: redelivery ? { clientId: secret.clientId, after: Date.parse(ledger.startedAt) - ADOPT_SKEW_MS } : null,
+        adopt: redelivery
+          ? { clientId: secret.clientId, size: file.body.byteLength, quickXorHash: quickXorHash(file.body) }
+          : null,
         suffix: await suffixOf(event.id, file.attachmentId),
       });
       ledger.files.push({ attachmentId: file.attachmentId, itemId: written.id, name: written.name ?? file.name });
@@ -377,7 +376,7 @@ async function writeOne(
     directory: string[];
     file: { name: string; body: Uint8Array; contentType: string };
     conflict: 'replace' | 'rename' | 'fail';
-    adopt: { clientId: string; after: number } | null;
+    adopt: { clientId: string; size: number; quickXorHash: string } | null;
     suffix: string;
   },
 ): Promise<DriveItem> {
@@ -397,10 +396,13 @@ async function writeOne(
         throw new Error('Graph found no folder to write into — the channel folder, or a directory under it, does not exist');
       }
       if (!(e instanceof GraphError && e.status === 409) || !w.adopt) throw e;
-      // A redelivery meeting a conflict: adopt the file if this app wrote it since the row.
+      // A redelivery meeting a conflict: adopt the file only if it is these bytes, written by this app.
       const existing = await itemUnder(client, binding.driveId, binding.folderItemId, segments);
-      const created = Date.parse(existing.createdDateTime ?? '');
-      if (existing.createdBy?.application?.id === w.adopt.clientId && created >= w.adopt.after) return existing;
+      const ours =
+        existing.createdBy?.application?.id === w.adopt.clientId &&
+        existing.size === w.adopt.size &&
+        existing.file?.hashes?.quickXorHash === w.adopt.quickXorHash;
+      if (ours) return existing;
       throw e;
     }
   };

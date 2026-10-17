@@ -1,5 +1,6 @@
 import { URL } from 'node:url';
 import type { FetchLike } from '@substrat-run/kernel';
+import { quickXorHash } from '../src/quickxor.js';
 
 /**
  * A stand-in for one SharePoint document library behind Graph, with a change feed.
@@ -104,6 +105,11 @@ export class FakeDrive {
     it.version += 1;
     it.contentVersion += 1;
     it.seq = ++this.seq;
+  }
+  /** Change a stored file's bytes in place, as SharePoint does to an Office document it stores. */
+  tamper(parentId: string, name: string, content: string) {
+    const it = this.live().find((i) => i.parentId === parentId && i.name === name)!;
+    it.content = new TextEncoder().encode(content);
   }
   rename(id: string, name: string) {
     const it = this.must(id);
@@ -294,7 +300,11 @@ export class FakeDrive {
       id: i.id,
       name: i.name,
       parentReference: { driveId: DRIVE, ...(i.parentId ? { id: i.parentId } : {}) },
-      ...(i.kind === 'root' ? { root: {}, folder: {} } : i.kind === 'folder' ? { folder: { childCount: 0 } } : { file: { mimeType: i.mimeType } }),
+      ...(i.kind === 'root'
+        ? { root: {}, folder: {} }
+        : i.kind === 'folder'
+          ? { folder: { childCount: 0 } }
+          : { file: { mimeType: i.mimeType, hashes: { quickXorHash: quickXorHash(i.content) } } }),
       size: i.content.byteLength,
       eTag: `"{${i.id}},${i.version}"`,
       cTag: `"c:{${i.id}},${i.contentVersion}"`,
