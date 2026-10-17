@@ -870,6 +870,65 @@ describe('reads: the sync lands what is in the folder', () => {
       expect((await listMicrosoft365Bindings(w.host, w.conn))[0]!.lastSync).toMatchObject({ unplaced: 1 });
     });
 
+    // r4 #3: what a folder ABOVE an item answers is never the item's deletion.
+    describe('an item whose own lookup succeeds is never deleted for what is above it', () => {
+      const movedUnder = async (depth: number) => {
+        const w = await world();
+        const f = w.drive.put(w.general, 'f.txt', 'f');
+        await w.bind();
+        await w.sync();
+        w.landed.length = 0;
+        let parent = w.general;
+        const chain: string[] = [];
+        for (let i = 0; i < depth; i += 1) {
+          parent = w.drive.mkdir(parent, `level ${i}`);
+          chain.push(parent);
+          w.drive.hiddenFromFeed.add(parent);
+        }
+        w.drive.move(f, parent);
+        return { w, f, chain };
+      };
+      const keptAndCounted = async (w: Awaited<ReturnType<typeof world>>) => {
+        expect(await w.sync()).toMatchObject({ complete: true });
+        expect(w.landed.filter((c) => c.change === 'delete')).toEqual([]);
+        expect((await listMicrosoft365Bindings(w.host, w.conn))[0]!.lastSync).toMatchObject({ unplaced: 1 });
+      };
+
+      it('a folder above it answering 404', async () => {
+        const { w, chain } = await movedUnder(1);
+        w.drive.failures.push({ when: (c) => c.url.includes(`/items/${chain[0]}?`), status: 404 });
+        await keptAndCounted(w);
+      });
+      it('a folder above it answering 410', async () => {
+        const { w, chain } = await movedUnder(1);
+        w.drive.failures.push({ when: (c) => c.url.includes(`/items/${chain[0]}?`), status: 410 });
+        await keptAndCounted(w);
+      });
+      it('a folder above it answering with a deleted facet', async () => {
+        const { w, chain } = await movedUnder(1);
+        w.drive.deletedFacet.add(chain[0]!);
+        await keptAndCounted(w);
+      });
+      it('a parent chain deeper than 64 folders', async () => {
+        const { w } = await movedUnder(65);
+        await keptAndCounted(w);
+      });
+    });
+
+    it('a refused item that a later lookup finds where it was is no longer counted', async () => {
+      const w = await world();
+      const f = w.drive.put(w.general, 'f.txt', 'f');
+      await w.bind();
+      await w.sync();
+      w.drive.hiddenFromFeed.add(f);
+      w.drive.expiredBefore = Number.MAX_SAFE_INTEGER;
+      w.drive.failures.push({ when: (c) => c.url.includes(`/items/${f}?`), status: 403, once: true });
+      await w.sync();
+      expect((await listMicrosoft365Bindings(w.host, w.conn))[0]!.lastSync).toMatchObject({ unplaced: 1 });
+      await w.sync();
+      expect((await listMicrosoft365Bindings(w.host, w.conn))[0]!.lastSync?.unplaced).toBeUndefined();
+    });
+
     it('a transient answer (503) still stops the pass with nothing deleted (the twin)', async () => {
       const w = await world();
       const held = w.drive.put(w.general, 'held.txt', 'held');

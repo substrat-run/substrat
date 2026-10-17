@@ -63,6 +63,8 @@ export class FakeDrive {
   misreportedSize = new Map<string, number>();
   /** Items the change feed leaves out — how a test makes an enumeration miss one, as a long one may. */
   hiddenFromFeed = new Set<string>();
+  /** Items a lookup answers with a deleted facet, though they are still there. */
+  deletedFacet = new Set<string>();
   /** Items whose size the drive leaves out, as Graph may. */
   sizeless = new Set<string>();
   /** Items per delta page — small, so every test pages. */
@@ -237,7 +239,10 @@ export class FakeDrive {
     m = /^drives\/drive-1\/items\/([^/:]+):\/(.+)$/.exec(path);
     if (m && method === 'GET') return respond(200, this.view(this.resolve(m[1]!, decodeSegments(m[2]!))));
     m = /^drives\/drive-1\/items\/([^/:]+)$/.exec(path);
-    if (m && method === 'GET') return respond(200, this.view(this.must(m[1]!)));
+    if (m && method === 'GET') {
+      if (this.deletedFacet.has(m[1]!)) return respond(200, { id: m[1], deleted: { state: 'deleted' }, parentReference: { driveId: DRIVE } });
+      return respond(200, this.view(this.must(m[1]!)));
+    }
     throw new Status(404, 'noRoute', `no route for ${method}`);
   }
 
