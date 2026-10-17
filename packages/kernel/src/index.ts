@@ -3,6 +3,7 @@ export type {
   AttachmentSearchOptions,
   AttachmentUploadInput,
   UploadLinkRedeemInput,
+  RedeemedUploadLink,
   AuditLogFilter,
   BlobStoreProvisionInput,
   BlobStoreRecord,
@@ -235,6 +236,7 @@ export {
   ACTIVE_CONTENT_TYPES,
   UPLOAD_LINK_DDL,
   UPLOAD_LINK_GONE,
+  UPLOAD_LINK_REPLAY_MISMATCH,
   UPLOAD_LINK_TOO_LARGE,
   UPLOAD_LINK_TYPE_REFUSED,
   UPLOAD_LINK_WRONG_TARGET,
@@ -243,6 +245,7 @@ export {
   isActiveContentType,
   isMediaTypeEssence,
   normalizeUploadMediaType,
+  redeemOrReplayUploadLink,
   redeemUploadLinkInTransaction,
   uploadContentTypeAllowed,
 } from './upload-link.js';

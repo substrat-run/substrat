@@ -871,8 +871,10 @@ that declares `uploadLinks: { maxBytes, contentTypes? }` lets an operation mint,
 directory row lives in the scope's own spine table, **`_substrat_upload_links`**
 (`UPLOAD_LINK_DDL` in `packages/kernel/src/upload-link.ts`). It holds the SHA-256 of the
 secret (never the secret), the target, the size and type policy, the visibility, who minted
-it and when it expires, and then when it was redeemed and which attachment it produced, or
-the tombstone of a revoke. Like `_substrat_capabilities`, it is left out of a copy, so a fork
+it and when it expires, and then when it was redeemed, which attachment it produced and the
+SHA-256 of the redeeming request's `Idempotency-Key` (#2315: a retry under that key, with the
+same bytes, inside the link's lifetime plus ten minutes, gets the stored record back and
+writes nothing), or the tombstone of a revoke. Like `_substrat_capabilities`, it is left out of a copy, so a fork
 never honours its source's links. Redemption is `ScopeHost.redeemUploadLink`: the same
 attachment write as above, authored by the minter, with the target's `writePermission`
 checked as them again. The link is spent in the transaction that inserts the attachment row.

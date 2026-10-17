@@ -4858,7 +4858,20 @@ export interface UploadLinkRedeemInput {
   filename: string;
   contentType: string;
   body: Uint8Array;
+  /**
+   * #2315: the redeemer's own id for this redemption (the route reads `Idempotency-Key`). The
+   * spend records its hash; a later redemption of the SAME link with the same key, the same
+   * bytes and inside the link's lifetime plus `UPLOAD_LINK_REPLAY_GRACE_SECONDS` gets the stored
+   * record back (`replayed: true`) and writes nothing. Without it, a spent link is 410 forever.
+   */
+  idempotencyKey?: string;
 }
+
+/** What `ScopeHost.redeemUploadLink` answers: the record, and whether it was stored by an earlier request. */
+export type RedeemedUploadLink = AttachmentRecord & {
+  /** Present only on a replay (#2315): the file was stored by the request that spent the link, and nothing was written now. */
+  replayed?: true;
+};
 
 /** An opened attachment: the metadata fact plus the bytes it witnesses. */
 export interface OpenedAttachment {
@@ -5497,7 +5510,13 @@ export interface ScopeHost {
    * Optional, like `getCapabilityAttachments`: a host that has not wired the link table says so
    * by leaving it out, and `mountUploadLinkRedeem` refuses to mount over one.
    */
-  inspectUploadLink?(tenantId: TenantId, scopeId: ScopeId, secret: string, target?: EntityRef): Promise<UploadLinkView>;
+  inspectUploadLink?(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    secret: string,
+    target?: EntityRef,
+    idempotencyKey?: string,
+  ): Promise<UploadLinkView>;
   /**
    * Redeem an upload link: write the bytes as ONE attachment, AS the principal who minted the
    * link — the target's `writePermission` is checked as them now, they are the author, and
@@ -5507,13 +5526,20 @@ export interface ScopeHost {
    * `upload_link_too_large` / `upload_link_type_refused`) and a link used by another request
    * first is `conflict` / `upload_link_gone`. The bytes are written to the blob store before
    * the row, as an upload's are, and removed again if the row is refused.
+   *
+   * #2315: with `input.idempotencyKey`, a link spent by a redemption that carried the same key
+   * is a REPLAY — `inspectUploadLink` with that key answers the view instead of 410, and this
+   * answers the stored record with `replayed: true` once the body matches it by size and
+   * SHA-256 (`conflict` / `upload_link_replay_mismatch` when it does not). A replay puts no
+   * bytes, writes no row and emits nothing. A retry that races the first request and loses the
+   * spend has its own bytes removed and is answered as a replay too.
    */
   redeemUploadLink?(
     tenantId: TenantId,
     scopeId: ScopeId,
     secret: string,
     input: UploadLinkRedeemInput,
-  ): Promise<AttachmentRecord>;
+  ): Promise<RedeemedUploadLink>;
 
   /**
    * One orphan-sweep pass over a scope's attachment bytes (#2314): delete the objects under the

@@ -208,17 +208,52 @@ the claim, so a PNG called `contract.pdf` is refused.
 | Answer | When | Spends the link? |
 |---|---|---|
 | **201** | the file is stored | yes |
+| **200** | a retry with the `Idempotency-Key` of the request that stored the file ([below](#a-lost-reply)) | n/a |
 | **404** | the secret names nothing or is not shaped like one, or the path names another entity or type than the link was minted for (whatever the link's state) | no |
 | **410** | the link was used, has expired or was revoked, asked for at its own path | n/a |
 | **413** | the body is over the link's size, judged by `Content-Length` and again as bytes arrive | no |
 | **415** | the type is not admitted, or the bytes contradict it | no |
 | **403** | the minter no longer holds the write key | no |
-| **400** | an empty body | no |
+| **400** | an empty body, or a malformed `Idempotency-Key` | no |
+| **422** | a retry under the right `Idempotency-Key` whose bytes are not the stored file | n/a |
 
 A refusal never spends the link: the caller can fix the file and send it again within the time
 box. A malformed secret is answered by the route without the scope being asked, with the same
 404 an unknown one gets. The route listens at `/api/attachment-uploads/…` only, the path the
 mint returns.
+
+### A lost reply
+
+A redemption can commit and still fail from the caller's side: the connection drops, or the scope
+restarts after the commit and before the answer. A plain retry of the same link then gets 410,
+though the file was stored. To make the retry safe, name the request with an `Idempotency-Key`
+header and send the same header with the retry:
+
+```sh
+KEY=$(uuidgen)
+curl --upload-file signed-contract.pdf -H "Idempotency-Key: $KEY" \
+  "https://crm.example/api/attachment-uploads/contract/01J…/sbup_…?filename=signed-contract.pdf"
+```
+
+- **The key.** 16 to 255 visible ASCII characters, with no space, `"` or `\`. A UUID or a ULID
+  fits. The structured-field spelling `Idempotency-Key: "…"` is read without its quotes. Anything
+  else is a 400, sent before the scope is asked, whatever the link's state.
+- **What the spend records.** The SHA-256 of the key, beside the link. The key itself is stored
+  nowhere. A redemption without the header records nothing, and its link can never be replayed.
+- **What a replay answers.** The same link, with the same key and the same bytes (judged by size and
+  SHA-256), within the link's lifetime plus **10 minutes**, answers **200** with the body the
+  stored 201 carried. A replay writes nothing: no bytes, no row, no event. The 200 tells "already
+  stored" apart from "stored now". The same key with other bytes is **422**
+  (`upload_link_replay_mismatch`), and nothing is stored.
+- **A retry that races the first request.** If the retry arrives while the first request is still
+  writing, both send their bytes. The first commits, and the retry finds the link spent in its
+  own transaction. Its own bytes, stored under an id of its own, are removed, and it is answered
+  as the replay.
+- **Everyone else still gets 410.** A request for a spent link with no key, with another key, after
+  the window, or after the stored file was removed or swept, gets the same 410 as before, down to
+  its headers and body. Someone who holds the secret without the key cannot learn whether the file
+  arrived. A key is no authority on its own: on another link, a pending one, it is an ordinary
+  redemption, and a path naming another target is still a 404.
 
 ### What it is, and is not
 
@@ -230,7 +265,8 @@ mint returns.
   what their links can do.
 - **Single use is the transaction's.** The link is marked used in the same transaction that
   inserts the attachment row. Two requests racing for one link are serialized by the scope and
-  the second one gets 410. A redemption that fails anywhere leaves the link unspent.
+  the second one gets 410, or the replay when it carries the first one's `Idempotency-Key`. A
+  redemption that fails anywhere leaves the link unspent.
 - **The secret is the authority.** 256 random bits, `sbup_`-prefixed so a secret scanner can
   recognise one. Only its SHA-256 is stored. An operation that tries to persist the secret in
   an event, its own table or a platform intent is refused, the same tripwire `ctx.capabilities`
