@@ -67,6 +67,16 @@ export function sitePath(siteUrl: string): string {
   return path ? `sites/${url.hostname}:${path}` : `sites/${url.hostname}`;
 }
 
+/**
+ * The site as the start of a longer Graph path. A site addressed by its server-relative path is
+ * closed with a colon before anything follows it (`sites/{host}:/sites/Team:/drive/…`); the root
+ * site needs none (`sites/{host}/drive/…`).
+ */
+export function siteSegment(siteUrl: string): string {
+  const path = sitePath(siteUrl);
+  return path.includes(':') ? `${path}:` : path;
+}
+
 export async function readSite(client: GraphClient, siteUrl: string): Promise<SiteInfo> {
   const res = await call(client, 'GET', sitePath(siteUrl));
   const body = (await res.json()) as Partial<SiteInfo>;
@@ -198,7 +208,7 @@ const page = z.object({
 
 /** The folder at `segments` under the site's default document library. */
 export async function folderAtPath(client: GraphClient, siteUrl: string, segments: readonly string[]): Promise<DriveItem> {
-  const res = await call(client, 'GET', `${sitePath(siteUrl)}/drive/root:/${encodedPath(segments)}?$select=${SELECT}`);
+  const res = await call(client, 'GET', `${siteSegment(siteUrl)}/drive/root:/${encodedPath(segments)}?$select=${SELECT}`);
   return driveItem.parse(await res.json());
 }
 

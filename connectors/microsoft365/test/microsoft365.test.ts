@@ -19,6 +19,7 @@ import {
   type Microsoft365Secret,
 } from '../src/index.js';
 import { acquireToken } from '../src/credential.js';
+import { siteSegment } from '../src/graph.js';
 import { certificateMatchesKey, integer } from '../src/x509.js';
 
 /**
@@ -872,5 +873,9 @@ describe('sitePath', () => {
   it("maps a site URL onto Graph's host-and-path address", () => {
     expect(sitePath('https://acme.sharepoint.com/sites/Team/')).toBe('sites/acme.sharepoint.com:/sites/Team');
     expect(sitePath('https://acme.sharepoint.com')).toBe('sites/acme.sharepoint.com');
+  });
+  it('closes a site path with a colon before a path continues it, and the root site needs none', () => {
+    expect(siteSegment('https://acme.sharepoint.com/sites/Team/')).toBe('sites/acme.sharepoint.com:/sites/Team:');
+    expect(siteSegment('https://acme.sharepoint.com')).toBe('sites/acme.sharepoint.com');
   });
 });

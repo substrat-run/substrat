@@ -188,7 +188,9 @@ export class FakeDrive {
     const u = new URL(url);
     const path = u.pathname.slice('/v1.0/'.length);
 
-    let m = /^sites\/[^/]+:\/sites\/Team\/drive\/root:\/(.+)$/.exec(path);
+    // Graph's path addressing: the site's server-relative path is closed by a colon before
+    // `/drive`, and the item path opened by one after `root`.
+    let m = /^sites\/[^/:]+:\/sites\/Team:\/drive\/root:\/(.+)$/.exec(path);
     if (m && method === 'GET') return respond(200, this.view(this.resolve('root', decodeSegments(m[1]!))));
 
     m = /^drives\/drive-1\/root\/delta$/.exec(path);
