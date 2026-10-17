@@ -47,6 +47,16 @@ const SEND = permissionKey.parse('docs:send');
 /** Words that live only OUTSIDE the bound folder: none may reach state, a payload or a log. */
 const OUTSIDE_NAMES = ['Board-salaries.xlsx', 'Leadership', 'Moved-away-secret.docx'];
 
+/** The paths a vertical holds after applying `changes` in order to `start`, by item id. */
+function mirror(start: Map<string, string>, changes: Microsoft365ChannelChange[]): Map<string, string> {
+  const held = new Map(start);
+  for (const c of changes) {
+    if (c.change === 'upsert') held.set(c.itemId, c.path);
+    if (c.change === 'delete') held.delete(c.itemId);
+  }
+  return held;
+}
+
 let dir: string | undefined;
 afterEach(() => {
   if (dir) rmSync(dir, { recursive: true, force: true });
@@ -171,9 +181,9 @@ async function world(opts: { grantLand?: boolean } = {}) {
       { connectionId: conn, tenantId: t, scopeId: s, vertical: 'docs', operation: 'docs/land', permission: 'docs:land', folder },
       options,
     );
-  const sync = async () => {
+  const sync = async (maxPages?: number) => {
     const [binding] = await listMicrosoft365Bindings(host, conn);
-    return syncMicrosoft365Scope(host, conn, binding!, options);
+    return syncMicrosoft365Scope(host, conn, binding!, { ...options, ...(maxPages ? { maxPages } : {}) });
   };
   const send = (payload: Microsoft365FilesRequested) => stub.invoke('docs/send', payload);
   const state = async () => JSON.stringify(await host.admin.listConnectorState(conn));
@@ -467,6 +477,7 @@ describe('reads: the sync lands what is in the folder', () => {
     w.drive.put(incoming, 'plan.txt', 'the plan');
     await w.bind();
     await w.sync();
+    const before = mirror(new Map(), w.landed);
     w.landed.length = 0;
 
     w.drive.put(w.general, 'new.txt', 'new');
@@ -478,11 +489,13 @@ describe('reads: the sync lands what is in the folder', () => {
     const r = await w.sync();
     expect(r.full).toBe(false);
 
-    const byPath = (change: string) => w.landed.filter((c) => c.change === change).map((c) => c.path).sort();
-    expect(byPath('delete')).toEqual(['Minutes/m1.txt', 'Moved-away-secret.docx']);
-    expect(w.landed.find((c) => c.change === 'delete' && c.name === 'Moved-away-secret.docx')).toMatchObject({ reason: 'moved-out' });
-    expect(w.landed.find((c) => c.change === 'delete' && c.name === 'm1.txt')).toMatchObject({ reason: 'deleted' });
-    expect(byPath('upsert')).toEqual(['Meeting minutes', 'Shared-plans', 'Shared-plans/plan.txt', 'agenda.txt', 'new.txt']);
+    // What the vertical holds once it has applied every change in order — the oracle, since a pass
+    // landed page by page may say a renamed folder's child moved before it says the child is gone.
+    expect([...mirror(before, w.landed).values()].sort()).toEqual(['Meeting minutes', 'Shared-plans', 'Shared-plans/plan.txt', 'agenda.txt', 'new.txt']);
+    const deletes = w.landed.filter((c) => c.change === 'delete');
+    expect(deletes.map((c) => c.itemId).sort()).toEqual([leaving, m1].sort());
+    expect(deletes.find((c) => c.itemId === leaving)).toMatchObject({ reason: 'moved-out' });
+    expect(deletes.find((c) => c.itemId === m1)).toMatchObject({ reason: 'deleted' });
     expect(w.landed.find((c) => c.change === 'upsert' && c.path === 'Meeting minutes')).toMatchObject({ previousPath: 'Minutes' });
     expect(w.landed.find((c) => c.change === 'upsert' && c.path === 'agenda.txt')).toMatchObject({ content: 'follows' });
     const edited = w.landed.find((c) => c.change === 'content' && c.path === 'agenda.txt');
@@ -530,6 +543,85 @@ describe('reads: the sync lands what is in the folder', () => {
     await w.sync();
     const upserts = w.landed.filter((c) => c.change === 'upsert').map((c) => c.name).sort();
     expect(upserts).toEqual(['a.txt', 'b.txt', 'c.txt']);
+  });
+
+  describe('a pass is landed page by page', () => {
+    const upsertsByItem = (landed: Microsoft365ChannelChange[]) => {
+      const counts = new Map<string, number>();
+      for (const c of landed) if (c.change === 'upsert') counts.set(c.name, (counts.get(c.name) ?? 0) + 1);
+      return counts;
+    };
+
+    it('a pass over its page budget resumes where it stopped, landing each item once', async () => {
+      const w = await world();
+      for (let i = 0; i < 8; i += 1) w.drive.put(w.general, `f${i}.txt`, `file ${i}`);
+      await w.bind();
+      const calls: boolean[] = [];
+      for (let n = 0; n < 20; n += 1) {
+        const r = await w.sync(1);
+        calls.push(r.complete);
+        if (r.complete) break;
+        // Between calls the binding holds where to resume, and nothing about outside items.
+        const [binding] = await listMicrosoft365Bindings(w.host, w.conn);
+        expect(binding!.pass?.next).toEqual(expect.stringContaining('/root/delta'));
+        expect(binding!.deltaLink).toBeUndefined();
+        for (const name of OUTSIDE_NAMES) expect(await w.state()).not.toContain(name);
+      }
+      expect(calls.length).toBeGreaterThan(2);
+      expect(calls.at(-1)).toBe(true);
+      const counts = upsertsByItem(w.landed);
+      expect([...counts.keys()].sort()).toEqual(['f0.txt', 'f1.txt', 'f2.txt', 'f3.txt', 'f4.txt', 'f5.txt', 'f6.txt', 'f7.txt']);
+      expect([...counts.values()].every((n) => n === 1)).toBe(true);
+      expect(w.landed.filter((c) => c.change === 'content')).toHaveLength(8);
+      expect(w.landed.some((c) => c.change === 'delete')).toBe(false);
+    });
+
+    it('a pass that crashes mid-way resumes from the last landed page, not the start', async () => {
+      const w = await world();
+      for (let i = 0; i < 8; i += 1) w.drive.put(w.general, `f${i}.txt`, `file ${i}`);
+      await w.bind();
+      w.failOn.name = 'f5.txt';
+      await expect(w.sync()).rejects.toThrow(/landing failed once/);
+      const [binding] = await listMicrosoft365Bindings(w.host, w.conn);
+      expect(binding!.pass?.next).toEqual(expect.stringContaining('skip='));
+      const firstPageReads = () => w.drive.calls.filter((c) => c.url.includes('/root/delta') && !c.url.includes('skip=')).length;
+      expect(firstPageReads()).toBe(1);
+      expect(await w.sync()).toMatchObject({ complete: true });
+      expect(firstPageReads()).toBe(1);
+      const counts = upsertsByItem(w.landed);
+      expect(counts.size).toBe(8);
+      expect([...counts.values()].every((n) => n === 1)).toBe(true);
+    });
+
+    it('a resync lands what it never saw as deleted only once the whole enumeration has been read', async () => {
+      const w = await world();
+      const keep = w.drive.put(w.general, 'keep.txt', 'keep');
+      for (let i = 0; i < 6; i += 1) w.drive.put(w.general, `f${i}.txt`, 'x');
+      const gone = w.drive.put(w.general, 'gone.txt', 'gone');
+      await w.bind();
+      await w.sync();
+      w.landed.length = 0;
+      w.drive.remove(gone);
+      w.drive.expiredBefore = Number.MAX_SAFE_INTEGER;
+      let r = await w.sync(1);
+      expect(r).toMatchObject({ full: true, complete: false });
+      expect(w.landed).toEqual([]);
+      while (!r.complete) r = await w.sync(1);
+      expect(w.landed).toEqual([expect.objectContaining({ change: 'delete', itemId: gone, reason: 'deleted' })]);
+      expect(w.landed.some((c) => c.itemId === keep)).toBe(false);
+    });
+
+    it('a file the feed presents before its folder still lands', async () => {
+      const w = await world();
+      const late = w.drive.mkdir(w.general, 'Late');
+      w.drive.put(late, 'early.txt', 'early');
+      // The folder changes after its child, so a full enumeration presents the child first.
+      w.drive.rename(late, 'Late folder');
+      w.drive.pageSize = 1;
+      await w.bind();
+      while (!(await w.sync(50)).complete);
+      expect([...mirror(new Map(), w.landed).values()].sort()).toEqual(['Late folder', 'Late folder/early.txt']);
+    });
   });
 
   it('an expired cursor resyncs from scratch, landing only what changed', async () => {

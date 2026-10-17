@@ -183,9 +183,24 @@ export interface Microsoft365Binding {
   boundAt: string;
   /** Where the next pass reads the change feed from; absent until the first full pass landed. */
   deltaLink?: string;
+  /**
+   * A pass in progress: the page to read next (`null` = the start of a full enumeration), saved
+   * after every landed page, so a pass longer than one call — or one cut off by a crash — resumes
+   * there instead of starting over.
+   */
+  pass?: SyncPass;
   lastSync?: { syncedAt: string; changes: number };
   /** Set when the folder is gone; the binding refuses until it is bound again. */
   folderMissing?: { since: string };
+}
+
+interface SyncPass {
+  id: string;
+  /** A full enumeration: what it never presents is gone, which is decided when it ends. */
+  full: boolean;
+  next: string | null;
+  startedAt: string;
+  changes: number;
 }
 
 interface ItemEntry {
@@ -196,6 +211,8 @@ interface ItemEntry {
   cTag: string | null;
   eTag: string | null;
   attachmentId: string | null;
+  /** The last pass that presented this item — how a full pass finds what it never saw. */
+  seenIn?: string;
 }
 
 /**
@@ -262,8 +279,9 @@ export async function bindMicrosoft365Scope(
   };
   // The same folder bound again keeps its cursor, so a re-bind does not re-land the folder.
   const prior = await readBinding(host, input.connectionId, input.scopeId);
-  if (prior && prior.folderItemId === binding.folderItemId && prior.driveId === binding.driveId && prior.deltaLink) {
-    binding.deltaLink = prior.deltaLink;
+  if (prior && prior.folderItemId === binding.folderItemId && prior.driveId === binding.driveId) {
+    if (prior.deltaLink) binding.deltaLink = prior.deltaLink;
+    if (prior.pass) binding.pass = prior.pass;
     if (prior.lastSync) binding.lastSync = prior.lastSync;
   }
   await host.admin.putConnectorState(input.connectionId, bindingKey(input.scopeId), binding);
@@ -474,23 +492,33 @@ const FILES_RETRY: ConnectorOptions = { maxAttempts: 8, baseDelayMs: 5_000, maxD
 
 export interface Microsoft365SyncResult {
   scopeId: string;
-  /** Changes landed this pass. */
+  /** Changes landed by this call. */
   changes: number;
-  /** True when the pass read the whole library because there was no cursor (or Graph expired it). */
+  /** True when the pass is a full enumeration (no cursor yet, or Graph expired it). */
   full: boolean;
+  /** Pages of the change feed this call read and landed. */
+  pages: number;
+  /** False when the pass stopped at its page budget; the next call resumes where it stopped. */
+  complete: boolean;
 }
 
+/** How many pages of the change feed one call reads before it stops and leaves the rest to the next. */
+export const SYNC_PAGES_PER_CALL = 20;
+
 /**
- * Sync ONE bound scope: read the change feed since the last pass, keep what is in the folder, and
- * land it. The cursor is saved only after every change landed, so a pass that fails part-way is
- * read again from the same cursor next time; changes already landed are recognised by the item
- * state and not landed twice.
+ * Sync ONE bound scope: read the change feed a page at a time, keep what is in the folder, land
+ * it, and save where the next page starts — so memory is one page (plus what the binding holds
+ * about the folder), and a pass that is cut off resumes from the last landed page.
+ *
+ * Landing is **at least once**, keyed by `itemId`: a change is landed, then its bytes, then the
+ * item state that says so, and a failure between those steps lands the change again on the next
+ * call. A vertical's operation upserts by `itemId`, and may see an upsert, or a `content`, twice.
  */
 export async function syncMicrosoft365Scope(
   host: ScopeHost,
   connectionId: ConnectionId,
   binding: Microsoft365Binding,
-  options: Microsoft365Options,
+  options: Microsoft365Options & { maxPages?: number },
 ): Promise<Microsoft365SyncResult> {
   if (binding.folderMissing) throw folderMissingError();
   const conn = await openMicrosoft365Connection(host.admin, options, {
@@ -499,14 +527,16 @@ export async function syncMicrosoft365Scope(
     vertical: binding.vertical,
   });
   const client = await signedInGraph(conn, options);
+  let current = binding;
+  const save = async (next: Microsoft365Binding) => {
+    current = next;
+    await host.admin.putConnectorState(connectionId, bindingKey(binding.scopeId), next);
+  };
 
   // The folder first: gone (or no longer a folder in this drive) marks the binding and stops,
   // before the feed is read. Never a fall back to the library root.
-  const markMissing = async () => {
-    await host.admin.putConnectorState(connectionId, bindingKey(binding.scopeId), {
-      ...binding,
-      folderMissing: { since: nowOf(options).toISOString() },
-    });
+  const markMissing = async (): Promise<never> => {
+    await save({ ...current, folderMissing: { since: nowOf(options).toISOString() } });
     throw folderMissingError();
   };
   try {
@@ -522,54 +552,32 @@ export async function syncMicrosoft365Scope(
   for (const row of await host.admin.listConnectorState(connectionId, prefix)) {
     if (row.value && typeof row.value === 'object') index.set(row.key.slice(prefix.length), row.value as ItemEntry);
   }
+  const freshPass = (full: boolean, next: string | null): SyncPass => ({
+    id: crypto.randomUUID(),
+    full,
+    next,
+    startedAt: nowOf(options).toISOString(),
+    changes: 0,
+  });
+  let pass = current.pass ?? freshPass(!current.deltaLink, current.deltaLink ?? null);
 
-  // Read the whole feed for this pass. Items outside the folder stay in this map and nowhere else.
-  let full = !binding.deltaLink;
-  let feed: Awaited<ReturnType<typeof readFeed>>;
-  try {
-    feed = await readFeed(client, binding.driveId, binding.deltaLink ?? null);
-  } catch (e) {
-    // 410: Graph expired the cursor and asks for a resync — a full enumeration, compared against
-    // what is held, so unchanged items land nothing and missing ones land as deletes.
-    if (!(e instanceof GraphError && e.status === 410)) throw e;
-    full = true;
-    feed = await readFeed(client, binding.driveId, null);
-  }
-  const changed = feed.items;
-  const folderChange = changed.get(binding.folderItemId);
-  if (folderChange?.deleted) await markMissing();
-
-  // A folder that came into the folder from outside arrives without its children: read them.
-  if (!full) {
-    const queue = [...changed.values()].filter((i) => i.folder && !i.deleted && !index.has(i.id));
-    const fenced = fenceOf(binding.folderItemId, changed, index, full);
-    while (queue.length) {
-      const f = queue.shift()!;
-      if (!fenced.inside(f.id)) continue;
-      for (const child of await childrenOf(client, binding.driveId, f.id)) {
-        if (changed.has(child.id)) continue;
-        changed.set(child.id, child);
-        if (child.folder) queue.push(child);
-      }
-    }
-  }
-
-  const fence = fenceOf(binding.folderItemId, changed, index, full);
-  const plan = planChanges(binding.folderItemId, changed, index, fence, full);
-
-  const scope = await host.getConnectorScope(connectionId, scopeIdSchema.parse(binding.scopeId));
-  const attachments = plan.some((p) => p.content === 'follows')
-    ? await host.getConnectorAttachments(connectionId, scopeIdSchema.parse(binding.scopeId))
-    : undefined;
+  const scopeRef = scopeIdSchema.parse(binding.scopeId);
+  const scope = await host.getConnectorScope(connectionId, scopeRef);
+  let attachments: Awaited<ReturnType<ScopeHost['getConnectorAttachments']>> | undefined;
   const base = { connectionId };
-  for (const p of plan) {
+  const put = async (id: string, entry: ItemEntry | null) => {
+    await host.admin.putConnectorState(connectionId, `${prefix}${id}`, entry);
+    if (entry) index.set(id, entry);
+    else index.delete(id);
+  };
+  const land = async (p: Planned) => {
     if (p.change === 'delete') {
       await scope.invoke(
         binding.operation,
         microsoft365ChannelChange.parse({ change: 'delete', ...base, itemId: p.id, kind: p.prior.kind, path: p.prior.path, name: p.prior.name, reason: p.reason }),
       );
-      await host.admin.putConnectorState(connectionId, `${prefix}${p.id}`, null);
-      continue;
+      await put(p.id, null);
+      return;
     }
     const item = p.item;
     const answer = await scope.invoke(
@@ -589,12 +597,13 @@ export async function syncMicrosoft365Scope(
         content: p.content,
       }),
     );
-    const entry: ItemEntry = { ...p.entry, attachmentId: p.prior?.attachmentId ?? null };
+    const entry: ItemEntry = { ...p.entry, attachmentId: p.prior?.attachmentId ?? null, seenIn: pass.id };
     if (p.content === 'follows') {
       const target = upsertAnswer.safeParse(answer);
       if (target.success && target.data.entity) {
         const body = await contentOf(client, binding.driveId, item.id);
-        const record = await attachments!.upload({
+        attachments ??= await host.getConnectorAttachments(connectionId, scopeRef);
+        const record = await attachments.upload({
           entity: target.data.entity,
           filename: p.entry.name,
           contentType: item.file?.mimeType ?? 'application/octet-stream',
@@ -617,45 +626,92 @@ export async function syncMicrosoft365Scope(
         entry.attachmentId = record.id;
       }
     }
-    await host.admin.putConnectorState(connectionId, `${prefix}${item.id}`, entry);
-  }
+    await put(item.id, entry);
+  };
 
-  await host.admin.putConnectorState(connectionId, bindingKey(binding.scopeId), {
-    ...binding,
-    deltaLink: feed.deltaLink,
-    lastSync: { syncedAt: nowOf(options).toISOString(), changes: plan.length },
-  } satisfies Microsoft365Binding);
-  return { scopeId: binding.scopeId, changes: plan.length, full };
-}
-
-/** Every page of the feed from `link`, the last version of each item kept. */
-async function readFeed(client: GraphClient, driveId: string, link: string | null) {
-  const items = new Map<string, DriveItem>();
-  let url = link;
+  const maxPages = options.maxPages ?? SYNC_PAGES_PER_CALL;
+  let pages = 0;
+  let changes = 0;
   for (;;) {
-    const page = await deltaPage(client, driveId, url);
-    for (const item of page.items) items.set(item.id, item);
-    if (page.delta) return { items, deltaLink: page.delta };
+    let page: Awaited<ReturnType<typeof deltaPage>>;
+    try {
+      page = await deltaPage(client, binding.driveId, pass.next);
+    } catch (e) {
+      // 410: Graph expired the cursor and asks for a resync — a full enumeration, compared against
+      // what is held, so unchanged items land nothing and what it never presents lands as deleted.
+      if (!(e instanceof GraphError && e.status === 410) || (pass.full && pass.next === null)) throw e;
+      pass = freshPass(true, null);
+      await save({ ...current, pass });
+      continue;
+    }
+
+    // This page, and nothing past it. Items outside the folder live in this map for one page.
+    const changed = new Map(page.items.map((i) => [i.id, i]));
+    if (changed.get(binding.folderItemId)?.deleted) await markMissing();
+    // A folder newly inside arrives without its descendants — moved in from outside, or met before
+    // its children on a full pass. Read them, so the order of the feed never decides what lands.
+    const fenced = fenceOf(binding.folderItemId, changed, index);
+    const queue = [...changed.values()].filter((i) => i.folder && !i.deleted && !index.has(i.id) && fenced.inside(i.id));
+    while (queue.length) {
+      const f = queue.shift()!;
+      for (const child of await childrenOf(client, binding.driveId, f.id)) {
+        if (changed.has(child.id)) continue;
+        changed.set(child.id, child);
+        if (child.folder) queue.push(child);
+      }
+    }
+    const fence = fenceOf(binding.folderItemId, changed, index);
+    const plan = planChanges(binding.folderItemId, changed, index, fence);
+    for (const p of plan) await land(p);
+    changes += plan.length;
+    // An item a full pass presents unchanged still has to be marked seen by it.
+    if (pass.full) {
+      for (const id of changed.keys()) {
+        const entry = index.get(id);
+        if (entry && entry.seenIn !== pass.id) await put(id, { ...entry, seenIn: pass.id });
+      }
+    }
+    pages += 1;
+    pass = { ...pass, changes: pass.changes + plan.length };
+
+    if (page.delta) {
+      if (pass.full) {
+        // What the whole enumeration never presented is gone from the folder.
+        const unseen = [...index.entries()]
+          .filter(([, e]) => e.seenIn !== pass.id)
+          .sort(([, a], [, b]) => b.path.split('/').length - a.path.split('/').length);
+        for (const [id, prior] of unseen) await land({ change: 'delete', id, prior, reason: 'deleted' });
+        changes += unseen.length;
+        pass = { ...pass, changes: pass.changes + unseen.length };
+      }
+      const done: Microsoft365Binding = { ...current, deltaLink: page.delta, lastSync: { syncedAt: nowOf(options).toISOString(), changes: pass.changes } };
+      delete done.pass;
+      await save(done);
+      return { scopeId: binding.scopeId, changes, full: pass.full, pages, complete: true };
+    }
     if (!page.next) throw new GraphError(502, undefined, 'the change feed ended without a delta link');
-    url = page.next;
+    pass = { ...pass, next: page.next };
+    await save({ ...current, pass });
+    if (pages >= maxPages) return { scopeId: binding.scopeId, changes, full: pass.full, pages, complete: false };
   }
 }
 
 /**
- * Whether an item is inside the folder, by id: its parent chain — this pass's changes first, the
- * held state for items the pass did not mention — reaches the folder's id. On a full pass the held
- * state is no evidence (everything live is in the pass), so only the pass is read.
+ * Whether an item is inside the folder, by id: its parent chain — this page's items first, the
+ * held state for items the page does not mention — reaches the folder's id. An item whose parent
+ * is in neither is outside: if it is really inside, its parent is newly inside too, and reading
+ * that parent's children (above) brings it in.
  */
-function fenceOf(folderId: string, changed: Map<string, DriveItem>, index: Map<string, ItemEntry>, full: boolean) {
+function fenceOf(folderId: string, changed: Map<string, DriveItem>, index: Map<string, ItemEntry>) {
   const memo = new Map<string, boolean>();
   const parentOf = (id: string): string | null => {
     const c = changed.get(id);
     if (c) return c.deleted ? null : (c.parentReference?.id ?? null);
-    return full ? null : (index.get(id)?.parentId ?? null);
+    return index.get(id)?.parentId ?? null;
   };
   const nameOf = (id: string): string | null => {
     const c = changed.get(id);
-    return c ? (c.name ?? null) : full ? null : (index.get(id)?.name ?? null);
+    return c ? (c.name ?? null) : (index.get(id)?.name ?? null);
   };
   const inside = (id: string): boolean => {
     const known = memo.get(id);
@@ -698,7 +754,7 @@ function fenceOf(folderId: string, changed: Map<string, DriveItem>, index: Map<s
     while (at && at !== folderId && !seen.has(at)) {
       seen.add(at);
       const c = changed.get(at);
-      if (c?.deleted || (!c && full)) return 'deleted';
+      if (c?.deleted) return 'deleted';
       if (c) return 'moved-out';
       at = index.get(at)?.parentId ?? null;
     }
@@ -716,7 +772,6 @@ function planChanges(
   changed: Map<string, DriveItem>,
   index: Map<string, ItemEntry>,
   fence: ReturnType<typeof fenceOf>,
-  full: boolean,
 ): Planned[] {
   const deletes: (Planned & { change: 'delete' })[] = [];
   const upserts: (Planned & { change: 'upsert' })[] = [];
