@@ -394,6 +394,65 @@ export interface RequestRecord {
   attempt: number | null;
   /** #1901: a schedule run's lateness against its due time, in milliseconds. */
   latenessMs: number | null;
+  /**
+   * #2192: the outbound `fetch` calls the request made, as the line names them (host, redacted
+   * path, method, status, outcome, timing). `[]` when the line names none — a request that made
+   * no call, or a line written before the field existed.
+   */
+  outboundCalls: OutboundCall[];
+  /** #2192: calls past the line's cap, counted rather than named. `0` when none were dropped. */
+  outboundCallsDropped: number;
+}
+
+/** #2192: one outbound call on a request's line — the kernel's `OutboundCallLine`, as read back. */
+export interface OutboundCall {
+  host: string;
+  path: string;
+  method: string;
+  status: number | null;
+  /** `ok`, `http-error`, `refused` (the platform's egress refusal), `timeout`, `aborted` or `failed`. */
+  outcome: string;
+  durationMs: number;
+  /** Milliseconds from the request's start to the call. */
+  atMs: number;
+  /** A `failed` call's error class, when the line names one. */
+  reason?: string;
+}
+
+/**
+ * #2192: the outbound calls of a raw line's `outboundCalls`, keeping only entries of the line's
+ * shape. The line is written by the platform's entry, but a vertical's own code can print a
+ * line of the same shape, so the read takes nothing on trust beyond the field types.
+ */
+export function outboundCallsOf(v: unknown): OutboundCall[] {
+  if (!Array.isArray(v)) return [];
+  const calls: OutboundCall[] = [];
+  for (const c of v) {
+    if (typeof c !== 'object' || c === null) continue;
+    const e = c as Record<string, unknown>;
+    if (
+      typeof e['host'] !== 'string' ||
+      typeof e['path'] !== 'string' ||
+      typeof e['method'] !== 'string' ||
+      !(typeof e['status'] === 'number' || e['status'] === null) ||
+      typeof e['outcome'] !== 'string' ||
+      typeof e['durationMs'] !== 'number' ||
+      typeof e['atMs'] !== 'number'
+    ) {
+      continue;
+    }
+    calls.push({
+      host: e['host'],
+      path: e['path'],
+      method: e['method'],
+      status: e['status'] as number | null,
+      outcome: e['outcome'],
+      durationMs: e['durationMs'],
+      atMs: e['atMs'],
+      ...(typeof e['reason'] === 'string' ? { reason: e['reason'] } : {}),
+    });
+  }
+  return calls;
 }
 
 /** The levels a `ctx.log` line is written at. */
