@@ -75,6 +75,7 @@ import {
   type StoreCallTally,
 } from '@substrat-run/kernel/invocation-line';
 import { ulid } from '@substrat-run/kernel/ulid';
+import { installOutboundRecorder, type OutboundRecording } from './outbound-calls.js';
 import { readRoutedNode, ROUTED_ID, RouterAssertionError } from './routed-node.js';
 import type { HeaderReader } from './routed-node.js';
 
@@ -102,7 +103,7 @@ export const INVOCATION_RECORD_KEY = 'substratInvocationRecord';
  * Every field is optional, and an unfilled one is written as `null`: a custom route that
  * never reaches an operation is still logged, it just has nothing to say about these.
  */
-export interface InvocationRecord extends StoreCallTally {
+export interface InvocationRecord extends StoreCallTally, OutboundRecording {
   /** The operation name `mountOperations` dispatched to. */
   operation?: string;
   /** The `errorCode` a failed call was classified with, when the kernel's vocabulary names it. */
@@ -122,6 +123,11 @@ export interface InvocationRecord extends StoreCallTally {
    * made during this request. Filled with no help from the vertical: the request runs in
    * an `AsyncLocalStorage` holding this record ({@link runRecordingStoreCalls}), and a
    * store stub reads it from there (RFC §6).
+   *
+   * #2192: `outboundCalls` and `outboundCallsDropped` (from `OutboundRecording`) — the
+   * `fetch` calls made during this request, recorded the same way by the platform's wrapped
+   * `fetch` (`outbound-calls.ts`). `outboundSince` is when the request started, which each
+   * call's `atMs` is measured from; it is never written to the line.
    */
 }
 
@@ -146,9 +152,17 @@ export interface AsyncLocalStorageLike<T> {
 }
 export type AsyncLocalStorageClass = new <T>() => AsyncLocalStorageLike<T>;
 
-/** The slot a request's store calls are reached through, plus the `run` that fills it. */
+/** What the request's `AsyncLocalStorage` holds: the record its calls are tallied on. */
+type RecordingTally = StoreCallTally & OutboundRecording;
+
+/**
+ * The slot a request's store calls are reached through, plus the `run` that fills it.
+ * `recording` (#2192) is the same record, for the outbound recorder; optional because a slot
+ * installed by an older copy of this module has none, and its requests then record no calls.
+ */
 interface StoreCallSlot extends StoreCallSinkSlot {
-  run<R>(tally: StoreCallTally, fn: () => R): R;
+  run<R>(tally: RecordingTally, fn: () => R): R;
+  recording?(): OutboundRecording | undefined;
 }
 
 /**
@@ -182,13 +196,14 @@ function storeCallSlot(provided: AsyncLocalStorageClass | undefined): StoreCallS
     if (typeof existing?.run === 'function' && typeof existing.current === 'function') return existing as StoreCallSlot;
     const Als = provided ?? builtinAsyncLocalStorage();
     if (!Als) return undefined;
-    const storage = new Als<StoreCallTally>();
+    const storage = new Als<RecordingTally>();
     const slot: StoreCallSlot = {
       current() {
         const tally = storage.getStore();
         return tally ? (call) => tallyStoreCall(tally, call) : undefined;
       },
       run: (tally, fn) => storage.run(tally, fn),
+      recording: () => storage.getStore(),
     };
     g[key] = slot;
     return slot;
@@ -197,14 +212,24 @@ function storeCallSlot(provided: AsyncLocalStorageClass | undefined): StoreCallS
   }
 }
 
+/** #2192: the recording of the request now running, read from the isolate's slot at call time. */
+function currentRecording(): OutboundRecording | undefined {
+  const slot = (globalThis as unknown as Record<symbol, Partial<StoreCallSlot> | undefined>)[Symbol.for(STORE_CALL_SINK_KEY)];
+  return typeof slot?.recording === 'function' ? slot.recording() : undefined;
+}
+
 /**
  * Run a request's handler with its record current (#2245, RFC §6), so a store call made
- * while it runs lands on this request's line with no observer from the vertical. With no
- * `AsyncLocalStorage` available the handler simply runs.
+ * while it runs lands on this request's line with no observer from the vertical — and, since
+ * #2192, so does every outbound `fetch` (the recorder is put in front of `fetch` here, once
+ * per isolate). With no `AsyncLocalStorage` available the handler simply runs.
  */
-function runRecordingStoreCalls<R>(record: InvocationRecord, provided: AsyncLocalStorageClass | undefined, fn: () => R): R {
+function runRecording<R>(record: InvocationRecord, started: number, provided: AsyncLocalStorageClass | undefined, fn: () => R): R {
   const slot = storeCallSlot(provided);
-  return slot ? slot.run(record, fn) : fn();
+  if (!slot) return fn();
+  record.outboundSince = started;
+  installOutboundRecorder(currentRecording);
+  return slot.run(record, fn);
 }
 
 /**
@@ -522,6 +547,8 @@ function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, opti
     ...(stamp.fieldCoverageId ? { fieldCoverageId: stamp.fieldCoverageId } : {}),
     ...(record.storeCalls && record.storeCalls.length > 0 ? { storeCalls: record.storeCalls } : {}),
     ...(record.storeCallsDropped ? { storeCallsDropped: record.storeCallsDropped } : {}),
+    ...(record.outboundCalls && record.outboundCalls.length > 0 ? { outboundCalls: record.outboundCalls } : {}),
+    ...(record.outboundCallsDropped ? { outboundCallsDropped: record.outboundCallsDropped } : {}),
   });
   console.log(JSON.stringify(line));
 }
@@ -576,7 +603,7 @@ export function invocationLog<Env = unknown>(
     c.set?.(INVOCATION_RECORD_KEY, stamp.record);
     let threw = false;
     try {
-      await runRecordingStoreCalls(stamp.record, options.asyncLocalStorage, next);
+      await runRecording(stamp.record, started, options.asyncLocalStorage, next);
       // #2192: after the handler, so whatever answered — a route's own `Response`, the
       // `onError` envelope — carries it. Set before, Hono would keep it only on a response it
       // built itself. Hono's `c.header` on an answered context COPIES the response (every one,
@@ -651,7 +678,7 @@ export function withInvocationLog<Env = unknown>(
       let threw = false;
       try {
         const response = withRequestId(
-          await runRecordingStoreCalls(stamp.record, options.asyncLocalStorage, () => inner.call(worker, request, env, ctx)),
+          await runRecording(stamp.record, started, options.asyncLocalStorage, () => inner.call(worker, request, env, ctx)),
           stamp.invocationId,
         );
         status = response.status;

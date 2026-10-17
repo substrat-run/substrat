@@ -153,6 +153,15 @@ export interface InvocationLogLine {
    * when none were dropped, so 16 calls and 500 do not read the same.
    */
   storeCallsDropped?: number;
+  /**
+   * #2192: the outbound `fetch` calls the request made, recorded by the platform's entry
+   * (`vertical-host`'s outbound recorder). Omitted when there were none. Each entry is a
+   * host, a redacted path, a method, a status, a duration and an outcome — never a header,
+   * a body or a query string.
+   */
+  outboundCalls?: readonly OutboundCallLine[];
+  /** #2192: calls past {@link OUTBOUND_CALL_LOG_CAP}, counted instead of named. */
+  outboundCallsDropped?: number;
   /*
    * #1901: the async line's own fields. Present only when `kind` is, and written by
    * `asyncInvocationLine` (`async-invocation-log.ts`) — ids, names, counts and codes only,
@@ -246,6 +255,10 @@ export interface InvocationLineFields {
   storeCalls?: readonly StoreCallLine[];
   /** #2245: written only when calls past the cap were dropped. */
   storeCallsDropped?: number;
+  /** #2192: outbound calls the request made. Omitted when there were none. */
+  outboundCalls?: readonly OutboundCallLine[];
+  /** #2192: written only when calls past the cap were dropped. */
+  outboundCallsDropped?: number;
   async?: Pick<
     InvocationLogLine,
     'outcome' | 'eventType' | 'eventId' | 'attempt' | 'dueAt' | 'latenessMs' | 'suppressed' | 'suppressedBy'
@@ -279,6 +292,8 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
     ...(f.outputFields ? { outputFields: f.outputFields, ...(f.fieldCoverageId ? { fieldCoverageId: f.fieldCoverageId } : {}) } : {}),
     ...(f.storeCalls && f.storeCalls.length > 0 ? { storeCalls: f.storeCalls } : {}),
     ...(f.storeCallsDropped ? { storeCallsDropped: f.storeCallsDropped } : {}),
+    ...(f.outboundCalls && f.outboundCalls.length > 0 ? { outboundCalls: f.outboundCalls } : {}),
+    ...(f.outboundCallsDropped ? { outboundCallsDropped: f.outboundCallsDropped } : {}),
     ...(f.async ?? {}),
   };
 }
@@ -314,6 +329,71 @@ export function tallyStoreCall(tally: StoreCallTally, call: StoreCallLine): void
     calls.push({ binding: call.binding, operation: call.operation, outcome: call.outcome, durationMs: call.durationMs });
   } else {
     tally.storeCallsDropped = (tally.storeCallsDropped ?? 0) + 1;
+  }
+}
+
+/**
+ * How an outbound call ended (#2192).
+ *
+ * - `ok` — the destination answered below 400.
+ * - `http-error` — the destination answered 400 or above.
+ * - `refused` — the PLATFORM refused it (the egress worker's `x-substrat-egress: refused`),
+ *   which the caller otherwise sees as a bare 403 indistinguishable from the destination's.
+ * - `timeout` / `aborted` — the `fetch` rejected with a `TimeoutError` / an `AbortError`.
+ * - `failed` — the `fetch` rejected with anything else; `reason` names the error's class.
+ */
+export type OutboundCallOutcome = 'ok' | 'http-error' | 'refused' | 'timeout' | 'aborted' | 'failed';
+
+/**
+ * One outbound call on an invocation line (#2192). The destination and how it answered,
+ * never what was sent or received: no header, no body, no query string, and a path whose
+ * segments that could be a credential are written `[redacted]`.
+ */
+export interface OutboundCallLine {
+  /** The destination's host, port included when the URL names one. */
+  readonly host: string;
+  /** The path, redacted segment by segment — see `vertical-host`'s `redactOutboundPath`. */
+  readonly path: string;
+  readonly method: string;
+  /** The status the destination answered, or `null` when the `fetch` rejected. */
+  readonly status: number | null;
+  readonly outcome: OutboundCallOutcome;
+  /** Milliseconds from the call to its response headers (or its rejection). */
+  readonly durationMs: number;
+  /** Milliseconds from the request's start to the call — where it sits on the timeline. */
+  readonly atMs: number;
+  /** A `failed` call's error class (`TypeError`, …) — the name only, never the message. */
+  readonly reason?: string;
+}
+
+/** How many outbound calls one line names (#2192), as {@link STORE_CALL_LOG_CAP} does for stores. */
+export const OUTBOUND_CALL_LOG_CAP = 16;
+
+/** Where a request's outbound calls are tallied: the invocation record, or anything shaped like it. */
+export interface OutboundCallTally {
+  outboundCalls?: OutboundCallLine[];
+  outboundCallsDropped?: number;
+}
+
+/**
+ * Add one outbound call to a tally (#2192): the first {@link OUTBOUND_CALL_LOG_CAP} are named,
+ * the rest counted. Rebuilt field by field, so nothing else on the object reaches the line.
+ */
+export function tallyOutboundCall(tally: OutboundCallTally, call: OutboundCallLine): void {
+  const calls = tally.outboundCalls ?? (tally.outboundCalls = []);
+  if (calls.length < OUTBOUND_CALL_LOG_CAP) {
+    calls.push({
+      host: call.host,
+      path: call.path,
+      method: call.method,
+      status: call.status,
+      outcome: call.outcome,
+      durationMs: call.durationMs,
+      atMs: call.atMs,
+      ...(call.reason !== undefined ? { reason: call.reason } : {}),
+    });
+  } else {
+    tally.outboundCallsDropped = (tally.outboundCallsDropped ?? 0) + 1;
   }
 }
 
