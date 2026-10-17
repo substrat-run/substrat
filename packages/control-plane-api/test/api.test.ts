@@ -1460,6 +1460,34 @@ describe('control-plane API', () => {
     expect((await req(`/tenants/${t1}/connections/${created.connectionId}/certificate`)).status).toBe(404);
   });
 
+  it('serves the successor a certificate rotation adds, beside the certificate in use (#2100)', async () => {
+    const sNext = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sNext, vertical: 'cert-next-vert' });
+    await host.admin.activateScope(staff, t1, sNext);
+    const PEM = '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n';
+    const NEXT = { pem: PEM.replace('AAAA', 'BBBB'), thumbprint: '123456', notAfter: '2028-09-07T12:00:00.000Z' };
+    const rotating = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      connectionInspectors: {
+        mailbox: {
+          certificate: async () => ({ pem: PEM, thumbprint: 'ABCDEF', notAfter: '2027-10-07T12:00:00.000Z' as never, next: NEXT as never }),
+        },
+      },
+    });
+    const rreq = (path: string, init?: RequestInit) => rotating.request(path, { headers: auth, ...init });
+    const created = (await (
+      await rreq(`/tenants/${t1}/connections`, {
+        method: 'POST',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify({ scopeId: sNext, provider: 'mailbox', secret: { clientId: 'c' }, createdBy: principalId.parse(ulid()) }),
+      })
+    ).json()) as { connectionId: string };
+    const cert = await rreq(`/tenants/${t1}/connections/${created.connectionId}/certificate`);
+    expect(cert.status).toBe(200);
+    expect(await cert.json()).toEqual({ pem: PEM, thumbprint: 'ABCDEF', notAfter: '2027-10-07T12:00:00.000Z', next: NEXT });
+  });
+
   // -- per-instance config delivery (vertical-auth-detach.md §2.2) -----------
 
   it('delivers per-instance config through the vertical that owns the scope', async () => {

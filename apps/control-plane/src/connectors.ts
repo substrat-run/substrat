@@ -43,7 +43,7 @@ import {
   microsoft365Certificate,
   microsoft365CredentialSummary,
   microsoft365MailSender,
-  prepareMicrosoft365Candidate,
+  prepareMicrosoft365,
   probeMicrosoft365Connection,
   probeMicrosoft365Secret,
 } from '@substrat-run/connector-microsoft365';
@@ -403,7 +403,9 @@ const PLANIMA: ConnectorRegistration = {
  * generates this connection's keypair on the plane, before the probe, and keeps it across an
  * edit — so the private key is made where it is sealed and the tenant only ever handles the
  * certificate. The connection is saved before the tenant can upload that certificate, which is
- * why the connector reports "not on the app registration yet" as inconclusive.
+ * why the connector reports "not on the app registration yet" as inconclusive. It also rotates
+ * the certificate: within 30 days of its end it mints a successor beside it, and promotes the
+ * successor on a later save once Entra accepts it (`prepareMicrosoft365`).
  */
 const MICROSOFT365: ConnectorRegistration = {
   provider: 'microsoft365',
@@ -412,8 +414,7 @@ const MICROSOFT365: ConnectorRegistration = {
     probe: async (h, row) => probeMicrosoft365Connection(h, row, microsoft365Options(env)),
     credential: (h, row) => microsoft365CredentialSummary(h, row),
     probeCandidate: async (secret) => probeMicrosoft365Secret(secret, microsoft365Options(env)),
-    prepareCandidate: (candidate, previous) =>
-      prepareMicrosoft365Candidate(candidate, previous, { now: new Date(), commonName: 'Substrat' }),
+    prepareCandidate: prepareMicrosoft365({ ...microsoft365Options(env), commonName: 'Substrat' }),
     certificate: (h, row) => microsoft365Certificate(h, row),
   }),
   // Nothing to poll: mail is sent on request, and Microsoft holds nothing the platform mirrors

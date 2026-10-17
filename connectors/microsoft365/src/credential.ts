@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { deriveExpiryWarning } from '@substrat-run/contracts';
 import type { FetchLike } from '@substrat-run/kernel';
 import { certificateMatchesKey, fromBase64, generateCertificate, thumbprintS256, toBase64Url } from './x509.js';
 
@@ -12,6 +13,9 @@ import { certificateMatchesKey, fromBase64, generateCertificate, thumbprintS256,
  * What the platform adds (`prepareMicrosoft365Candidate`): with no client secret, a keypair and
  * a self-signed certificate generated for THIS connection. The private key is sealed with the
  * rest of the secret and never leaves the platform; the tenant downloads the certificate.
+ *
+ * While a certificate is being rotated, a second keypair — the `next*` fields — sits beside the
+ * current one until the tenant has uploaded it (see `prepareMicrosoft365Candidate`).
  */
 export const microsoft365Secret = z.object({
   tenantId: z.string().trim().min(1),
@@ -23,11 +27,30 @@ export const microsoft365Secret = z.object({
   privateKey: z.string().optional(),
   certificate: z.string().optional(),
   certificateNotAfter: z.string().optional(),
+  nextPrivateKey: z.string().optional(),
+  nextCertificate: z.string().optional(),
+  nextCertificateNotAfter: z.string().optional(),
 });
 export type Microsoft365Secret = z.infer<typeof microsoft365Secret>;
 
 /** The fields only the platform may write — never accepted from a caller's candidate. */
-const GENERATED = ['privateKey', 'certificate', 'certificateNotAfter'] as const;
+const GENERATED = [
+  'privateKey',
+  'certificate',
+  'certificateNotAfter',
+  'nextPrivateKey',
+  'nextCertificate',
+  'nextCertificateNotAfter',
+] as const;
+
+/**
+ * The candidate field that asks for a new certificate now, ahead of the window. `'yes'` asks;
+ * anything else, or absence, does not. It is an instruction, never stored.
+ */
+export const ROTATE_FIELD = 'rotateCertificate';
+
+/** How long before the current certificate's end a save mints its successor. */
+export const ROTATION_WINDOW_DAYS = 30;
 
 export const LOGIN_BASE = 'https://login.microsoftonline.com';
 export const GRAPH_BASE = 'https://graph.microsoft.com';
@@ -54,45 +77,130 @@ export const authMethodOf = (s: Microsoft365Secret): AuthMethod =>
  *   has lapsed, or whose certificate is malformed or not its key's, gets a new one.
  *
  * Key material in the candidate itself is always discarded: a caller cannot choose the key.
+ *
+ * **Rotation** puts a second keypair beside the first, so mail never stops while the tenant
+ * swaps certificates:
+ *
+ * - A save within {@link ROTATION_WINDOW_DAYS} days of the current certificate's end, or one that
+ *   asks for it ({@link ROTATE_FIELD}), mints the successor beside it. The current one keeps
+ *   signing, and the connection's expiry stays the current one's: that is the deadline.
+ * - A later save signs in with the successor (`signIn`). If Entra accepts it, the tenant has
+ *   uploaded it: it becomes the current certificate and the old key is dropped. If Entra does not
+ *   accept it, or cannot be asked, both stay as they are. The successor's failure never touches
+ *   the current one.
+ * - Once the current certificate has lapsed, the successor is all that is left and takes its
+ *   place.
+ * - A successor already pending is kept, not re-minted, even when rotation is asked for again:
+ *   the tenant may have downloaded it already. And the save that promotes one mints no new one,
+ *   even with rotation asked for: a successor to the promoted certificate waits for a later save.
  */
 export async function prepareMicrosoft365Candidate(
   candidate: Record<string, string>,
   previous: Record<string, string> | undefined,
-  opts: { now: Date; commonName: string },
+  opts: {
+    now: Date;
+    commonName: string;
+    /** Signs in with a credential. Without it, a pending successor is kept but never promoted on a save. */
+    signIn?: (secret: Microsoft365Secret) => Promise<TokenOutcome>;
+  },
 ): Promise<{ secret: Record<string, string>; expiresAt: string | null }> {
   const secret = { ...candidate };
+  const rotate = secret[ROTATE_FIELD] === 'yes';
+  delete secret[ROTATE_FIELD];
   for (const k of GENERATED) delete secret[k];
   // Entra does not report a client secret's end to an app-only caller, so there is none to set.
   if (secret.clientSecret?.trim()) return { secret, expiresAt: null };
   delete secret.clientSecret;
 
-  const kept = previous?.privateKey && previous.certificate && previous.certificateNotAfter;
-  // A stored certificate is kept only while it is unexpired AND reads as the certificate of the stored
-  // key; one that does not (#2189: a non-minimal serial) is re-minted, so the connection heals on its next save.
-  if (
-    kept &&
-    Date.parse(previous.certificateNotAfter!) > opts.now.getTime() &&
-    (await certificateMatchesKey(previous.certificate!, previous.privateKey!))
-  ) {
-    return {
-      secret: {
-        ...secret,
-        privateKey: previous.privateKey!,
-        certificate: previous.certificate!,
-        certificateNotAfter: previous.certificateNotAfter!,
-      },
-      expiresAt: previous.certificateNotAfter!,
-    };
+  let [current, next] = await Promise.all([
+    storedKeypair(previous, 'current', opts.now),
+    storedKeypair(previous, 'next', opts.now),
+  ]);
+  let promoted = false;
+  if (!current && next) {
+    current = next;
+    next = undefined;
+    promoted = true;
+  } else if (current && next && opts.signIn) {
+    // An incomplete candidate cannot sign in; the probe after this refuses it, so promotion just waits.
+    const asNext = microsoft365Secret.safeParse({ ...secret, ...slot(next, 'current') });
+    const outcome = asNext.success ? await opts.signIn(asNext.data).catch(() => undefined) : undefined;
+    if (outcome?.ok) {
+      current = next;
+      next = undefined;
+      promoted = true;
+    }
   }
-  const minted = await generateCertificate({ commonName: opts.commonName, now: opts.now });
+  if (!current) {
+    current = await mint(opts);
+  } else if (!promoted && !next && (rotate || rotationDue(current.notAfter, opts.now))) {
+    // Not on the save that promoted: the certificate it switched to is the one the tenant just
+    // uploaded, so a successor to it is only asked for on a later save.
+    next = await mint(opts);
+  }
   return {
-    secret: {
-      ...secret,
-      privateKey: minted.privateKey,
-      certificate: minted.certificate,
-      certificateNotAfter: minted.notAfter,
-    },
-    expiresAt: minted.notAfter,
+    secret: { ...secret, ...slot(current, 'current'), ...(next ? slot(next, 'next') : {}) },
+    expiresAt: current.notAfter,
+  };
+}
+
+/** Is the certificate ending at `notAfter` within the rotation window at `now`? Inclusive. */
+const rotationDue = (notAfter: string, now: Date): boolean =>
+  deriveExpiryWarning(notAfter, now, ROTATION_WINDOW_DAYS) !== null;
+
+interface Keypair {
+  privateKey: string;
+  certificate: string;
+  notAfter: string;
+}
+
+const FIELDS = {
+  current: { privateKey: 'privateKey', certificate: 'certificate', notAfter: 'certificateNotAfter' },
+  next: { privateKey: 'nextPrivateKey', certificate: 'nextCertificate', notAfter: 'nextCertificateNotAfter' },
+} as const;
+
+/**
+ * A stored keypair, kept only while it is unexpired AND its certificate reads as the certificate of
+ * its key; one that does not (#2189: a non-minimal serial) is treated as absent, so the connection
+ * heals on its next save.
+ */
+async function storedKeypair(
+  stored: Record<string, string> | undefined,
+  which: keyof typeof FIELDS,
+  now: Date,
+): Promise<Keypair | undefined> {
+  const f = FIELDS[which];
+  const privateKey = stored?.[f.privateKey];
+  const certificate = stored?.[f.certificate];
+  const notAfter = stored?.[f.notAfter];
+  if (!privateKey || !certificate || !notAfter) return undefined;
+  if (!(Date.parse(notAfter) > now.getTime())) return undefined;
+  if (!(await certificateMatchesKey(certificate, privateKey))) return undefined;
+  return { privateKey, certificate, notAfter };
+}
+
+function slot(k: Keypair, which: keyof typeof FIELDS): Record<string, string> {
+  const f = FIELDS[which];
+  return { [f.privateKey]: k.privateKey, [f.certificate]: k.certificate, [f.notAfter]: k.notAfter };
+}
+
+async function mint(opts: { now: Date; commonName: string }): Promise<Keypair> {
+  const minted = await generateCertificate({ commonName: opts.commonName, now: opts.now });
+  return { privateKey: minted.privateKey, certificate: minted.certificate, notAfter: minted.notAfter };
+}
+
+/**
+ * The credential signing with the successor only — what checks whether the tenant uploaded it.
+ * `undefined` when no rotation is under way, or the credential signs in with a client secret.
+ */
+export function withNextOnly(secret: Microsoft365Secret): Microsoft365Secret | undefined {
+  const { nextPrivateKey, nextCertificate, nextCertificateNotAfter, ...rest } = secret;
+  if (authMethodOf(secret) !== 'certificate' || !nextPrivateKey || !nextCertificate || !nextCertificateNotAfter) {
+    return undefined;
+  }
+  return {
+    ...rest,
+    ...slot({ privateKey: nextPrivateKey, certificate: nextCertificate, notAfter: nextCertificateNotAfter }, 'current'),
   };
 }
 
@@ -104,6 +212,8 @@ export type TokenOutcome =
       /** Entra refused the credential for good (wrong ids, a bad secret) — not "try later". */
       refused: boolean;
       error: string;
+      /** Entra says the assertion's key is not on the app registration (AADSTS700027). */
+      notRegistered?: true;
     };
 
 /**
@@ -111,8 +221,44 @@ export type TokenOutcome =
  *
  * With a certificate, the client assertion is a PS256 JWT naming the key by its `x5t#S256`
  * thumbprint, as Entra specifies for certificate credentials.
+ *
+ * During a rotation the current certificate signs. The successor signs only when the current one
+ * has lapsed, or when Entra says the current one is not on the app registration (the tenant
+ * removed it after uploading the successor). Then the successor's answer is the answer, success or
+ * not: the current certificate is known to be unusable, so what blocks the sign-in is whatever the
+ * successor met (not uploaded either reads the same; a network error reads as one). It is also the
+ * attempt a send records, so the health log and the error agree.
  */
 export async function acquireToken(
+  fetchImpl: FetchLike,
+  secret: Microsoft365Secret,
+  opts: { loginBase?: string; now: Date },
+): Promise<TokenOutcome> {
+  const next = withNextOnly(secret);
+  const signing = signingCredential(secret, opts.now);
+  if (!next || signing !== secret) return requestToken(fetchImpl, signing, opts);
+  const first = await requestToken(fetchImpl, secret, opts);
+  if (first.ok || !first.notRegistered) return first;
+  return requestToken(fetchImpl, next, opts);
+}
+
+/**
+ * The credential that signs at `now`: the successor once the current certificate has lapsed,
+ * otherwise the credential as stored. A caller tells which it got by
+ * identity: anything but `secret` itself is the successor.
+ */
+export function signingCredential(secret: Microsoft365Secret, now: Date): Microsoft365Secret {
+  const next = withNextOnly(secret);
+  const lapsed = secret.certificateNotAfter !== undefined && !(Date.parse(secret.certificateNotAfter) > now.getTime());
+  return next && lapsed ? next : secret;
+}
+
+/**
+ * One token request with exactly this credential's current certificate (or client secret) — no
+ * fallback to a successor. What the probe asks, since it reports on the current certificate and
+ * judges the successor on its own.
+ */
+export async function requestToken(
   fetchImpl: FetchLike,
   secret: Microsoft365Secret,
   opts: { loginBase?: string; now: Date },
@@ -153,6 +299,9 @@ export async function acquireToken(
   return classifyTokenError(res.status, body);
 }
 
+/** AADSTS700027: the assertion's key is not registered on the app (or not yet propagated). */
+const KEY_NOT_REGISTERED = 700027;
+
 /**
  * Entra's refusals, sorted by what the person connecting can do about them.
  *
@@ -167,11 +316,11 @@ export function classifyTokenError(
   const codes = new Set(body.error_codes ?? []);
   const said = firstLine(body.error_description) ?? body.error ?? `HTTP ${status}`;
   if (status >= 500) return { ok: false, refused: false, error: `Microsoft sign-in is unavailable (${said})` };
-  // AADSTS700027: the assertion's key is not registered on the app (or not yet propagated).
-  if (codes.has(700027)) {
+  if (codes.has(KEY_NOT_REGISTERED)) {
     return {
       ok: false,
       refused: false,
+      notRegistered: true,
       error:
         'the certificate is not on the app registration yet — download it here, upload it under ' +
         'Certificates & secrets, then test the connection again',

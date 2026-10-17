@@ -1136,6 +1136,15 @@ export interface ProviderField {
   placeholder?: string;
   /** #2100: may be left empty — an alternative, not part of the credential's set. */
   optional?: boolean;
+  /** A checkbox: sent as `'yes'` when ticked, left out otherwise. */
+  toggle?: boolean;
+}
+
+/** A public certificate a connection signs in with (#2100). */
+export interface CertificateView {
+  pem: string;
+  thumbprint: string;
+  notAfter: string;
 }
 
 /** One provider connection, metadata only — the row cannot carry its secret. */
@@ -1335,7 +1344,10 @@ export interface ConnectionActivityView {
    * #2100: the public certificate the connection signs in with, for the tenant to upload on
    * the provider's side. Absent or null when the provider or this connection uses none.
    */
-  certificate?: { pem: string; thumbprint: string; notAfter: string } | null;
+  certificate?: (CertificateView & {
+    /** The successor being rotated in; the fields above stay the certificate in use until it is uploaded. */
+    next?: CertificateView;
+  }) | null;
   /**
    * The platform's dispatch record for this provider (#618) — newest first, empty on a plane
    * too old to serve it (the read is best-effort so a missing journal never costs the activity).

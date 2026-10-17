@@ -386,13 +386,23 @@ export type ConnectionCredential = z.infer<typeof connectionCredential>;
  * Microsoft 365). Nothing here is secret: the private key stays sealed with the credential,
  * and this is what the tenant downloads and uploads to the provider.
  */
-export const connectionCertificate = z.object({
+const certificateView = z.object({
   /** The certificate, PEM. */
   pem: z.string().min(1).max(8192),
   /** The thumbprint as the provider's own console shows it, so the two can be compared. */
   thumbprint: z.string().min(1).max(128),
-  /** When the certificate stops working — the connection's `expiresAt`. */
+  /** When the certificate stops working — for the certificate in use, the connection's `expiresAt`. */
   notAfter: instant,
+});
+
+export const connectionCertificate = certificateView.extend({
+  /**
+   * The successor being rotated in, when there is one: generated beside the certificate above,
+   * which keeps signing until the tenant has uploaded this one. Absent when no rotation is under
+   * way, and on a plane that predates rotation. The fields above always describe the certificate
+   * in use, so a consumer that ignores this one still shows the truth, only not the next step.
+   */
+  next: certificateView.optional(),
 });
 export type ConnectionCertificate = z.infer<typeof connectionCertificate>;
 
