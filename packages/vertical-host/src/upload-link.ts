@@ -35,8 +35,8 @@
  * `Idempotency-Key`.
  *
  * **A lost reply is retryable (#2315).** A request may name itself with `Idempotency-Key` (16 to
- * 255 visible ASCII characters, such as a UUID; a quoted structured-field string is read without
- * its quotes). The spend records the key's hash. A later request for the SAME link with the same
+ * 255 visible ASCII characters other than `"` and `\`, such as a UUID; a quoted structured-field
+ * string is read without its quotes). The spend records the key's hash. A later request for the SAME link with the same
  * key and the same bytes, before the link's expiry plus `UPLOAD_LINK_REPLAY_GRACE_SECONDS`, gets
  * the stored record with **200** and writes nothing. Every other request for a spent link (no
  * key, another key, past the window, or a file removed or swept since) gets the same 410, so a
@@ -278,11 +278,11 @@ function errorStatus(err: unknown): ContentfulStatusCode {
  */
 function idempotencyKeyOf(header: string | undefined): string | undefined {
   if (header === undefined) return undefined;
-  const key = /^"[^"\\]*"$/.test(header) ? header.slice(1, -1) : header;
+  const key = header.length >= 2 && header.startsWith('"') && header.endsWith('"') ? header.slice(1, -1) : header;
   if (!isUploadLinkIdempotencyKey(key)) {
     throw substratError(
       'validation_failed',
-      'An Idempotency-Key is 16 to 255 visible ASCII characters with no space, such as a UUID.',
+      'An Idempotency-Key is 16 to 255 visible ASCII characters, with no space, quote or backslash, such as a UUID.',
     );
   }
   return key;

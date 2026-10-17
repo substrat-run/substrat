@@ -469,7 +469,7 @@ async function idempotencyKeyHash(key: string | undefined): Promise<string | und
   if (!isUploadLinkIdempotencyKey(key)) {
     throw substratError(
       'validation_failed',
-      'An Idempotency-Key is 16 to 255 visible ASCII characters with no space, such as a UUID.',
+      'An Idempotency-Key is 16 to 255 visible ASCII characters, with no space, quote or backslash, such as a UUID.',
     );
   }
   return capabilityTokenHash(key);
