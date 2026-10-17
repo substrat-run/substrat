@@ -1,5 +1,110 @@
 # @substrat-run/vertical-host
 
+## 0.149.0
+
+### Minor Changes
+
+- e550dec: An invocation line names the outbound `fetch` calls a request made: the host, the path, the method, the status, how long the response took, when in the request the call started, and how it ended (`ok`, `http-error`, `refused`, `timeout`, `aborted`, `failed`). The vertical passes nothing. The platform entry puts a recorder in front of `fetch` on the first request and records each call made while a request is running. Outside a request the call goes straight to the runtime. Inside one, the arguments, the body stream and the signal are passed on untouched, and the runtime's own response or error comes back. A fault in the recorder never fails the call.
+
+  A call the platform's egress policy refused is recorded as `refused`, read from `x-substrat-egress: refused`, so it no longer reads like the destination's own 403. Headers, bodies, query strings, fragments and userinfo are never recorded. The path is redacted by default: a segment of at most 40 characters is kept only when it is lowercase words (at most 4 parts, each at most 16 letters, joined by `-` or `_`, optionally with a short file extension), an integer of at most 10 digits, or a version token such as `v1`. Every other segment, every UUID and ULID among them, is written `[redacted]`. The host is always written. A failed call names its error's class, never its message. The first 16 calls are named and the rest counted in `outboundCallsDropped`. Calls made inside a Durable Object, after the response, or through a `fetch` reference saved while the bundle loaded are not recorded. The egress worker strips `x-substrat-egress` from every answer it passes through, and a call is `refused` only on a 403 carrying exactly `refused`, so a destination cannot make its own answer read as the platform's.
+
+  The control plane's request record carries `outboundCalls` and `outboundCallsDropped`, read by `outboundCallsOf`, which the browser entry exports too. The dashboard's request panel lists the calls and draws each one on the timeline.
+
+- 9ae6644: The code that backs a scope store is now called its **driver** (K-53), where it was its kind. This is a clean break with no alias. No driver has been registered yet, so no push could declare a scope store and no store script was ever uploaded. Nothing deployed depends on the old names.
+
+  - **Declaration:** `runtimeNeeds.scopeStores: [{ binding, driver }]`. A declaration that still spells `kind` is refused with `scopeStores[].kind was renamed driver`, by the manifest parser and so by `substrat push`. A scope dump's `stores[].driver` is the same: a dump store that still spells `kind` is refused with the rename named, and a dump with no stores loads unchanged.
+  - **Contracts:** `storeKindId` → `storeDriverId`, `STORE_KINDS` → `STORE_DRIVERS`, `STORE_KIND_ID` → `STORE_DRIVER_ID`, `storeKindRegistration` → `storeDriverRegistration` (its field `kind` → `driver`), `StoreKindRelease*` → `StoreDriverRelease*`, `storeKindReleaseDigest` → `storeDriverReleaseDigest`. The admin actions are `uploadStoreDriverRelease`, `rollOutStoreDriver` and `rollBackStoreDriver`. The three old names stay readable as `HISTORIC_ADMIN_ACTIONS`, so an existing log still parses, and no host writes them.
+  - **Kernel and adapters:** the `HostAdmin` methods are `recordStoreDriverRelease`, `getStoreDriverRelease`, `storeDriverState`, `storeDriverDeclarations`, `holdStoreDriver`, `releaseStoreDriverHold`, `beginStoreDriverRollout` and `finishStoreDriverRollout`, and each takes `driver`. `ScopeStoreRunner.kind` is `driver`, and the host option `scopeStores.kinds` is `scopeStores.drivers`. The directory tables are `store_driver_releases`, `store_driver_rollouts`, `store_driver_current` and `store_driver_holds`, keyed by `driver`, and `vertical_scope_stores.kind` is `driver`. A directory built before the rename is moved onto these names on its next start, rows kept. A directory that ran the older code again (a rollback) holds both names: the start drops the name that holds no rows, and the one holding rows ends under the new name. When both hold rows, both are left as they are, and the start logs a line naming the tables and the remedy: restore a directory dump taken before the older code ran again, or export the `store_kind_*` rows, carry over any still wanted, and drop the `store_kind_*` tables by hand. Until then a directory dump of it is refused at restore. A directory restore maps an older dump's names the same way, leaves out an empty duplicate, and refuses a dump in which both names hold rows.
+  - **Control plane:** the routes are `/store-drivers/:driver`, `/store-drivers/:driver/releases`, `/store-drivers/:driver/rollouts` and `/store-drivers/:driver/rollback`. The builder client's methods are `getStoreDriver`, `uploadStoreDriverRelease`, `rollOutStoreDriver` and `rollBackStoreDriver`.
+  - **CLI:** `substrat store-kind … --kind <kind>` is now `substrat store-driver … --driver <driver>`. The old command and the old flag each exit naming the new one.
+  - **Release bundles:** a release bundle's package is `driver_<name>/` instead of `kind_<name>/`. The store entry's import placeholder is `__SUBSTRAT_STORE_DRIVER__`.
+
+  What did not change: a store script is still `substrat-store-<driver>-<vertical>`, with the driver id in the same position and the same `[a-z0-9]+` grammar, and its canary script is still `substrat-store-<driver>--canary`. Release bytes are still stored under `<driver>/<sha256>`. Both strings keep the shape they had, because the driver id is the value the kind id was. `tenantStores: [{ binding, kind: 'relational' | 'blob' }]` is a different concept, and it keeps its `kind`.
+
+- 9ceb545: Upload links: four tightenings after the first release's review.
+
+  **A family no longer admits an active type.** In an `uploadLinks.contentTypes` allowlist, `image/*`, `text/*` and every other family now leave out the types a browser runs rather than shows: HTML, `text/xsl`, `multipart/x-mixed-replace`, the types a browser sniffs for HTML (`application/unknown`, `unknown/unknown`), every XML type (`text/xml`, `application/xml` and any `+xml` subtype, such as `image/svg+xml` or `application/xhtml+xml`) and every WHATWG JavaScript MIME type (`text/javascript`, `application/javascript`, `application/x-javascript`, `text/ecmascript` and the rest). An exact entry still admits one on purpose (`['image/*', 'image/svg+xml']`). An absent allowlist still admits every well-formed type, these included. The rule is `isActiveContentType` in `@substrat-run/kernel` (`ACTIVE_CONTENT_TYPES` plus every `+xml`), and `uploadContentTypeAllowed` applies it in both the route and the redemption, to the type normalized by `normalizeUploadMediaType` (parameters, whitespace and case dropped, and `image/jpg` spelled `image/jpeg`), which is also how a redemption records it, including one a host makes by calling `redeemUploadLink` directly. An allowlist entry spelled `image/jpg` therefore never matches. A type that is not exactly one `type/subtype` after that (`isMediaTypeEssence`: a comma-separated list, a comma or whitespace after the subtype, a NUL, CR or LF, a missing or extra part, or a `*` wildcard, which only an allowlist entry may be) is refused by every allowlist, an absent one included, and the route answers 415. A link minted under a family that a vertical relied on for SVG or HTML now answers 415 for those files. Name the type to keep taking them.
+
+  **A wrong path is the same 404 whatever the link's state.** The target named in the path is judged before whether the link is pending, used, expired or revoked, so a spent link at another entity's path now answers 404 (`upload_link_wrong_target`) instead of 410. `ScopeHost.inspectUploadLink` takes an optional fourth argument, the target, and both adapters judge it in the kernel. A wrong path still spends nothing.
+
+  **A malformed secret never reaches the scope.** The route checks the secret's shape (`isUploadLinkSecretShape` from `@substrat-run/contracts`: `sbup_` and 43 base64url characters) before it resolves the host or the scope. It answers the same 404 an unknown secret gets. The kernel holds every lookup to the same shape.
+
+  **`mountUploadLinkRedeem` no longer takes a `path` option.** It always listens at `/api/attachment-uploads/:entityType/:entityId/:secret`, the path `mintUploadUrl` returns and the one whose secret `invocationLog` redacts. A custom mount matched no minted URL and wrote its secret to the log. `invocationLog` now also redacts any path segment that starts with `sbup_`, wherever it sits.
+
+  `uploadLinkContractSuite` adds cases for the principal-only mint and revoke (a consumer is refused both), redemption from another scope and another tenant, the active-type rule and the target-before-state answer, all run by both adapters.
+
+### Patch Changes
+
+- af096c6: The platform now runs the orphan-attachment sweep on its scheduled pass. The sweep is off until the platform turns it on, and it runs as a dry run before it deletes anything.
+
+  **The phase.** `runPlatformSweep` takes `orphanAttachments: { mode, sweepScopeFn, batch?, rng? }`. Left unset, the phase is skipped. Each pass visits at most `batch` active primary scopes (default 25). The window starts at a random point in the id order and wraps around, so every scope is reached over enough passes. The report counts three standing conditions apart, and none of them is an error:
+
+  - scopes the pass may not judge (`refused`);
+  - deployments built before the pass existed (`unsupported`);
+  - deployments that hold no attachment store for the tenant (`noStore`).
+
+  **A delete needs a dry run of the same scope first.** In `delete` mode a scope is swept for real only when the admin log holds a dry-run row for it from the last seven days. Any other scope gets a dry run instead. Every pass that finds or deletes an orphan writes a `sweepOrphanAttachments` admin-log row (`admin.recordOrphanSweep`). The row carries the counts and every key deleted, or every key a pass would delete.
+
+  **The control plane decides before any deployment judges.** For each scope it checks four things in its own directory: the scope is active and primary, it is bound to a vertical, its tenant is active, and every copy-ledger entry for it is `done`. Only then does it call `POST /internal/attachment-sweep` on the script the directory routes the scope to: its serving script, else its bound version's. There is no fallback to another script, and the control plane never asks its own host. The route requires `dryRun` and `copiesSettled: true`. It also requires `expectedVersionId`: the version the directory says runs on that script. A script deployed as another version refuses the pass, and so does one that carries no version identity when the pass is destructive. The route takes no instant from the body, and it answers 501 on a host built before it. A destructive pass writes its own log line in the deployment, with the scope, the counts and the deleted keys.
+
+  **A deployment with no attachment store answers so.** A pass whose deployment holds no attachment store for the tenant now returns `bucket: 'none'`, after every refusal the scope's copy makes, instead of failing. It does so only when the scope holds no attachment row either. A scope that holds files but has no store has a missing store binding, and its pass still fails. A store that held nothing answers without the marker.
+
+  The control plane's mode is `ORPHAN_ATTACHMENT_SWEEP`, with the values `off` (the default), `dry-run` and `delete`, and its window size is `ORPHAN_ATTACHMENT_SWEEP_BATCH`. `docs/architecture/orphan-attachment-sweep.md` has the rollout.
+
+  The dashboard's activity view reads the new admin-log rows as "swept orphan attachments".
+
+- 39ccfea: Attachment bytes that no row points at can now be swept, and nothing can sweep the bytes of a row that committed.
+
+  **The sweep.** `host.sweepOrphanAttachments(tenantId, scopeId, { dryRun?, limit?, copiesSettled? })` is one pass over a scope's attachment keys (`scope/<scopeId>/att/<ulid>`). It deletes an object only when no `_substrat_attachments` row names it, its id is more than seven days old, and the scope is clear of its restore fence. Age and fence are judged against the host's own clock (`clock` on the pure adapter, `orphanSweepClock` on the hosted one, both set at construction). A pass takes no instant from its caller. The scope condemns each candidate first, in one transaction, into the new spine table `_substrat_attachment_condemned`. Only a condemned object is deleted. A dry run condemns and deletes nothing and reports the keys a pass would delete. Other scopes' keys, other features' keys and malformed keys in the same bucket are never judged. Both adapters implement it. Nothing runs it on a schedule yet: the platform's pass is a separate change.
+
+  **An upload whose id was condemned is refused.** Both adapters' attachment insert, an upload-link redemption included, refuses a condemned id in its own transaction (`conflict`, reason `attachment_condemned`). So an upload racing a pass fails instead of committing a row without its bytes. A restore or carry whose dump would bring back a row for a condemned id is refused the same way, before anything is dropped. `pnpm lint:attachment-writers` refuses a new writer of attachment rows that skips either check.
+
+  **A rewind or a restore now refuses when its fence cannot be written.** This is a behaviour change. Every PITR rewind and every restore of a scope first writes a fence object into the tenant's attachment bucket, and the sweep deletes nothing of that scope for 35 days after it, because a Durable Object keeps 30 days of point-in-time history. If the fence cannot be written, the rewind or restore is refused before anything is replaced: availability is traded for never losing a restorable row's bytes. The error says so, and the operation can be retried once the bucket answers. A rewind also refuses a scope that holds files and whose tenant it cannot tell. The control plane now names the tenant on `/internal/rewind`, and otherwise the scope's own provision receipt does.
+
+  **Only the scope's own live copy judges.** Both adapters refuse a scope that is not active (archived, reaped, or under a suspended tenant) and a fork or a preview. With a directory, the hosted adapter reads the scope's record before it addresses the scope's storage, so a reaped scope is never woken. Its scope object also refuses on its own when its storage was reaped, when its delivered lifecycle is not active, when it holds nothing at all, when it is a copy a carry wiped or kept, and when its provision receipt does not name the tenant.
+
+  **No pass while another script's copy is unsettled.** While the copy ledger holds any entry for the scope that is not `done` (pending, eligible, kept, retained, or a state added later), the pass is refused, because that copy may hold rows, uploads among them, that the serving copy lacks, or may still turn one up. `done` is the only settled state (`SETTLED_COPY_STATES`, an allowlist). A deployment with no directory cannot read the ledger, so it refuses unless its caller says it checked (`copiesSettled: true`).
+
+  **What the sweep cannot protect.** A restore from a dump older than 35 days can bring back rows whose bytes were swept, the same exposure a removed attachment already has.
+
+  `orphanSweepContractSuite` holds each guard on both adapters with the others out of play: a pass racing a held upload, an in-flight upload a pass leaves alone, a restore the fence protects, and a fork and a foreign tenant refused. The hosted adapter's own cases cover the receipt, the copy markers and the rewind fence. `SqliteScopeHostOptions.wrapBlobStore` lets a deployment or a test wrap the per-tenant store.
+
+- 6f5f12b: A request started by another one through a peer call can now be related to it. The invocation line has an optional `parentInvocationId`, written only when there is one, so every other line is unchanged. A peer call carries the calling request's id on the `x-substrat-parent-request-id` header, from `peerClient` through the egress worker and the router to the target's `/internal/vertical-invoke`. The target now runs the operation under its own request id, so its events are stamped, and writes one invocation line per peer call, naming the caller as the parent (`parentInvocationId`) and the caller's scope, which the router names in the platform-verified body (`parentScopeId`). The tenant on that line is the one in that body. The parent id is the caller's own claim: each hop passes it on only as a single ULID and drops anything else, and it is used only to relate two requests. The dashboard's request panel lists the caller as "Caused by … peer call" and opens it in the calling app when the team holds that app. Otherwise it shows the id without a link. The read stays bound to the team's own tenant.
+
+  A purge schedule's run now runs every purge in its pass under the run's own invocation id, on both adapters, so the purges' events and deliveries join the run's line. Before, each purge minted an id that no line named.
+
+  The dashboard's create, retry and resume failure toasts now name the request id when the answer carried one.
+
+- 3608db6: An upload-link redemption whose reply was lost can be retried safely. The redeemer names the request with an `Idempotency-Key` header: 16 to 255 visible ASCII characters with no space, `"` or `\`, such as a UUID. The structured-field form `"…"` is read without its quotes. The spend records the key's SHA-256 beside the link in a new nullable column, `_substrat_upload_links.redeemed_key_hash`, which both adapters add to an existing scope on its next open.
+
+  A later request for the same link, with the same key and the same bytes (size and SHA-256) and within the link's lifetime plus 10 minutes (`UPLOAD_LINK_REPLAY_GRACE_SECONDS`), gets the stored record back with **200** instead of 201. It writes no bytes, no row and no event. The same key with other bytes is **422** (`upload_link_replay_mismatch`). Every other request for a spent link gets the same 410 as before, with the same headers and body: no key, another key, after the window, or after the file was removed or swept. A retry that races the first request has its own bytes removed and is answered as the replay.
+
+  `ScopeHost.inspectUploadLink` takes an optional `idempotencyKey`, `UploadLinkRedeemInput` gains `idempotencyKey`, and `redeemUploadLink` answers a `RedeemedUploadLink`, which carries `replayed: true` on a replay. A malformed key is `validation_failed`. `@substrat-run/contract-tests` adds `uploadLinkReplayContractSuite`, run by both adapters.
+
+- Updated dependencies [98f09fe]
+- Updated dependencies [0292dc0]
+- Updated dependencies [b190e40]
+- Updated dependencies [eda31d1]
+- Updated dependencies [af096c6]
+- Updated dependencies [39ccfea]
+- Updated dependencies [6f5f12b]
+- Updated dependencies [754fc62]
+- Updated dependencies [c7eb5fa]
+- Updated dependencies [1df1b93]
+- Updated dependencies [6c1e359]
+- Updated dependencies [439efc1]
+- Updated dependencies [e550dec]
+- Updated dependencies [4574ab8]
+- Updated dependencies [3025154]
+- Updated dependencies [9ae6644]
+- Updated dependencies [d6ba289]
+- Updated dependencies [2e503da]
+- Updated dependencies [3608db6]
+- Updated dependencies [9ceb545]
+  - @substrat-run/kernel@0.149.0
+  - @substrat-run/contracts@0.149.0
+  - @substrat-run/model-providers@0.5.39
+
 ## 0.148.0
 
 ### Minor Changes

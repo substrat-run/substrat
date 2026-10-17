@@ -1,5 +1,65 @@
 # @substrat-run/control-plane
 
+## 0.15.12
+
+### Patch Changes
+
+- af096c6: The platform now runs the orphan-attachment sweep on its scheduled pass. The sweep is off until the platform turns it on, and it runs as a dry run before it deletes anything.
+
+  **The phase.** `runPlatformSweep` takes `orphanAttachments: { mode, sweepScopeFn, batch?, rng? }`. Left unset, the phase is skipped. Each pass visits at most `batch` active primary scopes (default 25). The window starts at a random point in the id order and wraps around, so every scope is reached over enough passes. The report counts three standing conditions apart, and none of them is an error:
+
+  - scopes the pass may not judge (`refused`);
+  - deployments built before the pass existed (`unsupported`);
+  - deployments that hold no attachment store for the tenant (`noStore`).
+
+  **A delete needs a dry run of the same scope first.** In `delete` mode a scope is swept for real only when the admin log holds a dry-run row for it from the last seven days. Any other scope gets a dry run instead. Every pass that finds or deletes an orphan writes a `sweepOrphanAttachments` admin-log row (`admin.recordOrphanSweep`). The row carries the counts and every key deleted, or every key a pass would delete.
+
+  **The control plane decides before any deployment judges.** For each scope it checks four things in its own directory: the scope is active and primary, it is bound to a vertical, its tenant is active, and every copy-ledger entry for it is `done`. Only then does it call `POST /internal/attachment-sweep` on the script the directory routes the scope to: its serving script, else its bound version's. There is no fallback to another script, and the control plane never asks its own host. The route requires `dryRun` and `copiesSettled: true`. It also requires `expectedVersionId`: the version the directory says runs on that script. A script deployed as another version refuses the pass, and so does one that carries no version identity when the pass is destructive. The route takes no instant from the body, and it answers 501 on a host built before it. A destructive pass writes its own log line in the deployment, with the scope, the counts and the deleted keys.
+
+  **A deployment with no attachment store answers so.** A pass whose deployment holds no attachment store for the tenant now returns `bucket: 'none'`, after every refusal the scope's copy makes, instead of failing. It does so only when the scope holds no attachment row either. A scope that holds files but has no store has a missing store binding, and its pass still fails. A store that held nothing answers without the marker.
+
+  The control plane's mode is `ORPHAN_ATTACHMENT_SWEEP`, with the values `off` (the default), `dry-run` and `delete`, and its window size is `ORPHAN_ATTACHMENT_SWEEP_BATCH`. `docs/architecture/orphan-attachment-sweep.md` has the rollout.
+
+  The dashboard's activity view reads the new admin-log rows as "swept orphan attachments".
+
+- d6ba289: Scope stores: a key revocation or a store entry fix now reaches every store script without a push (#2309).
+
+  - **Control plane:** what the platform builds every store script from (both key lists, the entry, its verifier and the compatibility flags) is one digest, `storePlatformFingerprint`. The scheduled pass rebuilds every existing store script whose build is older than it, at the release the script already runs, and never moves a script to another release or creates one. Each pass walks a bounded number of scripts (`STORE_REBUILD_SUBREQUESTS`, default 500 subrequests, 5 a script) from a per-driver cursor and resumes there on the next pass. It runs under the shared hold a push takes, so a rollout or rollback excludes it and a paused rollout keeps its scripts where they are. A script it could not rebuild is retried on every pass and recorded as an ops failure. A finished walk is walked again a day later. A walk that finished within an hour of new lists appearing is walked again after that hour and reads as `settling` until then, because a control plane still serving the older lists during a deploy can upload a script after the walk read it. The window is `STORE_REBUILD_SETTLE_MINUTES` (60 by default), and status prints when the lists were first walked towards and when the next automatic walk is. Only a walk that began after the window proves the fleet current. `substrat store-driver rebuild --deploy-finished` lets a person attest that no control-plane deploy is rolling out, so the walk that run starts proves it once done; the attestation is audited. A re-walk at lists already proved reads `current (re-verifying)` until a script fails. A vertical whose stores cannot be named is walked by its script's name, so it counts as a failure only if its script exists and cannot be rebuilt.
+  - **API and CLI:** `GET /store-drivers/:driver` adds `rebuild`: whether every script is current, and the scripts that may not be. `POST /store-drivers/:driver/rebuild` runs a pass now, for a person only (as the other release writes), audited as `rebuildStoreDriver`. `substrat store-driver rebuild --driver <driver>` calls it, and `store-driver status` prints the rebuild's state.
+  - **Kernel and adapters:** a `store_driver_rebuilds` directory table and three `HostAdmin` methods (`storeDriverRebuild`, `claimStoreDriverRebuild`, `advanceStoreDriverRebuild`), plus `recordStoreDriverRebuildRun` for the audit row. The row's lease keeps two passes from walking one driver at once. A new fingerprint restarts the walk.
+  - **Runbook:** `secrets/store-keys.md` says how long the rebuild takes for a fleet size. It also says that an old key counts as revoked only once `store-driver status` reads `scripts: current`.
+
+- Updated dependencies [98f09fe]
+- Updated dependencies [0292dc0]
+- Updated dependencies [b190e40]
+- Updated dependencies [eda31d1]
+- Updated dependencies [5aaf0f5]
+- Updated dependencies [af096c6]
+- Updated dependencies [39ccfea]
+- Updated dependencies [6f5f12b]
+- Updated dependencies [754fc62]
+- Updated dependencies [c7eb5fa]
+- Updated dependencies [1df1b93]
+- Updated dependencies [6c1e359]
+- Updated dependencies [439efc1]
+- Updated dependencies [e550dec]
+- Updated dependencies [4574ab8]
+- Updated dependencies [3025154]
+- Updated dependencies [9ae6644]
+- Updated dependencies [d6ba289]
+- Updated dependencies [2e503da]
+- Updated dependencies [3608db6]
+- Updated dependencies [9ceb545]
+  - @substrat-run/kernel@0.149.0
+  - @substrat-run/adapter-cloudflare@0.149.0
+  - @substrat-run/control-plane-api@0.149.0
+  - @substrat-run/contracts@0.149.0
+  - @substrat-run/connector-microsoft365@0.0.10
+  - @substrat-run/oidc-rp@0.12.0
+  - @substrat-run/connector-fortnox@0.4.51
+  - @substrat-run/connector-planima@0.2.46
+  - @substrat-run/connector-scrive@0.14.55
+
 ## 0.15.11
 
 ### Patch Changes
