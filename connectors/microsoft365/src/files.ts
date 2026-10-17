@@ -702,8 +702,9 @@ export async function syncMicrosoft365Scope(
    * Where a held item the feed did not account for really is — asked of the drive, item by item,
    * up its parent chain until the chain reaches the folder, a held folder, or the library root.
    * Items read on the way that turn out to be outside are dropped with the answer; nothing about
-   * them is kept. A 404 on the item, or on a folder above it, is a deletion. Any other error is
-   * thrown, so the pass stops and deletes nothing it could not confirm.
+   * them is kept. Only the item's OWN answer is a deletion — its 404/410, or its own deleted facet.
+   * A folder above it that cannot be read says nothing about the item, and neither does any other
+   * error: both are thrown, so the pass stops and deletes nothing it could not confirm.
    */
   let gets = 0;
   const locate = async (id: string, pending: ReadonlySet<string>) => {
@@ -715,10 +716,13 @@ export async function syncMicrosoft365Scope(
         gets += 1;
         item = await itemById(client, binding.driveId, at);
       } catch (e) {
-        if (e instanceof GraphError && (e.status === 404 || e.status === 410)) return { at: 'gone' as const };
+        if (depth === 0 && e instanceof GraphError && (e.status === 404 || e.status === 410)) return { at: 'gone' as const };
         throw e;
       }
-      if (item.deleted) return { at: 'gone' as const };
+      if (item.deleted) {
+        if (depth === 0) return { at: 'gone' as const };
+        throw new Error('a folder above a held item is deleted while the item itself is not');
+      }
       if (item.parentReference?.driveId && item.parentReference.driveId !== binding.driveId) return { at: 'outside' as const };
       chain.push(item);
       const parent = item.parentReference?.id;
@@ -821,9 +825,10 @@ export async function syncMicrosoft365Scope(
     }
     if (pass.verify) {
       const { deltaLink } = pass.verify;
-      // Shallowest first: a folder's answer settles everything held under it.
+      // Deepest first: an item is answered before the folder that held it, and a folder's answer is
+      // never taken for what it held (below).
       const depth = (id: string) => index.get(id)?.path.split('/').length ?? 0;
-      const queue = pass.verify.queue.filter((id) => index.has(id)).sort((x, y) => depth(x) - depth(y));
+      const queue = pass.verify.queue.filter((id) => index.has(id)).sort((x, y) => depth(y) - depth(x));
       if (!queue.length) {
         const saved = await save(
           { deltaLink, lastSync: { syncedAt: nowOf(options).toISOString(), changes: pass.changes } },
@@ -844,15 +849,18 @@ export async function syncMicrosoft365Scope(
         // Still in the folder: the feed only failed to say so. Land it where it is, if that moved.
         carry(await landChanges(new Map(found.chain.map((i) => [i.id, i]))));
       } else {
-        const reason = found.at === 'gone' ? 'deleted' : 'moved-out';
-        const settled = [...heldUnder(id), id];
-        for (const gone of settled) await land({ change: 'delete', id: gone, prior: index.get(gone)!, reason });
-        changes += settled.length;
-        pass = {
-          ...pass,
-          changes: pass.changes + settled.length,
-          verify: { deltaLink, queue: pass.verify!.queue.filter((q) => !settled.includes(q)) },
-        };
+        // A folder that is gone, or moved out, still held items: each is looked up on its own
+        // first, and the folder is answered again after them. What it held is never deleted on its
+        // word — the held tree is exactly what a missed enumeration leaves stale.
+        const under = heldUnder(id);
+        if (under.length) {
+          pass = { ...pass, verify: { deltaLink, queue: [...new Set([...under, ...queue])] } };
+        } else {
+          const reason = found.at === 'gone' ? 'deleted' : 'moved-out';
+          await land({ change: 'delete', id, prior: index.get(id)!, reason });
+          changes += 1;
+          pass = { ...pass, changes: pass.changes + 1 };
+        }
       }
       if (!(await save({ pass }))) return superseded(pages, changes, pass.full);
       continue;

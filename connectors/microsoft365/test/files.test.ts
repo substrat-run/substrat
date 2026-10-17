@@ -727,6 +727,65 @@ describe('reads: the sync lands what is in the folder', () => {
       expect(w.drive.childrenNamed(w.general)).toContain('c.txt');
     });
 
+    // r3 #1: a folder's answer is never taken for what the held tree put under it.
+    it('a file moved out of a folder since deleted is kept when a resync misses it', async () => {
+      const w = await world();
+      const old = w.drive.mkdir(w.general, 'Old');
+      const x = w.drive.put(old, 'x.txt', 'x');
+      await w.bind();
+      await w.sync();
+      w.landed.length = 0;
+      w.drive.move(x, w.general);
+      w.drive.remove(old);
+      w.drive.hiddenFromFeed.add(x);
+      w.drive.expiredBefore = Number.MAX_SAFE_INTEGER;
+      await w.sync();
+      expect(w.landed.filter((c) => c.change === 'delete').map((c) => c.itemId)).toEqual([old]);
+      expect(w.landed.find((c) => c.itemId === x)).toMatchObject({ change: 'upsert', path: 'x.txt', previousPath: 'Old/x.txt' });
+      w.drive.hiddenFromFeed.clear();
+      w.drive.expiredBefore = 0;
+      w.landed.length = 0;
+      await w.sync();
+      expect(w.landed.filter((c) => c.change === 'delete')).toEqual([]);
+    });
+
+    it('a file deleted with its folder is deleted on its own answer when a resync misses both (the twin)', async () => {
+      const w = await world();
+      const old = w.drive.mkdir(w.general, 'Old');
+      const x = w.drive.put(old, 'x.txt', 'x');
+      await w.bind();
+      await w.sync();
+      w.landed.length = 0;
+      w.drive.remove(old);
+      w.drive.expiredBefore = Number.MAX_SAFE_INTEGER;
+      await w.sync();
+      expect(w.landed.map((c) => [c.change, c.itemId, c.change === 'delete' ? c.reason : null])).toEqual([
+        ['delete', x, 'deleted'],
+        ['delete', old, 'deleted'],
+      ]);
+      expect(w.drive.calls.some((c) => c.url.includes(`/items/${x}?`))).toBe(true);
+    });
+
+    it('a folder moved out takes what it held out only on each item\'s own answer', async () => {
+      const w = await world();
+      const out = w.drive.mkdir(w.general, 'Out');
+      const y = w.drive.put(out, 'y.txt', 'y');
+      const z = w.drive.put(out, 'z.txt', 'z');
+      await w.bind();
+      await w.sync();
+      w.landed.length = 0;
+      w.drive.move(out, w.leadership);
+      w.drive.move(z, w.general); // z left before the folder went
+      w.drive.hiddenFromFeed.add(z);
+      w.drive.expiredBefore = Number.MAX_SAFE_INTEGER;
+      await w.sync();
+      expect(w.landed.filter((c) => c.change === 'delete').map((c) => [c.itemId, c.change === 'delete' && c.reason]).sort()).toEqual(
+        [[out, 'moved-out'], [y, 'moved-out']].sort(),
+      );
+      expect(w.landed.find((c) => c.itemId === z)).toMatchObject({ change: 'upsert', path: 'z.txt' });
+      for (const name of OUTSIDE_NAMES) expect(await w.state()).not.toContain(name);
+    });
+
     it('a verification that cannot reach the drive stops the pass and deletes nothing', async () => {
       const w = await world();
       const gone = w.drive.put(w.general, 'gone.txt', 'gone');

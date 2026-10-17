@@ -61,6 +61,8 @@ export class FakeDrive {
   onRequest: ((c: Call) => Promise<void> | void) | null = null;
   /** Sizes the drive reports instead of the true one, by item name — to tell size from hash. */
   misreportedSize = new Map<string, number>();
+  /** Items the change feed leaves out — how a test makes an enumeration miss one, as a long one may. */
+  hiddenFromFeed = new Set<string>();
   /** Items whose size the drive leaves out, as Graph may. */
   sizeless = new Set<string>();
   /** Items per delta page — small, so every test pages. */
@@ -297,6 +299,7 @@ export class FakeDrive {
   private delta(token: number, skip: number) {
     if (token > 0 && token < this.expiredBefore) throw new Status(410, 'resyncRequired', 'resync');
     const changed = [...this.items.values()]
+      .filter((i) => !this.hiddenFromFeed.has(i.id))
       .filter((i) => (token === 0 ? !i.deleted : i.seq > token))
       .sort((a, b) => a.seq - b.seq);
     const pageItems = changed.slice(skip, skip + this.pageSize);
