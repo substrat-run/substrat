@@ -23,6 +23,7 @@ export type {
   PlatformRuntime,
   ProvisionScopeInput,
   RebindScopeResult,
+  RebindReviewResult,
   RecentLogEvent,
   ReprovisionedScope,
   ScopeHealth,

@@ -109,6 +109,7 @@ const WIRE: Record<string, [(c: ControlPlaneBuilderClient) => Promise<unknown>, 
     `/tenants/${T}/scopes/${S}/rebind-vertical`,
     '{"vertical":"x","ackMigrations":true}',
   ],
+  getRebindReview: [(c) => c.getRebindReview(T, S, 'acme/x'), undefined, `/tenants/${T}/scopes/${S}/rebind-review?vertical=acme%2Fx`, undefined],
 };
 
 describe('ControlPlaneBuilderClient — the wire', () => {

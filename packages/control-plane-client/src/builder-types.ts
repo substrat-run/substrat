@@ -181,10 +181,42 @@ export interface BindScopeVersionBody extends ExportBreakAck {
   snapshot?: true | undefined;
 }
 
-export interface RebindScopeBody extends ExportBreakAck {
+export interface RebindScopeBody {
   vertical: string;
   ackMigrations?: true | undefined;
   abandonData?: true | undefined;
+  /**
+   * #2347: `review` names the rebind review `ackMigrations` answers, exactly as the
+   * rebind-review read returned it beside the diff that was shown. The control plane refuses one
+   * whose base or stored rows moved since (`rebind_review_stale`), and an `ackMigrations` sent
+   * with none where the two lineages' migration digests differ (`rebind_review_unbound`).
+   */
+  acknowledge?: { exportBreak?: true; review?: PromoteReviewBinding };
+}
+
+/** #2347: one side of a rebind review: a lineage and the version on it. */
+export interface RebindReviewSide {
+  vertical: string;
+  versionId: string;
+}
+
+/**
+ * #2347: what a rebind would apply — the target lineage's serving version over the version the
+ * scope is bound to (`base`, null when it is bound to none) — and the binding to acknowledge it with.
+ */
+export interface RebindReview<M> {
+  base: RebindReviewSide | null;
+  target: RebindReviewSide;
+  /** The two lineages carry the same migration digest, so the rebind needs no acknowledgement. */
+  digestsMatch: boolean;
+  /** Null for a target version whose migrations cannot be shown, or when they are withheld. */
+  migrations: M | null;
+  /**
+   * The SQL is shown only to an owner of both verticals (staff included): any other caller gets
+   * `migrations: null` with this set, and still the digests-differ fact and the binding.
+   */
+  migrationsWithheld: boolean;
+  review: PromoteReviewBinding;
 }
 
 export interface AdoptServingResult {
@@ -328,6 +360,11 @@ export interface ConnectionScopeBindingInput {
   currency?: string;
   window?: { fromYear: number; toYear: number } | null;
   horizonYears?: number;
+  /**
+   * microsoft365 (#2101): the channel folder's drive path, relative to the site's default
+   * document library (`General`, not the channel's display name). Required for that provider.
+   */
+  folder?: string;
 }
 export interface ConnectionScopeBinding extends ConnectionScopeBindingInput {
   /** Read from the target scope's live projection; omitted when inspection fails. */

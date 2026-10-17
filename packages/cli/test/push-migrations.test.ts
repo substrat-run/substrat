@@ -142,7 +142,7 @@ describe.runIf(built && kernelBuilt)('push carries the derived index migrations 
   it('without a kernel to derive them, a module declaring lists carries NO migrations — never a short set', () => {
     const { manifest, stderr } = pushedWith(vertical([{ id: 'helpdesk', migrations: [TABLE], lists }]));
     expect(manifest.migrations).toBeUndefined();
-    expect(stderr).toMatch(/declares searchables or lists/);
+    expect(stderr).toMatch(/declares searchables, lists or entityStates/);
   });
 
   it('tracks unresolved index declarations when an older kernel cannot derive their SQL', () => {

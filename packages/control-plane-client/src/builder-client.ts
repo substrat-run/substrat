@@ -19,6 +19,7 @@ import type {
   PulledDump,
   RebindScopeBody,
   RebindVerticalResult,
+  RebindReview,
   RestoreBody,
   ScopeHealthRecord,
   ScopeRecord,
@@ -240,6 +241,11 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
   rebindScopeVertical(tenantId: string, scopeId: string, body: RebindScopeBody): Promise<RebindVerticalResult> {
     const path = `${this.scopePath(tenantId, scopeId)}/rebind-vertical`;
     return this.read(path, this.write('POST', body));
+  }
+
+  /** #2347: the review a rebind onto `vertical` would ask to be acknowledged, with its binding. */
+  getRebindReview<M>(tenantId: string, scopeId: string, vertical: string): Promise<RebindReview<M>> {
+    return this.read(`${this.scopePath(tenantId, scopeId)}/rebind-review?vertical=${seg(vertical)}`);
   }
 
   // -- store driver releases (D-63, #2300). Staff only, and every write by a person's sign-in: the

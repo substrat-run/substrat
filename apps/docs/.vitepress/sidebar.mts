@@ -208,7 +208,7 @@ export function guideSidebar() {
         { text: 'Scrive (e-signing)', link: '/connectors/scrive' },
         { text: 'Fortnox (accounting)', link: '/connectors/fortnox' },
         { text: 'Planima (facility maintenance)', link: '/connectors/planima' },
-        { text: 'Microsoft 365 (mail)', link: '/connectors/microsoft365' },
+        { text: 'Microsoft 365 (mail, documents)', link: '/connectors/microsoft365' },
       ],
     },
     {

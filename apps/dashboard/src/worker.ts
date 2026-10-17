@@ -54,7 +54,7 @@ import { deriveConnectionSweep, sweepWindowCutoff, type SweepSighting } from './
 import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable } from './fleet-health.js';
 import { deriveAppMetrics } from './app-metrics.js';
 import { deriveIdentityDivergence, mirrorIdentityLink } from './identity-mirror.js';
-import { BoundScopeError, moveBoundScopes, readBoundScopes, retireBoundScopes } from './bound-scopes.js';
+import { BoundScopeError, moveBoundScopes, readBoundScopes, readMoveReview, retireBoundScopes } from './bound-scopes.js';
 import { listDeploymentsFromCp, ownedDeploymentFromCp, ownedDeploymentOrThrow, assertOwnedFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, versionPair, type Deployment } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type ListRead, type PreviewRecord, type SweepRunRead } from './authority.js';
@@ -1328,7 +1328,7 @@ async function listAppsPage(c: Context<{ Bindings: Env }>, host: CloudflareScope
         a.hostname = healed.hostname;
       }
     }
-    // Reconcile the row's LINEAGE against the directory (#389): a staff
+    // Reconcile the row's LINEAGE against the directory (#389): a
     // rebind-vertical moves the scope onto a different lineage (builtin
     // 'manyfold' → tenant-owned 'acme/manyfold') and only the directory knows —
     // the stale slug here misroutes the Update path (prod channels resolve by
@@ -5543,6 +5543,16 @@ const moveScopesBody = z.object({
   scopeIds: z.array(z.string().min(1)).min(1).max(100),
   target: z.string().min(1),
   ackMigrations: z.boolean().optional(),
+  // #2347: per scope, the rebind review the acknowledgement answers.
+  reviews: z.record(z.string(), promotionAcknowledgement.shape.review.unwrap()).optional(),
+});
+
+// #2347: what each chosen install's move would apply, and the binding to acknowledge it with.
+// Read by the Move dialog before it asks, and gated like the move itself.
+app.post('/api/deployments/:slug/scopes/move-review', async (c) => {
+  const { cp, slug } = await boundScopesContext(c, true);
+  const body = moveScopesBody.pick({ scopeIds: true, target: true }).parse(await c.req.json());
+  return c.json(await asHttp(() => readMoveReview(cp, { vertical: slug, ...body })));
 });
 
 app.post('/api/deployments/:slug/scopes/move', async (c) => {

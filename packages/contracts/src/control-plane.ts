@@ -751,6 +751,8 @@ export const connectionBindingAudit = z.object({
   currency: z.string().regex(/^[A-Z]{3}$/).optional(),
   window: z.object({ fromYear: z.number().int(), toYear: z.number().int() }).nullable().optional(),
   horizonYears: z.number().int().min(0).optional(),
+  /** microsoft365 (#2101): the channel folder's drive path the binding names. */
+  folder: z.string().min(1).max(400).optional(),
   error: z.string().max(AUDIT_ERROR_MAX).optional(),
 }).strict();
 export type ConnectionBindingAudit = z.infer<typeof connectionBindingAudit>;

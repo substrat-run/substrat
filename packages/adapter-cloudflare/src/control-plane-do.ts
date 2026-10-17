@@ -167,7 +167,7 @@ import {
   type ServingPointer,
 } from '@substrat-run/kernel';
 import {
-  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS, SERVES_NOW_CONDITION, SERVES_NOW_PREDICATE, servesNowParams, type ExpectedServing,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
   type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -3461,11 +3461,24 @@ export class ControlPlaneDO extends DurableObject {
     );
   }
 
-  /** False when a conditional bind lost its compare-and-set (the host throws, as above). */
+  /**
+   * False when a conditional bind lost its compare-and-set (the host throws, as above). #2347:
+   * `servingRef` moves the route in the same write, and `expectedServing` holds it to what the
+   * target lineage's serving script runs, read in this same synchronous transaction.
+   */
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null,
-    expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation): boolean {
-    return this.moveScopeRow('vertical_version_id = ?, vertical = ?', [versionId, verticalSlug], scopeId,
-      { expectedVersionId, expectedErasureEpoch, confirmMove });
+    expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, servingRef?: string,
+    expectedServing?: ExpectedServing): boolean {
+    return servingRef === undefined
+      ? this.moveScopeRow('vertical_version_id = ?, vertical = ?', [versionId, verticalSlug], scopeId,
+        { expectedVersionId, expectedErasureEpoch, confirmMove, expectedServing })
+      : this.moveScopeRow('vertical_version_id = ?, vertical = ?, serving_ref = ?', [versionId, verticalSlug, servingRef], scopeId,
+        { expectedVersionId, expectedErasureEpoch, confirmMove, expectedServing });
+  }
+
+  /** #2347: whether a lineage's serving script still runs the version a rebind was judged against. */
+  servesNow(expected: ExpectedServing): boolean {
+    return this.sql.exec(`SELECT 1 FROM verticals WHERE ${SERVES_NOW_CONDITION}`, ...servesNowParams(expected)).toArray().length > 0;
   }
 
   /**
@@ -3476,7 +3489,10 @@ export class ControlPlaneDO extends DurableObject {
    */
   private moveScopeRow(
     set: string, setArgs: (string | null)[], scopeId: string,
-    cond: { expectedVersionId?: string | null; expectedErasureEpoch?: number; confirmMove?: ScopeCopyMoveConfirmation },
+    cond: {
+      expectedVersionId?: string | null; expectedErasureEpoch?: number; confirmMove?: ScopeCopyMoveConfirmation;
+      expectedServing?: ExpectedServing;
+    },
   ): boolean {
     const now = new Date().toISOString();
     return this.ctx.storage.transactionSync(() => {
@@ -3484,11 +3500,13 @@ export class ControlPlaneDO extends DurableObject {
         `UPDATE scopes SET ${set} WHERE scope_id = ?
          ${cond.expectedVersionId === undefined ? '' : 'AND vertical_version_id IS ?'}
          ${cond.expectedErasureEpoch === undefined ? '' : 'AND COALESCE(erasure_epoch, 0) = ? AND reap_claimed_at IS NULL'}
-         ${cond.confirmMove === undefined ? '' : COPY_MOVE_LIVE_PREDICATE}`,
+         ${cond.confirmMove === undefined ? '' : COPY_MOVE_LIVE_PREDICATE}
+         ${cond.expectedServing === undefined ? '' : SERVES_NOW_PREDICATE}`,
         ...setArgs, scopeId,
         ...(cond.expectedVersionId === undefined ? [] : [cond.expectedVersionId]),
         ...(cond.expectedErasureEpoch === undefined ? [] : [cond.expectedErasureEpoch]),
         ...(cond.confirmMove === undefined ? [] : copyMoveLiveParams(cond.confirmMove, now)),
+        ...(cond.expectedServing === undefined ? [] : servesNowParams(cond.expectedServing)),
       );
       if (moved.rowsWritten === 0) return false;
       if (cond.confirmMove) {

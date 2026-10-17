@@ -573,7 +573,7 @@ const reconcileAppVerticalInput = z.object({
 });
 
 /**
- * Heal the row's vertical lineage to match the directory (#389): a staff
+ * Heal the row's vertical lineage to match the directory (#389): a
  * `rebind-vertical` moves a scope onto a different lineage (e.g. builtin
  * 'manyfold' → tenant-owned 'acme/manyfold') and the directory's scope record is
  * the source of truth — but this row still names the old slug, which misroutes the

@@ -414,6 +414,45 @@ left in the old script is deleted by the platform's scheduled sweep, the same fo
 `substrat scope rebind` onto another lineage. If you want a way back, snapshot or back up the
 scope **before** the move; the old copy is not kept as one.
 
+### A rebind answers one review {#a-rebind-answers-one-review}
+
+`substrat scope rebind <scopeId> --to <vertical>` moves a scope onto another vertical's serving
+version, and that vertical's migration history is not the one the scope's data has been through.
+When the two migration digests differ, the rebind is refused until you acknowledge what it would
+apply. The refusal prints it: each migration the target's serving version carries over the version
+the scope is bound to, with its SQL and declared moves and discards, and a `--review` token.
+
+```text
+scope runs acme/courses 01J…; acme/coaching serves 01J….
+…
+to acknowledge exactly what is shown above, re-run with --ack-migrations and --review 01J…:9a1e…
+```
+
+The token names the version the scope was bound to when you read the review, and a digest of both
+sides' stored migrations, declarations and digests, the target's serving version included. The
+control plane recomputes it from its own rows. If a promote on either vertical has moved either side
+since, the rebind is refused as stale and nothing moves; `substrat scope rebind` prints the review
+as it stands now, with a new token. The route and the version pointer then move in one write, and
+only if neither side has moved since the review was checked, so a promote that lands while the data
+is being copied refuses the rebind too: the scope keeps serving from where it was, and both copies
+are kept. A promote's token is not a rebind's, nor the reverse: the two reviews are digested apart.
+
+Who may read the review is exactly who may make the rebind: staff, and a workspace's own credential
+for a scope of its own when it can see both verticals, which means each is either its own or listed on
+the marketplace. Anything else, whether a vertical that does not exist, another workspace's private
+vertical, or a scope that runs one, is answered with the same `404`, by the read and by the rebind alike.
+The migration SQL is shown only to staff and to a workspace that owns both verticals. Anyone else who
+may rebind, for example onto a listed vertical, sees both versions, that their migration digests
+differ, and the token to acknowledge with, but not the SQL.
+
+The dashboard's and the console's Move dialogs read the same review before they ask, show the
+migrations, and send each install's token with the acknowledgement. When a version changes under
+them, they read it again and ask again from scratch.
+
+The compatibility rule is the promote's: `--ack-migrations` without a token is refused when the
+digests differ, and the refusal says to upgrade to a CLI release whose `substrat scope rebind`
+supports `--review`.
+
 ## See what you've pushed — `substrat versions`
 
 ```bash

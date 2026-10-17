@@ -1,4 +1,13 @@
-import { assertReplayableDump, assertSqlIdentifier, problemDetail, scopeId, scopeStoreDump, tenantId } from '@substrat-run/contracts';
+import {
+  assertReplayableDump,
+  assertSqlIdentifier,
+  problemDetail,
+  rebindReviewReasonIn,
+  scopeId,
+  scopeStoreDump,
+  tenantId,
+  type MigrationDiff,
+} from '@substrat-run/contracts';
 /**
  * `substrat scope pull <scopeId>` — bring a scope's data to the local inner loop
  * (preview-and-snapshots.md §8; the substrat analog of `vercel env pull`).
@@ -16,10 +25,10 @@ import { assertReplayableDump, assertSqlIdentifier, problemDetail, scopeId, scop
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { fetchWhoami } from './whoami.js';
-import type { DumpTable, ExportBreakAck, PulledDump } from '@substrat-run/control-plane-client';
+import { ControlPlaneError, type DumpTable, type ExportBreakAck, type PromoteReviewBinding, type PulledDump } from '@substrat-run/control-plane-client';
 import { planeFor, refusalBody, viaPlane } from './plane.js';
 import { orderTablesByForeignKeys } from './dump-order.js';
-import { exportBreakListing, type ExportBreaks } from './promote.js';
+import { exportBreakListing, formatMigrationDiff, idOf, reviewToken, type ExportBreaks } from './promote.js';
 
 interface Backup {
   tables: DumpTable[];
@@ -436,8 +445,14 @@ export async function bindScopeVersion(opts: {
 /**
  * `substrat scope rebind <scopeId> --to <slug>` — move ONE scope onto a DIFFERENT vertical
  * lineage's serving script (#389): the update-rebind behind retiring a platform-owned lineage
- * in favour of a tenant-owned one. Staff-only server-side. Refused when the two lineages'
- * migration digests differ, unless `--ack-migrations` says both diffs were read.
+ * in favour of a tenant-owned one. Server-side: staff, or a workspace for its own scope between
+ * verticals it can see (its own, or listed). Refused when the two lineages'
+ * migration digests differ, unless `--ack-migrations` says the diff was read.
+ *
+ * #2347: that acknowledgement answers ONE review — the target's serving version over the version
+ * the scope is bound to, when it was read. The refusal prints the migrations and the `--review`
+ * token they were read with; the control plane refuses a token that a promote on either lineage
+ * has made stale since, and a `--ack-migrations` sent with none.
  */
 export async function rebindScopeVertical(opts: {
   controlPlaneUrl: string;
@@ -449,17 +464,39 @@ export async function rebindScopeVertical(opts: {
   abandonData?: boolean;
   /** #1756: within one lineage the rebind is an adopt, refused when it breaks an app here. */
   ackExportBreak?: boolean;
+  /** #2347: the review `ackMigrations` answers, as a refusal printed it. */
+  review?: PromoteReviewBinding;
 }): Promise<void> {
-  const body = await viaPlane(
-    () =>
-      planeFor(opts.controlPlaneUrl, opts.header).rebindScopeVertical(opts.tenantId, opts.scopeId, {
-        vertical: opts.vertical,
-        ackMigrations: opts.ackMigrations ? true : undefined,
-        abandonData: opts.abandonData ? true : undefined,
-        ...ackBody(opts.ackExportBreak),
-      }),
-    (e) => new Error(refusalText(refusalBody(e), `rebind refused: ${e.status} ${e.statusText}`)),
-  );
+  const plane = planeFor(opts.controlPlaneUrl, opts.header);
+  const acknowledge = {
+    ...(opts.ackExportBreak ? { exportBreak: true as const } : {}),
+    ...(opts.review ? { review: opts.review } : {}),
+  };
+  const send = () =>
+    // The refusal is passed through as it is: explaining it needs a second round-trip.
+    viaPlane(
+      () =>
+        plane.rebindScopeVertical(opts.tenantId, opts.scopeId, {
+          vertical: opts.vertical,
+          ackMigrations: opts.ackMigrations ? true : undefined,
+          abandonData: opts.abandonData ? true : undefined,
+          ...(Object.keys(acknowledge).length > 0 ? { acknowledge } : {}),
+        }),
+      (e) => e,
+    );
+  let body: Awaited<ReturnType<typeof send>>;
+  try {
+    body = await send();
+  } catch (e) {
+    if (!(e instanceof ControlPlaneError)) throw e;
+    const parsed = refusalBody(e);
+    const message = refusalText(parsed, `rebind refused: ${e.status} ${e.statusText}`);
+    // A digest refusal, a review that moved under the acknowledgement, or a migration
+    // acknowledgement sent with none, is answered the same way: the migrations as they stand
+    // now, and the token to acknowledge exactly those with.
+    if (!message.includes(DIGESTS_DIFFER) && rebindReviewReasonIn(parsed) === undefined) throw new Error(message);
+    throw new Error(`${message}\n\n${(await explainRebind(opts)).join('\n')}`);
+  }
   if (body.alreadyBound) {
     console.log(`✓ scope ${opts.scopeId} already bound to ${opts.vertical} (${body.servingRef}) — nothing to do.`);
   } else if (body.dataAbandoned) {
@@ -469,6 +506,43 @@ export async function rebindScopeVertical(opts: {
   } else {
     console.log(`✓ rebound scope ${opts.scopeId} onto ${opts.vertical} (${body.servingRef}, ${body.tables ?? 0} tables moved).`);
     console.log('  the source script’s copy is left intact — it is the backout.');
+  }
+}
+
+/** What the rebind's digest refusal says (`migration surfaces differ across lineages …`). */
+const DIGESTS_DIFFER = 'migration surfaces differ across lineages';
+
+/**
+ * The migrations a refused rebind would apply (#2347), as printable lines, and the `--review`
+ * token the same read returned beside them. Never throws: the refusal is the answer, and a review
+ * that could not be read is said so in a line.
+ */
+export async function explainRebind(opts: {
+  controlPlaneUrl: string;
+  header: Record<string, string>;
+  tenantId: string;
+  scopeId: string;
+  vertical: string;
+}): Promise<string[]> {
+  try {
+    const read = await viaPlane(
+      () => planeFor(opts.controlPlaneUrl, opts.header).getRebindReview<MigrationDiff>(opts.tenantId, opts.scopeId, opts.vertical),
+      (e) => new Error(refusalText(refusalBody(e), `${e.status} ${e.statusText}`)),
+    );
+    return [
+      `${read.base ? `scope runs ${idOf(read.base.vertical)} ${idOf(read.base.versionId)}` : 'scope is bound to no version'}; ` +
+        `${idOf(read.target.vertical)} serves ${idOf(read.target.versionId)}.`,
+      '',
+      'migration changes:',
+      ...(read.migrationsWithheld
+        ? ['the migration digests differ; the SQL is shown only to the owner of both verticals']
+        : formatMigrationDiff(read.migrations, !read.digestsMatch)
+      ).map((l) => `  ${l}`),
+      '',
+      `to acknowledge exactly what is shown above, re-run with --ack-migrations and --review ${idOf(reviewToken(read.review))}`,
+    ];
+  } catch (e) {
+    return [`(the rebind review could not be read: ${e instanceof Error ? e.message : String(e)})`];
   }
 }
 

@@ -196,10 +196,11 @@ export type ModuleMigrationsFn = (registration: PermissionsInput['modules'][numb
  * `migrations` beside the manifest.
  *
  * Through `moduleMigrations`, the kernel's own list, because a host also applies migrations
- * nobody authored: the indexes a module's `searchables` and `lists` declare. Changing those
- * runs real schema SQL. Without the function (a vertical on a kernel older than it, or none
- * resolvable) a module declaring either cannot be carried completely, so the field is left
- * off rather than carried short; one declaring neither has only its authored set.
+ * nobody authored: the indexes a module's `searchables` and `lists` declare, and the archive and
+ * trash columns its `entityStates` declare. Changing those runs real schema SQL. Without the
+ * function (a vertical on a kernel older than it, or none resolvable) a module declaring any of
+ * them cannot be carried completely, so the field is left off rather than carried short; one
+ * declaring none has only its authored set.
  *
  * Each migration's declared `moves` and `discards` (#2322) are carried beside its SQL.
  *
@@ -217,10 +218,14 @@ export function flattenDeclaredMigrations(
   migrations?: DeclaredMigration[];
   omitted?: string;
   digestMigrations: DeclaredMigration[];
-  unresolvedIndexes?: { moduleId: string; searchables: unknown[]; lists: unknown[] }[];
+  unresolvedIndexes?: { moduleId: string; searchables: unknown[]; lists: unknown[]; entityStates?: unknown[] }[];
 } {
+  // #2349: `entityStates` derive migrations too (the archive and trash columns), so a module
+  // declaring only them cannot be carried complete without the kernel either.
   const derives = (m: PermissionsInput['modules'][number]) =>
-    (m.manifest.searchables?.length ?? 0) > 0 || (m.manifest.lists?.length ?? 0) > 0;
+    (m.manifest.searchables?.length ?? 0) > 0 ||
+    (m.manifest.lists?.length ?? 0) > 0 ||
+    (m.manifest.entityStates?.length ?? 0) > 0;
   const migrations = permissions.modules.flatMap((m) =>
     (moduleMigrations ? moduleMigrations(m) : (m.migrations ?? [])).map((s) => ({
       moduleId: m.manifest.id,
@@ -238,6 +243,8 @@ export function flattenDeclaredMigrations(
         moduleId: m.manifest.id,
         searchables: m.manifest.searchables ?? [],
         lists: m.manifest.lists ?? [],
+        // Only when declared, so a module declaring none keeps the entry (and the digest) it had.
+        ...((m.manifest.entityStates?.length ?? 0) > 0 ? { entityStates: m.manifest.entityStates } : {}),
       }))
     : [];
   if (unresolvedIndexes.length > 0) {
@@ -245,8 +252,8 @@ export function flattenDeclaredMigrations(
       digestMigrations: migrations,
       unresolvedIndexes,
       omitted:
-        "a module declares searchables or lists, and the vertical's @substrat-run/kernel has no moduleMigrations " +
-        'to derive their index migrations with (upgrade the kernel)',
+        "a module declares searchables, lists or entityStates, and the vertical's @substrat-run/kernel has no " +
+        'moduleMigrations to derive their migrations with (upgrade the kernel)',
     };
   }
   const malformed = migrations.find((m) => !declaredMigrationDeclarations.safeParse(m).success);

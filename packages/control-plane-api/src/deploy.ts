@@ -11,7 +11,8 @@ import {
   type StoreDriverRegistration,
   type StoreDriverRelease,
 } from '@substrat-run/contracts';
-import type { AssetRouting, DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
+import type { AssetRouting, DeclaredBinding, DeclaredMigration, DeployManifest } from '@substrat-run/contracts';
+import { MIGRATIONS_DIGEST_BINDING, migrationSetDigest } from '@substrat-run/kernel';
 
 /**
  * The deploy seam (self-serve-deploy.md). A `substrat push` uploads a *built* worker
@@ -253,6 +254,22 @@ export function verticalUploadBindings<B>(input: {
 }): (DeclaredBinding | B)[] {
   const plan = scopeStoreUploadPlan({ vertical: input.vertical, stores: input.manifest.scopeStores, drivers: input.drivers });
   return [...input.manifest.bindings, ...input.platformBindings, ...plan.bindings];
+}
+
+/**
+ * The platform binding that hands a script the migration set digest of the version it deploys
+ * (#2349): the integrity check a scope host makes before it applies a migration compares the
+ * migrations its bundle registers with these. A version whose migrations the control plane does
+ * not hold (`null`: the push left them out of its manifest) gets no binding, so its scopes
+ * compare nothing — the promote gate already asks for the acknowledgement on such a version.
+ * `plain_text`, like `SUBSTRAT_VERSION_ID`, so an in-place serve replaces it with the served
+ * version's rather than keeping the outgoing one.
+ */
+export async function migrationsDigestBindings(
+  migrations: readonly DeclaredMigration[] | null,
+): Promise<{ type: 'plain_text'; name: string; text: string }[]> {
+  if (migrations === null) return [];
+  return [{ type: 'plain_text', name: MIGRATIONS_DIGEST_BINDING, text: await migrationSetDigest(migrations) }];
 }
 
 /**

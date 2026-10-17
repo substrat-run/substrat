@@ -224,7 +224,7 @@ const PLAIN_ID = /^[A-Za-z0-9@/._~:+-]+$/;
  * A module id or migration version on the listing's header line: bare when it is a plain id, as
  * every id the push boundary admits is, and `quoted` otherwise, so nothing in it can break the line.
  */
-const idOf = (text: string): string => (PLAIN_ID.test(text) ? text : quoted(text));
+export const idOf = (text: string): string => (PLAIN_ID.test(text) ? text : quoted(text));
 
 /**
  * A discard's reason as the listing shows it: quoted, and cut where the review cuts it

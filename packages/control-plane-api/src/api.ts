@@ -64,6 +64,7 @@ import {
   impersonationStamp,
   promotionAcknowledgement,
   bindAcknowledgement,
+  rebindAcknowledgement,
   provisionableJurisdiction,
   publishVersionInput,
   queryScopeInput,
@@ -125,6 +126,7 @@ import {
 } from '@substrat-run/contracts';
 import type {
   BindAcknowledgement,
+  RebindAcknowledgement,
   ChannelName,
   Connection,
   ConnectionActivity,
@@ -167,6 +169,10 @@ import {
   isExportBreakRefusal,
   isPrimaryScope,
   promoteReviewDigest,
+  rebindReviewDigest,
+  assertRebindReviewCurrent,
+  type ExpectedServing,
+  type ReviewedVersion,
   migrationProgress,
   ulid,
   auditWarningOf,
@@ -197,6 +203,7 @@ import { openDump, sealDump, type SubjectSealer } from './seal.js';
 import {
   assertSandboxContract,
   verticalUploadBindings,
+  migrationsDigestBindings,
   deployManifest,
   storedDeployManifest,
   pushedPermissionRegistry,
@@ -938,6 +945,8 @@ const rebindScopeVerticalBody = z.object({
   // version carry the SAME migration digest — or the operator acknowledges having
   // read both migration surfaces. Same discipline as a promote's `--ack-migrations`.
   ackMigrations: z.boolean().optional(),
+  // (#2347: the acknowledgement names the review it answers, `acknowledge.review`, as a
+  // promote's does; an `ackMigrations` without one is refused where the digests differ.)
   // Rebind the DIRECTORY only — no export/restore. For a scope whose source script
   // predates the `/internal/export` surface (#236) and so cannot be dumped at all.
   // The data is not deleted: it stays on the source script, which remains the
@@ -945,7 +954,8 @@ const rebindScopeVerticalBody = z.object({
   // on the target afterwards (`/verticals/:slug/instances` is idempotent, K-31).
   abandonData: z.boolean().optional(),
   // #1756: within one lineage the rebind is an adopt, refused when it breaks an app in the tenant.
-  acknowledge: bindAcknowledgement.optional(),
+  // #2347: `review`, the rebind review `ackMigrations` answers (`GET …/rebind-review`).
+  acknowledge: rebindAcknowledgement.optional(),
 });
 
 // #1756: an adopt moves the scope onto what its vertical serves, and is refused when that breaks
@@ -1399,6 +1409,8 @@ const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] =
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/query$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/reap$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/rebind-vertical$/, pin: 'path' },
+  // #2347: the review a rebind's migration acknowledgement answers; visible exactly as the rebind is.
+  { method: 'GET', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/rebind-review$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/restore$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/rewind$/, pin: 'path' },
   { method: 'POST', re: /\/tenants\/[^/]+\/scopes\/[^/]+\/snapshots$/, pin: 'path' },
@@ -2816,7 +2828,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             .refine((w) => w.toYear >= w.fromYear, 'window ends before it starts').nullable().optional(),
           horizonYears: z.number().int().min(0).optional(),
         }).strict()
-      : z.object(fields).strict();
+      : row.provider === 'microsoft365'
+        // #2101: the channel folder, by its drive path. The connector resolves it and holds the
+        // fence to it; this only bounds the input.
+        ? z.object({ ...fields, folder: z.string().trim().min(1).max(400) }).strict()
+        : z.object(fields).strict();
     const input = schema.parse(await c.req.json());
     const grants = await c.var.host.connectionGrantsInScope(row.tenantId, scopeId);
     if (!grants.some((g) => g.connectionId === row.id && g.permission === input.permission)) {
@@ -3318,6 +3334,29 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /**
+   * The two sides of a rebind review (#2347), as the host stores them: the version the scope is
+   * bound to (null: none, or one its lineage no longer holds) and the target lineage's serving
+   * version, each with its stored migrations. The read route and the rebind gate both read
+   * through here, so the digest a review hands out and the one the rebind recomputes are taken
+   * from the same rows the same way.
+   */
+  const rebindSidesOf = async (
+    c: ReqCtx, scope: Scope, target: string, servingVersionId: string,
+  ): Promise<{ base: ReviewedVersion | null; target: ReviewedVersion }> => {
+    const actor = c.get('actor');
+    const side = async (slug: string, id: string): Promise<ReviewedVersion | null> => {
+      const v = await c.var.admin.getVersion(actor, id, slug);
+      return v ? { ...v, migrations: await c.var.admin.versionMigrations(actor, slug, id) } : null;
+    };
+    const [base, incoming] = await Promise.all([
+      scope.vertical && scope.verticalVersionId ? side(scope.vertical, scope.verticalVersionId) : null,
+      side(target, servingVersionId),
+    ]);
+    if (!incoming) throw substratError('not_found', `unknown serving version for vertical '${target}'`);
+    return { base, target: incoming };
+  };
+
+  /**
    * Move ONE scope onto a DIFFERENT vertical lineage's serving script (#389) — the
    * update-rebind behind retiring a platform-owned lineage in favour of a tenant-owned
    * one (`manyfold` → `substrat-9yjbbn/manyfold`). The same data-first shape as
@@ -3338,7 +3377,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     tenantId: TenantId,
     scopeId: ScopeId,
     target: string,
-    opts: { ackMigrations?: boolean; abandonData?: boolean; acknowledge?: BindAcknowledgement },
+    opts: { ackMigrations?: boolean; abandonData?: boolean; acknowledge?: RebindAcknowledgement },
   ): Promise<{
     servingRef: string;
     versionId: string;
@@ -3369,13 +3408,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await c.var.admin.reassertSystemSwitches(actor, { tenantId, scopeId });
       return { servingRef: serving.ref, versionId: serving.versionId, alreadyBound: true };
     }
+    // #2347: the review binding is the rebind's own; what the host's bind takes is the rest.
+    const { review, ...bindAck } = opts.acknowledge ?? {};
     // #1756: within one lineage this is an adopt, and judged as one before anything moves. A
     // crossing is not judged (`bindExportBreaksOf`): the producer's slug itself changes.
     await refuseOnBreaks(actor, tenantId, scopeId, serving.versionId, {
       servingRef: serving.ref,
-      acknowledge: opts.acknowledge,
+      acknowledge: bindAck,
     });
-    const move = { acknowledge: opts.acknowledge };
+    const move = { acknowledge: bindAck };
     if (opts.abandonData) {
       // Directory-only crossing: no bytes move, so the frontier gate has nothing to
       // protect — the target provisions its own schema from scratch. The source script's
@@ -3402,19 +3443,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // what this DO has already applied plus whatever a same-lineage update would have
     // brought — the crossing is then no riskier than an ordinary version bind. Anything
     // else (differing digests, or a scope with no bound version to compare) needs the
-    // operator's explicit acknowledgement.
-    const targetV = await c.var.admin.getVersion(actor, serving.versionId, target);
-    const currentV = scope.verticalVersionId
-      ? await c.var.admin.getVersion(actor, scope.verticalVersionId, scope.vertical)
-      : undefined;
-    const digestsMatch = Boolean(
-      currentV && targetV && currentV.migrationDigest === targetV.migrationDigest,
-    );
+    // operator's explicit acknowledgement, bound to the review it answers (#2347).
+    const sides = await rebindSidesOf(c, scope, target, serving.versionId);
+    const digestsMatch = Boolean(sides.base && sides.base.migrationDigest === sides.target.migrationDigest);
+    await assertRebindReviewCurrent({
+      ackMigrations: opts.ackMigrations === true,
+      review,
+      target,
+      baseId: scope.verticalVersionId ?? null,
+      migrationsChange: !digestsMatch,
+      read: async () => ({ base: sides.base, baseVertical: scope.vertical, target: sides.target }),
+    });
     if (!digestsMatch && !opts.ackMigrations) {
       throw new ControlPlaneError(
         409,
-        `migration surfaces differ across lineages ('${scope.vertical}' ${currentV?.migrationDigest ?? '(unbound)'} → ` +
-          `'${target}' ${targetV?.migrationDigest ?? '(unknown)'}) — read both migration diffs, then re-run with ackMigrations`,
+        `migration surfaces differ across lineages ('${scope.vertical}' ${sides.base?.migrationDigest ?? '(unbound)'} → ` +
+          `'${target}' ${sides.target.migrationDigest}) — read the rebind review (GET ` +
+          `/tenants/:tenantId/scopes/:scopeId/rebind-review?vertical=<target>), then re-run with ackMigrations and the ` +
+          'acknowledge.review it returned',
       );
     }
     const source = await verticalForScope(c, scope);
@@ -3426,8 +3472,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // pointer cross. `bindScopeVersion` rewrites `scopes.vertical` from the version row, audited.
     // No snapshot is taken here: the old copy is swept once the move is confirmed, so an
     // operator who wants a way back takes a snapshot or backup first.
-    const restored = await moveOntoServing(c, scope, source, dest, serving.ref, move);
-    await c.var.admin.bindScopeVersion(actor, tenantId, scopeId, serving.versionId, move).catch(relayHostRefusal);
+    // #2347: the route flips and the pointer crosses in ONE write, and only if the scope is still
+    // bound to the version the gate judged and the target still serves the version it judged: a
+    // promote on either lineage since then is refused as stale, and the move settles `retained`.
+    const restored = await moveOntoServing(c, scope, source, dest, serving.ref, {
+      ...move,
+      bind: {
+        versionId: serving.versionId,
+        expectedVersionId: scope.verticalVersionId ?? null,
+        expectedServing: { vertical: target, ref: serving.ref, versionId: serving.versionId },
+      },
+    });
     // #1674: re-assert the recorded OFF positions in the store the scope now routes to.
     await c.var.admin.reassertSystemSwitches(actor, { tenantId, scopeId }, { appliedInUnit: restored.switchedOff });
     return { servingRef: serving.ref, versionId: serving.versionId, tables: restored.tables };
@@ -3450,7 +3505,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    */
   const moveOntoServing = async (
     c: ReqCtx, scope: Scope, source: VerticalClient, dest: VerticalClient, servingRef: string,
-    routeOpts: { acknowledge?: BindAcknowledgement },
+    routeOpts: {
+      acknowledge?: BindAcknowledgement;
+      /** #2347: bind the scope in the SAME write that flips its route, conditional on both sides. */
+      bind?: { versionId: string; expectedVersionId: string | null; expectedServing: ExpectedServing };
+    },
   ): ReturnType<VerticalClient['restoreScope']> => {
     const actor = c.get('actor');
     const { tenantId, id: scopeId } = scope;
@@ -3474,12 +3533,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         scopeId, exact: true, loadStamp: restoredStamp,
         ...(moveId ? { fence: copyRestoreFence(moveId, recordedAt, copyLeaseMs, erasureEpoch) } : {}),
       });
-      await c.var.admin.setScopeServingRef(actor, tenantId, scopeId, servingRef, {
-        ...routeOpts, expectedErasureEpoch: erasureEpoch,
+      const flip = {
+        acknowledge: routeOpts.acknowledge, expectedErasureEpoch: erasureEpoch,
         ...(moveId ? { confirmMove: sourceStamp
           ? { moveId, source: 'eligible' as const, sourceMarker: { loadStamp: sourceStamp, revision: sourceRevision } }
           : { moveId, source: 'retained' as const } } : {}),
-      }).catch(relayHostRefusal);
+      };
+      const { bind } = routeOpts;
+      await (bind
+        ? c.var.admin.bindScopeVersion(actor, tenantId, scopeId, bind.versionId, {
+          ...flip, servingRef, expectedVersionId: bind.expectedVersionId, expectedServing: bind.expectedServing,
+        })
+        : c.var.admin.setScopeServingRef(actor, tenantId, scopeId, servingRef, flip)
+      ).catch(relayHostRefusal);
       return restored;
     } catch (error) {
       if (moveId) await Promise.allSettled([
@@ -6557,10 +6623,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   });
 
   // Rebind ONE scope onto a different vertical lineage (#389) — the update-rebind that
-  // retires a platform-owned lineage in favour of a tenant-owned one. Deliberately NOT
-  // in BUILDER_ROUTES: a lineage crossing re-homes a customer's data under a different
-  // registry owner, which is a staff decision like admission — the allowlist's
-  // default-deny 403s a builder without a line here.
+  // retires a platform-owned lineage in favour of a tenant-owned one. Callers: staff, and a
+  // tenant credential pinned to the tenant in the path (TENANT_ROUTES); the crossing is judged
+  // by `crossingHidden`, the rule the review read shares. Deliberately NOT in BUILDER_ROUTES:
+  // a builder's push token is default-denied it.
   app.post('/tenants/:tenantId/scopes/:scopeId/rebind-vertical', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
@@ -6570,10 +6636,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // #977: the TARGET must be a vertical this principal can read — its own tenant's, or a
     // listed one. The path pin confines whose scope moves; without this, it could move onto
     // another tenant's private vertical, which a confined caller must not even learn exists
-    // (404, as `GET /verticals/:slug` answers it).
-    if (await notReadable(c.get('principal'), vertical)) {
-      return refuse(c, 'not_found', `unknown vertical: ${vertical}`);
-    }
+    // (404, as `GET /verticals/:slug` answers it). #2347: the one rule its review read shares.
+    const scope = await c.var.admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    // An unknown scope answers the same bytes as a hidden crossing, so the two cannot be told apart.
+    if (!scope || (await crossingHidden(c.get('principal'), scope.vertical ?? null, vertical))) return crossingNotFound(c);
     try {
       const r = await rebindScopeOntoVertical(c, tenantId, scopeId, vertical, {
         ackMigrations,
@@ -6587,6 +6653,56 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       throw e;
     }
+  });
+
+  // #2347: the review a rebind's migration acknowledgement answers — what the target lineage's
+  // serving version adds over the version the scope is bound to, with the binding
+  // (`acknowledge.review`) computed from the very rows this answer shows. The server picks both
+  // sides, so a caller cannot bind a review of a base the scope is not on.
+  //
+  // Who may read it is exactly who may make the rebind it answers (`crossingHidden`): a confined
+  // caller must be able to read both verticals, its own tenant's or a listed one. An unknown
+  // scope, a scope with no vertical, an unknown target and a vertical the caller cannot read all
+  // answer the same 404, so the read is no oracle for another tenant's verticals.
+  // Callers: staff, and a tenant credential pinned to the tenant in the path, as the rebind.
+  //
+  // The migration SQL itself stays owner-only, as `/versions/:id/migrations` keeps it: it describes
+  // a schema. A caller that does not own both verticals gets `migrations: null` and
+  // `migrationsWithheld: true`, with everything else: both sides, whether the digests differ, and
+  // the binding, so it can still acknowledge the review and rebind onto a listed vertical.
+  app.get('/tenants/:tenantId/scopes/:scopeId/rebind-review', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const target = z.string().min(1).parse(c.req.query('vertical'));
+    const actor = c.get('actor');
+    const scope = await c.var.admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope?.vertical || (await crossingHidden(c.get('principal'), scope.vertical, target))) return crossingNotFound(c);
+    const serving = await c.var.admin.verticalServing(actor, target).catch((e: unknown) => {
+      if (errorCodeOf(e) === 'not_found') return undefined;
+      throw e;
+    });
+    if (serving === undefined) return crossingNotFound(c);
+    if (serving === null) {
+      return refuseStatus(c, 409, `vertical '${target}' has no serving script yet — promote a version to prod first`);
+    }
+    const { base, target: incoming } = await rebindSidesOf(c, scope, target, serving.versionId);
+    const p = c.get('principal');
+    const withheld = (await notOwned(p, scope.vertical)) || (await notOwned(p, target));
+    const review: PromotionReviewBinding = {
+      base: scope.verticalVersionId ?? null,
+      digest: await rebindReviewDigest(
+        base && { vertical: scope.vertical, version: base },
+        { vertical: target, version: incoming },
+      ),
+    };
+    return c.json({
+      base: scope.verticalVersionId ? { vertical: scope.vertical, versionId: scope.verticalVersionId } : null,
+      target: { vertical: target, versionId: incoming.id },
+      digestsMatch: Boolean(base && base.migrationDigest === incoming.migrationDigest),
+      migrations: withheld || incoming.migrations === null ? null : migrationsOnTop(incoming.migrations, base ? base.migrations : undefined),
+      migrationsWithheld: withheld,
+      review,
+    });
   });
 
   // #1756: which apps in this tenant binding `versionId` onto the scope would break — the
@@ -7203,6 +7319,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const v = await verticalOf(p.actor, slug);
     return !v || (v.ownerTenant !== pin && !v.listed);
   };
+
+  /**
+   * #2347: the one visibility rule for a rebind across verticals and for the review it answers.
+   * A confined caller sees a crossing only when it can read both ends (`notReadable`: its own
+   * tenant's vertical, or a listed one), so whoever may make a rebind may read what it applies, and
+   * nobody reads the migrations of a vertical it could not see. A scope with no vertical (null)
+   * hides nothing here: the rebind refuses it on its own terms.
+   */
+  const crossingHidden = async (p: Principal, source: string | null, target: string): Promise<boolean> =>
+    (await notReadable(p, target)) || (source !== null && (await notReadable(p, source)));
+
+  /** What a hidden crossing answers, the same bytes whichever end is hidden. */
+  const crossingNotFound = (c: Context) => refuse(c, 'not_found', 'not found');
 
   // The vertical id a request actually addresses. For a BUILDER it is `<tenantSlug>/<name>`
   // (builder-plane.md §5): they send a bare `--slug`, the control plane forms the prefix
@@ -7850,7 +7979,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         doClasses,
         // #2210: a declared scope store adds no binding to either upload (L1), held at both call
         // sites with a driver registered by upload-scope-store-bindings.test.ts.
-        bindings: verticalUploadBindings({ vertical: slug, manifest, platformBindings: storeBindings }),
+        bindings: verticalUploadBindings({
+          vertical: slug,
+          manifest,
+          // #2349: the digest of the served version's stored migrations, which its scopes hold
+          // the SQL they apply to.
+          platformBindings: [
+            ...storeBindings,
+            ...(await migrationsDigestBindings(await admin.versionMigrations(actor, slug, versionId))),
+          ],
+        }),
         // #1242: the version now being served, injected as `SUBSTRAT_VERSION_ID` so the
         // scope host stamps the signals `version` dimension. The serving script is one
         // stable script updated in place, so this refresh is what keeps the binding
@@ -8405,7 +8543,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         compatibilityFlags: manifest.compatibilityFlags,
         modules,
         doClasses: manifest.doClasses,
-        bindings: verticalUploadBindings({ vertical: slug, manifest, platformBindings: [] }),
+        bindings: verticalUploadBindings({
+          vertical: slug,
+          manifest,
+          // #2349: the migrations this push declares, which are the ones the version stores.
+          platformBindings: await migrationsDigestBindings(manifest.migrations ?? null),
+        }),
         // #1242: the freshly minted version id — this archive script IS that version,
         // and a preview routed at it stamps the signals `version` dimension honestly.
         versionId: id,

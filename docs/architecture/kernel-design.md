@@ -541,6 +541,28 @@ shared across a tenant's verticals is §13 question 21.
   not to its digest — the kernel may respell the same declaration between releases, and
   holding those rows to a digest would fail every scope closed on that upgrade. Their
   digest is still recorded, as the fact of what ran.
+- **A pending migration is held to the migrations stored for the deployed version** (#2349).
+  The control plane stores the migrations a push declares (`vertical_version_migrations`), and
+  both uploads of a version — the push and every serving upload — inject their set digest as
+  the plain_text binding `SUBSTRAT_MIGRATIONS_DIGEST` (`migrationSetDigest`: SHA-256 over each
+  authored migration's module, version and SQL digest, modules ordered by id). Before a pass with
+  anything pending applies a statement, both adapters compute the same digest over the authored
+  steps the host registers, and refuse on a mismatch through the same
+  `migration failed … scope fails closed` record, naming both digests and the registered
+  migrations. Kernel-derived steps are left out on both sides: whether a stored set carries them
+  depends on the CLI that pushed it, so comparing them would refuse a correct deployment. (The
+  journal check above keeps them but holds an applied one to its version rather than its digest.)
+  Both sides decide by version name, `isDerivedMigrationVersion` (`search/…`, `state/…`,
+  `list/…`), because a stored set is only names and SQL; a kernel test holds every kind
+  `moduleMigrations` derives to those prefixes. A known limit follows: an *authored* migration
+  versioned under one of those prefixes is left out on both sides as well and never compared at
+  apply. It cannot cause a false refusal, and the journal still records its digest and holds it
+  once applied. A pass with nothing pending
+  computes nothing, so a scope that is fully applied keeps
+  serving; a version whose migrations the control plane does not hold (`unheld:<id>`), a script
+  uploaded before the binding, and the pure host without `migrationsDigest` compare nothing. This
+  is an integrity check inside the deployed adapter, against a build whose worker registers
+  other migrations than its push declared; it is not an isolation boundary.
 - **An authored migration may not lose data the scope holds unless it declares it** (#115,
   `migration-fence.ts`). The planner refuses destructive diffs when it writes a migration;
   this is the half that judges what any authored SQL *does*, at apply. It measures rather

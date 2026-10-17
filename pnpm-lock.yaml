@@ -574,6 +574,12 @@ importers:
         specifier: workspace:^
         version: link:../../packages/kernel
     devDependencies:
+      '@substrat-run/adapter-sqlite':
+        specifier: workspace:^
+        version: link:../../packages/adapter-sqlite
+      '@substrat-run/contract-tests':
+        specifier: workspace:^
+        version: link:../../packages/contract-tests
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

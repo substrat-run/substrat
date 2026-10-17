@@ -192,6 +192,7 @@ Usage:
                                               Requires its existing scoped landing grant.
                                               Planima: --organization-id <id|null>, --currency,
                                               --horizon-years, --from-year and --to-year.
+                                              Microsoft 365: --folder <channel folder's drive path>.
   substrat connection bindings <id>          read the connection's configured landing targets
   substrat scope restore <scopeId> --file <backup>
                                               load a backup into an existing hosted scope,
@@ -225,8 +226,10 @@ Usage:
                                               lineage's serving script, data carried;
                                               the old copy is deleted once the move is
                                               confirmed, so snapshot first to keep a way
-                                              back (staff; --ack-migrations to cross a
-                                              differing migration surface;
+                                              back (staff, or a workspace for its own
+                                              scope; --ack-migrations with the
+                                              --review token its refusal prints, to
+                                              cross a differing migration surface;
                                               --abandon-data for a source script that
                                               predates /internal/export — directory-only
                                               flip, then re-provision the scope)
@@ -755,7 +758,7 @@ async function cmdConnection(): Promise<void> {
   const sub = argv[1];
   const connectionId = argv[2];
   if (!connectionId || connectionId.startsWith('--') || !['bind', 'bindings'].includes(sub ?? '')) {
-    throw new Error('usage: substrat connection bind <id> --scope <id> --operation <module/operation> --permission <key> [--organization-id <id|null>] [--currency SEK] [--horizon-years 50] [--from-year <year> --to-year <year>] [--tenant <id-or-slug>]\n       substrat connection bindings <id> [--tenant <id-or-slug>]');
+    throw new Error('usage: substrat connection bind <id> --scope <id> --operation <module/operation> --permission <key> [--organization-id <id|null>] [--currency SEK] [--horizon-years 50] [--from-year <year> --to-year <year>] [--folder <drive path>] [--tenant <id-or-slug>]\n       substrat connection bindings <id> [--tenant <id-or-slug>]');
   }
   const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   const tenantId = await resolveTenantId(controlPlaneUrl, header, flag('tenant') ?? process.env.SUBSTRAT_TENANT ?? loadConfig().defaultTenant);
@@ -782,6 +785,7 @@ async function cmdConnection(): Promise<void> {
     ...(flag('currency') === undefined ? {} : { currency: flag('currency') }),
     ...(flag('horizon-years') === undefined ? {} : { horizonYears: numberFlag('horizon-years') }),
     ...(fromYear === undefined || toYear === undefined ? {} : { window: { fromYear, toYear } }),
+    ...(flag('folder') === undefined ? {} : { folder: flag('folder') }),
   };
   console.log(JSON.stringify(await bindConnectionScope({ ...opts, scopeId, input }), null, 2));
 }
@@ -798,7 +802,7 @@ async function cmdScope(): Promise<void> {
     '       substrat scope adopt-serving --vertical <slug> [--ack-export-break]\n' +
     '       substrat scope bind <scopeId> --version <versionId> [--snapshot] [--ack-export-break] [--tenant <id-or-slug>]\n' +
     '       substrat scope domain <scopeId> --domain <fqdn> [--surface app] [--canonical] [--tenant <id-or-slug>]\n' +
-    '       substrat scope rebind <scopeId> --to <vertical> [--ack-migrations] [--abandon-data] [--ack-export-break] [--tenant <id-or-slug>]';
+    '       substrat scope rebind <scopeId> --to <vertical> [--ack-migrations] [--review <token>] [--abandon-data] [--ack-export-break] [--tenant <id-or-slug>]';
   const known =
     sub === 'pull' || sub === 'restore' || sub === 'status' || sub === 'provision' ||
     sub === 'adopt-serving' || sub === 'bind' || sub === 'domain' || sub === 'rebind';
@@ -876,11 +880,19 @@ async function cmdScope(): Promise<void> {
       console.error(usage);
       process.exit(1);
     }
+    // #2347: the review the migration acknowledgement answers, as a refusal printed it.
+    const reviewFlag = flag('review');
+    const review = reviewFlag === undefined ? undefined : parseReviewToken(reviewFlag);
+    if (review === null) {
+      console.error('--review takes the token a refused rebind printed (<base>:<digest>)');
+      process.exit(1);
+    }
     await rebindScopeVertical({
       controlPlaneUrl, header, tenantId, scopeId: scope,
       vertical: to, ackMigrations: argv.includes('--ack-migrations'),
       abandonData: argv.includes('--abandon-data'),
       ackExportBreak: argv.includes('--ack-export-break'),
+      ...(review ? { review } : {}),
     });
     return;
   }

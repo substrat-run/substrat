@@ -406,6 +406,67 @@ describe('scope tools', () => {
     await expect(rebindScopeVertical({ ...base, vertical: 'v', ackMigrations: false })).rejects.toThrow('digests differ');
   });
 
+  // #2347: a migration acknowledgement answers the rebind review it was read with.
+  const DIGEST = 'a'.repeat(64);
+  const REVIEW = {
+    base: { vertical: 'acme/old', versionId: '01B' },
+    target: { vertical: 'acme/crm', versionId: '01T' },
+    digestsMatch: false,
+    migrations: { added: [{ moduleId: 'crm', version: '0002-notes', sql: 'ALTER TABLE t ADD COLUMN n TEXT;' }], changed: [], total: 1, truncated: false },
+    migrationsWithheld: false,
+    review: { base: '01B', digest: DIGEST },
+  };
+  const reasoned = (status: number, detail: string, reason: string) =>
+    json({ type: 'about:blank', title: 'precondition_failed', status, detail, code: 'precondition_failed', reason }, status);
+
+  it('rebind sends the review it was given, beside the acknowledgement', async () => {
+    plane(json({ servingRef: 'v2', tables: 1 }));
+    await rebindScopeVertical({ ...base, vertical: 'acme/crm', ackMigrations: true, review: { base: '01B', digest: DIGEST } });
+    expect(seen.map((r) => r.body)).toEqual([
+      `{"vertical":"acme/crm","ackMigrations":true,"acknowledge":{"review":{"base":"01B","digest":"${DIGEST}"}}}`,
+    ]);
+  });
+
+  for (const [what, answer] of [
+    ['the digest refusal', problem(409, "migration surfaces differ across lineages ('acme/old' g1 → 'acme/crm' g2) — read the rebind review", 'conflict')],
+    ['a stale review', reasoned(412, 'the rebind review is stale: …', 'rebind_review_stale')],
+    ['an unbound acknowledgement', reasoned(412, 'acknowledging the migrations of a rebind needs the review it answers', 'rebind_review_unbound')],
+  ] as const) {
+    it(`${what} is answered by the migrations as they stand now, and the token read with them`, async () => {
+      plane(answer, json(REVIEW));
+      const e = await rebindScopeVertical({ ...base, vertical: 'acme/crm', ackMigrations: true }).then(() => null, (x: Error) => x);
+      expect(seen.map((r) => [r.method, r.url])).toEqual([
+        ['POST', `${scopeUrl}/rebind-vertical`],
+        ['GET', `${scopeUrl}/rebind-review?vertical=acme%2Fcrm`],
+      ]);
+      expect(e?.message).toContain('scope runs acme/old 01B; acme/crm serves 01T.');
+      expect(e?.message).toContain('+ crm 0002-notes');
+      expect(e?.message).toContain('ALTER TABLE t ADD COLUMN n TEXT;');
+      expect(e?.message).toContain(`re-run with --ack-migrations and --review 01B:${DIGEST}`);
+    });
+  }
+
+  it('a review whose SQL is withheld says so, and still prints the token to acknowledge it with', async () => {
+    plane(reasoned(412, 'unbound', 'rebind_review_unbound'), json({ ...REVIEW, migrations: null, migrationsWithheld: true }));
+    const e = await rebindScopeVertical({ ...base, vertical: 'acme/crm', ackMigrations: true }).then(() => null, (x: Error) => x);
+    expect(e?.message).toContain('the migration digests differ; the SQL is shown only to the owner of both verticals');
+    expect(e?.message).not.toContain('SQL not available');
+    expect(e?.message).toContain(`--review 01B:${DIGEST}`);
+  });
+
+  it("a refusal that is not the rebind review's is left alone: no second read", async () => {
+    plane(reasoned(412, 'the promote review is stale', 'promote_review_stale'));
+    await expect(rebindScopeVertical({ ...base, vertical: 'acme/crm', ackMigrations: true })).rejects.toThrow('the promote review is stale');
+    expect(seen).toHaveLength(1);
+  });
+
+  it('a review that cannot be read is said so, and the refusal still stands', async () => {
+    plane(reasoned(412, 'stale', 'rebind_review_stale'), problem(404, 'not found', 'not_found'));
+    await expect(rebindScopeVertical({ ...base, vertical: 'acme/crm', ackMigrations: true })).rejects.toThrow(
+      /stale\n\n\(the rebind review could not be read: not found\)/,
+    );
+  });
+
   it('adopt-serving for a whole vertical reports what it managed before it stopped', async () => {
     plane(json({ adopted: ['a', 'b'], alreadyAdopted: ['c'] }));
     await adoptVerticalServing({ controlPlaneUrl: CP, header: HEADER, slug: 'acme/crm' });

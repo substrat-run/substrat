@@ -427,6 +427,11 @@ export type PromoteReviewReason = (typeof PROMOTE_REVIEW_REASONS)[keyof typeof P
  * answer. Takes the body as text (a transport's raw body) or already parsed.
  */
 export function promoteReviewReasonIn(body: unknown): PromoteReviewReason | undefined {
+  return reasonIn(body, PROMOTE_REVIEW_REASONS);
+}
+
+/** A problem body's `reason`, when it is one of `reasons`. Text (a transport's raw body) or parsed. */
+function reasonIn<R extends string>(body: unknown, reasons: Readonly<Record<'stale' | 'unbound', R>>): R | undefined {
   let parsed = body;
   if (typeof body === 'string') {
     try {
@@ -436,5 +441,32 @@ export function promoteReviewReasonIn(body: unknown): PromoteReviewReason | unde
     }
   }
   const reason = (parsed as { reason?: unknown } | null)?.reason;
-  return reason === PROMOTE_REVIEW_REASONS.stale || reason === PROMOTE_REVIEW_REASONS.unbound ? reason : undefined;
+  return reason === reasons.stale || reason === reasons.unbound ? (reason as R) : undefined;
+}
+
+/**
+ * #2347: what a scope rebind across lineages may acknowledge. `exportBreak` as a bind, and
+ * `review`: the rebind review its `ackMigrations` answers (`GET …/scopes/:id/rebind-review`),
+ * computed from the target lineage's serving version over the scope's bound version. Same shape
+ * and same rule as a promote's: the host refuses a binding whose base is no longer the scope's
+ * bound version, or whose digest the stored rows of both sides no longer give
+ * (`rebind_review_stale`), and an `ackMigrations` sent without one where the digests differ
+ * (`rebind_review_unbound`).
+ */
+export const rebindAcknowledgement = promotionAcknowledgement.pick({ exportBreak: true, review: true }).strict();
+export type RebindAcknowledgement = z.infer<typeof rebindAcknowledgement>;
+
+/**
+ * #2347: the `reason` on a rebind's two refusals of its review binding (both
+ * `precondition_failed`), named apart from the promote's so a client knows which review to read again.
+ */
+export const REBIND_REVIEW_REASONS = {
+  stale: 'rebind_review_stale',
+  unbound: 'rebind_review_unbound',
+} as const;
+export type RebindReviewReason = (typeof REBIND_REVIEW_REASONS)[keyof typeof REBIND_REVIEW_REASONS];
+
+/** Which rebind review refusal a problem body is, as `promoteReviewReasonIn` reads a promote's. */
+export function rebindReviewReasonIn(body: unknown): RebindReviewReason | undefined {
+  return reasonIn(body, REBIND_REVIEW_REASONS);
 }

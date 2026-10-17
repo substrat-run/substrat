@@ -461,6 +461,8 @@ import {
   exportBreakRefusal,
   assertPromoteReviewCurrent,
   promoteRaceRefusal,
+  rebindRaceRefusal,
+  type ExpectedServing,
   type ReviewedVersion,
   bindExportBreaksOf,
   bindExportBreakRefusal,
@@ -885,7 +887,8 @@ interface ControlPlaneStub {
   ): Promise<{ verticalSlug: string; migrations: DeclaredMigration[] | null } | undefined>;
   listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
-  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation): Promise<boolean>;
+  bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string, expectedVersionId?: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, servingRef?: string, expectedServing?: ExpectedServing): Promise<boolean>;
+  servesNow(expected: ExpectedServing): Promise<boolean>;
   scopeErasureEpoch(tenantId: string, scopeId: string): Promise<number>;
   claimSubjectErasure(tenantId: string, scopeId: string, fence: SubjectErasureFence): Promise<boolean>;
   recordScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, role?: ScopeCopyRole | null, loadStamp?: string | null, leaseMs?: number): Promise<'recorded' | 'reaping' | 'missing' | 'invalid'>;
@@ -8297,19 +8300,25 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
         const { v, scope } = await bindTarget(tenantId, scopeId, versionId);
-        if (opts?.expectedVersionId !== undefined && scope.vertical_version_id !== opts.expectedVersionId) {
-          throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
-        }
+        // #2347: a rebind judged against both lineages loses its race as stale, so its client reads
+        // the review again; any other conditional bind keeps the refusal it always had.
+        const lost = () => opts?.expectedServing
+          ? rebindRaceRefusal(opts.expectedServing.vertical)
+          : substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
+        if (opts?.expectedVersionId !== undefined && scope.vertical_version_id !== opts.expectedVersionId) throw lost();
+        if (opts?.expectedServing && !await this.cp.servesNow(opts.expectedServing)) throw lost();
         if (opts?.expectedErasureEpoch !== undefined && await this.cp.scopeErasureEpoch(tenantId, scopeId) !== opts.expectedErasureEpoch) {
           throw substratError('precondition_failed', 'scope erasure changed; reload the scope and retry');
         }
         const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
+        // #2347: a route moving in the same write is judged with it, as `bindingImpact` is.
+        const servingRef = opts?.servingRef;
         // #2178 first: no acknowledgement passes it, so none should be asked for ahead of it.
-        await this.assertBindingShapesKept(mapScope(scope), v);
+        await this.assertBindingShapesKept(mapScope(scope), v, servingRef);
         // #1756: an export an app in this tenant imports, dropped or re-versioned by what this
         // scope would run. Before the snapshot, so a refused bind leaves nothing behind.
         if (!ack.exportBreak) {
-          const breaks = await this.bindBreaks(actor, mapScope(scope), v);
+          const breaks = await this.bindBreaks(actor, mapScope(scope), v, servingRef);
           if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
         }
         // Fork-before-promote (§4): snapshot the pre-migration data if this rebind
@@ -8320,12 +8329,20 @@ export class CloudflareScopeHost implements ScopeHost {
             await this.snapshotScope(actor, tenantId, scopeId);
           }
         }
-        if (!await this.cp.bindScopeVersion(scopeId, versionId, v.vertical_slug, opts?.expectedVersionId, opts?.expectedErasureEpoch, opts?.confirmMove)) {
-          throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
+        if (!await this.cp.bindScopeVersion(scopeId, versionId, v.vertical_slug, opts?.expectedVersionId, opts?.expectedErasureEpoch,
+          opts?.confirmMove, servingRef, opts?.expectedServing)) {
+          // The erasure and copy-move conditions keep their own refusal: only a moved binding or a
+          // moved serving version is the race a rebind's review answers.
+          const now = await this.cp.getScopeRecord(tenantId, scopeId);
+          const raced = (opts?.expectedVersionId !== undefined && (now?.vertical_version_id ?? null) !== opts.expectedVersionId)
+            || (opts?.expectedServing !== undefined && !await this.cp.servesNow(opts.expectedServing));
+          throw raced ? lost() : substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
         }
-        await this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, null, {
+        await this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, servingRef === undefined ? null : { servingRef: scope.serving_ref ?? null }, {
           versionId, vertical: v.vertical_slug, version: v.version,
+          ...(servingRef !== undefined ? { servingRef } : {}),
           ...(opts?.expectedVersionId !== undefined ? { expectedVersionId: opts.expectedVersionId } : {}),
+          ...(opts?.expectedServing ? { expectedServing: opts.expectedServing } : {}),
           ...(ack.exportBreak ? { acknowledged: ack } : {}),
         });
       },

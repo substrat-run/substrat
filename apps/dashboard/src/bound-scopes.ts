@@ -1,5 +1,5 @@
-import type { Scope, ScopeId } from '@substrat-run/contracts';
-import { ControlPlaneError, type TenantNarrowedControlPlane } from './authority.js';
+import { rebindReviewReasonIn, type PromotionReviewBinding, type RebindReviewReason, type Scope, type ScopeId } from '@substrat-run/contracts';
+import { ControlPlaneError, type RebindReview, type TenantNarrowedControlPlane } from './authority.js';
 
 /**
  * The installs a vertical still backs — and what a builder may do about them (#1592).
@@ -17,10 +17,11 @@ import { ControlPlaneError, type TenantNarrowedControlPlane } from './authority.
  *
  * ## Why the narrowing lives here
  *
- * The dashboard reaches the plane over a staff-level service token, and the plane's
- * `rebind-vertical` and `reap` routes are staff routes — a builder is default-denied them
- * on the plane itself (`BUILDER_ROUTES`). The tenant narrowing is therefore this seam's,
- * and it has three parts, each held below:
+ * The dashboard reaches the plane with its tenant credential, pinned to the tenant in the
+ * path (a builder's push token is default-denied `rebind-vertical` and `reap` on the plane,
+ * `BUILDER_ROUTES`). The plane keeps the tenant to its own scopes and, for a rebind, to
+ * verticals it can read; what a Move and a Retire may touch on this page is narrower still,
+ * and that narrowing is this seam's, in three parts, each held below:
  *
  * - a scope id is acted on only if it is in the pinned tenant's own bound list for this
  *   vertical (`pick`) — a foreign or unrelated id never reaches a mutating call;
@@ -132,24 +133,20 @@ function pick(view: BoundScopesView, ids: readonly string[]): BoundScope[] {
 /** What a Move did: the scopes now on the target, and the refusal that stopped the run, if any. */
 export interface MoveOutcome {
   moved: string[];
-  refusal: { scopeId: string; message: string } | null;
+  /** `reason` (#2347): the rebind review the acknowledgement answered moved, or none was sent. */
+  refusal: { scopeId: string; message: string; reason?: RebindReviewReason } | null;
 }
 
 type MovePlane = ReadPlane & Pick<TenantNarrowedControlPlane, 'listVerticals' | 'rebindScopeVertical'>;
 
-/**
- * Rebind the chosen installs onto another vertical this team owns.
- *
- * Validated whole before anything moves: a target that is not the team's own, the same
- * vertical, or a selection containing a fork or an archived scope is refused outright
- * rather than half-applied. Then one audited rebind per scope, in order, stopping at the
- * first refusal — the plane's digest gate names the acknowledgement it wants, and the
- * caller reads that and re-runs the remainder rather than half-acknowledging.
- */
-export async function moveBoundScopes(
-  cp: MovePlane,
-  input: { vertical: string; scopeIds: readonly string[]; target: string; ackMigrations?: boolean },
-): Promise<MoveOutcome> {
+/** What one install's move would apply (#2347), as the Move dialog shows it before asking. */
+export interface MoveReview extends RebindReview {
+  scopeId: string;
+  slug: string;
+}
+
+/** The scopes a Move acts on, validated whole: a target this tenant owns, and live installs of this vertical. */
+async function movable(cp: MovePlane, input: { vertical: string; scopeIds: readonly string[]; target: string }): Promise<BoundScope[]> {
   if (input.target === input.vertical) {
     throw new BoundScopeError(400, 'choose a different vertical to move the installs onto');
   }
@@ -165,16 +162,61 @@ export async function moveBoundScopes(
       `${stuck.map((s) => s.slug).join(', ')} cannot be moved — a snapshot fork or an archived scope has no live install to rebind; retire it instead`,
     );
   }
+  return chosen;
+}
+
+/**
+ * #2347: the review each chosen install's move would apply, read before the dialog asks for an
+ * acknowledgement — validated exactly as the move is, so nothing is shown for a move that would
+ * be refused outright. Each binding comes from the same answer as the diff beside it.
+ */
+export async function readMoveReview(
+  cp: MovePlane & Pick<TenantNarrowedControlPlane, 'rebindReview'>,
+  input: { vertical: string; scopeIds: readonly string[]; target: string },
+): Promise<{ scopes: MoveReview[] }> {
+  const chosen = await movable(cp, input);
+  const scopes: MoveReview[] = [];
+  for (const s of chosen) scopes.push({ scopeId: s.id, slug: s.slug, ...(await cp.rebindReview(s.id as ScopeId, input.target)) });
+  return { scopes };
+}
+
+/**
+ * Rebind the chosen installs onto another vertical this team owns.
+ *
+ * Validated whole before anything moves: a target that is not the team's own, the same
+ * vertical, or a selection containing a fork or an archived scope is refused outright
+ * rather than half-applied. Then one audited rebind per scope, in order, stopping at the
+ * first refusal — the plane's digest gate names the acknowledgement it wants, and the
+ * caller reads that and re-runs the remainder rather than half-acknowledging.
+ */
+export async function moveBoundScopes(
+  cp: MovePlane,
+  input: {
+    vertical: string;
+    scopeIds: readonly string[];
+    target: string;
+    ackMigrations?: boolean;
+    /** #2347: per scope, the rebind review its acknowledgement answers (`readMoveReview`). */
+    reviews?: Readonly<Record<string, PromotionReviewBinding>>;
+  },
+): Promise<MoveOutcome> {
+  const chosen = await movable(cp, input);
   const moved: string[] = [];
   for (const s of chosen) {
+    const review = input.reviews?.[s.id];
     try {
       await cp.rebindScopeVertical(s.id as ScopeId, input.target, {
         ...(input.ackMigrations ? { ackMigrations: true } : {}),
+        ...(review ? { review } : {}),
       });
       moved.push(s.id);
     } catch (e) {
-      // The plane's own sentence, verbatim — it says what to do (`re-run with ackMigrations`).
-      if (e instanceof ControlPlaneError) return { moved, refusal: { scopeId: s.id, message: e.message } };
+      // The plane's own sentence, verbatim — it says what to do. A review that moved, or an
+      // acknowledgement sent with none, also carries its reason: the dialog reads the review again.
+      if (e instanceof ControlPlaneError) {
+        const reason = rebindReviewReasonIn(e.body);
+        return { moved, refusal: { scopeId: s.id, message: e.message, ...(reason ? { reason } : {}) } };
+      }
       throw e;
     }
   }
