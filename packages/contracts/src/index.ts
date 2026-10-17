@@ -20,6 +20,8 @@ export { z } from 'zod';
 
 export * from './ids.js';
 export * from './registry.js';
+export * from './request-trace.js';
+export * from './trace-sink.js';
 export * from './script-names.js';
 // The base64url helpers stay on the ./scope-store-envelope subpath, not the root.
 export {

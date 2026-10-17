@@ -36,6 +36,10 @@
     "./assistant-stream": {
       "types": "./dist/assistant-stream.d.ts",
       "default": "./dist/assistant-stream.js"
+    },
+    "./trace-sink": {
+      "types": "./dist/trace-sink.d.ts",
+      "default": "./dist/trace-sink.js"
     }
   },
   "files": [
