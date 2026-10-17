@@ -32,7 +32,7 @@ import {
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { PEER_CALLER, peerMod } from '@substrat-run/contract-tests';
-import { invocationLog, mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
+import { invocationLog, mountPlatformSurface, writePlatformCallLine, type VerticalScopeHost } from '../src/index.js';
 
 type Env = { PLATFORM_SECRET: string };
 const SECRET = 'sekret';
@@ -226,6 +226,8 @@ describe('/internal/vertical-invoke — the peer door over HTTP (#1706)', () => 
         path: '/internal/vertical-invoke',
         invocationId: id,
         parentInvocationId: PARENT,
+        // Where the parent's line is: the caller's scope, from the verified body.
+        parentScopeId: callerScope,
         status: 200,
         level: 'info',
         operation: 'peer/note',
@@ -296,6 +298,7 @@ describe('/internal/vertical-invoke — the peer door over HTTP (#1706)', () => 
       expect(res.status).toBe(200);
       expect(lines()).toHaveLength(1);
       expect(lines()[0]).not.toHaveProperty('parentInvocationId');
+      expect(lines()[0]).not.toHaveProperty('parentScopeId');
       expect(output().join('\n')).not.toContain(value);
     });
 
@@ -303,6 +306,20 @@ describe('/internal/vertical-invoke — the peer door over HTTP (#1706)', () => 
       await post(note('no-parent'), platform);
       expect(lines()).toHaveLength(1);
       expect(lines()[0]).not.toHaveProperty('parentInvocationId');
+      expect(lines()[0]).not.toHaveProperty('parentScopeId');
+    });
+
+    it('a malformed parent scope is dropped beside a good parent, and never logged raw', () => {
+      const bad = `${callerScope}, ${ulid()}`;
+      writePlatformCallLine({
+        tenantId: t, scopeId: s, vertical: null, method: 'POST', url: 'https://v/internal/vertical-invoke', env: {},
+        invocationId: ulid(), parentInvocationId: PARENT, parentScopeId: bad, status: 200, problemCode: null,
+        principalKind: 'vertical', operation: 'peer/note', emitted: undefined, started: Date.now(),
+      });
+      expect(lines()).toHaveLength(1);
+      expect(lines()[0]).toMatchObject({ parentInvocationId: PARENT });
+      expect(lines()[0]).not.toHaveProperty('parentScopeId');
+      expect(output().join('\n')).not.toContain(bad);
     });
 
     it('an unstamped request (no entry, no middleware) still runs, and writes no line', async () => {

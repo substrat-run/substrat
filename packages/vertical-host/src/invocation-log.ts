@@ -541,6 +541,8 @@ export interface PlatformCallLine {
   invocationId: string;
   /** As the request carried it: written only if it is one ULID ({@link parentRequestIdOf}). */
   parentInvocationId: string | undefined;
+  /** The caller's scope, from the verified body: written beside a parent, and only as one ULID. */
+  parentScopeId: string | undefined;
   status: number;
   problemCode: string | null;
   principalKind: string;
@@ -560,6 +562,8 @@ export interface PlatformCallLine {
 export function writePlatformCallLine(call: PlatformCallLine): void {
   try {
     const parent = parentRequestIdOf(call.parentInvocationId);
+    // The same one-ULID check: a scope id is a ULID too, and this is only where to look.
+    const parentScope = parentRequestIdOf(call.parentScopeId);
     console.log(
       JSON.stringify(
         invocationLine({
@@ -578,7 +582,7 @@ export function writePlatformCallLine(call: PlatformCallLine): void {
           principalKind: call.principalKind,
           ...(call.emitted ? { emitted: call.emitted } : {}),
           versionId: versionIdOf(call.env),
-          ...(parent ? { parentInvocationId: parent } : {}),
+          ...(parent ? { parentInvocationId: parent, ...(parentScope ? { parentScopeId: parentScope } : {}) } : {}),
         }),
       ),
     );

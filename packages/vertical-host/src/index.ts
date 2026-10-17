@@ -1876,6 +1876,8 @@ export function mountPlatformSurface<Env extends object>(
           env: c.env,
           invocationId,
           parentInvocationId: c.req.header(PARENT_REQUEST_ID_HEADER),
+          // Where the parent's line is: the caller's scope, which the router named in the body.
+          parentScopeId: body.caller.scope,
           status,
           problemCode,
           principalKind: 'vertical',

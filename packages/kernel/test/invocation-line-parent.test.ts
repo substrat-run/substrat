@@ -24,6 +24,14 @@ describe('invocation line: parentInvocationId (#2192)', () => {
     expect(JSON.stringify(invocationLine({ ...base, parentInvocationId: '' }))).toBe(before);
   });
 
+  it('a parent scope is written only beside a parent: alone it is dropped, and the line is what it was', () => {
+    expect(JSON.stringify(invocationLine({ ...base, parentScopeId: '01JSCOPESCOPESCOPESCOPESCO' }))).toBe(before);
+    const line = invocationLine({ ...base, parentInvocationId: '01JZZZZZZZZZZZZZZZZZZZZZZZ', parentScopeId: '01JSCOPESCOPESCOPESCOPESCO' });
+    const { parentInvocationId, parentScopeId, ...rest } = line;
+    expect([parentInvocationId, parentScopeId]).toEqual(['01JZZZZZZZZZZZZZZZZZZZZZZZ', '01JSCOPESCOPESCOPESCOPESCO']);
+    expect(JSON.stringify(rest)).toBe(before);
+  });
+
   it('present: one more key, nothing else moves', () => {
     const line = invocationLine({ ...base, parentInvocationId: '01JZZZZZZZZZZZZZZZZZZZZZZZ' });
     expect(line.parentInvocationId).toBe('01JZZZZZZZZZZZZZZZZZZZZZZZ');

@@ -160,6 +160,13 @@ export interface InvocationLogLine {
    * its own id, never authority.
    */
   parentInvocationId?: string;
+  /**
+   * #2192: the scope whose line {@link parentInvocationId} is — the caller's own, as the platform
+   * named it, since a peer call always crosses from one scope to another. Present only beside
+   * `parentInvocationId`. Where to look, never authority: a reader still reads it under its own
+   * tenant.
+   */
+  parentScopeId?: string;
   /*
    * #1901: the async line's own fields. Present only when `kind` is, and written by
    * `asyncInvocationLine` (`async-invocation-log.ts`) — ids, names, counts and codes only,
@@ -255,6 +262,8 @@ export interface InvocationLineFields {
   storeCallsDropped?: number;
   /** #2192: written only when there is one. */
   parentInvocationId?: string;
+  /** #2192: written only beside `parentInvocationId`. */
+  parentScopeId?: string;
   async?: Pick<
     InvocationLogLine,
     'outcome' | 'eventType' | 'eventId' | 'attempt' | 'dueAt' | 'latenessMs' | 'suppressed' | 'suppressedBy'
@@ -288,7 +297,9 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
     ...(f.outputFields ? { outputFields: f.outputFields, ...(f.fieldCoverageId ? { fieldCoverageId: f.fieldCoverageId } : {}) } : {}),
     ...(f.storeCalls && f.storeCalls.length > 0 ? { storeCalls: f.storeCalls } : {}),
     ...(f.storeCallsDropped ? { storeCallsDropped: f.storeCallsDropped } : {}),
-    ...(f.parentInvocationId ? { parentInvocationId: f.parentInvocationId } : {}),
+    ...(f.parentInvocationId
+      ? { parentInvocationId: f.parentInvocationId, ...(f.parentScopeId ? { parentScopeId: f.parentScopeId } : {}) }
+      : {}),
     ...(f.async ?? {}),
   };
 }
