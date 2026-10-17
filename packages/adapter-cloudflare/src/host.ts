@@ -507,7 +507,7 @@ import {
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
-import { fenceAttachmentSweep, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
+import { fenceAttachmentSweep, missingAttachmentStore, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
@@ -4167,10 +4167,12 @@ export class CloudflareScopeHost implements ScopeHost {
     // modules keep no files. Answered as that, marked, rather than the throw `resolveAttachmentStore`
     // makes for a write, so the platform's pass can tell it from a failure and from a store that held
     // nothing. Only once the scope's copy has given its verdict (an empty read runs every refusal), so
-    // a copy that may not judge is refused here as it is with a store.
+    // a copy that may not judge is refused here as it is with a store. A scope that holds an
+    // attachment row does keep files, so its missing store is a misconfiguration, and it fails.
     const bucket = await this.attachmentBuckets(tenantId);
     if (!bucket) {
       await judge(false)([], now);
+      if ((await stub.sweepFenceFacts()).holdsAttachments) throw missingAttachmentStore(tenantId, scopeId);
       return { listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: request.dryRun === true, bucket: 'none' };
     }
     const store = r2TenantBlobStore(bucket);

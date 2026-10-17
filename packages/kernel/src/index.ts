@@ -361,6 +361,7 @@ export {
   rowlessAttachmentIds,
   sweepOrphanAttachments,
   unsettledCopyRefusal,
+  missingAttachmentStore,
 } from './attachment-sweep.js';
 export type { OrphanSweepOptions, OrphanSweepReport, OrphanSweepRequest, OrphanSweepScope } from './attachment-sweep.js';
 export {

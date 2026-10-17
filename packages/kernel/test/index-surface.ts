@@ -401,6 +401,7 @@ export const INDEX_VALUE_EXPORTS = [
   'mintBecomeCapability',
   'mintBecomeCapabilityAsPrincipal',
   'mintCapabilitySecret',
+  'missingAttachmentStore',
   'moduleErasurePlan',
   'moduleLog',
   'moduleMigrations',

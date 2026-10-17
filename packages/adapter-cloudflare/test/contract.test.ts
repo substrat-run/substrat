@@ -6524,7 +6524,7 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     expect(objs.has(orphan)).toBe(false);
   });
 
-  it('a script with no attachment store answers so, marked, after the copy has judged; a store that held nothing answers unmarked', async () => {
+  it('a script with no attachment store answers so, marked, after the copy has judged, and fails for a scope that holds files; a store that held nothing answers unmarked', async () => {
     const s = await newScope();
     const orphan = plant(s);
     storeless = true;
@@ -6536,6 +6536,21 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
       storeless = false;
     }
     expect(objs.has(orphan)).toBe(true);
+    // A scope that holds an attachment row does keep files: no store there is a missing binding, a failure.
+    const kept = await newScope();
+    await (await host.attachments(owner, t, kept)).upload({
+      entity: { entityType: 'udoc', entityId: 'doc-1' },
+      filename: 'a.txt',
+      contentType: 'text/plain',
+      visibility: 'internal',
+      body: new TextEncoder().encode('kept'),
+    });
+    storeless = true;
+    try {
+      await expect(sweep(kept)).rejects.toThrow(/holds attachment rows.*store binding is missing/);
+    } finally {
+      storeless = false;
+    }
     const empty = await newScope();
     const clean = await sweep(empty);
     expect(clean).toMatchObject({ orphans: 0, deleted: 0 });

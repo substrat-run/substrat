@@ -2289,9 +2289,10 @@ export default {
     const cv = report.crossVertical;
     const cvActive = cv != null && (cv.delivered > 0 || cv.withheld > 0 || cv.paused > 0 || cv.unresolved > 0);
     // #2314: a pass that found, deleted or could not judge anything says so; each scope's finding is
-    // also its admin-log row.
+    // also its admin-log row. A scope with no store is not on the list: a vertical that keeps no files
+    // answers so on every visit, and one whose store binding is missing fails into `errors` instead.
     const oa = report.orphanAttachments;
-    const orphansActive = oa != null && (oa.orphans > 0 || oa.deleted > 0 || oa.refused.count > 0 || oa.unsupported.count > 0 || oa.noStore.count > 0);
+    const orphansActive = oa != null && (oa.orphans > 0 || oa.deleted > 0 || oa.refused.count > 0 || oa.unsupported.count > 0);
     if (
       report.snapshotsReaped > 0 ||
       report.archivedScopesReaped > 0 ||

@@ -208,6 +208,18 @@ export function unsettledCopyRefusal(scopeId: string, copies: readonly { state: 
   );
 }
 
+/**
+ * What a pass throws when the deployment holds no attachment store for the tenant, yet the scope
+ * holds attachment rows (#2314): its store binding is missing, which is a failure to fix, never the
+ * `bucket: 'none'` of a scope that keeps no files.
+ */
+export function missingAttachmentStore(tenantId: string, scopeId: string): Error {
+  return new Error(
+    `scope ${scopeId} holds attachment rows, but this deployment holds no attachment store for tenant ${tenantId}: ` +
+      'its store binding is missing. Re-push the vertical so the store is declared, then sweep again',
+  );
+}
+
 /** The blob key of a scope's restore fence (guard 3). Outside `att/`, so no pass ever lists it. */
 export function attachmentSweepFenceKey(scopeId: string): string {
   return `scope/${scopeId}/sweep-fence`;

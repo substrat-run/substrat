@@ -649,6 +649,7 @@ import {
   refuseCondemnedInDump,
   rowlessAttachmentIds,
   sweepOrphanAttachments,
+  missingAttachmentStore,
   SETTLED_COPY_STATES,
   unsettledCopyRefusal,
   type OrphanSweepReport,
@@ -3689,6 +3690,12 @@ export class SqliteScopeHost implements ScopeHost {
       ? (this.directory.prepare('SELECT 1 FROM blob_stores WHERE tenant_id = ? AND vertical = ? LIMIT 1').get(tenantId, row.vertical) as unknown)
       : undefined;
     if (!stores) {
+      // A scope that holds an attachment row does keep files: its missing store is a misconfiguration.
+      const holds = await rt.actor.enqueue(() => {
+        const table = rt.db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_substrat_attachments'`).get();
+        return table !== undefined && rt.db.prepare('SELECT 1 FROM _substrat_attachments LIMIT 1').get() !== undefined;
+      });
+      if (holds) throw missingAttachmentStore(tenantId, scopeId);
       return { listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: request.dryRun === true, bucket: 'none' };
     }
     const store = this.attachmentStore(tenantId, row?.vertical ?? null);
