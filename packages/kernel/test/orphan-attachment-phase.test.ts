@@ -148,6 +148,34 @@ describe('runPlatformSweep · orphan attachments (#2314)', () => {
       expect(asked).toEqual([true]);
     });
 
+    it("a scope whose own storage holds no licence (#2350) is dry-run in the same visit, counted as awaiting one", async () => {
+      const { host, log } = fakeHost([{ id: S, tenantId: T }], [dryRow(new Date(Date.parse(NOW) - DAY).toISOString())]);
+      const asked: boolean[] = [];
+      const r = await runPlatformSweep(host, opts({
+        mode: 'delete',
+        sweepScopeFn: async (_t, _s, o) => {
+          asked.push(o.dryRun);
+          return o.dryRun ? { swept: report({ orphans: 1, keys: ['k1'] }) } : { unlicensed: 'no dry run here' };
+        },
+      }));
+      expect(asked).toEqual([false, true]);
+      expect(r.errors).toEqual([]);
+      expect(r.orphanAttachments).toMatchObject({ awaitingDryRun: 1, dryRuns: 1, deletes: 0, refused: { count: 0 } });
+      // The dry run writes its admin-log row, the operator's record of what the scope now licenses.
+      expect((log[log.length - 1]!.after as { dryRun: boolean }).dryRun).toBe(true);
+    });
+
+    it('an unlicensed answer to a dry run, or a second one, is a refusal and never a loop', async () => {
+      const { host } = fakeHost([{ id: S, tenantId: T }], [dryRow(new Date(Date.parse(NOW) - DAY).toISOString())]);
+      const asked: boolean[] = [];
+      const r = await runPlatformSweep(host, opts({
+        mode: 'delete',
+        sweepScopeFn: async (_t, _s, o) => (asked.push(o.dryRun), { unlicensed: 'no dry run here' }),
+      }));
+      expect(asked).toEqual([false, true]);
+      expect(r.orphanAttachments).toMatchObject({ awaitingDryRun: 1, refused: { count: 1, scopeIds: [S] } });
+    });
+
     it('dry-run mode never asks for a delete, whatever the log holds', async () => {
       const { host } = fakeHost([{ id: S, tenantId: T }], [dryRow(new Date(Date.parse(NOW) - DAY).toISOString())]);
       const asked: boolean[] = [];
