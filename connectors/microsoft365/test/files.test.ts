@@ -183,9 +183,9 @@ async function world(opts: { grantLand?: boolean } = {}) {
       { connectionId: conn, tenantId: t, scopeId: s, vertical: 'docs', operation: 'docs/land', permission: 'docs:land', folder },
       options,
     );
-  const sync = async (maxPages?: number) => {
+  const sync = async (maxPages?: number, maxVerify?: number) => {
     const [binding] = await listMicrosoft365Bindings(host, conn);
-    return syncMicrosoft365Scope(host, conn, binding!, { ...options, ...(maxPages ? { maxPages } : {}) });
+    return syncMicrosoft365Scope(host, conn, binding!, { ...options, ...(maxPages ? { maxPages } : {}), ...(maxVerify ? { maxVerify } : {}) });
   };
   const send = (payload: Microsoft365FilesRequested) => stub.invoke('docs/send', payload);
   const state = async () => JSON.stringify(await host.admin.listConnectorState(conn));
@@ -657,6 +657,63 @@ describe('reads: the sync lands what is in the folder', () => {
       await w.sync();
       expect(timeout).toHaveBeenCalled();
       expect(new Set(timeout.mock.calls.map(([ms]) => ms))).toEqual(new Set([SYNC_TIMEOUT_MS]));
+    });
+
+    // r2 #1: an enumeration spanning many calls may miss a live item; it is checked, not deleted.
+    it('a resync that misses a live item checks it, and does not land it as deleted', async () => {
+      const w = await world();
+      const ids = ['a', 'b', 'c', 'd', 'e'].map((n) => w.drive.put(w.general, `${n}.txt`, n));
+      await w.bind();
+      await w.sync();
+      w.landed.length = 0;
+      w.drive.expiredBefore = Number.MAX_SAFE_INTEGER;
+      w.drive.pageSize = 1;
+      let calls = 0;
+      for (let r = await w.sync(1); !r.complete; r = await w.sync(1)) {
+        calls += 1;
+        // The enumeration's pages shift under it, as the reviewer showed with the stand-in.
+        if (calls === 6) w.drive.rename(ids[0]!, 'a-renamed.txt');
+        expect(calls).toBeLessThan(40);
+      }
+      expect(w.landed.filter((c) => c.change === 'delete')).toEqual([]);
+      w.drive.expiredBefore = 0;
+      await w.sync();
+      expect(w.landed.filter((c) => c.change === 'delete')).toEqual([]);
+      expect(w.drive.childrenNamed(w.general)).toContain('c.txt');
+    });
+
+    it('a verification that cannot reach the drive stops the pass and deletes nothing', async () => {
+      const w = await world();
+      const gone = w.drive.put(w.general, 'gone.txt', 'gone');
+      w.drive.put(w.general, 'keep.txt', 'keep');
+      await w.bind();
+      await w.sync();
+      w.landed.length = 0;
+      w.drive.remove(gone);
+      w.drive.expiredBefore = Number.MAX_SAFE_INTEGER;
+      w.drive.failures.push({ when: (c) => c.url.includes(`/items/${gone}?`), status: 503, once: true });
+      await expect(w.sync()).rejects.toThrow(/injected 503/);
+      expect(w.landed).toEqual([]);
+      expect((await listMicrosoft365Bindings(w.host, w.conn))[0]!.pass?.verify?.queue).toEqual([gone]);
+      expect(await w.sync()).toMatchObject({ complete: true });
+      expect(w.landed).toEqual([expect.objectContaining({ change: 'delete', itemId: gone, reason: 'deleted' })]);
+    });
+
+    it('a large verification resumes across calls under its budget', async () => {
+      const w = await world();
+      const gone = [0, 1, 2, 3].map((i) => w.drive.put(w.general, `g${i}.txt`, 'x'));
+      await w.bind();
+      await w.sync();
+      w.landed.length = 0;
+      for (const id of gone) w.drive.remove(id);
+      w.drive.expiredBefore = Number.MAX_SAFE_INTEGER;
+      const results = [];
+      for (let r = await w.sync(undefined, 1); ; r = await w.sync(undefined, 1)) {
+        results.push(r.complete);
+        if (r.complete) break;
+      }
+      expect(results.length).toBeGreaterThan(3);
+      expect(w.landed.map((c) => c.itemId).sort()).toEqual([...gone].sort());
     });
 
     it('a file the feed presents before its folder still lands', async () => {

@@ -86,6 +86,7 @@ export {
   syncMicrosoft365Scope,
   SYNC_PAGES_PER_CALL,
   SYNC_TIMEOUT_MS,
+  SYNC_VERIFY_PER_CALL,
   sweepMicrosoft365Files,
   withSuffix,
 } from './files.js';

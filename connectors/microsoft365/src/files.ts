@@ -201,11 +201,17 @@ export interface Microsoft365Binding {
 
 interface SyncPass {
   id: string;
-  /** A full enumeration: what it never presents is gone, which is decided when it ends. */
+  /** A full enumeration: what it never presents may be gone, which is checked when it ends. */
   full: boolean;
   next: string | null;
   startedAt: string;
   changes: number;
+  /**
+   * The feed has been read to its end: held items it did not account for are being checked against
+   * the drive, one by one, before anything about them lands. `deltaLink` is saved only once the
+   * queue is empty. In-folder item ids only.
+   */
+  verify?: { deltaLink: string; queue: string[] };
 }
 
 interface ItemEntry {
@@ -514,6 +520,8 @@ export interface Microsoft365SyncResult {
 
 /** How many pages of the change feed one call reads before it stops and leaves the rest to the next. */
 export const SYNC_PAGES_PER_CALL = 20;
+/** How many items one call reads back from the drive to check an unaccounted-for held item. */
+export const SYNC_VERIFY_PER_CALL = 50;
 /**
  * A sync's per-request timeout: long enough for a file at {@link MAX_FILE_BYTES} to download. The
  * connection's 15-second default would time out on the same large file every pass, and the pass
@@ -534,7 +542,7 @@ export async function syncMicrosoft365Scope(
   host: ScopeHost,
   connectionId: ConnectionId,
   binding: Microsoft365Binding,
-  options: Microsoft365Options & { maxPages?: number },
+  options: Microsoft365Options & { maxPages?: number; maxVerify?: number },
 ): Promise<Microsoft365SyncResult> {
   if (binding.folderMissing) throw folderMissingError();
   const timed = { ...options, timeoutMs: options.timeoutMs ?? SYNC_TIMEOUT_MS };
@@ -662,16 +670,104 @@ export async function syncMicrosoft365Scope(
     await put(item.id, entry);
   };
 
+  /** Held items under `id`, by the held state, deepest first. */
+  const heldUnder = (id: string): string[] => {
+    const out: string[] = [];
+    const walk = (parent: string) => {
+      for (const [child, e] of index) {
+        if (e.parentId !== parent) continue;
+        walk(child);
+        out.push(child);
+      }
+    };
+    walk(id);
+    return out;
+  };
+
+  /**
+   * Where a held item the feed did not account for really is — asked of the drive, item by item,
+   * up its parent chain until the chain reaches the folder, a held folder, or the library root.
+   * Items read on the way that turn out to be outside are dropped with the answer; nothing about
+   * them is kept. A 404 on the item, or on a folder above it, is a deletion. Any other error is
+   * thrown, so the pass stops and deletes nothing it could not confirm.
+   */
+  let gets = 0;
+  const locate = async (id: string, pending: ReadonlySet<string>) => {
+    const chain: DriveItem[] = [];
+    let at = id;
+    for (let depth = 0; depth < 64; depth += 1) {
+      let item: DriveItem;
+      try {
+        gets += 1;
+        item = await itemById(client, binding.driveId, at);
+      } catch (e) {
+        if (e instanceof GraphError && (e.status === 404 || e.status === 410)) return { at: 'gone' as const };
+        throw e;
+      }
+      if (item.deleted) return { at: 'gone' as const };
+      if (item.parentReference?.driveId && item.parentReference.driveId !== binding.driveId) return { at: 'outside' as const };
+      chain.push(item);
+      const parent = item.parentReference?.id;
+      if (!parent || item.root) return { at: 'outside' as const };
+      if (parent === binding.folderItemId || (index.has(parent) && !pending.has(parent))) return { at: 'inside' as const, chain };
+      at = parent;
+    }
+    throw new Error(`could not place a held item: its parent chain is deeper than 64 folders`);
+  };
+
   const maxPages = options.maxPages ?? SYNC_PAGES_PER_CALL;
+  const maxVerify = options.maxVerify ?? SYNC_VERIFY_PER_CALL;
   let pages = 0;
   let changes = 0;
+  const incomplete = (): Microsoft365SyncResult => ({ scopeId: binding.scopeId, changes, full: pass.full, pages, complete: false });
   for (;;) {
+    if (pass.verify) {
+      const { deltaLink } = pass.verify;
+      // Shallowest first: a folder's answer settles everything held under it.
+      const depth = (id: string) => index.get(id)?.path.split('/').length ?? 0;
+      let queue = pass.verify.queue.filter((id) => index.has(id)).sort((x, y) => depth(x) - depth(y));
+      while (queue.length) {
+        if (gets >= maxVerify) {
+          pass = { ...pass, verify: { deltaLink, queue } };
+          if (!(await save({ pass }))) return superseded(pages, changes, pass.full);
+          return incomplete();
+        }
+        const id = queue[0]!;
+        const found = await locate(id, new Set(queue));
+        let landed = 0;
+        if (found.at === 'inside') {
+          // Still in the folder: the feed only failed to say so. Land it where it is, if that moved.
+          const changed = new Map(found.chain.map((i) => [i.id, i]));
+          const plan = planChanges(binding.folderItemId, changed, index, fenceOf(binding.folderItemId, changed, index));
+          for (const p of plan) await land(p);
+          landed = plan.length;
+          queue = queue.slice(1);
+        } else {
+          const reason = found.at === 'gone' ? 'deleted' : 'moved-out';
+          const settled = [...heldUnder(id), id];
+          for (const gone of settled) await land({ change: 'delete', id: gone, prior: index.get(gone)!, reason });
+          landed = settled.length;
+          queue = queue.filter((q) => !settled.includes(q));
+        }
+        changes += landed;
+        pass = { ...pass, changes: pass.changes + landed, verify: { deltaLink, queue } };
+        if (!(await save({ pass }))) return superseded(pages, changes, pass.full);
+      }
+      const saved = await save(
+        { deltaLink, lastSync: { syncedAt: nowOf(options).toISOString(), changes: pass.changes } },
+        { endPass: true },
+      );
+      if (!saved) return superseded(pages, changes, pass.full);
+      return { scopeId: binding.scopeId, changes, full: pass.full, pages, complete: true };
+    }
+
+    if (pages >= maxPages) return incomplete();
     let page: Awaited<ReturnType<typeof deltaPage>>;
     try {
       page = await deltaPage(client, binding.driveId, pass.next);
     } catch (e) {
       // 410: Graph expired the cursor and asks for a resync — a full enumeration, compared against
-      // what is held, so unchanged items land nothing and what it never presents lands as deleted.
+      // what is held, so unchanged items land nothing and what it never presents is checked.
       if (!(e instanceof GraphError && e.status === 410) || (pass.full && pass.next === null)) throw e;
       pass = freshPass(true, null);
       if (!(await save({ pass }))) return superseded(pages, changes, true);
@@ -684,13 +780,13 @@ export async function syncMicrosoft365Scope(
     // A folder newly inside arrives without its descendants — moved in from outside, or met before
     // its children on a full pass. Read them, so the order of the feed never decides what lands.
     const fenced = fenceOf(binding.folderItemId, changed, index);
-    const queue = [...changed.values()].filter((i) => i.folder && !i.deleted && !index.has(i.id) && fenced.inside(i.id));
-    while (queue.length) {
-      const f = queue.shift()!;
+    const walk = [...changed.values()].filter((i) => i.folder && !i.deleted && !index.has(i.id) && fenced.inside(i.id));
+    while (walk.length) {
+      const f = walk.shift()!;
       for (const child of await childrenOf(client, binding.driveId, f.id)) {
         if (changed.has(child.id)) continue;
         changed.set(child.id, child);
-        if (child.folder) queue.push(child);
+        if (child.folder) walk.push(child);
       }
     }
     const fence = fenceOf(binding.folderItemId, changed, index);
@@ -708,26 +804,16 @@ export async function syncMicrosoft365Scope(
     pass = { ...pass, changes: pass.changes + plan.length };
 
     if (page.delta) {
-      if (pass.full) {
-        // What the whole enumeration never presented is gone from the folder.
-        const unseen = [...index.entries()]
-          .filter(([, e]) => e.seenIn !== pass.id)
-          .sort(([, a], [, b]) => b.path.split('/').length - a.path.split('/').length);
-        for (const [id, prior] of unseen) await land({ change: 'delete', id, prior, reason: 'deleted' });
-        changes += unseen.length;
-        pass = { ...pass, changes: pass.changes + unseen.length };
-      }
-      const saved = await save(
-        { deltaLink: page.delta, lastSync: { syncedAt: nowOf(options).toISOString(), changes: pass.changes } },
-        { endPass: true },
-      );
-      if (!saved) return superseded(pages, changes, pass.full);
-      return { scopeId: binding.scopeId, changes, full: pass.full, pages, complete: true };
+      // A full enumeration that never presented a held item has not shown it is gone: an
+      // enumeration spanning minutes can miss one. Each is checked before anything lands.
+      const queue = pass.full ? [...index.entries()].filter(([, e]) => e.seenIn !== pass.id).map(([id]) => id) : [];
+      pass = { ...pass, verify: { deltaLink: page.delta, queue } };
+      if (!(await save({ pass }))) return superseded(pages, changes, pass.full);
+      continue;
     }
     if (!page.next) throw new GraphError(502, undefined, 'the change feed ended without a delta link');
     pass = { ...pass, next: page.next };
     if (!(await save({ pass }))) return superseded(pages, changes, pass.full);
-    if (pages >= maxPages) return { scopeId: binding.scopeId, changes, full: pass.full, pages, complete: false };
   }
 }
 
