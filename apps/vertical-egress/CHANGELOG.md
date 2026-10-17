@@ -1,5 +1,38 @@
 # @substrat-run/vertical-egress
 
+## 0.2.13
+
+### Patch Changes
+
+- 6f5f12b: A request started by another one through a peer call can now be related to it. The invocation line has an optional `parentInvocationId`, written only when there is one, so every other line is unchanged. A peer call carries the calling request's id on the `x-substrat-parent-request-id` header, from `peerClient` through the egress worker and the router to the target's `/internal/vertical-invoke`. The target now runs the operation under its own request id, so its events are stamped, and writes one invocation line per peer call, naming the caller as the parent (`parentInvocationId`) and the caller's scope, which the router names in the platform-verified body (`parentScopeId`). The tenant on that line is the one in that body. The parent id is the caller's own claim: each hop passes it on only as a single ULID and drops anything else, and it is used only to relate two requests. The dashboard's request panel lists the caller as "Caused by … peer call" and opens it in the calling app when the team holds that app. Otherwise it shows the id without a link. The read stays bound to the team's own tenant.
+
+  A purge schedule's run now runs every purge in its pass under the run's own invocation id, on both adapters, so the purges' events and deliveries join the run's line. Before, each purge minted an id that no line named.
+
+  The dashboard's create, retry and resume failure toasts now name the request id when the answer carried one.
+
+- e550dec: An invocation line names the outbound `fetch` calls a request made: the host, the path, the method, the status, how long the response took, when in the request the call started, and how it ended (`ok`, `http-error`, `refused`, `timeout`, `aborted`, `failed`). The vertical passes nothing. The platform entry puts a recorder in front of `fetch` on the first request and records each call made while a request is running. Outside a request the call goes straight to the runtime. Inside one, the arguments, the body stream and the signal are passed on untouched, and the runtime's own response or error comes back. A fault in the recorder never fails the call.
+
+  A call the platform's egress policy refused is recorded as `refused`, read from `x-substrat-egress: refused`, so it no longer reads like the destination's own 403. Headers, bodies, query strings, fragments and userinfo are never recorded. The path is redacted by default: a segment of at most 40 characters is kept only when it is lowercase words (at most 4 parts, each at most 16 letters, joined by `-` or `_`, optionally with a short file extension), an integer of at most 10 digits, or a version token such as `v1`. Every other segment, every UUID and ULID among them, is written `[redacted]`. The host is always written. A failed call names its error's class, never its message. The first 16 calls are named and the rest counted in `outboundCallsDropped`. Calls made inside a Durable Object, after the response, or through a `fetch` reference saved while the bundle loaded are not recorded. The egress worker strips `x-substrat-egress` from every answer it passes through, and a call is `refused` only on a 403 carrying exactly `refused`, so a destination cannot make its own answer read as the platform's.
+
+  The control plane's request record carries `outboundCalls` and `outboundCallsDropped`, read by `outboundCallsOf`, which the browser entry exports too. The dashboard's request panel lists the calls and draws each one on the timeline.
+
+- Updated dependencies [0292dc0]
+- Updated dependencies [b190e40]
+- Updated dependencies [eda31d1]
+- Updated dependencies [af096c6]
+- Updated dependencies [39ccfea]
+- Updated dependencies [6f5f12b]
+- Updated dependencies [c7eb5fa]
+- Updated dependencies [1df1b93]
+- Updated dependencies [439efc1]
+- Updated dependencies [3025154]
+- Updated dependencies [9ae6644]
+- Updated dependencies [d6ba289]
+- Updated dependencies [2e503da]
+- Updated dependencies [3608db6]
+- Updated dependencies [9ceb545]
+  - @substrat-run/contracts@0.149.0
+
 ## 0.2.12
 
 ### Patch Changes

@@ -99,6 +99,10 @@ const MANIFEST = {
       OIDC_ALT_ISSUER: 'OIDC_ALT_ISSUER',
       OIDC_ALT_CLIENT_ID: 'CP_OIDC_ALT_CLIENT_ID',
       OIDC_ALT_CLIENT_SECRET: 'CP_OIDC_ALT_CLIENT_SECRET',
+      // How each client's secret reaches the issuer's token endpoint: `post` (default) or `basic`.
+      // Per client as REGISTERED at that issuer, which refuses the other; shared by the three apps.
+      OIDC_TOKEN_AUTH: 'OIDC_TOKEN_AUTH',
+      OIDC_ALT_TOKEN_AUTH: 'OIDC_ALT_TOKEN_AUTH',
       SERVICE_TOKEN: 'SERVICE_TOKEN',
       PLATFORM_SECRET: 'PLATFORM_SECRET',
       ROUTER_SECRET: 'ROUTER_SECRET',
@@ -177,6 +181,10 @@ const MANIFEST = {
       OIDC_ALT_ISSUER: 'OIDC_ALT_ISSUER',
       OIDC_ALT_CLIENT_ID: 'BUILDER_OIDC_ALT_CLIENT_ID',
       OIDC_ALT_CLIENT_SECRET: 'BUILDER_OIDC_ALT_CLIENT_SECRET',
+      // How each client's secret reaches the issuer's token endpoint: `post` (default) or `basic`.
+      // Per client as REGISTERED at that issuer, which refuses the other; shared by the three apps.
+      OIDC_TOKEN_AUTH: 'OIDC_TOKEN_AUTH',
+      OIDC_ALT_TOKEN_AUTH: 'OIDC_ALT_TOKEN_AUTH',
       // The control plane's SERVICE_TOKEN, under the studio's name for it —
       // membership lookups (/internal/builder/identity-tenants), dashboard-style.
       CP_SERVICE_TOKEN: 'SERVICE_TOKEN',
@@ -215,6 +223,10 @@ const MANIFEST = {
       OIDC_ALT_ISSUER: 'OIDC_ALT_ISSUER',
       OIDC_ALT_CLIENT_ID: 'DASH_OIDC_ALT_CLIENT_ID',
       OIDC_ALT_CLIENT_SECRET: 'DASH_OIDC_ALT_CLIENT_SECRET',
+      // How each client's secret reaches the issuer's token endpoint: `post` (default) or `basic`.
+      // Per client as REGISTERED at that issuer, which refuses the other; shared by the three apps.
+      OIDC_TOKEN_AUTH: 'OIDC_TOKEN_AUTH',
+      OIDC_ALT_TOKEN_AUTH: 'OIDC_ALT_TOKEN_AUTH',
       // The control plane's SERVICE_TOKEN, under the dashboard's name for it.
       CP_SERVICE_TOKEN: 'SERVICE_TOKEN',
       SECRET_BOX_KEY: 'SECRET_BOX_KEY',

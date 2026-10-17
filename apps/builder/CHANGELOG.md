@@ -1,5 +1,39 @@
 # @substrat-run/builder
 
+## 0.7.4
+
+### Patch Changes
+
+- 5aaf0f5: A second sign-in issuer, reached by asking for it. Set `OIDC_ALT_ISSUER`, `OIDC_ALT_CLIENT_ID` and `OIDC_ALT_CLIENT_SECRET` on an app that mounts `mountOidcRoutes`, and `/api/auth/login?idp=alt` signs in through that issuer while a plain login stays on `OIDC_ISSUER`. The choice is carried in the signed flow cookie, so the callback verifies the ID token against the issuer the person was sent to, and sign-out ends the session at the issuer that made it. Asking for `alt` where the three values are not all set is refused rather than falling back to the default. The Console, the Dashboard and the builder studio pass `?idp=alt` from the address they were opened at on to the login route. `beginLogin` takes an optional `idp`; `envForIdp` and `idpOf` are exported.
+- Updated dependencies [98f09fe]
+- Updated dependencies [0292dc0]
+- Updated dependencies [b190e40]
+- Updated dependencies [eda31d1]
+- Updated dependencies [5aaf0f5]
+- Updated dependencies [af096c6]
+- Updated dependencies [39ccfea]
+- Updated dependencies [6f5f12b]
+- Updated dependencies [754fc62]
+- Updated dependencies [c7eb5fa]
+- Updated dependencies [1df1b93]
+- Updated dependencies [6c1e359]
+- Updated dependencies [439efc1]
+- Updated dependencies [e550dec]
+- Updated dependencies [4574ab8]
+- Updated dependencies [3025154]
+- Updated dependencies [9ae6644]
+- Updated dependencies [d6ba289]
+- Updated dependencies [2e503da]
+- Updated dependencies [3608db6]
+- Updated dependencies [9ceb545]
+  - @substrat-run/kernel@0.149.0
+  - @substrat-run/adapter-cloudflare@0.149.0
+  - @substrat-run/control-plane-api@0.149.0
+  - @substrat-run/contracts@0.149.0
+  - @substrat-run/oidc-rp@0.12.0
+  - @substrat-run/engine-metering@0.6.33
+  - @substrat-run/model-providers@0.5.39
+
 ## 0.7.3
 
 ### Patch Changes

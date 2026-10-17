@@ -42,7 +42,21 @@ BASE_URL             # optional — force the redirect origin, else derive from 
 OIDC_ALT_ISSUER      # optional — a second issuer, see below. All three or none
 OIDC_ALT_CLIENT_ID
 OIDC_ALT_CLIENT_SECRET
+OIDC_TOKEN_AUTH       # optional — post (default) | basic, see below
+OIDC_ALT_TOKEN_AUTH   # the same, for the alternate issuer's client
 ```
+
+### How the client secret reaches the token endpoint
+
+`OIDC_TOKEN_AUTH` is `post` (the default: `client_secret` in the form body, which is what
+this package has always sent) or `basic` (an `Authorization: Basic` header, RFC 6749
+§2.3.1, the id and secret form-urlencoded before they are joined). An issuer holds the method
+**per client, as registered**, and refuses the other: Better Auth's provider answers
+`invalid_client: client registered for client_secret_basic cannot use client_secret_post`.
+Discovery cannot settle it, because a server advertises every method it supports at all, so
+set it to what the client was registered with. The secret is sent in one place, never both.
+Any value but `post`, `basic` or empty refuses the login rather than guessing.
+`OIDC_ALT_TOKEN_AUTH` is the same setting for the alternate issuer's client.
 
 ### A second issuer: `?idp=alt`
 

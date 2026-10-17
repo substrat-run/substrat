@@ -1,5 +1,66 @@
 # @substrat-run/dashboard
 
+## 0.43.9
+
+### Patch Changes
+
+- 5aaf0f5: A second sign-in issuer, reached by asking for it. Set `OIDC_ALT_ISSUER`, `OIDC_ALT_CLIENT_ID` and `OIDC_ALT_CLIENT_SECRET` on an app that mounts `mountOidcRoutes`, and `/api/auth/login?idp=alt` signs in through that issuer while a plain login stays on `OIDC_ISSUER`. The choice is carried in the signed flow cookie, so the callback verifies the ID token against the issuer the person was sent to, and sign-out ends the session at the issuer that made it. Asking for `alt` where the three values are not all set is refused rather than falling back to the default. The Console, the Dashboard and the builder studio pass `?idp=alt` from the address they were opened at on to the login route. `beginLogin` takes an optional `idp`; `envForIdp` and `idpOf` are exported.
+- 6f5f12b: A request started by another one through a peer call can now be related to it. The invocation line has an optional `parentInvocationId`, written only when there is one, so every other line is unchanged. A peer call carries the calling request's id on the `x-substrat-parent-request-id` header, from `peerClient` through the egress worker and the router to the target's `/internal/vertical-invoke`. The target now runs the operation under its own request id, so its events are stamped, and writes one invocation line per peer call, naming the caller as the parent (`parentInvocationId`) and the caller's scope, which the router names in the platform-verified body (`parentScopeId`). The tenant on that line is the one in that body. The parent id is the caller's own claim: each hop passes it on only as a single ULID and drops anything else, and it is used only to relate two requests. The dashboard's request panel lists the caller as "Caused by … peer call" and opens it in the calling app when the team holds that app. Otherwise it shows the id without a link. The read stays bound to the team's own tenant.
+
+  A purge schedule's run now runs every purge in its pass under the run's own invocation id, on both adapters, so the purges' events and deliveries join the run's line. Before, each purge minted an id that no line named.
+
+  The dashboard's create, retry and resume failure toasts now name the request id when the answer carried one.
+
+- c7eb5fa: A promote acknowledgement now answers one review. The review a promote shows is computed against the version prod points at when it is read, and a promote by someone else in between used to leave the acknowledgement standing for a diff that was no longer the one applied. The migrations read (`/versions/:id/migrations?base=`) now answers a `review` binding beside the diff it shows: the base version and a digest of the stored rows the review was computed from (each side's id, permission and migration digests, and every stored migration with its declared moves and discards). A promote carries it as `acknowledge.review`, and the control plane recomputes the digest from its own rows and refuses, as `precondition_failed` with reason `promote_review_stale`, when prod no longer points at that base or the digest differs. The sent digest is only compared, never read as the diff. The channel pointer now moves by compare-and-set, in one transaction with its history row: of two promotes judged against the same base, one moves the channel and the other is refused as stale and records nothing, where both used to land.
+
+  **Behaviour change:** a migration acknowledgement without a binding is refused when the migration digest moved (`precondition_failed`, reason `promote_review_unbound`), because it is the acknowledgement that lets a migration, and any data loss it declares, reach live data. An older `substrat promote --ack-migrations` is refused that way, and the refusal says to upgrade to a CLI release whose `substrat promote` supports `--review` (this one). A permission-only acknowledgement without one is still honoured, so an older client keeps promoting where no migration changes; a binding, when sent, covers the permission diff too.
+
+  `substrat promote` prints a `--review <token>` with every refusal that prints the diffs, and takes it back with `--review`; a stale or unbound refusal prints the diffs as they stand now, with the new token. The dashboard's promote dialog sends the binding with every promote, and when prod moved it reads the review again and asks again from scratch, saying so, with nothing ticked carried over. The console's promote dialog binds its acknowledgement to the review it read and, refused as stale, reloads the channel and shows the new review. The refusal's header line in `substrat promote` now quotes a version id that is not a plain id, as the migration listing already did.
+
+- 439efc1: A scope rebind's migration acknowledgement now answers one review, as a promote's does. `GET /tenants/:tenantId/scopes/:scopeId/rebind-review?vertical=<target>` returns what the rebind would apply: the target vertical's serving version over the version the scope is bound to, each migration with its SQL and declared moves and discards. Beside it is a `review` binding: the scope's bound version, and a digest of both sides' stored rows that is taken under its own tag, so a promote's binding is never accepted as a rebind's, or the reverse. `POST …/rebind-vertical` takes it as `acknowledge.review`. The control plane recomputes the digest from its own rows and refuses with `precondition_failed`, reason `rebind_review_stale`, when the scope is no longer bound to that version or a promote on either vertical has moved what the review showed. The read follows exactly the rebind's own visibility. It is one shared rule: a workspace credential needs to be able to read both verticals (its own, or a listed one), and everything else answers the same 404, for the read and for the rebind. The migration SQL itself is shown only to staff and to an owner of both verticals; anyone else gets `migrations: null` and `migrationsWithheld: true`, with the digests-differ fact and the binding, so a workspace can still acknowledge and rebind onto a listed vertical.
+
+  A rebind now moves the scope's route and its version pointer in one write. That write is conditional on the scope still being bound to the judged version and on the target still serving the judged version, on both adapters (`bindScopeVersion` gains the additive options `servingRef` and `expectedServing`). Before, these were two writes, and a promote on the target landing between them left the route on the new script and the pointer on the old vertical. A promote that lands while the data is being copied now refuses the rebind as stale; the scope keeps serving from where it was, and both copies are kept.
+
+  **Behaviour change:** an `ackMigrations` without a binding is refused when the two migration digests differ (`precondition_failed`, reason `rebind_review_unbound`). The refusal says to upgrade to a CLI release whose `substrat scope rebind` supports `--review`, which this one does. `substrat scope rebind` prints the migrations and a `--review <token>` with every digest, stale or unbound refusal, and takes it back with `--review`. The dashboard's and the console's Move dialogs now read the review before they ask and show the migrations. They send each install's binding, and when a version changes under them they read the review again and ask again from scratch.
+
+- e550dec: An invocation line names the outbound `fetch` calls a request made: the host, the path, the method, the status, how long the response took, when in the request the call started, and how it ended (`ok`, `http-error`, `refused`, `timeout`, `aborted`, `failed`). The vertical passes nothing. The platform entry puts a recorder in front of `fetch` on the first request and records each call made while a request is running. Outside a request the call goes straight to the runtime. Inside one, the arguments, the body stream and the signal are passed on untouched, and the runtime's own response or error comes back. A fault in the recorder never fails the call.
+
+  A call the platform's egress policy refused is recorded as `refused`, read from `x-substrat-egress: refused`, so it no longer reads like the destination's own 403. Headers, bodies, query strings, fragments and userinfo are never recorded. The path is redacted by default: a segment of at most 40 characters is kept only when it is lowercase words (at most 4 parts, each at most 16 letters, joined by `-` or `_`, optionally with a short file extension), an integer of at most 10 digits, or a version token such as `v1`. Every other segment, every UUID and ULID among them, is written `[redacted]`. The host is always written. A failed call names its error's class, never its message. The first 16 calls are named and the rest counted in `outboundCallsDropped`. Calls made inside a Durable Object, after the response, or through a `fetch` reference saved while the bundle loaded are not recorded. The egress worker strips `x-substrat-egress` from every answer it passes through, and a call is `refused` only on a 403 carrying exactly `refused`, so a destination cannot make its own answer read as the platform's.
+
+  The control plane's request record carries `outboundCalls` and `outboundCallsDropped`, read by `outboundCallsOf`, which the browser entry exports too. The dashboard's request panel lists the calls and draws each one on the timeline.
+
+- Updated dependencies [98f09fe]
+- Updated dependencies [0292dc0]
+- Updated dependencies [b190e40]
+- Updated dependencies [eda31d1]
+- Updated dependencies [5aaf0f5]
+- Updated dependencies [af096c6]
+- Updated dependencies [39ccfea]
+- Updated dependencies [6f5f12b]
+- Updated dependencies [754fc62]
+- Updated dependencies [c7eb5fa]
+- Updated dependencies [1df1b93]
+- Updated dependencies [6c1e359]
+- Updated dependencies [439efc1]
+- Updated dependencies [e550dec]
+- Updated dependencies [4574ab8]
+- Updated dependencies [3025154]
+- Updated dependencies [9ae6644]
+- Updated dependencies [d6ba289]
+- Updated dependencies [2e503da]
+- Updated dependencies [3608db6]
+- Updated dependencies [9ceb545]
+  - @substrat-run/kernel@0.149.0
+  - @substrat-run/adapter-cloudflare@0.149.0
+  - @substrat-run/control-plane-api@0.149.0
+  - @substrat-run/contracts@0.149.0
+  - @substrat-run/control-plane-client@0.3.0
+  - @substrat-run/oidc-rp@0.12.0
+  - @substrat-run/vertical-host@0.149.0
+  - @substrat-run/connector-fortnox@0.4.51
+  - @substrat-run/engine-invites@0.9.26
+  - @substrat-run/engine-protocol@0.13.34
+
 ## 0.43.8
 
 ### Patch Changes
