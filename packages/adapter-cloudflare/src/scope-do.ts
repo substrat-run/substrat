@@ -3895,6 +3895,8 @@ export function defineScopeDO(
         const misrouted = orphanSweepVersionRefusal(this.env.SUBSTRAT_VERSION_ID ?? null, expectedVersionId, condemn);
         if (misrouted) throw misrouted;
         await this.refuseOrphanJudgement(tenantId, vouched);
+        // The verdict alone (no ids, the host's first call) changes nothing: no migration, no repair.
+        if (ids.length === 0) return [];
         await this.ensureMigrations();
         return this.queue.enqueue(async () => {
           await this.refuseOrphanJudgement(tenantId, vouched);
