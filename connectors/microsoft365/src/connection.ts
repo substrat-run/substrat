@@ -1,4 +1,4 @@
-import { tenantId as tenantIdSchema, type Connection } from '@substrat-run/contracts';
+import { tenantId as tenantIdSchema } from '@substrat-run/contracts';
 import { settleConnectionUse, type FetchLike, type HostAdmin } from '@substrat-run/kernel';
 import { acquireToken, microsoft365Secret, type Microsoft365Secret } from './credential.js';
 import type { GraphClient } from './graph.js';
@@ -14,7 +14,8 @@ export interface Microsoft365Options {
   timeoutMs?: number;
 }
 
-export type ConnectionRef = Pick<Connection, 'id' | 'tenantId' | 'vertical'>;
+/** Which connection: a row, or the ids a binding recorded. The tenant id is parsed on open. */
+export type ConnectionRef = { id: string; tenantId: string; vertical: string };
 
 export const nowOf = (o: Pick<Microsoft365Options, 'now'>) => (o.now ? o.now() : new Date());
 export const loginOf = (o: Microsoft365Options) => (o.loginBase ? { loginBase: o.loginBase } : {});

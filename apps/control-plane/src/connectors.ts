@@ -40,6 +40,10 @@ import {
 } from '@substrat-run/connector-planima';
 import {
   MICROSOFT365_CONNECTION_GRANTS,
+  bindMicrosoft365Scope,
+  listMicrosoft365Bindings,
+  microsoft365FilesConnector,
+  sweepMicrosoft365Files,
   microsoft365Certificate,
   microsoft365CredentialSummary,
   microsoft365MailSender,
@@ -396,8 +400,9 @@ const PLANIMA: ConnectorRegistration = {
 
 /**
  * Microsoft 365 (#2100) — a tenant's own mailbox, as a `MailSender` behind the email relay
- * (#2098). App-only Graph in the tenant's directory; no dispatch, no callback, no consent round
- * (the app registration is the tenant's, so the credential is typed into the door).
+ * (#2098), and one Teams channel's folder of its SharePoint site (#2101). App-only Graph in the
+ * tenant's directory; no callback, no consent round (the app registration is the tenant's, so the
+ * credential is typed into the door).
  *
  * `prepareCandidate` is what makes the certificate path work: with no client secret it
  * generates this connection's keypair on the plane, before the probe, and keeps it across an
@@ -406,21 +411,33 @@ const PLANIMA: ConnectorRegistration = {
  * why the connector reports "not on the app registration yet" as inconclusive. It also rotates
  * the certificate: within 30 days of its end it mints a successor beside it, and promotes the
  * successor on a later save once Entra accepts it (`prepareMicrosoft365`).
+ *
+ * The channel folder is a binding (`bindScope`): the folder's drive path, resolved to its item id
+ * when bound. Writes are a dispatch of `microsoft365.channel-files-requested`; reads are the
+ * sweep, following the drive's change feed and landing what is in the folder through the
+ * binding's operation.
  */
 const MICROSOFT365: ConnectorRegistration = {
   provider: 'microsoft365',
   grants: MICROSOFT365_CONNECTION_GRANTS,
   inspector: (env) => ({
+    bindScope: (h, row, target) => {
+      if (!target.folder) throw new Error('a Microsoft 365 binding names the channel folder');
+      return bindMicrosoft365Scope(
+        h,
+        { ...target, folder: target.folder, connectionId: row.id },
+        microsoft365Options(env),
+      );
+    },
+    bindings: (h, row) => listMicrosoft365Bindings(h, row.id),
     probe: async (h, row) => probeMicrosoft365Connection(h, row, microsoft365Options(env)),
     credential: (h, row) => microsoft365CredentialSummary(h, row),
     probeCandidate: async (secret) => probeMicrosoft365Secret(secret, microsoft365Options(env)),
     prepareCandidate: prepareMicrosoft365({ ...microsoft365Options(env), commonName: 'Substrat' }),
     certificate: (h, row) => microsoft365Certificate(h, row),
   }),
-  // Nothing to poll: mail is sent on request, and Microsoft holds nothing the platform mirrors
-  // yet (documents, #2101, will). A sweeper that does nothing says so rather than being absent,
-  // because the registration requires one.
-  sweep: () => async () => ({ swept: false, reason: 'microsoft365 has nothing to poll' }),
+  dispatch: (env) => microsoft365FilesConnector(microsoft365Options(env)),
+  sweep: (env) => async (h, id, o) => sweepMicrosoft365Files(h, id, { ...microsoft365Options(env), fetch: o.fetch }),
   mail: (env) => microsoft365MailSender(microsoft365Options(env)),
 };
 

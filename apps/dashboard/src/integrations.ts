@@ -183,7 +183,8 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     provider: 'microsoft365',
     name: 'Microsoft 365',
     description:
-      "Send mail as your organisation's own addresses through an app registration in your Entra directory. " +
+      "Send mail as your organisation's own addresses, and keep documents in one Teams channel's folder, " +
+      'through an app registration in your Entra directory. ' +
       'Leave the client secret empty and a certificate is generated for this connection: download it here ' +
       'and upload it under Certificates & secrets.',
     monogram: 'M3',
@@ -196,7 +197,8 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
       // `ROTATE_FIELD` in the connector. Without it, a save within 30 days of the certificate's end rotates anyway.
       { key: 'rotateCertificate', label: 'Generate a new certificate now', secret: false, optional: true, toggle: true },
     ],
-    // Mail lands nothing in a scope, so no standing grant (`MICROSOFT365_CONNECTION_GRANTS`).
+    // Mail lands nothing in a scope, and the channel-folder sync lands through the vertical's own
+    // operation, checked at bind — so no standing grant (`MICROSOFT365_CONNECTION_GRANTS`).
     grants: [],
     sendsMail: true,
     certificate: true,

@@ -192,6 +192,7 @@ Usage:
                                               Requires its existing scoped landing grant.
                                               Planima: --organization-id <id|null>, --currency,
                                               --horizon-years, --from-year and --to-year.
+                                              Microsoft 365: --folder <channel folder's drive path>.
   substrat connection bindings <id>          read the connection's configured landing targets
   substrat scope restore <scopeId> --file <backup>
                                               load a backup into an existing hosted scope,
@@ -755,7 +756,7 @@ async function cmdConnection(): Promise<void> {
   const sub = argv[1];
   const connectionId = argv[2];
   if (!connectionId || connectionId.startsWith('--') || !['bind', 'bindings'].includes(sub ?? '')) {
-    throw new Error('usage: substrat connection bind <id> --scope <id> --operation <module/operation> --permission <key> [--organization-id <id|null>] [--currency SEK] [--horizon-years 50] [--from-year <year> --to-year <year>] [--tenant <id-or-slug>]\n       substrat connection bindings <id> [--tenant <id-or-slug>]');
+    throw new Error('usage: substrat connection bind <id> --scope <id> --operation <module/operation> --permission <key> [--organization-id <id|null>] [--currency SEK] [--horizon-years 50] [--from-year <year> --to-year <year>] [--folder <drive path>] [--tenant <id-or-slug>]\n       substrat connection bindings <id> [--tenant <id-or-slug>]');
   }
   const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   const tenantId = await resolveTenantId(controlPlaneUrl, header, flag('tenant') ?? process.env.SUBSTRAT_TENANT ?? loadConfig().defaultTenant);
@@ -782,6 +783,7 @@ async function cmdConnection(): Promise<void> {
     ...(flag('currency') === undefined ? {} : { currency: flag('currency') }),
     ...(flag('horizon-years') === undefined ? {} : { horizonYears: numberFlag('horizon-years') }),
     ...(fromYear === undefined || toYear === undefined ? {} : { window: { fromYear, toYear } }),
+    ...(flag('folder') === undefined ? {} : { folder: flag('folder') }),
   };
   console.log(JSON.stringify(await bindConnectionScope({ ...opts, scopeId, input }), null, 2));
 }

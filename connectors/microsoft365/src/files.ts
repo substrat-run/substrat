@@ -27,6 +27,7 @@ import {
   attachmentRecord,
   entityRef,
   scopeId as scopeIdSchema,
+  substratError,
   tenantId as tenantIdSchema,
   type ConnectionId,
   type DomainEvent,
@@ -224,11 +225,13 @@ export async function bindMicrosoft365Scope(
     folder = await folderAtPath(client, conn.secret.siteUrl, segments);
   } catch (e) {
     if (e instanceof GraphError && e.status === 404) {
-      throw new Error(`no folder at '${segments.join('/')}' in the site's document library`);
+      throw substratError('conflict', `no folder at '${segments.join('/')}' in the site's document library`);
     }
     throw e;
   }
-  if (!folder.folder || folder.root) throw new Error(`'${segments.join('/')}' is not a folder in the document library`);
+  if (!folder.folder || folder.root) {
+    throw substratError('conflict', `'${segments.join('/')}' is not a folder in the document library`);
+  }
   const driveId = folder.parentReference?.driveId;
   if (!driveId) throw new Error('Graph did not say which drive the folder is in');
 
@@ -256,8 +259,12 @@ export async function bindMicrosoft365Scope(
 /** A bound folder's drive path, held to the fence's grammar; never the library root. */
 export function folderSegments(folder: string): string[] {
   const trimmed = folder.replace(/^\/+|\/+$/g, '');
-  if (!trimmed) throw new Error('a binding names a folder; the library root is not one');
-  return fencedPath(trimmed);
+  if (!trimmed) throw substratError('validation_failed', 'a binding names a folder; the library root is not one');
+  try {
+    return fencedPath(trimmed);
+  } catch (e) {
+    throw substratError('validation_failed', e instanceof Error ? e.message : String(e));
+  }
 }
 
 export async function listMicrosoft365Bindings(host: ScopeHost, connectionId: ConnectionId): Promise<Microsoft365Binding[]> {
