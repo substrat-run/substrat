@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { ATTACHMENT_TEXT_JOB, ATTACHMENT_TEXT_MODULE, UNSAFE_allowAllChecker, manualClock, ulid, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine } from '@substrat-run/kernel';
+import { ATTACHMENT_TEXT_JOB, ATTACHMENT_TEXT_MODULE, UNSAFE_allowAllChecker, manualClock, ulid, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type TenantBlobStore } from '@substrat-run/kernel';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import {
   atomicContractSuite,
@@ -19,6 +19,7 @@ import {
   findingsAtomicContractSuite,
   capabilityAttachmentContractSuite,
   uploadLinkContractSuite,
+  orphanSweepContractSuite,
   attachmentRefusalContractSuite,
   attachmentTextContractSuite,
   capabilityContractSuite,
@@ -59,7 +60,7 @@ import {
   spineGuardContractSuite,
   sqlLimitsContractSuite,
 } from '@substrat-run/contract-tests';
-import { errorCodeOf, moduleId, platformActorId } from '@substrat-run/contracts';
+import { errorCodeOf, instant, moduleId, platformActorId } from '@substrat-run/contracts';
 import { SqliteScopeHost } from '../src/index.js';
 
 scopeHostContractSuite('adapter-sqlite', async () => {
@@ -453,6 +454,64 @@ capabilityAttachmentContractSuite('adapter-sqlite', attachmentHostFixture);
 
 // Upload links: a single-use URL minted in an operation, redeemed through the attachment write.
 uploadLinkContractSuite('adapter-sqlite', attachmentHostFixture);
+
+// #2314: the orphan-byte sweep over the per-tenant directory, with each put observable so a test
+// can hold an upload between its bytes and its row.
+orphanSweepContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-orphan-sweep-'));
+  let hook: ((key: string) => Promise<void>) | null = null;
+  let ahead = 0;
+  const raw = new Map<string, TenantBlobStore>();
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    clock: () => instant.parse(new Date(Date.now() + ahead).toISOString()),
+    wrapBlobStore: (store, ref) => {
+      raw.set(ref, store);
+      return {
+        ...store,
+        put: async (key, body, opts) => {
+          await store.put(key, body, opts);
+          if (hook) await hook(key);
+        },
+      };
+    },
+  });
+  return {
+    host,
+    // A store's ref names its tenant (`blob__<tenant>__…`). It is opened by the first call that
+    // reaches it, so a store is looked up lazily, at each call.
+    blobs: async (tenant) => {
+      const of = (): TenantBlobStore => {
+        const found = [...raw.entries()].find(([ref]) => ref.startsWith(`blob__${tenant}__`));
+        if (!found) throw new Error(`no attachment store opened yet for ${tenant}`);
+        return found[1];
+      };
+      return {
+        put: (key, body, opts) => of().put(key, body, opts),
+        get: (key) => of().get(key),
+        delete: (key) => of().delete(key),
+        list: (prefix) => of().list(prefix),
+      };
+    },
+    afterPut: (next) => {
+      hook = next;
+    },
+    clockAhead: (ms) => {
+      ahead = ms;
+    },
+    // The ledger is the directory's; no public door writes an entry without a move behind it.
+    recordCopy: async (tenant, scope, state) => {
+      (host as unknown as { directory: Database.Database }).directory
+        .prepare(`INSERT INTO scope_script_copies (tenant_id, scope_id, script_ref, move_id, state) VALUES (?, ?, 'old-script', ?, ?)`)
+        .run(tenant, scope, ulid(), state);
+    },
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
 
 // #113: an attachment refusal reaches the caller typed — the pure adapter's half of the parity.
 attachmentRefusalContractSuite('adapter-sqlite', attachmentHostFixture);

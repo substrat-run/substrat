@@ -1,3 +1,4 @@
+import type { OrphanSweepReport, OrphanSweepRequest } from './attachment-sweep.js';
 import type { ScopeStoreStubOptions, StoreErasureReplay, StoreStub } from './scope-store.js';
 import type { ModuleLog } from './module-log.js';
 import type { BoundOperations } from './module-operations.js';
@@ -5472,6 +5473,22 @@ export interface ScopeHost {
     secret: string,
     input: UploadLinkRedeemInput,
   ): Promise<AttachmentRecord>;
+
+  /**
+   * One orphan-sweep pass over a scope's attachment bytes (#2314): delete the objects under the
+   * scope's attachment prefix that no `_substrat_attachments` row names, once they are older than
+   * the grace period and the scope is clear of its restore fence. The scope tombstones each id
+   * before its object is deleted, and the attachment insert refuses a tombstoned id, so a row
+   * that commits never loses its bytes (`sweepOrphanAttachments`, attachment-sweep.ts).
+   *
+   * Platform-only, and judged by THIS host's copy of the scope: only an active primary of
+   * `tenantId` that this host holds is swept, and anything else refuses (`conflict`), as does a
+   * scope with an unsettled copy in another script. On a host whose scopes live in several
+   * deployments, the caller asks only the deployment serving the scope. The age floor and the
+   * fence are judged against the host's own clock, never the caller's.
+   * Optional: a host that has not wired the sweep leaves it out.
+   */
+  sweepOrphanAttachments?(tenantId: TenantId, scopeId: ScopeId, request?: OrphanSweepRequest): Promise<OrphanSweepReport>;
 
   /**
    * Provision a NEW scope and load a `ScopeDump` into it — the write side of

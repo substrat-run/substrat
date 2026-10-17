@@ -1775,11 +1775,12 @@ export class VerticalClient {
   async rewindScope(
     scopeId: ScopeId,
     bookmark: string,
-    opts?: { force?: boolean },
+    /** `tenantId` (#2314): the vertical fences the orphan sweep in that tenant's bucket first. */
+    opts?: { force?: boolean; tenantId?: TenantId },
   ): Promise<{ rewindingTo: string }> {
     return this.postInternal<{ rewindingTo: string }>(
       '/internal/rewind',
-      { scopeId, bookmark, force: opts?.force ?? false },
+      { scopeId, bookmark, force: opts?.force ?? false, ...(opts?.tenantId ? { tenantId: opts.tenantId } : {}) },
       'rewind',
     );
   }

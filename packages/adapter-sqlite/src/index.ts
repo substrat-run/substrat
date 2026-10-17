@@ -638,6 +638,17 @@ import {
   type AttachmentExtractor,
   type AttachmentTextBounds,
   ATTACHMENT_TEXT_DDL,
+  ATTACHMENT_CONDEMNED_DDL,
+  condemnOrphanAttachments,
+  fenceAttachmentSweep,
+  refuseCondemnedAttachment,
+  refuseCondemnedInDump,
+  rowlessAttachmentIds,
+  sweepOrphanAttachments,
+  SETTLED_COPY_STATES,
+  unsettledCopyRefusal,
+  type OrphanSweepReport,
+  type OrphanSweepRequest,
   assertAttachmentExtractors,
   resolveAttachmentTextBounds,
   assertJobRegistrable,
@@ -967,6 +978,13 @@ interface DeclaredGuard {
 }
 
 export interface SqliteScopeHostOptions {
+  /**
+   * Wrap each per-tenant attachment store this host opens (#2314): the per-tenant directory it
+   * would use is handed in with its ref, and what comes back is used instead. For a deployment
+   * that keeps bytes elsewhere, and for a test that must see (or hold) each store call, as the
+   * orphan sweep's race is driven. Omitted, the directory is used as it is.
+   */
+  wrapBlobStore?: (store: TenantBlobStore, ref: string) => TenantBlobStore;
   /**
    * The parsers attachment text is extracted with (#1575, K-43) — `defaultAttachmentExtractors()`
    * from `@substrat-run/attachment-extractors`, or a list of the deployment's own. The kernel
@@ -1301,6 +1319,9 @@ const KERNEL_DDL = `
   -- #1575: attachment text and its FTS5 index, shared from @substrat-run/kernel. After
   -- _substrat_attachments, whose delete trigger it adds.
   ${ATTACHMENT_TEXT_DDL}
+  -- #2314: the orphan sweep's tombstones, shared from @substrat-run/kernel. An id here
+  -- never takes an attachment row again: the insert path refuses it.
+  ${ATTACHMENT_CONDEMNED_DDL}
   -- #901: an entity's version is the ULID of the last event about it (a state move
   -- excepted, #2191), so the newest id per (entity_type, entity_id) is the read. The id
   -- column sits last so SQLite walks the matched range backwards instead of aggregating.
@@ -2025,6 +2046,7 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly secretBox: SecretBox;
   /** The parsers attachment text is extracted with (K-43); the host's own, never imported here. */
   private readonly attachmentExtractors: readonly AttachmentExtractor[];
+  private readonly wrapBlobStore: (store: TenantBlobStore, ref: string) => TenantBlobStore;
   private readonly attachmentTextBounds: AttachmentTextBounds;
   private readonly fetchImpl: FetchLike;
   private readonly connectorCalls: ConnectorCallRecorder;
@@ -2044,6 +2066,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
     assertAttachmentExtractors(options.attachmentExtractors ?? []);
     this.attachmentExtractors = options.attachmentExtractors ?? [];
+    this.wrapBlobStore = options.wrapBlobStore ?? ((store) => store);
     this.attachmentTextBounds = resolveAttachmentTextBounds(options.attachmentTextBounds);
     this.fetchImpl = options.fetch ?? globalFetch;
     this.connectorCalls = options.connectorCalls ?? noopConnectorCallRecorder;
@@ -3539,7 +3562,7 @@ export class SqliteScopeHost implements ScopeHost {
         else if (!e.name.endsWith('.meta')) out.push(r);
       }
     };
-    return {
+    return this.wrapBlobStore({
       put: async (key, body, opts) => {
         const p = resolveKey(key);
         mkdirSync(dirname(p), { recursive: true });
@@ -3569,7 +3592,7 @@ export class SqliteScopeHost implements ScopeHost {
         walk(root, '', out);
         return out.filter((k) => k.startsWith(prefix)).sort();
       },
-    };
+    }, ref);
   }
 
   /** Resolve the blob store that carries a scope's attachments (#473): the platform-minted
@@ -3628,6 +3651,58 @@ export class SqliteScopeHost implements ScopeHost {
     return rt.actor.enqueue(
       async () => (await inspectUploadLink({ sql: spineSql(rt.db), now: this.clock() }, secret, target)).view,
     );
+  }
+
+  /**
+   * #2314: one orphan-sweep pass over a scope's attachment bytes (`sweepOrphanAttachments` in the
+   * kernel has the guards). Only an active PRIMARY scope of `tenantId` is judged: a fork or a
+   * preview holds another scope's rows, never this one's.
+   */
+  async sweepOrphanAttachments(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    request: OrphanSweepRequest = {},
+  ): Promise<OrphanSweepReport> {
+    const row = this.directory
+      .prepare('SELECT vertical, kind, forked_from FROM scopes WHERE scope_id = ? AND tenant_id = ?')
+      .get(scopeId, tenantId) as { vertical: string | null; kind: string | null; forked_from: string | null } | undefined;
+    if (row && !isPrimaryScopeRow(row)) {
+      throw substratError('conflict', `refused: scope ${scopeId} is a copy, and a copy may not judge orphan attachments`);
+    }
+    const copies = this.directory
+      .prepare(
+        `SELECT script_ref AS scriptRef, state FROM scope_script_copies
+          WHERE tenant_id = ? AND scope_id = ? AND state NOT IN (${SETTLED_COPY_STATES.map(() => '?').join(', ')})`,
+      )
+      .all(tenantId, scopeId, ...SETTLED_COPY_STATES) as { scriptRef: string; state: string }[];
+    const unsettled = unsettledCopyRefusal(scopeId, copies);
+    if (unsettled) throw unsettled;
+    // Only an active scope: an archived or reaped one is not this pass's to judge.
+    const rt = await this.openActiveScope(tenantId, scopeId);
+    const store = this.attachmentStore(tenantId, row?.vertical ?? null);
+    return sweepOrphanAttachments(store, scopeId, {
+      rowless: async (ids) => rt.actor.enqueue(() => rowlessAttachmentIds(spineSql(rt.db), ids)),
+      condemn: async (ids, now) =>
+        rt.actor.enqueue(() => rt.db.transaction(() => condemnOrphanAttachments(spineSql(rt.db), ids, now))()),
+    }, {
+      // The host's own clock, never a caller's: no request can step past the floor or the fence.
+      now: this.clock(),
+      ...(request.dryRun ? { dryRun: true } : {}),
+      ...(request.limit !== undefined ? { limit: request.limit } : {}),
+    });
+  }
+
+  /**
+   * #2314: the orphan sweep's restore fence for a scope whose rows are about to be replaced. A
+   * scope whose vertical has no blob store has no bytes, so nothing is fenced; a fence that cannot
+   * be written throws, and the caller refuses the replacement.
+   */
+  private fenceOrphanSweep(tenantId: TenantId, scopeId: ScopeId, vertical: string | null): Promise<void> {
+    const held = vertical
+      ? this.directory.prepare('SELECT 1 FROM blob_stores WHERE tenant_id = ? AND vertical = ? LIMIT 1').get(tenantId, vertical)
+      : undefined;
+    if (!held) return Promise.resolve();
+    return fenceAttachmentSweep(this.attachmentStore(tenantId, vertical), scopeId, this.clock());
   }
 
   async redeemUploadLink(
@@ -3833,6 +3908,8 @@ export class SqliteScopeHost implements ScopeHost {
         try {
           return await guarded('attachments.upload', async (ctx) => {
             assertAllowed(await ctx.check(gate.write, input.entity));
+            // #2314: an id the orphan sweep condemned takes no row, in this same transaction.
+            refuseCondemnedAttachment(spineSql(rt.db), record.id);
             rt.db
               .prepare(
                 `INSERT INTO _substrat_attachments
@@ -4039,6 +4116,16 @@ export class SqliteScopeHost implements ScopeHost {
       // rows are gone and the new ones are in. It also covers what a topological sort
       // cannot express: FK cycles, and self-referencing rows within one table.
       db.pragma('defer_foreign_keys = ON');
+      // A dump written before indexes were excluded may still carry them; skip those
+      // too rather than failing a restore over data that is about to be recomputed.
+      // Matched without case, as SQLite resolves a table name (#1883 review).
+      const replayable = dumped.filter((t) => !isSearchIndexTable(t.name.toLowerCase()));
+      // A Durable Object's dump carries spine tables this adapter keeps in its directory, or does
+      // not keep at all; they are skipped by name, and any other unknown spine table is refused.
+      const loadable = replayable.filter((t) => !DO_SCOPE_ONLY_SPINE_TABLES.has(t.name.toLowerCase()));
+      // #2314: a row for an id the orphan sweep condemned here is refused, as the insert refuses it.
+      // Judged on `loadable`, the very tables whose rows the replay below inserts, before any drop.
+      refuseCondemnedInDump(spineSql(db), loadable);
       // Drop the current schema: a vertical's tables are rebuilt from the dump's DDL, the
       // spine from KERNEL_DDL (below). Only real tables (never `sqlite_*` internals, which
       // are auto-managed and un-droppable).
@@ -4052,10 +4139,6 @@ export class SqliteScopeHost implements ScopeHost {
         if (isSearchIndexTable(name.toLowerCase())) continue;
         db.exec(`DROP TABLE IF EXISTS "${name}"`);
       }
-      // A dump written before indexes were excluded may still carry them; skip those
-      // too rather than failing a restore over data that is about to be recomputed.
-      // Matched without case, as SQLite resolves a table name (#1883 review).
-      const replayable = dumped.filter((t) => !isSearchIndexTable(t.name.toLowerCase()));
       // The dump is untrusted input (#1143): its names reach SQL as identifiers, and
       // `db.exec` would run every statement its `ddl` contains, not just the CREATE
       // TABLE. Judged as a whole before any of it executes — a check interleaved with
@@ -4067,9 +4150,6 @@ export class SqliteScopeHost implements ScopeHost {
       // contributes only rows, by column name (`dumpRowsInsert`). Otherwise a dump could
       // declare a column the checker compares on as COLLATE NOCASE. The column pass follows,
       // for the one outbox index KERNEL_DDL leaves to it.
-      // A Durable Object's dump carries spine tables this adapter keeps in its directory, or does
-      // not keep at all; they are skipped by name, and any other unknown spine table is refused.
-      const loadable = replayable.filter((t) => !DO_SCOPE_ONLY_SPINE_TABLES.has(t.name.toLowerCase()));
       // Comment-blanked (#2068), as the Durable Object replays it: the dump's DDL is
       // `sqlite_master.sql` verbatim, and `prepare` still compiles exactly one statement.
       for (const t of loadable) if (!isSpineTable(t.name)) db.prepare(blankSqlComments(t.ddl)).run();
@@ -4159,6 +4239,8 @@ export class SqliteScopeHost implements ScopeHost {
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
     this.refuseUnusableScopeStores(dump.stores, existing.vertical);
+    // #2314: the load replaces the scope's rows, so the orphan sweep is fenced first.
+    await this.fenceOrphanSweep(tenantId, scopeId, existing.vertical ?? null);
     // #1742: a dump from before a switch was pulled brings the module's grants back live, so
     // the directory's recorded-off modules go back off in the load's own turn, as a
     // provision's seat does — no schedule pass can run in between.

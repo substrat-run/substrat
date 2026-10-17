@@ -405,7 +405,9 @@ export interface VerticalScopeHost {
   rewindScopeLocal(
     scopeId: ScopeId,
     bookmark: string,
-    opts?: { force?: boolean },
+    /** `tenantId` (#2314): whose attachment bucket gets the orphan sweep's fence; the scope's
+     *  own provision receipt names it when this does not. */
+    opts?: { force?: boolean; tenantId?: TenantId },
   ): Promise<{ rewindingTo: string }>;
   introspectScopeTables(scopeId: ScopeId): Promise<ScopeTable[]>;
   introspectScopeTable(
@@ -1493,10 +1495,15 @@ export function mountPlatformSurface<Env extends object>(
   // restarts itself to complete the restore; the control plane is the gate and the auditor.
   app.post('/internal/rewind', async (c) => {
     const body = z
-      .object({ scopeId: scopeIdOf, bookmark: z.string().min(1), force: z.boolean().optional() })
+      // #2314: `tenantId` names the bucket the orphan sweep's fence goes in, for a scope from
+      // before provision receipts. A control plane that predates it sends none.
+      .object({ scopeId: scopeIdOf, bookmark: z.string().min(1), force: z.boolean().optional(), tenantId: tenantIdOf.optional() })
       .parse(await c.req.json());
     return c.json(
-      await deps.hostFor(c.env).rewindScopeLocal(body.scopeId, body.bookmark, { force: body.force }),
+      await deps.hostFor(c.env).rewindScopeLocal(body.scopeId, body.bookmark, {
+        force: body.force,
+        ...(body.tenantId ? { tenantId: body.tenantId } : {}),
+      }),
     );
   });
 

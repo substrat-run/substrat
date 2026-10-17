@@ -570,12 +570,19 @@ describe('a CP-less host refuses a (tenant, scope) pair its scope was not provis
   const TOKEN = `${CAPABILITY_SESSION_PREFIX}${'a'.repeat(43)}`;
   const resolved: string[] = [];
 
+  // A bucket that takes writes: a restore writes the orphan sweep's fence into it first (#2314).
+  const bucket = {
+    put: async () => undefined,
+    get: async () => null,
+    delete: async () => undefined,
+    list: async () => ({ objects: [], truncated: false }),
+  };
   const hostFor = () => {
     const host = new CloudflareScopeHost({
       scope: env.SCOPE,
       attachmentBuckets: (tenant) => {
         resolved.push(tenant);
-        return {};
+        return bucket;
       },
     });
     host.registerModule(scheduleMod);

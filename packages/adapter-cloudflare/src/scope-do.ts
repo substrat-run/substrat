@@ -177,6 +177,11 @@ import {
   type SearchIndexPlan,
   type SearchOptions,
   ATTACHMENT_TEXT_DDL,
+  ATTACHMENT_CONDEMNED_DDL,
+  condemnOrphanAttachments,
+  refuseCondemnedAttachment,
+  refuseCondemnedInDump,
+  rowlessAttachmentIds,
   attachmentRecordOfRow,
   enqueueAttachmentText,
   reconcileAttachmentText,
@@ -866,6 +871,9 @@ const KERNEL_DDL = `
   -- #1575: attachment text and its FTS5 index, shared from @substrat-run/kernel. After
   -- _substrat_attachments, whose delete trigger it adds.
   ${ATTACHMENT_TEXT_DDL}
+  -- #2314: the orphan sweep's tombstones, shared from @substrat-run/kernel. An id here
+  -- never takes an attachment row again: the insert path refuses it.
+  ${ATTACHMENT_CONDEMNED_DDL}
   -- #901: an entity's version is the ULID of the last event about it (a state move
   -- excepted, #2191), so the newest id per (entity_type, entity_id) is the read. The id
   -- column sits last so SQLite walks the matched range backwards instead of aggregating.
@@ -3860,6 +3868,74 @@ export function defineScopeDO(
       );
     }
 
+    /**
+     * #2314: the scope side of one orphan-sweep pass over `ids`. With `condemn`, the ids no row
+     * names are tombstoned in one transaction, which the attachment insert refuses from then on,
+     * and only they may be deleted; without it (a dry run), they are only read.
+     *
+     * Only the copy that holds the scope's rows may judge them, so this refuses, before anything
+     * is migrated: a reaped store, a scope whose delivered lifecycle is not active, a scope not
+     * provisioned here for `tenantId`, a store that holds nothing (an object this namespace never
+     * held, woken by this call), a copy a carry wiped or kept, and a fork or snapshot. Each of
+     * those would read every object as an orphan. Any doubt refuses.
+     */
+    orphanAttachmentsReply(
+      ids: string[],
+      now: string,
+      tenantId: TenantId,
+      condemn: boolean,
+      // Whether the coordinator's directory named this scope a primary of `tenantId`. Only that
+      // stands in for a missing receipt: a scope provisioned on a host with a directory holds none.
+      vouched = false,
+    ): Promise<DoReply<string[]>> {
+      return replyOf(async () => {
+        await this.refuseOrphanJudgement(tenantId, vouched);
+        await this.ensureMigrations();
+        return this.queue.enqueue(async () => {
+          await this.refuseOrphanJudgement(tenantId, vouched);
+          if (!condemn) return rowlessAttachmentIds(doSpineSql(this.sql), ids);
+          return this.revision.transaction(async () => condemnOrphanAttachments(doSpineSql(this.sql), ids, now));
+        });
+      });
+    }
+
+    /**
+     * #2314: what the orphan sweep's fence needs from this storage, read without migrating: the
+     * tenant its provision receipt names (or null), and whether it holds any attachment row.
+     */
+    async sweepFenceFacts(): Promise<{ tenant: string | null; holdsAttachments: boolean }> {
+      return {
+        tenant: this.provisionedFor(),
+        holdsAttachments:
+          this.hasTable('_substrat_attachments') &&
+          this.sql.exec('SELECT 1 FROM _substrat_attachments LIMIT 1').toArray().length > 0,
+      };
+    }
+
+    /** #2314: why this copy may not judge which attachment bytes are orphans, as a refusal. */
+    private async refuseOrphanJudgement(tenantId: TenantId, vouched: boolean): Promise<void> {
+      // First, and before any table is read: a reaped store holds none.
+      if (await this.isReaped()) {
+        throw substratError('conflict', 'refused: this scope copy may not judge orphan attachments, because its storage was reaped');
+      }
+      const { verdict } = this.tenantVerdict(tenantId);
+      const lifecycle = readLifecycle(this.switchSql());
+      const why = lifecycle && (lifecycle.scope !== 'active' || lifecycle.tenant !== 'active')
+          ? `its lifecycle is not active (scope ${lifecycle.scope}, tenant ${lifecycle.tenant})`
+          : verdict === 'foreign' || (verdict !== 'recorded' && !vouched)
+            ? `it holds no provision receipt for tenant ${tenantId} (${verdict})`
+            : verdict === 'unknown' && !this.holdsData()
+              ? 'it holds nothing: this namespace does not hold the scope'
+              : this.carriedAwayCopy
+            ? 'it is a copy a carry wiped'
+            : this.hasTable('_substrat_meta') && this.metaValue(KEPT_DIVERGENT_KEY)
+              ? 'it is a kept copy'
+              : this.hasTable('_substrat_copy_origin') && this.isCopy()
+                ? 'it is a fork or a snapshot'
+                : null;
+      if (why) throw substratError('conflict', `refused: this scope copy may not judge orphan attachments, because ${why}`);
+    }
+
     /** Look an upload link up without spending it — what the route judges a body against. */
     uploadLinkInspectReply(
       secret: string,
@@ -3936,6 +4012,8 @@ export function defineScopeDO(
               undefined, undefined, undefined, 'attachments.upload',
             );
             assertAllowed(await ctx.check(gate.write, parsed.entity));
+            // #2314: an id the orphan sweep condemned takes no row, in this same transaction.
+            refuseCondemnedAttachment(doSpineSql(this.sql), parsed.id);
             this.sql.exec(
               `INSERT INTO _substrat_attachments
                  (id, entity_type, entity_id, filename, content_type, size, sha256,
@@ -6834,6 +6912,9 @@ export function defineScopeDO(
         // #2016: this store's own tenant receipt, read before the drops take it. A load never
         // changes which tenant the scope belongs to: the platform's word for it (`provisionedFor`)
         // must agree with the receipt held, and is refused before the first drop if it does not.
+        // #2314: a row for an id the orphan sweep condemned here is refused, as the insert refuses it.
+        // Judged on `replayable`, the very tables whose rows the replay below inserts.
+        refuseCondemnedInDump(doSpineSql(this.sql), replayable);
         const receiptBefore = this.provisionedFor();
         if (provisionedFor !== undefined && receiptBefore !== null && receiptBefore !== provisionedFor) {
           const refused = substratError('conflict', tenantReceiptRefusal(receiptBefore, provisionedFor));

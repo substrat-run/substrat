@@ -329,6 +329,11 @@ jobs:
       # scanner is held by its own fixtures first.
       - run: pnpm test:bare-regexp
       - run: pnpm lint:tests
+      # Every writer of an attachment row checks the orphan sweep's tombstone (#2314): the sweep
+      # deletes an object only after its id is tombstoned, which is safe only while no insert or
+      # dump load can then write a row for that id. Held by its own fixtures first.
+      - run: pnpm test:attachment-writers
+      - run: pnpm lint:attachment-writers
       # No promise in a workerd suite floats (#2131). A forgotten `await` is a rejection nobody
       # handles, and the workerd setup file fails a test on one only when the test drives that
       # path; oxlint's type-aware `no-floating-promises` sees every path. Reads the built

@@ -1704,3 +1704,29 @@ it('connectorGrants reads the serving deployment and refuses an old or malformed
     await expect(old.connectorGrants({ tenantId: t, scopeId: s })).rejects.toBeInstanceOf(ControlPlaneError);
   }
 });
+
+/**
+ * #2314: a rewind names the tenant, so the vertical can fence the orphan sweep in that tenant's
+ * attachment bucket for a scope whose storage holds no receipt naming it.
+ */
+describe('VerticalClient.rewindScope (#2314)', () => {
+  const answering = (seen: { path: string; body: unknown }[]) =>
+    new VerticalClient({
+      fetch: (async (u: string, init?: RequestInit) => {
+        seen.push({ path: new URL(u).pathname, body: JSON.parse(String(init?.body)) });
+        return Response.json({ rewindingTo: 'bm-1' });
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+
+  it('carries the tenant when given, and sends none when not', async () => {
+    const seen: { path: string; body: unknown }[] = [];
+    const client = answering(seen);
+    await client.rewindScope(s, 'bm-1', { force: true, tenantId: t });
+    await client.rewindScope(s, 'bm-1');
+    expect(seen).toEqual([
+      { path: '/internal/rewind', body: { scopeId: s, bookmark: 'bm-1', force: true, tenantId: t } },
+      { path: '/internal/rewind', body: { scopeId: s, bookmark: 'bm-1', force: false } },
+    ]);
+  });
+});

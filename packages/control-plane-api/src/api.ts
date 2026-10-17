@@ -6466,7 +6466,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         force,
         localApply: !vertical,
       });
-      const answer = vertical ? await vertical.rewindScope(scopeId, bookmark, { force }) : result;
+      const answer = vertical ? await vertical.rewindScope(scopeId, bookmark, { force, tenantId }) : result;
       // #1674: a rewind takes the scope's grants back to the bookmark, and with them any
       // schedule kill switch pulled since — a tenant owner could otherwise undo a staff
       // switch this way. Clearing the provisioned receipt, only once the rewind has gone
