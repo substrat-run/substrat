@@ -161,7 +161,7 @@ export default {
   async fetch(request) {
     const client = { fetch };
     const a = await fetch('https://api.example.com/v1/users/42?token=sekret');
-    const b = await client.fetch('https://undeclared.example.com/oauth2/token', { method: 'POST' });
+    const b = await client.fetch('https://undeclared.example.com/oauth/token', { method: 'POST' });
     const body = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('chunk')); c.close(); } });
     const c = await globalThis.fetch(new Request('https://api.example.com/upload', { method: 'PUT', body, duplex: 'half' }));
     const stamp = globalThis[Symbol.for('substrat.invocation-stamp')]?.get(request);
@@ -177,7 +177,7 @@ describe('the platform entry records a vertical’s outbound calls, on workerd (
     expect(body.statuses).toEqual([200, 403, 200]);
     const named = [
       { host: 'api.example.com', path: '/v1/users/42', method: 'GET', status: 200, outcome: 'ok', durationMs: expect.any(Number), atMs: expect.any(Number) },
-      { host: 'undeclared.example.com', path: '/oauth2/token', method: 'POST', status: 403, outcome: 'refused', durationMs: expect.any(Number), atMs: expect.any(Number) },
+      { host: 'undeclared.example.com', path: '/oauth/token', method: 'POST', status: 403, outcome: 'refused', durationMs: expect.any(Number), atMs: expect.any(Number) },
       { host: 'api.example.com', path: '/upload', method: 'PUT', status: 200, outcome: 'ok', durationMs: expect.any(Number), atMs: expect.any(Number) },
     ];
     expect(body.outboundCalls).toEqual(named);

@@ -20,38 +20,53 @@ import {
  * call does, inside a request or out of one.
  */
 
-describe('redactOutboundPath — a segment is kept only when it is plainly a name or an id', () => {
-  const cases: Array<[string, string, string]> = [
+describe('redactOutboundPath — default-deny: a segment is kept only when it is a plain lowercase name', () => {
+  const kept: Array<[string, string]> = [
+    // [what it is, the path] — written exactly as it came
+    ['a REST path with a small integer id', '/v1/users/42/messages'],
+    ['an OAuth token endpoint', '/oauth/token'],
+    ['a dotted file name', '/api/me.json'],
+    ['underscore- and hyphen-joined words', '/v2.1/oauth_token/access-tokens'],
+    ['an integer of 10 digits', '/chats/1234567890'],
+    ['the root', '/'],
+    ['a lowercase owner and repository', '/repos/owner/name'],
+  ];
+  it.each(kept)('keeps %s', (_what, path) => {
+    expect(redactOutboundPath(path)).toBe(path);
+  });
+
+  const redacted: Array<[string, string, string]> = [
     // [what it is, the path, how it is written]
-    ['a REST path with an integer id stays readable', '/v1/users/42/messages', '/v1/users/42/messages'],
-    ['an OAuth token endpoint', '/oauth2/token', '/oauth2/token'],
-    ['a dotted file name', '/api/me.json', '/api/me.json'],
-    ['an underscored word', '/v2/oauth_token', '/v2/oauth_token'],
-    ['a UUID', '/items/3f2b8c1e-9a4d-4e2f-b6a1-0c9d8e7f6a5b', '/items/3f2b8c1e-9a4d-4e2f-b6a1-0c9d8e7f6a5b'],
-    ['a ULID', '/things/01JZ0000000000000000TEN001', '/things/01JZ0000000000000000TEN001'],
-    ['the root', '/', '/'],
+    ['a UUID', '/items/3f2b8c1e-9a4d-4e2f-b6a1-0c9d8e7f6a5b', '/items/[redacted]'],
+    ['a ULID, upper case', '/things/01JZ0000000000000000TEN001', '/things/[redacted]'],
+    ['a ULID, lower case', '/things/01jz0000000000000000ten001', '/things/[redacted]'],
+    ['a 7-character letter-and-digit mix (a capability-URL token)', '/hooks/catch/123456/ab1cd2e/', '/hooks/catch/123456/[redacted]/'],
+    ['an integer of 16 digits', '/card/4111111111111111', '/card/[redacted]'],
+    ['an integer of 19 digits', '/channels/1234567890123456789', '/channels/[redacted]'],
+    ['an integer of 11 digits', '/n/12345678901', '/n/[redacted]'],
+    ['a base64url run', '/k/AbCdEfGhIjKlMnOp', '/k/[redacted]'],
     ['a 32-hex API key', '/api/0123456789abcdef0123456789abcdef/send', '/api/[redacted]/send'],
-    ['a 36-char token that is not a UUID', '/hook/abcdefghij0123456789KLMNOPQRSTUVwx', '/hook/[redacted]'],
-    ['a bot<id>:<token> segment', '/bot123456789:AAH4tQ_Zx9yPq2lM0nB7vC3kJ8hG1fD6sE/sendMessage', '/[redacted]/sendMessage'],
-    ['a JWT-looking segment', '/verify/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl', '/verify/[redacted]'],
+    ['a bot<id>:<token> segment', '/bot123456789:AAH4tQ_Zx9yPq2lM0nB7vC3kJ8hG1fD6sE/sendMessage', '/[redacted]/[redacted]'],
+    ['a JWT-shaped segment', '/verify/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl', '/verify/[redacted]'],
+    ['a letter-and-digit name', '/oauth2/token', '/[redacted]/token'],
+    ['a mixed-case owner and repository', '/repos/Acme/Widgets', '/repos/[redacted]/[redacted]'],
+    ['a digit-bearing repository', '/repos/owner/name2', '/repos/owner/[redacted]'],
     ['a key=value segment', '/x/key=abc', '/x/[redacted]'],
     ['a percent-encoded segment', '/files/a%2Fb', '/files/[redacted]'],
     ['an @ segment', '/mail/user@example', '/mail/[redacted]'],
-    ['a 16-hex run below the length cap', '/k/deadbeefcafebabe', '/k/[redacted]'],
-    ['a base64url run of 16', '/k/AbCdEfGhIjKlMnOp', '/k/[redacted]'],
-    ['letters and digits mixed past 8', '/u/user42abc9', '/u/[redacted]'],
-    ['a long plain word errs toward redaction', '/authorizationcode', '/[redacted]'],
+    ['a word part past 16 letters', '/authorizationcodes', '/[redacted]'],
   ];
-  it.each(cases)('%s', (_what, path, written) => {
+  it.each(redacted)('redacts %s', (_what, path, written) => {
     expect(redactOutboundPath(path)).toBe(written);
   });
 
-  it('the limitations, stated as the docs state them: these shapes are written as they are', () => {
-    // A short all-letter segment reads as a word, and an integer of up to 19 digits as an id.
-    expect(keepsSegment('hunter')).toBe(true);
-    expect(keepsSegment('1234567890123456789')).toBe(true);
-    // The 20th digit is past the integer rule and the length cap.
-    expect(keepsSegment('12345678901234567890')).toBe(false);
+  it('the limits, stated as the docs state them: these shapes are written as they are', () => {
+    // A lowercase-letter word of up to 16 letters per part, and an integer of up to 10 digits.
+    expect(keepsSegment('hunterhunterhunt')).toBe(true);
+    // Even one that is all hex letters: the rule cannot tell it from a word.
+    expect(keepsSegment('deadbeefcafebabe')).toBe(true);
+    expect(keepsSegment('hunterhunterhunte')).toBe(false);
+    expect(keepsSegment('1234567890')).toBe(true);
   });
 
   it('a very long path is cut after redaction', () => {
@@ -140,7 +155,7 @@ describe('recordingFetch — the wrapper in front of the runtime’s fetch', () 
   it('a platform refusal is recorded as refused, not as the destination’s 403', async () => {
     const recording: OutboundRecording = {};
     const wrapped = recordingFetch(runtimeFetch(ok(403, { 'x-substrat-egress': 'refused' })).fn, () => recording);
-    await wrapped('https://undeclared.example.com/oauth2/token');
+    await wrapped('https://undeclared.example.com/oauth/token');
     expect(recording.outboundCalls?.[0]).toMatchObject({ status: 403, outcome: 'refused' });
   });
 
@@ -264,7 +279,7 @@ describe('the line names the request’s outbound calls (#2192)', () => {
       {
         async fetch(request) {
           if (request.url.endsWith('/callback')) {
-            await fetch('https://undeclared.example.com/oauth2/token?code=sekret-code', { method: 'POST' });
+            await fetch('https://undeclared.example.com/oauth/token?code=sekret-code', { method: 'POST' });
           }
           return new Response('{}');
         },
@@ -277,7 +292,7 @@ describe('the line names the request’s outbound calls (#2192)', () => {
     });
     expect(lines).toHaveLength(2);
     expect(lines[0]?.outboundCalls).toEqual([
-      { host: 'undeclared.example.com', path: '/oauth2/token', method: 'POST', status: 403, outcome: 'refused', durationMs: expect.any(Number), atMs: expect.any(Number) },
+      { host: 'undeclared.example.com', path: '/oauth/token', method: 'POST', status: 403, outcome: 'refused', durationMs: expect.any(Number), atMs: expect.any(Number) },
     ]);
     expect(JSON.stringify(lines[0])).not.toContain('sekret-code');
     expect(lines[1]).not.toHaveProperty('outboundCalls');

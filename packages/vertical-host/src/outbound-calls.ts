@@ -58,35 +58,35 @@ const REDACTED = '[redacted]';
 /** A path longer than this is cut, after redaction. */
 const PATH_MAX = 200;
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
-const INTEGER = /^[0-9]{1,19}$/;
-/** A word: letters, with `-`, `_` or `.` between them — `messages`, `oauth_token`, `me.json`. */
-const WORD = /^[A-Za-z][A-Za-z._-]*$/;
-/** Letters and digits mixed, kept only this short: `v1`, `oauth2`, `v2beta`. */
-const SHORT_MIXED = /^[A-Za-z0-9._-]{1,8}$/;
-/** A run that could be encoded bytes — hex or base64url — however it is cased. */
-const ENCODED_RUN = /[A-Za-z0-9]{16,}/;
-/** A segment holding any of these is never a plain name: `bot123:abc`, `key=…`, `%2F`, `user@host`. */
-const NEVER_NAME = /[:=%@+~!$&'()*,;]/;
-/** Every segment of 20 characters or more is redacted, unless it is exactly a UUID or a ULID. */
-const LONG = 20;
+/** Lowercase words, joined by `-` or `_`, each at most 16 letters: `messages`, `oauth_token`. */
+const WORDS = /^[a-z]{1,16}(?:[-_][a-z]{1,16})*$/;
+/** The same words with a short file extension: `me.json`, `token.json`, `clip.mp4`. */
+const WORDS_WITH_EXTENSION = /^[a-z]{1,16}(?:[-_][a-z]{1,16})*\.[a-z][a-z0-9]{0,4}$/;
+/** An integer of at most 10 digits: a page number, a small numeric id. */
+const SMALL_INTEGER = /^[0-9]{1,10}$/;
+/** A version: `v1`, `v2.1`, `v10.0.3`. */
+const VERSION = /^v[0-9]{1,3}(?:\.[0-9]{1,3}){0,2}$/;
 
 /**
- * Whether one path segment is kept as it is. Redaction is the default: a segment is kept only
- * when it is exactly a UUID, a ULID or an integer, a word of letters (with `-`, `_` or `.`)
- * shorter than {@link LONG}, or a mix of letters and digits no longer than 8. Anything else —
- * 20 characters or more, holding `:` `=` `%` `@`, or a run of 16 letters and digits that could
- * be hex or base64url — could be a credential and is redacted.
+ * Whether one path segment is kept as it is. Default-deny: a segment is kept ONLY when it is
+ * lowercase words (each at most 16 letters, joined by `-` or `_`), optionally with a short file
+ * extension, an integer of at most 10 digits, or a version token (`v1`, `v2.1`). Everything else
+ * is redacted — every UUID and ULID, any segment mixing letters and digits (`oauth2`, `abc1234`),
+ * anything with an uppercase letter (an owner or a repository named `Acme`), and any longer
+ * number. An id in a path is not needed to diagnose a failed call: the host, the method, the
+ * status, the outcome and the path's shape are.
  *
- * Heuristic, and it errs one way: a short secret made only of letters, or only of digits,
- * still reads as a word or an id. A long plain word (`authorizationcode`) is redacted too.
+ * What still survives, stated: a lowercase-letter word of up to 16 letters (per part) and an
+ * integer of up to 10 digits are written as they are, whatever they mean to the destination.
  */
 export function keepsSegment(segment: string): boolean {
-  if (segment === '') return true;
-  if (UUID.test(segment) || ULID.test(segment) || INTEGER.test(segment)) return true;
-  if (segment.length >= LONG || NEVER_NAME.test(segment) || ENCODED_RUN.test(segment)) return false;
-  return WORD.test(segment) || SHORT_MIXED.test(segment);
+  return (
+    segment === '' ||
+    WORDS.test(segment) ||
+    WORDS_WITH_EXTENSION.test(segment) ||
+    SMALL_INTEGER.test(segment) ||
+    VERSION.test(segment)
+  );
 }
 
 /**

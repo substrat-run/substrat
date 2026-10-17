@@ -305,20 +305,23 @@ What a call records: host (with port), path, method, status (`null` on a rejecti
 headers, and its offset from the request's start (`atMs`, which places it on the slide-over's
 axis without comparing two clocks). A `failed` call names its error's class (`TypeError`),
 never its message, which can carry a URL. Never a header, a body, a query string, a fragment
-or userinfo. The path is redacted segment by segment, and redaction is the default: a segment
-is kept only when it is exactly a UUID, a ULID or an integer, a word of letters (with `-`, `_`,
-`.`) under 20 characters, or a letter-and-digit mix of at most 8. Anything 20 characters or
-longer, anything holding `:` `=` `%` `@`, and anything with a run of 16 letters and digits
-(hex, base64url) is written `[redacted]`. **Limitations.** The rule is a heuristic, and these
-are written as they are:
+or userinfo. The path is redacted segment by segment, and the rule is default-deny: a segment
+is kept only when it is lowercase words (each part at most 16 letters, joined by `-` or `_`),
+optionally with a short file extension (`me.json`), an integer of at most 10 digits, or a
+version token (`v1`, `v2.1`). Everything else is written `[redacted]`: every UUID and ULID, any
+segment that mixes letters and digits (`oauth2`, a capability-URL token like `ab1cd2e`), any
+segment with an uppercase letter, so a mixed-case or digit-bearing owner or repository name
+(`/repos/Acme/name2`) is redacted too, and any longer number. An id in a path is not needed
+to diagnose a failed call; the host, method, status, outcome and the path's shape are.
+**Limitations.** These are written as they are:
 
-- a path segment under 20 characters made only of letters (with `-`, `_`, `.`), with no run of
-  16 letters, which reads as a word;
-- an integer of 16 to 19 digits, which reads as an id;
-- a secret in the host, such as a subdomain, since the host is always written.
+- the host, always, so a secret carried in a subdomain survives;
+- a lowercase-letter word of up to 16 letters per part, whatever it means to the destination
+  (`deadbeefcafebabe` reads as a word);
+- an integer of up to 10 digits.
 
-A long plain word being redacted is the opposite error, and the accepted one. Calls to the scope-store transport are already named in
-`storeCalls` and are not recorded twice. Sixteen calls are named and the rest counted, so the
+Calls to the scope-store transport are already named in `storeCalls` and are not recorded
+twice. Sixteen calls are named and the rest counted, so the
 line grows by at most a few kilobytes; no new store, event or dataset is added.
 
 Not covered: a `fetch` made inside a Durable Object (a consumer, a schedule, the drain — no

@@ -137,7 +137,7 @@ describe('msLabel', () => {
 });
 
 describe('outbound calls on the request (#2192)', () => {
-  const refused = { host: 'undeclared.example.com', path: '/oauth2/token', method: 'POST', status: 403, outcome: 'refused', durationMs: 6, atMs: 30 };
+  const refused = { host: 'undeclared.example.com', path: '/oauth/token', method: 'POST', status: 403, outcome: 'refused', durationMs: 6, atMs: 30 };
   const slow = { host: 'api.example.com', path: '/v1/users/42', method: 'GET', status: 200, outcome: 'ok', durationMs: 200, atMs: 10 };
 
   it('reads them off the stamped line, keeping only entries of the line’s shape', () => {
@@ -152,7 +152,7 @@ describe('outbound calls on the request (#2192)', () => {
     const t = requestTimeline(r, [], [])!;
     expect(t.marks).toEqual([
       { kind: 'call', offsetMs: 10, durationMs: 200, level: 'info', label: 'GET api.example.com/v1/users/42 → 200' },
-      { kind: 'call', offsetMs: 30, durationMs: 6, level: 'error', label: 'POST undeclared.example.com/oauth2/token → 403 refused by the platform' },
+      { kind: 'call', offsetMs: 30, durationMs: 6, level: 'error', label: 'POST undeclared.example.com/oauth/token → 403 refused by the platform' },
     ]);
     expect(t.axisMs).toBe(210);
   });
