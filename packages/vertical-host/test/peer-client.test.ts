@@ -132,7 +132,7 @@ describe('peerClient hands on the request it is made from (#2192)', () => {
       worker.fetch!(new Request('https://app.example/b'), {}, {}),
     ]);
     release();
-    const [a, b] = (await both) as Response[];
+    const [a, b] = (await both) as unknown as Response[];
     const sent = [headersOf(fetchImpl, 0).get(PARENT_REQUEST_ID_HEADER), headersOf(fetchImpl, 1).get(PARENT_REQUEST_ID_HEADER)];
     expect(new Set(sent)).toEqual(new Set([a!.headers.get(REQUEST_ID_HEADER), b!.headers.get(REQUEST_ID_HEADER)]));
     expect(sent[0]).not.toBe(sent[1]);

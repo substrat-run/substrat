@@ -1,5 +1,5 @@
 import type { CauseChain, EffectsTree, EmittedLifecycle, HistoryEntry } from '@substrat-run/contracts';
-import { ulidTime } from './palette';
+import { ulidTime } from './palette.js';
 
 /** A log line, as far as this file reads one — the client's `LogLine` is assignable. */
 export interface LogLine {
