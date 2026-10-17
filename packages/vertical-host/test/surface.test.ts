@@ -593,12 +593,12 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     });
     const post = (h: VerticalScopeHost, body: unknown, headers: Record<string, string> = authed()) =>
       appWith(h).request('/internal/attachment-sweep', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body) }, ENV);
-    const body = { tenantId: TENANT, scopeId: SCOPE, dryRun: true, copiesSettled: true };
+    const body = { tenantId: TENANT, scopeId: SCOPE, dryRun: true, copiesSettled: true, expectedVersionId: 'v1' };
 
     const ok = await post(host, { ...body, now: '2099-01-01T00:00:00.000Z' });
     expect(ok.status).toBe(200);
     expect(await ok.json()).toEqual(report);
-    expect(seen).toEqual([[TENANT, SCOPE, { dryRun: true, copiesSettled: true }]]);
+    expect(seen).toEqual([[TENANT, SCOPE, { dryRun: true, copiesSettled: true, expectedVersionId: 'v1' }]]);
 
     // A destructive pass writes its own log line, keys and all; a dry run writes none.
     const logged = vi.spyOn(console, 'log').mockImplementation(() => undefined);
@@ -615,13 +615,15 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
       logged.mockRestore();
     }
     expect(destructive.status).toBe(200);
-    expect(seen[2]).toEqual([TENANT, SCOPE, { dryRun: false, copiesSettled: true, limit: 10 }]);
+    expect(seen[2]).toEqual([TENANT, SCOPE, { dryRun: false, copiesSettled: true, expectedVersionId: 'v1', limit: 10 }]);
 
     expect((await post(host, body, {})).status).toBe(403);
     // A pass whose mode is not said, or that does not carry the platform's word on the ledger, is refused.
-    expect((await post(host, { tenantId: TENANT, scopeId: SCOPE, copiesSettled: true })).status).toBe(400);
+    expect((await post(host, { tenantId: TENANT, scopeId: SCOPE, copiesSettled: true, expectedVersionId: 'v1' })).status).toBe(400);
     expect((await post(host, { ...body, copiesSettled: false })).status).toBe(400);
-    expect((await post(host, { tenantId: TENANT, scopeId: SCOPE, dryRun: true })).status).toBe(400);
+    expect((await post(host, { tenantId: TENANT, scopeId: SCOPE, dryRun: true, expectedVersionId: 'v1' })).status).toBe(400);
+    // Nor a pass that does not say which version it was routed to.
+    expect((await post(host, { tenantId: TENANT, scopeId: SCOPE, dryRun: true, copiesSettled: true })).status).toBe(400);
     expect(seen).toHaveLength(3);
 
     const refused = await post(fakeHost(), body);

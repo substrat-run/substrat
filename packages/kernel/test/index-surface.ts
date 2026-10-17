@@ -419,6 +419,7 @@ export const INDEX_VALUE_EXPORTS = [
   'operationSeriesQuery',
   'operationsFor',
   'orgChangeBound',
+  'orphanSweepVersionRefusal',
   'parseValidationRecords',
   // #2252: the peer rule the adapters' doors, the platform's resolvers and the dashboard share.
   'peerCallerAt',

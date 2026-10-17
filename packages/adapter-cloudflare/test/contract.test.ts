@@ -6557,6 +6557,19 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     expect(clean).not.toHaveProperty('bucket');
   });
 
+  it('a pass routed to another version than this script runs is refused, in either mode; the routed version sweeps', async () => {
+    const s = await newScope();
+    const orphan = plant(s);
+    const deployed = (env as unknown as { SUBSTRAT_VERSION_ID: string }).SUBSTRAT_VERSION_ID;
+    const routed = (expectedVersionId: string, dryRun: boolean) =>
+      host.sweepOrphanAttachments(t, s, { copiesSettled: true, expectedVersionId, ...(dryRun ? { dryRun: true } : {}) });
+    for (const dryRun of [true, false]) {
+      await expect(routed('01JTESTVRSN00000000000OTHR', dryRun)).rejects.toThrow(/runs version .*, not 01JTESTVRSN00000000000OTHR/);
+    }
+    expect(objs.has(orphan)).toBe(true);
+    expect((await routed(deployed, false)).keys).toEqual([orphan]);
+  });
+
   it('with no directory, a pass needs its caller to have read the copy ledger', async () => {
     const s = await newScope();
     const orphan = plant(s);

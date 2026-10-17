@@ -1793,6 +1793,8 @@ export class VerticalClient {
     scopeId: ScopeId;
     dryRun: boolean;
     copiesSettled: true;
+    /** The version the scope runs, by the directory: the deployment refuses the pass if it is not it. */
+    expectedVersionId: string;
     limit?: number;
   }): Promise<OrphanSweepReport> {
     const answer = await this.postInternal<unknown>('/internal/attachment-sweep', input, 'attachment-sweep');

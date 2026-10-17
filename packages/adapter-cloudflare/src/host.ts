@@ -1664,7 +1664,7 @@ interface ScopeStubRpc {
     scopeId: ScopeId,
   ): Promise<DoReply<AttachmentRecord>>;
   /** #2314: the scope side of an orphan-sweep pass — condemn (or, dry, only read) the rowless ids. */
-  orphanAttachmentsReply(ids: string[], now: string, tenantId: TenantId, condemn: boolean, vouched?: boolean): Promise<DoReply<string[]>>;
+  orphanAttachmentsReply(ids: string[], now: string, tenantId: TenantId, condemn: boolean, vouched?: boolean, expectedVersionId?: string): Promise<DoReply<string[]>>;
   /** #2314: the receipt's tenant (or null) and whether any attachment row is held; read without migrating. */
   sweepFenceFacts(): Promise<{ tenant: string | null; holdsAttachments: boolean }>;
   /** Look an upload link up without spending it; `target` is judged before its state. */
@@ -4161,17 +4161,20 @@ export class CloudflareScopeHost implements ScopeHost {
     }
     const stub = this.scopeStub(scopeId);
     const now = this.orphanSweepClock();
+    const expected = request.expectedVersionId;
     const judge = (condemn: boolean) => async (ids: readonly string[], at: string) =>
-      unwrapReply(await stub.orphanAttachmentsReply([...ids], at, tenantId, condemn, vouched));
+      unwrapReply(await stub.orphanAttachmentsReply([...ids], at, tenantId, condemn, vouched, expected));
+    // The scope's copy gives its verdict first, with no ids: every refusal it makes, and whether this
+    // script is the one the platform routed the pass to, in the pass's own mode. So a destructive
+    // pass routed to the wrong script is refused even when there is nothing to condemn.
+    await judge(request.dryRun !== true)([], now);
     // A script with no attachment store for the tenant holds none of its bytes: a vertical whose
     // modules keep no files. Answered as that, marked, rather than the throw `resolveAttachmentStore`
     // makes for a write, so the platform's pass can tell it from a failure and from a store that held
-    // nothing. Only once the scope's copy has given its verdict (an empty read runs every refusal), so
-    // a copy that may not judge is refused here as it is with a store. A scope that holds an
-    // attachment row does keep files, so its missing store is a misconfiguration, and it fails.
+    // nothing. A scope that holds an attachment row does keep files, so its missing store is a
+    // misconfiguration, and it fails.
     const bucket = await this.attachmentBuckets(tenantId);
     if (!bucket) {
-      await judge(false)([], now);
       if ((await stub.sweepFenceFacts()).holdsAttachments) throw missingAttachmentStore(tenantId, scopeId);
       return { listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: request.dryRun === true, bucket: 'none' };
     }

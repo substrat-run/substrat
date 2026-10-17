@@ -23,11 +23,11 @@ describe('sweepScopeAttachments (#2314)', () => {
   let ref1: string;
 
   /** Every call a script was asked, by script. */
-  const asked: { ref: string; scopeId: string; dryRun: boolean; copiesSettled: unknown }[] = [];
+  const asked: { ref: string; scopeId: string; dryRun: boolean; copiesSettled: unknown; expectedVersionId?: string }[] = [];
   let answer: (ref: string) => Promise<OrphanSweepReport> = async () => ({ listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: true });
   const deployment = (ref: string) => ({
-    sweepOrphanAttachments: async (input: { scopeId: ScopeId; dryRun: boolean; copiesSettled: true }) => {
-      asked.push({ ref, scopeId: input.scopeId, dryRun: input.dryRun, copiesSettled: input.copiesSettled });
+    sweepOrphanAttachments: async (input: { scopeId: ScopeId; dryRun: boolean; copiesSettled: true; expectedVersionId: string }) => {
+      asked.push({ ref, scopeId: input.scopeId, dryRun: input.dryRun, copiesSettled: input.copiesSettled, expectedVersionId: input.expectedVersionId });
       return answer(ref);
     },
   });
@@ -65,7 +65,7 @@ describe('sweepScopeAttachments (#2314)', () => {
     answer = async () => ({ listed: 2, candidates: 1, orphans: 1, deleted: 0, keys: ['k'], dryRun: true });
     const out = await sweepScopeAttachments(reach(), t, s, { dryRun: true });
     expect(out).toEqual({ swept: { listed: 2, candidates: 1, orphans: 1, deleted: 0, keys: ['k'], dryRun: true } });
-    expect(asked).toEqual([{ ref: ref1, scopeId: s, dryRun: true, copiesSettled: true }]);
+    expect(asked).toEqual([{ ref: ref1, scopeId: s, dryRun: true, copiesSettled: true, expectedVersionId: v1 }]);
   });
 
   it('a scope on a serving script reaches that script, not the bound version', async () => {
@@ -73,7 +73,8 @@ describe('sweepScopeAttachments (#2314)', () => {
     await host.admin.setScopeServingRef(staff, t, s, 'sweep-vert-serving');
     asked.length = 0;
     await sweepScopeAttachments(reach(), t, s, { dryRun: false });
-    expect(asked.map((a) => [a.ref, a.dryRun])).toEqual([['sweep-vert-serving', false]]);
+    // No serving pointer names that script, so the version that runs there is the bound one.
+    expect(asked.map((a) => [a.ref, a.dryRun, a.expectedVersionId])).toEqual([['sweep-vert-serving', false, v1]]);
   });
 
   describe('refused before any deployment is asked', () => {
@@ -181,6 +182,12 @@ describe('sweepScopeAttachments (#2314)', () => {
       }
     });
 
+    it('a deployment answering another version than the one routed to (a promote mid-pass) is a refusal, not an error', async () => {
+      const s = await provision();
+      const promoted = new ControlPlaneError(409, 'refused: this script runs version B, not A, the one the platform routed this pass to');
+      expect(await sweepScopeAttachments(failing(promoted), t, s, { dryRun: false })).toEqual({ refused: expect.stringMatching(/runs version B, not A/) });
+    });
+
     it("the deployment's own refusal (a conflict, a JSON not-found) is a refusal", async () => {
       const s = await provision();
       for (const err of [new ControlPlaneError(409, 'is a copy'), new ControlPlaneError(404, 'unknown scope', undefined, { body: '{"error":"unknown scope"}' })]) {
@@ -211,11 +218,11 @@ describe('VerticalClient.sweepOrphanAttachments (#2314)', () => {
   it('posts the request as given and parses the report, the no-store marker included', async () => {
     const sent: unknown[] = [];
     const report = { listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: false, bucket: 'none' };
-    expect(await clientAnswering(200, report, sent).sweepOrphanAttachments({ tenantId: t, scopeId: s, dryRun: false, copiesSettled: true })).toEqual(report);
-    expect(sent).toEqual([{ tenantId: t, scopeId: s, dryRun: false, copiesSettled: true }]);
+    expect(await clientAnswering(200, report, sent).sweepOrphanAttachments({ tenantId: t, scopeId: s, dryRun: false, copiesSettled: true, expectedVersionId: 'v9' })).toEqual(report);
+    expect(sent).toEqual([{ tenantId: t, scopeId: s, dryRun: false, copiesSettled: true, expectedVersionId: 'v9' }]);
   });
 
   it('a 200 that is not a report throws rather than reading as a clean pass', async () => {
-    await expect(clientAnswering(200, { ok: true }).sweepOrphanAttachments({ tenantId: t, scopeId: s, dryRun: true, copiesSettled: true })).rejects.toThrow(/without a report/);
+    await expect(clientAnswering(200, { ok: true }).sweepOrphanAttachments({ tenantId: t, scopeId: s, dryRun: true, copiesSettled: true, expectedVersionId: 'v9' })).rejects.toThrow(/without a report/);
   });
 });

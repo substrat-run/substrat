@@ -175,6 +175,15 @@ describe('runPlatformSweep · orphan attachments (#2314)', () => {
     });
   });
 
+  it('a refusal (a promote mid-pass answering a version that is not the one routed to) writes no licence row', async () => {
+    const s = sid(1);
+    const { host, log } = fakeHost([{ id: s, tenantId: T }]);
+    const r = await runPlatformSweep(host, opts({ sweepScopeFn: async () => ({ refused: 'refused: this script runs version B, not A' }) }));
+    expect(r.errors).toEqual([]);
+    expect(r.orphanAttachments).toMatchObject({ refused: { count: 1, scopeIds: [s] }, dryRuns: 0 });
+    expect(log).toEqual([]);
+  });
+
   it('a throw is an attachment-sweep error, and the rest of the window carries on', async () => {
     const [a, b] = [sid(1), sid(2)];
     const { host } = fakeHost([{ id: a, tenantId: T }, { id: b, tenantId: T }]);

@@ -263,6 +263,36 @@ export interface OrphanSweepRequest {
    * lacks. It refuses unless its caller says it checked the ledger and found no such copy.
    */
   copiesSettled?: boolean;
+  /**
+   * The version the platform routed this pass to: the one the scope runs, by the directory. A host
+   * that knows the version its own code is deployed as refuses a pass routed to another (a stale
+   * script, a dispatch mixup, a promote mid-pass). See {@link orphanSweepVersionRefusal}.
+   */
+  expectedVersionId?: string;
+}
+
+/**
+ * Why a pass may not run in a script deployed as `deployed`, when the platform routed it to the
+ * script running `expected` (#2314), or null. A script deployed as another version refuses any
+ * pass. A deployed script that carries no version identity cannot be told it is the one routed to,
+ * so it refuses a destructive pass and lets a dry run proceed, since a dry run deletes nothing.
+ * No `expected` (a host the platform does not route to, a self-host) asks nothing.
+ */
+export function orphanSweepVersionRefusal(deployed: string | null, expected: string | undefined, destructive: boolean): Error | null {
+  if (expected === undefined) return null;
+  if (deployed === null) {
+    return destructive
+      ? substratError(
+          'conflict',
+          `refused: this script carries no version identity, so a destructive pass cannot be told it reached ` +
+            `the script running version ${expected}, the one the platform routed it to`,
+        )
+      : null;
+  }
+  if (deployed !== expected) {
+    return substratError('conflict', `refused: this script runs version ${deployed}, not ${expected}, the one the platform routed this pass to`);
+  }
+  return null;
 }
 
 /** The options the kernel's pass takes from its host: the request, and the host's clock. */

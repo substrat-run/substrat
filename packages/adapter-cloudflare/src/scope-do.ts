@@ -407,7 +407,7 @@ import {
   type UndrainedRead,
   type ConsumerDelivery,
 } from '@substrat-run/kernel';
-import { COPY_RESTORE_FENCE_LAPSED, copyRestoreFenceLapsed, type CopyRestoreFence } from '@substrat-run/kernel';
+import { COPY_RESTORE_FENCE_LAPSED, copyRestoreFenceLapsed, orphanSweepVersionRefusal, type CopyRestoreFence } from '@substrat-run/kernel';
 import type {
   DrainedEvent,
   EventFacetInput,
@@ -3887,8 +3887,13 @@ export function defineScopeDO(
       // Whether the coordinator's directory named this scope a primary of `tenantId`. Only that
       // stands in for a missing receipt: a scope provisioned on a host with a directory holds none.
       vouched = false,
+      // The version the platform routed this pass to, judged against the version this script is
+      // deployed as: this object shares the script's env, so it reads the binding the upload sets.
+      expectedVersionId?: string,
     ): Promise<DoReply<string[]>> {
       return replyOf(async () => {
+        const misrouted = orphanSweepVersionRefusal(this.env.SUBSTRAT_VERSION_ID ?? null, expectedVersionId, condemn);
+        if (misrouted) throw misrouted;
         await this.refuseOrphanJudgement(tenantId, vouched);
         await this.ensureMigrations();
         return this.queue.enqueue(async () => {

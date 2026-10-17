@@ -1503,6 +1503,8 @@ export function mountPlatformSurface<Env extends object>(
         dryRun: z.boolean(),
         limit: z.number().int().min(0).max(1000).optional(),
         copiesSettled: z.literal(true),
+        // The version the platform routed this pass to; the host refuses it in a script deployed as another.
+        expectedVersionId: z.string().min(1),
       })
       .parse(await c.req.json());
     const host = deps.hostFor(c.env);
@@ -1512,6 +1514,7 @@ export function mountPlatformSurface<Env extends object>(
     const report = await host.sweepOrphanAttachments(body.tenantId, body.scopeId, {
       dryRun: body.dryRun,
       copiesSettled: true,
+      expectedVersionId: body.expectedVersionId,
       ...(body.limit !== undefined ? { limit: body.limit } : {}),
     });
     // A destructive pass leaves its own line in this deployment's log, whoever asked for it: the
