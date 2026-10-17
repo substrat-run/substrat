@@ -75,6 +75,7 @@ import {
   ControlPlaneTransport,
   SERVICE_TOKEN_HEADER,
   TENANT_HEADER,
+  type RebindReview as ClientRebindReview,
 } from '@substrat-run/control-plane-client';
 
 // One class, owned by the package that throws it from its own client (#971).
@@ -263,13 +264,7 @@ class TenantTransport extends ControlPlaneTransport {
 }
 
 /** #2347: a rebind review as the plane answers it (`GET …/scopes/:id/rebind-review`). */
-export interface RebindReview {
-  base: { vertical: string; versionId: string } | null;
-  target: { vertical: string; versionId: string };
-  digestsMatch: boolean;
-  migrations: MigrationDiff | null;
-  review: PromotionReviewBinding;
-}
+export type RebindReview = ClientRebindReview<MigrationDiff>;
 
 export class TenantNarrowedControlPlane {
   private readonly transport: TenantTransport;

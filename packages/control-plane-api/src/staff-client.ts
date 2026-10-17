@@ -58,7 +58,7 @@ import type {
 } from '@substrat-run/contracts';
 import type { BlobStoreRecord, TenantStoreRecord } from '@substrat-run/kernel';
 
-import type { ClientProvisionScopeInput } from '@substrat-run/control-plane-client';
+import type { ClientProvisionScopeInput, RebindReview } from '@substrat-run/control-plane-client';
 import type { DoNamespaceRecord } from './do-namespaces.js';
 import type { ConnectorCallsBucket } from './observability.js';
 import type { PlatformRuntime } from './platform-runtime.js';
@@ -288,13 +288,7 @@ export interface RebindScopeResult {
 }
 
 /** #2347: the target lineage's serving version over the version the scope is bound to, and its binding. */
-export interface RebindReviewResult {
-  base: { vertical: string; versionId: string } | null;
-  target: { vertical: string; versionId: string };
-  digestsMatch: boolean;
-  migrations: MigrationDiff | null;
-  review: PromotionReviewBinding;
-}
+export type RebindReviewResult = RebindReview<MigrationDiff>;
 
 export interface BindHostnameInput {
   hostname: string;
