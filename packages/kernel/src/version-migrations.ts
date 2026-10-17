@@ -30,8 +30,10 @@ import {
   declaredMigrationDeclarations,
   deployManifest,
   migrationDigestOf,
+  reviewLine,
   storedDeployManifest,
   substratError,
+  UNHELD_MIGRATION_DIGEST_PREFIX,
   unheldMigrationDigest,
   type DeclaredMigration,
   type ModuleId,
@@ -411,4 +413,23 @@ export async function deriveMigrationDigestsBatch(
 /** Whether any version's migration digest still waits to be derived. One probe of the partial index. */
 export function versionsAwaitDigest(db: SwitchSql): boolean {
   return db.all(UNDERIVED_PROBE_SQL).length > 0;
+}
+
+/**
+ * The promote gate's refusal when the migration digest moved and the change was not acknowledged.
+ * A side whose digest is unheld (#2339) is named with why it always asks, so a vertical whose
+ * pushes leave their SQL out of the manifest is not surprised that every promote does.
+ */
+export function migrationChangeRefusal(outgoing: string, incoming: string): string {
+  const unheld = [outgoing, incoming]
+    .filter((d) => d.startsWith(UNHELD_MIGRATION_DIGEST_PREFIX))
+    .map((d) => d.slice(UNHELD_MIGRATION_DIGEST_PREFIX.length));
+  return (
+    `promotion changes migrations (${outgoing} → ${incoming}) — acknowledge it explicitly to promote` +
+    (unheld.length === 0
+      ? ''
+      : `. ${unheld.length === 1 ? `Version ${reviewLine(unheld[0]!)} holds` : `Versions ${unheld.map((id) => reviewLine(id)).join(' and ')} hold`} ` +
+        'no migrations the platform can compare: the push left them out of the manifest (over the size a manifest ' +
+        'carries, or from before manifests carried them), so a promote to or over it always asks for this acknowledgement')
+  );
 }

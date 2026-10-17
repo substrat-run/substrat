@@ -385,6 +385,7 @@ export const INDEX_VALUE_EXPORTS = [
   'membershipFencesTableExists',
   'membershipRemoveExecutorId',
   'metaValueIn',
+  'migrationChangeRefusal',
   'migrationDigest',
   'migrationDivergence',
   'migrationFailedError',

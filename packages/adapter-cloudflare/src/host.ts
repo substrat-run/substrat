@@ -476,6 +476,7 @@ import {
   settleConnectionUse,
   splitManifestMigrations,
   publishedMigrationDigest,
+  migrationChangeRefusal,
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
   unknownRoleError,
@@ -7992,10 +7993,7 @@ export class CloudflareScopeHost implements ScopeHost {
             );
           }
           if (outgoing.migration_digest !== incoming.migration_digest && !ack.migrationChange) {
-            throw substratError('conflict',
-              `promotion changes migrations (${outgoing.migration_digest} → ` +
-                `${incoming.migration_digest}) — acknowledge it explicitly to promote`,
-            );
+            throw substratError('conflict', migrationChangeRefusal(outgoing.migration_digest, incoming.migration_digest));
           }
           // #1705 PR 3: an export an installed consumer imports, dropped or re-versioned.
           if (!ack.exportBreak) {

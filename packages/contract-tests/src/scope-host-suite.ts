@@ -6912,7 +6912,7 @@ export function scopeHostContractSuite(
       const bare = await publish(digestOfA);
       expect((await host.admin.getVersion(staff, bare, slug))?.migrationDigest).toBe(unheldMigrationDigest(bare));
       await host.admin.admitVersion(staff, bare);
-      await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', bare), 'conflict', /changes migrations/);
+      await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', bare), 'conflict', /holds no migrations the platform can compare/);
     });
 
     it('an archived scope blocks the delete naming the reap step; a reaped tombstone never blocks', async () => {

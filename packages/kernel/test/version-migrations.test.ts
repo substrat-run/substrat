@@ -6,6 +6,7 @@ import {
   MIGRATION_DIGEST_MISMATCH_REASON,
   deriveMigrationDigestsBatch,
   deriveVersionMigrationDigest,
+  migrationChangeRefusal,
   publishedMigrationDigest,
   versionsAwaitDigest,
   splitManifestMigrations,
@@ -362,6 +363,16 @@ describe('version migrations stored apart (#1764)', () => {
           publishedMigrationDigest({ id: 'v1', migrationDigest: digest, manifestJson: manifest(), migrations }),
         ).resolves.toBe(digest);
       });
+    });
+
+    it('the promote refusal says why a version holding no migrations always asks, and only then', () => {
+      expect(migrationChangeRefusal('aa', 'bb')).toBe('promotion changes migrations (aa → bb) — acknowledge it explicitly to promote');
+      const one = migrationChangeRefusal('aa', unheldMigrationDigest('01JZBARE'));
+      expect(one).toMatch(/^promotion changes migrations/);
+      expect(one).toContain('Version 01JZBARE holds no migrations the platform can compare');
+      expect(one).toContain('so a promote to or over it always asks for this acknowledgement');
+      expect(one).not.toMatch(/\b\d+\.\d+(\.\d+)?\b/);
+      expect(migrationChangeRefusal(unheldMigrationDigest('01JZA'), unheldMigrationDigest('01JZB'))).toContain('Versions 01JZA and 01JZB hold');
     });
 
     describe('versions stored before it', () => {

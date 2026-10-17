@@ -643,6 +643,7 @@ export {
   deriveMigrationDigestsBatch,
   deriveVersionMigrationDigest,
   derivedMigrationDigest,
+  migrationChangeRefusal,
   publishedMigrationDigest,
   versionsAwaitDigest,
   splitManifestMigrations,

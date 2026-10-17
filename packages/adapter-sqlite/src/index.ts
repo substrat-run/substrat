@@ -521,6 +521,7 @@ import {
   versionMigrationsOf,
   deriveVersionMigrationDigest,
   publishedMigrationDigest,
+  migrationChangeRefusal,
   writeVersionMigrations,
   type SystemSwitchReassert,
   type SystemSwitchReassertOptions,
@@ -9502,10 +9503,7 @@ export class SqliteScopeHost implements ScopeHost {
             );
           }
           if (outgoing.migrationDigest !== incoming.migrationDigest && !ack.migrationChange) {
-            throw substratError('conflict',
-              `promotion changes migrations (${outgoing.migrationDigest} → ` +
-                `${incoming.migrationDigest}) — acknowledge it explicitly to promote`,
-            );
+            throw substratError('conflict', migrationChangeRefusal(outgoing.migrationDigest, incoming.migrationDigest));
           }
           // #1705 PR 3: an export an installed consumer imports, dropped or re-versioned.
           if (!ack.exportBreak) {
