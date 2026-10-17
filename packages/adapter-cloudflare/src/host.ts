@@ -4159,19 +4159,21 @@ export class CloudflareScopeHost implements ScopeHost {
           'to have found no unsettled copy of it (copiesSettled)',
       );
     }
-    // A script with no attachment store for the tenant holds none of its bytes: a vertical whose
-    // modules keep no files. Answered as that, marked, after every guard above, rather than the
-    // throw `resolveAttachmentStore` makes for a write, so the platform's pass can tell it from a
-    // failure and from a store that held nothing.
-    const bucket = await this.attachmentBuckets(tenantId);
-    if (!bucket) {
-      return { listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: request.dryRun === true, bucket: 'none' };
-    }
-    const store = r2TenantBlobStore(bucket);
     const stub = this.scopeStub(scopeId);
     const now = this.orphanSweepClock();
     const judge = (condemn: boolean) => async (ids: readonly string[], at: string) =>
       unwrapReply(await stub.orphanAttachmentsReply([...ids], at, tenantId, condemn, vouched));
+    // A script with no attachment store for the tenant holds none of its bytes: a vertical whose
+    // modules keep no files. Answered as that, marked, rather than the throw `resolveAttachmentStore`
+    // makes for a write, so the platform's pass can tell it from a failure and from a store that held
+    // nothing. Only once the scope's copy has given its verdict (an empty read runs every refusal), so
+    // a copy that may not judge is refused here as it is with a store.
+    const bucket = await this.attachmentBuckets(tenantId);
+    if (!bucket) {
+      await judge(false)([], now);
+      return { listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: request.dryRun === true, bucket: 'none' };
+    }
+    const store = r2TenantBlobStore(bucket);
     return sweepOrphanAttachments(store, scopeId, {
       rowless: (ids) => judge(false)(ids, now),
       condemn: judge(true),

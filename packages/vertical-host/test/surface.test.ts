@@ -582,6 +582,40 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect((await refused.json()).error).toMatch(/database size/);
   });
 
+  // #2314: one orphan-attachment pass, asked of THIS deployment by the platform's sweep. The body is
+  // parsed here: `dryRun` must be said, `copiesSettled` must be the platform's `true`, and no
+  // instant crosses (a `now` is stripped, so the host's own clock is the only one the pass sees).
+  it('runs an orphan-attachment pass behind the gate, on its own clock, and 501s on a host that cannot', async () => {
+    const seen: unknown[] = [];
+    const report = { listed: 1, candidates: 1, orphans: 1, deleted: 0, keys: ['k'], dryRun: true };
+    const host = fakeHost({
+      sweepOrphanAttachments: async (...args: unknown[]) => (seen.push(args), report),
+    });
+    const post = (h: VerticalScopeHost, body: unknown, headers: Record<string, string> = authed()) =>
+      appWith(h).request('/internal/attachment-sweep', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body) }, ENV);
+    const body = { tenantId: TENANT, scopeId: SCOPE, dryRun: true, copiesSettled: true };
+
+    const ok = await post(host, { ...body, now: '2099-01-01T00:00:00.000Z' });
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual(report);
+    expect(seen).toEqual([[TENANT, SCOPE, { dryRun: true, copiesSettled: true }]]);
+
+    const destructive = await post(host, { ...body, dryRun: false, limit: 10 });
+    expect(destructive.status).toBe(200);
+    expect(seen[1]).toEqual([TENANT, SCOPE, { dryRun: false, copiesSettled: true, limit: 10 }]);
+
+    expect((await post(host, body, {})).status).toBe(403);
+    // A pass whose mode is not said, or that does not carry the platform's word on the ledger, is refused.
+    expect((await post(host, { tenantId: TENANT, scopeId: SCOPE, copiesSettled: true })).status).toBe(400);
+    expect((await post(host, { ...body, copiesSettled: false })).status).toBe(400);
+    expect((await post(host, { tenantId: TENANT, scopeId: SCOPE, dryRun: true })).status).toBe(400);
+    expect(seen).toHaveLength(2);
+
+    const refused = await post(fakeHost(), body);
+    expect(refused.status).toBe(501);
+    expect((await refused.json()).error).toMatch(/orphan attachments/);
+  });
+
   // #618: the journal read is the platform's door to a settled intent's full `last_error`,
   // which lives in THIS deployment's DO. The query string is the filter — parsed here, not
   // trusted onward — so a console can ask for one provider's traffic.

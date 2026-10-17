@@ -6488,10 +6488,12 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     list: async () => ({ objects: [...objs.keys()].map((key) => ({ key })), truncated: false as const }),
   };
   const later = () => new Date(Date.now() + ORPHAN_SWEEP_GRACE_MS + DAY).toISOString();
+  /** #2314: whether this script holds no attachment store for any tenant (a vertical keeping no files). */
+  let storeless = false;
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
-    attachmentBuckets: () => bucket,
+    attachmentBuckets: () => (storeless ? undefined : bucket),
     // Every pass here runs eight days ahead, past the age floor; the fence is stamped the same way.
     orphanSweepClock: later,
   });
@@ -6520,6 +6522,24 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     expect(objs.has(orphan)).toBe(true);
     expect((await sweep(s)).keys).toEqual([orphan]);
     expect(objs.has(orphan)).toBe(false);
+  });
+
+  it('a script with no attachment store answers so, marked, after the copy has judged; a store that held nothing answers unmarked', async () => {
+    const s = await newScope();
+    const orphan = plant(s);
+    storeless = true;
+    try {
+      expect(await sweep(s)).toEqual({ listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: false, bucket: 'none' });
+      // The copy's refusals still come first: a foreign tenant is refused, not answered "no store".
+      await expect(sweep(s, other)).rejects.toThrow(/may not judge orphan attachments/);
+    } finally {
+      storeless = false;
+    }
+    expect(objs.has(orphan)).toBe(true);
+    const empty = await newScope();
+    const clean = await sweep(empty);
+    expect(clean).toMatchObject({ orphans: 0, deleted: 0 });
+    expect(clean).not.toHaveProperty('bucket');
   });
 
   it('with no directory, a pass needs its caller to have read the copy ledger', async () => {
