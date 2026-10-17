@@ -7854,8 +7854,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         bindings: verticalUploadBindings({
           vertical: slug,
           manifest,
-          // #2349: the served version's stored migrations, which its scopes hold the SQL they apply to.
-          platformBindings: [...storeBindings, ...(await migrationsDigestBindings(await admin.versionMigrations(actor, slug, versionId)))],
+          // #2349: the digest of the served version's stored migrations, which its scopes hold
+          // the SQL they apply to.
+          platformBindings: [
+            ...storeBindings,
+            ...(await migrationsDigestBindings(await admin.versionMigrations(actor, slug, versionId))),
+          ],
         }),
         // #1242: the version now being served, injected as `SUBSTRAT_VERSION_ID` so the
         // scope host stamps the signals `version` dimension. The serving script is one

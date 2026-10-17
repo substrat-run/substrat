@@ -272,13 +272,16 @@ async function setDigestOf(entries: { moduleId: string; version: string; sqlDige
  * migration declares it may lose, nor the store classes: it is what a scope compares with the
  * SQL it is about to run. The control plane computes it from a version's stored migrations at
  * upload; a scope host computes it from its registered steps (`migrationSetDivergence`).
+ *
+ * Not through `cachedDigest`: the control plane hashes every version it serves, and that cache
+ * would keep each one's SQL for the life of the isolate.
  */
 export async function migrationSetDigest(
   migrations: readonly { moduleId: string; version: string; sql: string }[],
 ): Promise<string> {
   return setDigestOf(
     await Promise.all(
-      migrations.map(async (m) => ({ moduleId: m.moduleId, version: m.version, sqlDigest: await cachedDigest(m.sql) })),
+      migrations.map(async (m) => ({ moduleId: m.moduleId, version: m.version, sqlDigest: await migrationDigest(m.sql) })),
     ),
   );
 }
