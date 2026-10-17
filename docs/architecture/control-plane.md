@@ -417,18 +417,43 @@ rolled out and rolled back only by an actor whose credential is a rostered sign-
 no roster entry may be an automation identity, a shared mailbox, or anything else that can
 finish the login without a person. Such an entry would publish releases as if it were one.
 
-**A store driver release reaches at most 300 verticals** (#2300). A rollout or rollback walks every
-vertical any version ever declared the driver in, uploading at most 100 scripts per request; posting
-it again continues. A driver declared by more than 300 verticals cannot be rolled out **or rolled
-back** (409) until the rollout row carries a cursor (#2312). Watch that count before a driver grows
-towards it: past it, the emergency path is closed too.
+**A store driver release reaches a fleet of any size, a request at a time** (#2300, #2312). A rollout
+or rollback walks every vertical any version ever declared the driver in. One request walks at most
+300 verticals and uploads at most 100 scripts; then it ends `paused` and answers 202 with
+`remaining`, the verticals not walked yet. Posting the same rollout (or rollback) again continues
+it from the attempt's **walk ledger**: what each earlier request walked, kept by the directory per
+declaration (vertical, binding, and the version that first declared it), written in the same
+transaction as the request's `paused` end. A continued request walks only declarations the ledger
+does not hold, in (vertical, binding) order:
+
+- A vertical declared between two posts is walked by the next, wherever its slug sorts, and one
+  deleted is not walked. A slug deleted and registered again is a new declaration, walked again.
+- A request ends `good` only when the pending list it read under its exclusive hold was complete
+  and it walked all of it. No push can create a script while that hold is held.
+- Only a `paused` request is continued. A request that stopped without its end (the invocation
+  died, its lease lapsed) reads `diverged`, and the next post walks every vertical again. That
+  re-walk is cheap: a script already on the release uploads nothing. Anything else between two
+  posts, such as another release, a rollback, a `failed` or `diverged` end, also starts afresh.
+- A failure part way returns every vertical **the attempt** reached, its earlier requests
+  included, to the release it started from. **When that is more than 300 verticals, nothing is
+  returned**: the request ends `diverged` and its refusal says so. The operator sees a 409 or 502
+  naming the vertical it stopped at and the count it reached. `GET /store-drivers/:driver` then shows
+  the rollout `diverged` and `rollbackTarget` = the current good release. The recovery is
+  `POST /store-drivers/:driver/rollback`, repeated while it answers 202, until it ends `good` with
+  every script back on that release.
 
 **Which rollback, and what blocks a rollout** (#2300). `GET /store-drivers/:driver` answers `rollbackTarget`,
 and `POST /store-drivers/:driver/rollback` always goes there:
 
-- A request that runs out of its 100 uploads ends `paused`. It is not a fault: post the same rollout,
-  or the same rollback, again.
-- A `failed` attempt moved nothing or returned what it moved. It never decides where a rollback goes.
+- A request that runs out of its 100 uploads or its 300 walks ends `paused`. It is not a fault: post
+  the same rollout, or the same rollback, again.
+- A `failed` request never decides where a rollback goes. It moved nothing, or returned what its
+  attempt moved. The exception is a canary that fails on a later page: that request moves and
+  returns nothing, so the verticals earlier pages moved stay on the new release. Their `paused`
+  rows still count, so `rollbackTarget` is the current release and a rollback converges them.
+- A rollout of the **current** release (a re-post, paged past one request) never moves the
+  rollback target, whatever it ends: every script it touches stays on the current release, so a
+  rollback still goes to the previous good one.
 - A rollback that has not finished (`paused`, or `diverged` because an upload failed or a request
   lost its hold) is continued: posting the rollback again goes to its target, never back.
 - While a rollback to an **earlier** release is unfinished, **every rollout is refused** (409). The

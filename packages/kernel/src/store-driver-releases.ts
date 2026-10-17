@@ -8,6 +8,9 @@
  * - `store_driver_rollouts`: one row per attempt to move every script of the driver to a release, in
  *   `seq` order. A row is `rolling` until its holder ends it `good`, `failed` or `diverged`.
  * - `store_driver_current`: the release the last `good` rollout moved every script to.
+ * - `store_driver_rollout_walks`: the walk ledger of a rollout paged over several requests (#2312).
+ *   Each row is one declaration (vertical, binding, and the version that first declared it) an
+ *   earlier request of the same attempt walked; the next request walks only what is not in it.
  *
  * "The immediately previous good release" (D-63) is recorded, never derived from an ordering:
  * each rollout row names `previous_good_sha256`, the release a rollback from it returns to. A
@@ -30,6 +33,7 @@
  */
 import { substratError } from '@substrat-run/contracts';
 import type { SwitchSql } from './system-switch.js';
+import { driverDeclarationsOf } from './vertical-scope-stores.js';
 
 /** Interpolated into both adapters' directory DDL, so `lint:spine-ddl` sees one spelling on each side. */
 export const STORE_DRIVER_RELEASES_DDL = `
@@ -61,6 +65,16 @@ export const STORE_DRIVER_RELEASES_DDL = `
     driver TEXT PRIMARY KEY,
     sha256 TEXT NOT NULL,
     seq    INTEGER NOT NULL
+  );
+  -- One declaration an attempt walked (#2312). The attempt is the seq of its first row; a row
+  -- continues it while the rows before it are paused at the same release and action.
+  CREATE TABLE IF NOT EXISTS store_driver_rollout_walks (
+    driver           TEXT NOT NULL,
+    attempt          INTEGER NOT NULL,
+    vertical_slug    TEXT NOT NULL,
+    binding          TEXT NOT NULL,
+    first_version_id TEXT NOT NULL,
+    PRIMARY KEY (driver, attempt, vertical_slug, binding, first_version_id)
   );
   CREATE TABLE IF NOT EXISTS store_driver_holds (
     driver     TEXT NOT NULL,
@@ -338,16 +352,23 @@ export function recordStoreDriverReleaseIn(
  * `rollbackTarget` is, in order:
  * - the target of a rollback that is the newest attempt since the current release, a `failed` one
  *   aside, and ended `paused` or `diverged` (`unfinishedRollback`): posting the rollback again
- *   continues it, and never turns it around onto the release it is leaving. A failed attempt moved
- *   nothing, or returned what it moved, so it changes nothing here. No rollout may begin while a
+ *   continues it, and never turns it around onto the release it is leaving. A `failed` request
+ *   changes nothing here: it moved nothing, or returned what its attempt moved, or (a later page's
+ *   canary) moved nothing in its own request while earlier pages' verticals stay on the new
+ *   release; those pages' `paused` rows are still since the current release, so the fleet still
+ *   reads as mixed below. No rollout may begin while a
  *   rollback to an earlier release is unfinished, `paused` or `diverged` (`beginStoreDriverRolloutIn`):
  *   it is finished first, by posting it again. A rollback onto the current release (undoing a
  *   diverged rollout) does not block a rollout. A rollback to an earlier release cannot meet the
  *   schema rule (the route refuses one below the current schema), but one onto the current release
  *   can, and then it never finishes, so going forward must stay open;
- * - the current release itself, when a rollout since it ended `diverged` or `paused`: the fleet may
- *   be mixed, and undoing that rollout means converging every script back on the release it was
- *   healthy on, never going past it;
+ * - the current release itself, when a rollout since it ended `diverged` or `paused` on ANOTHER
+ *   release: the fleet may be mixed, and undoing that rollout means converging every script back
+ *   on the release it was healthy on, never going past it. A row that moves scripts to the current
+ *   release itself (a re-post of it, paged over several requests, or a rollback onto it) leaves
+ *   every script on the current release whatever it ended, so it never makes the fleet mixed:
+ *   otherwise re-posting the current release past one request's walk would turn the rollback
+ *   onto the release being escaped (#2312);
  * - otherwise the immediately previous good release.
  * An unfinished attempt never changes what "previous good" means.
  */
@@ -367,10 +388,10 @@ export function storeDriverStateIn(db: SwitchSql, driver: string, nowMs?: number
   const row = rollouts.find((r) => r.seq === seq);
   const previousGoodSha256 = row?.previousGoodSha256 ?? null;
   const since = rollouts.filter((r) => r.seq > seq);
-  // A failed attempt moved nothing, or returned what it moved, so it never decides what comes next.
+  // A failed request never decides what comes next (see above).
   const newest = since.filter((r) => r.state !== 'failed').at(-1);
   const unfinishedRollback = newest?.action === 'rollback' && (newest.state === 'paused' || newest.state === 'diverged') ? newest.sha256 : null;
-  const mixed = since.some((r) => r.state === 'diverged' || r.state === 'paused');
+  const mixed = since.some((r) => (r.state === 'diverged' || r.state === 'paused') && r.sha256 !== current.sha256);
   return {
     current: { sha256: current.sha256, seq, previousGoodSha256 },
     rollouts,
@@ -481,19 +502,55 @@ export function beginStoreDriverRolloutIn(
   return rolloutAt(db, input.driver, next)!;
 }
 
-/** End a rollout the caller began, as the exclusive holder. A good one makes its release current. */
+/**
+ * End a rollout the caller began, as the exclusive holder. A good one makes its release current.
+ *
+ * `walked` is what this request walked, and only a `paused` end takes it (#2312): it joins the
+ * attempt's ledger in the transaction that writes the state, so a request that stops before its
+ * end leaves no ledger rows, and the next attempt walks those verticals again rather than skip
+ * them. What keeps a dead ledger unread is the attempt key (`attemptOf`); the deletes here keep the
+ * table to the one attempt a driver can continue: any end drops every other attempt's rows, and any
+ * end but `paused` this attempt's too.
+ */
 export function finishStoreDriverRolloutIn(
   db: SwitchSql,
-  input: { driver: string; seq: number; holder: string; state: Exclude<StoreDriverRolloutState, 'rolling'>; detail: string | null; at: string; nowMs: number },
+  input: {
+    driver: string;
+    seq: number;
+    holder: string;
+    state: Exclude<StoreDriverRolloutState, 'rolling'>;
+    detail: string | null;
+    walked?: readonly StoreDriverRolloutTarget[];
+    at: string;
+    nowMs: number;
+  },
 ): StoreDriverRolloutRecord {
   assertExclusive(db, input.driver, input.holder, input.nowMs);
   const row = rolloutAt(db, input.driver, input.seq);
   if (!row) throw substratError('not_found', `'${input.driver}' has no rollout ${input.seq}`);
   if (row.state !== 'rolling') throw substratError('conflict', `rollout ${input.seq} of '${input.driver}' already ended ${row.state}`);
+  if (input.walked && input.state !== 'paused') {
+    throw substratError('validation_failed', `only a paused rollout records what it walked; ${input.seq} of '${input.driver}' ends ${input.state}`);
+  }
   db.run(
     'UPDATE store_driver_rollouts SET state = ?, ended_at = ?, detail = ? WHERE driver = ? AND seq = ?',
     input.state, input.at, input.detail, input.driver, input.seq,
   );
+  const attempt = attemptOf(db, input.driver, input.seq, row.sha256, row.action);
+  db.run(
+    `DELETE FROM store_driver_rollout_walks WHERE driver = ?${input.state === 'paused' ? ' AND attempt <> ?' : ''}`,
+    ...(input.state === 'paused' ? [input.driver, attempt] : [input.driver]),
+  );
+  if (input.state === 'paused') {
+    for (const target of input.walked ?? []) {
+      for (const store of target.stores) {
+        db.run(
+          `INSERT OR IGNORE INTO store_driver_rollout_walks (driver, attempt, vertical_slug, binding, first_version_id) VALUES (?, ?, ?, ?, ?)`,
+          input.driver, attempt, target.vertical, store.binding, store.firstVersionId,
+        );
+      }
+    }
+  }
   if (input.state === 'good') {
     db.run(
       `INSERT INTO store_driver_current (driver, sha256, seq) VALUES (?, ?, ?)
@@ -670,4 +727,108 @@ export function advanceStoreDriverRebuildIn(
     input.driver,
   );
   return rebuildOf(rebuildRowOf(db, input.driver)!);
+}
+
+/**
+ * One vertical's bindings of a driver as a rollout walks them (#2312). `firstVersionId` is the
+ * version that first declared the binding: a vertical deleted and registered again under the
+ * same slug declares it anew, under another id, so the ledger never counts the new one walked.
+ */
+export interface StoreDriverRolloutTarget {
+  readonly vertical: string;
+  readonly stores: readonly { readonly binding: string; readonly firstVersionId: string }[];
+}
+
+/**
+ * The attempt the rollout at `seq` belongs to: the seq of the first row of the run of `paused`
+ * rows of the same release and action just before it, or `seq` itself. Any other row between
+ * (good, failed, diverged, a rolling one left by a holder that stopped, another release) ends the
+ * run, so its ledger is never read: what it walked may since have been moved elsewhere.
+ */
+function attemptOf(db: SwitchSql, driver: string, seq: number, sha256: string, action: StoreDriverRolloutAction): number {
+  const before = db.all(
+    'SELECT seq, sha256, action, state FROM store_driver_rollouts WHERE driver = ? AND seq < ? ORDER BY seq DESC',
+    driver, seq,
+  ) as { seq: number; sha256: string; action: StoreDriverRolloutAction; state: StoreDriverRolloutState }[];
+  let attempt = seq;
+  for (const row of before) {
+    if (row.state !== 'paused' || row.sha256 !== sha256 || row.action !== action) break;
+    attempt = Number(row.seq);
+  }
+  return attempt;
+}
+
+interface DeclarationRow {
+  vertical_slug: string;
+  binding: string;
+  first_version_id: string;
+}
+
+/** Rows in (vertical, binding) order, grouped by vertical. */
+function targetsOf(rows: readonly DeclarationRow[]): StoreDriverRolloutTarget[] {
+  const byVertical = new Map<string, { binding: string; firstVersionId: string }[]>();
+  for (const r of rows) {
+    const stores = byVertical.get(r.vertical_slug) ?? [];
+    stores.push({ binding: r.binding, firstVersionId: r.first_version_id });
+    byVertical.set(r.vertical_slug, stores);
+  }
+  return [...byVertical].map(([vertical, stores]) => ({ vertical, stores }));
+}
+
+const assertLimit = (limit: number) => {
+  if (!(Number.isInteger(limit) && limit > 0)) throw substratError('validation_failed', 'a rollout page needs a positive limit');
+};
+
+/** A declaration the attempt walked: the ledger row of the same vertical, binding and first version. */
+const WALKED = `EXISTS (SELECT 1 FROM store_driver_rollout_walks AS w
+  WHERE w.driver = s.driver AND w.attempt = ? AND w.vertical_slug = s.vertical_slug
+    AND w.binding = s.binding AND w.first_version_id = s.first_version_id)`;
+
+/**
+ * What the next request of a rollout of `sha256` (or a rollback to it) walks (#2312): the first
+ * `limit` verticals, in (vertical, binding) order, with a declaration of the driver that the attempt
+ * it would continue has not walked, and how many verticals are pending in all. Asked before the
+ * request's row begins, as the exclusive holder will begin it: a request that continues no attempt
+ * walks every declaration. `walked` counts the verticals the continued attempt walked that still
+ * declare the driver. `unreadable` is `driverDeclarationsOf`'s: a caller that must reach every script
+ * refuses while it is not empty.
+ */
+export function storeDriverRolloutPendingIn(
+  db: SwitchSql,
+  input: { driver: string; sha256: string; action: StoreDriverRolloutAction; limit: number },
+): { verticals: StoreDriverRolloutTarget[]; pending: number; walked: number; unreadable: string[] } {
+  assertLimit(input.limit);
+  // Indexes every vertical not indexed yet, and names the ones that cannot say what they declare.
+  const { unreadable } = driverDeclarationsOf(db, input.driver);
+  const next = Number((db.all('SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM store_driver_rollouts WHERE driver = ?', input.driver)[0] as { next: number }).next);
+  const attempt = attemptOf(db, input.driver, next, input.sha256, input.action);
+  const rows = db.all(
+    `SELECT s.vertical_slug, s.binding, s.first_version_id, ${WALKED} AS walked
+       FROM vertical_scope_stores AS s WHERE s.driver = ? ORDER BY s.vertical_slug, s.binding`,
+    attempt, input.driver,
+  ) as unknown as (DeclarationRow & { walked: number })[];
+  const pending = targetsOf(rows.filter((r) => !r.walked));
+  const walked = new Set(rows.filter((r) => r.walked).map((r) => r.vertical_slug)).size;
+  return { verticals: pending.slice(0, input.limit), pending: pending.length, walked, unreadable };
+}
+
+/**
+ * What the attempt of the rollout at `seq` walked in its EARLIER requests and still declares the
+ * driver, in (vertical, binding) order: the verticals a failure part way returns, besides the ones
+ * its own request reached (#2312). At most `limit`, and `walked` counts them all.
+ */
+export function storeDriverRolloutWalkedIn(
+  db: SwitchSql,
+  input: { driver: string; seq: number; limit: number },
+): { verticals: StoreDriverRolloutTarget[]; walked: number } {
+  assertLimit(input.limit);
+  const row = rolloutAt(db, input.driver, input.seq);
+  if (!row) throw substratError('not_found', `'${input.driver}' has no rollout ${input.seq}`);
+  const attempt = attemptOf(db, input.driver, input.seq, row.sha256, row.action);
+  const walked = targetsOf(db.all(
+    `SELECT s.vertical_slug, s.binding, s.first_version_id FROM vertical_scope_stores AS s
+      WHERE s.driver = ? AND ${WALKED} ORDER BY s.vertical_slug, s.binding`,
+    input.driver, attempt,
+  ) as unknown as DeclarationRow[]);
+  return { verticals: walked.slice(0, input.limit), walked: walked.length };
 }

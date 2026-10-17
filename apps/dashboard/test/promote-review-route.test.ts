@@ -8,7 +8,7 @@ import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 import type { PromotionReview } from '../src/promotion-review.js';
-import { classifyRefusal, planPermission, promoteWithCheckpoint, type Acks, type Checkpoint, type PromoteReviewWire } from '../web/src/lib/promote-review.js';
+import { classifyRefusal, planPermission, promoteWithCheckpoint, type Acks, type Checkpoint, type PromoteReviewWire, type SentAcks } from '../web/src/lib/promote-review.js';
 
 /**
  * `GET /api/deployments/:slug/promote-review` and the dialog's logic against the REAL gate
@@ -180,7 +180,7 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
   const get = (sub: string | null, path: string) =>
     app.request(path, { method: 'GET', headers: sub ? { cookie: `sb_session=${sub}` } : {} }, env);
   const reviewPath = (versionId: string, slug = SLUG) => `/api/deployments/${encodeURIComponent(slug)}/promote-review?versionId=${versionId}`;
-  const promoteTo = (id: string, ack?: Acks) => host.admin.promoteVersion(staff, SLUG, 'prod', id, ack);
+  const promoteTo = (id: string, ack?: SentAcks) => host.admin.promoteVersion(staff, SLUG, 'prod', id, ack);
   const prod = async () => (await host.admin.listChannels(staff, SLUG)).find((c) => c.channel === 'prod')?.versionId ?? null;
 
   describe('the route', () => {
@@ -204,7 +204,17 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
         incomingRegistry: null,
         migrations: null,
         exportBreaks: null,
+        review: null,
       });
+    });
+
+    it('carries the binding the migrations read answered beside its diff (#2333)', async () => {
+      await promoteTo(v.v1);
+      const body = (await (await get(subs.owner, reviewPath(v.v3))).json()) as PromoteReviewWire;
+      expect(body.review).toEqual({ base: v.v1, digest: expect.stringMatching(/^[0-9a-f]{64}$/) });
+      // The gate takes it: it describes what the host would apply.
+      await promoteTo(v.v3, { migrationChange: true, review: body.review! });
+      expect(await prod()).toBe(v.v3);
     });
 
     it('a version pushed before registries were kept reads as null — the answer, not a failure', async () => {
@@ -289,10 +299,13 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
       if (!res.ok) throw new Error(`${res.status}`);
       return (await res.json()) as PromoteReviewWire;
     };
-    /** The gate is the host's own; what it was sent is what a spy on it records. */
+    /** The gate is the host's own; what it was sent is what a spy on it records — the flags, the binding apart. */
     const sentAcks: Array<Acks | undefined> = [];
+    /** #2333: the review binding each promote carried. */
+    const sentReviews: Array<SentAcks['review']> = [];
     const drive = (id: string, ...answers: Array<Acks | null>) => {
       sentAcks.length = 0;
+      sentReviews.length = 0;
       const shown: Checkpoint[] = [];
       return {
         shown,
@@ -300,7 +313,9 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
           promoteWithCheckpoint({
             review: () => review(id),
             promote: (ack) => {
-              sentAcks.push(ack);
+              const { review: bound, ...flags } = ack ?? {};
+              sentAcks.push(Object.keys(flags).length > 0 ? flags : undefined);
+              sentReviews.push(bound);
               return promoteTo(id, ack);
             },
             ask: async (c) => {
@@ -413,6 +428,112 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
       await expect(d.run()).rejects.toBeDefined();
       expect(sentAcks).toEqual([]);
       expect(d.shown).toEqual([]);
+      expect(await prod()).toBe(v.v1);
+    });
+
+    it('every promote carries the review it answers (#2333)', async () => {
+      await promoteTo(v.v1);
+      const d = drive(v.v4, { permissionChange: true }, { migrationChange: true });
+      expect(await d.run()).toBe('promoted');
+      expect(sentReviews).toHaveLength(2);
+      expect(sentReviews.every((r) => r !== undefined && r.base === v.v1)).toBe(true);
+      // Read again now that v4 serves, a review names another base — the one each send did not.
+      const read = (await (await get(subs.owner, reviewPath(v.v3))).json()) as PromoteReviewWire;
+      expect(read.review?.base).toBe(v.v4);
+    });
+
+    it('prod moving between the review and the acknowledgement: refused, read again, asked again from scratch (#2333)', async () => {
+      await promoteTo(v.v1);
+      let moved = false;
+      const shown: Checkpoint[] = [];
+      sentReviews.length = 0;
+      const outcome = await promoteWithCheckpoint({
+        review: () => review(v.v4),
+        promote: (ack) => {
+          sentReviews.push(ack?.review);
+          return promoteTo(v.v4, ack);
+        },
+        ask: async (c) => {
+          shown.push(c);
+          // While the person reads the first review, someone else promotes v2.
+          if (!moved) {
+            moved = true;
+            await promoteTo(v.v2, { permissionChange: true });
+          }
+          return { permissionChange: true, migrationChange: true };
+        },
+      });
+      expect(outcome).toBe('promoted');
+      expect(shown[0]!.reviewMoved).toBeUndefined();
+      // The second is the review over v2, said to be one, with nothing carried over from the first.
+      expect(shown[1]!.reviewMoved).toBe(true);
+      expect(shown[1]!.acknowledged).toEqual({});
+      // (v4 adds no SQL, so its migration digest is learned from the gate in a third round, as before.)
+      expect(shown).toHaveLength(3);
+      expect(sentReviews.map((r) => r?.base)).toEqual([v.v1, v.v2, v.v2]);
+      expect(await prod()).toBe(v.v4);
+    });
+
+    it('declining the re-asked review promotes nothing (#2333)', async () => {
+      await promoteTo(v.v1);
+      let round = 0;
+      const outcome = await promoteWithCheckpoint({
+        review: () => review(v.v4),
+        promote: (ack) => promoteTo(v.v4, ack),
+        ask: async () => {
+          if (round++ === 0) {
+            await promoteTo(v.v2, { permissionChange: true });
+            return { permissionChange: true, migrationChange: true };
+          }
+          return null;
+        },
+      });
+      expect(outcome).toBe('cancelled');
+      expect(await prod()).toBe(v.v2);
+    });
+  });
+
+  describe('the worker relays a review refusal with its reason (#2333)', () => {
+    const post = (body: unknown) =>
+      app.request(
+        `/api/deployments/${encodeURIComponent(SLUG)}/promote`,
+        { method: 'POST', headers: { cookie: `sb_session=${subs.owner}`, 'content-type': 'application/json' }, body: JSON.stringify(body) },
+        env,
+      );
+
+    it('a stale binding is a 412 the dialog can tell apart; a current one promotes', async () => {
+      await promoteTo(v.v1);
+      const shown = ((await (await get(subs.owner, reviewPath(v.v3))).json()) as PromoteReviewWire).review!;
+      await promoteTo(v.v2, { permissionChange: true });
+      const stale = await post({ channel: 'prod', versionId: v.v3, acknowledge: { permissionChange: true, migrationChange: true, review: shown } });
+      expect(stale.status).toBe(412);
+      const problem = (await stale.json()) as { reason?: string; detail?: string };
+      expect(problem.reason).toBe('promote_review_stale');
+      expect(classifyRefusal(problem.detail ?? '', problem.reason)).toEqual({ kind: 'review-moved' });
+      expect(await prod()).toBe(v.v2);
+
+      const again = ((await (await get(subs.owner, reviewPath(v.v3))).json()) as PromoteReviewWire).review!;
+      const ok = await post({ channel: 'prod', versionId: v.v3, acknowledge: { permissionChange: true, migrationChange: true, review: again } });
+      expect(ok.status).toBe(204);
+      expect(await prod()).toBe(v.v3);
+    });
+
+    it('a migration acknowledgement with no binding is refused with its own reason', async () => {
+      await promoteTo(v.v1);
+      const res = await post({ channel: 'prod', versionId: v.v3, acknowledge: { migrationChange: true } });
+      expect(res.status).toBe(412);
+      expect(((await res.json()) as { reason?: string }).reason).toBe('promote_review_unbound');
+    });
+
+    it('a viewer cannot promote, bound or not', async () => {
+      await promoteTo(v.v1);
+      const shown = ((await (await get(subs.viewer, reviewPath(v.v3))).json()) as PromoteReviewWire).review!;
+      const res = await app.request(
+        `/api/deployments/${encodeURIComponent(SLUG)}/promote`,
+        { method: 'POST', headers: { cookie: `sb_session=${subs.viewer}`, 'content-type': 'application/json' }, body: JSON.stringify({ channel: 'prod', versionId: v.v3, acknowledge: { migrationChange: true, review: shown } }) },
+        env,
+      );
+      expect(res.status).toBe(403);
       expect(await prod()).toBe(v.v1);
     });
   });

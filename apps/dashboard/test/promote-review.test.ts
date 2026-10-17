@@ -648,3 +648,70 @@ describe('a review that needs all three acknowledgements', () => {
     expect(g.sent).toEqual([EVERY]);
   });
 });
+
+describe('the review binding (#2333)', () => {
+  const B1 = { base: 'v1', digest: 'a'.repeat(64) };
+  const B2 = { base: 'v9', digest: 'b'.repeat(64) };
+  /** An error the way `call` raises a review refusal: the problem's reason beside its sentence. */
+  const moved = () => Object.assign(new Error('the promote review is stale: …'), { reason: 'promote_review_stale' });
+
+  it('reads the reason, never the sentence', () => {
+    expect(classifyRefusal('anything at all', 'promote_review_stale')).toEqual({ kind: 'review-moved' });
+    expect(classifyRefusal('anything at all', 'promote_review_unbound')).toEqual({ kind: 'review-moved' });
+    expect(classifyRefusal('the promote review is stale: it was read against version v1')).toBeNull();
+    expect(classifyRefusal(PERM_REFUSAL, 'some_other_reason')).toEqual({ kind: 'permission', digests: 'aaa111 → bbb222' });
+  });
+
+  it('sends the binding with every promote, even one that acknowledges nothing', async () => {
+    const sent: unknown[] = [];
+    await promoteWithCheckpoint({ review: async () => review({ review: B1 }), promote: async (a) => void sent.push(a), ask: async () => null });
+    expect(sent).toEqual([{ review: B1 }]);
+  });
+
+  it('a stale refusal reads the review again and asks it from scratch, with the new binding', async () => {
+    const reads = [review({ review: B1, incomingRegistry: reg({ permissions: [] }) }), review({ serving: { versionId: 'v9' }, review: B2, incomingRegistry: reg({ permissions: [] }) })];
+    const sent: unknown[] = [];
+    const shown: Checkpoint[] = [];
+    const outcome = await promoteWithCheckpoint({
+      review: async () => reads.shift()!,
+      promote: async (a) => {
+        sent.push(a);
+        if (sent.length === 1) throw moved();
+      },
+      ask: async (c) => (shown.push(c), { permissionChange: true }),
+    });
+    expect(outcome).toBe('promoted');
+    expect(shown.map((c) => c.reviewMoved ?? false)).toEqual([false, true]);
+    expect(shown[1]!.acknowledged).toEqual({});
+    expect(sent).toEqual([{ permissionChange: true, review: B1 }, { permissionChange: true, review: B2 }]);
+  });
+
+  it('a first promotion met by a digest refusal reads the review again: something serves now', async () => {
+    const reads = [review({ serving: null, review: null }), review({ review: B1, incomingRegistry: reg({ permissions: [] }) })];
+    const sent: unknown[] = [];
+    const outcome = await promoteWithCheckpoint({
+      review: async () => reads.shift()!,
+      promote: async (a) => {
+        sent.push(a);
+        if (sent.length === 1) throw new Error(PERM_REFUSAL);
+      },
+      ask: async () => ({ permissionChange: true }),
+    });
+    expect(outcome).toBe('promoted');
+    expect(sent).toEqual([undefined, { permissionChange: true, review: B1 }]);
+  });
+
+  it('prod moving under every review is reported, not chased', async () => {
+    let promotes = 0;
+    const run = promoteWithCheckpoint({
+      review: async () => review({ review: B1 }),
+      promote: async () => {
+        promotes++;
+        throw moved();
+      },
+      ask: async () => ({}),
+    });
+    await expect(run).rejects.toThrow(/kept changing/);
+    expect(promotes).toBe(3);
+  });
+});

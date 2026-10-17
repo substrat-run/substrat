@@ -5,7 +5,7 @@ import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
 import type { ScopeCopyBackfillResult, SubjectErasureFence } from './scope-copy-ledger.js';
 import type { VerticalScopeStore } from './vertical-scope-stores.js';
-import type { StoreDriverHoldMode, StoreDriverRebuildFailure, StoreDriverRebuildRecord, StoreDriverReleaseRecord, StoreDriverRolloutAction, StoreDriverRolloutRecord, StoreDriverRolloutState, StoreDriverState } from './store-driver-releases.js';
+import type { StoreDriverHoldMode, StoreDriverRebuildFailure, StoreDriverRebuildRecord, StoreDriverReleaseRecord, StoreDriverRolloutAction, StoreDriverRolloutRecord, StoreDriverRolloutState, StoreDriverRolloutTarget, StoreDriverState } from './store-driver-releases.js';
 import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
   OnBehalfOf,
@@ -3109,6 +3109,25 @@ export interface HostAdmin {
    */
   storeDriverDeclarations(actor: PlatformActorId, driver: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
   /**
+   * What the next request of a rollout of `sha256` (or a rollback to it) walks (#2312): the first
+   * `limit` verticals, in (vertical, binding) order, holding a declaration of the driver the attempt
+   * it would continue has not walked yet; `pending` counts them all and `walked` the verticals that
+   * attempt walked. A request that continues no attempt (the rows before it are not `paused` at the
+   * same release and action) walks every declaration. `unreadable` as `storeDriverDeclarations`.
+   */
+  storeDriverRolloutPending(
+    actor: PlatformActorId,
+    input: { driver: string; sha256: string; action: StoreDriverRolloutAction; limit: number },
+  ): Promise<{ verticals: StoreDriverRolloutTarget[]; pending: number; walked: number; unreadable: string[] }>;
+  /**
+   * What the attempt of the rollout at `seq` walked in its earlier requests, in (vertical, binding)
+   * order, at most `limit` (#2312): what a failure part way returns besides its own request's.
+   */
+  storeDriverRolloutWalked(
+    actor: PlatformActorId,
+    input: { driver: string; seq: number; limit: number },
+  ): Promise<{ verticals: StoreDriverRolloutTarget[]; walked: number }>;
+  /**
    * Take or renew a lease on a driver (#2300): `exclusive` for a rollout or rollback, `shared` for
    * a push or serve rebuilding a script. False when a live hold of another holder excludes it.
    * `renew` extends only a hold the holder still holds (a lapsed one answers false, never a fresh
@@ -3128,10 +3147,21 @@ export interface HostAdmin {
     actor: PlatformActorId,
     input: { driver: string; sha256: string; action: StoreDriverRolloutAction; holder: string },
   ): Promise<StoreDriverRolloutRecord>;
-  /** End a rollout as its exclusive holder; a `good` end makes its release current. Audited as its begin. */
+  /**
+   * End a rollout as its exclusive holder; a `good` end makes its release current. Audited as its
+   * begin. A `paused` end records `walked`, what its request walked, in the attempt's ledger, in
+   * the same transaction (#2312); any other end drops the ledger, and `walked` with it is refused.
+   */
   finishStoreDriverRollout(
     actor: PlatformActorId,
-    input: { driver: string; seq: number; holder: string; state: Exclude<StoreDriverRolloutState, 'rolling'>; detail: string | null },
+    input: {
+      driver: string;
+      seq: number;
+      holder: string;
+      state: Exclude<StoreDriverRolloutState, 'rolling'>;
+      detail: string | null;
+      walked?: readonly StoreDriverRolloutTarget[];
+    },
   ): Promise<StoreDriverRolloutRecord>;
   /** The platform's rebuild of every script of a driver (#2309), or undefined before its first. */
   storeDriverRebuild(actor: PlatformActorId, driver: string): Promise<StoreDriverRebuildRecord | undefined>;

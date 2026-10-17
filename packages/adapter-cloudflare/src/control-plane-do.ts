@@ -97,6 +97,8 @@ import {
   releaseStoreDriverHoldIn,
   storeDriverReleaseIn,
   storeDriverStateIn,
+  storeDriverRolloutPendingIn,
+  storeDriverRolloutWalkedIn,
   type StoreDriverHoldMode,
   type StoreDriverRebuildFailure,
   type StoreDriverRebuildRecord,
@@ -104,6 +106,7 @@ import {
   type StoreDriverRolloutAction,
   type StoreDriverRolloutRecord,
   type StoreDriverRolloutState,
+  type StoreDriverRolloutTarget,
   type StoreDriverState,
   forgetVerticalScopeStores,
   indexVersionScopeStores,
@@ -1480,6 +1483,9 @@ export const REPLIED_METHODS = [
   // validation_failed or unavailable.
   'recordStoreDriverRelease',
   'storeDriverDeclarations',
+  // #2312: a rollout page refuses a limit that is not positive, and an unknown rollout.
+  'storeDriverRolloutPending',
+  'storeDriverRolloutWalked',
   'holdStoreDriver',
   'beginStoreDriverRollout',
   'finishStoreDriverRollout',
@@ -2357,6 +2363,19 @@ export class ControlPlaneDO extends DurableObject {
     return this.ctx.storage.transactionSync(() => driverDeclarationsOf(this.kernelSql, driver));
   }
 
+  storeDriverRolloutPending(input: { driver: string; sha256: string; action: StoreDriverRolloutAction; limit: number }): {
+    verticals: StoreDriverRolloutTarget[];
+    pending: number;
+    walked: number;
+    unreadable: string[];
+  } {
+    return this.ctx.storage.transactionSync(() => storeDriverRolloutPendingIn(this.kernelSql, input));
+  }
+
+  storeDriverRolloutWalked(input: { driver: string; seq: number; limit: number }): { verticals: StoreDriverRolloutTarget[]; walked: number } {
+    return this.ctx.storage.transactionSync(() => storeDriverRolloutWalkedIn(this.kernelSql, input));
+  }
+
   holdStoreDriver(input: { driver: string; holder: string; mode: StoreDriverHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): boolean {
     return this.ctx.storage.transactionSync(() => holdStoreDriverIn(this.kernelSql, { ...input, nowMs: Date.now() }));
   }
@@ -2382,6 +2401,7 @@ export class ControlPlaneDO extends DurableObject {
     holder: string;
     state: Exclude<StoreDriverRolloutState, 'rolling'>;
     detail: string | null;
+    walked?: readonly StoreDriverRolloutTarget[];
     at: string;
   }): StoreDriverRolloutRecord {
     return this.ctx.storage.transactionSync(() => finishStoreDriverRolloutIn(this.kernelSql, { ...input, nowMs: Date.now() }));
@@ -3638,13 +3658,25 @@ export class ControlPlaneDO extends DurableObject {
       .toArray()[0] as unknown as ChannelRow | undefined;
   }
 
-  setChannel(verticalSlug: string, channel: string, versionId: string, updatedAt: string): void {
-    this.sql.exec(
-      `INSERT INTO vertical_channels (vertical_slug, channel, version_id, updated_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT (vertical_slug, channel) DO UPDATE SET version_id = ?, updated_at = ?`,
-      verticalSlug, channel, versionId, updatedAt, versionId, updatedAt,
-    );
+  /**
+   * #2333: move a channel's pointer, and record the move, only if it still names `from` (null: the
+   * channel has none yet). A compare-and-set in one synchronous transaction, so no other promote
+   * runs between the read and the write: a promote judged its gates against `from` across awaits,
+   * and the one that lost the race is told so (`false`) and writes nothing.
+   */
+  moveChannel(from: string | null, history: ChannelHistoryRow): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const now = this.readChannel(history.vertical_slug, history.channel);
+      if ((now?.version_id ?? null) !== from) return false;
+      this.sql.exec(
+        `INSERT INTO vertical_channels (vertical_slug, channel, version_id, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT (vertical_slug, channel) DO UPDATE SET version_id = ?, updated_at = ?`,
+        history.vertical_slug, history.channel, history.version_id, history.at, history.version_id, history.at,
+      );
+      this.insertChannelHistory(history);
+      return true;
+    });
   }
 
   listChannels(verticalSlug: string, page?: ListPage): ChannelRow[] {

@@ -667,6 +667,8 @@ export {
   storeDriverRebuildIn,
   storeDriverReleaseIn,
   storeDriverStateIn,
+  storeDriverRolloutPendingIn,
+  storeDriverRolloutWalkedIn,
   type StoreDriverHoldMode,
   type StoreDriverRebuildFailure,
   type StoreDriverRebuildRecord,
@@ -674,6 +676,7 @@ export {
   type StoreDriverRolloutAction,
   type StoreDriverRolloutRecord,
   type StoreDriverRolloutState,
+  type StoreDriverRolloutTarget,
   type StoreDriverState,
 } from './store-driver-releases.js';
 export type { SplitManifest } from './version-migrations.js';
@@ -682,6 +685,7 @@ export {
   collectPeers,
   peerGrantsStatus,
   peerSeats,
+  boundToPeerDeclarations,
   peerSubjectRef,
   resolveVerticalInstanceFrom,
   switchPeer,
@@ -858,6 +862,13 @@ export {
   BIND_EXPORT_BREAK_REFUSAL,
   isBindExportBreakRefusal,
 } from './export-break.js';
+export {
+  promoteReviewDigest,
+  assertPromoteReviewCurrent,
+  promoteReviewRefusalOf,
+  promoteRaceRefusal,
+  type ReviewedVersion,
+} from './promote-review.js';
 export {
   PROVISIONED_VERSIONS_SQL,
   installsReconciledOf,

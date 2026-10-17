@@ -9,12 +9,13 @@ import type {
   VerticalChannel,
   VerticalVersion,
 } from '@substrat-run/contracts';
-import { clipReviewText, discardTally, grantShapeHolderNotes, reviewLine, reviewSql, type MigrationEntry } from '@substrat-run/contracts';
+import { clipReviewText, discardTally, grantShapeHolderNotes, promoteReviewReasonIn, reviewLine, reviewSql, type MigrationEntry } from '@substrat-run/contracts';
 import { Badge, Button, Card, Checkbox, Dialog, Input, Select, SelectBox, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
 import type { Api, EgressReport } from '../lib/api';
 import {
+  boundAcknowledgement,
   exportBreakAckNeeded,
   promoteAckSatisfied,
   readReview,
@@ -621,12 +622,27 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
       onToast('Acknowledge the change to promote', 'The permission or migration surface changed.', 'danger');
       return;
     }
-    await run(
-      'promote',
-      () => api.promoteVersion(vertical.slug, promote.channel, promote.versionId, ack),
-      `Promoted ${promote.channel}`,
-      versionById(promote.versionId)?.version,
-    );
+    setBusy('promote');
+    try {
+      await api.promoteVersion(vertical.slug, promote.channel, promote.versionId, boundAcknowledgement(ack, review));
+    } catch (e) {
+      // #2333: the review these boxes were ticked against is no longer what the promote would apply
+      // (or a migration acknowledgement went without one). Reload what the channel points at, which
+      // re-reads the review in this same dialog, and ask again from scratch.
+      if (promoteReviewReasonIn((e as { body?: unknown }).body) !== undefined) {
+        setAck({});
+        await loadDetail(vertical.slug).catch(() => undefined);
+        onToast('Review again', 'The channel changed while you were reviewing — this is what the promotion would apply now.', 'danger');
+      } else {
+        onToast('Refused', (e as Error).message, 'danger');
+      }
+      return;
+    } finally {
+      setBusy(null);
+    }
+    onChanged();
+    await loadDetail(vertical.slug);
+    onToast(`Promoted ${promote.channel}`, versionById(promote.versionId)?.version);
     setPromote(null);
     setAck({});
   }

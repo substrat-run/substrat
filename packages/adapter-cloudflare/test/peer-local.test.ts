@@ -1494,3 +1494,98 @@ describe('#2045 — overlapping switch calls end with the record and the scope a
     expect(await platform.admin.peerSwitchCarry(staff, node)).toEqual({ switchedOffPeers: [], tenantHeldPeers: [], fences: {} });
   });
 });
+
+/**
+ * #2263: a version that NARROWS a peer, or drops it, takes the keys away on its first call — on
+ * real DO SQLite. Storage is seated by a host registering the WIDER `peerMod` (the platform seats
+ * from the version it reconciles from), and served by a ScopeDO class whose code declares less:
+ * the stale tuples stay live as evidence, and the DO's checker, bounded by the running
+ * declaration, never holds them.
+ */
+describe('#2263 — a narrowed or removed peer declaration holds nothing it no longer names', () => {
+  beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
+
+  const READ = permissionKey.parse('peer:read');
+  const WRITE = permissionKey.parse('peer:write');
+  const t = tenantId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  const caller = { vertical: PEER_CALLER, scope: scopeId.parse(ulid()) };
+  const hostOn = (ns: DurableObjectNamespace) => {
+    const host = new CloudflareScopeHost({ scope: ns });
+    host.registerModule(peerMod);
+    return host;
+  };
+  const provisionWide = async (ns: DurableObjectNamespace) => {
+    const s = scopeId.parse(ulid());
+    await hostOn(ns).provisionScopeLocal({
+      tenantId: t,
+      scopeId: s,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [READ, WRITE], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+    });
+    return s;
+  };
+  const refusal = (p: Promise<unknown>): Promise<string | undefined> =>
+    p.then(
+      () => undefined,
+      (e: unknown) => errorCodeOf(e),
+    );
+  const liveSeats = async (ns: DurableObjectNamespace, s: ScopeId) =>
+    (
+      await hostOn(ns).introspectScopeQuery(s, {
+        sql: `SELECT relation FROM _substrat_tuples WHERE subject = 'vertical:${PEER_CALLER}'
+               AND substr(relation, 1, 8) = 'granted:' AND revoked_at IS NULL ORDER BY relation`,
+      })
+    ).rows.map((r) => r[0]);
+
+  it('a dropped key is not held, and a call checking it is denied, though its tuple stays', async () => {
+    const s = await provisionWide(env.NARROWED_PEER_SCOPE);
+    const host = hostOn(env.NARROWED_PEER_SCOPE);
+    expect(await liveSeats(env.NARROWED_PEER_SCOPE, s)).toEqual(['granted:peer:read', 'granted:peer:write']);
+    expect(await host.peerCovers(t, s, PEER_CALLER, [READ, WRITE])).toEqual([
+      { permission: READ, held: true },
+      { permission: WRITE, held: false },
+    ]);
+    expect(await refusal(host.verticalInvokeLocal(caller, t, s, 'peer/note', { id: 'w1', body: 'x' }))).toBe('permission_denied');
+    await expect(host.verticalInvokeLocal(caller, t, s, 'peer/list')).resolves.toEqual([]);
+    expect((await host.peerGrantsStatusLocal(s)).find((p) => p.vertical === PEER_CALLER)?.calls).toBe('on');
+  });
+
+  it('the kill switch OFF then ON gives back only what the running declaration names', async () => {
+    const s = await provisionWide(env.NARROWED_PEER_SCOPE);
+    const host = hostOn(env.NARROWED_PEER_SCOPE);
+    await host.peerSwitchLocal(s, PEER_CALLER, 'off');
+    expect((await host.peerCovers(t, s, PEER_CALLER, [READ, WRITE])).some((c) => c.held)).toBe(false);
+    await host.peerSwitchLocal(s, PEER_CALLER, 'on');
+    // ON gave the tuple back (it is the switch's to give) — and the declaration still bounds it.
+    expect(await liveSeats(env.NARROWED_PEER_SCOPE, s)).toEqual(['granted:peer:read', 'granted:peer:write']);
+    expect(await host.peerCovers(t, s, PEER_CALLER, [READ, WRITE])).toEqual([
+      { permission: READ, held: true },
+      { permission: WRITE, held: false },
+    ]);
+    expect(await refusal(host.verticalInvokeLocal(caller, t, s, 'peer/note', { id: 'w2', body: 'x' }))).toBe('permission_denied');
+  });
+
+  it('a removed peer is refused at the door and holds nothing, though its tuples remain', async () => {
+    const s = await provisionWide(env.REMOVED_PEER_SCOPE);
+    const host = hostOn(env.REMOVED_PEER_SCOPE);
+    expect(await liveSeats(env.REMOVED_PEER_SCOPE, s)).toHaveLength(2);
+    expect(await refusal(host.verticalInvokeLocal(caller, t, s, 'peer/list'))).toBe('forbidden');
+    expect(await host.peerCovers(t, s, PEER_CALLER, [READ, WRITE])).toEqual([
+      { permission: READ, held: false },
+      { permission: WRITE, held: false },
+    ]);
+    // The status read agrees with the door: the panel must not say its grants are active.
+    expect((await host.peerGrantsStatusLocal(s)).find((p) => p.vertical === PEER_CALLER)?.calls).toBe('ungranted');
+  });
+
+  it('the twin: the wider code over the same seats holds both keys', async () => {
+    const s = await provisionWide(env.SCOPE);
+    expect(await hostOn(env.SCOPE).peerCovers(t, s, PEER_CALLER, [READ, WRITE])).toEqual([
+      { permission: READ, held: true },
+      { permission: WRITE, held: true },
+    ]);
+    expect((await hostOn(env.SCOPE).peerGrantsStatusLocal(s)).find((p) => p.vertical === PEER_CALLER)?.calls).toBe('on');
+  });
+});

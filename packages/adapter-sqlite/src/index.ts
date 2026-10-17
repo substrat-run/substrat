@@ -440,6 +440,7 @@ import {
   type RoleBound,
   type ScopeRoleHolder,
   admitPeer,
+  boundToPeerDeclarations,
   peerCallerAt,
   collectPeers,
   peerSeats,
@@ -516,6 +517,8 @@ import {
   releaseStoreDriverHoldIn,
   storeDriverReleaseIn,
   storeDriverStateIn,
+  storeDriverRolloutPendingIn,
+  storeDriverRolloutWalkedIn,
   splitManifestMigrations,
   splitVersionMigrationsBatch,
   versionMigrationsOf,
@@ -677,6 +680,9 @@ import {
   importCursorSourceOf,
   exportBreaksOf,
   exportBreakRefusal,
+  assertPromoteReviewCurrent,
+  promoteRaceRefusal,
+  type ReviewedVersion,
   bindExportBreaksOf,
   bindExportBreakRefusal,
   scopeMoveOf,
@@ -2068,7 +2074,8 @@ export class SqliteScopeHost implements ScopeHost {
       this.directory.pragma('journal_mode = WAL');
       this.ensureDirectorySchema();
       this.loadRoles();
-      this.checker =
+      // #2263: whichever checker evaluates, a peer holds only what the running declaration names.
+      this.checker = boundToPeerDeclarations(
         customChecker ??
         createTupleChecker({
           directory: this.directory,
@@ -2078,7 +2085,9 @@ export class SqliteScopeHost implements ScopeHost {
           // scripted one can actually expire a grant. A caller-supplied `checker`
           // keeps its own time source — this only binds the built-in one.
           clock: () => this.clock(),
-        });
+        }),
+        () => this.peerDeclarations(),
+      );
       this.admin = this.buildAdmin();
       this.owner = owner;
     } catch (err) {
@@ -3063,6 +3072,7 @@ export class SqliteScopeHost implements ScopeHost {
     }
     // #1705: validated whole and kept only if it passes, so a refused module leaves nothing.
     this.crossVertical.register(manifest, registration.imports);
+    this.peerUnion = undefined; // #2263: the next check reads the new module set's declarations
     this.modules.set(manifest.id, {
       id: manifest.id,
       // The order the kernel writes once (#1677): authored, then search, then list indexes.
@@ -5213,10 +5223,15 @@ export class SqliteScopeHost implements ScopeHost {
     return this.buildAttachments(rt, { kind: 'capability-session', hash }, store);
   }
 
-  /** Every registered module's `peers`, as one declaration per peer vertical (#1706). */
+  /**
+   * Every registered module's `peers`, as one declaration per peer vertical (#1706). Built once
+   * per registered module set and dropped by `registerModule` (#2263): the checker reads it on
+   * every check, so it must be a lookup, never a rebuild.
+   */
   private peerDeclarations(): PeerDeclarations {
-    return collectPeers(this.modules.values());
+    return (this.peerUnion ??= collectPeers(this.modules.values()));
   }
+  private peerUnion: PeerDeclarations | undefined;
 
   /**
    * The peer door (#1706) — mirror of the connection, system and capability doors. The caller is
@@ -8311,7 +8326,7 @@ export class SqliteScopeHost implements ScopeHost {
       }
       const rt = this.runtime(tenantId, scopeId);
       const states: PeerGrantsRow[] = await rt.actor.turn(() =>
-        peerGrantsStatus(switchSqlOf(rt.db), new Date().toISOString()),
+        peerGrantsStatus(switchSqlOf(rt.db), new Date().toISOString(), this.peerDeclarations()),
       );
       const offPeers = new Set(states.filter((p) => p.calls === 'off').map((p) => p.vertical));
       const explanations =
@@ -9443,6 +9458,19 @@ export class SqliteScopeHost implements ScopeHost {
           served || owned.length > 0 ? this.provisionedVersionsOf(verticalSlug, served, owned.length > 0 ? owning!.ownerTenant : null) : [],
         );
 
+        // #2333: the acknowledgements answer the review they were given against, or none at all.
+        const reviewed = (v: VerticalVersion): ReviewedVersion => ({
+          ...v,
+          migrations: versionMigrationsOf(switchSqlOf(this.directory), v.id)?.migrations ?? null,
+        });
+        await assertPromoteReviewCurrent({
+          ack,
+          channel,
+          baseId: outgoing?.id ?? null,
+          migrationsChange: outgoing !== undefined && outgoing.migrationDigest !== incoming.migrationDigest,
+          read: async () => ({ base: outgoing ? reviewed(outgoing) : null, incoming: reviewed(incoming) }),
+        });
+
         // §4's two checkpoints, fired where the blast radius is. A FIRST promotion
         // has nothing to diff against, so there is nothing to acknowledge — the
         // gate is about change, not about existence.
@@ -9467,22 +9495,34 @@ export class SqliteScopeHost implements ScopeHost {
         }
 
         const promotedAt = new Date().toISOString();
-        this.directory
-          .prepare(
-            `INSERT INTO vertical_channels (vertical_slug, channel, version_id, updated_at)
-             VALUES (?, ?, ?, ?)
-             ON CONFLICT (vertical_slug, channel) DO UPDATE SET version_id = ?, updated_at = ?`,
-          )
-          .run(verticalSlug, channel, versionId, promotedAt, versionId, promotedAt);
-        // The timeline row: what makes rollback a choice among recorded moments, and
-        // `at` the PITR anchor a data rollback would rewind to.
-        this.directory
-          .prepare(
-            `INSERT INTO vertical_channel_history
-               (id, vertical_slug, channel, version_id, from_version_id, actor, at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(ulid(), verticalSlug, channel, versionId, outgoing?.id ?? null, actor, promotedAt);
+        // #2333: a compare-and-set. Every gate above — the review binding, the digest checkpoints,
+        // the export breaks — was judged against `outgoing`, across awaits another promote can run
+        // in. So the pointer moves only if it still names `outgoing`, read and written in one
+        // transaction; the promote that lost the race is refused as stale and writes nothing.
+        const moved = this.directory.transaction(() => {
+          const now = this.directory
+            .prepare('SELECT version_id FROM vertical_channels WHERE vertical_slug = ? AND channel = ?')
+            .get(verticalSlug, channel) as { version_id: string } | undefined;
+          if ((now?.version_id ?? null) !== (outgoing?.id ?? null)) return false;
+          this.directory
+            .prepare(
+              `INSERT INTO vertical_channels (vertical_slug, channel, version_id, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT (vertical_slug, channel) DO UPDATE SET version_id = ?, updated_at = ?`,
+            )
+            .run(verticalSlug, channel, versionId, promotedAt, versionId, promotedAt);
+          // The timeline row: what makes rollback a choice among recorded moments, and
+          // `at` the PITR anchor a data rollback would rewind to.
+          this.directory
+            .prepare(
+              `INSERT INTO vertical_channel_history
+                 (id, vertical_slug, channel, version_id, from_version_id, actor, at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(ulid(), verticalSlug, channel, versionId, outgoing?.id ?? null, actor, promotedAt);
+          return true;
+        })();
+        if (!moved) throw promoteRaceRefusal(channel);
 
         // For a PRIVATE vertical, prod IS what the owner's apps run: re-point the
         // owning tenant's live scopes in the same act, so merge-to-main (push +
@@ -10565,6 +10605,16 @@ export class SqliteScopeHost implements ScopeHost {
         const declared = this.directory.transaction(() => driverDeclarationsOf(switchSqlOf(this.directory), driver))();
         this.recordAccess(actor, 'storeDriverDeclarations', { tenantId: null }, { driver }, declared.verticals.length);
         return declared;
+      },
+      storeDriverRolloutPending: async (actor, input) => {
+        const page = this.directory.transaction(() => storeDriverRolloutPendingIn(switchSqlOf(this.directory), input))();
+        this.recordAccess(actor, 'storeDriverRolloutPending', { tenantId: null }, { driver: input.driver, sha256: input.sha256, action: input.action }, page.verticals.length);
+        return page;
+      },
+      storeDriverRolloutWalked: async (actor, input) => {
+        const walked = this.directory.transaction(() => storeDriverRolloutWalkedIn(switchSqlOf(this.directory), input))();
+        this.recordAccess(actor, 'storeDriverRolloutWalked', { tenantId: null }, { driver: input.driver, seq: input.seq }, walked.verticals.length);
+        return walked;
       },
       holdStoreDriver: async (_actor, input) =>
         this.directory.transaction(() =>

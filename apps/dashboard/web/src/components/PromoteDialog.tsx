@@ -60,6 +60,12 @@ export function PromoteDialog({
       onCancel={() => onAnswer(null)}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18, maxHeight: '60vh', overflowY: 'auto' }}>
+        {checkpoint.reviewMoved && (
+          <div role="status" style={{ ...muted, color: 'var(--status-warning-fg)' }}>
+            Prod changed while you were reviewing this promotion, so what it would apply changed too. This is the review as it stands
+            now — read it again; nothing you ticked before carries over.
+          </div>
+        )}
         {checkpoint.permission && (
           <Section title="Permission changes">
             <PermissionBody section={checkpoint.permission} servingLabel={servingLabel} incomingLabel={incomingLabel} />

@@ -12,10 +12,10 @@
  * rollout's read and its upload, and two rollouts never interleave. It canaries the release on the
  * platform's own object first, and no vertical's script moves unless every reserved operation
  * answered there. Then it moves each vertical that ever declared the driver, at most
- * {@link ROLLOUT_VERTICALS_PER_REQUEST} uploads per request. A bigger fleet ends the request
- * `paused`, and posting the same rollout (or rollback) again continues it, walking past the scripts
- * already there. A request that stops on a failure ends `failed` or `diverged`. One request walks at
- * most {@link ROLLOUT_FLEET_MAX} verticals, a rollback included, until #2312.
+ * {@link ROLLOUT_VERTICALS_PER_REQUEST} uploads and {@link ROLLOUT_WALKS_PER_REQUEST} verticals
+ * walked per request. A bigger fleet ends the request `paused`, and posting the same rollout (or
+ * rollback) again continues it from the attempt's walk ledger (#2312), so a fleet of any size
+ * converges, a rollback included. A request that stops on a failure ends `failed` or `diverged`.
  */
 import {
   STORE_RELEASE_MAX_BYTES,
@@ -28,7 +28,14 @@ import {
   type StoreDriverRegistration,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
-import { createUlid, ulid, type HostAdmin, type StoreDriverRolloutAction, type StoreDriverRolloutRecord } from '@substrat-run/kernel';
+import {
+  createUlid,
+  ulid,
+  type HostAdmin,
+  type StoreDriverRolloutAction,
+  type StoreDriverRolloutRecord,
+  type StoreDriverRolloutTarget,
+} from '@substrat-run/kernel';
 import { assertPythonDriverModules } from './store-entry.js';
 import type { ScopeStoreEnsurerOptions, StoreDriverReleaseArtifact } from './store-script.js';
 
@@ -56,12 +63,13 @@ export const PUSH_HOLD_TTL_MS = 10 * 60_000;
  */
 export const ROLLOUT_VERTICALS_PER_REQUEST = 100;
 /**
- * The most verticals one rollout walks. Every one costs a settings read and a hold renewal even
- * when it is already at the release, so a bigger fleet would outrun one invocation; it is refused
- * (409) rather than left unable to converge, and that blocks a rollback too. Raising it needs a
- * cursor on the rollout row: #2312.
+ * The verticals one rollout request walks. Every one costs a settings read and a hold renewal even
+ * when it is already at the release, so a request that reaches this many ends `paused` and the
+ * next continues from the walk ledger (#2312). It also bounds what a failure returns: an attempt
+ * that reached more ends `diverged` without returning any, and a rollback, paged the same way,
+ * converges them.
  */
-export const ROLLOUT_FLEET_MAX = 300;
+export const ROLLOUT_WALKS_PER_REQUEST = 300;
 
 type LoadRelease = ScopeStoreEnsurerOptions['loadRelease'];
 
@@ -219,6 +227,8 @@ export interface StoreDriverRolloutDeps {
   callCanary: CanaryCall;
   /** For a test: a smaller batch than {@link ROLLOUT_VERTICALS_PER_REQUEST}. */
   perRequest?: number;
+  /** For a test: fewer verticals walked per request than {@link ROLLOUT_WALKS_PER_REQUEST}. */
+  perRequestWalks?: number;
 }
 
 export interface StoreDriverRolloutResult {
@@ -227,6 +237,8 @@ export interface StoreDriverRolloutResult {
   moved: string[];
   /** False when verticals remain: post the same rollout again. */
   complete: boolean;
+  /** The verticals not walked yet; 0 once complete. */
+  remaining: number;
 }
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -242,18 +254,24 @@ class HoldLost extends ControlPlaneError {
 
 /**
  * Move every script of a driver to a stored, pinned release (D-63): hold, canary, then each
- * vertical. A failure after a vertical moved returns every vertical it reached to the release
- * the rollout started from, rehashing those bytes as it uploads them, and ends `failed`. It ends
- * `diverged` instead, naming what is where, when there is nothing to return to (a driver's first
- * rollout), when returning would lower the stored schema, or when a return fails: the next
- * rollout or rollback converges every script. The hold is renewed before every upload, the
- * returns included, and a hold that cannot be renewed stops everything at once: another holder
- * may be moving the same scripts, so nothing is returned either. The hold is released however it
- * ends.
+ * vertical. A failure after a vertical moved returns every vertical the attempt reached to the
+ * release the rollout started from, rehashing those bytes as it uploads them, and ends `failed`.
+ * It ends `diverged` instead, naming what is where, when there is nothing to return to (a driver's
+ * first rollout), when returning would lower the stored schema, when the attempt reached more
+ * verticals than one request returns, or when a return fails: the next rollout or rollback
+ * converges every script. The hold is renewed before every upload, the returns included, and a
+ * hold that cannot be renewed stops everything at once: another holder may be moving the same
+ * scripts, so nothing is returned either. The hold is released however it ends.
  *
- * Each request uploads at most `perRequest` scripts. A vertical already at the release is
- * walked past without counting, so posting the same rollout again continues where the last
- * request stopped, and a fleet of any size within {@link ROLLOUT_FLEET_MAX} converges.
+ * A fleet bigger than one request is paged (#2312). Each request walks at most
+ * {@link ROLLOUT_WALKS_PER_REQUEST} verticals and uploads at most `perRequest` scripts; one that runs out
+ * ends `paused`, and its end records what it walked in the attempt's ledger. Posting the same
+ * rollout (or rollback) again continues the attempt and walks only declarations the ledger does
+ * not hold, in (vertical, binding) order: a vertical declared between two requests, wherever it
+ * sorts, is walked by the next one, and one walked is never walked again. A request ends `good`
+ * only when the pending list it read under its exclusive hold was the whole of it and it walked
+ * every vertical on it: no push can create a script while the hold is held, so nothing declared
+ * can be left on another release.
  */
 export async function runStoreDriverRollout(deps: StoreDriverRolloutDeps): Promise<StoreDriverRolloutResult> {
   const { admin, actor, registration, sha256 } = deps;
@@ -263,21 +281,16 @@ export async function runStoreDriverRollout(deps: StoreDriverRolloutDeps): Promi
     throw new ControlPlaneError(409, `driver '${driver}' is being rolled out or a vertical declaring it is being pushed; try again shortly`);
   }
   try {
-    const declared = await admin.storeDriverDeclarations(actor, driver);
-    if (declared.unreadable.length > 0) {
+    const walkMax = deps.perRequestWalks ?? ROLLOUT_WALKS_PER_REQUEST;
+    const page = await admin.storeDriverRolloutPending(actor, { driver, sha256, action: deps.action, limit: walkMax });
+    if (page.unreadable.length > 0) {
       throw new ControlPlaneError(
         409,
-        `driver '${driver}' cannot be rolled out: ${declared.unreadable.join(', ')} ha${declared.unreadable.length === 1 ? 's a version' : 've versions'} whose stores cannot be named`,
-      );
-    }
-    if (declared.verticals.length > ROLLOUT_FLEET_MAX) {
-      throw new ControlPlaneError(
-        409,
-        `driver '${driver}' is declared by ${declared.verticals.length} verticals; a ${deps.action} walks at most ${ROLLOUT_FLEET_MAX}, so neither a rollout nor a rollback can run until rollouts page with a cursor (#2312)`,
+        `driver '${driver}' cannot be rolled out: ${page.unreadable.join(', ')} ha${page.unreadable.length === 1 ? 's a version' : 've versions'} whose stores cannot be named`,
       );
     }
     const row = await admin.beginStoreDriverRollout(actor, { driver, sha256, action: deps.action, holder });
-    const end = (state: 'good' | 'failed' | 'diverged' | 'paused', detail: string | null) =>
+    const end = (state: 'good' | 'failed' | 'diverged', detail: string | null) =>
       admin.finishStoreDriverRollout(actor, { driver, seq: row.seq, holder, state, detail });
     const renew = async () => {
       const held = await admin.holdStoreDriver(actor, { driver, holder, mode: 'exclusive', ttlMs: ROLLOUT_HOLD_TTL_MS, renew: true, rolloutSeq: row.seq });
@@ -287,79 +300,107 @@ export async function runStoreDriverRollout(deps: StoreDriverRolloutDeps): Promi
     try {
       await deps.ensureCanary(sha256).then(({ scriptName }) => canaryStoreRelease({ call: deps.callCanary, scriptName }));
     } catch (e) {
-      // No vertical's script moved; the current release stays. A row the end cannot write (the
-      // hold lapsed) reads as diverged, which is what it then is.
+      // No vertical's script moved in this request; the current release stays. A row the end
+      // cannot write (the hold lapsed) reads as diverged, which is what it then is.
       await end('failed', message(e)).catch(() => undefined);
       throw e;
     }
 
-    const targets = declared.verticals.map((v) => ({ vertical: v.vertical, stores: v.stores.map((s) => ({ binding: s.binding, driver })) }));
     const budget = deps.perRequest ?? ROLLOUT_VERTICALS_PER_REQUEST;
-    // Every vertical walked: the ones moved now, and the ones an earlier request moved.
-    const reached: string[] = [];
     const moved: string[] = [];
-    for (const target of targets) {
-      if (moved.length >= budget) {
-        const rest = targets.length - reached.length;
-        const rollout = await end('paused', `this request moved ${moved.length}; ${rest} vertical(s) not walked yet: post the same ${deps.action} again`);
-        return { rollout, moved, complete: false };
-      }
+    // Every vertical this request reached. A request that pauses failed at none of them, so its
+    // paused end records exactly the verticals whose ensure answered.
+    const reached: StoreDriverRolloutTarget[] = [];
+    for (const target of page.verticals) {
+      if (moved.length >= budget) break;
       try {
         await renew();
-        reached.push(target.vertical);
-        if (await deps.ensure({ vertical: target.vertical, stores: target.stores, to: sha256 })) moved.push(target.vertical);
+        reached.push(target);
+        const stores = target.stores.map((s) => ({ binding: s.binding, driver }));
+        if (await deps.ensure({ vertical: target.vertical, stores, to: sha256 })) moved.push(target.vertical);
       } catch (e) {
         const detail = e instanceof HoldLost
-          ? { state: 'diverged' as const, text: `Nothing was returned: ${reached.join(', ') || 'no vertical'} may run ${sha256}.` }
-          : await restore(deps, row.fromSha256, reached, targets, renew);
+          ? { state: 'diverged' as const, text: `Nothing was returned: ${reachedText(page.walked, reached)} may run ${sha256}.` }
+          : await restore(deps, row, page.walked, reached, renew);
         await end(detail.state, `${target.vertical}: ${message(e)}. ${detail.text}`).catch(() => undefined);
-        throw new ControlPlaneError(e instanceof ControlPlaneError ? e.status : 502, `rollout of '${driver}' to ${sha256} stopped at ${target.vertical} (${message(e)}). ${detail.text}`);
+        throw new ControlPlaneError(e instanceof ControlPlaneError ? e.status : 502, `${deps.action} of '${driver}' to ${sha256} stopped at ${target.vertical} (${message(e)}). ${detail.text}`);
       }
     }
-    return { rollout: await end('good', null), moved, complete: true };
+    const remaining = page.pending - reached.length;
+    if (remaining > 0) {
+      const rollout = await admin.finishStoreDriverRollout(actor, {
+        driver,
+        seq: row.seq,
+        holder,
+        state: 'paused',
+        detail: `this request walked ${reached.length} and moved ${moved.length}; ${remaining} vertical(s) not walked yet: post the same ${deps.action} again`,
+        walked: reached,
+      });
+      return { rollout, moved, complete: false, remaining };
+    }
+    return { rollout: await end('good', null), moved, complete: true, remaining: 0 };
   } finally {
     await admin.releaseStoreDriverHold(actor, { driver, holder }).catch(() => undefined);
   }
 }
 
+/** The verticals an attempt reached, for a refusal: earlier requests' count, then this one's names. */
+const reachedText = (before: number, reached: readonly StoreDriverRolloutTarget[]) => {
+  const names = reached.map((t) => t.vertical).join(', ');
+  if (before === 0) return names || 'no vertical';
+  return `${before} vertical(s) earlier requests of this attempt walked${names ? ` and ${names}` : ''}`;
+};
+
 /**
- * Return every vertical a failed rollout reached to the release it started from, where that is
- * allowed, renewing the hold before each upload. A hold that cannot be renewed stops the return.
+ * Return every vertical a failed attempt reached to the release it started from, where that is
+ * allowed, renewing the hold before each upload: the ones its earlier requests walked (the
+ * ledger), then the ones this request reached. A hold that cannot be renewed stops the return.
+ * More than one request returns ({@link ROLLOUT_WALKS_PER_REQUEST}) returns nothing and ends diverged.
  */
 async function restore(
   deps: StoreDriverRolloutDeps,
-  from: string | null,
-  reached: readonly string[],
-  verticals: readonly { vertical: string; stores: readonly ScopeStoreNeed[] }[],
+  row: StoreDriverRolloutRecord,
+  before: number,
+  reached: readonly StoreDriverRolloutTarget[],
   renew: () => Promise<void>,
 ): Promise<{ state: 'failed' | 'diverged'; text: string }> {
-  if (reached.length === 0) return { state: 'failed', text: 'No vertical moved.' };
+  const from = row.fromSha256;
+  const all = reachedText(before, reached);
+  if (before + reached.length === 0) return { state: 'failed', text: 'No vertical moved.' };
   if (from === null) {
-    return { state: 'diverged', text: `There is no earlier release to return to; ${reached.join(', ')} may run ${deps.sha256}.` };
+    return { state: 'diverged', text: `There is no earlier release to return to; ${all} may run ${deps.sha256}.` };
   }
   const leaving = schemaOf(deps.registration, deps.sha256);
   const returning = schemaOf(deps.registration, from);
   if (leaving === undefined || returning === undefined || returning < leaving) {
     return {
       state: 'diverged',
-      text: `Returning to ${from} would lower the stored schema (${leaving} to ${returning}), so ${reached.join(', ')} may run ${deps.sha256}.`,
+      text: `Returning to ${from} would lower the stored schema (${leaving} to ${returning}), so ${all} may run ${deps.sha256}.`,
     };
   }
+  const max = deps.perRequestWalks ?? ROLLOUT_WALKS_PER_REQUEST;
+  if (before + reached.length > max) {
+    return {
+      state: 'diverged',
+      text: `The attempt reached ${before + reached.length} verticals, more than one request returns (${max}), so none was returned and they may run ${deps.sha256}: post a rollback, which converges every script on ${from} over as many requests as it takes.`,
+    };
+  }
+  const earlier = before === 0 ? [] : (await deps.admin.storeDriverRolloutWalked(deps.actor, { driver: row.driver, seq: row.seq, limit: max })).verticals;
+  const back = [...earlier, ...reached];
   const stuck: string[] = [];
-  for (const [i, vertical] of reached.entries()) {
+  for (const [i, target] of back.entries()) {
     try {
       await renew();
     } catch {
-      return { state: 'diverged', text: `The hold was lost while returning; ${reached.slice(i).join(', ')} may run ${deps.sha256}.` };
+      return { state: 'diverged', text: `The hold was lost while returning; ${back.slice(i).map((t) => t.vertical).join(', ')} may run ${deps.sha256}.` };
     }
-    const target = verticals.find((v) => v.vertical === vertical)!;
     try {
-      await deps.ensure({ vertical, stores: target.stores, to: from });
+      await deps.ensure({ vertical: target.vertical, stores: target.stores.map((s) => ({ binding: s.binding, driver: deps.registration.driver })), to: from });
     } catch (e) {
-      stuck.push(`${vertical} (${message(e)})`);
+      stuck.push(`${target.vertical} (${message(e)})`);
     }
   }
   return stuck.length === 0
-    ? { state: 'failed', text: `${reached.join(', ')} returned to ${from}.` }
+    ? { state: 'failed', text: `${back.map((t) => t.vertical).join(', ')} returned to ${from}.` }
     : { state: 'diverged', text: `Could not return ${stuck.join(', ')} to ${from}.` };
 }

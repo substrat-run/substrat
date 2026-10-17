@@ -455,6 +455,9 @@ import {
   importCursorSourceOf,
   exportBreaksOf,
   exportBreakRefusal,
+  assertPromoteReviewCurrent,
+  promoteRaceRefusal,
+  type ReviewedVersion,
   bindExportBreaksOf,
   bindExportBreakRefusal,
   scopeMoveOf,
@@ -515,6 +518,7 @@ import type {
   StoreDriverRolloutAction,
   StoreDriverRolloutRecord,
   StoreDriverRolloutState,
+  StoreDriverRolloutTarget,
   StoreDriverState,
 } from '@substrat-run/kernel';
 import {
@@ -691,6 +695,13 @@ interface ControlPlaneStub {
   getStoreDriverRelease(driver: string, sha256: string): Promise<StoreDriverReleaseRecord | undefined>;
   storeDriverState(driver: string): Promise<StoreDriverState>;
   storeDriverDeclarations(driver: string): Promise<{ verticals: { vertical: string; stores: VerticalScopeStore[] }[]; unreadable: string[] }>;
+  storeDriverRolloutPending(input: { driver: string; sha256: string; action: StoreDriverRolloutAction; limit: number }): Promise<{
+    verticals: StoreDriverRolloutTarget[];
+    pending: number;
+    walked: number;
+    unreadable: string[];
+  }>;
+  storeDriverRolloutWalked(input: { driver: string; seq: number; limit: number }): Promise<{ verticals: StoreDriverRolloutTarget[]; walked: number }>;
   holdStoreDriver(input: { driver: string; holder: string; mode: StoreDriverHoldMode; ttlMs: number; renew?: boolean; rolloutSeq?: number }): Promise<boolean>;
   releaseStoreDriverHold(input: { driver: string; holder: string }): Promise<void>;
   beginStoreDriverRollout(input: {
@@ -707,6 +718,7 @@ interface ControlPlaneStub {
     holder: string;
     state: Exclude<StoreDriverRolloutState, 'rolling'>;
     detail: string | null;
+    walked?: readonly StoreDriverRolloutTarget[];
     at: string;
   }): Promise<StoreDriverRolloutRecord>;
   storeDriverRebuild(driver: string): Promise<StoreDriverRebuildRecord | undefined>;
@@ -886,7 +898,7 @@ interface ControlPlaneStub {
   setScopeExpiresAt(scopeId: string, expiresAt: string | null): Promise<void>;
   deleteScopeDirectory(scopeId: string): Promise<void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
-  setChannel(verticalSlug: string, channel: string, versionId: string, updatedAt: string): Promise<void>;
+  moveChannel(from: string | null, history: ChannelHistoryRow): Promise<boolean>;
   listChannels(verticalSlug: string, page?: ListPage): Promise<ChannelRow[]>;
   insertChannelHistory(h: ChannelHistoryRow): Promise<void>;
   listChannelHistory(
@@ -7966,6 +7978,21 @@ export class CloudflareScopeHost implements ScopeHost {
             : [],
         );
 
+        // #2333: the acknowledgements answer the review they were given against, or none at all.
+        const reviewed = async (v: VersionRow): Promise<ReviewedVersion> => ({
+          id: v.id,
+          permissionDigest: v.permission_digest,
+          migrationDigest: v.migration_digest,
+          migrations: (await this.cp.readVersionMigrations(v.id))?.migrations ?? null,
+        });
+        await assertPromoteReviewCurrent({
+          ack,
+          channel,
+          baseId: outgoing?.id ?? null,
+          migrationsChange: outgoing !== undefined && outgoing.migration_digest !== incoming.migration_digest,
+          read: async () => ({ base: outgoing ? await reviewed(outgoing) : null, incoming: await reviewed(incoming) }),
+        });
+
         // §4's checkpoints, at the moment of exposure. A first promotion has
         // nothing to diff against — the gate is about change, not existence.
         if (outgoing) {
@@ -7989,10 +8016,13 @@ export class CloudflareScopeHost implements ScopeHost {
         }
 
         const promotedAt = new Date().toISOString();
-        await this.cp.setChannel(verticalSlug, channel, versionId, promotedAt);
-        // The timeline row: what makes rollback a choice among recorded moments, and
-        // `at` the PITR anchor a data rollback would rewind to.
-        await this.cp.insertChannelHistory({
+        // #2333: a compare-and-set. Every gate above — the review binding, the digest checkpoints,
+        // the export breaks — was judged against `outgoing`, across awaits another promote can run
+        // in. The control plane moves the pointer, and writes the timeline row (what makes rollback a
+        // choice among recorded moments, and `at` the PITR anchor a data rollback would rewind to),
+        // only if the pointer still names `outgoing`; the promote that lost the race is refused as
+        // stale and writes nothing.
+        const moved = await this.cp.moveChannel(outgoing?.id ?? null, {
           id: ulid(),
           vertical_slug: verticalSlug,
           channel,
@@ -8001,6 +8031,7 @@ export class CloudflareScopeHost implements ScopeHost {
           actor,
           at: promotedAt,
         });
+        if (!moved) throw promoteRaceRefusal(channel);
         // For a PRIVATE vertical, prod IS what the owner's apps run: re-point the
         // owning tenant's live scopes in the same act, so merge-to-main (push +
         // promote) is a complete deploy and a rollback promote reaches the running
@@ -8533,6 +8564,16 @@ export class CloudflareScopeHost implements ScopeHost {
         const declared = await this.directory('storeDriverDeclarations', driver);
         await this.recordAccess(actor, 'storeDriverDeclarations', { tenantId: null }, { driver }, declared.verticals.length);
         return declared;
+      },
+      storeDriverRolloutPending: async (actor, input) => {
+        const page = await this.directory('storeDriverRolloutPending', input);
+        await this.recordAccess(actor, 'storeDriverRolloutPending', { tenantId: null }, { driver: input.driver, sha256: input.sha256, action: input.action }, page.verticals.length);
+        return page;
+      },
+      storeDriverRolloutWalked: async (actor, input) => {
+        const walked = await this.directory('storeDriverRolloutWalked', input);
+        await this.recordAccess(actor, 'storeDriverRolloutWalked', { tenantId: null }, { driver: input.driver, seq: input.seq }, walked.verticals.length);
+        return walked;
       },
       holdStoreDriver: async (_actor, input) => this.directory('holdStoreDriver', input),
       releaseStoreDriverHold: async (_actor, input) => {

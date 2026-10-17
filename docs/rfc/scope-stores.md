@@ -848,8 +848,9 @@ block it.
    forward-only answer to D-63's "Rollback against a migrated schema"; D-63's text is not changed.
    One request moves at most 100 scripts and then pauses; posting the same rollout, or the same
    rollback, again continues it. One request walks at most 300 verticals, counting every vertical
-   any version declared the driver in. Past that a rollout **and a rollback** are both refused (409),
-   and an operator has no recourse until the rollout row carries a cursor (#2312).
+   any version declared the driver in, and the next continues from a walk ledger of what the attempt
+   already walked (#2312), so a fleet of any size converges, a rollback included
+   (`control-plane.md` §4.4).
    A `failed` attempt never decides where a rollback goes. An unfinished rollback (`paused`, or
    `diverged`) is continued by posting the rollback again, and while it goes to an earlier release
    every rollout is refused (409). A rollback onto the current release does not block a rollout,

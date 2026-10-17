@@ -54,6 +54,8 @@ import {
   REDACTED_INTENT_MARKER,
   runPlatformSweep,
   startPlatformSweeper,
+  promoteReviewDigest,
+  promoteReviewRefusalOf,
   createUlid,
   ulid,
   type AuditLogFilter,
@@ -7005,6 +7007,19 @@ export function scopeHostContractSuite(
       return id;
     };
 
+    /**
+     * #2333: the binding a review hands out, computed as the migrations read computes it — from
+     * the stored rows of the version prod points at now and of the one being promoted.
+     */
+    const reviewOf = async (slug: string, versionId: string, base?: string | null) => {
+      const prod = base !== undefined ? base : ((await host.admin.listChannels(staff, slug)).find((c) => c.channel === 'prod')?.versionId ?? null);
+      const side = async (id: string) => ({
+        ...(await host.admin.getVersion(staff, id, slug))!,
+        migrations: await host.admin.versionMigrations(staff, slug, id),
+      });
+      return { base: prod, digest: await promoteReviewDigest(prod === null ? null : await side(prod), await side(versionId)) };
+    };
+
     it('promotes a first version with nothing to acknowledge', async () => {
       // The gate is about CHANGE, not existence. A first promotion has no
       // predecessor to diff against, so demanding an acknowledgement would be
@@ -7030,7 +7045,9 @@ export function scopeHostContractSuite(
     it('refuses a promotion that changes migrations until it is acknowledged', async () => {
       const v3 = await publish('2.2.0', { perm: 'pB', mig: 'gB' }); // migrations moved
       await expectRefusal(host.admin.promoteVersion(staff, 'callout', 'prod', v3), 'conflict', /changes migrations/);
-      await host.admin.promoteVersion(staff, 'callout', 'prod', v3, { migrationChange: true });
+      // #2333: the acknowledgement that lets a migration reach live data names the review it answers.
+      await expectRefusal(host.admin.promoteVersion(staff, 'callout', 'prod', v3, { migrationChange: true }), 'precondition_failed', /needs the review it answers/);
+      await host.admin.promoteVersion(staff, 'callout', 'prod', v3, { migrationChange: true, review: await reviewOf('callout', v3) });
       expect(
         (await host.admin.listChannels(staff, 'callout')).find((c) => c.channel === 'prod')
           ?.versionId,
@@ -7077,8 +7094,174 @@ export function scopeHostContractSuite(
       await expectRefusal(host.admin.promoteVersion(staff, 'elsewhere', 'prod', v), 'conflict');
       // Positive twin: through its own vertical the same version promotes (the earlier tests
       // moved prod, so the digest checkpoints are acknowledged — they are not under test here).
-      await host.admin.promoteVersion(staff, 'callout', 'prod', v, { permissionChange: true, migrationChange: true });
+      await host.admin.promoteVersion(staff, 'callout', 'prod', v, { permissionChange: true, migrationChange: true, review: await reviewOf('callout', v) });
       expect((await host.admin.listChannels(staff, 'callout')).find((c) => c.channel === 'prod')?.versionId).toBe(v);
+    });
+
+    // -- the acknowledgement names the review it answers (#2333) ---------------
+    // A review is computed over the channel's CURRENT version. A promote between showing it and
+    // acknowledging it moves that base, and a bare flag would then acknowledge a diff that is not
+    // the one applied. So the acknowledgement carries the review's binding, and the host refuses
+    // one that no longer holds.
+    describe('an acknowledgement bound to the review it answers (#2333)', () => {
+      const MIGRATION = (discards: Record<string, string>, moves: Record<string, string> = {}) => ({
+        moduleId: 'callout', version: '0002-drop', sql: 'ALTER TABLE t DROP COLUMN c;', discards, ...(Object.keys(moves).length ? { moves } : {}),
+      });
+      /** A fresh vertical with three admitted versions; `a` serves. */
+      const fresh = async () => {
+        const slug = `acme/review-${ulid().slice(-8).toLowerCase()}`;
+        await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+        const put = async (perm: string, mig: string, migrations?: unknown[]) => {
+          const id = ulid();
+          await host.admin.publishVersion(staff, {
+            id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
+            permissionDigest: perm, migrationDigest: mig, deploymentRef: null,
+            ...(migrations ? { manifestJson: JSON.stringify({ migrations }) } : {}),
+          });
+          await host.admin.admitVersion(staff, id);
+          return id;
+        };
+        const a = await put('pA', 'gA', []);
+        await host.admin.promoteVersion(staff, slug, 'prod', a);
+        return { slug, put, a };
+      };
+      const prodOf = async (slug: string) => (await host.admin.listChannels(staff, slug)).find((c) => c.channel === 'prod')?.versionId;
+      const refusal = async (p: Promise<unknown>) => {
+        const err = await p.then(() => undefined, (e: unknown) => e);
+        return { kind: promoteReviewRefusalOf(err), message: (err as Error | undefined)?.message };
+      };
+
+      it('a promote between show and acknowledge moves the base: the acknowledgement is refused, and a fresh review passes', async () => {
+        const { slug, put, a } = await fresh();
+        const c = await put('pC', 'gC', [MIGRATION({ c: 'the column is no longer read' })]);
+        const shown = await reviewOf(slug, c);
+        expect(shown.base).toBe(a);
+        // Someone else promotes b in between: same migrations as a, a different permission surface.
+        const b = await put('pB', 'gA', []);
+        await host.admin.promoteVersion(staff, slug, 'prod', b, { permissionChange: true, review: await reviewOf(slug, b) });
+
+        const stale = await refusal(host.admin.promoteVersion(staff, slug, 'prod', c, { permissionChange: true, migrationChange: true, review: shown }));
+        expect(stale.kind).toBe('stale');
+        expect(stale.message).toContain(`read against version ${a}`);
+        expect(await prodOf(slug)).toBe(b);
+        // The review read again names b, and is what an acknowledgement answers now.
+        const again = await reviewOf(slug, c);
+        expect(again).toEqual({ base: b, digest: expect.stringMatching(/^[0-9a-f]{64}$/) });
+        expect(again.digest).not.toBe(shown.digest);
+        await host.admin.promoteVersion(staff, slug, 'prod', c, { permissionChange: true, migrationChange: true, review: again });
+        expect(await prodOf(slug)).toBe(c);
+      });
+
+      it('two promotes bound to the same base, racing: one moves the channel, the other is refused as stale', async () => {
+        const { slug, put, a } = await fresh();
+        const b = await put('pB', 'gB', [MIGRATION({ c: 'gone' })]);
+        const c = await put('pC', 'gC', [MIGRATION({ c: 'gone too' })]);
+        const [forB, forC] = [await reviewOf(slug, b), await reviewOf(slug, c)];
+        expect([forB.base, forC.base]).toEqual([a, a]);
+        const ACK = { permissionChange: true, migrationChange: true } as const;
+        // Neither awaited before the other starts: each judges its gates against `a`.
+        const settled = await Promise.allSettled([
+          host.admin.promoteVersion(staff, slug, 'prod', b, { ...ACK, review: forB }),
+          host.admin.promoteVersion(staff, slug, 'prod', c, { ...ACK, review: forC }),
+        ]);
+        const won = settled.flatMap((s, i) => (s.status === 'fulfilled' ? [[b, c][i]!] : []));
+        const lost = settled.flatMap((s) => (s.status === 'rejected' ? [s.reason as unknown] : []));
+        expect(won).toHaveLength(1);
+        expect(lost.map((e) => promoteReviewRefusalOf(e))).toEqual(['stale']);
+        expect(await prodOf(slug)).toBe(won[0]);
+        // One move away from `a`, by the winner; the loser recorded nothing.
+        const history = await host.admin.listChannelHistory(staff, slug, 'prod');
+        expect(history.filter((h) => h.fromVersionId === a).map((h) => h.versionId)).toEqual(won);
+        expect(history.some((h) => h.versionId === (won[0] === b ? c : b))).toBe(false);
+      });
+
+      it('a binding is checked whatever it acknowledges: a moved base refuses even a promote that needs no acknowledgement', async () => {
+        const { slug, put, a } = await fresh();
+        const same = await put('pA', 'gA', []);
+        const shown = await reviewOf(slug, same);
+        const b = await put('pB', 'gA', []);
+        await host.admin.promoteVersion(staff, slug, 'prod', b, { permissionChange: true });
+        expect((await refusal(host.admin.promoteVersion(staff, slug, 'prod', same, { review: shown }))).kind).toBe('stale');
+        expect(await prodOf(slug)).toBe(b);
+        // Twin: bound to the base that still serves, it promotes.
+        await host.admin.promoteVersion(staff, slug, 'prod', a, { permissionChange: true, review: await reviewOf(slug, a) });
+        expect(await prodOf(slug)).toBe(a);
+      });
+
+      it('a review read before anything served is stale once something does', async () => {
+        const slug = `acme/review-${ulid().slice(-8).toLowerCase()}`;
+        await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+        const put = async () => {
+          const id = ulid();
+          await host.admin.publishVersion(staff, { id, verticalSlug: slug, version: id, manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null });
+          await host.admin.admitVersion(staff, id);
+          return id;
+        };
+        const first = await put();
+        const shown = await reviewOf(slug, first, null);
+        expect(shown.base).toBeNull();
+        const other = await put();
+        await host.admin.promoteVersion(staff, slug, 'prod', other);
+        const stale = await refusal(host.admin.promoteVersion(staff, slug, 'prod', first, { review: shown }));
+        expect(stale.kind).toBe('stale');
+        expect(stale.message).toContain('read against no serving version');
+      });
+
+      it('a digest that is not the one the stored rows give is refused, with the base right', async () => {
+        const { slug, put, a } = await fresh();
+        const c = await put('pA', 'gC', [MIGRATION({ c: 'gone' })]);
+        const shown = await reviewOf(slug, c);
+        // Another review's digest, as a client that bound the wrong answer would send.
+        const other = await reviewOf(slug, await put('pA', 'gD', [MIGRATION({ c: 'gone, differently' })]));
+        expect(other.base).toBe(a);
+        const stale = await refusal(host.admin.promoteVersion(staff, slug, 'prod', c, { migrationChange: true, review: { base: a, digest: other.digest } }));
+        expect(stale.kind).toBe('stale');
+        expect(stale.message).toMatch(/no longer give the digest/);
+        // Never handed back: a refusal is not something to retry with.
+        expect(stale.message).not.toContain(shown.digest);
+        expect(await prodOf(slug)).toBe(a);
+        await host.admin.promoteVersion(staff, slug, 'prod', c, { migrationChange: true, review: shown });
+        expect(await prodOf(slug)).toBe(c);
+      });
+
+      it('a migration acknowledgement without a binding is refused; a permission-only one is still honoured', async () => {
+        const { slug, put } = await fresh();
+        const c = await put('pA', 'gC', [MIGRATION({ c: 'gone' })]);
+        const unbound = await refusal(host.admin.promoteVersion(staff, slug, 'prod', c, { migrationChange: true }));
+        expect(unbound.kind).toBe('unbound');
+        // It names the fix: the client release that binds, and how to read the review.
+        // By what the release does, never a version number the release tooling has not cut yet.
+        expect(unbound.message).toContain("a CLI release whose 'substrat promote' supports --review");
+        expect(unbound.message).toContain('/guide/deploying#acknowledgement-answers-one-review');
+        expect(unbound.message).not.toMatch(/\d+\.\d+\.\d+/);
+        // The compatibility rule: no migration moves, so an older client's bare flag still promotes.
+        const p = await put('pP', 'gA', []);
+        await host.admin.promoteVersion(staff, slug, 'prod', p, { permissionChange: true });
+        expect(await prodOf(slug)).toBe(p);
+        // And a migrationChange the gate does not consume needs no binding either.
+        const q = await put('pP', 'gA', []);
+        await host.admin.promoteVersion(staff, slug, 'prod', q, { migrationChange: true });
+        expect(await prodOf(slug)).toBe(q);
+      });
+
+      it('the digest is over the stored declarations, and the binding is recorded', async () => {
+        const { slug, put, a } = await fresh();
+        const c = await put('pA', 'gC', [MIGRATION({ c: 'gone' }, { 't.a': 't.b' })]);
+        const shown = await reviewOf(slug, c);
+        // What the host digests is what it stored: the declarations come back with the SQL…
+        const stored = await host.admin.versionMigrations(staff, slug, c);
+        expect(stored).toEqual([MIGRATION({ c: 'gone' }, { 't.a': 't.b' })]);
+        // …and a review of the same version showing a reworded reason binds another digest.
+        const side = async (id: string, migrations: unknown) => ({ ...(await host.admin.getVersion(staff, id, slug))!, migrations: migrations as typeof stored });
+        const reworded = await promoteReviewDigest(await side(a, await host.admin.versionMigrations(staff, slug, a)), await side(c, [MIGRATION({ c: 'gone, differently' }, { 't.a': 't.b' })]));
+        expect(reworded).not.toBe(shown.digest);
+        expect((await refusal(host.admin.promoteVersion(staff, slug, 'prod', c, { migrationChange: true, review: { base: a, digest: reworded } }))).kind).toBe('stale');
+        await host.admin.promoteVersion(staff, slug, 'prod', c, { migrationChange: true, review: shown });
+        const row = (await host.admin.auditLog(staff, {})).find(
+          (e) => e.action === 'promoteVersion' && JSON.stringify(e.after).includes(c),
+        );
+        expect((row?.after as { acknowledged?: unknown } | null)?.acknowledged).toEqual({ migrationChange: true, review: shown });
+      });
     });
 
     // -- a version that strands people a link bound (#2178) -------------------

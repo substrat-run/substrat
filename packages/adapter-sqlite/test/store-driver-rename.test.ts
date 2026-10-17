@@ -38,6 +38,8 @@ async function legacyDirectory(): Promise<string> {
     // The fleet rebuild's table (#2309) came after the rename: a directory from before it has none.
     db.exec('DROP TABLE store_driver_rebuilds');
     db.exec('ALTER TABLE vertical_scope_stores RENAME COLUMN driver TO kind');
+    // The walk ledger (#2312) came after the rename, so a directory from before it has none.
+    db.exec('DROP TABLE store_driver_rollout_walks');
     db.prepare(
       'INSERT INTO store_kind_releases (kind, sha256, source_commit, uploaded_by, uploaded_at) VALUES (?, ?, ?, ?, ?)',
     ).run('graph', SHA, 'b'.repeat(40), staff, '2026-10-15T00:00:00.000Z');

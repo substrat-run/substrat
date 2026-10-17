@@ -22,7 +22,7 @@ import {
   STORE_RELEASE_VAR,
   storedReleaseLoader,
   DEV_ACTOR_HEADER,
-  ROLLOUT_FLEET_MAX,
+  ROLLOUT_WALKS_PER_REQUEST,
   ROLLOUT_HOLD_TTL_MS,
   runStoreDriverRollout,
   UNSAFE_devPlatformActorAuth,
@@ -152,6 +152,8 @@ describe('the canary runs every reserved operation on a fresh platform object (D
 function fleet() {
   const runs = new Map<string, string>();
   const events: string[] = [];
+  /** Every vertical walked, as `<vertical>:<release>`, whether or not anything was uploaded. */
+  const walks: string[] = [];
   const fail = new Set<string>();
   /** Uploads that land, then answer an error. */
   const landed = new Set<string>();
@@ -160,11 +162,13 @@ function fleet() {
   return {
     runs,
     events,
+    walks,
     fail,
     landed,
     before,
     /** Uploads unless the script already runs `to`, as the real ensurer does, and says which. */
     ensure: async ({ vertical, to }: { vertical: string; to: string }) => {
+      walks.push(`${vertical}:${to.slice(0, 1)}`);
       if (runs.get(vertical) === to) return false;
       const key = `${vertical}:${to.slice(0, 1)}`;
       await before.get(key)?.();
@@ -222,9 +226,13 @@ describe('a rollout canaries, then moves every vertical that declared the driver
     rmSync(dir, { recursive: true, force: true });
   });
 
-  const run = (f: ReturnType<typeof fleet>, sha256: string, extra: { canaryFails?: boolean; perRequest?: number } = {}) =>
+  const run = (
+    f: ReturnType<typeof fleet>,
+    sha256: string,
+    extra: { canaryFails?: boolean; perRequest?: number; perRequestWalks?: number; admin?: typeof host.admin } = {},
+  ) =>
     runStoreDriverRollout({
-      admin: host.admin,
+      admin: extra.admin ?? host.admin,
       actor: staff,
       registration,
       sha256,
@@ -237,6 +245,7 @@ describe('a rollout canaries, then moves every vertical that declared the driver
       },
       callCanary: canaryStore().call,
       ...(extra.perRequest ? { perRequest: extra.perRequest } : {}),
+      ...(extra.perRequestWalks ? { perRequestWalks: extra.perRequestWalks } : {}),
     });
   let clock: ManualClock;
   const current = async () => (await host.admin.storeDriverState(staff, 'graph')).current?.sha256;
@@ -507,12 +516,147 @@ describe('a rollout canaries, then moves every vertical that declared the driver
     expect(await lastState()).toBe('failed');
   });
 
-  it('refuses a fleet bigger than one request can walk', async () => {
-    const big = { ...host.admin, storeDriverDeclarations: async () => ({ verticals: Array.from({ length: ROLLOUT_FLEET_MAX + 1 }, (_, i) => ({ vertical: `v${i}`, stores: [] })), unreadable: [] }) };
+  it('pages a rollout past the walk cap: each vertical walked once, one declared between posts walked, one removed not (#2312)', async () => {
+    for (const slug of ['vd', 've']) await declare(slug);
     const f = fleet();
-    expect(await refusal(runStoreDriverRollout({ admin: big, actor: staff, registration, sha256: sha('1'), action: 'rollout', ensure: f.ensure, ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call })))
-      .toMatchObject({ status: 409, message: expect.stringMatching(/a rollout walks at most 300, so neither a rollout nor a rollback can run .*#2312/) });
-    expect(f.events).toEqual([]);
+    await run(f, sha('1'));
+    f.walks.length = 0;
+    expect(await run(f, sha('2'), { perRequestWalks: 2 })).toMatchObject({ complete: false, remaining: 3, moved: ['va', 'vb'], rollout: { state: 'paused' } });
+    expect(await current()).toBe(sha('1'));
+    // Between posts a vertical sorting before every one walked is pushed, at the release then
+    // current, and vd is deleted.
+    await declare('v0');
+    f.runs.set('v0', sha('1'));
+    await host.admin.deleteVertical(staff, 'vd');
+    expect(await run(f, sha('2'), { perRequestWalks: 2 })).toMatchObject({ complete: false, remaining: 1, moved: ['v0', 'vc'], rollout: { state: 'paused' } });
+    // While the last post walks, a push cannot take the driver, so it cannot add a script the list missed.
+    f.before.set('ve:2', async () => {
+      expect(await host.admin.holdStoreDriver(staff, { driver: 'graph', holder: ulid(), mode: 'shared', ttlMs: 1000 })).toBe(false);
+    });
+    expect(await run(f, sha('2'), { perRequestWalks: 2 })).toMatchObject({ complete: true, remaining: 0, moved: ['ve'], rollout: { state: 'good' } });
+    expect(f.walks).toEqual(['va:2', 'vb:2', 'v0:2', 'vc:2', 've:2']);
+    expect(await current()).toBe(sha('2'));
+    expect(f.runs.get('v0')).toBe(sha('2'));
+  });
+
+  it('pages a rollback past the walk cap onto its target, each vertical walked once (#2312)', async () => {
+    for (const slug of ['vd', 've']) await declare(slug);
+    const f = fleet();
+    await run(f, sha('1'));
+    await run(f, sha('2'));
+    f.walks.length = 0;
+    const rollback = async () =>
+      runStoreDriverRollout({
+        admin: host.admin, actor: staff, registration, sha256: (await host.admin.storeDriverState(staff, 'graph')).rollbackTarget!,
+        action: 'rollback', ensure: f.ensure, ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call, perRequestWalks: 2,
+      });
+    expect(await rollback()).toMatchObject({ complete: false, remaining: 3, rollout: { sha256: sha('1'), state: 'paused' } });
+    expect(await rollback()).toMatchObject({ complete: false, remaining: 1, rollout: { sha256: sha('1'), state: 'paused' } });
+    expect((await host.admin.storeDriverState(staff, 'graph')).rollbackTarget).toBe(sha('1'));
+    expect(await rollback()).toMatchObject({ complete: true, remaining: 0, rollout: { sha256: sha('1'), state: 'good' } });
+    expect(f.walks).toEqual(['va:1', 'vb:1', 'vc:1', 'vd:1', 've:1']);
+    expect(new Set(f.runs.values())).toEqual(new Set([sha('1')]));
+  });
+
+  it('rolls back to the previous good release after a re-post of the current one paused past the walk cap (#2312)', async () => {
+    const f = fleet();
+    await run(f, sha('1'));
+    await run(f, sha('2'));
+    f.walks.length = 0;
+    // Re-posting the current release over a fleet bigger than one request walks: nothing moves,
+    // and the request pauses.
+    expect(await run(f, sha('2'), { perRequestWalks: 2 })).toMatchObject({ complete: false, moved: [], rollout: { state: 'paused' } });
+    // The emergency rollback still escapes 2, onto 1, and never converges onto 2 first.
+    expect((await host.admin.storeDriverState(staff, 'graph')).rollbackTarget).toBe(sha('1'));
+    const rollback = () =>
+      runStoreDriverRollout({
+        admin: host.admin, actor: staff, registration, sha256: sha('1'), action: 'rollback', ensure: f.ensure,
+        ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call, perRequestWalks: 2,
+      });
+    expect(await rollback()).toMatchObject({ complete: false, moved: ['va', 'vb'] });
+    expect(await rollback()).toMatchObject({ complete: true, moved: ['vc'], rollout: { state: 'good' } });
+    expect(await current()).toBe(sha('1'));
+    expect(f.walks).toEqual(['va:2', 'vb:2', 'va:1', 'vb:1', 'vc:1']);
+  });
+
+  it('walks again, never skips, the verticals a post uploaded before it could record them (#2312)', async () => {
+    const f = fleet();
+    await run(f, sha('1'));
+    f.walks.length = 0;
+    // The invocation ends after va's and vb's uploads, before the paused end records them.
+    let crash = true;
+    const crashing: typeof host.admin = {
+      ...host.admin,
+      finishStoreDriverRollout: async (actor, input) => {
+        if (crash && input.state === 'paused') {
+          crash = false;
+          throw new Error('the invocation ended');
+        }
+        return host.admin.finishStoreDriverRollout(actor, input);
+      },
+    };
+    expect(await refusal(run(f, sha('2'), { perRequestWalks: 2, admin: crashing }))).toMatchObject({ message: expect.stringMatching(/the invocation ended/) });
+    expect(await lastState()).toBe('diverged');
+    expect(await run(f, sha('2'), { perRequestWalks: 2 })).toMatchObject({ complete: false, moved: [] });
+    expect(await run(f, sha('2'), { perRequestWalks: 2 })).toMatchObject({ complete: true, moved: ['vc'] });
+    expect(f.walks).toEqual(['va:2', 'vb:2', 'va:2', 'vb:2', 'vc:2']);
+    expect(await current()).toBe(sha('2'));
+  });
+
+  it('continues no attempt another rollout or rollback came between, so nothing it moved back is skipped (#2312)', async () => {
+    const f = fleet();
+    await run(f, sha('1'));
+    expect(await run(f, sha('2'), { perRequestWalks: 2 })).toMatchObject({ moved: ['va', 'vb'], rollout: { state: 'paused' } });
+    // Undoing it part way moves va and vb back to 1.
+    const back = await runStoreDriverRollout({
+      admin: host.admin, actor: staff, registration, sha256: sha('1'), action: 'rollback', ensure: f.ensure,
+      ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call, perRequestWalks: 2,
+    });
+    expect(back).toMatchObject({ moved: ['va', 'vb'], rollout: { state: 'paused' } });
+    // Rolling 2 out again starts afresh: va and vb are on 1, and are moved again.
+    expect(await run(f, sha('2'), { perRequestWalks: 2 })).toMatchObject({ moved: ['va', 'vb'], remaining: 1 });
+    expect(await run(f, sha('2'), { perRequestWalks: 2 })).toMatchObject({ complete: true, moved: ['vc'] });
+    expect(new Set(f.runs.values())).toEqual(new Set([sha('2')]));
+  });
+
+  it('ends diverged, returning nothing, when a failure comes after more verticals than one request returns (#2312)', async () => {
+    const f = fleet();
+    await run(f, sha('1'));
+    f.events.length = 0;
+    expect((await run(f, sha('2'), { perRequestWalks: 2 })).rollout.state).toBe('paused');
+    f.fail.add('vc:2');
+    expect(await refusal(run(f, sha('2'), { perRequestWalks: 2 }))).toMatchObject({
+      message: expect.stringMatching(/stopped at vc.*reached 3 verticals, more than one request returns \(2\), so none was returned.*post a rollback/),
+    });
+    // Nothing was moved back.
+    expect(f.events).toEqual(['canary:2', 'va:2', 'vb:2', 'canary:2', 'vc:2']);
+    expect(await lastState()).toBe('diverged');
+    // The rollback the refusal names converges every script on 1, paged.
+    f.fail.clear();
+    expect((await host.admin.storeDriverState(staff, 'graph')).rollbackTarget).toBe(sha('1'));
+    const rollback = () =>
+      runStoreDriverRollout({
+        admin: host.admin, actor: staff, registration, sha256: sha('1'), action: 'rollback', ensure: f.ensure,
+        ensureCanary: async () => ({ scriptName: 'c' }), callCanary: canaryStore().call, perRequestWalks: 2,
+      });
+    expect(await rollback()).toMatchObject({ complete: false });
+    expect(await rollback()).toMatchObject({ complete: true, rollout: { state: 'good' } });
+    expect(new Set(f.runs.values())).toEqual(new Set([sha('1')]));
+  });
+
+  it('lets one of two racing posts walk, refuses the other, and the ledger stays whole (#2312)', async () => {
+    const f = fleet();
+    await run(f, sha('1'));
+    f.walks.length = 0;
+    const [x, y] = await Promise.allSettled([run(f, sha('2'), { perRequestWalks: 2 }), run(f, sha('2'), { perRequestWalks: 2 })]);
+    const won = [x, y].filter((r) => r.status === 'fulfilled');
+    const lost = [x, y].filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(won).toHaveLength(1);
+    expect(lost).toHaveLength(1);
+    expect(lost[0]!.reason).toMatchObject({ status: 409, message: expect.stringMatching(/is being rolled out/) });
+    expect((await host.admin.storeDriverState(staff, 'graph')).rollouts.filter((r) => r.sha256 === sha('2'))).toHaveLength(1);
+    expect(await run(f, sha('2'), { perRequestWalks: 2 })).toMatchObject({ complete: true, moved: ['vc'] });
+    expect(f.walks).toEqual(['va:2', 'vb:2', 'vc:2']);
   });
 
   it('refuses a rollout while a version cannot say which stores it declares', async () => {
@@ -642,6 +786,63 @@ describe('the release routes: a person stores and rolls out a pinned release (D-
     expect(await host.admin.getStoreDriverRelease(person, 'graph', shas[0]!)).toBeUndefined();
     // Reading the state is any staff's.
     expect((await call(appWith(asPerson), 'GET', '/store-drivers/graph', service)).status).toBe(200);
+  });
+
+  it(`pages a rollout past ${ROLLOUT_WALKS_PER_REQUEST} verticals, and a refused caller between posts moves nothing (#2312)`, async () => {
+    const fleetSize = ROLLOUT_WALKS_PER_REQUEST + 1;
+    for (let i = 1; i < fleetSize; i++) {
+      const slug = `vb${String(i).padStart(3, '0')}`;
+      await host.admin.registerVertical(person, { slug, name: slug, source: 'cli' });
+      const id = ulid();
+      await host.admin.publishVersion(person, {
+        id, verticalSlug: slug, version: '1.0.0', manifestDigest: `m-${id}`, permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
+        manifestJson: JSON.stringify({ scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] }),
+      });
+    }
+    // A fleet that uploads only a script not on the release yet, as the real ensurer does.
+    const at = new Map<string, string>();
+    const walks: string[] = [];
+    const app = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      storeDrivers: [registration],
+      humanStaffActor: asPerson,
+      ensureScopeStores: async ({ vertical, to }) => {
+        walks.push(vertical);
+        if (at.get(vertical) === to) return { uploaded: 0 };
+        at.set(vertical, to!);
+        return { uploaded: 1 };
+      },
+      storeReleases: {
+        bytes: { get: async (k) => bytes.get(k), put: async (k, b) => void bytes.set(k, b) },
+        ensureCanary: async () => ({ scriptName: 'substrat-store-graph--canary' }),
+        callCanary: canaryStore().call,
+      },
+    });
+    expect((await call(app, 'PUT', '/store-drivers/graph/releases', person, wire(bundle(1)))).status).toBe(201);
+    const post = async (actor: string) => {
+      const res = await call(app, 'POST', '/store-drivers/graph/rollouts', actor, { sha256: shas[0] });
+      return { status: res.status, body: (await res.json()) as { complete: boolean; remaining: number; moved: string[] } };
+    };
+    // Every script moves, 100 uploads a post.
+    const remaining: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const { status, body } = await post(person);
+      expect(status).toBe(body.complete ? 200 : 202);
+      remaining.push(body.remaining);
+      // A service token between posts is refused, and changes nothing the next post continues from.
+      expect((await post(service)).status).toBe(403);
+    }
+    expect(remaining).toEqual([201, 101, 1, 0]);
+    expect(at.size).toBe(fleetSize);
+    expect(walks).toHaveLength(fleetSize);
+    expect(new Set(walks).size).toBe(fleetSize);
+    // Posted again with every script already there, a post walks at most the cap and pauses.
+    walks.length = 0;
+    expect(await post(person)).toMatchObject({ status: 202, body: { complete: false, remaining: 1, moved: [] } });
+    expect(walks).toHaveLength(ROLLOUT_WALKS_PER_REQUEST);
+    expect(await post(person)).toMatchObject({ status: 200, body: { complete: true, remaining: 0 } });
+    expect(new Set(walks).size).toBe(fleetSize);
   });
 
   it('stores a bundle by its sha256, refuses one too big, malformed or for an unregistered driver', async () => {

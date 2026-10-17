@@ -28,6 +28,21 @@ function trustTupleChecker<T extends PermissionChecker>(checker: T): T {
   return checker;
 }
 
+/**
+ * A kernel decorator that only ever NARROWS the built-in evaluator keeps its node-wide semantics
+ * (#2263, `boundToPeerDeclarations`): its node-level allow is still the tuple algebra's, so a
+ * grant-scoped read still answers `all` for it. Kernel-internal and deliberately not exported from
+ * the package — the trust is inherited from `inner`, never claimed, so a provider's checker
+ * wrapped this way stays as untrusted as it was.
+ */
+export function inheritTupleTrust<T extends PermissionChecker>(inner: PermissionChecker, wrapper: T): T {
+  if (nodeWideTupleCheckers.has(inner)) {
+    Object.freeze(wrapper);
+    nodeWideTupleCheckers.add(wrapper);
+  }
+  return wrapper;
+}
+
 /** The one result selector both adapter contexts call, using their own `ctx.check` path. */
 export async function grantedEntitiesForContext(
   checker: PermissionChecker,

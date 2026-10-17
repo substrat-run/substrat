@@ -113,6 +113,7 @@ import {
   importCursorAcknowledgementMissing,
   REDRAIN_BATCH,
   migrationsOnTop,
+  substratError,
   errorCodeOf,
   capabilityFilterQuery,
   capabilityId as capabilityIdSchema,
@@ -139,6 +140,7 @@ import type {
   Page,
   PlatformActorId,
   PlatformRequestBacklog,
+  PromotionReviewBinding,
   Scope,
   ScopeDump,
   ScopeId,
@@ -164,6 +166,7 @@ import {
   isBindExportBreakRefusal,
   isExportBreakRefusal,
   isPrimaryScope,
+  promoteReviewDigest,
   migrationProgress,
   ulid,
   auditWarningOf,
@@ -7475,12 +7478,30 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     // `versionMigrations` refuses a version of another vertical, so `base` cannot reach one.
     const migrationsOf = (id: string) => c.var.admin.versionMigrations(c.get('actor'), slug, id);
+    const versionOf = async (id: string) => {
+      const v = await c.var.admin.getVersion(c.get('actor'), id, slug);
+      if (!v) throw substratError('not_found', `unknown version ${id} for vertical '${slug}'`);
+      return v;
+    };
     const base = c.req.query('base');
-    const [incoming, baseline] = await Promise.all([
-      migrationsOf(c.req.param('id')),
+    const incomingId = c.req.param('id');
+    const [incoming, baseline, incomingVersion, baseVersion] = await Promise.all([
+      migrationsOf(incomingId),
       base === undefined ? undefined : migrationsOf(base),
+      versionOf(incomingId),
+      base === undefined ? null : versionOf(base),
     ]);
-    return c.json({ migrations: incoming === null ? null : migrationsOnTop(incoming, baseline) });
+    // #2333: the binding a promote's acknowledgement carries, computed from the very rows this
+    // answer shows, in this answer — so a client cannot show one diff and bind another. The
+    // promote recomputes it from its own stored rows and refuses when it no longer matches.
+    const review: PromotionReviewBinding = {
+      base: base ?? null,
+      digest: await promoteReviewDigest(
+        baseVersion && { ...baseVersion, migrations: baseline ?? null },
+        { ...incomingVersion, migrations: incoming },
+      ),
+    };
+    return c.json({ migrations: incoming === null ? null : migrationsOnTop(incoming, baseline), review });
   });
 
   // The emitted entity model (#1214) one version ships: entities, field schemas, parent

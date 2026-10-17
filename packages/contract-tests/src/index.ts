@@ -108,6 +108,8 @@ export {
   capMod,
   capModManifest,
   peerMod,
+  peerModNarrowed,
+  peerModWithoutCaller,
   peerModManifest,
   PEER_CALLER,
   PEER_LISTENER,

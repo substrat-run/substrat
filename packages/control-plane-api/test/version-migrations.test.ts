@@ -197,4 +197,85 @@ describe('version migrations route (#1677)', () => {
     const res = await read('acme/app', v.next, as.tenantA, v.preField);
     expect(diffOf(res.text)).toMatchObject({ baseline: 'unavailable', added: [INIT, ADD] });
   });
+
+  // -- the binding a promote acknowledges (#2333) -------------------------------
+
+  describe('the review binding', () => {
+    type Binding = { base: string | null; digest: string };
+    const bindingOf = (text: string) => (JSON.parse(text) as { review?: Binding }).review;
+    /** An embedded vertical (no deployment), so a prod promote here is the gate alone. */
+    const SLUG = 'acme/embedded';
+    const e = { a: ulid(), b: ulid(), c: ulid() };
+    const promote = (versionId: string, acknowledge: object, headers: Record<string, string>) =>
+      app.request(`/verticals/${encodeURIComponent(SLUG)}/channels/prod/promote`, {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ versionId, acknowledge }),
+      });
+    const prodOf = async () => (await host.admin.listChannels(staff, SLUG)).find((ch) => ch.channel === 'prod')?.versionId;
+
+    beforeAll(async () => {
+      await host.admin.registerVertical(staff, { slug: SLUG, name: 'Embedded', source: 'cli', ownerTenant: tA });
+      const put = async (id: string, perm: string, mig: string, migrations: unknown[]) => {
+        await host.admin.publishVersion(staff, {
+          id, verticalSlug: SLUG, version: id.slice(-6), manifestDigest: 'm', permissionDigest: perm, migrationDigest: mig,
+          deploymentRef: null, manifestJson: manifest(migrations),
+        });
+        await host.admin.admitVersion(staff, id);
+      };
+      await put(e.a, 'pA', 'gA', [INIT]);
+      await put(e.b, 'pB', 'gA', [INIT]);
+      await put(e.c, 'pA', 'gC', [INIT, { ...ADD, discards: { 'secret_ledger.note': 'superseded' } }]);
+      await host.admin.promoteVersion(staff, SLUG, 'prod', e.a);
+    });
+
+    it('comes in the same answer as the diff, and is what the host recomputes from its stored rows', async () => {
+      const res = await read(SLUG, e.c, as.tenantA, e.a);
+      expect(diffOf(res.text)?.added).toEqual([{ ...ADD, discards: { 'secret_ledger.note': 'superseded' } }]);
+      const shown = bindingOf(res.text)!;
+      expect(shown).toEqual({ base: e.a, digest: expect.stringMatching(/^[0-9a-f]{64}$/) });
+      // Without a base: a first promote's binding names none.
+      expect(bindingOf((await read(SLUG, e.c, as.tenantA)).text)?.base).toBeNull();
+      // Read twice, the same rows give the same binding.
+      expect(bindingOf((await read(SLUG, e.c, as.tenantA, e.a)).text)).toEqual(shown);
+    });
+
+    it('a refused read hands out no binding', async () => {
+      const foreign = await read(SLUG, e.c, as.tenantB, e.a);
+      expect(foreign.status).toBe(404);
+      expect(bindingOf(foreign.text)).toBeUndefined();
+      expect(foreign.text).not.toMatch(/[0-9a-f]{64}/);
+    });
+
+    it('another tenant cannot promote with a binding it was handed; the owner can', async () => {
+      const shown = bindingOf((await read(SLUG, e.c, as.tenantA, e.a)).text)!;
+      const foreign = await promote(e.c, { migrationChange: true, review: shown }, as.tenantB);
+      expect(foreign.status).toBe(403);
+      expect(await prodOf()).toBe(e.a);
+      // An unbound acknowledgement is refused with its reason; the bound one promotes.
+      const unbound = await promote(e.c, { migrationChange: true }, as.tenantA);
+      expect(unbound.status).toBe(412);
+      expect(await unbound.json()).toEqual(expect.objectContaining({ reason: 'promote_review_unbound', detail: expect.stringContaining('--review') }));
+      const own = await promote(e.c, { migrationChange: true, review: shown }, as.tenantA);
+      expect(own.status).toBe(200);
+      expect(await prodOf()).toBe(e.c);
+      // Back to a for the next case (no migration moves back past a, so the permission flag alone).
+      await host.admin.promoteVersion(staff, SLUG, 'prod', e.a, { migrationChange: true, review: bindingOf((await read(SLUG, e.a, as.tenantA, e.c)).text)! });
+    });
+
+    it('a promote between the read and the acknowledgement refuses it as stale, and a read again passes', async () => {
+      const shown = bindingOf((await read(SLUG, e.c, as.tenantA, e.a)).text)!;
+      // Someone promotes b meanwhile: prod's permission surface moves under the review.
+      await host.admin.promoteVersion(staff, SLUG, 'prod', e.b, { permissionChange: true });
+      const stale = await promote(e.c, { permissionChange: true, migrationChange: true, review: shown }, as.tenantA);
+      expect(stale.status).toBe(412);
+      expect(await stale.json()).toEqual(expect.objectContaining({ reason: 'promote_review_stale' }));
+      expect(await prodOf()).toBe(e.b);
+      const again = bindingOf((await read(SLUG, e.c, as.tenantA, e.b)).text)!;
+      expect(again.base).toBe(e.b);
+      const ok = await promote(e.c, { permissionChange: true, migrationChange: true, review: again }, as.tenantA);
+      expect(ok.status).toBe(200);
+      expect(await prodOf()).toBe(e.c);
+    });
+  });
 });

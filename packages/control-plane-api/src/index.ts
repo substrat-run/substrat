@@ -154,7 +154,7 @@ export {
   type StoreDriverRebuildPass,
 } from './store-rebuild.js';
 export {
-  ROLLOUT_FLEET_MAX,
+  ROLLOUT_WALKS_PER_REQUEST,
   ROLLOUT_HOLD_TTL_MS,
   ROLLOUT_VERTICALS_PER_REQUEST,
   canaryObjectName,

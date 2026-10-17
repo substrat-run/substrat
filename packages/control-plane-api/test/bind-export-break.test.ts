@@ -533,6 +533,12 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
       headers: auth,
       body: JSON.stringify({ versionId, ...(acknowledge ? { acknowledge } : {}) }),
     });
+  /** #2333: the review binding a migration acknowledgement carries, read as a client reads it. */
+  const reviewFor = async (slug: string, versionId: string) => {
+    const base = (await host.admin.listChannels(staff, slug)).find((c) => c.channel === 'prod')?.versionId;
+    const res = await app.request(`/verticals/${encodeURIComponent(slug)}/versions/${versionId}/migrations?base=${base}`, { headers: auth });
+    return ((await res.json()) as { review: object }).review;
+  };
 
   it('refuses the adopt the promote never judged, moves nothing, and a promote with the acknowledgement moves it', async () => {
     const pin = `cascade-${ulid().slice(-6).toLowerCase()}`;
@@ -619,7 +625,7 @@ describe("the promote's adopt of a lagging install (#1756)", () => {
       ] as const) {
         const next = await push(pin, manifest(version, false, migration));
         listScopes.mockClear();
-        const res = await promote(slug, next.id, acknowledge);
+        const res = await promote(slug, next.id, 'migrationChange' in acknowledge ? { ...acknowledge, review: await reviewFor(slug, next.id) } : acknowledge);
         expect(res.status).toBe(200);
         expect(backfillRan()).toBe(true);
         for (const s of [onServing, legacy]) {
