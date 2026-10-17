@@ -2,7 +2,7 @@
   "name": "@substrat-run/connector-microsoft365",
   "version": "0.0.9",
   "private": true,
-  "description": "Substrat connector: a tenant's own Microsoft 365, over Microsoft Graph with app-only client credentials in the tenant's Entra directory. Sends mail as the tenant's own addresses (a MailSender behind the platform's email relay). Signs in with a per-connection certificate the platform generates, or a client secret. Host code, never module code.",
+  "description": "Substrat connector: a tenant's own Microsoft 365, over Microsoft Graph with app-only client credentials in the tenant's Entra directory. Sends mail as the tenant's own addresses (a MailSender behind the platform's email relay), and reads and writes files in one Teams channel's SharePoint folder. Signs in with a per-connection certificate the platform generates, or a client secret. Host code, never module code.",
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
@@ -31,6 +31,8 @@
     "@substrat-run/kernel": "workspace:^"
   },
   "devDependencies": {
+    "@substrat-run/adapter-sqlite": "workspace:^",
+    "@substrat-run/contract-tests": "workspace:^",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "zod": "catalog:"

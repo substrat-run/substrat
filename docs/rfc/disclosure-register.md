@@ -310,10 +310,13 @@ as argued; where this section disagrees with one of them, it says so.
   two tables, not one").
 - **§13.1 now states twelve limits, not six.** Limit 3 still names no processor, so §3.2 holds.
 - **`CONNECTORS` is four, not three**: scrive, fortnox, planima and microsoft365
-  (`apps/control-plane/src/connectors.ts:431`). **Only Scrive declares `dispatch`**
-  (`connectors.ts:252`). Fortnox, Planima and microsoft365 each say "no dispatch" in their own
-  headers, so they never receive an event. microsoft365 declares `mail` (#2098) instead, and
-  sends a vertical's message as the tenant through the email relay, outside the event journal.
+  (`apps/control-plane/src/connectors.ts`). **Scrive and microsoft365 declare `dispatch`**;
+  Fortnox and Planima say "no dispatch" in their own headers, so they never receive an event.
+  microsoft365 declares `mail` (#2098) too, and sends a vertical's message as the tenant through
+  the email relay, outside the event journal. Its `dispatch` (#2101) answers
+  `microsoft365.channel-files-requested`: it uploads the attachments the event names to the
+  tenant's own SharePoint channel folder, and its sweep lands that folder's changes through the
+  vertical's operation as the connection.
 - **The email relay still writes no subject-keyed row** (`/internal/email/send`,
   `apps/control-plane/src/worker.ts`). F4's finding stands.
 
@@ -372,14 +375,16 @@ connector's own calls that no event drove (a sweep, a callback), a vertical's de
 silent about those paths would read as complete. Making the issue's rule ("PII leaves only
 through a connection") a gate is a separate decision and is not taken here.
 
-**Costs, stated.** It answers *handed to*, not *sent* and not *kept*. **Today it covers one
-provider**: Scrive is the only connector that receives events, so the derived edges name Scrive
-or nothing. That is the strongest argument against building more than the read. A table, a
-writer or a gate for one connector would cost more than the answer it improves, and the
+**Costs, stated.** It answers *handed to*, not *sent* and not *kept*. **When this was written it
+covered one provider**: Scrive was the only connector that received events, so the derived edges
+named Scrive or nothing. That was the strongest argument against building more than the read. A
+table, a writer or a gate for one connector would cost more than the answer it improves, and the
 `uncovered` list is the larger half of an honest answer. The read is still worth having, because
 it costs no migration and already covers the history. A second dispatching connector is what
 would make the register more than a Scrive lookup, and that connector should arrive with
-`discloses` already declared (Q4). It covers nothing a vertical reaches on its own. Its
+`discloses` already declared (Q4). microsoft365 is that second connector since #2101 (its
+`microsoft365.channel-files-requested` deliveries), and it arrived without `discloses`, since
+Q4 is still open. It covers nothing a vertical reaches on its own. Its
 precision is limit 1's: one subject per event, so an event about a meeting with five people is
 an edge for one of them. It adds no migration and no write on any outbound path, which is why it
 is cheap, and the same fact is why it can never be more truthful than the journals it reads.

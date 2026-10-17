@@ -86,6 +86,17 @@ describe('connector registry', () => {
     expect(connectorSweepersFor({})['fortnox']).toBeDefined();
   });
 
+  it('Microsoft 365 dispatches channel-folder writes, sweeps the folder, and binds only with a folder (#2101)', async () => {
+    const m365 = CONNECTORS.find((c) => c.provider === 'microsoft365')!;
+    expect(m365.dispatch).toBeDefined();
+    expect(m365.mail).toBeDefined();
+    const inspector = connectionInspectorsFor({})['microsoft365']!;
+    expect(inspector.bindings).toBeDefined();
+    const target = { tenantId: '01JZ0000000000000000000002', scopeId: '01JZ0000000000000000000003', vertical: 'acme-crm', operation: 'docs/land', permission: 'docs:land' };
+    // No folder is refused before anything is read — the host here has nothing to read.
+    expect(() => inspector.bindScope!(null as never, { id: 'con_x' } as never, target)).toThrow(/channel folder/);
+  });
+
   it('refuses a malformed Fortnox candidate without spending a provider round trip', async () => {
     const inspector = connectionInspectorsFor({})['fortnox']!;
     // No fetch is reachable here (the inspector got a real fetchImpl, but a malformed

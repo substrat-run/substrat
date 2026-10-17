@@ -2,10 +2,12 @@
  * `@substrat-run/connector-microsoft365` — a tenant's own Microsoft 365, over Microsoft Graph
  * with app-only client credentials in the tenant's own Entra directory (#2100).
  *
- * Host code, never module code. What it does today is send mail as the tenant: it implements
- * the kernel's `MailSender`, so the platform's email relay routes a vertical's message to it
- * when the message's `from` is one of the connection's addresses (#2098). Documents in a Teams
- * channel's SharePoint folder are #2101.
+ * Host code, never module code. It sends mail as the tenant: it implements the kernel's
+ * `MailSender`, so the platform's email relay routes a vertical's message to it when the
+ * message's `from` is one of the connection's addresses (#2098). And it keeps documents in one
+ * Teams channel's SharePoint folder (#2101, `files.ts`): writes requested by an event
+ * (`microsoft365.channel-files-requested`, dispatched), reads by a sweep of the library's change
+ * feed, landed through the vertical's own operation.
  *
  * **Least privilege is the tenant's, and this connector assumes it.** The app registration
  * holds only `Sites.Selected` in Entra; the right to send is granted in Exchange with RBAC for
@@ -24,13 +26,21 @@
  */
 import {
   instant,
-  tenantId as tenantIdSchema,
-  type Connection,
   type ConnectionCertificate,
   type ConnectionCredential,
   type ConnectionProbe,
 } from '@substrat-run/contracts';
-import { settleConnectionUse, type FetchLike, type HostAdmin, type MailSender, type ScopeHost } from '@substrat-run/kernel';
+import type { FetchLike, MailSender, ScopeHost } from '@substrat-run/kernel';
+import {
+  graph,
+  loginOf,
+  nowOf,
+  openMicrosoft365Connection,
+  openSecret,
+  signedInGraph,
+  type ConnectionRef,
+  type Microsoft365Options,
+} from './connection.js';
 import {
   acquireToken,
   authMethodOf,
@@ -42,7 +52,7 @@ import {
   withNextOnly,
   type Microsoft365Secret,
 } from './credential.js';
-import { GraphError, readSite, sendMail, type GraphClient } from './graph.js';
+import { GraphError, readSite, sendMail } from './graph.js';
 import { certificatePem, thumbprintSha1Hex } from './x509.js';
 
 export {
@@ -56,7 +66,38 @@ export {
   GRAPH_BASE,
 } from './credential.js';
 export type { Microsoft365Secret, AuthMethod, TokenOutcome } from './credential.js';
-export { GraphError, MAX_ATTACHMENT_BYTES, sitePath } from './graph.js';
+export { GraphError, MAX_ATTACHMENT_BYTES, SIMPLE_UPLOAD_MAX_BYTES, UPLOAD_CHUNK_BYTES, sitePath } from './graph.js';
+export type { ConflictBehavior, DriveItem } from './graph.js';
+export { MICROSOFT365_PROVIDER, type Microsoft365Options } from './connection.js';
+export { FenceError, fencedPath, fencedSegment, MAX_RELATIVE_PATH } from './fence.js';
+export {
+  MICROSOFT365_FILES_EVENT,
+  MAX_FILES_PER_EVENT,
+  MAX_FILE_BYTES,
+  MAX_EVENT_BYTES,
+  microsoft365FilesRequested,
+  microsoft365ChannelChange,
+  bindMicrosoft365Scope,
+  listMicrosoft365Bindings,
+  unbindMicrosoft365Scope,
+  microsoft365FilesConnector,
+  registerMicrosoft365FilesConnector,
+  declareMicrosoft365FilesConnector,
+  syncMicrosoft365Scope,
+  SYNC_PAGES_PER_CALL,
+  SYNC_TIMEOUT_MS,
+  SYNC_VERIFY_PER_CALL,
+  MAX_UNPLACED_ATTEMPTS,
+  sweepMicrosoft365Files,
+  withSuffix,
+} from './files.js';
+export type {
+  Microsoft365Binding,
+  Microsoft365ChannelChange,
+  Microsoft365FilesRequested,
+  Microsoft365SyncResult,
+  Microsoft365SweepResult,
+} from './files.js';
 export {
   generateCertificate,
   certificatePem,
@@ -65,28 +106,14 @@ export {
   CERTIFICATE_VALIDITY_DAYS,
 } from './x509.js';
 
-export const MICROSOFT365_PROVIDER = 'microsoft365';
-
 /**
  * No standing grants. Sending mail lands nothing in a scope; an attachment a message carries
  * is read as this connection, so the tenant grants that read on the target it means to send
- * from — per vertical, which is why no fixed key can be named here.
+ * from — per vertical, which is why no fixed key can be named here. The channel-folder sync
+ * (#2101) lands through the vertical's own operation, whose permission the binding names and
+ * `bindMicrosoft365Scope` checks.
  */
 export const MICROSOFT365_CONNECTION_GRANTS: readonly string[] = [];
-
-export interface Microsoft365Options {
-  fetch: FetchLike;
-  /** Overrides for a test deployment pointed at a stub. Unset = the real hosts. */
-  loginBase?: string;
-  graphBase?: string;
-  now?: () => Date;
-  timeoutMs?: number;
-}
-
-type ConnectionRef = Pick<Connection, 'id' | 'tenantId' | 'vertical'>;
-
-const nowOf = (o: Microsoft365Options) => (o.now ? o.now() : new Date());
-const loginOf = (o: Microsoft365Options) => (o.loginBase ? { loginBase: o.loginBase } : {});
 
 /** Check a credential that is not stored yet — the connect-time gate. */
 export async function probeMicrosoft365Secret(
@@ -160,7 +187,7 @@ async function probeWith(
       return probeOf({
         ok: false,
         refused: false,
-        error: `signed in, but this app has no access to ${secret.siteUrl} yet — grant it Read on the site (Sites.Selected)`,
+        error: `signed in, but this app has no access to ${secret.siteUrl} yet — grant it Write on the site (Sites.Selected; Read is enough for mail alone)`,
         facts,
       });
     }
@@ -280,15 +307,9 @@ export function microsoft365MailSender(options: Microsoft365Options): MailSender
     senders: async (host, connection) => sendersOf((await openSecret(host.admin, connection)).secret),
     send: async (host, connection, mail) => {
       const conn = await openMicrosoft365Connection(host.admin, options, connection);
-      // One sign-in is one use: mid-rotation it may take two requests (the current certificate,
-      // then its successor), and only the attempt that decided the answer is recorded.
-      const signIn = conn.signInFetch();
-      const token = await acquireToken(signIn.fetch, conn.secret, { now: nowOf(options), ...loginOf(options) }).finally(
-        signIn.record,
-      );
-      if (!token.ok) throw new Error(`Microsoft 365 sign-in failed: ${token.error}`);
+      const client = await signedInGraph(conn, options);
       try {
-        return await sendMail(graph(conn.fetch, token.accessToken, options), mail);
+        return await sendMail(client, mail);
       } catch (e) {
         // Exchange's RBAC for Applications scope is the tenant's fence; say that, not "403".
         // Reworded, never re-typed: the status and `Retry-After` are what the platform's retry
@@ -316,64 +337,6 @@ export function microsoft365MailSender(options: Microsoft365Options): MailSender
 }
 
 // ── internals ────────────────────────────────────────────────────────────────
-
-function graph(fetchImpl: FetchLike, accessToken: string, options: Microsoft365Options): GraphClient {
-  return { fetch: fetchImpl, accessToken, ...(options.graphBase ? { graphBase: options.graphBase } : {}) };
-}
-
-async function openSecret(admin: HostAdmin, connection: ConnectionRef) {
-  const open = await admin.openConnection(
-    tenantIdSchema.parse(connection.tenantId),
-    connection.vertical,
-    MICROSOFT365_PROVIDER,
-  );
-  if (!open) {
-    throw new Error(
-      `no live '${MICROSOFT365_PROVIDER}' connection for tenant ${connection.tenantId} / vertical '${connection.vertical}'`,
-    );
-  }
-  // The row the caller named and the credential opened must be the same connection.
-  if (open.id !== connection.id) {
-    throw new Error(
-      `connection ${connection.id} is not the live '${MICROSOFT365_PROVIDER}' connection (${open.id}) for this tenant`,
-    );
-  }
-  return { open, secret: microsoft365Secret.parse(open.secret) };
-}
-
-/** The live connection, its parsed secret, and egress that records health against it. */
-async function openMicrosoft365Connection(admin: HostAdmin, options: Microsoft365Options, connection: ConnectionRef) {
-  const { open, secret } = await openSecret(admin, connection);
-  const timeoutMs = options.timeoutMs ?? 15_000;
-  type Settled = Parameters<typeof settleConnectionUse>[2];
-  const record = (durationMs: number, settled: Settled) =>
-    admin.recordConnectionUse(open.id, settleConnectionUse(MICROSOFT365_PROVIDER, durationMs, settled));
-  /** The fetch, timed out, reporting each settlement (with its duration) to `settle`. */
-  const timed =
-    (settle: (durationMs: number, settled: Settled) => Promise<void> | void): FetchLike =>
-    async (input, init) => {
-      const started = Date.now();
-      try {
-        const res = await options.fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
-        await settle(Date.now() - started, { response: res });
-        return res;
-      } catch (err) {
-        await settle(Date.now() - started, { error: err });
-        throw err;
-      }
-    };
-  /** A fetch for one sign-in: every attempt is held, and `record` writes only the last. */
-  const signInFetch = () => {
-    let last: [number, Settled] | undefined;
-    return {
-      fetch: timed((ms, settled) => void (last = [ms, settled])),
-      record: async () => {
-        if (last) await record(...last);
-      },
-    };
-  };
-  return { secret, fetch: timed(record), signInFetch };
-}
 
 function probeOf(p: {
   ok: boolean;

@@ -2828,7 +2828,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             .refine((w) => w.toYear >= w.fromYear, 'window ends before it starts').nullable().optional(),
           horizonYears: z.number().int().min(0).optional(),
         }).strict()
-      : z.object(fields).strict();
+      : row.provider === 'microsoft365'
+        // #2101: the channel folder, by its drive path. The connector resolves it and holds the
+        // fence to it; this only bounds the input.
+        ? z.object({ ...fields, folder: z.string().trim().min(1).max(400) }).strict()
+        : z.object(fields).strict();
     const input = schema.parse(await c.req.json());
     const grants = await c.var.host.connectionGrantsInScope(row.tenantId, scopeId);
     if (!grants.some((g) => g.connectionId === row.id && g.permission === input.permission)) {

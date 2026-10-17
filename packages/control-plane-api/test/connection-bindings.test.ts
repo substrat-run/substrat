@@ -21,7 +21,7 @@ describe('poll connector binding door', () => {
   const createdBy = principalId.parse(ulid());
   const headers = { [DEV_ACTOR_HEADER]: actor, 'content-type': 'application/json' };
   const input = { operation: 'maintenance/record-plan', permission: 'plan:record', organizationId: null, currency: 'SEK', window: null, horizonYears: 50 };
-  let dir: string, host: SqliteScopeHost, connection: ConnectionId, fortnox: ConnectionId;
+  let dir: string, host: SqliteScopeHost, connection: ConnectionId, fortnox: ConnectionId, m365: ConnectionId;
   let app: ReturnType<typeof createControlPlaneApi>;
   const bind = vi.fn<NonNullable<ConnectionInspector['bindScope']>>();
   const bindings = vi.fn<NonNullable<ConnectionInspector['bindings']>>();
@@ -41,6 +41,8 @@ describe('poll connector binding door', () => {
     await host.admin.createConnection(actor, { id: connection, scopes: [], tenantId: tenant, vertical: 'acme-crm', provider: 'planima', label: 'Planima', secret: { apiToken: 'never-return-this' }, createdBy });
     fortnox = connectionId.parse(ulid());
     await host.admin.createConnection(actor, { id: fortnox, scopes: [], tenantId: tenant, vertical: 'acme-crm', provider: 'fortnox', label: 'Fortnox', secret: { apiToken: 'never-return-this-either' }, createdBy });
+    m365 = connectionId.parse(ulid());
+    await host.admin.createConnection(actor, { id: m365, scopes: [], tenantId: tenant, vertical: 'acme-crm', provider: 'microsoft365', label: 'Microsoft 365', secret: { clientSecret: 'never-return-this-too' }, createdBy });
     bind.mockImplementation(async (_h, row, target) => {
       const value = { ...target, boundAt: '2026-10-15T12:00:00.000Z' };
       await host.admin.putConnectorState(row.id, `${row.provider}:binding:${target.scopeId}`, value);
@@ -51,7 +53,7 @@ describe('poll connector binding door', () => {
       authenticateTenantService: tenantTokenAuth('tenant-secret', actor),
       authenticateBuilder: firstBuilderAuth(pushTokenBuilderAuth('push-secret')),
       tenantTokenSecret: 'tenant-secret',
-      connectionInspectors: { planima: { bindScope: bind, bindings }, fortnox: { bindScope: bind, bindings } },
+      connectionInspectors: { planima: { bindScope: bind, bindings }, fortnox: { bindScope: bind, bindings }, microsoft365: { bindScope: bind, bindings } },
     });
   });
   afterAll(async () => { await host.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -133,6 +135,22 @@ describe('poll connector binding door', () => {
     const response = await write({ operation: 'ledger/record-period', permission: 'ledger:record' }, path(fortnox));
     expect(response.status).toBe(200);
     expect(await host.admin.getConnectorState(fortnox, 'unrelated')).toEqual({ keep: true });
+  });
+  // #2101: a Microsoft 365 binding names its channel folder, and only it may.
+  it('requires a folder for Microsoft 365, refuses one elsewhere, and hands it to the connector', async () => {
+    await host.admin.grantToConnection(actor, { connectionId: m365, permission: permissionKey.parse('docs:land'), node: { tenantId: tenant, scopeId: scope }, grantedBy: actor });
+    const docs = { operation: 'docs/land', permission: 'docs:land' };
+    const before = bind.mock.calls.length;
+    for (const body of [docs, { ...docs, folder: '' }, { ...docs, folder: 'General', currency: 'SEK' }]) {
+      expect((await write(body, path(m365))).status).toBe(400);
+    }
+    expect((await write({ ...input, folder: 'General' })).status).toBe(400);
+    expect(bind.mock.calls.length).toBe(before);
+    const response = await write({ ...docs, folder: 'General' }, path(m365));
+    expect(response.status).toBe(200);
+    expect(bind.mock.calls.at(-1)?.[2]).toMatchObject({ ...docs, folder: 'General', tenantId: tenant, scopeId: scope, vertical: 'acme-crm' });
+    const log = (await host.admin.auditLog(actor, { tenantId: tenant })).filter((r) => r.action === 'bindConnectionScope' && r.after?.connectionId === m365);
+    expect(log.map((r) => r.after?.folder)).toEqual(['General', 'General']);
   });
   it('preserves unavailable targets alongside held and missing permission results', async () => {
     const held = { ...input, tenantId: tenant, scopeId: scope, vertical: 'acme-crm', boundAt: '2026-10-15T12:00:00.000Z' };

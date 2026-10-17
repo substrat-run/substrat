@@ -360,6 +360,11 @@ export interface ConnectionScopeBindingInput {
   currency?: string;
   window?: { fromYear: number; toYear: number } | null;
   horizonYears?: number;
+  /**
+   * microsoft365 (#2101): the channel folder's drive path, relative to the site's default
+   * document library (`General`, not the channel's display name). Required for that provider.
+   */
+  folder?: string;
 }
 export interface ConnectionScopeBinding extends ConnectionScopeBindingInput {
   /** Read from the target scope's live projection; omitted when inspection fails. */

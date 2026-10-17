@@ -1,15 +1,21 @@
+import { z } from 'zod';
 import type { MailSendResult, OutboundMail } from '@substrat-run/kernel';
 import { GRAPH_BASE } from './credential.js';
+import { encodedPath } from './fence.js';
 import { toBase64 } from './x509.js';
 
 /** What a Graph call needs: an egress that records health, a token, and where Graph is. */
 export interface GraphClient {
-  fetch(input: string, init?: { method?: string; headers?: Record<string, string>; body?: string }): Promise<{
+  fetch(
+    input: string,
+    init?: { method?: string; headers?: Record<string, string>; body?: string | Uint8Array },
+  ): Promise<{
     ok: boolean;
     status: number;
     /** Read for `Retry-After` on a throttle (#2102). Optional: a test fetch may omit it. */
     headers?: { get(name: string): string | null };
     json(): Promise<unknown>;
+    arrayBuffer(): Promise<ArrayBuffer>;
   }>;
   accessToken: string;
   graphBase?: string;
@@ -59,6 +65,16 @@ export function sitePath(siteUrl: string): string {
   const url = new URL(siteUrl);
   const path = url.pathname.replace(/\/+$/, '');
   return path ? `sites/${url.hostname}:${path}` : `sites/${url.hostname}`;
+}
+
+/**
+ * The site as the start of a longer Graph path. A site addressed by its server-relative path is
+ * closed with a colon before anything follows it (`sites/{host}:/sites/Team:/drive/…`); the root
+ * site needs none (`sites/{host}/drive/…`).
+ */
+export function siteSegment(siteUrl: string): string {
+  const path = sitePath(siteUrl);
+  return path.includes(':') ? `${path}:` : path;
 }
 
 export async function readSite(client: GraphClient, siteUrl: string): Promise<SiteInfo> {
@@ -115,13 +131,35 @@ export async function sendMail(client: GraphClient, mail: OutboundMail): Promise
 }
 
 async function call(client: GraphClient, method: string, path: string, body?: unknown) {
-  const res = await client.fetch(`${client.graphBase ?? GRAPH_BASE}/v1.0/${path}`, {
+  return send(client, method, `${graphRoot(client)}/${path}`, {
+    ...(body === undefined ? {} : { body: JSON.stringify(body), contentType: 'application/json' }),
+  });
+}
+
+const graphRoot = (client: GraphClient) => `${client.graphBase ?? GRAPH_BASE}/v1.0`;
+
+/**
+ * One request to Graph at an absolute URL, with the token. A URL Graph handed back (`nextLink`,
+ * `deltaLink`) is followed only when it is under the same Graph root: the token goes nowhere else.
+ */
+async function send(
+  client: GraphClient,
+  method: string,
+  url: string,
+  opts: { body?: string | Uint8Array; contentType?: string; auth?: boolean; headers?: Record<string, string> } = {},
+) {
+  const auth = opts.auth ?? true;
+  if (auth && !url.startsWith(`${graphRoot(client)}/`)) {
+    throw new GraphError(400, 'foreignLink', 'refused to send the Graph token to a URL outside Graph');
+  }
+  const res = await client.fetch(url, {
     method,
     headers: {
-      authorization: `Bearer ${client.accessToken}`,
-      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      ...(auth ? { authorization: `Bearer ${client.accessToken}` } : {}),
+      ...(opts.contentType ? { 'content-type': opts.contentType } : {}),
+      ...opts.headers,
     },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    ...(opts.body === undefined ? {} : { body: opts.body }),
   });
   if (res.ok) return res;
   const err = ((await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string } }).error;
@@ -132,3 +170,160 @@ async function call(client: GraphClient, method: string, path: string, body?: un
     retryAfterSeconds(res.headers?.get('retry-after')),
   );
 }
+
+// ── drive items (#2101) ──────────────────────────────────────────────────────
+
+/**
+ * The fields of a `driveItem` this connector reads, parsed with its own schema: Graph may add a
+ * field tomorrow, and an unknown key is stripped rather than trusted.
+ */
+export const driveItem = z.object({
+  id: z.string().min(1),
+  name: z.string().optional(),
+  parentReference: z.object({ id: z.string().optional(), driveId: z.string().optional(), path: z.string().optional() }).optional(),
+  file: z
+    .object({ mimeType: z.string().optional(), hashes: z.object({ quickXorHash: z.string().optional() }).optional() })
+    .optional(),
+  folder: z.object({ childCount: z.number().optional() }).optional(),
+  root: z.object({}).passthrough().optional(),
+  deleted: z.object({ state: z.string().optional() }).optional(),
+  size: z.number().optional(),
+  cTag: z.string().optional(),
+  eTag: z.string().optional(),
+  lastModifiedDateTime: z.string().optional(),
+  createdDateTime: z.string().optional(),
+  createdBy: z.object({ application: z.object({ id: z.string().optional() }).optional() }).optional(),
+  webUrl: z.string().optional(),
+});
+export type DriveItem = z.infer<typeof driveItem>;
+
+const SELECT =
+  'id,name,parentReference,file,folder,root,deleted,size,cTag,eTag,lastModifiedDateTime,createdDateTime,createdBy,webUrl';
+
+const page = z.object({
+  value: z.array(driveItem),
+  '@odata.nextLink': z.string().optional(),
+  '@odata.deltaLink': z.string().optional(),
+});
+
+/** The folder at `segments` under the site's default document library. */
+export async function folderAtPath(client: GraphClient, siteUrl: string, segments: readonly string[]): Promise<DriveItem> {
+  const res = await call(client, 'GET', `${siteSegment(siteUrl)}/drive/root:/${encodedPath(segments)}?$select=${SELECT}`);
+  return driveItem.parse(await res.json());
+}
+
+export async function itemById(client: GraphClient, driveId: string, itemId: string): Promise<DriveItem> {
+  const res = await call(client, 'GET', `drives/${enc(driveId)}/items/${enc(itemId)}?$select=${SELECT}`);
+  return driveItem.parse(await res.json());
+}
+
+/** The item at `segments` under `parentId` — addressed relative to the parent's id. */
+export async function itemUnder(
+  client: GraphClient,
+  driveId: string,
+  parentId: string,
+  segments: readonly string[],
+): Promise<DriveItem> {
+  const res = await call(
+    client,
+    'GET',
+    `drives/${enc(driveId)}/items/${enc(parentId)}:/${encodedPath(segments)}?$select=${SELECT}`,
+  );
+  return driveItem.parse(await res.json());
+}
+
+/**
+ * One page of the drive's change feed. Delta runs on the drive ROOT: on SharePoint Graph supports
+ * it nowhere else, so what comes back covers the whole library and the caller's fence is what
+ * keeps the folder. `link` is the previous page's `nextLink` or the last pass's `deltaLink`;
+ * `null` starts a full enumeration.
+ */
+export async function deltaPage(client: GraphClient, driveId: string, link: string | null) {
+  const url = link ?? `${graphRoot(client)}/drives/${enc(driveId)}/root/delta?$select=${SELECT}`;
+  const res = await send(client, 'GET', url);
+  const body = page.parse(await res.json());
+  return { items: body.value, next: body['@odata.nextLink'] ?? null, delta: body['@odata.deltaLink'] ?? null };
+}
+
+/** One page of a folder's children; `link` is the previous page's `nextLink`, `null` the first. */
+export async function childrenPage(client: GraphClient, driveId: string, itemId: string, link: string | null) {
+  const url = link ?? `${graphRoot(client)}/drives/${enc(driveId)}/items/${enc(itemId)}/children?$select=${SELECT}`;
+  const body = page.parse(await (await send(client, 'GET', url)).json());
+  return { items: body.value, next: body['@odata.nextLink'] ?? null };
+}
+
+/**
+ * A file's bytes, at most `maxBytes` of them: refused on the declared `content-length` before the
+ * body is read when Graph sends one, and on what arrived when it does not.
+ */
+export async function contentOf(client: GraphClient, driveId: string, itemId: string, maxBytes: number): Promise<Uint8Array> {
+  const res = await call(client, 'GET', `drives/${enc(driveId)}/items/${enc(itemId)}/content`);
+  const tooLarge = () => new GraphError(413, 'tooLarge', `the file is larger than the ${maxBytes} bytes a sync brings in`);
+  if (Number(res.headers?.get('content-length') ?? 0) > maxBytes) throw tooLarge();
+  const body = new Uint8Array(await res.arrayBuffer());
+  if (body.byteLength > maxBytes) throw tooLarge();
+  return body;
+}
+
+export type ConflictBehavior = 'replace' | 'rename' | 'fail';
+
+/** Graph's largest simple upload this connector sends; anything bigger goes by upload session. */
+export const SIMPLE_UPLOAD_MAX_BYTES = 4 * 1024 * 1024;
+/** One upload-session chunk: a multiple of 320 KiB, as Graph requires. */
+export const UPLOAD_CHUNK_BYTES = 320 * 1024 * 10;
+
+/**
+ * Write `body` at `segments` under the folder `parentId` — simple PUT up to 4 MB, an upload session
+ * above. A session that fails part-way is cancelled, so no half-written upload is left behind; it is
+ * never resumed across deliveries (its URL is a capability, and is not stored).
+ */
+export async function writeUnder(
+  client: GraphClient,
+  input: {
+    driveId: string;
+    parentId: string;
+    segments: readonly string[];
+    body: Uint8Array;
+    contentType: string;
+    conflict: ConflictBehavior;
+  },
+): Promise<DriveItem> {
+  const target = `drives/${enc(input.driveId)}/items/${enc(input.parentId)}:/${encodedPath(input.segments)}:`;
+  if (input.body.byteLength <= SIMPLE_UPLOAD_MAX_BYTES) {
+    const res = await send(
+      client,
+      'PUT',
+      `${graphRoot(client)}/${target}/content?@microsoft.graph.conflictBehavior=${input.conflict}`,
+      { body: input.body, contentType: input.contentType },
+    );
+    return driveItem.parse(await res.json());
+  }
+  const session = z
+    .object({ uploadUrl: z.string().min(1) })
+    .parse(
+      await (
+        await call(client, 'POST', `${target}/createUploadSession`, {
+          item: { '@microsoft.graph.conflictBehavior': input.conflict },
+        })
+      ).json(),
+    );
+  const total = input.body.byteLength;
+  try {
+    for (let start = 0; start < total; start += UPLOAD_CHUNK_BYTES) {
+      const end = Math.min(start + UPLOAD_CHUNK_BYTES, total);
+      // The upload URL is pre-authorized; Graph refuses a request to it that carries the token.
+      const res = await send(client, 'PUT', session.uploadUrl, {
+        auth: false,
+        body: input.body.subarray(start, end),
+        headers: { 'content-range': `bytes ${start}-${end - 1}/${total}` },
+      });
+      if (end === total) return driveItem.parse(await res.json());
+    }
+    throw new GraphError(500, undefined, 'the upload session ended without an item');
+  } catch (e) {
+    await send(client, 'DELETE', session.uploadUrl, { auth: false }).catch(() => undefined);
+    throw e;
+  }
+}
+
+const enc = encodeURIComponent;
