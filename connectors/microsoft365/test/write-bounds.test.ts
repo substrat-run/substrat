@@ -84,6 +84,15 @@ describe('a write delivery holds one file at a time', () => {
     expect(h.drive.childrenNamed(h.general)).toEqual(['a.bin', 'b.bin']);
   });
 
+  it('refuses an event naming one attachment twice, before reading anything', async () => {
+    const h = harness({ a: 10 });
+    await expect(
+      h.run({ files: [{ attachmentId: 'a', size: 10, name: 'a.pdf' }, { attachmentId: 'a', size: 10, name: 'b.pdf' }], conflict: 'fail' }),
+    ).rejects.toThrow(/named more than once/);
+    expect(h.log).toEqual([]);
+    expect(h.drive.calls).toEqual([]);
+  });
+
   it('refuses a file whose attachment is not the size the event declared', async () => {
     const h = harness({ a: 10 }, { actual: { a: 11 } });
     await expect(h.run({ files: [{ attachmentId: 'a', size: 10 }], conflict: 'fail' })).rejects.toThrow(/not the 10 bytes/);

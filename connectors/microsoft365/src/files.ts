@@ -100,6 +100,11 @@ export const microsoft365FilesRequested = z.object({
     .max(MAX_FILES_PER_EVENT)
     .refine((files) => files.reduce((n, f) => n + f.size, 0) <= MAX_EVENT_BYTES, {
       message: `the files come to more than ${MAX_EVENT_BYTES} bytes, the most one event may move`,
+    })
+    // The ledger records progress by attachment, so one attachment named twice would be written
+    // once and reported done. Two copies of one attachment are two events.
+    .refine((files) => new Set(files.map((f) => f.attachmentId)).size === files.length, {
+      message: 'an attachment is named more than once',
     }),
   conflict: z.enum(['replace', 'rename', 'fail']),
 });
