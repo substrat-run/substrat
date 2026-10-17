@@ -335,7 +335,9 @@ A push then:
    bindings, the runtime baseline and flags, the entry module — from the same derived config
    the bundler consumed, so what you declared and what you shipped cannot drift.
 3. **Computes digests** — manifest, permission (from the bindings), migration (from the DO
-   classes) — the same digest-diff surface the checkpoints read.
+   classes and every SQL migration with its declared moves and discards) — the same digest-diff
+   surface the checkpoints read. The control plane derives the migration digest again from what it
+   stores, and refuses a push whose digest is not that one.
 4. **POSTs the bundle + manifest** to `{cp}/verticals/{slug}/deploy`, authenticated with your
    own credential.
 
@@ -476,9 +478,18 @@ the new declarations.
 
 The migration digest covers the app's Durable-Object classes and every SQL migration the host
 would run, with its declared moves and discards, so a change to any of them is refused until you
-acknowledge it, from the CLI, the API and the dashboard alike. A version pushed by a CLI older than
-0.38.0 hashed only its Durable-Object classes, so between two such versions the registry does not
-refuse a change to SQL alone; the dashboard asks you to acknowledge one anyway.
+acknowledge it, from the CLI, the API and the dashboard alike. The control plane derives that digest
+itself, from the migrations it stores for the version and the store classes in its manifest, and a
+push whose own digest is not that one is refused before anything is uploaded: the gate never rests on
+a value only the pushing client computed. A CLI whose digest covers the SQL and its declarations is
+unaffected; one from before the SQL was hashed is refused at push, and the refusal says to upgrade
+it. Versions stored before the control plane derived the digest are derived the same way when they
+are next read, so a promote compares derived digests on both sides.
+
+A version whose manifest carries no migrations gives the platform nothing to compare: one pushed
+before manifests carried them, or one whose SQL is over what a manifest carries, which
+`substrat push` warns about. Its digest equals no other version's, so **every promote to or over it
+asks for the migration acknowledgement**, and its review says the SQL is not available.
 
 ### An acknowledgement answers one review {#acknowledgement-answers-one-review}
 

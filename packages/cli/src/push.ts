@@ -310,6 +310,15 @@ export async function migrationDigest(
 }
 
 /**
+ * What a version whose manifest leaves its SQL out means at promote (#2339): the platform derives
+ * the migration digest from the migrations it stores, so it holds none to compare, and every
+ * promote to or over the version asks for the migration acknowledgement.
+ */
+const UNCARRIED_PROMOTE =
+  'the platform cannot compare its migrations, so every promote to or over it asks for the migration ' +
+  'acknowledgement, and the review says the SQL is not available.';
+
+/**
  * The manifest as it is sent: without `migrations` when carrying them would take the whole
  * serialized manifest past {@link DEPLOY_MANIFEST_BYTES_SAFE} (#1677). The control plane keeps
  * the manifest in one Durable-Object row, which refuses anything over 2 MB, and JSON-escaping
@@ -323,7 +332,7 @@ export function boundManifest(manifest: DeployManifest, warn: (message: string) 
   if (bytes <= DEPLOY_MANIFEST_BYTES_SAFE) return manifest;
   warn(
     `⚠ the SQL migrations are not carried in this version's manifest (the manifest would be ${bytes} bytes, over the ` +
-      `${DEPLOY_MANIFEST_BYTES_SAFE} the platform stores) — a promote of it will say the SQL is not available.`,
+      `${DEPLOY_MANIFEST_BYTES_SAFE} the platform stores) — ${UNCARRIED_PROMOTE}`,
   );
   const { migrations: _omitted, ...rest } = manifest;
   return rest;
@@ -1664,8 +1673,7 @@ export async function push(
 
   if (migrations.omitted) {
     console.warn(
-      `⚠ the SQL migrations are not carried in this version's manifest (${migrations.omitted}) — ` +
-        'a promote of it will say the SQL is not available.',
+      `⚠ the SQL migrations are not carried in this version's manifest (${migrations.omitted}) — ${UNCARRIED_PROMOTE}`,
     );
   }
   const envSpec = resolveDeclaredEnvSpec(derivedEnvSpec, opts.envSpec);
