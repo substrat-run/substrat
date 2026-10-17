@@ -213,9 +213,12 @@ describe('runPlatformSweep · orphan attachments (#2314)', () => {
   });
 
   it("reports the deployment's word on what it did, not the mode it was asked for", async () => {
-    const { host } = fakeHost([{ id: sid(1), tenantId: T }]);
+    const { host, log } = fakeHost([{ id: sid(1), tenantId: T }]);
     const r = await runPlatformSweep(host, opts({ sweepScopeFn: async () => ({ swept: report({ dryRun: false, deleted: 1, keys: ['k'] }) }) }));
     expect(r.orphanAttachments).toMatchObject({ dryRuns: 0, deletes: 1, deleted: 1 });
+    // The row too: its `dryRun` is the licence for later deletes, so a deployment that deleted when it
+    // was asked for a dry run must never write a row that reads as one.
+    expect(log.map((row) => (row.after as { dryRun: boolean }).dryRun)).toEqual([false]);
   });
 
   it('a fenced pass is counted', async () => {
