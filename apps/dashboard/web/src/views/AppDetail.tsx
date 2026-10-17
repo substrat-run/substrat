@@ -139,6 +139,7 @@ export function AppDetail({
   onTab,
   onDeleted,
   authServers = [],
+  teamApps = [],
 }: {
   /** The team the tab is on — hostname calls name it in their URL (#2170). */
   teamId: string;
@@ -148,6 +149,8 @@ export function AppDetail({
   onDeleted: () => void;
   /** The team's active Auth Server apps — offered as issuers on the Settings Identity card. */
   authServers?: AppRow[];
+  /** #2192: the team's app scope ids — where a related request in another app may be opened. */
+  teamApps?: readonly string[];
 }) {
   const meta = verticalMeta(app.vertical_slug);
   const statusKind = app.status === 'provisioning' ? 'info' : app.status === 'failed' ? 'danger' : 'success';
@@ -199,6 +202,7 @@ export function AppDetail({
           invocationId={openRequest.invocationId}
           atMs={openRequest.atMs}
           onClose={closeRequestInUrl}
+          teamApps={teamApps}
         />
       )}
       <AppHeader

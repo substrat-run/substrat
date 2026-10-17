@@ -1,5 +1,6 @@
 import type { CauseChain, EffectsTree, EmittedLifecycle, HistoryEntry } from '@substrat-run/contracts';
 import { outboundCallsOf, type OutboundCall } from '@substrat-run/control-plane-api/browser';
+import { ulidTime } from './palette.js';
 
 export type { OutboundCall };
 
@@ -49,7 +50,17 @@ export interface RequestRecord {
    */
   outboundCalls?: OutboundCall[];
   outboundCallsDropped?: number;
+  /**
+   * #2192: the request that started this one through a peer call, as the caller named it.
+   * Absent on a line that names none; only ever read as one ULID.
+   */
+  parentInvocationId?: string | null;
+  /** #2192: the scope that parent's line is in — the calling app. Only ever read as one ULID. */
+  parentScopeId?: string | null;
 }
+
+/** #2192: a line's parent (or its scope), only as a ULID — anything else is none. */
+const parentOf = (v: unknown): string | null => (typeof v === 'string' && ulidTime(v) !== null ? v : null);
 
 /** #1901: a line's kind, absent read as `request`. */
 export function kindOf(v: unknown): 'request' | 'consumer' | 'schedule' {
@@ -127,6 +138,8 @@ export function recordFromLogs(logs: LogLine[]): RequestRecord | null {
       latenessMs: num(source['latenessMs']),
       outboundCalls: outboundCallsOf(source['outboundCalls']),
       outboundCallsDropped: num(source['outboundCallsDropped']) ?? 0,
+      parentInvocationId: parentOf(source['parentInvocationId']),
+      parentScopeId: parentOf(source['parentScopeId']),
     };
   }
   return null;
@@ -312,8 +325,10 @@ export function msLabel(ms: number): string {
  *   retry or a drain), or an event emitted downstream under a different call.
  *
  * Consumers delivered inside the call share its id, so they are not listed here: they are
- * the request's own. Nothing records a request that started another through a path with no
- * event (a schedule's own run, a peer or MCP call), so those cannot appear.
+ * the request's own. A peer call is the one path with no event that is recorded: the called
+ * request's line names its caller (`parentInvocationId`, #2192), so it lists that caller as
+ * `caused-by`. The caller's side does not list the peer calls it made, and an MCP call or a
+ * platform request records no parent, so those cannot appear.
  */
 export interface RelatedRequest {
   relation: 'caused-by' | 'set-off';
@@ -322,6 +337,12 @@ export interface RelatedRequest {
   at: string;
   /** What links it: the event type, and the consumer for a delivery. */
   via: string;
+  /**
+   * #2192: the app its lines are in, when that is not this request's own: a peer call's caller
+   * is another app. `null` when the line did not say which (it predates the field), and then it
+   * cannot be opened.
+   */
+  scopeId?: string | null;
 }
 
 /** What the related-requests read could cover, and whether it covered it all. */
@@ -331,12 +352,30 @@ export interface RelatedResult {
   incomplete: string | null;
 }
 
-export function relatedRequests(own: string, trees: EffectsTree[], causes: CauseChain[]): RelatedRequest[] {
+export function relatedRequests(
+  own: string,
+  trees: EffectsTree[],
+  causes: CauseChain[],
+  /** #2192: the request's own line, whose `parentInvocationId` names the request that called it. */
+  record?: Pick<RequestRecord, 'parentInvocationId' | 'parentScopeId'> | null,
+): RelatedRequest[] {
   const out = new Map<string, RelatedRequest>();
   const add = (r: RelatedRequest) => {
     // The first sighting wins, so a cause is not relabelled by a later delivery.
     if (r.invocationId !== own && !out.has(r.invocationId)) out.set(r.invocationId, r);
   };
+  // The caller's id is its claim, so it is only ever a link: opening it reads that id in the
+  // calling app, under this team's own tenant, where another tenant's request matches nothing.
+  const parentAt = record?.parentInvocationId ? ulidTime(record.parentInvocationId) : null;
+  if (record?.parentInvocationId && parentAt !== null) {
+    add({
+      relation: 'caused-by',
+      invocationId: record.parentInvocationId,
+      at: new Date(parentAt).toISOString(),
+      via: 'peer call',
+      scopeId: record.parentScopeId ?? null,
+    });
+  }
   for (const c of causes) {
     const cause = c.chain.slice(1).find((e) => e.invocationId !== null && e.invocationId !== own);
     if (cause) add({ relation: 'caused-by', invocationId: cause.invocationId!, at: cause.occurredAt, via: cause.type });

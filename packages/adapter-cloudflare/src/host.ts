@@ -1534,6 +1534,8 @@ interface ScopeStubRpc {
     tenantId: TenantId,
     scopeId: ScopeId,
     systemDoorInstance: string,
+    /** #2192: the schedule run's id, which every purge in the pass runs under. */
+    runInvocationId?: string,
   ): Promise<PurgePass | SystemDoorMoved>;
   /** #1232: the freshness evaluator's one-round-trip read — evidence + evaluator state per type. */
   freshnessProbe(
@@ -6256,9 +6258,12 @@ export class CloudflareScopeHost implements ScopeHost {
           // #119: a purge horizon's schedule runs its operation once per due entity, each its own
           // call and transaction — and the SCOPE decides which are due and runs them, so purge
           // authority is never an argument any stub can pass (`runPurgeSweep`).
-          const pass = await door.through((instance) => stub.runPurgeSweep(schedule.operation, tenantId, scopeId, instance));
+          // #2192: under the run's own id, so the purges and their deliveries join this run's line.
+          const pass = await door.through((instance) =>
+            stub.runPurgeSweep(schedule.operation, tenantId, scopeId, instance, invocationId),
+          );
           // The purges' events, delivered the way each invoke's own tail delivers them.
-          await this.drainExecutors(tenantId, scopeId, null);
+          await this.drainExecutors(tenantId, scopeId, invocationId);
           stillDue = purgeStillDue(pass);
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
           report.errors.push(...outcome.errors);

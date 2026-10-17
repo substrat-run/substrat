@@ -1,5 +1,13 @@
 import { globalFetch } from '@substrat-run/kernel';
-import { PEER_CALL_URL, peerCallResponse, substratError, type ErrorCode } from '@substrat-run/contracts';
+import { currentInvocationId } from '@substrat-run/kernel/invocation-line';
+import {
+  PARENT_REQUEST_ID_HEADER,
+  parentRequestIdOf,
+  PEER_CALL_URL,
+  peerCallResponse,
+  substratError,
+  type ErrorCode,
+} from '@substrat-run/contracts';
 
 /**
  * Calling another vertical of the same tenant, from a vertical's own harness (#1706).
@@ -51,9 +59,12 @@ export function peerClient(vertical: string, options: PeerClientOptions = {}): P
   const call = options.fetch ?? globalFetch;
   return {
     async invoke<O>(operation: string, input?: unknown, invokeOptions?: { idempotencyKey?: string }): Promise<O> {
+      // #2192: the request this call is made from, so the target's line can name it as its
+      // parent. Absent outside a stamped request, and on a platform entry that predates it.
+      const parent = parentRequestIdOf(currentInvocationId());
       const response = await call(PEER_CALL_URL, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...(parent ? { [PARENT_REQUEST_ID_HEADER]: parent } : {}) },
         body: JSON.stringify({
           vertical,
           operation,

@@ -162,6 +162,20 @@ export interface InvocationLogLine {
   outboundCalls?: readonly OutboundCallLine[];
   /** #2192: calls past {@link OUTBOUND_CALL_LOG_CAP}, counted instead of named. */
   outboundCallsDropped?: number;
+  /**
+   * #2192: the request that started this one through a path that leaves no event chain — today
+   * a peer call, whose target names the calling request's id. Omitted when there is none, so
+   * every other line stays what it was. For relating requests only: it is the caller's word for
+   * its own id, never authority.
+   */
+  parentInvocationId?: string;
+  /**
+   * #2192: the scope whose line {@link parentInvocationId} is — the caller's own, as the platform
+   * named it, since a peer call always crosses from one scope to another. Present only beside
+   * `parentInvocationId`. Where to look, never authority: a reader still reads it under its own
+   * tenant.
+   */
+  parentScopeId?: string;
   /*
    * #1901: the async line's own fields. Present only when `kind` is, and written by
    * `asyncInvocationLine` (`async-invocation-log.ts`) — ids, names, counts and codes only,
@@ -259,6 +273,10 @@ export interface InvocationLineFields {
   outboundCalls?: readonly OutboundCallLine[];
   /** #2192: written only when calls past the cap were dropped. */
   outboundCallsDropped?: number;
+  /** #2192: written only when there is one. */
+  parentInvocationId?: string;
+  /** #2192: written only beside `parentInvocationId`. */
+  parentScopeId?: string;
   async?: Pick<
     InvocationLogLine,
     'outcome' | 'eventType' | 'eventId' | 'attempt' | 'dueAt' | 'latenessMs' | 'suppressed' | 'suppressedBy'
@@ -294,6 +312,9 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
     ...(f.storeCallsDropped ? { storeCallsDropped: f.storeCallsDropped } : {}),
     ...(f.outboundCalls && f.outboundCalls.length > 0 ? { outboundCalls: f.outboundCalls } : {}),
     ...(f.outboundCallsDropped ? { outboundCallsDropped: f.outboundCallsDropped } : {}),
+    ...(f.parentInvocationId
+      ? { parentInvocationId: f.parentInvocationId, ...(f.parentScopeId ? { parentScopeId: f.parentScopeId } : {}) }
+      : {}),
     ...(f.async ?? {}),
   };
 }
@@ -414,6 +435,11 @@ export const STORE_CALL_SINK_KEY = 'substrat.store-call-sink';
 /** What the entry installs under {@link STORE_CALL_SINK_KEY}. */
 export interface StoreCallSinkSlot {
   current(): StoreCallSink | undefined;
+  /**
+   * #2192: the id of the request now running. Optional: a slot installed by a copy that
+   * predates it has none, and a caller then learns no id.
+   */
+  invocationId?(): string | undefined;
 }
 
 /**
@@ -426,6 +452,22 @@ export function currentStoreCallSink(): StoreCallSink | undefined {
       | Partial<StoreCallSinkSlot>
       | undefined;
     return typeof slot?.current === 'function' ? slot.current() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The id of the request now running, or `undefined` outside one (#2192) — what a peer call
+ * hands on as its parent. Never throws, like {@link currentStoreCallSink}.
+ */
+export function currentInvocationId(): string | undefined {
+  try {
+    const slot = (globalThis as Record<symbol, unknown>)[Symbol.for(STORE_CALL_SINK_KEY)] as
+      | Partial<StoreCallSinkSlot>
+      | undefined;
+    const id = typeof slot?.invocationId === 'function' ? slot.invocationId() : undefined;
+    return typeof id === 'string' ? id : undefined;
   } catch {
     return undefined;
   }

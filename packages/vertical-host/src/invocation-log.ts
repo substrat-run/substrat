@@ -62,6 +62,7 @@ import {
   FIELD_COVERAGE_HEADER,
   INVOCATION_RECORD_HEADER,
   invocationLevelOf,
+  parentRequestIdOf,
   REQUEST_ID_HEADER,
 } from '@substrat-run/contracts/invocation-record';
 import type { EmittedReport, ScopeStoreStubOptions } from '@substrat-run/kernel';
@@ -160,7 +161,11 @@ type RecordingTally = StoreCallTally & OutboundRecording;
  * installed by an older copy of this module has none, and its requests then record no calls.
  */
 interface StoreCallSlot extends StoreCallSinkSlot {
-  run<R>(tally: RecordingTally, fn: () => R): R;
+  /**
+   * #2192: `invocationId` is the request's own, for a peer call to hand on. A slot that predates
+   * it ignores the argument.
+   */
+  run<R>(tally: RecordingTally, fn: () => R, invocationId?: string): R;
   recording?(): OutboundRecording | undefined;
 }
 
@@ -195,14 +200,15 @@ function storeCallSlot(provided: AsyncLocalStorageClass | undefined): StoreCallS
     if (typeof existing?.run === 'function' && typeof existing.current === 'function') return existing as StoreCallSlot;
     const Als = provided ?? builtinAsyncLocalStorage();
     if (!Als) return undefined;
-    const storage = new Als<RecordingTally>();
+    const storage = new Als<{ tally: RecordingTally; invocationId: string | undefined }>();
     const slot: StoreCallSlot = {
       current() {
-        const tally = storage.getStore();
+        const tally = storage.getStore()?.tally;
         return tally ? (call) => tallyStoreCall(tally, call) : undefined;
       },
-      run: (tally, fn) => storage.run(tally, fn),
-      recording: () => storage.getStore(),
+      invocationId: () => storage.getStore()?.invocationId,
+      run: (tally, fn, invocationId) => storage.run({ tally, invocationId }, fn),
+      recording: () => storage.getStore()?.tally,
     };
     g[key] = slot;
     return slot;
@@ -223,12 +229,12 @@ function currentRecording(): OutboundRecording | undefined {
  * #2192, so does every outbound `fetch` (the recorder is put in front of `fetch` here, once
  * per isolate). With no `AsyncLocalStorage` available the handler simply runs.
  */
-function runRecording<R>(record: InvocationRecord, started: number, provided: AsyncLocalStorageClass | undefined, fn: () => R): R {
+function runRecording<R>(stamp: InvocationStamp, started: number, provided: AsyncLocalStorageClass | undefined, fn: () => R): R {
   const slot = storeCallSlot(provided);
   if (!slot) return fn();
-  markRequestStart(record, started);
+  markRequestStart(stamp.record, started);
   installOutboundRecorder(currentRecording);
-  return slot.run(record, fn);
+  return slot.run(stamp.record, fn, stamp.invocationId);
 }
 
 /**
@@ -552,6 +558,68 @@ function writeLineOrThrow<Env>(stamp: InvocationStamp, done: Finished<Env>, opti
   console.log(JSON.stringify(line));
 }
 
+/** What a platform call's route knows about the call it served (#2192). */
+export interface PlatformCallLine {
+  /** The tenant and scope of the platform-verified BODY — never a header. */
+  tenantId: string;
+  scopeId: string;
+  vertical: string | null;
+  method: string;
+  url: string;
+  env: unknown;
+  invocationId: string;
+  /** As the request carried it: written only if it is one ULID ({@link parentRequestIdOf}). */
+  parentInvocationId: string | undefined;
+  /** The caller's scope, from the verified body: written beside a parent, and only as one ULID. */
+  parentScopeId: string | undefined;
+  status: number;
+  problemCode: string | null;
+  principalKind: string;
+  operation: string;
+  emitted: EmittedReport | undefined;
+  started: number;
+}
+
+/**
+ * #2192: the line for a call the PLATFORM made into this worker behind its secret — a peer
+ * call's `/internal/vertical-invoke` — where no router assertion names a tenant, so the stamp's
+ * own writer stays silent. Called by the route, after the `/internal/*` gate verified the
+ * secret, with the tenant and scope of the body that gate admitted: one line per call, the same
+ * grammar as every other, carrying the calling request's id as `parentInvocationId`. Never a
+ * throw, like the stamp's writer.
+ */
+export function writePlatformCallLine(call: PlatformCallLine): void {
+  try {
+    const parent = parentRequestIdOf(call.parentInvocationId);
+    // The same one-ULID check: a scope id is a ULID too, and this is only where to look.
+    const parentScope = parentRequestIdOf(call.parentScopeId);
+    console.log(
+      JSON.stringify(
+        invocationLine({
+          tenantId: call.tenantId,
+          scopeId: call.scopeId,
+          vertical: call.vertical,
+          method: call.method,
+          path: pathOf(call.url),
+          status: call.status,
+          threw: false,
+          durationMs: Date.now() - call.started,
+          invocationId: call.invocationId,
+          level: invocationLevelOf(call.status, false, call.problemCode),
+          operation: call.operation,
+          problemCode: call.problemCode,
+          principalKind: call.principalKind,
+          ...(call.emitted ? { emitted: call.emitted } : {}),
+          versionId: versionIdOf(call.env),
+          ...(parent ? { parentInvocationId: parent, ...(parentScope ? { parentScopeId: parentScope } : {}) } : {}),
+        }),
+      ),
+    );
+  } catch {
+    /* one missing line, never a failed call */
+  }
+}
+
 /**
  * Mount as the FIRST middleware on a vertical's app, with the same two answers the
  * vertical gives `readRoutedNode` in its own `nodeFor`:
@@ -602,7 +670,7 @@ export function invocationLog<Env = unknown>(
     c.set?.(INVOCATION_RECORD_KEY, stamp.record);
     let threw = false;
     try {
-      await runRecording(stamp.record, started, options.asyncLocalStorage, next);
+      await runRecording(stamp, started, options.asyncLocalStorage, next);
       // #2192: after the handler, so whatever answered — a route's own `Response`, the
       // `onError` envelope — carries it. Set before, Hono would keep it only on a response it
       // built itself. Hono's `c.header` on an answered context COPIES the response (every one,
@@ -677,7 +745,7 @@ export function withInvocationLog<Env = unknown>(
       let threw = false;
       try {
         const response = withRequestId(
-          await runRecording(stamp.record, started, options.asyncLocalStorage, () => inner.call(worker, request, env, ctx)),
+          await runRecording(stamp, started, options.asyncLocalStorage, () => inner.call(worker, request, env, ctx)),
           stamp.invocationId,
         );
         status = response.status;
