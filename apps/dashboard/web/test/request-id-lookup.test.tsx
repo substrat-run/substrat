@@ -3,7 +3,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RequestsMode } from '../src/views/RequestsMode';
 import { RequestSlideOver } from '../src/views/RequestSlideOver';
-import { RequestIdNote } from '../src/components/RequestIdNote';
+import { failureDetail, RequestIdNote, requestIdOf } from '../src/components/RequestIdNote';
+import { ApiError as ClientError } from '../src/lib/api.generated';
 import { api, ApiError, type CauseChain, type EffectsTree, type HistoryEntry, type InvocationEvents } from '../src/lib/api';
 import { parseRequestId, requestLookup, REQUEST_WINDOW_MS } from '../src/lib/request-url';
 import { recordFromLogs, relatedRequests } from '../src/lib/request-detail';
@@ -127,6 +128,24 @@ describe('a peer call’s parent (#2192)', () => {
 
   it('never lists the request as its own parent', () => {
     expect(relatedRequests(OWN, [], [], { parentInvocationId: OWN })).toEqual([]);
+  });
+});
+
+describe('a team-client failure’s request id (#2192): install, retry and resume', () => {
+  it('reads it from the problem body the generated client keeps, and puts it in the toast text', () => {
+    const e = new ClientError(502, 'install failed', { title: 'Bad Gateway', detail: 'install failed', requestId: ID });
+    expect(requestIdOf(e)).toBe(ID);
+    expect(failureDetail(e)).toBe(`install failed (request id ${ID})`);
+  });
+
+  it('reads none from a body without one, or with something that is not an id', () => {
+    for (const body of [null, 'text', {}, { requestId: 'nope' }, { requestId: 7 }, { requestId: `${ID} ${ID}` }]) {
+      const e = new ClientError(500, 'boom', body);
+      expect(requestIdOf(e), JSON.stringify(body)).toBeUndefined();
+      expect(failureDetail(e)).toBe('boom');
+    }
+    expect(failureDetail(new Error('plain'))).toBe('plain');
+    expect(failureDetail('thrown string')).toBe('thrown string');
   });
 });
 
