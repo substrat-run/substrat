@@ -178,12 +178,19 @@ The connection also needs write access to the attachment target that stores the 
   that was being passed on when it stopped is passed on again, so the app's operation must accept
   the same change, or the same contents, twice for one file — keyed by the file's id, which never
   changes.
-- **Nothing is reported deleted or moved out on the feed's word alone**, unless the feed itself says
-  the file, or a folder above it, was deleted. A file the feed shows somewhere the sync cannot place
-  yet (a folder it has not reached), and a file a full re-read never mentions, is looked up in the
-  library when the sync reaches the end of the feed: gone is reported deleted, outside the folder
-  is reported moved out, and still inside stays (and is reported where it now is). If the lookup
-  fails, nothing is deleted and the next sync tries again.
+- **A file is reported deleted only on Microsoft's answer about that file** — the feed saying that
+  file was deleted, or a lookup of that file finding nothing. Never because a folder it used to be
+  in was deleted, and never because a re-read of the library did not mention it. A file the feed
+  shows somewhere the sync cannot place yet (a folder it has not reached), a file under a folder
+  the feed shows deleted, and a file a full re-read never mentions are each looked up on their own
+  when the sync reaches the end of the feed: not found is reported deleted, outside the folder is
+  reported moved out, and still inside stays (and is reported where it now is).
+- **A lookup that fails does not stop the folder.** If Microsoft is briefly unavailable or
+  throttling, the sync stops with nothing deleted and the next one carries on. If Microsoft refuses
+  the lookup itself (no access to that file, or a folder above it that cannot be read), the file is
+  kept as it was, never reported deleted, and the sync finishes without it, so new changes keep
+  arriving. Such a file is looked up again on later syncs, up to three times, and the binding
+  shows how many files are in that state (a count only).
 
 ## Limits
 
