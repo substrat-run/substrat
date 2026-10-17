@@ -1,5 +1,5 @@
 ---
-name: substrat-review
+name: review
 description: Review the current Substrat vertical change against Substrat's own rules (scope isolation, permission checks, generated files, migration losses, personal data, lifecycles, secrets, tests). Run it before pushing a vertical change or opening a PR, after the editor's built-in review. Use when asked to review, check or audit a change to a Substrat vertical.
 ---
 

@@ -1,6 +1,6 @@
 # Substrat review checklist
 
-One rule set, any runner: the `substrat-review` skill (run it locally before you push) reads
+One rule set, any runner: the `review` skill (run it locally before you push) reads
 it today, and a runner the platform hosts would read the same file. Edit the rules **here
 and nowhere else**. No runner carries its own copy.
 
