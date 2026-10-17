@@ -541,6 +541,19 @@ shared across a tenant's verticals is §13 question 21.
   not to its digest — the kernel may respell the same declaration between releases, and
   holding those rows to a digest would fail every scope closed on that upgrade. Their
   digest is still recorded, as the fact of what ran.
+- **A pending migration is held to the migrations stored for the deployed version** (#2349).
+  The control plane stores the migrations a push declares (`vertical_version_migrations`), and
+  both uploads of a version — the push and every serving upload — inject their set digest as
+  the plain_text binding `SUBSTRAT_MIGRATIONS_DIGEST` (`migrationSetDigest`: SHA-256 over each
+  migration's module, version and SQL digest, modules ordered by id). Before a pass with
+  anything pending applies a statement, both adapters compute the same digest over every step
+  the host registers, authored and kernel-derived, and refuse on a mismatch through the same
+  `migration failed … scope fails closed` record, naming both digests and the registered
+  migrations. A pass with nothing pending computes nothing, so a scope that is fully applied keeps
+  serving; a version whose migrations the control plane does not hold (`unheld:<id>`), a script
+  uploaded before the binding, and the pure host without `migrationsDigest` compare nothing. This
+  is an integrity check inside the deployed adapter, against a build whose worker registers
+  other migrations than its push declared; it is not an isolation boundary.
 - **An authored migration may not lose data the scope holds unless it declares it** (#115,
   `migration-fence.ts`). The planner refuses destructive diffs when it writes a migration;
   this is the half that judges what any authored SQL *does*, at apply. It measures rather
