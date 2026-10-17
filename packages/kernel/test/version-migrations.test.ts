@@ -342,7 +342,10 @@ describe('version migrations stored apart (#1764)', () => {
       it('a CLI whose digest covers the SQL keeps working; one from before the SQL was hashed is refused, naming no version', async () => {
         // A CLI that hashes SQL but predates declarations: its migrations carry none, so its digest is the same.
         await expect(publish(await migrationDigestOf({ doClasses, migrations }), migrations)).resolves.toBeTypeOf('string');
-        const refusal = await publish(await preSqlDigest(doClasses), migrations).catch((e: unknown) => e as Error);
+        const refusal = (await publish(await preSqlDigest(doClasses), migrations).then(
+          () => undefined,
+          (e: unknown) => e,
+        )) as Error;
         expect(refusal).toBeInstanceOf(Error);
         expect(refusal.message).toMatch(/upgrade to a CLI release whose push digest covers its SQL migrations/);
         expect(refusal.message).not.toMatch(/\b\d+\.\d+(\.\d+)?\b/);
