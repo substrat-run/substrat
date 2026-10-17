@@ -160,7 +160,7 @@ const CALLER = `
 export default {
   async fetch(request) {
     const client = { fetch };
-    const a = await fetch('https://api.example.com/v1/users/42?token=sekret');
+    const a = await fetch('https://api.example.com/v1/users/42/0123456789abcdef0123456789abcdef?token=sekret');
     const b = await client.fetch('https://undeclared.example.com/oauth/token', { method: 'POST' });
     const body = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('chunk')); c.close(); } });
     const c = await globalThis.fetch(new Request('https://api.example.com/upload', { method: 'PUT', body, duplex: 'half' }));
@@ -176,13 +176,15 @@ describe('the platform entry records a vertical’s outbound calls, on workerd (
     const body = run.body as unknown as { statuses: number[]; outboundCalls: unknown };
     expect(body.statuses).toEqual([200, 403, 200]);
     const named = [
-      { host: 'api.example.com', path: '/v1/users/42', method: 'GET', status: 200, outcome: 'ok', durationMs: expect.any(Number), atMs: expect.any(Number) },
+      { host: 'api.example.com', path: '/v1/users/42/[redacted]', method: 'GET', status: 200, outcome: 'ok', durationMs: expect.any(Number), atMs: expect.any(Number) },
       { host: 'undeclared.example.com', path: '/oauth/token', method: 'POST', status: 403, outcome: 'refused', durationMs: expect.any(Number), atMs: expect.any(Number) },
       { host: 'api.example.com', path: '/upload', method: 'PUT', status: 200, outcome: 'ok', durationMs: expect.any(Number), atMs: expect.any(Number) },
     ];
     expect(body.outboundCalls).toEqual(named);
     await expect.poll(() => lineOf(run.lines)?.outboundCalls).toEqual(named);
+    // Redacted on the way to the line, in the entry as it is uploaded.
     expect(run.lines.join('\n')).not.toContain('sekret');
+    expect(run.lines.join('\n')).not.toContain('0123456789abcdef0123456789abcdef');
   });
 
   it('a script that opts out of AsyncLocalStorage still makes its calls; its line names none', async () => {

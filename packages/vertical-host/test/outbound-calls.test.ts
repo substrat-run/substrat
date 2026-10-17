@@ -106,17 +106,17 @@ describe('recordingFetch — the wrapper in front of the runtime’s fetch', () 
     const recording: OutboundRecording = {};
     markRequestStart(recording, Date.now() - 50);
     const wrapped = recordingFetch(runtime.fn, () => recording);
-    const res = await wrapped('https://User:pw@API.example.com:8443/v1/users/42?token=abc#frag', { method: 'post' });
+    const res = await wrapped('https://User:pw@API.example.com:8443/v1/users/42/0123456789abcdef0123456789abcdef?token=abc#frag', { method: 'post' });
     expect(res).toBe(answer);
     expect(runtime.calls[0]?.self).toBe(globalThis);
     expect(recording.outboundCalls).toEqual([
-      { host: 'api.example.com:8443', path: '/v1/users/42', method: 'POST', status: 403, outcome: 'http-error', durationMs: expect.any(Number), atMs: expect.any(Number) },
+      { host: 'api.example.com:8443', path: '/v1/users/42/[redacted]', method: 'POST', status: 403, outcome: 'http-error', durationMs: expect.any(Number), atMs: expect.any(Number) },
     ]);
     // Measured from the request's start, which is kept beside the record and never on it.
     expect(recording.outboundCalls?.[0]?.atMs).toBeGreaterThanOrEqual(50);
     expect(Object.keys(recording)).toEqual(['outboundCalls']);
     const written = JSON.stringify(recording);
-    for (const secret of ['token', 'abc', 'frag', 'User', 'pw']) expect(written).not.toContain(secret);
+    for (const secret of ['token', 'abc', 'frag', 'User', 'pw', '0123456789abcdef0123456789abcdef']) expect(written).not.toContain(secret);
   });
 
   it('passes a streaming body and the caller’s AbortSignal through untouched, and never reads the body', async () => {
@@ -279,7 +279,7 @@ describe('the line names the request’s outbound calls (#2192)', () => {
       {
         async fetch(request) {
           if (request.url.endsWith('/callback')) {
-            await fetch('https://undeclared.example.com/oauth/token?code=sekret-code', { method: 'POST' });
+            await fetch('https://undeclared.example.com/oauth/token/0123456789abcdef0123456789abcdef?code=sekret-code', { method: 'POST' });
           }
           return new Response('{}');
         },
@@ -292,9 +292,11 @@ describe('the line names the request’s outbound calls (#2192)', () => {
     });
     expect(lines).toHaveLength(2);
     expect(lines[0]?.outboundCalls).toEqual([
-      { host: 'undeclared.example.com', path: '/oauth/token', method: 'POST', status: 403, outcome: 'refused', durationMs: expect.any(Number), atMs: expect.any(Number) },
+      { host: 'undeclared.example.com', path: '/oauth/token/[redacted]', method: 'POST', status: 403, outcome: 'refused', durationMs: expect.any(Number), atMs: expect.any(Number) },
     ]);
+    // Redacted on the way to the line, not only in the rule's own table.
     expect(JSON.stringify(lines[0])).not.toContain('sekret-code');
+    expect(JSON.stringify(lines[0])).not.toContain('0123456789abcdef0123456789abcdef');
     expect(lines[1]).not.toHaveProperty('outboundCalls');
     expect(lines[1]).not.toHaveProperty('outboundCallsDropped');
   });
@@ -304,7 +306,7 @@ describe('the line names the request’s outbound calls (#2192)', () => {
     const app = new Hono<{ Bindings: Env }>();
     app.use('*', invocationLog<Env>({ routerSecret: (env) => env.ROUTER_SECRET }));
     app.get('/api/sync', async (c) => {
-      await fetch('https://api.example.com/v1/sync');
+      await fetch('https://api.example.com/v1/sync/3f2b8c1e-9a4d-4e2f-b6a1-0c9d8e7f6a5b');
       return c.json({});
     });
     const lines = await linesOf(async () => {
@@ -313,7 +315,7 @@ describe('the line names the request’s outbound calls (#2192)', () => {
     });
     expect(lines).toHaveLength(1);
     expect(lines[0]?.outboundCalls).toEqual([
-      { host: 'api.example.com', path: '/v1/sync', method: 'GET', status: 200, outcome: 'ok', durationMs: expect.any(Number), atMs: expect.any(Number) },
+      { host: 'api.example.com', path: '/v1/sync/[redacted]', method: 'GET', status: 200, outcome: 'ok', durationMs: expect.any(Number), atMs: expect.any(Number) },
     ]);
   });
 });
