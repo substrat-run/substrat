@@ -360,6 +360,7 @@ export {
   clearOrphanSweepLicence,
   condemnLicensedOrphanAttachments,
   consumeOrphanSweepLicence,
+  licensedOrphanIds,
   orphanSweepLicensedAt,
   recordOrphanSweepLicence,
   refuseUnlicensedOrphanSweep,

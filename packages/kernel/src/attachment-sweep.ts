@@ -303,9 +303,17 @@ export function condemnLicensedOrphanAttachments(sql: ScopedSql, ids: readonly s
   return condemnOrphanAttachments(sql, licensed, now);
 }
 
+/** The ids the scope's licence lists, held or expired: at most `ORPHAN_SWEEP_LICENCE_CAP`. */
+export function licensedOrphanIds(sql: ScopedSql): string[] {
+  if (!hasLicenceTable(sql)) return [];
+  return sql.query<{ id: string }>(`SELECT id FROM _substrat_attachment_sweep_licence ORDER BY id`).map((r) => r.id);
+}
+
 /**
- * Take the ids a destructive pass deleted out of the licence, so its next pass in the window goes
- * on with the ids it has not reached, and never back to what is gone. Writes only when one is held.
+ * Take ids out of the licence: the ones a destructive pass deleted, and the ones whose objects are
+ * gone some other way, so its next pass in the window goes on with the ids it has not reached and
+ * never back to what is gone. A licence left with nothing is no licence, so the next destructive
+ * pass is refused and the scope is dry-run again. Writes only when one of `ids` is held.
  */
 export function consumeOrphanSweepLicence(sql: ScopedSql, ids: readonly string[]): void {
   if (ids.length === 0 || !hasLicenceTable(sql)) return;
@@ -466,9 +474,10 @@ export interface OrphanSweepReport {
   /** Set when the restore fence held the pass: the instant until which it holds. */
   fencedUntil?: string;
   /**
-   * Set when a destructive pass deleted objects but could not take them out of the scope's dry-run
-   * licence afterwards (#2350). The deletes stand and `keys` names them; the licence keeps rows for
-   * ids that are gone, which a later pass finds nothing to condemn for.
+   * Set when a destructive pass could not bring the scope's dry-run licence up to date afterwards
+   * (#2350): take out what it deleted, and what is gone some other way. Any deletes stand and `keys`
+   * names them. The licence keeps rows for ids that are gone, which license nothing a pass could
+   * delete, and which the next pass that settles the licence takes out.
    */
   consumeFailed?: true;
   dryRun: boolean;
@@ -490,7 +499,9 @@ export interface OrphanSweepScope {
   condemn(ids: readonly string[], now: string): Promise<string[]>;
   /** Record what a dry run found as the scope's licence (`recordOrphanSweepLicence`). */
   license(ids: readonly string[], now: string): Promise<void>;
-  /** Take what a destructive pass deleted out of the licence (`consumeOrphanSweepLicence`). */
+  /** The ids the scope's licence lists (`licensedOrphanIds`). */
+  licensed(): Promise<string[]>;
+  /** Take ids out of the licence (`consumeOrphanSweepLicence`). */
   consume(ids: readonly string[]): Promise<void>;
 }
 
@@ -548,6 +559,8 @@ export async function sweepOrphanAttachments(
     if (minted <= cutoff) candidates.push(id);
   }
   report.candidates = candidates.length;
+  // Every id this scope's prefix still holds, whatever its age: a licensed id not among them is gone.
+  const present = new Set(keys.map((key) => key.slice(prefix.length)));
 
   const orphans: string[] = [];
   for (let i = 0; i < candidates.length && orphans.length < limit; i += ORPHAN_CONDEMN_BATCH) {
@@ -565,7 +578,34 @@ export async function sweepOrphanAttachments(
     await scope.license(doomed, opts.now);
     return report;
   }
-  if (doomed.length === 0) return report;
+
+  /**
+   * Bring the licence up to date once the pass is done (#2350): take out the ids it deleted, so a
+   * backlog past `limit` drains over the next passes in the window, and every licensed id whose
+   * object is gone some other way, so a licence that lists nothing deletable does not hold the
+   * scope away from its next dry run until it expires. Taking ids out only narrows the licence.
+   *
+   * The bytes may be gone by now, so a failure here (the scope suspended or carried away mid-pass)
+   * must not cost the report: it is the only record of which keys were deleted. A licence row left
+   * for a gone id licenses nothing a pass could delete.
+   */
+  const settleLicence = async (gone: readonly string[]): Promise<void> => {
+    try {
+      const stale = (await scope.licensed()).filter((id) => !present.has(id));
+      const drop = [...gone, ...stale];
+      if (drop.length > 0) await scope.consume(drop);
+    } catch (err) {
+      report.consumeFailed = true;
+      console.error(
+        `orphan-attachment sweep: scope ${scopeId} deleted ${report.deleted} object(s) but could not bring its ` +
+          `dry-run licence up to date (${err instanceof Error ? err.name : 'Error'}); the report names the deleted keys`,
+      );
+    }
+  };
+  if (doomed.length === 0) {
+    await settleLicence([]);
+    return report;
+  }
   // Guard 3 again, after the condemnation: a rewind that armed mid-pass wrote its fence first.
   if (await fenced()) return report;
   const gone: string[] = [];
@@ -576,21 +616,8 @@ export async function sweepOrphanAttachments(
     report.keys.push(key);
     report.deleted++;
   }
-  // Only what was deleted leaves the licence, so a backlog past `limit` drains over the next passes
-  // in the window. A delete that throws ends the pass before this, so every id stays licensed and
-  // condemned, and the next pass deletes them again (a delete of what is gone is a no-op).
-  //
-  // The bytes are gone by now, so a consume that fails (the scope suspended or carried away
-  // mid-pass) must not cost the report: it is the only record of which keys were deleted. A licence
-  // row left for a gone id is harmless, since a later pass finds nothing there to condemn.
-  try {
-    await scope.consume(gone);
-  } catch (err) {
-    report.consumeFailed = true;
-    console.error(
-      `orphan-attachment sweep: scope ${scopeId} deleted ${report.deleted} object(s) but could not take them out of ` +
-        `its dry-run licence (${err instanceof Error ? err.name : 'Error'}); the report names the deleted keys`,
-    );
-  }
+  // A delete that throws ends the pass before this, so every id stays licensed and condemned, and
+  // the next pass deletes them again (a delete of what is gone is a no-op).
+  await settleLicence(gone);
   return report;
 }

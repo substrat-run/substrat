@@ -184,6 +184,7 @@ import {
   clearOrphanSweepLicence,
   condemnLicensedOrphanAttachments,
   consumeOrphanSweepLicence,
+  licensedOrphanIds,
   recordOrphanSweepLicence,
   refuseUnlicensedOrphanSweep,
   refuseCondemnedAttachment,
@@ -3935,30 +3936,32 @@ export function defineScopeDO(
 
     /**
      * #2350: the licence half of a pass, behind the same refusals as the judgement. `record` keeps
-     * what a dry run listed as this store's licence; `consume` takes what a destructive pass deleted
-     * out of it. Each writes only when it changes the licence, so a dry run that keeps finding the
-     * same orphans leaves the write revision where it was.
+     * what a dry run listed as this store's licence; `read` answers the ids it lists; `consume` takes
+     * ids out of it (what a destructive pass deleted, and what is gone some other way). Each write
+     * happens only when it changes the licence, so a dry run that keeps finding the same orphans
+     * leaves the write revision where it was. Only `read` answers ids; the others answer none.
      */
     orphanSweepLicenceReply(
-      op: 'record' | 'consume',
+      op: 'record' | 'read' | 'consume',
       ids: string[],
       now: string,
       tenantId: TenantId,
       vouched = false,
       expectedVersionId?: string,
-    ): Promise<DoReply<null>> {
+    ): Promise<DoReply<string[]>> {
       return replyOf(async () => {
-        const misrouted = orphanSweepVersionRefusal(this.env.SUBSTRAT_VERSION_ID ?? null, expectedVersionId, op === 'consume');
+        const misrouted = orphanSweepVersionRefusal(this.env.SUBSTRAT_VERSION_ID ?? null, expectedVersionId, op !== 'record');
         if (misrouted) throw misrouted;
         await this.ensureMigrations();
-        await this.queue.enqueue(async () => {
+        return this.queue.enqueue(async () => {
           await this.refuseOrphanJudgement(tenantId, vouched);
+          if (op === 'read') return licensedOrphanIds(doSpineSql(this.sql));
           await this.revision.transaction(async () => {
             if (op === 'record') recordOrphanSweepLicence(doSpineSql(this.sql), ids, now);
             else consumeOrphanSweepLicence(doSpineSql(this.sql), ids);
           });
+          return [];
         });
-        return null;
       });
     }
 

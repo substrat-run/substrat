@@ -385,6 +385,7 @@ export const INDEX_VALUE_EXPORTS = [
   'kernelJobFor',
   'legacyStoreDriverConflict',
   'legacyStoreDriverRenames',
+  'licensedOrphanIds',
   'lifecycleReceipt',
   'lifecycleRefusal',
   'listConnectLinks',

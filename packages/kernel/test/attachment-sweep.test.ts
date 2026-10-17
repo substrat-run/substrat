@@ -75,16 +75,19 @@ const young = (): string => idAt(NOW - ORPHAN_SWEEP_GRACE_MS + DAY);
 /** A scope side whose rows are `rows`; it records what it was asked. */
 function scopeOf(
   rows: Set<string>,
-): OrphanSweepScope & { asked: string[][]; condemned: string[]; reads: number; licensed: string[][]; consumed: string[][] } {
+  held: string[] = [],
+): OrphanSweepScope & { asked: string[][]; condemned: string[]; reads: number; recorded: string[][]; consumed: string[][] } {
   const side = {
     asked: [] as string[][],
     condemned: [] as string[],
     reads: 0,
-    licensed: [] as string[][],
+    // What `license` was handed, call by call; `held` is what the scope's licence lists now.
+    recorded: [] as string[][],
     consumed: [] as string[][],
     license: async (ids: readonly string[]) => {
-      side.licensed.push([...ids]);
+      side.recorded.push([...ids]);
     },
+    licensed: async () => [...held],
     consume: async (ids: readonly string[]) => {
       side.consumed.push([...ids]);
     },
@@ -209,7 +212,7 @@ describe('sweepOrphanAttachments (#2314)', () => {
     expect(scope.reads).toBe(1);
     expect(store.deletes).toEqual([]);
     // What it listed is the licence a destructive pass needs (#2350), and nothing is consumed.
-    expect(scope.licensed).toEqual([[orphan]]);
+    expect(scope.recorded).toEqual([[orphan]]);
     expect(scope.consumed).toEqual([]);
   });
 
@@ -220,7 +223,7 @@ describe('sweepOrphanAttachments (#2314)', () => {
     const scope = scopeOf(new Set());
     const report = await sweepOrphanAttachments(store, S, scope, { now: at(NOW), dryRun: true });
     expect(report.fencedUntil).toEqual(expect.any(String));
-    expect(scope.licensed).toEqual([]);
+    expect(scope.recorded).toEqual([]);
   });
 
   it('a dry run licenses what it reports, at most `limit`, and a dry run that finds nothing licenses nothing (#2350)', async () => {
@@ -230,11 +233,11 @@ describe('sweepOrphanAttachments (#2314)', () => {
     const scope = scopeOf(new Set([ids[2]!]));
     const report = await sweepOrphanAttachments(store, S, scope, { now: at(NOW), dryRun: true, limit: 1 });
     expect(report.keys).toEqual([attachmentBlobKey(S, ids[0]!)]);
-    expect(scope.licensed).toEqual([[ids[0]]]);
+    expect(scope.recorded).toEqual([[ids[0]]]);
     // An empty finding is handed on too: the scope clears a licence it holds.
     const none = scopeOf(new Set(ids));
     await sweepOrphanAttachments(store, S, none, { now: at(NOW), dryRun: true });
-    expect(none.licensed).toEqual([[]]);
+    expect(none.recorded).toEqual([[]]);
   });
 
   it('a consume that fails after the deletes still returns the report naming them, marked (#2350)', async () => {
@@ -266,6 +269,56 @@ describe('sweepOrphanAttachments (#2314)', () => {
     expect(await sweepOrphanAttachments(store, S, scope, { now: at(NOW) })).not.toHaveProperty('consumeFailed');
   });
 
+  it('a destructive pass also takes out licensed ids whose objects are gone, even with nothing to delete (#2350)', async () => {
+    const store = memoryStore();
+    const kept = old();
+    const gone = old();
+    // `kept` is licensed and still listed (it has a row now, so it is not deleted); `gone` is licensed
+    // and no longer listed: it vanished some other way, and nothing a pass could delete is left of it.
+    await store.put(attachmentBlobKey(S, kept), bytes);
+    const scope = scopeOf(new Set([kept]), [kept, gone]);
+    const report = await sweepOrphanAttachments(store, S, scope, { now: at(NOW) });
+    expect(report).toMatchObject({ deleted: 0 });
+    expect(report).not.toHaveProperty('consumeFailed');
+    expect(scope.consumed).toEqual([[gone]]);
+    // The twin: a licence that lists only what is still there is left alone, and nothing is written.
+    const untouched = scopeOf(new Set([kept]), [kept]);
+    await sweepOrphanAttachments(store, S, untouched, { now: at(NOW) });
+    expect(untouched.consumed).toEqual([]);
+  });
+
+  it('a pass takes out what it deleted and what is gone in one call', async () => {
+    const store = memoryStore();
+    const orphan = old();
+    const gone = old();
+    await store.put(attachmentBlobKey(S, orphan), bytes);
+    const scope = scopeOf(new Set(), [orphan, gone]);
+    await sweepOrphanAttachments(store, S, scope, { now: at(NOW) });
+    expect(scope.consumed).toEqual([[orphan, gone]]);
+  });
+
+  it('a licence that cannot be read after the deletes still returns the report, marked (#2350)', async () => {
+    const store = memoryStore();
+    const orphan = old();
+    await store.put(attachmentBlobKey(S, orphan), bytes);
+    const scope = scopeOf(new Set());
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let report;
+    try {
+      report = await sweepOrphanAttachments(store, S, {
+        ...scope,
+        licensed: async () => {
+          throw new Error('refused: this scope copy may not judge orphan attachments');
+        },
+      }, { now: at(NOW) });
+      expect(logged).toHaveBeenCalledTimes(1);
+    } finally {
+      logged.mockRestore();
+    }
+    expect(report).toMatchObject({ deleted: 1, consumeFailed: true, keys: [attachmentBlobKey(S, orphan)] });
+    expect(scope.consumed).toEqual([]);
+  });
+
   it('a destructive pass consumes exactly the ids it deleted, and records no licence (#2350)', async () => {
     const store = memoryStore();
     const ids = [old(), old(), old()].sort();
@@ -273,7 +326,7 @@ describe('sweepOrphanAttachments (#2314)', () => {
     const scope = scopeOf(new Set());
     await sweepOrphanAttachments(store, S, scope, { now: at(NOW), limit: 2 });
     expect(scope.consumed).toEqual([ids.slice(0, 2)]);
-    expect(scope.licensed).toEqual([]);
+    expect(scope.recorded).toEqual([]);
   });
 
   it('deletes only ids it asked about, whatever the scope answers', async () => {

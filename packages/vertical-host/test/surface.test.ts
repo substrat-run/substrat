@@ -632,6 +632,25 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect((await refused.json()).error).toMatch(/orphan attachments/);
   });
 
+  // #2350: a destructive pass that could not bring the scope's licence up to date says so in the
+  // deployment's own line too, beside the keys it deleted.
+  it("names a failed licence update in a destructive pass's log line", async () => {
+    const report = { listed: 1, candidates: 1, orphans: 1, deleted: 1, keys: ['k'], dryRun: false, consumeFailed: true as const };
+    const host = fakeHost({ sweepOrphanAttachments: async () => report });
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const res = await appWith(host).request('/internal/attachment-sweep', {
+        method: 'POST',
+        headers: { ...authed(), 'content-type': 'application/json' },
+        body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, dryRun: false, copiesSettled: true, expectedVersionId: 'v1' }),
+      }, ENV);
+      expect(res.status).toBe(200);
+      expect(JSON.parse(String(logged.mock.calls[0]![0]))).toMatchObject({ host: 'orphan-attachment-sweep', deleted: 1, consumeFailed: true, keys: ['k'] });
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
   // #2350: a destructive pass the scope refuses for want of its own dry-run licence answers a 409
   // whose problem document carries the reason, which is what the platform's phase reads to dry-run
   // the scope in the same visit instead of counting it refused.

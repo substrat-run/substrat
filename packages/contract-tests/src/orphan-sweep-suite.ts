@@ -560,6 +560,24 @@ export function orphanSweepContractSuite(adapterName: string, makeFixture: () =>
         expect(reasonOf(await refusal(pass(aged(now) + DAY, { scope: s })))).toBe(ORPHAN_SWEEP_UNLICENSED);
       });
 
+      it('a licence whose objects are gone some other way is taken out, so the scope is dry-run again rather than held until it expires', async () => {
+        const s = await freshScope();
+        const now = Date.now();
+        const orphan = await plant(now, s);
+        await pass(aged(now), { scope: s, dryRun: true });
+        // The listed object disappears without a pass: nothing a pass could delete is left of it.
+        await store.delete(attachmentBlobKey(s, orphan));
+        const fresh = await plant(now, s);
+        const report = await pass(aged(now) + DAY, { scope: s });
+        expect(report).toMatchObject({ deleted: 0 });
+        expect(report).not.toHaveProperty('consumeFailed');
+        // The licence held only that id, so it is empty now: the next destructive pass is refused and
+        // the phase dry-runs the scope, which lists the orphan that appeared since.
+        expect(reasonOf(await refusal(pass(aged(now) + DAY, { scope: s })))).toBe(ORPHAN_SWEEP_UNLICENSED);
+        expect((await pass(aged(now) + DAY, { scope: s, dryRun: true })).keys).toEqual([attachmentBlobKey(s, fresh)]);
+        expect((await pass(aged(now) + DAY, { scope: s })).keys).toEqual([attachmentBlobKey(s, fresh)]);
+      });
+
       it('a restore takes the licence away, a forged one in the dump included, so the next destructive pass is refused', async () => {
         const s = await freshScope();
         const now = Date.now();

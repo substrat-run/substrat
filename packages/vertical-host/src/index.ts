@@ -1542,6 +1542,8 @@ export function mountPlatformSurface<Env extends object>(
         orphans: report.orphans,
         deleted: report.deleted,
         ...(report.fencedUntil !== undefined ? { fencedUntil: report.fencedUntil } : {}),
+        // #2350: the pass could not bring the scope's dry-run licence up to date; the deletes stand.
+        ...(report.consumeFailed ? { consumeFailed: true } : {}),
         keys: report.keys,
       }));
     }

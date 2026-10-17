@@ -653,6 +653,7 @@ import {
   clearOrphanSweepLicence,
   condemnLicensedOrphanAttachments,
   consumeOrphanSweepLicence,
+  licensedOrphanIds,
   recordOrphanSweepLicence,
   refuseUnlicensedOrphanSweep,
   fenceAttachmentSweep,
@@ -3751,6 +3752,7 @@ export class SqliteScopeHost implements ScopeHost {
       license: async (ids, at) => {
         await rt.actor.enqueue(() => rt.db.transaction(() => recordOrphanSweepLicence(spineSql(rt.db), ids, at))());
       },
+      licensed: async () => rt.actor.enqueue(() => licensedOrphanIds(spineSql(rt.db))),
       consume: async (ids) => rt.actor.enqueue(() => rt.db.transaction(() => consumeOrphanSweepLicence(spineSql(rt.db), ids))()),
     }, {
       // The host's own clock, never a caller's: no request can step past the floor or the fence.
