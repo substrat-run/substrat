@@ -1,5 +1,6 @@
 export { testOperations, type RawDerivedMaps } from './test-operations.js';
 export { scopeHostContractSuite } from './scope-host-suite.js';
+export { derivedDigestOf, heldMigrations } from './held-migrations.js';
 export type { ScopeHostFixture, ScopeHostSuiteOptions } from './scope-host-suite.js';
 export { permissionContractSuite } from './permission-suite.js';
 export { atomicContractSuite } from './atomic-suite.js';
