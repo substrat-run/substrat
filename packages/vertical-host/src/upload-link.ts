@@ -36,9 +36,9 @@
  *
  * **A lost reply is retryable (#2315).** A request may name itself with `Idempotency-Key` (16 to
  * 255 visible ASCII characters other than `"` and `\`, such as a UUID; a quoted structured-field
- * string is read without its quotes). The spend records the key's hash. A later request for the SAME link with the same
- * key and the same bytes, before the link's expiry plus `UPLOAD_LINK_REPLAY_GRACE_SECONDS`, gets
- * the stored record with **200** and writes nothing. Every other request for a spent link (no
+ * string is read without its quotes). The spend records the key's hash. A later request for the
+ * SAME link with the same key and the same bytes, before the link's expiry plus
+ * `UPLOAD_LINK_REPLAY_GRACE_SECONDS`, gets the stored record with **200** and writes nothing. Every other request for a spent link (no
  * key, another key, past the window, or a file removed or swept since) gets the same 410, so a
  * holder of the secret without the key learns nothing about the redemption.
  *

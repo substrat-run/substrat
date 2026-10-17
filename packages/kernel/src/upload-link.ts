@@ -506,8 +506,7 @@ async function resolveLink(
   )[0];
   if (!row) throw unknownLink();
   if (target && (row.entity_type !== target.entityType || row.entity_id !== target.entityId)) throw wrongTarget();
-  const state = stateOf(row, now);
-  if (state === 'pending') return { row };
+  if (stateOf(row, now) === 'pending') return { row };
   if (keyHash !== undefined && row.redeemed_at !== null && now < replayHorizon(row)) {
     // The key is compared in SQL, as the secret is: a hash of it is all the row holds.
     const attachment = sql.query<AttachmentRowShape>(
@@ -534,7 +533,7 @@ export interface UploadLinkInspection {
   mintedBy: PrincipalId;
   /**
    * #2315: the attachment the link already produced, when this request is a replay of the
-   * redemption that spent it. Nothing is to be written then: `judgeUploadLinkReplay` the body.
+   * redemption that spent it. Nothing is written then; the body is judged against it instead.
    */
   replay?: AttachmentRecord;
 }

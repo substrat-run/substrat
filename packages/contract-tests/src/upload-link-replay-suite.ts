@@ -25,7 +25,7 @@
  *    from the condemned id.
  * 6. **The window.** A spent link is replayed past its own expiry. (The far end of the window, the
  *    expiry plus `UPLOAD_LINK_REPLAY_GRACE_SECONDS`, needs a clock a Durable Object does not take
- *    (#956); the kernel's `upload-link.test.ts` and the route's test hold it on SQLite.)
+ *    (#956); the kernel's `upload-link-replay.test.ts` and the route's test hold it on SQLite.)
  * 7. **The key's shape.** A malformed key is `validation_failed`, before the link is looked up.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
