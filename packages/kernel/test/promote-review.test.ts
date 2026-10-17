@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { PROMOTE_REVIEW_REASONS, substratError } from '@substrat-run/contracts';
+import { PROMOTE_REVIEW_REASONS, REBIND_REVIEW_REASONS, substratError } from '@substrat-run/contracts';
 import {
   assertPromoteReviewCurrent,
+  assertRebindReviewCurrent,
   promoteReviewDigest,
   promoteReviewRefusalOf,
+  rebindRaceRefusal,
+  rebindReviewDigest,
+  rebindReviewRefusalOf,
   type ReviewedVersion,
 } from '../src/promote-review.js';
 
@@ -103,5 +107,95 @@ describe('assertPromoteReviewCurrent (#2333)', () => {
     expect(promoteReviewRefusalOf(substratError('precondition_failed', 'x', { reason: PROMOTE_REVIEW_REASONS.unbound }))).toBe('unbound');
     expect(promoteReviewRefusalOf(substratError('precondition_failed', 'the promote review is stale'))).toBeNull();
     expect(promoteReviewRefusalOf(substratError('conflict', 'x', { reason: PROMOTE_REVIEW_REASONS.stale }))).toBeNull();
+  });
+});
+
+/**
+ * #2347: a rebind's review is the target lineage's serving version over the version the scope is
+ * bound to. Its digest moves with everything a promote's does, plus each side's lineage, and never
+ * equals a promote's over the same rows: a promote's binding is not a rebind's, nor the reverse.
+ */
+describe('rebindReviewDigest and the rebind gate (#2347)', () => {
+  const src = { vertical: 'acme/old', version: base };
+  const dst = { vertical: 'acme/new', version: incoming };
+
+  it('never equals a promote review of the same two rows, so neither binding passes for the other', async () => {
+    const rebind = await rebindReviewDigest(src, dst);
+    expect(rebind).toMatch(/^[0-9a-f]{64}$/);
+    expect(rebind).not.toBe(await promoteReviewDigest(base, incoming));
+    expect(await rebindReviewDigest(null, dst)).not.toBe(await promoteReviewDigest(null, incoming));
+  });
+
+  it('moves with either lineage, either side and the shown rows; not with key order', async () => {
+    const d = await rebindReviewDigest(src, dst);
+    const variants: [string, typeof src | null, typeof dst][] = [
+      ['the source lineage', { ...src, vertical: 'acme/other' }, dst],
+      ['the target lineage', src, { ...dst, vertical: 'acme/other' }],
+      ['the target serving version', src, { ...dst, version: { ...incoming, id: 'v3' } }],
+      ['the bound version', { ...src, version: { ...base, id: 'v0' } }, dst],
+      ['a discard reason', src, { ...dst, version: at({ discards: { 't.c': 'reworded' } }) }],
+      ['bound to none', null, dst],
+    ];
+    for (const [what, b, t] of variants) {
+      expect({ what, same: (await rebindReviewDigest(b, t)) === d }).toEqual({ what, same: false });
+    }
+    const reordered = { ...dst, version: at({ moves: { 't.a': 't.b' }, discards: { 't.c': 'no longer read' } }) };
+    expect(await rebindReviewDigest(src, reordered)).toBe(d);
+  });
+
+  const check = async (o: { ackMigrations?: boolean; review?: { base: string | null; digest: string }; baseId?: string | null; migrationsChange?: boolean }) =>
+    assertRebindReviewCurrent({
+      ackMigrations: o.ackMigrations ?? false,
+      review: o.review,
+      target: dst.vertical,
+      baseId: o.baseId === undefined ? base.id : o.baseId,
+      migrationsChange: o.migrationsChange ?? true,
+      read: async () => ({ base, baseVertical: src.vertical, target: incoming }),
+    }).then(() => 'passed', (e: unknown) => rebindReviewRefusalOf(e) ?? String(e));
+
+  it('passes a current binding and refuses a stale base, a stale digest and a promote binding', async () => {
+    const review = { base: base.id, digest: await rebindReviewDigest(src, dst) };
+    expect(await check({ ackMigrations: true, review })).toBe('passed');
+    expect(await check({ ackMigrations: true, review, baseId: 'v9' })).toBe('stale');
+    expect(await check({ ackMigrations: true, review, baseId: null })).toBe('stale');
+    expect(await check({ ackMigrations: true, review: { ...review, digest: await rebindReviewDigest(src, { ...dst, version: { ...incoming, id: 'v3' } }) } })).toBe('stale');
+    expect(await check({ ackMigrations: true, review: { base: base.id, digest: await promoteReviewDigest(base, incoming) } })).toBe('stale');
+    // A binding is checked even where nothing is to be acknowledged.
+    expect(await check({ review: { ...review, digest: '0'.repeat(64) }, migrationsChange: false })).toBe('stale');
+  });
+
+  it('refuses an unbound migration acknowledgement where the digests differ, and nothing else', async () => {
+    expect(await check({ ackMigrations: true })).toBe('unbound');
+    expect(await check({ ackMigrations: true, migrationsChange: false })).toBe('passed');
+    expect(await check({})).toBe('passed');
+    const err = await assertRebindReviewCurrent({
+      ackMigrations: true, review: undefined, target: dst.vertical, baseId: base.id, migrationsChange: true,
+      read: async () => ({ base, baseVertical: src.vertical, target: incoming }),
+    }).then(() => null, (e: Error) => e);
+    // It names the fix by what the release does, never a version number, and links the docs.
+    expect(err?.message).toContain("a CLI release whose 'substrat scope rebind' supports --review");
+    expect(err?.message).toContain('/guide/deploying#a-rebind-answers-one-review');
+    expect(err?.message).not.toMatch(/\d+\.\d+\.\d+/);
+  });
+
+  it('names a publisher\u2019s ids on one line, and its refusals are told apart from a promote\u2019s by reason', async () => {
+    const err = await assertRebindReviewCurrent({
+      ackMigrations: true, review: { base: 'v1\n+ forged\u202e', digest: '0'.repeat(64) }, target: dst.vertical, baseId: 'v2', migrationsChange: true,
+      read: async () => ({ base, baseVertical: src.vertical, target: incoming }),
+    }).then(() => null, (e: Error) => e);
+    expect(err?.message).not.toMatch(/[\n\u202e]/);
+    expect(rebindReviewRefusalOf(rebindRaceRefusal('acme/new'))).toBe('stale');
+    expect(promoteReviewRefusalOf(rebindRaceRefusal('acme/new'))).toBeNull();
+    expect(rebindReviewRefusalOf(substratError('precondition_failed', 'x', { reason: PROMOTE_REVIEW_REASONS.stale }))).toBeNull();
+    expect(rebindReviewRefusalOf(substratError('precondition_failed', 'x', { reason: REBIND_REVIEW_REASONS.unbound }))).toBe('unbound');
+  });
+
+  it('reads nothing when no binding was sent', async () => {
+    let reads = 0;
+    await assertRebindReviewCurrent({
+      ackMigrations: false, review: undefined, target: dst.vertical, baseId: base.id, migrationsChange: true,
+      read: async () => (reads++, { base, baseVertical: src.vertical, target: incoming }),
+    });
+    expect(reads).toBe(0);
   });
 });

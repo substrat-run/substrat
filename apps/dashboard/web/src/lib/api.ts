@@ -3,7 +3,7 @@ import { createClient, type DashboardClient } from './api.generated';
 import { tenantLogsQuery } from './logs-query';
 import type { PromoteReviewWire, SentAcks } from './promote-review';
 import { exportBreaksIn } from './bind-ack';
-import type { EdgeHealthReport, ImportCursorMove, ImportCursorMoved, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PreviewAuth, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { EdgeHealthReport, MigrationDiff, PromotionReviewBinding, RebindReviewReason, ImportCursorMove, ImportCursorMoved, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PreviewAuth, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
@@ -897,7 +897,19 @@ export interface BoundScopesView {
 
 export interface MoveScopesResult {
   moved: string[];
-  refusal: { scopeId: string; message: string } | null;
+  /** `reason` (#2347): the review the acknowledgement answered moved, or none was sent. */
+  refusal: { scopeId: string; message: string; reason?: RebindReviewReason } | null;
+}
+
+/** #2347: what one install's move would apply, and the binding its acknowledgement carries. */
+export interface MoveReviewRow {
+  scopeId: string;
+  slug: string;
+  base: { vertical: string; versionId: string } | null;
+  target: { vertical: string; versionId: string };
+  digestsMatch: boolean;
+  migrations: MigrationDiff | null;
+  review: PromotionReviewBinding;
 }
 
 export interface RetireScopesResult {
@@ -2132,8 +2144,17 @@ export const api = {
     call<BoundScopesView>(`/deployments/${encodeURIComponent(slug)}/scopes`),
   /** Rebind installs onto another vertical this team owns. A refusal mid-run comes back
    *  in the result (with what did move), not as a thrown error. */
-  moveBoundScopes: (slug: string, input: { scopeIds: string[]; target: string; ackMigrations?: boolean }) =>
+  moveBoundScopes: (
+    slug: string,
+    input: { scopeIds: string[]; target: string; ackMigrations?: boolean; reviews?: Record<string, PromotionReviewBinding> },
+  ) =>
     call<MoveScopesResult>(`/deployments/${encodeURIComponent(slug)}/scopes/move`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  /** #2347: what moving these installs would apply, read before the Move dialog asks. */
+  readMoveReview: (slug: string, input: { scopeIds: string[]; target: string }) =>
+    call<{ scopes: MoveReviewRow[] }>(`/deployments/${encodeURIComponent(slug)}/scopes/move-review`, {
       method: 'POST',
       body: JSON.stringify(input),
     }),

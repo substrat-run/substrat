@@ -262,6 +262,15 @@ class TenantTransport extends ControlPlaneTransport {
   }
 }
 
+/** #2347: a rebind review as the plane answers it (`GET …/scopes/:id/rebind-review`). */
+export interface RebindReview {
+  base: { vertical: string; versionId: string } | null;
+  target: { vertical: string; versionId: string };
+  digestsMatch: boolean;
+  migrations: MigrationDiff | null;
+  review: PromotionReviewBinding;
+}
+
 export class TenantNarrowedControlPlane {
   private readonly transport: TenantTransport;
   private readonly credential: (opts?: { fresh?: boolean }) => Promise<string>;
@@ -753,20 +762,39 @@ export class TenantNarrowedControlPlane {
    * one this tenant has bound to the vertical being left, and the target must be a
    * vertical this tenant owns. This method pins the TENANT (the path), not the target.
    *
-   * `ackMigrations` is the operator's statement that they have read both lineages'
-   * migration surfaces; without it the plane refuses a crossing whose digests differ.
+   * `ackMigrations` is the operator's statement that they have read what the crossing applies;
+   * without it the plane refuses a crossing whose digests differ. #2347: `review` names the
+   * rebind review it answers (`rebindReview`), which the plane requires beside it and refuses
+   * once a promote on either lineage has moved what was shown.
    * `abandonData` is deliberately not exposed: it rebinds the directory and leaves the
    * data behind, which is a staff repair, not something to offer from a button.
    */
   rebindScopeVertical(
     scopeId: ScopeId,
     vertical: string,
-    opts: { ackMigrations?: boolean } = {},
+    opts: { ackMigrations?: boolean; review?: PromotionReviewBinding } = {},
   ): Promise<void> {
     return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/rebind-vertical`, {
       vertical,
       ...(opts.ackMigrations ? { ackMigrations: true } : {}),
+      ...(opts.review ? { acknowledge: { review: opts.review } } : {}),
     });
+  }
+
+  /**
+   * #2347: what rebinding one of this tenant's scopes onto `vertical` would apply — the target's
+   * serving version over the version the scope is bound to — and the binding an acknowledgement
+   * of it carries, read in one answer. Pinned to the tenant by the path; the plane answers it only
+   * where the rebind itself would be allowed (both verticals this tenant's own, or listed).
+   */
+  async rebindReview(scopeId: ScopeId, vertical: string): Promise<RebindReview> {
+    const res = await this.call<RebindReview | undefined>(
+      `/tenants/${this.tenantId}/scopes/${scopeId}/rebind-review?vertical=${encodeURIComponent(vertical)}`,
+    );
+    if (!res || typeof res !== 'object' || !('review' in res)) {
+      throw new ControlPlaneError(502, `the rebind review of scope ${scopeId} could not be read`);
+    }
+    return res;
   }
 
   /**

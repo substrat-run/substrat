@@ -78,3 +78,43 @@ export function removalRefusalDetail(message: string, ours: number | null): stri
   if (ours === null) return `${message}. Your team’s installs are listed under Bound scopes on this page.`;
   return `${message}. Your team’s are listed under Bound scopes on this page — move or retire them; the count can also include other teams’ installs, which only they can clear.`;
 }
+
+/** #2347: one install's move review, as the Move dialog reads it. */
+interface MoveReviewLike {
+  scopeId: string;
+  digestsMatch: boolean;
+  review: { base: string | null; digest: string };
+}
+
+/**
+ * The reviews a Move must show before it may be acknowledged (#2347): every install whose
+ * lineages' migrations differ, grouped by the review it would answer — installs on the same
+ * version share one diff, and one digest means one diff. Empty when nothing is to be acknowledged.
+ */
+export function reviewsToShow<R extends MoveReviewLike>(scopes: readonly R[]): { review: R; installs: R[] }[] {
+  const groups = new Map<string, { review: R; installs: R[] }>();
+  for (const r of scopes) {
+    if (r.digestsMatch) continue;
+    const group = groups.get(r.review.digest);
+    if (group) group.installs.push(r);
+    else groups.set(r.review.digest, { review: r, installs: [r] });
+  }
+  return [...groups.values()];
+}
+
+/**
+ * The bindings a Move sends: each install's own, as the review it was shown answered it. Sent
+ * whether or not anything is acknowledged, since the plane checks a binding it is given.
+ */
+export function moveBindings<R extends MoveReviewLike>(scopes: readonly R[]): Record<string, R['review']> {
+  return Object.fromEntries(scopes.map((r) => [r.scopeId, r.review]));
+}
+
+/**
+ * Whether a Move refusal is answered by reading the review again (#2347): what it would apply
+ * moved since it was shown, or the acknowledgement named no review. The dialog then shows the
+ * review as it stands now and asks from scratch.
+ */
+export function reviewMoved(reason: string | undefined): boolean {
+  return reason === 'rebind_review_stale' || reason === 'rebind_review_unbound';
+}

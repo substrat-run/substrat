@@ -893,6 +893,14 @@ export {
   assertPromoteReviewCurrent,
   promoteReviewRefusalOf,
   promoteRaceRefusal,
+  rebindReviewDigest,
+  assertRebindReviewCurrent,
+  rebindReviewRefusalOf,
+  rebindRaceRefusal,
+  SERVES_NOW_CONDITION,
+  SERVES_NOW_PREDICATE,
+  servesNowParams,
+  type ExpectedServing,
   type ReviewedVersion,
 } from './promote-review.js';
 export {

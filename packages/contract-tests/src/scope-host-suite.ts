@@ -57,6 +57,7 @@ import {
   startPlatformSweeper,
   promoteReviewDigest,
   promoteReviewRefusalOf,
+  rebindReviewRefusalOf,
   createUlid,
   ulid,
   type AuditLogFilter,
@@ -7318,6 +7319,102 @@ export function scopeHostContractSuite(
       });
     });
 
+    // -- a rebind's route and pointer move in one write (#2347) ----------------
+    // A rebind onto another lineage is judged against the version the scope is bound to and the
+    // version the target serves. Flipping the route and crossing the pointer used to be two
+    // writes, so a promote on the target between them left the route on the new script and the
+    // pointer on the old lineage. Now they are one write, conditional on both sides.
+    describe("a rebind's route and pointer move in one write, conditional on both sides (#2347)", () => {
+      const lineages = async () => {
+        const tag = ulid().slice(-8).toLowerCase();
+        const [source, target] = [`acme/src-${tag}`, `acme/dst-${tag}`];
+        const put = async (slug: string) => {
+          const id = ulid();
+          await host.admin.publishVersion(staff, {
+            id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: 'm', permissionDigest: 'p',
+            migrationDigest: 'g', deploymentRef: null,
+          });
+          await host.admin.admitVersion(staff, id);
+          return id;
+        };
+        for (const slug of [source, target]) await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli', ownerTenant: t1 });
+        const [s1, s2, t1v, t2v] = [await put(source), await put(source), await put(target), await put(target)];
+        const ref = `serving-${tag}`;
+        await host.admin.setVerticalServing(staff, target, { ref, versionId: t1v, doClasses: [], migrationTag: 'g' });
+        const install = async () => {
+          const sc = scopeId.parse(ulid());
+          await host.provisionScope(staff, { tenantId: t1, scopeId: sc, vertical: source });
+          await host.admin.activateScope(staff, t1, sc);
+          await host.admin.bindScopeVersion(staff, t1, sc, s1);
+          return sc;
+        };
+        const judged = { vertical: target, ref, versionId: t1v };
+        return { source, target, s1, s2, t1v, t2v, ref, install, judged };
+      };
+      const where = async (sc: ScopeId) => {
+        const r = (await host.admin.getScopeRecord(staff, t1, sc))!;
+        return { vertical: r.vertical, versionId: r.verticalVersionId, servingRef: r.servingRef ?? null };
+      };
+      const refusal = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e);
+
+      it('lands route and pointer together when both sides still hold, and records both', async () => {
+        const { source, target, s1, t1v, ref, install, judged } = await lineages();
+        const sc = await install();
+        expect(await where(sc)).toEqual({ vertical: source, versionId: s1, servingRef: null });
+        await host.admin.bindScopeVersion(staff, t1, sc, t1v, { servingRef: ref, expectedVersionId: s1, expectedServing: judged });
+        expect(await where(sc)).toEqual({ vertical: target, versionId: t1v, servingRef: ref });
+        const row = (await host.admin.auditLog(staff, { action: 'bindScopeVersion', scopeId: sc }))
+          .find((e) => (e.after as { versionId?: string } | null)?.versionId === t1v);
+        expect(row?.before).toEqual({ servingRef: null });
+        expect(row?.after).toMatchObject({ versionId: t1v, servingRef: ref, expectedVersionId: s1, expectedServing: judged });
+      });
+
+      it('a promote on the TARGET since the rebind was judged refuses it as stale, and moves neither route nor pointer', async () => {
+        const { source, target, s1, t1v, t2v, ref, install, judged } = await lineages();
+        const sc = await install();
+        // What the target serves moves on after the rebind read it.
+        await host.admin.setVerticalServing(staff, target, { ref, versionId: t2v, doClasses: [], migrationTag: 'g' });
+        const err = await refusal(host.admin.bindScopeVersion(staff, t1, sc, t1v, { servingRef: ref, expectedVersionId: s1, expectedServing: judged }));
+        expect(rebindReviewRefusalOf(err)).toBe('stale');
+        expect(await where(sc)).toEqual({ vertical: source, versionId: s1, servingRef: null });
+        // The twin: judged against what serves now, it lands.
+        await host.admin.bindScopeVersion(staff, t1, sc, t2v, { servingRef: ref, expectedVersionId: s1, expectedServing: { ...judged, versionId: t2v } });
+        expect(await where(sc)).toEqual({ vertical: target, versionId: t2v, servingRef: ref });
+      });
+
+      it('a move of the SOURCE binding since the rebind was judged refuses it as stale; a plain conditional bind keeps its own refusal', async () => {
+        const { source, s1, s2, t1v, ref, install, judged } = await lineages();
+        const sc = await install();
+        await host.admin.bindScopeVersion(staff, t1, sc, s2);
+        const err = await refusal(host.admin.bindScopeVersion(staff, t1, sc, t1v, { servingRef: ref, expectedVersionId: s1, expectedServing: judged }));
+        expect(rebindReviewRefusalOf(err)).toBe('stale');
+        expect(await where(sc)).toEqual({ vertical: source, versionId: s2, servingRef: null });
+        // Without `expectedServing` the bind is the #1722 compare-and-set it always was.
+        const plain = await refusal(host.admin.bindScopeVersion(staff, t1, sc, s1, { expectedVersionId: s1 }));
+        expect(rebindReviewRefusalOf(plain)).toBeNull();
+        expect(String(plain)).toMatch(/scope binding changed/);
+      });
+
+      it('racing a promote on the target: either the rebind lands whole, or it is refused as stale and nothing moved', async () => {
+        const { source, target, s1, t1v, t2v, ref, install, judged } = await lineages();
+        for (let round = 0; round < 4; round++) {
+          const sc = await install();
+          await host.admin.setVerticalServing(staff, target, { ref, versionId: t1v, doClasses: [], migrationTag: 'g' });
+          const [rebind] = await Promise.allSettled([
+            host.admin.bindScopeVersion(staff, t1, sc, t1v, { servingRef: ref, expectedVersionId: s1, expectedServing: judged }),
+            host.admin.setVerticalServing(staff, target, { ref, versionId: t2v, doClasses: [], migrationTag: 'g' }),
+          ]);
+          if (rebind.status === 'fulfilled') {
+            expect(await where(sc)).toEqual({ vertical: target, versionId: t1v, servingRef: ref });
+          } else {
+            expect(rebindReviewRefusalOf(rebind.reason)).toBe('stale');
+            expect(await where(sc)).toEqual({ vertical: source, versionId: s1, servingRef: null });
+          }
+        }
+      });
+
+    });
+
     // -- a version that strands people a link bound (#2178) -------------------
     // A binding shape's people keep it until they are released, and the levers need the shape:
     // an unbind needs it to bind, a retirement needs it to be a bootstrap shape, an erasure finds
@@ -7443,6 +7540,23 @@ export function scopeHostContractSuite(
         await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.retired, doClasses: [], migrationTag: 'g' });
         await host.admin.setScopeServingRef(staff, t1, sc, ref);
         expect(await routeOf()).toBe(ref);
+      });
+
+      it('a bind that routes the scope in the same write (#2347) is judged on the script it routes to', async () => {
+        const { slug, v } = await listed();
+        const sc = await install(slug, v.binds);
+        const ref = `serving-${ulid().slice(-8).toLowerCase()}`;
+        await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.dropped, doClasses: [], migrationTag: 'g' });
+        // The pointer stays on the binding version; the route moves onto a script that runs one
+        // that drops the shape. Judged without the route, this bind would pass.
+        await expectRefusal(host.admin.bindScopeVersion(staff, t1, sc, v.binds, { servingRef: ref }), 'precondition_failed', /drops the shape/);
+        const r = await host.admin.getScopeRecord(staff, t1, sc);
+        expect([r?.verticalVersionId, r?.servingRef ?? null]).toEqual([v.binds, null]);
+        // The twin: the script serves a version that retires the keys, and both move in one write.
+        await host.admin.setVerticalServing(staff, slug, { ref, versionId: v.retired, doClasses: [], migrationTag: 'g' });
+        await host.admin.bindScopeVersion(staff, t1, sc, v.binds, { servingRef: ref });
+        const after = await host.admin.getScopeRecord(staff, t1, sc);
+        expect([after?.verticalVersionId, after?.servingRef]).toEqual([v.binds, ref]);
       });
 
       it('a promote is judged from the version served in place too, and replacing what serves is judged like a promote (review of #2181)', async () => {

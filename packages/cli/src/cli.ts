@@ -225,8 +225,9 @@ Usage:
                                               lineage's serving script, data carried;
                                               the old copy is deleted once the move is
                                               confirmed, so snapshot first to keep a way
-                                              back (staff; --ack-migrations to cross a
-                                              differing migration surface;
+                                              back (staff; --ack-migrations with the
+                                              --review token its refusal prints, to
+                                              cross a differing migration surface;
                                               --abandon-data for a source script that
                                               predates /internal/export — directory-only
                                               flip, then re-provision the scope)
@@ -798,7 +799,7 @@ async function cmdScope(): Promise<void> {
     '       substrat scope adopt-serving --vertical <slug> [--ack-export-break]\n' +
     '       substrat scope bind <scopeId> --version <versionId> [--snapshot] [--ack-export-break] [--tenant <id-or-slug>]\n' +
     '       substrat scope domain <scopeId> --domain <fqdn> [--surface app] [--canonical] [--tenant <id-or-slug>]\n' +
-    '       substrat scope rebind <scopeId> --to <vertical> [--ack-migrations] [--abandon-data] [--ack-export-break] [--tenant <id-or-slug>]';
+    '       substrat scope rebind <scopeId> --to <vertical> [--ack-migrations] [--review <token>] [--abandon-data] [--ack-export-break] [--tenant <id-or-slug>]';
   const known =
     sub === 'pull' || sub === 'restore' || sub === 'status' || sub === 'provision' ||
     sub === 'adopt-serving' || sub === 'bind' || sub === 'domain' || sub === 'rebind';
@@ -876,11 +877,19 @@ async function cmdScope(): Promise<void> {
       console.error(usage);
       process.exit(1);
     }
+    // #2347: the review the migration acknowledgement answers, as a refusal printed it.
+    const reviewFlag = flag('review');
+    const review = reviewFlag === undefined ? undefined : parseReviewToken(reviewFlag);
+    if (review === null) {
+      console.error('--review takes the token a refused rebind printed (<base>:<digest>)');
+      process.exit(1);
+    }
     await rebindScopeVertical({
       controlPlaneUrl, header, tenantId, scopeId: scope,
       vertical: to, ackMigrations: argv.includes('--ack-migrations'),
       abandonData: argv.includes('--abandon-data'),
       ackExportBreak: argv.includes('--ack-export-break'),
+      ...(review ? { review } : {}),
     });
     return;
   }

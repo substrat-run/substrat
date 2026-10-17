@@ -16,6 +16,7 @@
  */
 import {
   PROMOTE_REVIEW_REASONS,
+  REBIND_REVIEW_REASONS,
   reviewLine,
   substratError,
   errorCodeOf,
@@ -66,11 +67,32 @@ const sideOf = (v: ReviewedVersion | null) =>
           : v.migrations.map((m) => [m.moduleId, m.version, m.sql, pairs(m.moves), pairs(m.discards)]),
       ];
 
+/** Lowercase hex SHA-256 of a value's JSON. */
+async function digestOf(value: unknown): Promise<string> {
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(value))));
+  return Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 /** The digest of a review of `incoming` over `base` (null: nothing serves). Lowercase hex SHA-256. */
 export async function promoteReviewDigest(base: ReviewedVersion | null, incoming: ReviewedVersion): Promise<string> {
-  const bytes = new TextEncoder().encode(JSON.stringify(['promote-review/1', sideOf(base), sideOf(incoming)]));
-  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  return Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('');
+  return digestOf(['promote-review/1', sideOf(base), sideOf(incoming)]);
+}
+
+/**
+ * The digest of a rebind review (#2347): the target lineage's serving version over the version
+ * the scope is bound to (null: bound to none). Each side names its lineage too, since the two are
+ * different verticals. Its own tag, so a promote's binding is never accepted as a rebind's, nor
+ * the reverse: the two answer different questions over what can be the same two rows.
+ */
+export async function rebindReviewDigest(
+  base: { vertical: string; version: ReviewedVersion } | null,
+  target: { vertical: string; version: ReviewedVersion },
+): Promise<string> {
+  return digestOf([
+    'rebind-review/1',
+    base === null ? null : [base.vertical, sideOf(base.version)],
+    [target.vertical, sideOf(target.version)],
+  ]);
 }
 
 /**
@@ -157,3 +179,101 @@ export async function assertPromoteReviewCurrent(opts: {
     );
   }
 }
+
+/** Where the unbound rebind refusal sends a person; by what the release does, as `PROMOTE_REVIEW_DOCS`. */
+const REBIND_REVIEW_DOCS = 'https://substrat.net/guide/deploying#a-rebind-answers-one-review';
+
+const rebindStale = (why: string): Error =>
+  substratError('precondition_failed', `the rebind review is stale: ${why}. Read the review again and acknowledge what it shows now`, {
+    reason: REBIND_REVIEW_REASONS.stale,
+  });
+
+/**
+ * The refusal for a rebind that lost a race (#2347): the scope's bound version, or the target's
+ * serving version, moved after the rebind's gate and review binding were judged against them, so
+ * its acknowledgement answered a diff that is no longer the one it would apply.
+ */
+export function rebindRaceRefusal(target: string): Error {
+  return rebindStale(
+    `the scope's bound version or what ${reviewLine(target)} serves moved while this rebind was being judged`,
+  );
+}
+
+/** Whether a throw is one of the rebind review refusals, and which. */
+export function rebindReviewRefusalOf(err: unknown): 'stale' | 'unbound' | null {
+  if (errorCodeOf(err) !== 'precondition_failed') return null;
+  const reason = (err as { extensions?: { reason?: unknown } }).extensions?.reason;
+  return reason === REBIND_REVIEW_REASONS.stale ? 'stale' : reason === REBIND_REVIEW_REASONS.unbound ? 'unbound' : null;
+}
+
+/**
+ * The rebind gate's binding check (#2347), `assertPromoteReviewCurrent`'s rule for a scope
+ * moving onto another lineage. `baseId` is the version the scope is bound to now (null: none),
+ * `target` the lineage it moves onto. `read` loads both sides' stored rows, and is only called
+ * when a binding was sent.
+ *
+ * - A binding is always checked: its base must be the scope's bound version, and its digest the
+ *   one the stored rows of both sides give now. The target's serving version is inside the
+ *   digest, so a promote on either lineage since the review was read turns it stale.
+ * - Without one, an `ackMigrations` the gate is about to consume (the digests differ) is refused.
+ *
+ * Neither refusal hands back the current digest: the client reads the review again.
+ */
+export async function assertRebindReviewCurrent(opts: {
+  ackMigrations: boolean;
+  review: PromotionReviewBinding | undefined;
+  target: string;
+  baseId: string | null;
+  /** The two lineages' migration digests differ (or the scope is bound to none), so the gate consumes `ackMigrations`. */
+  migrationsChange: boolean;
+  read: () => Promise<{ base: ReviewedVersion | null; baseVertical: string | null; target: ReviewedVersion }>;
+}): Promise<void> {
+  const review = opts.review;
+  if (review === undefined) {
+    if (opts.migrationsChange && opts.ackMigrations) {
+      throw substratError(
+        'precondition_failed',
+        `acknowledging the migrations of a rebind needs the review it answers: send acknowledge.review (the base and ` +
+          `digest the rebind-review read returned beside the diff that was shown). From the command line, upgrade ` +
+          `to a CLI release whose 'substrat scope rebind' supports --review, and run it without --ack-migrations: it ` +
+          `prints the migrations and the --review token to acknowledge them with (${REBIND_REVIEW_DOCS})`,
+        { reason: REBIND_REVIEW_REASONS.unbound },
+      );
+    }
+    return;
+  }
+  if (review.base !== opts.baseId) {
+    throw rebindStale(
+      // The ids are a publisher's text (#2322): every control, format and bidi character made visible.
+      `it was read against ${review.base === null ? 'no bound version' : `version ${reviewLine(review.base)}`}, ` +
+        `and the scope is now bound to ${opts.baseId === null ? 'none' : `version ${reviewLine(opts.baseId)}`}`,
+    );
+  }
+  const { base, baseVertical, target } = await opts.read();
+  const digest = await rebindReviewDigest(
+    base && baseVertical !== null ? { vertical: baseVertical, version: base } : null,
+    { vertical: opts.target, version: target },
+  );
+  if (digest !== review.digest) {
+    throw rebindStale(
+      `the stored versions it was computed from, the target's serving version among them, no longer give the ` +
+        'digest it was acknowledged with',
+    );
+  }
+}
+
+/** #2347: what a rebind expects the target lineage's serving script to run when its write lands. */
+export interface ExpectedServing {
+  vertical: string;
+  ref: string;
+  versionId: string;
+}
+
+/** The serving row a rebind was judged against, as a `verticals` WHERE. Params: `servesNowParams`. */
+export const SERVES_NOW_CONDITION = 'slug = ? AND serving_ref IS ? AND serving_version_id IS ?';
+
+/** Appended to a rebind's `UPDATE scopes … WHERE`, so the route and pointer move only onto what was judged. */
+export const SERVES_NOW_PREDICATE = `
+  AND EXISTS (SELECT 1 FROM verticals WHERE ${SERVES_NOW_CONDITION})`;
+
+export const servesNowParams = (e: ExpectedServing): string[] => [e.vertical, e.ref, e.versionId];

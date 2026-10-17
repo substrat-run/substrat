@@ -697,6 +697,11 @@ import {
   exportBreakRefusal,
   assertPromoteReviewCurrent,
   promoteRaceRefusal,
+  rebindRaceRefusal,
+  SERVES_NOW_CONDITION,
+  SERVES_NOW_PREDICATE,
+  servesNowParams,
+  type ExpectedServing,
   type ReviewedVersion,
   bindExportBreaksOf,
   bindExportBreakRefusal,
@@ -9756,21 +9761,27 @@ export class SqliteScopeHost implements ScopeHost {
       },
       bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
         const { v, scope } = await bindTarget(tenantId, scopeId, versionId);
-        if (opts?.expectedVersionId !== undefined && scope.vertical_version_id !== opts.expectedVersionId) {
-          throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
-        }
+        // #2347: a rebind judged against both lineages loses its race as stale, so its client reads
+        // the review again; any other conditional bind keeps the refusal it always had.
+        const lost = () => opts?.expectedServing
+          ? rebindRaceRefusal(opts.expectedServing.vertical)
+          : substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
+        if (opts?.expectedVersionId !== undefined && scope.vertical_version_id !== opts.expectedVersionId) throw lost();
+        if (opts?.expectedServing && !this.servesNow(opts.expectedServing)) throw lost();
         const epoch = this.directory.prepare('SELECT COALESCE(erasure_epoch, 0) AS erasure_epoch FROM scopes WHERE tenant_id = ? AND scope_id = ?')
           .get(tenantId, scopeId) as { erasure_epoch: number } | undefined;
         if (opts?.expectedErasureEpoch !== undefined && epoch?.erasure_epoch !== opts.expectedErasureEpoch) {
           throw substratError('precondition_failed', 'scope erasure changed; reload the scope and retry');
         }
         const ack = bindAcknowledgement.parse(opts?.acknowledge ?? {});
+        // #2347: a route moving in the same write is judged with it, as `bindingImpact` is.
+        const servingRef = opts?.servingRef;
         // #2178 first: no acknowledgement passes it, so none should be asked for ahead of it.
-        this.assertBindingShapesKept(mapScope(scope), versionId);
+        this.assertBindingShapesKept(mapScope(scope), versionId, servingRef);
         // #1756: an export an app in this tenant imports, dropped or re-versioned by what this
         // scope would run. Before the snapshot, so a refused bind leaves nothing behind.
         if (!ack.exportBreak) {
-          const breaks = await this.bindBreaks(actor, mapScope(scope), v);
+          const breaks = await this.bindBreaks(actor, mapScope(scope), v, servingRef);
           if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
         }
         // Fork-before-promote (§4): snapshot the pre-migration data if this rebind
@@ -9782,14 +9793,25 @@ export class SqliteScopeHost implements ScopeHost {
             await this.snapshotScope(actor, tenantId, scopeId);
           }
         }
-        if (!this.moveScopeRow('vertical_version_id = ?, vertical = ?', [versionId, v.verticalSlug], tenantId, scopeId, opts)) {
-          throw substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
+        const moved = servingRef === undefined
+          ? this.moveScopeRow('vertical_version_id = ?, vertical = ?', [versionId, v.verticalSlug], tenantId, scopeId, opts)
+          : this.moveScopeRow('vertical_version_id = ?, vertical = ?, serving_ref = ?', [versionId, v.verticalSlug, servingRef], tenantId, scopeId, opts);
+        if (!moved) {
+          // The erasure and copy-move conditions keep their own refusal: only a moved binding or a
+          // moved serving version is the race a rebind's review answers.
+          const now = this.directory.prepare('SELECT vertical_version_id FROM scopes WHERE scope_id = ?').get(scopeId) as
+            { vertical_version_id: string | null } | undefined;
+          const raced = (opts?.expectedVersionId !== undefined && now?.vertical_version_id !== opts.expectedVersionId)
+            || (opts?.expectedServing !== undefined && !this.servesNow(opts.expectedServing));
+          throw raced ? lost() : substratError('precondition_failed', 'scope binding changed; reload the scope and retry');
         }
-        this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, null, {
+        this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, servingRef === undefined ? null : { servingRef: scope.serving_ref }, {
           versionId,
           vertical: v.verticalSlug,
           version: v.version,
+          ...(servingRef !== undefined ? { servingRef } : {}),
           ...(opts?.expectedVersionId !== undefined ? { expectedVersionId: opts.expectedVersionId } : {}),
+          ...(opts?.expectedServing ? { expectedServing: opts.expectedServing } : {}),
           ...(ack.exportBreak ? { acknowledged: ack } : {}),
         });
       },
@@ -12794,7 +12816,10 @@ export class SqliteScopeHost implements ScopeHost {
    */
   private moveScopeRow(
     set: string, setArgs: (string | null)[], tenantId: TenantId, scopeId: ScopeId,
-    cond?: { expectedVersionId?: string | null; expectedErasureEpoch?: number; confirmMove?: ScopeCopyMoveConfirmation },
+    cond?: {
+      expectedVersionId?: string | null; expectedErasureEpoch?: number; confirmMove?: ScopeCopyMoveConfirmation;
+      expectedServing?: ExpectedServing;
+    },
   ): boolean {
     const now = new Date().toISOString();
     return this.directory.transaction(() => {
@@ -12802,11 +12827,13 @@ export class SqliteScopeHost implements ScopeHost {
         `UPDATE scopes SET ${set} WHERE scope_id = ?
          ${cond?.expectedVersionId === undefined ? '' : 'AND vertical_version_id IS ?'}
          ${cond?.expectedErasureEpoch === undefined ? '' : 'AND COALESCE(erasure_epoch, 0) = ? AND reap_claimed_at IS NULL'}
-         ${cond?.confirmMove === undefined ? '' : COPY_MOVE_LIVE_PREDICATE}`,
+         ${cond?.confirmMove === undefined ? '' : COPY_MOVE_LIVE_PREDICATE}
+         ${cond?.expectedServing === undefined ? '' : SERVES_NOW_PREDICATE}`,
       ).run(...setArgs, scopeId,
         ...(cond?.expectedVersionId === undefined ? [] : [cond.expectedVersionId]),
         ...(cond?.expectedErasureEpoch === undefined ? [] : [cond.expectedErasureEpoch]),
-        ...(cond?.confirmMove === undefined ? [] : copyMoveLiveParams(cond.confirmMove, now)));
+        ...(cond?.confirmMove === undefined ? [] : copyMoveLiveParams(cond.confirmMove, now)),
+        ...(cond?.expectedServing === undefined ? [] : servesNowParams(cond.expectedServing)));
       if (moved.changes === 0) return false;
       if (cond?.confirmMove) {
         this.directory.prepare(COPY_MOVE_CONFIRM_SQL).run(...copyMoveConfirmParams(cond.confirmMove, tenantId, scopeId, now));
@@ -12814,6 +12841,11 @@ export class SqliteScopeHost implements ScopeHost {
       }
       return true;
     })();
+  }
+
+  /** #2347: whether a lineage's serving script still runs the version a rebind was judged against. */
+  private servesNow(expected: ExpectedServing): boolean {
+    return this.directory.prepare(`SELECT 1 FROM verticals WHERE ${SERVES_NOW_CONDITION}`).get(...servesNowParams(expected)) !== undefined;
   }
 
   private ensureColumn(db: Database.Database, table: string, column: string, ddl: string): boolean {

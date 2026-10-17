@@ -84,6 +84,7 @@ const WIRE: Record<string, [(c: C) => Promise<unknown>, string, string, unknown?
   // `backup: true` rides ALWAYS on a default reap (#493) — the safety the console relies on.
   reapScope: [(c) => c.reapScope(T as never, S as never), 'POST', `/tenants/${T}/scopes/${S}/reap`, { backup: true }],
   rebindScopeVertical: [(c) => c.rebindScopeVertical(T as never, S as never, 'v', { ackMigrations: true }), 'POST', `/tenants/${T}/scopes/${S}/rebind-vertical`, { vertical: 'v', ackMigrations: true }],
+  rebindReview: [(c) => c.rebindReview(T as never, S as never, 'acme/x'), 'GET', `/tenants/${T}/scopes/${S}/rebind-review?vertical=acme%2Fx`],
   listScopeBackups: [(c) => c.listScopeBackups(T as never, S as never), 'GET', `/tenants/${T}/scopes/${S}/backups`],
   backupScope: [(c) => c.backupScope(T as never, S as never), 'POST', `/tenants/${T}/scopes/${S}/backups`],
   listDirectoryBackups: [(c) => c.listDirectoryBackups(), 'GET', '/directory/backups'],

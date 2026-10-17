@@ -287,6 +287,15 @@ export interface RebindScopeResult {
   tables?: number;
 }
 
+/** #2347: the target lineage's serving version over the version the scope is bound to, and its binding. */
+export interface RebindReviewResult {
+  base: { vertical: string; versionId: string } | null;
+  target: { vertical: string; versionId: string };
+  digestsMatch: boolean;
+  migrations: MigrationDiff | null;
+  review: PromotionReviewBinding;
+}
+
 export interface BindHostnameInput {
   hostname: string;
   tenantId: TenantId;
@@ -513,19 +522,24 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
   // update-rebind behind retiring a lineage in favour of another. Data-first with the
   // source script kept as the backout. `ackMigrations` is the digest gate's override:
   // the control plane refuses the crossing when the two lineages' migration digests
-  // differ unless the operator acknowledges having read both surfaces. `abandonData`
+  // differ unless the operator acknowledges what it applies — bound (#2347) to the review
+  // `rebindReview` returned, which the plane refuses once a promote on either lineage has
+  // moved what it showed. `abandonData`
   // is deliberately NOT exposed — it exists for pre-#236 relic scripts only, and a
   // console that offers it invites moving an install while leaving its data behind.
   rebindScopeVertical = (
     t: TenantId,
     s: ScopeId,
     vertical: string,
-    opts: { ackMigrations?: boolean } = {},
+    opts: { ackMigrations?: boolean; acknowledge?: { review?: PromotionReviewBinding } } = {},
   ): Promise<RebindScopeResult> =>
     this.post(
       `/tenants/${t}/scopes/${s}/rebind-vertical`,
       { vertical, ...opts },
     );
+  /** #2347: what rebinding the scope onto `vertical` would apply, and the binding its acknowledgement carries. */
+  rebindReview = (t: TenantId, s: ScopeId, vertical: string): Promise<RebindReviewResult> =>
+    this.call(`/tenants/${t}/scopes/${s}/rebind-review?vertical=${seg(vertical)}`);
   /** The copies held for a scope, newest first — readable after the reap (the tombstone survives). */
   listScopeBackups = (t: TenantId, s: ScopeId): Promise<ScopeBackup[]> =>
     this.call(`/tenants/${t}/scopes/${s}/backups`);

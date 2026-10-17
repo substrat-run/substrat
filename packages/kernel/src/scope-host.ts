@@ -2588,6 +2588,16 @@ export interface HostAdmin {
    * (`bindExportBreaksOf`), asked of one install. Judged on what the scope RUNS before and
    * after, so re-pointing a scope that runs its vertical's serving script, a fork, a preview,
    * or a first bind is never refused. `bindingImpact` is the listing.
+   *
+   * **#2347: a rebind across lineages moves the route and the pointer in ONE write.**
+   * `opts.servingRef` routes the scope onto that serving script in the same write as the bind
+   * (judged for what the scope runs there, as `bindingImpact` with `servingRef` is), and
+   * `opts.expectedServing` makes that write conditional on the target lineage's serving script
+   * still running the version the rebind was judged against. Two writes would leave a window
+   * where a promote on the target lands between them: the route on the new script, the pointer
+   * on the old lineage. When `expectedServing` is given, losing either compare-and-set (it, or
+   * `expectedVersionId`) is refused as `rebind_review_stale`. Both options are additive: a
+   * caller that sends neither binds exactly as before.
    */
   bindScopeVersion(
     actor: PlatformActorId,
@@ -2598,6 +2608,10 @@ export interface HostAdmin {
       snapshot?: boolean; acknowledge?: BindAcknowledgement; expectedVersionId?: string | null; expectedErasureEpoch?: number;
       /** #1722: the copy move this bind routes the scope onto, confirmed in the same write. */
       confirmMove?: ScopeCopyMoveConfirmation;
+      /** #2347: the serving script the scope routes to from this same write. */
+      servingRef?: string;
+      /** #2347: what the target lineage's serving script must still run for the write to land. */
+      expectedServing?: { vertical: string; ref: string; versionId: string };
     },
   ): Promise<void>;
   /**

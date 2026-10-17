@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Checkbox, Dialog, Input, Select } from '@substrat-run/ui';
-import { api, type BoundScopeRow, type BoundScopesView, type Deployment } from '../lib/api';
-import { hasBoundScopes, isRetireArmed, looksStrandedByRename, moveTargets } from '../lib/bound-scopes';
+import { api, type BoundScopeRow, type BoundScopesView, type Deployment, type MoveReviewRow } from '../lib/api';
+import { hasBoundScopes, isRetireArmed, looksStrandedByRename, moveBindings, moveTargets, reviewMoved, reviewsToShow } from '../lib/bound-scopes';
+import { PromoteMigrations } from '../components/PromoteMigrations';
 import { DEV_MOCK, MOCK_BOUND_SCOPES } from '../lib/mock';
 import { GridTable, Row } from '../components/layout';
 import { MonoTag, Pill, type PillKind } from '../components/ui';
@@ -48,6 +49,10 @@ export function BoundScopes({ d, all, onChanged }: { d: Deployment; all: readonl
   const [refusal, setRefusal] = useState<string | null>(null);
   const [target, setTarget] = useState('');
   const [ack, setAck] = useState(false);
+  // #2347: what the Move would apply, read before it asks, and whether it moved since it was first
+  // shown (then every earlier tick is gone, and the dialog says why it asks again).
+  const [review, setReview] = useState<MoveReviewRow[] | null>(null);
+  const [reviewChanged, setReviewChanged] = useState(false);
   const [typed, setTyped] = useState('');
 
   // The caller keys this component by vertical, so a request still in flight when the person
@@ -73,20 +78,28 @@ export function BoundScopes({ d, all, onChanged }: { d: Deployment; all: readonl
   const targets = useMemo(() => moveTargets(d, all), [d, all]);
   const stranded = useMemo(() => looksStrandedByRename(d, all), [d, all]);
 
+  const forgetReview = () => {
+    setReview(null);
+    setReviewChanged(false);
+    setAck(false);
+  };
+
   const closeDialog = () => {
     setDialog(null);
     setRefusal(null);
-    setAck(false);
+    forgetReview();
     setTyped('');
   };
 
   const openMove = () => {
     setTarget(targets[0]?.slug ?? '');
-    setAck(false);
+    forgetReview();
     setRefusal(null);
     setNotice(null);
     setDialog('move');
   };
+
+  const shown = review ? reviewsToShow(review) : [];
 
   const openRetire = () => {
     setTyped('');
@@ -100,9 +113,21 @@ export function BoundScopes({ d, all, onChanged }: { d: Deployment; all: readonl
     setRefusal(null);
     try {
       const ids = movable.map((s) => s.id);
+      // #2347: the review comes first. Where the lineages' migrations differ, it is shown and the
+      // dialog asks; the move then sends each install's binding with the acknowledgement.
+      const read = DEV_MOCK ? [] : (review ?? (await api.readMoveReview(d.slug, { scopeIds: ids, target })).scopes);
+      if (review === null && !DEV_MOCK) {
+        setReview(read);
+        if (reviewsToShow(read).length > 0) return;
+      }
       const result = DEV_MOCK
         ? { moved: ids, refusal: null }
-        : await api.moveBoundScopes(d.slug, { scopeIds: ids, target, ...(ack ? { ackMigrations: true } : {}) });
+        : await api.moveBoundScopes(d.slug, {
+            scopeIds: ids,
+            target,
+            ...(reviewsToShow(read).length > 0 && ack ? { ackMigrations: true } : {}),
+            reviews: moveBindings(read),
+          });
       if (DEV_MOCK) setView((v) => dropScopes(v, result.moved));
       else await load();
       // Partial or whole: something may have left this vertical, so what reads its installs
@@ -110,7 +135,15 @@ export function BoundScopes({ d, all, onChanged }: { d: Deployment; all: readonl
       if (result.moved.length > 0) onChanged();
       // Whatever moved is off the list now; whatever did not stays selected for the re-run.
       setSelected((sel) => new Set([...sel].filter((id) => !result.moved.includes(id))));
-      if (result.refusal) {
+      if (result.refusal && reviewMoved(result.refusal.reason)) {
+        // What the move would apply changed under the acknowledgement: show it as it stands now,
+        // for what is left, and ask again from scratch.
+        const left = ids.filter((id) => !result.moved.includes(id));
+        setReview((await api.readMoveReview(d.slug, { scopeIds: left, target })).scopes);
+        setReviewChanged(true);
+        setAck(false);
+        if (result.moved.length > 0) setNotice(`${plural(result.moved.length, 'install')} moved to ${targetName(target, all)}.`);
+      } else if (result.refusal) {
         const who = scopes.find((s) => s.id === result.refusal!.scopeId)?.slug ?? result.refusal.scopeId;
         setRefusal(`${result.moved.length > 0 ? `${plural(result.moved.length, 'install')} moved. ` : ''}${who}: ${result.refusal.message}`);
       } else {
@@ -253,7 +286,7 @@ export function BoundScopes({ d, all, onChanged }: { d: Deployment; all: readonl
         title={`Move ${plural(movable.length, 'install')} to another vertical`}
         description="Each install is rebound onto the target’s serving version, data first. This vertical keeps its copy of the data."
         confirmLabel="Move"
-        confirmDisabled={movable.length === 0 || target === ''}
+        confirmDisabled={movable.length === 0 || target === '' || (shown.length > 0 && !ack)}
         busy={busy}
         onConfirm={() => void move()}
         onCancel={closeDialog}
@@ -272,15 +305,37 @@ export function BoundScopes({ d, all, onChanged }: { d: Deployment; all: readonl
           <Select
             label="Move to"
             value={target}
-            onChange={(e) => setTarget(e.target.value)}
+            onChange={(e) => {
+              setTarget(e.target.value);
+              forgetReview();
+            }}
             options={targets.map((t) => ({ value: t.slug, label: `${t.name} — ${t.displaySlug}` }))}
           />
-          <Checkbox
-            label="The migration histories differ — I have read both"
-            description="Only needed when this vertical’s version and the target’s carry different migrations. The platform refuses the move otherwise, and says so."
-            checked={ack}
-            onChange={setAck}
-          />
+          {reviewChanged && (
+            <div role="status" style={{ fontSize: 12.5, color: 'var(--status-warning-fg)', lineHeight: 1.5 }}>
+              A version changed while you were reviewing this move, so what it would apply changed too. This is the review as it
+              stands now — read it again; nothing you ticked before carries over.
+            </div>
+          )}
+          {shown.map(({ review: r, installs }) => (
+            <div key={r.review.digest} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                {plural(installs.length, 'install')} ({installs.map((i) => i.slug).join(', ')}) on{' '}
+                {r.base ? <MonoTag>{r.base.versionId}</MonoTag> : 'no version'} would run{' '}
+                <MonoTag>{r.target.versionId}</MonoTag>, whose migrations differ. These are what the move applies:
+              </span>
+              <PromoteMigrations section={{ digests: null, sql: r.migrations, enforced: true }} />
+            </div>
+          ))}
+          {shown.length > 0 && (
+            <Checkbox
+              key={shown.map((g) => g.review.review.digest).join()}
+              label="I have read the migrations above and acknowledge them"
+              description="The acknowledgement answers exactly this review. If a version changes before the move lands, the platform refuses it and this dialog asks again."
+              checked={ack}
+              onChange={setAck}
+            />
+          )}
           {refusal && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{refusal}</div>}
         </div>
       </Dialog>

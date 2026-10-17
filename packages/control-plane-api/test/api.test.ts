@@ -7461,11 +7461,174 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     expect(rec?.vertical).toBe(slug);
     expect(scripts.get(stableDeploymentRefFor(target.slug))?.has(sc)).toBeFalsy();
 
-    // The operator read both diffs: the acknowledged crossing proceeds.
-    const acked = await rebind(t, sc, { vertical: target.slug, ackMigrations: true });
+    // #2347: a bare acknowledgement names no review, so it is refused and moves nothing.
+    const unbound = await rebind(t, sc, { vertical: target.slug, ackMigrations: true });
+    expect(unbound.status).toBe(412);
+    const why = await unbound.json();
+    expect(why.reason).toBe('rebind_review_unbound');
+    expect(why.detail).toContain("a CLI release whose 'substrat scope rebind' supports --review");
+    expect(why.detail).not.toMatch(/\d+\.\d+\.\d+/);
+    expect((await host.admin.getScopeRecord(staff, t, sc))?.vertical).toBe(slug);
+    // The operator read the review: the acknowledged crossing, bound to it, proceeds.
+    const shown = await rebindReview(t, sc, target.slug);
+    const acked = await rebind(t, sc, { vertical: target.slug, ackMigrations: true, acknowledge: { review: shown.review } });
     expect(acked.status).toBe(200);
     expect((await host.admin.getScopeRecord(staff, t, sc))?.vertical).toBe(target.slug);
     expect(scripts.get(stableDeploymentRefFor(target.slug))?.get(sc)).toEqual([customers]);
+  });
+
+  // -- #2347: the rebind acknowledgement answers ONE review --------------------
+  const rebindReview = async (t: string, sc: string, target: string) => {
+    const res = await app.request(`/tenants/${t}/scopes/${sc}/rebind-review?vertical=${encodeURIComponent(target)}`, { headers: auth });
+    expect(res.status, await res.clone().text()).toBe(200);
+    return (await res.json()) as {
+      base: { vertical: string; versionId: string } | null;
+      target: { vertical: string; versionId: string };
+      digestsMatch: boolean;
+      migrations: { added: { sql: string | null }[]; changed: { sql: string | null }[] } | null;
+      review: { base: string | null; digest: string };
+    };
+  };
+  // A promote that changes migrations, acknowledged against the review it was shown.
+  const promoteAcked = async (slug: string, versionId: string) => {
+    const prod = (await host.admin.listChannels(staff, slug)).find((c) => c.channel === 'prod')?.versionId;
+    const read = await app.request(
+      `/verticals/${encodeURIComponent(slug)}/versions/${versionId}/migrations?base=${prod}`, { headers: auth },
+    );
+    const { review } = await read.json();
+    return app.request(`/verticals/${encodeURIComponent(slug)}/channels/prod/promote`, {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({ versionId, acknowledge: { permissionChange: true, migrationChange: true, review } }),
+    });
+  };
+  /** A legacy scope adopted onto its source serving script, and a target lineage whose migrations differ. */
+  const crossing = async (tag: string) => {
+    const { t, slug, sc } = await legacyScope(`${tag}-src`);
+    const v2 = (await (await push(`${tag}-src`, manifest({ version: '0.2.0' }))).json()).id as string;
+    expect((await promote(slug, v2)).status).toBe(200);
+    const target = await targetLineage(`${tag}-dst`, { version: '0.1.0', digests: { manifest: 'm1', permission: 'p1', migration: 'g2' } });
+    return { t, slug, sc, v2, target, pin: `${tag}-dst` };
+  };
+  const stays = async (t: string, sc: string, slug: string, target: string) => {
+    const rec = await host.admin.getScopeRecord(staff, t, sc);
+    expect(rec?.vertical).toBe(slug);
+    expect(rec?.servingRef).toBe(stableDeploymentRefFor(slug));
+    expect(scripts.get(stableDeploymentRefFor(target))?.has(sc)).toBeFalsy();
+  };
+
+  it('the rebind review names both sides and the migrations the target adds, bound in the same answer (#2347)', async () => {
+    const { t, sc, slug, v2, target } = await crossing('rv-read');
+    const shown = await rebindReview(t, sc, target.slug);
+    expect(shown.base).toEqual({ vertical: slug, versionId: v2 });
+    expect(shown.target).toEqual({ vertical: target.slug, versionId: target.versionId });
+    expect(shown.digestsMatch).toBe(false);
+    // The fixture's one migration, re-written by the target lineage: shown with its SQL.
+    expect(shown.migrations?.changed.map((m) => m.sql)).toEqual(['-- g2']);
+    expect(shown.review).toEqual({ base: v2, digest: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    // Read again with nothing moved, it binds the same review.
+    expect((await rebindReview(t, sc, target.slug)).review).toEqual(shown.review);
+  });
+
+  it('a promote on the TARGET between the review and the rebind makes the acknowledgement stale (#2347)', async () => {
+    const { t, sc, slug, target, pin } = await crossing('rv-tgt');
+    const shown = await rebindReview(t, sc, target.slug);
+    // Someone promotes the target onto another migration set: the diff the rebind would apply moved.
+    const t2 = (await (await push(pin, manifest({ version: '0.2.0', digests: { manifest: 'm1', permission: 'p1', migration: 'g3' } }))).json()).id as string;
+    expect((await promoteAcked(target.slug, t2)).status).toBe(200);
+    const stale = await rebind(t, sc, { vertical: target.slug, ackMigrations: true, acknowledge: { review: shown.review } });
+    expect(stale.status).toBe(412);
+    const body = await stale.json();
+    expect(body.reason).toBe('rebind_review_stale');
+    expect(JSON.stringify(body)).not.toContain(shown.review.digest);
+    await stays(t, sc, slug, target.slug);
+    // The review read again shows what serves now, and is what the acknowledgement answers.
+    const again = await rebindReview(t, sc, target.slug);
+    expect(again.target.versionId).toBe(t2);
+    expect(again.review.digest).not.toBe(shown.review.digest);
+    const acked = await rebind(t, sc, { vertical: target.slug, ackMigrations: true, acknowledge: { review: again.review } });
+    expect(acked.status, await acked.clone().text()).toBe(200);
+    expect((await host.admin.getScopeRecord(staff, t, sc))?.verticalVersionId).toBe(t2);
+  });
+
+  it('a promote on the SOURCE between the review and the rebind makes the acknowledgement stale (#2347)', async () => {
+    const { t, sc, slug, v2, target } = await crossing('rv-src');
+    const shown = await rebindReview(t, sc, target.slug);
+    // The scope's own lineage moves on: a private vertical's promote rebinds its owned scopes.
+    const v3 = (await (await push('rv-src-src', manifest({ version: '0.3.0' }))).json()).id as string;
+    expect((await promote(slug, v3)).status).toBe(200);
+    expect((await host.admin.getScopeRecord(staff, t, sc))?.verticalVersionId).toBe(v3);
+    const stale = await rebind(t, sc, { vertical: target.slug, ackMigrations: true, acknowledge: { review: shown.review } });
+    expect(stale.status).toBe(412);
+    const body = await stale.json();
+    expect(body.reason).toBe('rebind_review_stale');
+    expect(body.detail).toContain(`read against version ${v2}`);
+    await stays(t, sc, slug, target.slug);
+    const again = await rebindReview(t, sc, target.slug);
+    expect(again.review.base).toBe(v3);
+    expect((await rebind(t, sc, { vertical: target.slug, ackMigrations: true, acknowledge: { review: again.review } })).status).toBe(200);
+  });
+
+  it('a promote token is not a rebind token, nor the reverse: each review digests under its own tag (#2347)', async () => {
+    const { t, sc, slug, v2, target } = await crossing('rv-tag');
+    // A promote review over the very base the scope is bound to: right base, the promote's digest.
+    const v3 = (await (await push('rv-tag-src', manifest({ version: '0.3.0', digests: { manifest: 'm1', permission: 'p1', migration: 'g4' } }))).json()).id as string;
+    const promoteRead = await (await app.request(
+      `/verticals/${encodeURIComponent(slug)}/versions/${v3}/migrations?base=${v2}`, { headers: auth },
+    )).json();
+    expect(promoteRead.review.base).toBe(v2);
+    const asRebind = await rebind(t, sc, { vertical: target.slug, ackMigrations: true, acknowledge: { review: promoteRead.review } });
+    expect(asRebind.status).toBe(412);
+    expect((await asRebind.json()).reason).toBe('rebind_review_stale');
+    await stays(t, sc, slug, target.slug);
+    // And a rebind's binding, whose base is prod's version, does not pass a promote.
+    const rebindRead = await rebindReview(t, sc, target.slug);
+    expect(rebindRead.review.base).toBe(v2);
+    const asPromote = await app.request(`/verticals/${encodeURIComponent(slug)}/channels/prod/promote`, {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({ versionId: v3, acknowledge: { migrationChange: true, review: rebindRead.review } }),
+    });
+    expect(asPromote.status).toBe(412);
+    expect((await asPromote.json()).reason).toBe('promote_review_stale');
+    // The twins: each token passes where it belongs.
+    expect((await rebind(t, sc, { vertical: target.slug, ackMigrations: true, acknowledge: { review: rebindRead.review } })).status).toBe(200);
+  });
+
+  it('a promote on the target landing DURING the move: the rebind is refused as stale, routes nothing, and keeps both copies (#2347)', async () => {
+    const { t, sc, slug, target, pin } = await crossing('rv-race');
+    const shown = await rebindReview(t, sc, target.slug);
+    const t2 = (await (await push(pin, manifest({ version: '0.2.0' }))).json()).id as string;
+    const serving = (await host.admin.verticalServing(staff, target.slug))!;
+    // The gate has judged both sides; the target's serving script moves on while the bytes are
+    // in flight (what a promote's in-place serve records), before the route flips.
+    const real = host.admin.scopeErasureEpoch.bind(host.admin);
+    const epoch = vi.spyOn(host.admin, 'scopeErasureEpoch').mockImplementationOnce(async (...args) => {
+      await host.admin.setVerticalServing(staff, target.slug, { ...serving, versionId: t2 });
+      return real(...args);
+    });
+    try {
+      const raced = await rebind(t, sc, { vertical: target.slug, ackMigrations: true, acknowledge: { review: shown.review } });
+      expect(raced.status, await raced.clone().text()).toBe(412);
+      expect((await raced.json()).reason).toBe('rebind_review_stale');
+    } finally {
+      epoch.mockRestore();
+    }
+    const rec = await host.admin.getScopeRecord(staff, t, sc);
+    expect([rec?.vertical, rec?.servingRef]).toEqual([slug, stableDeploymentRefFor(slug)]);
+    // Both ends of the move settle retained: the source copy is still the scope's data.
+    const ledger = await host.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sc });
+    const move = ledger.find((c) => c.role === 'destination' && c.scriptRef === stableDeploymentRefFor(target.slug))?.moveId;
+    expect(ledger.filter((c) => c.moveId === move).map((c) => [c.role, c.scriptRef, c.state]).sort()).toEqual([
+      ['destination', stableDeploymentRefFor(target.slug), 'retained'], ['source', stableDeploymentRefFor(slug), 'retained'],
+    ]);
+    expect(scripts.get(stableDeploymentRefFor(slug))?.get(sc)).toEqual([customers]);
+    // The winner's view is consistent: the review read now names what serves, and binds it.
+    const again = await rebindReview(t, sc, target.slug);
+    expect(again.target.versionId).toBe(t2);
+    expect((await rebind(t, sc, { vertical: target.slug, ackMigrations: true, acknowledge: { review: again.review } })).status).toBe(200);
+    const after = await host.admin.getScopeRecord(staff, t, sc);
+    expect([after?.vertical, after?.verticalVersionId, after?.servingRef]).toEqual([target.slug, t2, stableDeploymentRefFor(target.slug)]);
   });
 
   it('rebinds directory-only on abandonData — no bytes carried, gate bypassed, source intact (#389)', async () => {
