@@ -34,6 +34,7 @@ import { settleConnectionUse, type FetchLike, type HostAdmin, type MailSender, t
 import {
   acquireToken,
   authMethodOf,
+  requestToken,
   microsoft365Secret,
   prepareMicrosoft365Candidate,
   sendersOf,
@@ -114,8 +115,10 @@ async function probeWith(
   secret: Microsoft365Secret,
   options: Microsoft365Options,
 ): Promise<ConnectionProbe> {
+  // The current certificate alone: the successor is judged by `successorFacts`, unrecorded, so a
+  // rotation's expected "not uploaded yet" never lands in the connection's health.
   const [token, successor] = await Promise.all([
-    acquireToken(fetchImpl, secret, { now: nowOf(options), ...loginOf(options) }),
+    requestToken(fetchImpl, secret, { now: nowOf(options), ...loginOf(options) }),
     successorFacts(secret, options),
   ]);
   const facts = [
@@ -262,7 +265,12 @@ export function microsoft365MailSender(options: Microsoft365Options): MailSender
     senders: async (host, connection) => sendersOf((await openSecret(host.admin, connection)).secret),
     send: async (host, connection, mail) => {
       const conn = await openMicrosoft365Connection(host.admin, options, connection);
-      const token = await acquireToken(conn.fetch, conn.secret, { now: nowOf(options), ...loginOf(options) });
+      // One sign-in is one use: mid-rotation it may take two requests (the current certificate,
+      // then its successor), and only the attempt that decided the answer is recorded.
+      const signIn = conn.signInFetch();
+      const token = await acquireToken(signIn.fetch, conn.secret, { now: nowOf(options), ...loginOf(options) }).finally(
+        signIn.record,
+      );
       if (!token.ok) throw new Error(`Microsoft 365 sign-in failed: ${token.error}`);
       try {
         return await sendMail(graph(conn.fetch, token.accessToken, options), mail);
@@ -322,24 +330,34 @@ async function openSecret(admin: HostAdmin, connection: ConnectionRef) {
 async function openMicrosoft365Connection(admin: HostAdmin, options: Microsoft365Options, connection: ConnectionRef) {
   const { open, secret } = await openSecret(admin, connection);
   const timeoutMs = options.timeoutMs ?? 15_000;
-  const fetchImpl: FetchLike = async (input, init) => {
-    const started = Date.now();
-    try {
-      const res = await options.fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
-      await admin.recordConnectionUse(
-        open.id,
-        settleConnectionUse(MICROSOFT365_PROVIDER, Date.now() - started, { response: res }),
-      );
-      return res;
-    } catch (err) {
-      await admin.recordConnectionUse(
-        open.id,
-        settleConnectionUse(MICROSOFT365_PROVIDER, Date.now() - started, { error: err }),
-      );
-      throw err;
-    }
+  type Settled = Parameters<typeof settleConnectionUse>[2];
+  const record = (durationMs: number, settled: Settled) =>
+    admin.recordConnectionUse(open.id, settleConnectionUse(MICROSOFT365_PROVIDER, durationMs, settled));
+  /** The fetch, timed out, reporting each settlement (with its duration) to `settle`. */
+  const timed =
+    (settle: (durationMs: number, settled: Settled) => Promise<void> | void): FetchLike =>
+    async (input, init) => {
+      const started = Date.now();
+      try {
+        const res = await options.fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+        await settle(Date.now() - started, { response: res });
+        return res;
+      } catch (err) {
+        await settle(Date.now() - started, { error: err });
+        throw err;
+      }
+    };
+  /** A fetch for one sign-in: every attempt is held, and `record` writes only the last. */
+  const signInFetch = () => {
+    let last: [number, Settled] | undefined;
+    return {
+      fetch: timed((ms, settled) => void (last = [ms, settled])),
+      record: async () => {
+        if (last) await record(...last);
+      },
+    };
   };
-  return { secret, fetch: fetchImpl };
+  return { secret, fetch: timed(record), signInFetch };
 }
 
 function probeOf(p: {

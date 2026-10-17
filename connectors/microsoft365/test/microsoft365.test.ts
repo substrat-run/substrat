@@ -773,6 +773,41 @@ describe('rotating the certificate before it lapses', () => {
       expect(h.uses.every((u) => u.ok)).toBe(true);
     });
 
+    it('with the current certificate removed, the probe reports the current one and asks the successor once, unrecorded', async () => {
+      const { secret, at } = await rotating();
+      const [cur, nxt] = [await thumbprintS256(secret.certificate!), await thumbprintS256(secret.nextCertificate!)];
+      const ms = entra([nxt], siteOk);
+      const h = hostWith(secret);
+      const p = await probeMicrosoft365Connection(h.host, conn, { fetch: ms.fetchImpl, now: () => at });
+      // The probe is about the certificate in use, which Entra no longer has.
+      expect(p).toMatchObject({ ok: false, refused: false });
+      expect(p.error).toContain('not on the app registration yet');
+      expect(p.facts.find((f) => f.label === 'New certificate')?.value).toContain('on the app registration');
+      // One sign-in each: the current one (recorded), the successor (not).
+      expect([...ms.signedWith].sort()).toEqual([cur, nxt].sort());
+      expect(h.uses).toEqual([expect.objectContaining({ ok: false, status: 401 })]);
+    });
+
+    it('a send that falls back to the successor records one sign-in, the one that decided it', async () => {
+      const { secret, at } = await rotating();
+      const ms = entra([await thumbprintS256(secret.nextCertificate!)], { '/sendMail': { status: 202, body: {} } });
+      const h = hostWith(secret);
+      await microsoft365MailSender({ fetch: ms.fetchImpl, now: () => at }).send(h.host, conn, mail());
+      expect(ms.signedWith).toEqual([await thumbprintS256(secret.certificate!), await thumbprintS256(secret.nextCertificate!)]);
+      // The successor's token and the sendMail; the current certificate's expected 401 is not one of them.
+      expect(h.uses).toHaveLength(2);
+      expect(h.uses.every((u) => u.ok)).toBe(true);
+    });
+
+    it('a sign-in that fails is still recorded, once', async () => {
+      const { secret, at } = await rotating();
+      const h = hostWith(secret);
+      await expect(
+        microsoft365MailSender({ fetch: entra([]).fetchImpl, now: () => at }).send(h.host, conn, mail()),
+      ).rejects.toThrow(/sign-in failed/);
+      expect(h.uses).toEqual([expect.objectContaining({ ok: false, status: 401 })]);
+    });
+
     it('the probe says when the successor is on the app registration', async () => {
       const { secret, at } = await rotating();
       const ms = entra([await thumbprintS256(secret.certificate!), await thumbprintS256(secret.nextCertificate!)], siteOk);

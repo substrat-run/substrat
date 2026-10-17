@@ -242,7 +242,12 @@ export async function acquireToken(
   return second.ok ? second : first;
 }
 
-async function requestToken(
+/**
+ * One token request with exactly this credential's current certificate (or client secret) — no
+ * fallback to a successor. What the probe asks, since it reports on the current certificate and
+ * judges the successor on its own.
+ */
+export async function requestToken(
   fetchImpl: FetchLike,
   secret: Microsoft365Secret,
   opts: { loginBase?: string; now: Date },
