@@ -58,6 +58,29 @@ export interface OidcEnv {
   OIDC_ALT_CLIENT_ID?: string;
   /** Secret (wrangler secret put OIDC_ALT_CLIENT_SECRET). */
   OIDC_ALT_CLIENT_SECRET?: string;
+  /**
+   * How the client secret reaches the issuer's token endpoint: `post` (in the form body,
+   * the default and what this package has always done) or `basic` (an `Authorization:
+   * Basic` header, RFC 6749 §2.3.1). An issuer holds this per CLIENT, as registered, and
+   * refuses the other one — Better Auth's provider answers `invalid_client: client
+   * registered for client_secret_basic cannot use client_secret_post` — so it is a setting
+   * of the client you registered, not something discovery can say. Anything else is refused
+   * at login rather than guessed.
+   */
+  OIDC_TOKEN_AUTH?: string;
+  /** `OIDC_TOKEN_AUTH`, for the alternate issuer's client. */
+  OIDC_ALT_TOKEN_AUTH?: string;
+}
+
+/** The two ways a client secret is presented; see `OidcEnv.OIDC_TOKEN_AUTH`. */
+export type TokenAuth = 'post' | 'basic';
+
+/** `OIDC_TOKEN_AUTH` as the method it names. Unset is `post`; an unknown value throws. */
+export function tokenAuthOf(env: Pick<OidcEnv, 'OIDC_TOKEN_AUTH'>): TokenAuth {
+  const v = env.OIDC_TOKEN_AUTH;
+  if (v === undefined || v === '' || v === 'post') return 'post';
+  if (v === 'basic') return 'basic';
+  throw new Error(`OIDC_TOKEN_AUTH must be 'basic' or 'post', not '${v}'`);
 }
 
 /** The one value `idp` may take; anything else means the default issuer. */
@@ -78,7 +101,7 @@ export function envForIdp<B extends OidcEnv>(env: B, idp: Idp | undefined): B | 
   if (idp !== 'alt') return env;
   const { OIDC_ALT_ISSUER: issuer, OIDC_ALT_CLIENT_ID: id, OIDC_ALT_CLIENT_SECRET: secret } = env;
   if (!issuer || !id || !secret) return null;
-  return { ...env, OIDC_ISSUER: issuer, OIDC_CLIENT_ID: id, OIDC_CLIENT_SECRET: secret };
+  return { ...env, OIDC_ISSUER: issuer, OIDC_CLIENT_ID: id, OIDC_CLIENT_SECRET: secret, OIDC_TOKEN_AUTH: env.OIDC_ALT_TOKEN_AUTH };
 }
 
 export interface SessionUser {
@@ -243,16 +266,27 @@ export async function completeLogin(
   // required to share the issuer's origin: real providers serve the token endpoint from
   // another host than their issuer.
   if (!isAllowedEndpoint(env.OIDC_ISSUER, d.token_endpoint)) throw new Error('token endpoint is not https');
+  const basic = tokenAuthOf(env) === 'basic';
   const res = await fetch(d.token_endpoint, {
     redirect: 'manual',
     method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      // RFC 6749 §2.3.1: the id and the secret are form-urlencoded FIRST, then joined and
+      // base64'd — a secret with a `:` or a `%` in it is not the bytes it looks like.
+      ...(basic
+        ? {
+            authorization: `Basic ${btoa(`${encodeURIComponent(env.OIDC_CLIENT_ID)}:${encodeURIComponent(env.OIDC_CLIENT_SECRET)}`)}`,
+          }
+        : {}),
+    },
     body: new URLSearchParams({
       grant_type: 'authorization_code',
       code,
       redirect_uri: redirectUri(env, origin),
       client_id: env.OIDC_CLIENT_ID,
-      client_secret: env.OIDC_CLIENT_SECRET,
+      // Never both: an issuer may refuse a request that presents the secret twice.
+      ...(basic ? {} : { client_secret: env.OIDC_CLIENT_SECRET }),
       code_verifier: flow.v,
     }),
   });
