@@ -81,9 +81,13 @@ alone stops a row that committed from losing its bytes:
   Settle the copy first. A deployment with no directory cannot read the ledger, so a pass there
   needs its caller to have checked it (`copiesSettled`).
 
-Nothing runs the sweep on a schedule yet. A platform pass that calls it is planned. That pass
-will check the ledger itself, and it will report a scope held this way rather than skip it
-silently. Until then, a pass is run by calling `sweepOrphanAttachments` on a host.
+On the hosted platform the control plane's scheduled pass runs the sweep. It is off until the
+platform turns it on, and it runs as a dry run before any delete. It visits a bounded window of
+scopes per pass. It checks the ledger itself and asks only the deployment that serves the scope.
+A scope held by an unsettled copy is counted as refused, never skipped silently. Every pass that
+finds or deletes an orphan leaves a `sweepOrphanAttachments` row in the admin log, with the keys.
+In delete mode, a scope is swept for real only after a dry run of it is in that log from the
+last seven days. Off the platform, a pass is run by calling `sweepOrphanAttachments` on a host.
 
 A pass lists only the scope's own attachment keys (`scope/<scopeId>/att/<ulid>`). Other scopes'
 keys, other features' keys and anything malformed in the same bucket are never judged. A dry run

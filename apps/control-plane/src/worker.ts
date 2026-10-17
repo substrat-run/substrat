@@ -398,7 +398,7 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * deletes, but only on a scope whose dry-run row is in the admin log from the last 7 days; any
    * other scope gets a dry run instead. Any other value is `off`, with a warning in the tail.
    * Without script dispatch the phase never runs: no script but the one serving a scope may judge
-   * its bytes. docs/runbooks/orphan-attachment-sweep.md has the rollout.
+   * its bytes. docs/architecture/orphan-attachment-sweep.md has the rollout.
    */
   ORPHAN_ATTACHMENT_SWEEP?: string;
   /** #2314: scopes one orphan-attachment pass visits (kernel default 25). `0` pauses. Garbled is the default. */
