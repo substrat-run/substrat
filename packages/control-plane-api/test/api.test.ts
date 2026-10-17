@@ -7595,8 +7595,12 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
     expect((await rebind(t, sc, { vertical: target.slug, ackMigrations: true, acknowledge: { review: rebindRead.review } })).status).toBe(200);
   });
 
-  it('a promote on the target landing DURING the move: the rebind is refused as stale, routes nothing, and keeps both copies (#2347)', async () => {
-    const { t, sc, slug, target, pin } = await crossing('rv-race');
+  // Twice: a serve that lands before the host's own pre-check, which refuses it, and one that lands
+  // after that pre-check passed (it is made to pass once, as a serve between the two would), where
+  // only the write's own compare-and-set (`SERVES_NOW_PREDICATE`) stands between the rebind and
+  // binding the scope to the version the serve replaced.
+  for (const window of ['before the host pre-check', 'between the pre-check and the write'] as const) it(`a promote on the target landing DURING the move (${window}): the rebind is refused as stale, routes nothing, and keeps both copies (#2347)`, async () => {
+    const { t, sc, slug, target, pin } = await crossing(window.startsWith('before') ? 'rv-race' : 'rv-race-cas');
     const shown = await rebindReview(t, sc, target.slug);
     const t2 = (await (await push(pin, manifest({ version: '0.2.0' }))).json()).id as string;
     const serving = (await host.admin.verticalServing(staff, target.slug))!;
@@ -7607,12 +7611,18 @@ describe('control-plane API — adopt-on-promote (#321)', () => {
       await host.admin.setVerticalServing(staff, target.slug, { ...serving, versionId: t2 });
       return real(...args);
     });
+    const preCheck = window.startsWith('between')
+      ? vi.spyOn(host as unknown as { servesNow: () => boolean }, 'servesNow').mockReturnValueOnce(true)
+      : null;
     try {
       const raced = await rebind(t, sc, { vertical: target.slug, ackMigrations: true, acknowledge: { review: shown.review } });
       expect(raced.status, await raced.clone().text()).toBe(412);
       expect((await raced.json()).reason).toBe('rebind_review_stale');
+      // The forced pass was taken: the refusal came from the write.
+      if (preCheck) expect(preCheck).toHaveBeenCalled();
     } finally {
       epoch.mockRestore();
+      preCheck?.mockRestore();
     }
     const rec = await host.admin.getScopeRecord(staff, t, sc);
     expect([rec?.vertical, rec?.servingRef]).toEqual([slug, stableDeploymentRefFor(slug)]);
