@@ -34,7 +34,7 @@ The package has no runtime dependencies and ships web-standard + `node:*` only. 
 | `substrat versions <slug>` | List a vertical's versions + whether `prod` points at each. |
 | `substrat preview create [dir] --tag <t>` | Run a version against a fork of prod (or `--empty` clean room) at its own URL — the non-prod environment primitive. |
 | `substrat scope bind <scopeId> --version <id>` | Pin **one** scope to a version of the same vertical — the per-scope rollout primitive (canary, test env). |
-| `substrat scope rebind <scopeId> --to <vertical>` | Move **one** scope onto another vertical's serving version, data carried (staff). |
+| `substrat scope rebind <scopeId> --to <vertical>` | Move **one** scope onto another vertical's serving version, data carried. |
 | `substrat scope domain <scopeId> --domain <d>` | Bind a custom domain to **any** owned scope (a prod app, a preview, a test env). |
 | `substrat publish <slug>` | Request a listing on the public marketplace (a staff operator reviews). |
 | `substrat unpublish <slug>` | Remove a vertical from the public marketplace (staff). |
@@ -388,7 +388,8 @@ substrat scope rebind <scopeId> --to <vertical> --ack-migrations --review 01J…
 Moves **one** scope onto a different vertical's serving version: the data is exported from the
 script the scope runs on, restored onto the target's serving script, and then the route and the
 version pointer move together. The old copy is deleted once the move is confirmed, so take a
-snapshot first if you want a way back. Staff only.
+snapshot first if you want a way back. Staff may rebind any scope; a workspace's own credential may rebind
+one of its own scopes, between verticals it can see (its own, or listed). A CI push token cannot.
 
 The two verticals' migration histories are independent. When their migration digests differ, the
 rebind is refused and prints what it would apply: each migration the target's serving version
