@@ -1,8 +1,8 @@
 # Substrat review checklist
 
-One rule set, two runners: the `substrat-review` skill (run it locally before you push) and
-the PR job in `.github/workflows/substrat-review.yml`. Edit the rules **here and nowhere
-else**. Neither runner carries its own copy.
+One rule set, any runner: the `substrat-review` skill (run it locally before you push) reads
+it today, and a runner the platform hosts would read the same file. Edit the rules **here
+and nowhere else**. No runner carries its own copy.
 
 This checklist exists because the failures it names *look like success*: they compile, the
 tests pass and the page renders. Review that is already built into your editor catches

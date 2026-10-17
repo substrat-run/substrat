@@ -12,7 +12,7 @@ that drops data. Run it **after** the built-in review, before you push.
 
 The rules are in [`plugin/substrat/review/checklist.md`](../../review/checklist.md) in the
 plugin. Read that file in full first. It is the only copy: this skill adds a procedure, not
-rules, and the PR job runs this same procedure against the same file.
+rules, and any other runner should follow this same procedure against the same file.
 
 ## Procedure
 
