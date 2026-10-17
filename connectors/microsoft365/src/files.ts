@@ -42,7 +42,7 @@ import {
   type Microsoft365Options,
 } from './connection.js';
 import { microsoft365Secret } from './credential.js';
-import { FenceError, fencedPath, fencedSegment } from './fence.js';
+import { fencedPath, fencedSegment } from './fence.js';
 import {
   GraphError,
   childrenOf,
@@ -257,7 +257,7 @@ export async function bindMicrosoft365Scope(
 }
 
 /** A bound folder's drive path, held to the fence's grammar; never the library root. */
-export function folderSegments(folder: string): string[] {
+function folderSegments(folder: string): string[] {
   const trimmed = folder.replace(/^\/+|\/+$/g, '');
   if (!trimmed) throw substratError('validation_failed', 'a binding names a folder; the library root is not one');
   try {

@@ -79,7 +79,6 @@ export {
   bindMicrosoft365Scope,
   listMicrosoft365Bindings,
   unbindMicrosoft365Scope,
-  folderSegments,
   microsoft365FilesConnector,
   registerMicrosoft365FilesConnector,
   declareMicrosoft365FilesConnector,
