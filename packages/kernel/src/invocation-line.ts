@@ -344,6 +344,11 @@ export const STORE_CALL_SINK_KEY = 'substrat.store-call-sink';
 /** What the entry installs under {@link STORE_CALL_SINK_KEY}. */
 export interface StoreCallSinkSlot {
   current(): StoreCallSink | undefined;
+  /**
+   * #2192: the id of the request now running. Optional: a slot installed by a copy that
+   * predates it has none, and a caller then learns no id.
+   */
+  invocationId?(): string | undefined;
 }
 
 /**
@@ -356,6 +361,22 @@ export function currentStoreCallSink(): StoreCallSink | undefined {
       | Partial<StoreCallSinkSlot>
       | undefined;
     return typeof slot?.current === 'function' ? slot.current() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The id of the request now running, or `undefined` outside one (#2192) — what a peer call
+ * hands on as its parent. Never throws, like {@link currentStoreCallSink}.
+ */
+export function currentInvocationId(): string | undefined {
+  try {
+    const slot = (globalThis as Record<symbol, unknown>)[Symbol.for(STORE_CALL_SINK_KEY)] as
+      | Partial<StoreCallSinkSlot>
+      | undefined;
+    const id = typeof slot?.invocationId === 'function' ? slot.invocationId() : undefined;
+    return typeof id === 'string' ? id : undefined;
   } catch {
     return undefined;
   }

@@ -148,7 +148,8 @@ export type AsyncLocalStorageClass = new <T>() => AsyncLocalStorageLike<T>;
 
 /** The slot a request's store calls are reached through, plus the `run` that fills it. */
 interface StoreCallSlot extends StoreCallSinkSlot {
-  run<R>(tally: StoreCallTally, fn: () => R): R;
+  /** #2192: `invocationId` is the request's own, for a peer call to hand on. A slot that predates it ignores it. */
+  run<R>(tally: StoreCallTally, fn: () => R, invocationId?: string): R;
 }
 
 /**
@@ -182,13 +183,14 @@ function storeCallSlot(provided: AsyncLocalStorageClass | undefined): StoreCallS
     if (typeof existing?.run === 'function' && typeof existing.current === 'function') return existing as StoreCallSlot;
     const Als = provided ?? builtinAsyncLocalStorage();
     if (!Als) return undefined;
-    const storage = new Als<StoreCallTally>();
+    const storage = new Als<{ tally: StoreCallTally; invocationId: string | undefined }>();
     const slot: StoreCallSlot = {
       current() {
-        const tally = storage.getStore();
+        const tally = storage.getStore()?.tally;
         return tally ? (call) => tallyStoreCall(tally, call) : undefined;
       },
-      run: (tally, fn) => storage.run(tally, fn),
+      invocationId: () => storage.getStore()?.invocationId,
+      run: (tally, fn, invocationId) => storage.run({ tally, invocationId }, fn),
     };
     g[key] = slot;
     return slot;
@@ -202,9 +204,9 @@ function storeCallSlot(provided: AsyncLocalStorageClass | undefined): StoreCallS
  * while it runs lands on this request's line with no observer from the vertical. With no
  * `AsyncLocalStorage` available the handler simply runs.
  */
-function runRecordingStoreCalls<R>(record: InvocationRecord, provided: AsyncLocalStorageClass | undefined, fn: () => R): R {
+function runRecordingStoreCalls<R>(stamp: InvocationStamp, provided: AsyncLocalStorageClass | undefined, fn: () => R): R {
   const slot = storeCallSlot(provided);
-  return slot ? slot.run(record, fn) : fn();
+  return slot ? slot.run(stamp.record, fn, stamp.invocationId) : fn();
 }
 
 /**
@@ -576,7 +578,7 @@ export function invocationLog<Env = unknown>(
     c.set?.(INVOCATION_RECORD_KEY, stamp.record);
     let threw = false;
     try {
-      await runRecordingStoreCalls(stamp.record, options.asyncLocalStorage, next);
+      await runRecordingStoreCalls(stamp, options.asyncLocalStorage, next);
       // #2192: after the handler, so whatever answered — a route's own `Response`, the
       // `onError` envelope — carries it. Set before, Hono would keep it only on a response it
       // built itself. Hono's `c.header` on an answered context COPIES the response (every one,
@@ -651,7 +653,7 @@ export function withInvocationLog<Env = unknown>(
       let threw = false;
       try {
         const response = withRequestId(
-          await runRecordingStoreCalls(stamp.record, options.asyncLocalStorage, () => inner.call(worker, request, env, ctx)),
+          await runRecordingStoreCalls(stamp, options.asyncLocalStorage, () => inner.call(worker, request, env, ctx)),
           stamp.invocationId,
         );
         status = response.status;
