@@ -38,6 +38,8 @@ import {
   capabilityAttachmentContractSuite,
   uploadLinkContractSuite,
   orphanSweepContractSuite,
+  uploadLinkReplayContractSuite,
+  type OrphanSweepFixture,
   uploadLinkMod,
   UPL_READ,
   UPL_WRITE,
@@ -538,7 +540,7 @@ uploadLinkContractSuite('adapter-cloudflare', attachmentHostFixture);
 // #2314: the orphan-byte sweep, judged by the real ScopeDO (the tombstone, the insert's and the
 // load's refusals, the copy refusal) over a bucket whose puts a test can hold. Its listing
 // ignores the prefix, as the shared fake's does, so the sweep's own key filter is what is held.
-orphanSweepContractSuite('adapter-cloudflare', async () => {
+const orphanSweepFixture = async (): Promise<OrphanSweepFixture> => {
   const objs = new Map<string, { body: Uint8Array; contentType?: string }>();
   let hook: ((key: string) => Promise<void>) | null = null;
   let ahead = 0;
@@ -597,7 +599,10 @@ orphanSweepContractSuite('adapter-cloudflare', async () => {
     },
     cleanup: async () => host.close(),
   };
-});
+};
+orphanSweepContractSuite('adapter-cloudflare', orphanSweepFixture);
+// #2315: a retry of a redemption with its Idempotency-Key, against the same held, raw store.
+uploadLinkReplayContractSuite('adapter-cloudflare', orphanSweepFixture);
 
 // #113: an attachment refusal crosses the ScopeDO hop as data, so it reaches the caller typed.
 attachmentRefusalContractSuite('adapter-cloudflare', attachmentHostFixture);

@@ -25,11 +25,22 @@
  * target's `writePermission` as them, now. The link is spent in that transaction, so every
  * failure leaves it unspent.
  *
- * Answers: **201** `{ id, filename, contentType, size, sha256 }`; **404** for a secret that
+ * Answers: **201** `{ id, filename, contentType, size, sha256 }`; **200** with the same body for
+ * a replay (below); **404** for a secret that
  * names nothing — a malformed one answered here, without asking the scope — and for a path
  * naming another target than the link's, whatever the link's state (nothing is spent);
  * **410** for a link already used, expired or revoked at its own path; **413** over the link's size;
- * **415** for a type the link refuses; **403** when the minter no longer holds the key.
+ * **415** for a type the link refuses; **403** when the minter no longer holds the key; **422**
+ * for a replay whose bytes are not the stored file; **400** for an empty body or a malformed
+ * `Idempotency-Key`.
+ *
+ * **A lost reply is retryable (#2315).** A request may name itself with `Idempotency-Key` (16 to
+ * 255 visible ASCII characters, such as a UUID; a quoted structured-field string is read without
+ * its quotes). The spend records the key's hash. A later request for the SAME link with the same
+ * key and the same bytes, before the link's expiry plus `UPLOAD_LINK_REPLAY_GRACE_SECONDS`, gets
+ * the stored record with **200** and writes nothing. Every other request for a spent link (no
+ * key, another key, past the window, or a file removed or swept since) gets the same 410, so a
+ * holder of the secret without the key learns nothing about the redemption.
  *
  * **Response hygiene, set before anything can fail.** `Cache-Control: no-store`,
  * `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`. There is no `ETag`,
@@ -44,7 +55,9 @@
 import type { Context, Env, Hono } from 'hono';
 import {
   PROBLEM_CONTENT_TYPE,
+  UPLOAD_LINK_IDEMPOTENCY_HEADER,
   UPLOAD_LINK_PATH_PREFIX,
+  isUploadLinkIdempotencyKey,
   isUploadLinkSecretShape,
   substratError,
   uploadLinkFilename,
@@ -53,6 +66,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   UPLOAD_LINK_GONE,
+  UPLOAD_LINK_REPLAY_MISMATCH,
   UPLOAD_LINK_TOO_LARGE,
   UPLOAD_LINK_TYPE_REFUSED,
   UPLOAD_LINK_WRONG_TARGET,
@@ -211,6 +225,7 @@ const STATUS_BY_REASON: Readonly<Record<string, ContentfulStatusCode>> = {
   [UPLOAD_LINK_TOO_LARGE]: 413,
   [UPLOAD_LINK_TYPE_REFUSED]: 415,
   [UPLOAD_LINK_WRONG_TARGET]: 404,
+  [UPLOAD_LINK_REPLAY_MISMATCH]: 422,
 };
 
 const CORS_HEADERS = [
@@ -256,6 +271,23 @@ function errorStatus(err: unknown): ContentfulStatusCode {
   return (code && STATUS_BY_CODE[code]) || 500;
 }
 
+/**
+ * The `Idempotency-Key` a request carries, or `undefined` for none: the bare token, or one
+ * structured-field string (`"…"`, the IETF draft's spelling) with its quotes taken off. Anything
+ * else is a 400 — never a key matched loosely.
+ */
+function idempotencyKeyOf(header: string | undefined): string | undefined {
+  if (header === undefined) return undefined;
+  const key = /^"[^"\\]*"$/.test(header) ? header.slice(1, -1) : header;
+  if (!isUploadLinkIdempotencyKey(key)) {
+    throw substratError(
+      'validation_failed',
+      'An Idempotency-Key is 16 to 255 visible ASCII characters with no space, such as a UUID.',
+    );
+  }
+  return key;
+}
+
 /** The 404 every secret that names nothing gets — the scope's answer, and this route's for a malformed one. */
 const unknownLink = () => substratError('not_found', 'This upload link is not valid.');
 
@@ -278,6 +310,9 @@ export function mountUploadLinkRedeem<E extends Env>(app: Hono<E>, options: Uplo
       // A secret that cannot be one the kernel minted costs the scope nothing: the same 404 an
       // unknown one gets, before the host, the scope or its Durable Object is touched.
       if (!entityType || !entityId || !isUploadLinkSecretShape(secret)) throw unknownLink();
+      // #2315: the redeemer's own id for this redemption, judged before the scope is asked, so a
+      // malformed one is the same 400 whatever the link's state.
+      const idempotencyKey = idempotencyKeyOf(c.req.header(UPLOAD_LINK_IDEMPOTENCY_HEADER));
       const [host, node] = await Promise.all([options.host(c), options.node(c)]);
       if (!host.inspectUploadLink || !host.redeemUploadLink) {
         throw substratError('unavailable', 'this scope host serves no upload links');
@@ -285,10 +320,13 @@ export function mountUploadLinkRedeem<E extends Env>(app: Hono<E>, options: Uplo
       // The link first, so a refusal costs no body: unknown or minted for another target (404,
       // judged before its state), used / expired / revoked (410), and what the body will be
       // judged against.
-      const view: UploadLinkView = await host.inspectUploadLink(node.tenantId, node.scopeId, secret, {
-        entityType,
-        entityId,
-      });
+      const view: UploadLinkView = await host.inspectUploadLink(
+        node.tenantId,
+        node.scopeId,
+        secret,
+        { entityType, entityId },
+        idempotencyKey,
+      );
       const filename =
         view.filename ??
         cleanFilename(c.req.query('filename')) ??
@@ -317,7 +355,9 @@ export function mountUploadLinkRedeem<E extends Env>(app: Hono<E>, options: Uplo
         filename,
         contentType,
         body,
+        ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
       });
+      // 200 for a replay of the redemption that spent the link, 201 for a file stored now.
       return c.body(
         JSON.stringify({
           id: record.id,
@@ -326,7 +366,7 @@ export function mountUploadLinkRedeem<E extends Env>(app: Hono<E>, options: Uplo
           size: record.size,
           sha256: record.sha256,
         }),
-        201,
+        record.replayed ? 200 : 201,
         { 'content-type': 'application/json' },
       );
     } catch (err) {
