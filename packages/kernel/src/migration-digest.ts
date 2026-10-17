@@ -254,6 +254,16 @@ export const migrationSetDigestComputations = (): number => setDigestComputation
 /** How many registered migrations a set divergence names before it says how many more there are. */
 const DIVERGENCE_LISTED = 20;
 
+/**
+ * Whether a migration version is one the kernel derives from a declaration (`search/…`,
+ * `state/…`, `list/…`, see `moduleMigrations`) rather than one a module authored. Every derived
+ * generator names its versions under one of these prefixes, which `migration-set-digest.test.ts`
+ * holds against `moduleMigrations` for a module declaring all three.
+ */
+export function isDerivedMigrationVersion(version: string): boolean {
+  return /^(search|state|list)\//.test(version);
+}
+
 async function setDigestOf(entries: { moduleId: string; version: string; sqlDigest: string }[]): Promise<string> {
   setDigestComputations++;
   // Modules by id, each module's migrations in the order it applies them: the order the CLI
@@ -267,11 +277,17 @@ async function setDigestOf(entries: { moduleId: string; version: string; sqlDige
 }
 
 /**
- * The digest of a set of migrations (#2349): SHA-256 over each migration's module, version and
- * the SHA-256 of its exact SQL, modules ordered by id. Only the SQL is covered, not what a
- * migration declares it may lose, nor the store classes: it is what a scope compares with the
- * SQL it is about to run. The control plane computes it from a version's stored migrations at
- * upload; a scope host computes it from its registered steps (`migrationSetDivergence`).
+ * The digest of a set of AUTHORED migrations (#2349): SHA-256 over each migration's module,
+ * version and the SHA-256 of its exact SQL, modules ordered by id. Only the SQL is covered, not
+ * what a migration declares it may lose, nor the store classes. The control plane computes it
+ * from a version's stored migrations at upload; a scope host computes it from its registered
+ * steps (`migrationSetDivergence`).
+ *
+ * Kernel-derived migrations are left out on both sides, as #2066 leaves them out of the journal
+ * check: their SQL is the kernel's spelling of a declaration, and whether a stored set carries
+ * them at all depends on the CLI that pushed it (one that could not resolve the vertical's kernel
+ * stores the authored set alone). Dropped here by version name, so a stored set from any CLI
+ * compares as its authored part.
  *
  * Not through `cachedDigest`: the control plane hashes every version it serves, and that cache
  * would keep each one's SQL for the life of the isolate.
@@ -281,7 +297,9 @@ export async function migrationSetDigest(
 ): Promise<string> {
   return setDigestOf(
     await Promise.all(
-      migrations.map(async (m) => ({ moduleId: m.moduleId, version: m.version, sqlDigest: await migrationDigest(m.sql) })),
+      migrations
+        .filter((m) => !isDerivedMigrationVersion(m.version))
+        .map(async (m) => ({ moduleId: m.moduleId, version: m.version, sqlDigest: await migrationDigest(m.sql) })),
     ),
   );
 }
@@ -289,8 +307,9 @@ export async function migrationSetDigest(
 /**
  * An integrity check at apply time (#2349): why a scope host must not apply its pending
  * migrations, or null when it may. `stored` is the set digest the uploader injected for the
- * version this script serves (`MIGRATIONS_DIGEST_BINDING`); the registered side is every step
- * the host's modules register, authored and kernel-derived, which is the set a push stores.
+ * version this script serves (`MIGRATIONS_DIGEST_BINDING`); the registered side is every
+ * AUTHORED step the host's modules register. A kernel-derived step is never compared, so a
+ * difference in derived steps alone cannot refuse (see `migrationSetDigest`).
  *
  * Called only when a pass has migrations pending, so a scope with nothing to apply never
  * computes it. Without a stored digest (a version whose migrations the control plane does not
@@ -306,7 +325,10 @@ export async function migrationSetDivergence(
   if (!stored) return null;
   const entries: { moduleId: string; version: string; sqlDigest: string }[] = [];
   for (const mod of modules) {
-    for (const step of await mod.steps) entries.push({ moduleId: mod.id, version: step.migration.version, sqlDigest: step.digest });
+    for (const step of await mod.steps) {
+      if (!step.authored || isDerivedMigrationVersion(step.migration.version)) continue;
+      entries.push({ moduleId: mod.id, version: step.migration.version, sqlDigest: step.digest });
+    }
   }
   const registered = await setDigestOf(entries);
   if (registered === stored) return null;
@@ -317,7 +339,7 @@ export async function migrationSetDivergence(
       : keys.slice(0, DIVERGENCE_LISTED).join(', ') +
         (keys.length > DIVERGENCE_LISTED ? ` and ${keys.length - DIVERGENCE_LISTED} more` : '');
   return (
-    `the migrations this deployment registers are not the ones stored for the version it serves ` +
+    `the authored migrations this deployment registers are not the ones stored for the version it serves ` +
     `(registered set sha256 ${registered}, stored ${stored}); registered: ${listed}. Nothing was applied. ` +
     `Push the version again from the build that is deployed, so the stored migrations are the ones it runs (#2349)`
   );

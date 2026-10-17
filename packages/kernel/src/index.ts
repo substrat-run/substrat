@@ -438,6 +438,7 @@ export {
   MIGRATIONS_DIGEST_BINDING,
   assertJournalDumpCoherent,
   assertMigrationSql,
+  isDerivedMigrationVersion,
   migrationDigest,
   migrationDivergence,
   migrationFailedError,

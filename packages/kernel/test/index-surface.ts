@@ -350,6 +350,8 @@ export const INDEX_VALUE_EXPORTS = [
   'isCopyLoad',
   'isCopyMarkInsert',
   'isDeliveryRefusal',
+  // #2349: which migration versions the set digest leaves out.
+  'isDerivedMigrationVersion',
   'isExportBreakRefusal',
   'isLifecycleWrite',
   'isMediaTypeEssence',

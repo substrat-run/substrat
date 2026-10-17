@@ -129,7 +129,7 @@ describe('a vertical upload carries the stored migration set digest (#2349)', ()
     expect(await migrationSetDivergence([{ id: mod.manifest.id, steps: migrationSteps(mod) }], expected)).toBeNull();
     const edited = { ...mod, migrations: mod.migrations.map((m, i) => (i === 0 ? { ...m, sql: `${m.sql}\n-- edited` } : m)) };
     expect(await migrationSetDivergence([{ id: mod.manifest.id, steps: migrationSteps(edited) }], expected)).toMatch(
-      /^the migrations this deployment registers are not the ones stored/,
+      /^the authored migrations this deployment registers are not the ones stored/,
     );
   });
 

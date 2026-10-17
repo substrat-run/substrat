@@ -9,7 +9,7 @@ import { env, runInDurableObject } from 'cloudflare:test';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { listMod } from '@substrat-run/contract-tests';
-import { migrationSetDigest, moduleMigrations, ulid, UNSAFE_allowAllChecker } from '@substrat-run/kernel';
+import { isDerivedMigrationVersion, migrationSetDigest, moduleMigrations, ulid, UNSAFE_allowAllChecker } from '@substrat-run/kernel';
 import { migrationSetDigestComputations } from '@substrat-run/kernel/testing';
 import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
@@ -17,6 +17,8 @@ import { SET_CHECK_DIGEST } from './worker.js';
 
 const MODULE = listMod.manifest.id;
 const steps = moduleMigrations(listMod);
+/** Its authored steps: the part the check compares. `listMod` also derives a list index. */
+const authored = steps.filter((m) => !isDerivedMigrationVersion(m.version));
 /** The digest the uploader injects for a version storing `migrations`: the kernel function it calls. */
 const digestOf = (migrations: readonly { version: string; sql: string }[]) =>
   migrationSetDigest(migrations.map((m) => ({ moduleId: MODULE, version: m.version, sql: m.sql })));
@@ -69,9 +71,9 @@ describe('the migration set check at apply time, on DO SQLite (#2349)', () => {
     setStored(stored);
     const { t, s, provisioned } = await provision();
     await expect(provisioned).rejects.toThrow(
-      `migration failed for ${MODULE}@${steps[0]!.version} — scope fails closed: the migrations this deployment registers are ` +
+      `migration failed for ${MODULE}@${steps[0]!.version} — scope fails closed: the authored migrations this deployment registers are ` +
         `not the ones stored for the version it serves (registered set sha256 ${registered}, stored ${stored}); registered: ` +
-        steps.map((m) => `${MODULE}@${m.version}`).join(', '),
+        `${authored.map((m) => `${MODULE}@${m.version}`).join(', ')}. Nothing was applied.`,
     );
     const record = await host.admin.getScopeRecord(staff, t, s);
     expect(record?.migrationFailure?.version).toBe(`${MODULE}@${steps[0]!.version}`);
@@ -82,6 +84,21 @@ describe('the migration set check at apply time, on DO SQLite (#2349)', () => {
     );
     expect(tables.filter((n) => !n.startsWith('_'))).toEqual([]);
   });
+
+  for (const [what, stored] of [
+    ['without the derived steps (a CLI that did not resolve the kernel)', () => authored],
+    ['with a derived step spelled otherwise', () => steps.map((m) => (isDerivedMigrationVersion(m.version) ? { ...m, sql: `${m.sql} ` } : m))],
+  ] as const) {
+    it(`applies when the stored set differs only in derived steps: ${what}`, async () => {
+      expect(steps.length).toBeGreaterThan(authored.length);
+      setStored(await digestOf(stored()));
+      const { t, s, provisioned } = await provision();
+      await provisioned;
+      await host.admin.activateScope(staff, t, s);
+      await expect(add(t, s)).resolves.toBeDefined();
+      expect(await journalOf(s)).toEqual(steps.map((m) => m.version).sort());
+    });
+  }
 
   it('compares nothing without the binding: a script uploaded before it, or an unheld version, keeps applying', async () => {
     setStored(undefined);

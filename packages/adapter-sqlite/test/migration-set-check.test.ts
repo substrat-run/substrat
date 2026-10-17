@@ -10,9 +10,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
-import { testOperations } from '@substrat-run/contract-tests';
+import { listMod, testOperations } from '@substrat-run/contract-tests';
 import { moduleManifest, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import {
+  isDerivedMigrationVersion,
   migrationDigest,
   migrationSetDigest,
   moduleMigrations,
@@ -122,7 +123,7 @@ describe('the migration set check at apply time (#2349)', () => {
     const next = hostOver(dir, [INIT, NEXT], stored);
     try {
       await expect(next.getScope(who, t, s)).rejects.toThrow(
-        `migration failed for ${MODULE}@0002-next — scope fails closed: the migrations this deployment registers are not ` +
+        `migration failed for ${MODULE}@0002-next — scope fails closed: the authored migrations this deployment registers are not ` +
           `the ones stored for the version it serves (registered set sha256 ${registered}, stored ${stored}); ` +
           `registered: ${MODULE}@0001-init, ${MODULE}@0002-next. Nothing was applied.`,
       );
@@ -162,7 +163,7 @@ describe('the migration set check at apply time (#2349)', () => {
           await host.admin.activateScope(staff, t, s);
           await host.getScope(who, t, s);
         })(),
-      ).rejects.toThrow(`migration failed for ${MODULE}@0001-init — scope fails closed: the migrations this deployment registers`);
+      ).rejects.toThrow(`migration failed for ${MODULE}@0001-init — scope fails closed: the authored migrations this deployment registers`);
       expect(journalOf(join(dir, `${t}__${s}.sqlite`))).toEqual([]);
     } finally {
       await host.close();
@@ -192,6 +193,77 @@ describe('the migration set check at apply time (#2349)', () => {
       expect(migrationSetDigestComputations()).toBe(before);
     } finally {
       await same.close();
+    }
+  });
+});
+
+/**
+ * The derived steps are never compared (#2349 r1): whether a stored set carries them depends on
+ * the CLI that pushed it, and their SQL is the kernel's spelling of a declaration (#2066). Held
+ * with `listMod`, which derives a list index beside its two authored migrations.
+ */
+describe('a stored set that differs only in kernel-derived steps applies (#2349)', () => {
+  const dirs: string[] = [];
+  const staff = platformActorId.parse(ulid());
+  const who = principalId.parse(ulid());
+  const MOD = listMod.manifest.id;
+  const steps = moduleMigrations(listMod);
+  const authored = steps.filter((m) => !isDerivedMigrationVersion(m.version));
+  const digestOf = (set: { version: string; sql: string }[]) =>
+    migrationSetDigest(set.map((m) => ({ moduleId: MOD, version: m.version, sql: m.sql })));
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const cases: [string, () => { version: string; sql: string }[]][] = [
+    ['without the derived steps (a CLI that did not resolve the kernel)', () => authored],
+    ['with a derived step spelled otherwise', () => steps.map((m) => (isDerivedMigrationVersion(m.version) ? { ...m, sql: `${m.sql} ` } : m))],
+    ['with all of them (the twin)', () => steps],
+  ];
+  for (const [what, stored] of cases) {
+    it(what, async () => {
+      expect(steps.length).toBeGreaterThan(authored.length);
+      const dir = mkdtempSync(join(tmpdir(), 'substrat-set-derived-'));
+      dirs.push(dir);
+      const t = tenantId.parse(ulid());
+      const s = scopeId.parse(ulid());
+      const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker, migrationsDigest: await digestOf(stored()) });
+      host.registerModule(listMod);
+      try {
+        await host.admin.createTenant(staff, { id: t, slug: `set-derived-${ulid().toLowerCase()}`, name: 'Set derived' });
+        await host.admin.grantEntitlement(staff, t, 'list');
+        await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'list-vertical' });
+        await host.admin.activateScope(staff, t, s);
+        await (await host.getScope(who, t, s)).invoke('list/add', { id: ulid(), number: ulid(), status: 'open', kind: 'a' });
+      } finally {
+        await host.close();
+      }
+      const db = new Database(join(dir, `${t}__${s}.sqlite`), { readonly: true });
+      try {
+        const versions = (db.prepare('SELECT version FROM _substrat_migrations WHERE module_id = ?').all(MOD) as { version: string }[]).map((r) => r.version);
+        expect(versions.sort()).toEqual(steps.map((m) => m.version).sort());
+      } finally {
+        db.close();
+      }
+    });
+  }
+
+  it('the twin: an authored step that differs still refuses', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-set-derived-'));
+    dirs.push(dir);
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const edited = steps.map((m) => (m.version === authored[0]!.version ? { ...m, sql: `${m.sql}\n-- other` } : m));
+    const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker, migrationsDigest: await digestOf(edited) });
+    host.registerModule(listMod);
+    try {
+      await host.admin.createTenant(staff, { id: t, slug: `set-derived-${ulid().toLowerCase()}`, name: 'Set derived' });
+      await host.admin.grantEntitlement(staff, t, 'list');
+      await expect(host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'list-vertical' })).rejects.toThrow(
+        `migration failed for ${MOD}@${authored[0]!.version} — scope fails closed: the authored migrations this deployment registers`,
+      );
+    } finally {
+      await host.close();
     }
   });
 });
