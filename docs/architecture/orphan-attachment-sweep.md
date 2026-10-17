@@ -253,3 +253,12 @@ dry run. The directory reads are not repeated.
   its own dry run listed.
 - A dry run lists at most its `limit` (default 500) keys, so a backlog larger than that drains one
   dry run's worth at a time.
+- A licensed id whose object is still listed but that a row names again is not condemned, and it
+  stays in the scope's licence until the record ages out (at most `ORPHAN_SWEEP_DRY_RUN_WINDOW_MS`).
+  It can delete nothing, since the condemnation's rowless check still holds it. While such an id is
+  the only one left, destructive passes delete nothing and answer as passes, so the scope's next dry
+  run waits for the window. Only a dump load writes a row for an id that old, and every load clears
+  the licence, so this is not expected in practice.
+- A licence that lapses between a destructive pass's first check and its condemnation leaves
+  nothing to condemn, so that pass deletes nothing and answers as a pass. The next pass is refused
+  at its first check, and the phase dry-runs the scope.
