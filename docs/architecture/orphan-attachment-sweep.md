@@ -40,8 +40,21 @@ deployment (`sweepScopeAttachments`, `packages/control-plane-api/src/attachment-
    scope namespace holds none of the scope's rows and would judge every object an orphan.
 
 Only then does it call `POST /internal/attachment-sweep` on that script. The body must state
-`dryRun` and carry `copiesSettled: true`. It takes no instant: the host judges age and the fence
-against its own clock.
+`dryRun`, carry `copiesSettled: true`, and name `expectedVersionId`: the version the directory
+says runs there (the serving pointer's, else the bound version). It takes no instant: the host
+judges age and the fence against its own clock.
+
+The scope's copy checks that version against the one its script is deployed as
+(`SUBSTRAT_VERSION_ID`, which every pushed script carries) before it judges anything:
+- a script deployed as another version refuses the pass in either mode. That covers a stale
+  script, a dispatch mixup, and a promote that lands mid-pass. Each is counted as `refused` and
+  writes no admin-log row;
+- a script that carries no version identity refuses a destructive pass and lets a dry run
+  through;
+- a host the platform does not route to (a self-host) is asked nothing.
+
+A destructive pass also writes its own line to the deployment's log (`orphan-attachment-sweep`)
+with the scope, the counts and the deleted keys, whatever the control plane records.
 
 The deployment answers with the pass's report. Every guard the pass has also applies on the
 deployment's side.
