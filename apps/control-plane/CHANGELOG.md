@@ -1,5 +1,12 @@
 # @substrat-run/control-plane
 
+## 0.15.13
+
+### Patch Changes
+
+- Updated dependencies [6b22e85]
+  - @substrat-run/oidc-rp@0.13.0
+
 ## 0.15.12
 
 ### Patch Changes

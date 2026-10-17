@@ -1,5 +1,11 @@
 # @substrat-run/spike-k3s-sharding
 
+## 0.0.6
+
+### Patch Changes
+
+- @substrat-run/demo-todo@0.3.67
+
 ## 0.0.5
 
 ### Patch Changes
