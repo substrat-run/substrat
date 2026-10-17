@@ -539,7 +539,7 @@ export interface PlatformCallLine {
   url: string;
   env: unknown;
   invocationId: string;
-  /** Through {@link parentRequestIdOf} before it gets here; anything else is dropped. */
+  /** As the request carried it: written only if it is one ULID ({@link parentRequestIdOf}). */
   parentInvocationId: string | undefined;
   status: number;
   problemCode: string | null;

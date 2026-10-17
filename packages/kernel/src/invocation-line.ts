@@ -154,10 +154,10 @@ export interface InvocationLogLine {
    */
   storeCallsDropped?: number;
   /**
-   * #2192: the invocation that started this one through a path that leaves no event chain:
-   * a peer call (the calling request's id), or a delivery run by a schedule's own drain (the
-   * run's id). Omitted when there is none, so every other line stays what it was. For relating
-   * requests only: it is the caller's word for its own id, never authority.
+   * #2192: the request that started this one through a path that leaves no event chain — today
+   * a peer call, whose target names the calling request's id. Omitted when there is none, so
+   * every other line stays what it was. For relating requests only: it is the caller's word for
+   * its own id, never authority.
    */
   parentInvocationId?: string;
   /*
