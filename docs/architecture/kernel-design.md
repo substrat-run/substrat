@@ -549,9 +549,15 @@ shared across a tenant's verticals is §13 question 21.
   anything pending applies a statement, both adapters compute the same digest over the authored
   steps the host registers, and refuse on a mismatch through the same
   `migration failed … scope fails closed` record, naming both digests and the registered
-  migrations. Kernel-derived steps (`search/…`, `state/…`, `list/…`) are left out on both sides,
-  as the journal check leaves them out: whether a stored set carries them depends on the CLI that
-  pushed it, so comparing them would refuse a correct deployment. A pass with nothing pending
+  migrations. Kernel-derived steps are left out on both sides: whether a stored set carries them
+  depends on the CLI that pushed it, so comparing them would refuse a correct deployment. (The
+  journal check above keeps them but holds an applied one to its version rather than its digest.)
+  Both sides decide by version name, `isDerivedMigrationVersion` (`search/…`, `state/…`,
+  `list/…`), because a stored set is only names and SQL; a kernel test holds every kind
+  `moduleMigrations` derives to those prefixes. A known limit follows: an *authored* migration
+  versioned under one of those prefixes is left out on both sides as well and never compared at
+  apply. It cannot cause a false refusal, and the journal still records its digest and holds it
+  once applied. A pass with nothing pending
   computes nothing, so a scope that is fully applied keeps
   serving; a version whose migrations the control plane does not hold (`unheld:<id>`), a script
   uploaded before the binding, and the pure host without `migrationsDigest` compare nothing. This

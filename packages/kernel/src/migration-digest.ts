@@ -283,11 +283,14 @@ async function setDigestOf(entries: { moduleId: string; version: string; sqlDige
  * from a version's stored migrations at upload; a scope host computes it from its registered
  * steps (`migrationSetDivergence`).
  *
- * Kernel-derived migrations are left out on both sides, as #2066 leaves them out of the journal
- * check: their SQL is the kernel's spelling of a declaration, and whether a stored set carries
- * them at all depends on the CLI that pushed it (one that could not resolve the vertical's kernel
- * stores the authored set alone). Dropped here by version name, so a stored set from any CLI
- * compares as its authored part.
+ * Kernel-derived migrations are left out on both sides. Their SQL is the kernel's spelling of a
+ * declaration (#2066 holds an applied one to its version, not its digest), and whether a stored
+ * set carries them at all depends on the CLI that pushed it (one that could not resolve the
+ * vertical's kernel stores the authored set alone). Both sides decide by version name
+ * (`isDerivedMigrationVersion`), since a stored set is only names and SQL, so a stored set from
+ * any CLI compares as its authored part. The cost: an AUTHORED migration versioned under one of
+ * those prefixes is left out on both sides too, and never compared here. That cannot refuse a
+ * correct deployment; the journal still records its digest, and #2066 holds it once applied.
  *
  * Not through `cachedDigest`: the control plane hashes every version it serves, and that cache
  * would keep each one's SQL for the life of the isolate.
