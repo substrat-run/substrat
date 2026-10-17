@@ -201,11 +201,26 @@ type FetchFn = (input: unknown, init?: unknown) => Promise<{ status: number; hea
 const WRAPPED = Symbol.for('substrat.outbound-fetch');
 
 /**
+ * Set while a recorder is handing a call on, synchronously, and cleared before it returns.
+ *
+ * Something that patches `globalThis.fetch` after the recorder is installed (instrumentation
+ * that installs lazily) is wrapped again by the next request's install, so one call can pass
+ * through two recorders: recorder → patch → recorder → runtime. The inner one sees this set and
+ * hands the call straight on, so the call is recorded once, by the outermost recorder. It spans
+ * only the synchronous part of the call, so concurrent calls never see each other's: a patch that
+ * reaches the inner recorder only after an `await` is still recorded twice.
+ */
+const IN_CALL = Symbol.for('substrat.outbound-fetch.in-call');
+
+/**
  * Wrap `fetch` so each call made while a request's recording is current is added to it.
  * Exported for the tests; the platform installs it with {@link installOutboundRecorder}.
  */
 export function recordingFetch<F extends FetchFn>(original: F, current: CurrentRecording): F {
   const wrapped = function fetch(input: unknown, init?: unknown) {
+    const g = globalThis as unknown as Record<symbol, unknown>;
+    // An outer recorder is already recording this call: hand it on, unrecorded.
+    if (g[IN_CALL] === true) return original.call(globalThis, input, init);
     let recording: OutboundRecording | undefined;
     let destination: { url: URL; method: string } | null = null;
     try {
@@ -221,7 +236,14 @@ export function recordingFetch<F extends FetchFn>(original: F, current: CurrentR
     const rec = recording;
     const dest = destination;
     const startedAt = Date.now();
-    return original.call(globalThis, input, init).then(
+    let pending: ReturnType<F>;
+    g[IN_CALL] = true;
+    try {
+      pending = original.call(globalThis, input, init) as ReturnType<F>;
+    } finally {
+      g[IN_CALL] = false;
+    }
+    return pending.then(
       (response) => {
         let status: number | null = null;
         let outcome: OutboundCallOutcome = 'failed';

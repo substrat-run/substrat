@@ -238,6 +238,39 @@ describe('installOutboundRecorder — once per isolate', () => {
     expect(recording.outboundCalls).toHaveLength(1);
   });
 
+  it('a patch made after the install is wrapped again, and each call is still recorded once', async () => {
+    const runtime = runtimeFetch(ok());
+    globalThis.fetch = runtime.fn as unknown as typeof fetch;
+    const recording: OutboundRecording = {};
+    installOutboundRecorder(() => recording);
+    // Instrumentation that patches lazily, in front of the recorder, unmarked…
+    const inner = globalThis.fetch;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => inner(input, init)) as typeof fetch;
+    // …is wrapped by the next install: recorder → patch → recorder → runtime.
+    installOutboundRecorder(() => recording);
+    await Promise.all([globalThis.fetch('https://api.example.com/a'), globalThis.fetch('https://api.example.com/b')]);
+    expect(runtime.calls).toHaveLength(2);
+    expect(recording.outboundCalls?.map((c) => c.path)).toEqual(['/a', '/b']);
+    // And a call made after them is recorded too: the flag does not outlive the call.
+    await globalThis.fetch('https://api.example.com/c');
+    expect(recording.outboundCalls).toHaveLength(3);
+  });
+
+  it('a runtime fetch that throws synchronously still throws, and leaves the flag clear', async () => {
+    const boom = new TypeError('sync');
+    const recording: OutboundRecording = {};
+    const wrapped = recordingFetch(
+      (() => {
+        throw boom;
+      }) as unknown as Parameters<typeof recordingFetch>[0],
+      () => recording,
+    );
+    expect(() => wrapped('https://api.example.com/a')).toThrow(boom);
+    const after = recordingFetch(runtimeFetch(ok()).fn, () => recording);
+    await after('https://api.example.com/b');
+    expect(recording.outboundCalls?.map((c) => c.path)).toEqual(['/b']);
+  });
+
   it('a fetch replaced since (a mock) is wrapped in turn', () => {
     installOutboundRecorder(() => undefined);
     const mock = runtimeFetch(ok()).fn as unknown as typeof fetch;
