@@ -508,12 +508,15 @@ import {
   type ScopeStorageFilter,
   type ScopeStorageReadingInput,
 } from '@substrat-run/kernel';
+import { fenceAttachmentSweep, sweepOrphanAttachments, unsettledCopyRefusal, type OrphanSweepReport, type OrphanSweepRequest } from '@substrat-run/kernel';
 import { COPY_RESTORE_FENCE_LAPSED, scopeScriptCopyOf, type CopyRestoreFence, type ScopeCopyMoveConfirmation, type ErasureEpochStamp, type SubjectErasureFence, type VerticalScopeStore, type ScopeCopyBackfillResult, type ScopeCopyRole, type ScopeScriptCopyRow } from '@substrat-run/kernel';
 import { attributedView, isModuleErasureCounts, moduleErasurePlan, moduleRowsErased, callReservedStoreOperation, callScopeStore, observeStoreCall, replayStoreErasures, type ReservedStoreResult, scopeStoreLifecycleOf, scopeStoreRunnersOf, type ScopeStoreHostOptions, type ScopeStoreLifecycle, type ScopeStoreRunner, type ScopeStoreStubOptions, type StoreErasureReplay, type StoreStub } from '@substrat-run/kernel';
 import { PLATFORM_BINDING_PREFIX, scopeStoreBindingName, scopeStoreObjectName, STORE_CALL_URL, StoreError, type ReservedStoreOperation, type StoreRequest } from '@substrat-run/contracts';
 import type { PlatformRequestSettle, ShapeCursor } from '@substrat-run/kernel';
 import type {
   StoreDriverHoldMode,
+  StoreDriverRebuildFailure,
+  StoreDriverRebuildRecord,
   StoreDriverReleaseRecord,
   StoreDriverRolloutAction,
   StoreDriverRolloutRecord,
@@ -721,6 +724,20 @@ interface ControlPlaneStub {
     walked?: readonly StoreDriverRolloutTarget[];
     at: string;
   }): Promise<StoreDriverRolloutRecord>;
+  storeDriverRebuild(driver: string): Promise<StoreDriverRebuildRecord | undefined>;
+  claimStoreDriverRebuild(input: { driver: string; fingerprint: string; holder: string; ttlMs: number; at: string; restart?: boolean; attestedBy?: string }): Promise<StoreDriverRebuildRecord | null>;
+  advanceStoreDriverRebuild(input: {
+    driver: string;
+    fingerprint: string;
+    holder: string;
+    cursor: string | null;
+    failures: readonly StoreDriverRebuildFailure[];
+    done: boolean;
+    verified?: boolean;
+    ttlMs: number;
+    release?: boolean;
+    at: string;
+  }): Promise<StoreDriverRebuildRecord>;
   getBlobStore(
     tenantId: string,
     vertical: string,
@@ -1647,6 +1664,10 @@ interface ScopeStubRpc {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<DoReply<AttachmentRecord>>;
+  /** #2314: the scope side of an orphan-sweep pass — condemn (or, dry, only read) the rowless ids. */
+  orphanAttachmentsReply(ids: string[], now: string, tenantId: TenantId, condemn: boolean, vouched?: boolean): Promise<DoReply<string[]>>;
+  /** #2314: the receipt's tenant (or null) and whether any attachment row is held; read without migrating. */
+  sweepFenceFacts(): Promise<{ tenant: string | null; holdsAttachments: boolean }>;
   /** Look an upload link up without spending it; `target` is judged before its state. */
   uploadLinkInspectReply(
     secret: string,
@@ -2303,6 +2324,13 @@ export interface CloudflareScopeHostOptions {
    */
   attachmentBuckets?: (tenantId: string) => unknown | null | Promise<unknown | null>;
   /**
+   * The clock the orphan sweep (#2314) judges the age floor and its restore fence against, and
+   * stamps a fence with. Omitted, the wall clock. It is a construction-time seam, for a test that
+   * must step past seven days, and never a per-call option: a caller that could hand a pass its
+   * own instant could step past the fence. The rest of this host takes no clock (#956).
+   */
+  orphanSweepClock?: () => string;
+  /**
    * The live D1 client for per-tenant relational stores (#301) —
    * `createD1TenantStores` with the platform's Cloudflare credential. Lives on the
    * COORDINATOR like `secretBox`: the ControlPlaneDO keeps the ledger and has never
@@ -2792,6 +2820,7 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly blobStores?: R2BlobStores;
   /** Worker-side attachment-bucket resolver (#473); the ambient per-tenant binding unless overridden (#1995). */
   private readonly attachmentBuckets: (tenantId: string) => unknown | null | Promise<unknown | null>;
+  private readonly orphanSweepClock: () => string;
   /** The parsers attachment text is extracted with (K-43); the host's own, never imported here. */
   private readonly attachmentExtractors: readonly AttachmentExtractor[];
   private readonly attachmentTextBounds: AttachmentTextBounds;
@@ -2862,6 +2891,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.tenantStores = options.tenantStores;
     this.blobStores = options.blobStores;
     this.attachmentBuckets = options.attachmentBuckets ?? ambientAttachmentBucket;
+    this.orphanSweepClock = options.orphanSweepClock ?? (() => new Date().toISOString());
     assertAttachmentExtractors(options.attachmentExtractors ?? []);
     this.attachmentExtractors = options.attachmentExtractors ?? [];
     this.attachmentTextBounds = resolveAttachmentTextBounds(options.attachmentTextBounds);
@@ -3631,6 +3661,8 @@ export class CloudflareScopeHost implements ScopeHost {
     },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
     if (opts?.markCopy) assertCopyLineage(opts.markCopy);
+    // #2314: a load replaces the scope's rows, so the orphan sweep is fenced first, as for a rewind.
+    await this.fenceOrphanSweep(scopeId, opts?.tenantId);
     const carry = opts ? recordedOffFromWire(opts) : undefined;
     const load = {
       switchOff: carry ? { at: new Date().toISOString(), ...carry } : undefined,
@@ -4032,9 +4064,111 @@ export class CloudflareScopeHost implements ScopeHost {
   async rewindScopeLocal(
     scopeId: ScopeId,
     bookmark: string,
-    opts?: { force?: boolean },
+    opts?: { force?: boolean; tenantId?: TenantId },
   ): Promise<{ rewindingTo: string }> {
-    return this.rewindHolding(scopeId, () => this.scopeStub(scopeId).rewindToBookmark(bookmark, opts));
+    // #2314: the orphan sweep's fence first. The rewind can take rows away that a later restore
+    // brings back, so their bytes must outlive the PITR window; no fence, no rewind.
+    try {
+      await this.fenceOrphanSweep(scopeId, opts?.tenantId);
+    } catch (err) {
+      throw new Error(`${REWIND_REFUSED}${err instanceof Error ? err.message : String(err)}`);
+    }
+    return this.rewindHolding(scopeId, () => this.scopeStub(scopeId).rewindToBookmark(bookmark, { force: opts?.force }));
+  }
+
+  /**
+   * #2314: write the orphan sweep's restore fence for a scope whose state is about to be
+   * replaced, into the tenant's attachment bucket, so no pass deletes its bytes while a row the
+   * replacement takes away can still be restored. The tenant is the one named, else the scope's
+   * own provision receipt. A scope whose tenant is neither holds no row the replacement could
+   * take from it unless it holds an attachment row (a fresh scope, a clean-room preview), and
+   * only then is it refused, because its bucket cannot be found. A tenant this script holds no
+   * bucket for has no bytes here, so nothing is fenced. Throws when the fence cannot be written:
+   * the caller refuses the replacement.
+   */
+  private async fenceOrphanSweep(scopeId: ScopeId, named?: TenantId): Promise<void> {
+    let tenantId: TenantId | null = named ?? null;
+    if (!tenantId) {
+      const facts = await this.scopeStub(scopeId).sweepFenceFacts();
+      if (!facts.tenant && !facts.holdsAttachments) return;
+      tenantId = facts.tenant as TenantId | null;
+    }
+    if (!tenantId) {
+      throw new Error(
+        `the tenant of scope ${scopeId} is unknown (no provision receipt, and none was named), so the ` +
+          `orphan-attachment sweep's restore fence (#2314) cannot be written. Reconcile the scope, or ` +
+          `name its tenant, then retry`,
+      );
+    }
+    const bucket = await this.attachmentBuckets(tenantId);
+    if (!bucket) return;
+    try {
+      await fenceAttachmentSweep(r2TenantBlobStore(bucket), scopeId, this.orphanSweepClock());
+    } catch (err) {
+      throw new Error(
+        `the orphan-attachment sweep's restore fence (#2314) could not be written for scope ${scopeId}: ` +
+          `${err instanceof Error ? err.message : String(err)}. Nothing was replaced; retry once the attachment bucket answers`,
+      );
+    }
+  }
+
+  /**
+   * #2314: one orphan-sweep pass over a scope's attachment bytes, judged by THIS deployment's
+   * copy of the scope (`sweepOrphanAttachments` in the kernel has the guards). The caller is the
+   * platform, and only for the deployment that serves the scope: the copy refuses to judge if it
+   * is not the scope's provisioned primary, but a stale copy in an older version's script cannot
+   * tell that it is stale.
+   */
+  async sweepOrphanAttachments(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    request: OrphanSweepRequest = {},
+  ): Promise<OrphanSweepReport> {
+    // With a directory, it is the word on the scope, and it is read BEFORE the object is addressed,
+    // since addressing a reaped or never-held object would wake an empty one: this tenant's, active,
+    // a primary, and with no other script's copy that may hold rows this one lacks. A CP-less
+    // deployment has none: its scope's own storage is the word (receipt, lifecycle, copy markers,
+    // in the DO), and the copy ledger is the caller's to have read.
+    let vouched = false;
+    if (!this.cpLess) {
+      const record = await this.cp.getScopeRecord(tenantId, scopeId);
+      if (!record) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
+      if (record.status !== 'active') {
+        throw substratError('conflict', `refused: scope ${scopeId} is ${record.status}, and only an active scope's bytes are swept`);
+      }
+      if (!isPrimaryScopeRow(record)) {
+        throw substratError('conflict', `refused: scope ${scopeId} is a copy, and a copy may not judge orphan attachments`);
+      }
+      // Every ledger entry of the scope, page by page, so no page can hide one: a pass needs all of
+      // them settled (`SETTLED_COPY_STATES` is an allowlist), and stops at the first that is not.
+      let after: { scriptRef: string; moveId: string } | undefined;
+      for (;;) {
+        const page = (await this.cp.listScopeScriptCopies({ tenantId, scopeId, limit: 100, ...(after ? { after } : {}) })).map(scopeScriptCopyOf);
+        const unsettled = unsettledCopyRefusal(scopeId, page);
+        if (unsettled) throw unsettled;
+        const last = page[page.length - 1];
+        if (page.length < 100 || !last) break;
+        after = { scriptRef: last.scriptRef, moveId: last.moveId };
+      }
+      // The tenant's status too, as every door into a scope asks.
+      await this.assertLive(tenantId, scopeId);
+      vouched = true;
+    } else if (request.copiesSettled !== true) {
+      throw substratError(
+        'conflict',
+        `refused: this deployment cannot read the copy ledger, so a pass over scope ${scopeId} needs its caller ` +
+          'to have found no unsettled copy of it (copiesSettled)',
+      );
+    }
+    const store = await this.resolveAttachmentStore(tenantId);
+    const stub = this.scopeStub(scopeId);
+    const now = this.orphanSweepClock();
+    const judge = (condemn: boolean) => async (ids: readonly string[], at: string) =>
+      unwrapReply(await stub.orphanAttachmentsReply([...ids], at, tenantId, condemn, vouched));
+    return sweepOrphanAttachments(store, scopeId, {
+      rowless: (ids) => judge(false)(ids, now),
+      condemn: judge(true),
+    }, { now, ...(request.dryRun ? { dryRun: true } : {}), ...(request.limit !== undefined ? { limit: request.limit } : {}) });
   }
 
   registerModule(registration: ModuleRegistration): void {
@@ -4717,6 +4851,8 @@ export class CloudflareScopeHost implements ScopeHost {
     const existing = await this.admin.getScopeRecord(actor, tenantId, scopeId);
     if (!existing) throw substratError('not_found', `unknown scope ${scopeId} in tenant ${tenantId}`);
     this.refuseUnusableScopeStores(dump.stores, existing.vertical);
+    // #2314: the load replaces the scope's rows, so the orphan sweep is fenced first.
+    await this.fenceOrphanSweep(scopeId, tenantId);
     // #1742: a dump from before a switch was pulled brings the module's grants back live, so
     // the directory's recorded-off modules go back off in the replay's own event. Only where
     // this is the scope's real store, as for the provision's seat above; a hosted scope is
@@ -8332,7 +8468,7 @@ export class CloudflareScopeHost implements ScopeHost {
           return { rewindingTo: bookmark };
         }
         // #1819: the same rewind a dispatched vertical runs, holding what the scope switched off.
-        return this.rewindScopeLocal(scopeId, bookmark, { force: opts?.force });
+        return this.rewindScopeLocal(scopeId, bookmark, { force: opts?.force, tenantId });
       },
       createOrg: async (actor: PlatformActorId, input: CreateOrgInput) => {
         const parsed = createOrgInput.parse(input);
@@ -8575,6 +8711,16 @@ export class CloudflareScopeHost implements ScopeHost {
         const row = await this.directory('finishStoreDriverRollout', { ...input, at: new Date().toISOString() });
         await this.recordAdmin(actor, row.action === 'rollback' ? 'rollBackStoreDriver' : 'rollOutStoreDriver', { tenantId: null }, null, row);
         return row;
+      },
+      storeDriverRebuild: async (actor, driver) => {
+        const rebuild = await this.cp.storeDriverRebuild(driver);
+        await this.recordAccess(actor, 'storeDriverRebuild', { tenantId: null }, { driver }, rebuild ? 1 : 0);
+        return rebuild;
+      },
+      claimStoreDriverRebuild: async (_actor, input) => this.directory('claimStoreDriverRebuild', { ...input, at: new Date().toISOString() }),
+      advanceStoreDriverRebuild: async (_actor, input) => this.directory('advanceStoreDriverRebuild', { ...input, at: new Date().toISOString() }),
+      recordStoreDriverRebuildRun: async (actor, entry) => {
+        await this.recordAdmin(actor, 'rebuildStoreDriver', { tenantId: null }, null, entry);
       },
       listScopeTables: async (actor, tenantId, scopeId): Promise<ScopeTable[]> => {
         // K-3 cross-check on the shared directory BEFORE reaching the scope DO: a pair

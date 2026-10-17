@@ -350,8 +350,14 @@ describe('a rollout moves a store script with `to`, and canaries in the platform
       drivers: [{ driver: 'graph', releases: pins, className: 'Store', operations: [], platformOperations: [...RESERVED_STORE_OPERATIONS] }],
       loadRelease: async ({ sha256 }) => (sha256 === pins[1]!.sha256 ? v2 : undefined),
     });
-    expect(await canary({ driver: 'graph', to: pins[1]!.sha256 })).toEqual({ scriptName: 'substrat-store-graph--canary' });
+    // The fleet rebuild (#2309) creates no canary script where there is none.
+    expect(await canary({ driver: 'graph', existingOnly: true })).toEqual({ scriptName: 'substrat-store-graph--canary', uploaded: false });
+    expect(cf.puts).toEqual([]);
+    expect(await canary({ driver: 'graph', to: pins[1]!.sha256 })).toEqual({ scriptName: 'substrat-store-graph--canary', uploaded: true });
     expect(cf.puts.map((p) => p.script)).toEqual(['substrat-store-graph--canary']);
+    // Rebuilt where it is, built the same way: nothing is uploaded again.
+    expect(await canary({ driver: 'graph', existingOnly: true })).toEqual({ scriptName: 'substrat-store-graph--canary', uploaded: false });
+    expect(cf.puts).toHaveLength(1);
     expect(text(cf.puts[0]!, 'SUBSTRAT_STORE_SCRIPT')).toBe('substrat-store-graph--canary');
     expect(text(cf.puts[0]!, STORE_RELEASE_VAR)).toBe(pins[1]!.sha256);
     expect(await refusal(canary({ driver: 'graph', to: 'a'.repeat(64) }))).toMatchObject({ status: 409 });

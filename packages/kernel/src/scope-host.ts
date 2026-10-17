@@ -1,3 +1,4 @@
+import type { OrphanSweepReport, OrphanSweepRequest } from './attachment-sweep.js';
 import type { ScopeStoreStubOptions, StoreErasureReplay, StoreStub } from './scope-store.js';
 import type { ModuleLog } from './module-log.js';
 import type { BoundOperations } from './module-operations.js';
@@ -5,7 +6,7 @@ import type { DeliveryRefusal } from './delivery-refusal.js';
 import type { ScopeRoleHolder } from './scope-role-admin.js';
 import type { ScopeCopyBackfillResult, SubjectErasureFence } from './scope-copy-ledger.js';
 import type { VerticalScopeStore } from './vertical-scope-stores.js';
-import type { StoreDriverHoldMode, StoreDriverReleaseRecord, StoreDriverRolloutAction, StoreDriverRolloutRecord, StoreDriverRolloutState, StoreDriverRolloutTarget, StoreDriverState } from './store-driver-releases.js';
+import type { StoreDriverHoldMode, StoreDriverRebuildFailure, StoreDriverRebuildRecord, StoreDriverReleaseRecord, StoreDriverRolloutAction, StoreDriverRolloutRecord, StoreDriverRolloutState, StoreDriverRolloutTarget, StoreDriverState } from './store-driver-releases.js';
 import type { SubjectRedactionCounts } from './subject-redaction.js';
 import type {
   OnBehalfOf,
@@ -3163,6 +3164,47 @@ export interface HostAdmin {
       walked?: readonly StoreDriverRolloutTarget[];
     },
   ): Promise<StoreDriverRolloutRecord>;
+  /** The platform's rebuild of every script of a driver (#2309), or undefined before its first. */
+  storeDriverRebuild(actor: PlatformActorId, driver: string): Promise<StoreDriverRebuildRecord | undefined>;
+  /**
+   * Take the lease on a driver's fleet rebuild towards `fingerprint` (#2309): the rebuild as it
+   * stands, started over when it was towards another fingerprint (or, with `restart`, when it is
+   * done; with `attestedBy`, always, carrying that attestation), or null while another holder's
+   * lease is live.
+   */
+  claimStoreDriverRebuild(
+    actor: PlatformActorId,
+    input: { driver: string; fingerprint: string; holder: string; ttlMs: number; restart?: boolean; attestedBy?: string },
+  ): Promise<StoreDriverRebuildRecord | null>;
+  /**
+   * Record the lease holder's progress and renew its lease (or drop it with `release`); refused
+   * (`conflict`) once another pass claimed the row or it was restarted at another fingerprint.
+   */
+  advanceStoreDriverRebuild(
+    actor: PlatformActorId,
+    input: {
+      driver: string;
+      fingerprint: string;
+      holder: string;
+      cursor: string | null;
+      failures: readonly StoreDriverRebuildFailure[];
+      done: boolean;
+      /** With `done`: the walk proved every script current. */
+      verified?: boolean;
+      ttlMs: number;
+      release?: boolean;
+    },
+  ): Promise<StoreDriverRebuildRecord>;
+  /**
+   * Audit a staff-run pass of a driver's fleet rebuild (#2309) as `rebuildStoreDriver`: the driver,
+   * how the pass ended and what it walked, and `deployFinished` when the person attested that no
+   * control-plane deploy was rolling out. The scheduled pass writes no admin row; its failures are
+   * ops-failure rows.
+   */
+  recordStoreDriverRebuildRun(
+    actor: PlatformActorId,
+    entry: { driver: string; outcome: string; walked: readonly string[]; uploaded: readonly string[]; error?: string; deployFinished?: true },
+  ): Promise<void>;
   /**
    * One scope's directory record. Cross-checks the (tenantId, scopeId) pair and
    * returns undefined on a mismatch rather than another tenant's scope (K-3) —
@@ -5472,6 +5514,22 @@ export interface ScopeHost {
     secret: string,
     input: UploadLinkRedeemInput,
   ): Promise<AttachmentRecord>;
+
+  /**
+   * One orphan-sweep pass over a scope's attachment bytes (#2314): delete the objects under the
+   * scope's attachment prefix that no `_substrat_attachments` row names, once they are older than
+   * the grace period and the scope is clear of its restore fence. The scope tombstones each id
+   * before its object is deleted, and the attachment insert refuses a tombstoned id, so a row
+   * that commits never loses its bytes (`sweepOrphanAttachments`, attachment-sweep.ts).
+   *
+   * Platform-only, and judged by THIS host's copy of the scope: only an active primary of
+   * `tenantId` that this host holds is swept, and anything else refuses (`conflict`), as does a
+   * scope with an unsettled copy in another script. On a host whose scopes live in several
+   * deployments, the caller asks only the deployment serving the scope. The age floor and the
+   * fence are judged against the host's own clock, never the caller's.
+   * Optional: a host that has not wired the sweep leaves it out.
+   */
+  sweepOrphanAttachments?(tenantId: TenantId, scopeId: ScopeId, request?: OrphanSweepRequest): Promise<OrphanSweepReport>;
 
   /**
    * Provision a NEW scope and load a `ScopeDump` into it — the write side of

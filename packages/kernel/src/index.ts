@@ -348,6 +348,22 @@ export type {
   SearchableDeclaration,
 } from './search-index.js';
 export {
+  ATTACHMENT_CONDEMNED,
+  ATTACHMENT_CONDEMNED_DDL,
+  ORPHAN_SWEEP_FENCE_MS,
+  ORPHAN_SWEEP_GRACE_MS,
+  SETTLED_COPY_STATES,
+  attachmentSweepFenceKey,
+  condemnOrphanAttachments,
+  fenceAttachmentSweep,
+  refuseCondemnedAttachment,
+  refuseCondemnedInDump,
+  rowlessAttachmentIds,
+  sweepOrphanAttachments,
+  unsettledCopyRefusal,
+} from './attachment-sweep.js';
+export type { OrphanSweepOptions, OrphanSweepReport, OrphanSweepRequest, OrphanSweepScope } from './attachment-sweep.js';
+export {
   ATTACHMENT_SEARCH_OWNER_MAX,
   ATTACHMENT_SEARCH_OWNERS_SQL,
   ATTACHMENT_SEARCH_SQL,
@@ -662,18 +678,23 @@ export {
 } from './vertical-scope-stores.js';
 export {
   STORE_DRIVER_RELEASES_DDL,
+  advanceStoreDriverRebuildIn,
   beginStoreDriverRolloutIn,
+  claimStoreDriverRebuildIn,
   finishStoreDriverRolloutIn,
   holdStoreDriverIn,
   legacyStoreDriverConflict,
   legacyStoreDriverRenames,
   recordStoreDriverReleaseIn,
   releaseStoreDriverHoldIn,
+  storeDriverRebuildIn,
   storeDriverReleaseIn,
   storeDriverStateIn,
   storeDriverRolloutPendingIn,
   storeDriverRolloutWalkedIn,
   type StoreDriverHoldMode,
+  type StoreDriverRebuildFailure,
+  type StoreDriverRebuildRecord,
   type StoreDriverReleaseRecord,
   type StoreDriverRolloutAction,
   type StoreDriverRolloutRecord,

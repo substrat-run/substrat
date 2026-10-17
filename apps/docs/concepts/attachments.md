@@ -30,6 +30,76 @@ That leaves one gap. An [MCP](./mcp.md) client calling an operation has no cooki
 bearer for the vertical's own route, and a file of any real size cannot go through a tool call
 as base64. Upload links close it.
 
+## Bytes that no row points at
+
+The bytes go to the store before the row is written, so a few paths leave an object that no row
+names: a crash between the two, a call to the scope that fails in transport (the platform cannot
+tell whether the row committed, so it keeps the bytes rather than risk a row without its file),
+and a point-in-time rewind past a row. Nothing reads such an object, but it costs storage and the
+storage meter counts it. The platform's **orphan sweep** deletes it, under four guards. Each one
+alone stops a row that committed from losing its bytes:
+
+- **A tombstone first.** The scope never deletes. It records each candidate that no row names as
+  condemned, in one transaction, and an attachment insert refuses a condemned id in its own
+  transaction. The scope serializes the two, so either the row commits first and the sweep sees
+  it, or the tombstone commits first and the upload fails with `conflict`
+  (`attachment_condemned`). Only a condemned object is deleted. No clock is involved, so a slow
+  upload, a retried call or a skewed clock cannot turn a committed row into a deleted object. A
+  restore whose dump would bring back a row for a condemned id is refused the same way.
+- **An age floor.** Only an object whose id was minted more than seven days ago is judged. The id
+  is a ULID minted just before the bytes are written, so an upload still in flight is never
+  condemned in the first place. The age, and the fence below, are judged against the host's own
+  clock. A pass takes no instant from its caller, so no caller can step past either one.
+- **A restore fence.** A Durable Object keeps 30 days of point-in-time history, so a row that a
+  rewind or a restore took away can be brought back for that long. Every rewind and every restore
+  of a scope first writes a fence object into the tenant's blob store, and the sweep deletes
+  nothing of that scope until the fence is 35 days old. The fence lives in the blob store, not in
+  the scope, because the rewind it records would erase it there. The sweep reads the fence before a
+  pass and again after the condemnation, just before the first delete, so a rewind that lands
+  mid-pass stops the deletes. A fence it cannot read counts as a fence.
+- **The scope itself judges, and only while it is live.** Only the copy that holds the scope's
+  rows may say which objects are orphans. These all refuse, because any of them would read every
+  object as an orphan:
+  - a scope that is not active (archived, reaped, or under a suspended tenant);
+  - a store that holds nothing, such as a scope whose data lives in another deployment;
+  - a copy that a carry wiped or kept, a fork, or a snapshot;
+  - a scope with no record that it was provisioned for the tenant.
+
+  A host with a directory reads the scope's record before it addresses the scope's storage, so a
+  reaped scope is never woken.
+- **No unsettled copy elsewhere.** After a carry, another version's script can keep a copy of the
+  scope that took writes the serving copy lacks, uploads among them. Its bytes share the scope's
+  prefix. The pass is refused while the copy ledger holds any entry for the scope that is not
+  `done`, and `done` is the only state that lets it through, so a state added later holds the pass
+  too. The states that hold it:
+  - a move still pending;
+  - a source still waiting for its wipe (`eligible`). That wipe is the step that finds a write
+    landed after the export, and it may not have run;
+  - a copy kept as divergent;
+  - a copy retained unchecked.
+
+  Settle the copy first. A deployment with no directory cannot read the ledger, so a pass there
+  needs its caller to have checked it (`copiesSettled`).
+
+Nothing runs the sweep on a schedule yet. A platform pass that calls it is planned. That pass
+will check the ledger itself, and it will report a scope held this way rather than skip it
+silently. Until then, a pass is run by calling `sweepOrphanAttachments` on a host.
+
+A pass lists only the scope's own attachment keys (`scope/<scopeId>/att/<ulid>`). Other scopes'
+keys, other features' keys and anything malformed in the same bucket are never judged. A dry run
+condemns and deletes nothing and reports the keys a pass would delete.
+
+**A restore refuses when its fence cannot be written.** This is a deliberate trade of
+availability for safety: a rewind or a restore whose fence did not land could hand the sweep a
+state that lacks rows a later restore brings back. The refusal says so, and nothing has been
+replaced, so retry once the attachment store answers. A rewind also needs to know whose bucket to
+fence. The control plane names the tenant, and otherwise the scope's own provision receipt does.
+A scope that has neither and holds files is refused until it is reconciled. One that holds no file has nothing to lose and is not fenced.
+
+**What the sweep cannot protect.** A restore from a dump older than 35 days can bring back rows
+whose bytes were swept. A removed attachment has the same exposure today, since removing it
+deletes its bytes. Restore from a dump younger than that, or expect some of its files to be missing.
+
 ## Upload links
 
 An operation mints a **single-use, short-lived URL that admits one file to one entity**. The caller

@@ -88,8 +88,13 @@ import {
   createWfpUploader,
   createScopeStoreEnsurer,
   createStoreCanaryEnsurer,
+  runStoreFleetRebuild,
+  storePlatformFingerprint,
+  storeRebuildBudget,
+  STORE_REBUILD_PASS_SUBREQUESTS,
   callPlatformScopeStoreAt,
   type ScopeStoreEnsurerOptions,
+  type StoreCanaryTarget,
   createWfpBindingsPatcher,
   createWfpModulesFetcher,
   createCfObservabilityReader,
@@ -385,6 +390,20 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    */
   PROVISION_RECONCILE_BATCH?: string;
   /**
+   * #2309: the subrequests the scheduled pass may spend rebuilding store scripts after the key
+   * lists, the store entry or its verifier changed (`STORE_REBUILD_PASS_SUBREQUESTS` by default,
+   * `STORE_REBUILD_SUBREQUESTS_PER_SCRIPT` a script). `0` pauses the phase. A garbled value is the
+   * default, the same parse as `PROVISION_RECONCILE_BATCH`.
+   */
+  STORE_REBUILD_SUBREQUESTS?: string;
+  /**
+   * #2309: minutes after new key lists (or a new store entry) first appear during which a finished
+   * store-script rebuild is not yet proof, because a control-plane deploy may still be rolling out
+   * (`STORE_REBUILD_SETTLE_MS`, 60 by default). Set it to how long a deploy of this worker takes to
+   * serve only the new version. A garbled value is the default.
+   */
+  STORE_REBUILD_SETTLE_MINUTES?: string;
+  /**
    * #1705: consumer scopes one cross-vertical pass visits, at most. Unset is the kernel's
    * default (`CROSS_VERTICAL_CONSUMERS_PER_PASS`), and `0` pauses the phase: nothing is read or
    * delivered, watermarks hold, and the producers' outboxes keep the backlog. A garbled value
@@ -667,8 +686,11 @@ function storeReleasesFor(env: Env) {
         await bucket.put(key, bytes);
       },
     },
-    ensureCanary: async (input: { driver: string; to: string; loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }) =>
-      createStoreCanaryEnsurer({ ...(await options()), loadRelease: input.loadRelease })(input),
+    ensureCanary: async ({ loadRelease, ...input }: StoreCanaryTarget & { loadRelease: ScopeStoreEnsurerOptions['loadRelease'] }) =>
+      createStoreCanaryEnsurer({ ...(await options()), loadRelease })(input),
+    // #2309: what every store script is built from now; the fleet rebuild converges on it.
+    fingerprint: async () => storePlatformFingerprint(await options()),
+    ...settleOf(env),
     callCanary: (target: { scriptName: string; objectName: string }, operation: ReservedStoreOperation, input?: unknown) =>
       callPlatformScopeStoreAt(
         { platformKey, fetch: (scriptName, request) => dispatch.get(scriptName).fetch(request) },
@@ -678,6 +700,39 @@ function storeReleasesFor(env: Env) {
       ),
   };
 }
+/** `STORE_REBUILD_SETTLE_MINUTES` as the rebuild's settle window, or nothing for the default. */
+function settleOf(env: Env): { settleMs?: number } {
+  const minutes = parseNonNegativeInteger(env.STORE_REBUILD_SETTLE_MINUTES);
+  return minutes === undefined ? {} : { settleMs: minutes * 60_000 };
+}
+
+/**
+ * One scheduled pass of the store scripts' rebuild (#2309), when this control plane uploads store
+ * scripts and keeps releases. Logs what it did; a pass with nothing to do logs nothing.
+ */
+async function rebuildStoreScripts(env: Env, admin: HostAdmin): Promise<void> {
+  const flow = storeReleasesFor(env);
+  const ensure = ensureScopeStoresFor(env);
+  const subrequests = parseNonNegativeInteger(env.STORE_REBUILD_SUBREQUESTS) ?? STORE_REBUILD_PASS_SUBREQUESTS;
+  if (!flow || !ensure || subrequests === 0 || STORE_DRIVERS.length === 0) return;
+  const passes = await runStoreFleetRebuild({
+    admin,
+    actor: SWEEP_ACTOR,
+    drivers: STORE_DRIVERS,
+    fingerprint: await flow.fingerprint(),
+    bytes: flow.bytes,
+    ensure,
+    ensureCanary: flow.ensureCanary,
+    budget: storeRebuildBudget(subrequests),
+    reverify: 'when-due',
+    ...settleOf(env),
+  });
+  const active = passes.filter((p) => p.outcome !== 'current');
+  if (active.length > 0) {
+    console.log('store-rebuild', active.map(({ rebuild, ...pass }) => ({ ...pass, failures: rebuild?.failures.length ?? 0 })));
+  }
+}
+
 /** The list of base domains a PLATFORM hostname is minted under (#305), read once (#973). */
 function platformBaseDomains(env: Env): string[] {
   return parsePlatformBaseDomains(env.PLATFORM_BASE_DOMAINS);
@@ -2238,6 +2293,14 @@ export default {
         errors: report.errors,
       });
     }
+
+    // #2309 — the store scripts' rebuild: after the key lists, the store entry or its verifier
+    // changed (a deploy of this worker), every store script is rebuilt at the release it runs, a
+    // bounded number per pass, resuming where the last pass stopped. Before the digest below, so a
+    // script that could not be rebuilt is in this pass's digest. Contained: loud, never sunk.
+    await rebuildStoreScripts(env, host.admin).catch((err: unknown) => {
+      console.error('store-rebuild failed', err instanceof Error ? err.message : String(err));
+    });
 
     // #2064 — an audited change (owner hand-over, member change) whose intent row has had no
     // outcome for an hour: its outcome write failed, or the request died between the two. The
