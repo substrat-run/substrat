@@ -257,6 +257,7 @@ describe('writes: a vertical puts files in the channel', () => {
     expect(ours).toMatch(/^report \([0-9a-f]{8}\)\.pdf$/);
     expect(w.drive.text(w.general, 'report.pdf')).toBe("a person's report");
     expect(w.drive.text(w.general, ours)).toBe('ours');
+    expect(await w.ledgers()).toEqual([expect.objectContaining({ status: 'done' })]);
   });
 
   it("fail refuses a person's file of the same name, and never adopts it", async () => {
