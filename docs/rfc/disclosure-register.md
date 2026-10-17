@@ -314,6 +314,9 @@ as argued; where this section disagrees with one of them, it says so.
   (`connectors.ts:252`). Fortnox, Planima and microsoft365 each say "no dispatch" in their own
   headers, so they never receive an event. microsoft365 declares `mail` (#2098) instead, and
   sends a vertical's message as the tenant through the email relay, outside the event journal.
+  Since #2101 microsoft365 also declares `dispatch`, for `microsoft365.channel-files-requested`:
+  it uploads the attachments the event names to the tenant's own SharePoint channel folder, and its
+  sweep lands that folder's changes through the vertical's operation as the connection.
 - **The email relay still writes no subject-keyed row** (`/internal/email/send`,
   `apps/control-plane/src/worker.ts`). F4's finding stands.
 
