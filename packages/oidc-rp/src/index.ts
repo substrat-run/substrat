@@ -22,7 +22,7 @@
  * Config is entirely runtime (secrets), never checked in:
  *   OIDC_ISSUER · OIDC_CLIENT_ID · OIDC_CLIENT_SECRET · SESSION_SECRET
  */
-import { SignJWT, jwtVerify, createRemoteJWKSet } from 'jose';
+import { SignJWT, jwtVerify, createRemoteJWKSet, decodeJwt } from 'jose';
 import type { Hono } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { discoverIssuer as discover, isAllowedEndpoint, type Discovery } from './discovery.js';
@@ -47,6 +47,38 @@ export interface OidcEnv {
   SESSION_SECRET: string;
   /** If set, the redirect origin is forced to this (else derived from the request). */
   BASE_URL?: string;
+  /**
+   * A second issuer, reached only by asking for it (`/api/auth/login?idp=alt`) — to try a
+   * new issuer before it is the default, and to keep one that does not live on this
+   * platform for the day the default is down. All three or none: a half-set trio is
+   * "not configured", never a login against a guessed client. The redirect URI is the
+   * same for both, so register this app's callback at the alternate issuer too.
+   */
+  OIDC_ALT_ISSUER?: string;
+  OIDC_ALT_CLIENT_ID?: string;
+  /** Secret (wrangler secret put OIDC_ALT_CLIENT_SECRET). */
+  OIDC_ALT_CLIENT_SECRET?: string;
+}
+
+/** The one value `idp` may take; anything else means the default issuer. */
+export type Idp = 'alt';
+
+/** `idp` as a query value: `'alt'` exactly, else `undefined` (the default issuer). */
+export function idpOf(value: string | null | undefined): Idp | undefined {
+  return value === 'alt' ? 'alt' : undefined;
+}
+
+/**
+ * The env a login against `idp` runs on: the same env with the issuer and client swapped
+ * for the alternate trio. `null` for `'alt'` when the trio is not all set — the caller
+ * refuses, because falling back to the default issuer would sign the person in somewhere
+ * they did not ask to be.
+ */
+export function envForIdp<B extends OidcEnv>(env: B, idp: Idp | undefined): B | null {
+  if (idp !== 'alt') return env;
+  const { OIDC_ALT_ISSUER: issuer, OIDC_ALT_CLIENT_ID: id, OIDC_ALT_CLIENT_SECRET: secret } = env;
+  if (!issuer || !id || !secret) return null;
+  return { ...env, OIDC_ISSUER: issuer, OIDC_CLIENT_ID: id, OIDC_CLIENT_SECRET: secret };
 }
 
 export interface SessionUser {
@@ -135,9 +167,11 @@ const redirectUri = (env: OidcEnv, origin: string): string =>
 export async function beginLogin(
   env: OidcEnv,
   origin: string,
-  opts: { returnTo?: string; loginHint?: string; screenHint?: string; prompt?: 'login' | 'select_account' } = {},
+  opts: { returnTo?: string; loginHint?: string; screenHint?: string; prompt?: 'login' | 'select_account'; idp?: Idp } = {},
 ): Promise<{ location: string; flow: string }> {
-  const d = await discover(env.OIDC_ISSUER);
+  const issuerEnv = envForIdp(env, opts.idp);
+  if (!issuerEnv) throw new Error('alternate issuer is not configured');
+  const d = await discover(issuerEnv.OIDC_ISSUER);
   const verifier = randomB64url(32);
   const state = randomB64url(16);
   const nonce = randomB64url(16);
@@ -145,6 +179,9 @@ export async function beginLogin(
   // cookie so the callback can send the browser back where login began.
   const claims: Record<string, unknown> = { v: verifier, s: state, n: nonce };
   if (opts.returnTo) claims.rt = opts.returnTo;
+  // Which issuer this round is against rides the signed cookie, so the callback verifies
+  // the token against the issuer the person was sent to and a query string cannot move it.
+  if (opts.idp) claims.i = opts.idp;
   const flow = await new SignJWT(claims)
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
@@ -153,7 +190,7 @@ export async function beginLogin(
 
   const u = new URL(d.authorization_endpoint);
   u.searchParams.set('response_type', 'code');
-  u.searchParams.set('client_id', env.OIDC_CLIENT_ID);
+  u.searchParams.set('client_id', issuerEnv.OIDC_CLIENT_ID);
   u.searchParams.set('redirect_uri', redirectUri(env, origin));
   u.searchParams.set('scope', 'openid email profile');
   u.searchParams.set('state', state);
@@ -178,7 +215,7 @@ export async function beginLogin(
  * and return the user + a signed session cookie value.
  */
 export async function completeLogin(
-  env: OidcEnv,
+  baseEnv: OidcEnv,
   origin: string,
   url: URL,
   flowCookie: string | undefined,
@@ -190,13 +227,15 @@ export async function completeLogin(
   if (!code || !state) throw new Error('missing code or state');
   if (!flowCookie) throw new Error('missing login flow cookie');
 
-  let flow: { v: string; s: string; n: string; rt?: string };
+  let flow: { v: string; s: string; n: string; rt?: string; i?: string };
   try {
-    flow = (await jwtVerify(flowCookie, signingKey(env))).payload as unknown as typeof flow;
+    flow = (await jwtVerify(flowCookie, signingKey(baseEnv))).payload as unknown as typeof flow;
   } catch {
     throw new Error('invalid or expired login flow');
   }
   if (flow.s !== state) throw new Error('state mismatch');
+  const env = envForIdp(baseEnv, idpOf(flow.i));
+  if (!env) throw new Error('alternate issuer is not configured');
 
   const d = await discover(env.OIDC_ISSUER);
   // The code, the PKCE verifier and the client secret go to this URL: https (or plaintext
@@ -570,11 +609,19 @@ export function mountOidcRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>, o
     // IdP validates it.
     const screen = c.req.query('screen_hint');
     const prompt = c.req.query('prompt');
+    const idp = idpOf(c.req.query('idp'));
+    // Asked for an issuer this deployment does not have: say so, rather than send the
+    // person to the default one and let them think the alternate worked.
+    if (!envForIdp(c.env, idp)) {
+      console.error('oidc.login.alt_not_configured');
+      return c.redirect(onError);
+    }
     const { location, flow } = await beginLogin(c.env, origin, {
       returnTo: safePath(c.req.query('returnTo')),
       loginHint: c.req.query('login_hint') || undefined,
       screenHint: screen === 'signup' || screen === 'login' ? screen : undefined,
       prompt: prompt === 'login' || prompt === 'select_account' ? prompt : undefined,
+      idp,
     });
     setCookie(c, FLOW_COOKIE, flow, cookieOpts(origin, FLOW_MAXAGE));
     return c.redirect(location);
@@ -629,7 +676,7 @@ export function mountOidcRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>, o
     // allowed logout URL on the IdP client; discovery failure falls back to local.
     if (c.req.query('federated') !== undefined) {
       const origin = new URL(c.req.url).origin;
-      const out = await federatedLogout(c.env, origin, local, idTokenHint, onSuccess);
+      const out = await federatedLogout(logoutEnv(c.env, idTokenHint), origin, local, idTokenHint, onSuccess);
       if (out) {
         if (out.returnTo) {
           // Lax, not Strict: it is read on the issuer's cross-site redirect back.
@@ -646,6 +693,24 @@ export function mountOidcRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>, o
     deleteCookie(c, LOGOUT_RETURN_COOKIE, { path: LOGGED_OUT_PATH });
     return c.redirect(back);
   });
+}
+
+/**
+ * The env a sign-out runs against: the alternate issuer's when the login's ID token
+ * names it, else the default. The session records no issuer, but the hint cookie is the
+ * ID token that login minted, and its `iss` says which one it came from. It is read
+ * unverified, which is safe for this one decision: it can only choose between the two
+ * issuers this deployment is configured with, and the issuer it is then sent to verifies
+ * it. A missing or unreadable hint means the default, as it always did.
+ */
+function logoutEnv<B extends OidcEnv>(env: B, idTokenHint: string | undefined): B {
+  if (!idTokenHint || !env.OIDC_ALT_ISSUER) return env;
+  try {
+    if (decodeJwt(idTokenHint).iss === env.OIDC_ALT_ISSUER) return envForIdp(env, 'alt') ?? env;
+  } catch {
+    // not a JWT: the default issuer's logout, as before
+  }
+  return env;
 }
 
 /**

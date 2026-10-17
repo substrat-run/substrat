@@ -16,10 +16,17 @@ export async function getSession(): Promise<StaffSession | null> {
   return data?.user?.email ? { email: data.user.email } : null;
 }
 
-/** Redirect into the OIDC login flow; the browser comes back to the console signed in. */
+/**
+ * Redirect into the OIDC login flow; the browser comes back to the console signed in.
+ * Opening the console as `/?idp=alt` signs in through the alternate issuer instead of the
+ * default one (the server accepts that one value and ignores any other).
+ */
 export function signIn(opts: { returnTo?: string } = {}): void {
-  const rt = opts.returnTo;
-  window.location.href = `/api/auth/login${rt ? `?returnTo=${encodeURIComponent(rt)}` : ''}`;
+  const p = new URLSearchParams();
+  if (opts.returnTo) p.set('returnTo', opts.returnTo);
+  if (new URLSearchParams(window.location.search).get('idp') === 'alt') p.set('idp', 'alt');
+  const qs = p.toString();
+  window.location.href = `/api/auth/login${qs ? `?${qs}` : ''}`;
 }
 
 /** Drop the session and return to the console. Always federated: signed-out visits
