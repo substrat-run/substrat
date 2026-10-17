@@ -2323,6 +2323,8 @@ export const api = {
  * Auth is a full-page redirect — the OIDC round-trip needs a real navigation.
  * `returnTo` is a same-origin path the callback returns to (e.g. an invite link);
  * `loginHint` prefills the email at the IdP; `screenHint` opens sign-up vs log-in.
+ * Opening the dashboard as `/?idp=alt` signs in through the alternate issuer instead of
+ * the default one (the server accepts that one value and ignores any other).
  */
 export const signIn = (
   opts: { returnTo?: string; loginHint?: string; screenHint?: 'signup' | 'login' } = {},
@@ -2331,6 +2333,7 @@ export const signIn = (
   if (opts.returnTo) p.set('returnTo', opts.returnTo);
   if (opts.loginHint) p.set('login_hint', opts.loginHint);
   if (opts.screenHint) p.set('screen_hint', opts.screenHint);
+  if (new URLSearchParams(window.location.search).get('idp') === 'alt') p.set('idp', 'alt');
   const qs = p.toString();
   window.location.href = `/api/auth/login${qs ? `?${qs}` : ''}`;
 };

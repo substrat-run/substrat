@@ -153,7 +153,9 @@ app.use('*', async (c, next) => {
 	if (!user) {
 		// Browsers get sent to login; API callers get the 401 they can parse.
 		if (c.req.header('accept')?.includes('text/html')) {
-			return c.redirect(`/api/auth/login?returnTo=${encodeURIComponent(new URL(c.req.url).pathname)}`);
+			// `?idp=alt` on the page URL is carried to the login route (which accepts only that value).
+			const idp = c.req.query('idp') === 'alt' ? '&idp=alt' : '';
+			return c.redirect(`/api/auth/login?returnTo=${encodeURIComponent(new URL(c.req.url).pathname)}${idp}`);
 		}
 		return c.json({ error: 'not signed in' }, 401);
 	}
