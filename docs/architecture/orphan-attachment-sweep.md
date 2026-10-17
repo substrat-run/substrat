@@ -120,8 +120,16 @@ The phase is **off** by default. Turn it on in this order, one step at a time:
      missing store binding: re-push that vertical. (`noStore` is a vertical that keeps no files,
      and is not printed on its own);
    - an `unsupported` scope needs its vertical redeployed;
-   - `refused` names the scopes held by an unsettled copy (#1722), which need settling before
-     they are swept.
+   - `refused` names the scopes the pass may not judge right now. The reasons:
+     - an unsettled copy (#1722), which needs settling before the scope is swept;
+     - a script deployed as another version than the directory says runs there. A promote that
+       races the pass causes one, and the next pass reads again;
+     - a script that carries no version identity (pushed before the version binding). It dry-runs
+       and writes licence rows, then refuses every delete. It shows in the tail on every pass
+       until the vertical is re-pushed;
+     - a scope whose serving ref is no longer its vertical's current one. The pass is routed to
+       that script but expects the bound version, so it is refused on every pass. This fails
+       closed, and the scope needs its serving ref repaired.
 
    If anything looks wrong, set the mode back to `off` and stop.
 4. **Delete.** Set `ORPHAN_ATTACHMENT_SWEEP=delete`. Scopes with a dry-run row from the last
@@ -148,10 +156,15 @@ refused. Nothing un-condemns an id, because the bytes behind it are already gone
 
 ## Cost
 
-Per visited scope, the control plane's reach reads the scope's record, its tenant and, when it is
-not on a serving script, its version. Each is a directory read, and each writes one access-log
-row (K-24). In delete mode the licence read adds one more. At the default batch of 25 and the
-15-minute cron, that is 4,800 to 7,200 rows a day, plus 2,400 in delete mode. The access-log drain
+Per visited scope, the control plane's reach makes three directory reads, and each writes one
+access-log row (K-24):
+- the scope's record;
+- its tenant;
+- either its vertical's serving pointer (a scope on a serving script) or its bound version (any
+  other scope).
+
+In delete mode the licence read adds a fourth. At the default batch of 25 and the 15-minute cron,
+that is about 7,200 rows a day, plus 2,400 in delete mode. The access-log drain
 ships up to 500 rows per pass (48,000 a day) to Tier 2 before it prunes them. The licence read
 stays an audited read on purpose: one per pass for the whole window would carry a week of rows
 with up to 500 keys each.

@@ -2601,8 +2601,8 @@ const pushCapped = (bucket: { count: number; scopeIds: string[] }, id: string): 
  *
  * One read per visited scope, in delete mode only, and on a host that records directory reads it is
  * one more access-log row each (K-24): at the default batch and a 15-minute cron, 2,400 a day. The
- * control plane's reach already reads the scope, its tenant and, off a serving script, its version
- * per visit, which is two or three such rows, so this adds a third to a quarter. It stays an audited
+ * control plane's reach already reads the scope, its tenant, and its serving pointer or its bound
+ * version per visit, which is three such rows, so this adds a quarter. It stays an audited
  * read on purpose: a quiet read of the admin log would be the one platform read K-24 does not see.
  * One read per pass for the whole window is not cheaper, since a row carries up to the pass's limit
  * of keys and the window holds a week of them.
