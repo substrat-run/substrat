@@ -17,6 +17,8 @@ import {
   type RelatedRequest,
   type RelatedResult,
   msLabel,
+  outboundCallLevel,
+  outboundCallResult,
   parseEntity,
   recordFromLogs,
   requestTimeline,
@@ -254,8 +256,14 @@ export function RequestSlideOver({
 
           <Section title="Timeline" hint="lines and events where they happened">
             {timeline ? <Timeline t={timeline} failed={failed} /> : <Quiet>{d.logs.state === 'loading' ? 'Reading…' : 'No duration was recorded, so there is no axis to draw.'}</Quiet>}
-            <Quiet>Database, connector and model calls are not recorded as spans yet, so they do not appear on the axis.</Quiet>
+            <Quiet>Outbound calls are on the axis; database and model calls are not recorded as spans yet.</Quiet>
           </Section>
+
+          {r && (
+            <Section title="Outbound calls" hint={outboundHint(r)}>
+              <OutboundCalls record={r} />
+            </Section>
+          )}
 
           <Section title="Emitted" hint={d.events.state === 'ready' ? (events.length === 0 ? undefined : `${events.length} event${events.length === 1 ? '' : 's'} · consumers timed from the response`) : undefined}>
             <FollowUps
@@ -440,12 +448,28 @@ function Timeline({ t, failed }: { t: RequestTimeline; failed: boolean }) {
       {t.marks.map((m, i) => (
         <div key={i} style={{ ...row, background: m.level === 'error' ? 'color-mix(in srgb, var(--status-danger-bg) 60%, transparent)' : m.level === 'warn' ? 'color-mix(in srgb, var(--status-warning-bg) 60%, transparent)' : undefined }}>
           <span style={{ display: 'flex', gap: 6, alignItems: 'center', minWidth: 0 }}>
-            <Tag dashed={m.kind === 'event'}>{m.kind === 'event' ? 'emit' : m.level === 'warn' ? 'wrn' : m.level === 'error' ? 'err' : m.level === 'debug' ? 'dbg' : 'log'}</Tag>
+            <Tag dashed={m.kind === 'event'}>{m.kind === 'event' ? 'emit' : m.kind === 'call' ? 'out' : m.level === 'warn' ? 'wrn' : m.level === 'error' ? 'err' : m.level === 'debug' ? 'dbg' : 'log'}</Tag>
             <span style={{ ...mono, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: m.kind === 'event' ? 'var(--text-primary)' : 'var(--text-secondary)' }} title={m.label}>
               {m.label || '—'}
             </span>
           </span>
           {track(
+            m.kind === 'call' ? (
+              <span
+                aria-hidden
+                style={{
+                  position: 'absolute',
+                  left: pct(m.offsetMs),
+                  width: pct(m.durationMs ?? 0),
+                  minWidth: 3,
+                  top: 9,
+                  height: 8,
+                  borderRadius: 2,
+                  background: m.level === 'info' ? 'var(--text-tertiary)' : LEVEL_COLOR[m.level],
+                  opacity: 0.75,
+                }}
+              />
+            ) : (
             <span
               aria-hidden
               style={{
@@ -458,13 +482,66 @@ function Timeline({ t, failed }: { t: RequestTimeline; failed: boolean }) {
                 borderRadius: m.kind === 'event' ? 2 : 999,
                 background: m.kind === 'event' ? 'var(--brand-400)' : LEVEL_COLOR[m.level],
               }}
-            />,
+            />
+            ),
           )}
           <span style={{ ...mono, fontSize: 11.5, textAlign: 'right', color: m.offsetMs > t.durationMs ? 'var(--text-tertiary)' : 'var(--text-secondary)' }} title={m.offsetMs > t.durationMs ? 'after the response' : undefined}>
             {msLabel(m.offsetMs)}
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+/** #2192: the section's count, and the calls the line counted without naming. */
+function outboundHint(r: RequestRecord): string | undefined {
+  const named = r.outboundCalls?.length ?? 0;
+  const dropped = r.outboundCallsDropped ?? 0;
+  if (named + dropped === 0) return undefined;
+  const total = `${named + dropped} call${named + dropped === 1 ? '' : 's'}`;
+  return dropped > 0 ? `${total} · the first ${named} named` : total;
+}
+
+/**
+ * #2192: the `fetch` calls the request made — host and path, never a query string or a header,
+ * and path segments that could be a credential already written `[redacted]` by the platform.
+ */
+function OutboundCalls({ record }: { record: RequestRecord }) {
+  const calls = record.outboundCalls ?? [];
+  if (calls.length === 0 && !record.outboundCallsDropped) {
+    return (
+      <Quiet>
+        No outbound call was recorded. Calls made inside a Durable Object, after the response, or by a version pushed before calls were recorded do not appear here.
+      </Quiet>
+    );
+  }
+  return (
+    <div style={{ border: '1px solid var(--border-subtle)', borderRadius: 8, overflow: 'hidden' }}>
+      {calls.map((c, i) => {
+        const level = outboundCallLevel(c);
+        return (
+          <div
+            key={i}
+            style={{ display: 'grid', gridTemplateColumns: '56px 1fr auto 64px', gap: 10, alignItems: 'center', padding: '7px 12px', borderBottom: '1px solid var(--border-subtle)', fontSize: 12.5 }}
+          >
+            <Tag>{c.method}</Tag>
+            <span style={{ ...mono, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${c.host}${c.path}`}>
+              {c.host}
+              <span style={{ color: 'var(--text-secondary)' }}>{c.path}</span>
+            </span>
+            <span style={{ ...mono, fontSize: 12, color: level === 'info' ? 'var(--text-secondary)' : LEVEL_COLOR[level], whiteSpace: 'nowrap' }}>{outboundCallResult(c)}</span>
+            <span style={{ ...mono, fontSize: 12, textAlign: 'right', color: 'var(--text-secondary)' }}>{msLabel(c.durationMs)}</span>
+          </div>
+        );
+      })}
+      {record.outboundCallsDropped ? (
+        <div style={{ padding: '7px 12px' }}>
+          <Quiet>
+            {record.outboundCallsDropped} more call{record.outboundCallsDropped === 1 ? ' was' : 's were'} made and counted, not named.
+          </Quiet>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { EffectsTree, EmittedLifecycle, HistoryEntry } from '@substrat-run/contracts';
-import { causedTransition, followUps, msLabel, parseEntity, recordFromLogs, requestTimeline } from '../web/src/lib/request-detail.js';
+import { causedTransition, followUps, msLabel, outboundCallLabel, outboundCallLevel, parseEntity, recordFromLogs, requestTimeline } from '../web/src/lib/request-detail.js';
 
 /** The request slide-over's derivations (#1752 §7a), each from a read that exists today. */
 
@@ -133,5 +133,36 @@ describe('msLabel', () => {
     expect(msLabel(842)).toBe('842 ms');
     expect(msLabel(2_100)).toBe('2.1 s');
     expect(msLabel(-40)).toBe('−40 ms');
+  });
+});
+
+describe('outbound calls on the request (#2192)', () => {
+  const refused = { host: 'undeclared.example.com', path: '/oauth2/token', method: 'POST', status: 403, outcome: 'refused', durationMs: 6, atMs: 30 };
+  const slow = { host: 'api.example.com', path: '/v1/users/42', method: 'GET', status: 200, outcome: 'ok', durationMs: 200, atMs: 10 };
+
+  it('reads them off the stamped line, keeping only entries of the line’s shape', () => {
+    const r = recordFromLogs([stamped({ status: 502, durationMs: 120, outboundCalls: [slow, { host: 'x' }, refused], outboundCallsDropped: 2 })]);
+    expect(r).toMatchObject({ outboundCalls: [slow, refused], outboundCallsDropped: 2 });
+    // A line that names none — or predates the field — has none, not missing data.
+    expect(recordFromLogs([stamped({ status: 200, durationMs: 5 })])).toMatchObject({ outboundCalls: [], outboundCallsDropped: 0 });
+  });
+
+  it('puts each call on the axis at its own offset, as a bar its duration long, and widens the axis to fit it', () => {
+    const r = recordFromLogs([stamped({ status: 502, durationMs: 120, outboundCalls: [refused, slow] })])!;
+    const t = requestTimeline(r, [], [])!;
+    expect(t.marks).toEqual([
+      { kind: 'call', offsetMs: 10, durationMs: 200, level: 'info', label: 'GET api.example.com/v1/users/42 → 200' },
+      { kind: 'call', offsetMs: 30, durationMs: 6, level: 'error', label: 'POST undeclared.example.com/oauth2/token → 403 refused by the platform' },
+    ]);
+    expect(t.axisMs).toBe(210);
+  });
+
+  it('a platform refusal, a timeout and a 5xx read as errors; another 4xx as a warning', () => {
+    const at = (over: Record<string, unknown>) => ({ ...slow, ...over }) as typeof slow;
+    expect(outboundCallLevel(at({ outcome: 'refused', status: 403 }))).toBe('error');
+    expect(outboundCallLevel(at({ outcome: 'http-error', status: 503 }))).toBe('error');
+    expect(outboundCallLevel(at({ outcome: 'http-error', status: 404 }))).toBe('warn');
+    expect(outboundCallLevel(at({ outcome: 'timeout', status: null }))).toBe('error');
+    expect(outboundCallLabel(at({ outcome: 'failed', status: null, reason: 'TypeError' }))).toBe('GET api.example.com/v1/users/42 → failed (TypeError)');
   });
 });

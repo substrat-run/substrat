@@ -256,6 +256,7 @@ export {
   LOG_PATTERN_TOP,
   INVOCATION_KINDS,
   invocationKindOf,
+  outboundCallsOf,
 } from './observability.js';
 export {
   STORAGE_PAGE_DEFAULT,
