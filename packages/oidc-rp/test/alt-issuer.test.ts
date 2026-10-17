@@ -196,6 +196,62 @@ describe('?idp=alt', () => {
     expect(out.searchParams.get('id_token_hint')).toBe(hint);
   });
 
+  /** The ID-token hint a login at `query` on `loginEnv` leaves. One login per case: `login` stacks its fetch stub. */
+  async function hintOf(query: string, loginEnv: OidcEnv): Promise<string> {
+    const { callback } = await login(query, { env: loginEnv });
+    const hint = cookiesOf(callback!).get(LOGOUT_HINT_COOKIE)!;
+    expect(hint).toBeTruthy();
+    return hint;
+  }
+
+  /** Where a federated sign-out on `logoutEnv` sends the browser holding `hint`. */
+  async function signOutWith(hint: string, logoutEnv: OidcEnv): Promise<URL> {
+    const res = await app().request(`${APP}/api/auth/logout?federated`, { headers: { cookie: `${LOGOUT_HINT_COOKIE}=${hint}` } }, logoutEnv);
+    return new URL(res.headers.get('location')!, APP);
+  }
+
+  it('ends the alternate issuer\'s session when its configured issuer carries a trailing slash', async () => {
+    // Discovery and the callback compare issuers with one trailing slash dropped, so this
+    // login works; sign-out must agree, or it sends the alt token to the default issuer.
+    const slashed: OidcEnv = { ...env, OIDC_ALT_ISSUER: `${ALT}/` };
+    const hint = await hintOf('?idp=alt', slashed);
+    const out = await signOutWith(hint, slashed);
+    expect(out.origin).toBe(ALT);
+    expect(out.searchParams.get('client_id')).toBe('alt-client');
+    expect(out.searchParams.get('id_token_hint')).toBe(hint);
+  });
+
+  it('ends the default issuer\'s session when its configured issuer carries a trailing slash', async () => {
+    const slashed: OidcEnv = { ...env, OIDC_ISSUER: `${DEFAULT}/` };
+    const out = await signOutWith(await hintOf('', slashed), slashed);
+    expect(out.origin).toBe(DEFAULT);
+    expect(out.searchParams.get('client_id')).toBe('default-client');
+  });
+
+  it('ends the alternate issuer\'s session when only the default issuer carries a trailing slash', async () => {
+    const slashed: OidcEnv = { ...env, OIDC_ISSUER: `${DEFAULT}/` };
+    const out = await signOutWith(await hintOf('?idp=alt', slashed), slashed);
+    expect(out.origin).toBe(ALT);
+    expect(out.searchParams.get('client_id')).toBe('alt-client');
+  });
+
+  it('sends an alt login\'s sign-out to the default issuer once the alternate is unset, as before it existed', async () => {
+    const bare: OidcEnv = { ...env, OIDC_ALT_ISSUER: undefined, OIDC_ALT_CLIENT_ID: undefined, OIDC_ALT_CLIENT_SECRET: undefined };
+    const out = await signOutWith(await hintOf('?idp=alt', env), bare);
+    expect(out.origin).toBe(DEFAULT);
+    expect(out.searchParams.get('client_id')).toBe('default-client');
+  });
+
+  it('never sends an alt login\'s sign-out to a half-set alternate', async () => {
+    // A half-set trio is not configured (envForIdp), at sign-out as at login.
+    const hint = await hintOf('?idp=alt', env);
+    for (const half of [{ OIDC_ALT_CLIENT_ID: undefined }, { OIDC_ALT_CLIENT_SECRET: '' }]) {
+      const out = await signOutWith(hint, { ...env, ...half });
+      expect(out.origin).toBe(DEFAULT);
+      expect(out.searchParams.get('client_id')).toBe('default-client');
+    }
+  });
+
   it('ends the default issuer\'s session at sign-out when the login came from it', async () => {
     const a = app();
     const { callback } = await login('');

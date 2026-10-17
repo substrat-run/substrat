@@ -25,7 +25,7 @@
 import { SignJWT, jwtVerify, createRemoteJWKSet, decodeJwt } from 'jose';
 import type { Hono } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { discoverIssuer as discover, isAllowedEndpoint, type Discovery } from './discovery.js';
+import { discoverIssuer as discover, isAllowedEndpoint, sameIssuer, type Discovery } from './discovery.js';
 
 export { discoverIssuer, type Discovery as OidcDiscovery } from './discovery.js';
 export {
@@ -706,7 +706,9 @@ export function mountOidcRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>, o
 function logoutEnv<B extends OidcEnv>(env: B, idTokenHint: string | undefined): B {
   if (!idTokenHint || !env.OIDC_ALT_ISSUER) return env;
   try {
-    if (decodeJwt(idTokenHint).iss === env.OIDC_ALT_ISSUER) return envForIdp(env, 'alt') ?? env;
+    // Compared the way discovery compares issuers, so a trailing slash in the configured
+    // value still matches the `iss` the issuer's tokens carry.
+    if (sameIssuer(decodeJwt(idTokenHint).iss ?? '', env.OIDC_ALT_ISSUER)) return envForIdp(env, 'alt') ?? env;
   } catch {
     // not a JWT: the default issuer's logout, as before
   }
