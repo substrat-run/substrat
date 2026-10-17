@@ -246,6 +246,11 @@ describe('VerticalClient.sweepOrphanAttachments (#2314)', () => {
     expect(sent).toEqual([{ tenantId: t, scopeId: s, dryRun: false, copiesSettled: true, expectedVersionId: 'v9' }]);
   });
 
+  it('carries a failed licence consume through (#2350)', async () => {
+    const report = { listed: 1, candidates: 1, orphans: 1, deleted: 1, keys: ['k'], dryRun: false, consumeFailed: true };
+    expect(await clientAnswering(200, report).sweepOrphanAttachments({ tenantId: t, scopeId: s, dryRun: false, copiesSettled: true, expectedVersionId: 'v9' })).toEqual(report);
+  });
+
   it('a 200 that is not a report throws rather than reading as a clean pass', async () => {
     await expect(clientAnswering(200, { ok: true }).sweepOrphanAttachments({ tenantId: t, scopeId: s, dryRun: true, copiesSettled: true, expectedVersionId: 'v9' })).rejects.toThrow(/without a report/);
   });

@@ -6,6 +6,7 @@ import { ulidTime } from './ulid.js';
 // Web-standard (Node, Workers, browsers); the kernel pulls in no platform lib typings.
 declare const TextEncoder: new () => { encode(input: string): Uint8Array };
 declare const TextDecoder: new () => { decode(input: Uint8Array): string };
+declare const console: { error(message: string): void };
 
 /**
  * The orphan-byte sweep (#2314): delete attachment bytes that no `_substrat_attachments` row
@@ -464,6 +465,12 @@ export interface OrphanSweepReport {
   keys: string[];
   /** Set when the restore fence held the pass: the instant until which it holds. */
   fencedUntil?: string;
+  /**
+   * Set when a destructive pass deleted objects but could not take them out of the scope's dry-run
+   * licence afterwards (#2350). The deletes stand and `keys` names them; the licence keeps rows for
+   * ids that are gone, which a later pass finds nothing to condemn for.
+   */
+  consumeFailed?: true;
   dryRun: boolean;
   /**
    * `'none'` when the deployment holds no attachment store for the tenant at all, so nothing was
@@ -572,6 +579,18 @@ export async function sweepOrphanAttachments(
   // Only what was deleted leaves the licence, so a backlog past `limit` drains over the next passes
   // in the window. A delete that throws ends the pass before this, so every id stays licensed and
   // condemned, and the next pass deletes them again (a delete of what is gone is a no-op).
-  await scope.consume(gone);
+  //
+  // The bytes are gone by now, so a consume that fails (the scope suspended or carried away
+  // mid-pass) must not cost the report: it is the only record of which keys were deleted. A licence
+  // row left for a gone id is harmless, since a later pass finds nothing there to condemn.
+  try {
+    await scope.consume(gone);
+  } catch (err) {
+    report.consumeFailed = true;
+    console.error(
+      `orphan-attachment sweep: scope ${scopeId} deleted ${report.deleted} object(s) but could not take them out of ` +
+        `its dry-run licence (${err instanceof Error ? err.name : 'Error'}); the report names the deleted keys`,
+    );
+  }
   return report;
 }

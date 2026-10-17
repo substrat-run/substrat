@@ -728,6 +728,11 @@ export interface OrphanAttachmentSweepReport {
   noStore: { count: number; scopeIds: string[] };
   /** Passes the restore fence held. */
   fenced: number;
+  /**
+   * Destructive passes that deleted objects but could not take them out of the scope's dry-run
+   * licence (#2350). The deletes stand and the admin-log row names them; never an error.
+   */
+  consumeFailed: number;
   /** Orphans found, and objects deleted, summed over the passes. */
   orphans: number;
   deleted: number;
@@ -2659,6 +2664,7 @@ async function sweepOrphanAttachmentWindow(
     awaitingDryRun: 0,
     noStore: { count: 0, scopeIds: [] },
     fenced: 0,
+    consumeFailed: 0,
     orphans: 0,
     deleted: 0,
     refused: { count: 0, scopeIds: [] },
@@ -2691,6 +2697,7 @@ async function sweepOrphanAttachmentWindow(
       else out.deletes += 1;
       if (r.bucket === 'none') pushCapped(out.noStore, s.id);
       if (r.fencedUntil !== undefined) out.fenced += 1;
+      if (r.consumeFailed) out.consumeFailed += 1;
       out.orphans += r.orphans;
       out.deleted += r.deleted;
       if (r.orphans > 0 || r.deleted > 0) {

@@ -165,6 +165,17 @@ describe('runPlatformSweep · orphan attachments (#2314)', () => {
       expect((log[log.length - 1]!.after as { dryRun: boolean }).dryRun).toBe(true);
     });
 
+    it("a pass whose consume failed after its deletes is counted, and its row still names the keys (#2350)", async () => {
+      const { host, log } = fakeHost([{ id: S, tenantId: T }], [dryRow(new Date(Date.parse(NOW) - DAY).toISOString())]);
+      const r = await runPlatformSweep(host, opts({
+        mode: 'delete',
+        sweepScopeFn: async () => ({ swept: report({ dryRun: false, orphans: 1, deleted: 1, keys: ['k1'], consumeFailed: true }) }),
+      }));
+      expect(r.errors).toEqual([]);
+      expect(r.orphanAttachments).toMatchObject({ deletes: 1, deleted: 1, consumeFailed: 1 });
+      expect(log[log.length - 1]!.after).toMatchObject({ dryRun: false, deleted: 1, keys: ['k1'] });
+    });
+
     it('an unlicensed answer to a dry run, or a second one, is a refusal and never a loop', async () => {
       const { host } = fakeHost([{ id: S, tenantId: T }], [dryRow(new Date(Date.parse(NOW) - DAY).toISOString())]);
       const asked: boolean[] = [];

@@ -4,7 +4,7 @@
  * are held on both adapters by `orphanSweepContractSuite`; this holds the order of the pass: the
  * fence, the age floor, the prefix, the condemnation, the fence again, the deletes.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   ATTACHMENT_CONDEMNED_DDL,
   ATTACHMENT_SWEEP_LICENCE_DDL,
@@ -235,6 +235,35 @@ describe('sweepOrphanAttachments (#2314)', () => {
     const none = scopeOf(new Set(ids));
     await sweepOrphanAttachments(store, S, none, { now: at(NOW), dryRun: true });
     expect(none.licensed).toEqual([[]]);
+  });
+
+  it('a consume that fails after the deletes still returns the report naming them, marked (#2350)', async () => {
+    const store = memoryStore();
+    const ids = [old(), old()].sort();
+    for (const id of ids) await store.put(attachmentBlobKey(S, id), bytes);
+    const scope = scopeOf(new Set());
+    const failing: OrphanSweepScope = {
+      ...scope,
+      // The scope suspended or carried away between the deletes and the consume.
+      consume: async () => {
+        throw new Error('refused: this scope copy may not judge orphan attachments');
+      },
+    };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let report;
+    try {
+      report = await sweepOrphanAttachments(store, S, failing, { now: at(NOW) });
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(String(logged.mock.calls[0]![0])).toMatch(new RegExp(`scope ${S} deleted 2 object`));
+    } finally {
+      logged.mockRestore();
+    }
+    expect(report).toMatchObject({ deleted: 2, consumeFailed: true });
+    expect(report.keys).toEqual(ids.map((id) => attachmentBlobKey(S, id)));
+    expect(store.keys()).toEqual([]);
+    // The twin: a consume that succeeds leaves no mark.
+    await store.put(attachmentBlobKey(S, ids[0]!), bytes);
+    expect(await sweepOrphanAttachments(store, S, scope, { now: at(NOW) })).not.toHaveProperty('consumeFailed');
   });
 
   it('a destructive pass consumes exactly the ids it deleted, and records no licence (#2350)', async () => {

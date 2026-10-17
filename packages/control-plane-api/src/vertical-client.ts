@@ -147,6 +147,7 @@ const orphanSweepReportWire = z.object({
   fencedUntil: z.string().optional(),
   dryRun: z.boolean(),
   bucket: z.literal('none').optional(),
+  consumeFailed: z.literal(true).optional(),
 });
 
 /** `routeAnswer`'s word for a deployment that predates the route it was asked (#1722, #2010). */
@@ -1802,8 +1803,13 @@ export class VerticalClient {
     if (!parsed.success) {
       throw new ControlPlaneError(502, `vertical answered attachment-sweep without a report for scope ${input.scopeId}`);
     }
-    const { fencedUntil, bucket, ...rest } = parsed.data;
-    return { ...rest, ...(fencedUntil !== undefined ? { fencedUntil } : {}), ...(bucket !== undefined ? { bucket } : {}) };
+    const { fencedUntil, bucket, consumeFailed, ...rest } = parsed.data;
+    return {
+      ...rest,
+      ...(fencedUntil !== undefined ? { fencedUntil } : {}),
+      ...(bucket !== undefined ? { bucket } : {}),
+      ...(consumeFailed ? { consumeFailed } : {}),
+    };
   }
 
   /**
