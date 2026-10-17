@@ -545,11 +545,14 @@ shared across a tenant's verticals is §13 question 21.
   The control plane stores the migrations a push declares (`vertical_version_migrations`), and
   both uploads of a version — the push and every serving upload — inject their set digest as
   the plain_text binding `SUBSTRAT_MIGRATIONS_DIGEST` (`migrationSetDigest`: SHA-256 over each
-  migration's module, version and SQL digest, modules ordered by id). Before a pass with
-  anything pending applies a statement, both adapters compute the same digest over every step
-  the host registers, authored and kernel-derived, and refuse on a mismatch through the same
+  authored migration's module, version and SQL digest, modules ordered by id). Before a pass with
+  anything pending applies a statement, both adapters compute the same digest over the authored
+  steps the host registers, and refuse on a mismatch through the same
   `migration failed … scope fails closed` record, naming both digests and the registered
-  migrations. A pass with nothing pending computes nothing, so a scope that is fully applied keeps
+  migrations. Kernel-derived steps (`search/…`, `state/…`, `list/…`) are left out on both sides,
+  as the journal check leaves them out: whether a stored set carries them depends on the CLI that
+  pushed it, so comparing them would refuse a correct deployment. A pass with nothing pending
+  computes nothing, so a scope that is fully applied keeps
   serving; a version whose migrations the control plane does not hold (`unheld:<id>`), a script
   uploaded before the binding, and the pure host without `migrationsDigest` compare nothing. This
   is an integrity check inside the deployed adapter, against a build whose worker registers
