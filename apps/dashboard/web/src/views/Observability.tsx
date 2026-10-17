@@ -138,7 +138,7 @@ export function Observability({
         <RecordPanel key={`${rec.entityType}:${rec.entityId}`} scopeId={(rec.scopeId ?? scopeId)!} entityType={rec.entityType} entityId={rec.entityId} onClose={closeRecordInUrl} />
       )}
       {open && (open.scopeId ?? scopeId) && (
-        <RequestSlideOver key={open.invocationId} scopeId={(open.scopeId ?? scopeId)!} invocationId={open.invocationId} atMs={open.atMs} onClose={closeRequestInUrl} />
+        <RequestSlideOver key={open.invocationId} scopeId={(open.scopeId ?? scopeId)!} invocationId={open.invocationId} atMs={open.atMs} onClose={closeRequestInUrl} teamApps={apps.map((a) => a.app_scope_id)} />
       )}
     </>
   );

@@ -961,6 +961,7 @@ export function App() {
           onTab={(t) => go(`/apps/${openApp.app_scope_id}/${t}`)}
           onDeleted={() => void deleteApp(openApp)}
           authServers={authServers}
+          teamApps={apps.map((a) => a.app_scope_id)}
         />
       ) : route.section === 'apps' && route.app ? (
         // While the first listApps() is in flight — or older pages are still being

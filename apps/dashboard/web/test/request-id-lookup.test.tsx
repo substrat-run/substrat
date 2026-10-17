@@ -110,8 +110,11 @@ describe('a peer call’s parent (#2192)', () => {
     const record = recordFromLogs([line({ parentInvocationId: OTHER })]);
     expect(record?.parentInvocationId).toBe(OTHER);
     expect(relatedRequests(OWN, [], [], record)).toEqual([
-      { relation: 'caused-by', invocationId: OTHER, at: new Date(MINTED - 60_000).toISOString(), via: 'peer call' },
+      { relation: 'caused-by', invocationId: OTHER, at: new Date(MINTED - 60_000).toISOString(), via: 'peer call', scopeId: null },
     ]);
+    // With the calling app named, it is where the link opens; a malformed one names none.
+    expect(relatedRequests(OWN, [], [], recordFromLogs([line({ parentInvocationId: OTHER, parentScopeId: RETRY })]))[0]!.scopeId).toBe(RETRY);
+    expect(relatedRequests(OWN, [], [], recordFromLogs([line({ parentInvocationId: OTHER, parentScopeId: 'app-b' })]))[0]!.scopeId).toBeNull();
   });
 
   it.each([
@@ -265,27 +268,64 @@ describe('the request-finding surfaces', () => {
     expect(text).toContain('acme.assigned → notify');
   });
 
-  it('a peer call’s parent is a link, opened by id under this app — the plane reads it under this team’s tenant only', async () => {
+  describe('a peer call’s parent: opened in the CALLING app, when the team holds it (#2192)', () => {
     const at = Date.now() - 60_000;
     const child = ulidAt(at, 'D');
     const parent = ulidAt(at - 1_000, 'E');
-    const logs = vi.spyOn(api, 'appTenantLogs').mockImplementation(async (_scope, q) =>
-      (q as { invocationId?: string }).invocationId === child
-        ? ([{ timestamp: at, level: 'info', message: null, raw: { timestamp: at, source: { substrat: 'invocation', invocationId: child, method: 'POST', parentInvocationId: parent } } }] as never)
-        : [],
-    );
-    vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: [], truncated: false } as InvocationEvents);
-    await renderPanel(child, at);
-    const text = container.textContent!;
-    expect(text).toContain('Caused by');
-    expect(text).toContain('peer call');
-    // What the panel read about the parent: nothing. Opening it is a fresh read by its id, in
-    // this app, which the plane binds to the team's own tenant.
-    expect(logs.mock.calls.every(([scope, q]) => scope === 'app-a' && (q as { invocationId?: string }).invocationId === child)).toBe(true);
-    // A parent id naming another tenant's request: the plane has no line for it under ours.
-    await renderPanel(parent, at - 1_000);
-    expect(logs.mock.calls.at(-1)).toEqual(['app-a', expect.objectContaining({ invocationId: parent })]);
-    expect(container.textContent).toContain('was found in this app within the log window');
+    const callerApp = ulidAt(at - 86_400_000, 'F');
+    const childLine = (source: Record<string, unknown>) =>
+      [{ timestamp: at, level: 'info', message: null, raw: { timestamp: at, source: { substrat: 'invocation', invocationId: child, method: 'POST', parentInvocationId: parent, ...source } } }] as never;
+    const parentLine = [{ timestamp: at, level: 'info', message: null, raw: { timestamp: at, source: { substrat: 'invocation', invocationId: parent, method: 'GET', path: '/api/board' } } }] as never;
+    const openButton = () => [...container.querySelectorAll('button')].find((b) => b.textContent === 'Open');
+    const render = async (id: string, scope: string, teamApps: string[]) => {
+      await act(async () => root.render(<RequestSlideOver scopeId={scope} invocationId={id} atMs={at} onClose={vi.fn()} teamApps={teamApps} />));
+      await settle();
+    };
+    afterEach(() => window.history.replaceState(null, '', '/'));
+
+    it('links the caller in its own app, and that app’s read finds the parent’s line', async () => {
+      // The plane, as the dashboard worker narrows it: a read is per app, so the parent's line is
+      // found only under the calling app's scope.
+      const logs = vi.spyOn(api, 'appTenantLogs').mockImplementation(async (scope, q) => {
+        const id = (q as { invocationId?: string }).invocationId;
+        if (scope === 'app-a' && id === child) return childLine({ parentScopeId: callerApp });
+        if (scope === callerApp && id === parent) return parentLine;
+        return [];
+      });
+      vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: [], truncated: false } as InvocationEvents);
+      await render(child, 'app-a', ['app-a', callerApp]);
+      expect(container.textContent).toContain('peer call');
+      await act(async () => openButton()!.click());
+      const url = new URL(window.location.href);
+      expect([url.searchParams.get('req'), url.searchParams.get('reqScope')]).toEqual([parent, callerApp]);
+      // What the page then renders for that address: the panel in the calling app.
+      await render(parent, url.searchParams.get('reqScope')!, ['app-a', callerApp]);
+      expect(logs.mock.calls.at(-1)).toEqual([callerApp, expect.objectContaining({ invocationId: parent })]);
+      expect(container.textContent).toContain('/api/board');
+      expect(container.textContent).not.toContain('was found in this app within the log window');
+    });
+
+    it('shows the caller without a link when the team does not hold its app, and reads nothing there', async () => {
+      const logs = vi.spyOn(api, 'appTenantLogs').mockImplementation(async (scope, q) =>
+        scope === 'app-a' && (q as { invocationId?: string }).invocationId === child ? childLine({ parentScopeId: callerApp }) : [],
+      );
+      vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: [], truncated: false } as InvocationEvents);
+      await render(child, 'app-a', ['app-a']);
+      expect(container.textContent).toContain('Caused by');
+      expect(container.textContent).toContain('peer call');
+      expect(openButton()).toBeUndefined();
+      expect(logs.mock.calls.every(([scope]) => scope === 'app-a')).toBe(true);
+    });
+
+    it('shows the caller without a link when the line names no scope for it (written before the field)', async () => {
+      vi.spyOn(api, 'appTenantLogs').mockImplementation(async (_scope, q) =>
+        (q as { invocationId?: string }).invocationId === child ? childLine({}) : [],
+      );
+      vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: [], truncated: false } as InvocationEvents);
+      await render(child, 'app-a', ['app-a', callerApp]);
+      expect(container.textContent).toContain('peer call');
+      expect(openButton()).toBeUndefined();
+    });
   });
 
   describe('related requests that could not all be checked', () => {

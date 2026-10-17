@@ -158,8 +158,14 @@ export function RequestSlideOver({
   invocationId,
   atMs,
   onClose,
+  teamApps = [],
 }: {
   scopeId: string;
+  /**
+   * #2192: the team's app scope ids, so a related request in ANOTHER of the team's apps (a peer
+   * call's caller) can be opened there. One in an app the team does not hold is shown, not linked.
+   */
+  teamApps?: readonly string[];
   invocationId: string;
   /** When the request happened, epoch ms — what its log read is windowed around. */
   atMs: number;
@@ -276,7 +282,7 @@ export function RequestSlideOver({
           </Section>
 
           <Section title="Related requests" hint={d.related.state === 'ready' && d.related.value.requests.length > 0 ? 'share a cause with this one' : undefined}>
-            <Related part={d.related} scopeId={scopeId} />
+            <Related part={d.related} scopeId={scopeId} teamApps={teamApps} />
           </Section>
 
           <Section title="Log lines" hint={d.logs.state === 'ready' ? `${logs.filter((l) => !isInvocationLine(l)).length} lines` : undefined}>
@@ -541,7 +547,16 @@ function notFoundText(invocationId: string, atMs: number): string {
 
 const RELATION: Record<RelatedRequest['relation'], string> = { 'caused-by': 'Caused by', 'set-off': 'Set off' };
 
-function Related({ part, scopeId }: { part: Detail['related']; scopeId: string }) {
+/**
+ * #2192: the app to open a related request in — this one, or another the team holds — or null
+ * when it is in an app the team does not hold, or one the line did not name.
+ */
+function openIn(r: RelatedRequest, scopeId: string, teamApps: readonly string[]): string | null {
+  if (r.scopeId === undefined || r.scopeId === scopeId) return scopeId;
+  return r.scopeId !== null && teamApps.includes(r.scopeId) ? r.scopeId : null;
+}
+
+function Related({ part, scopeId, teamApps }: { part: Detail['related']; scopeId: string; teamApps: readonly string[] }) {
   if (part.state === 'loading') return <Quiet>Looking for related requests…</Quiet>;
   if (part.state === 'error') return <Quiet tone="danger">Related requests are unavailable ({part.message}).</Quiet>;
   const { requests, incomplete } = part.value;
@@ -565,9 +580,11 @@ function Related({ part, scopeId }: { part: Detail['related']; scopeId: string }
           <span style={mono} title={r.invocationId}>{shortId(r.invocationId)}</span>
           <span style={{ color: 'var(--text-secondary)' }}>{r.via}</span>
           <span style={{ flex: 1 }} />
-          <Button variant="ghost" size="sm" onClick={() => openRequestInUrl(r.invocationId, Date.parse(r.at), scopeId)}>
-            Open
-          </Button>
+          {openIn(r, scopeId, teamApps) !== null && (
+            <Button variant="ghost" size="sm" onClick={() => openRequestInUrl(r.invocationId, Date.parse(r.at), openIn(r, scopeId, teamApps)!)}>
+              Open
+            </Button>
+          )}
         </div>
       ))}
     </div>

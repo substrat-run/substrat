@@ -45,9 +45,11 @@ export interface RequestRecord {
    * Absent on a line that names none; only ever read as one ULID.
    */
   parentInvocationId?: string | null;
+  /** #2192: the scope that parent's line is in — the calling app. Only ever read as one ULID. */
+  parentScopeId?: string | null;
 }
 
-/** #2192: a line's parent, only as a ULID — anything else is no parent. */
+/** #2192: a line's parent (or its scope), only as a ULID — anything else is none. */
 const parentOf = (v: unknown): string | null => (typeof v === 'string' && ulidTime(v) !== null ? v : null);
 
 /** #1901: a line's kind, absent read as `request`. */
@@ -125,6 +127,7 @@ export function recordFromLogs(logs: LogLine[]): RequestRecord | null {
       attempt: num(source['attempt']),
       latenessMs: num(source['latenessMs']),
       parentInvocationId: parentOf(source['parentInvocationId']),
+      parentScopeId: parentOf(source['parentScopeId']),
     };
   }
   return null;
@@ -294,6 +297,12 @@ export interface RelatedRequest {
   at: string;
   /** What links it: the event type, and the consumer for a delivery. */
   via: string;
+  /**
+   * #2192: the app its lines are in, when that is not this request's own: a peer call's caller
+   * is another app. `null` when the line did not say which (it predates the field), and then it
+   * cannot be opened.
+   */
+  scopeId?: string | null;
 }
 
 /** What the related-requests read could cover, and whether it covered it all. */
@@ -308,18 +317,24 @@ export function relatedRequests(
   trees: EffectsTree[],
   causes: CauseChain[],
   /** #2192: the request's own line, whose `parentInvocationId` names the request that called it. */
-  record?: Pick<RequestRecord, 'parentInvocationId'> | null,
+  record?: Pick<RequestRecord, 'parentInvocationId' | 'parentScopeId'> | null,
 ): RelatedRequest[] {
   const out = new Map<string, RelatedRequest>();
   const add = (r: RelatedRequest) => {
     // The first sighting wins, so a cause is not relabelled by a later delivery.
     if (r.invocationId !== own && !out.has(r.invocationId)) out.set(r.invocationId, r);
   };
-  // The caller's id is its claim, so it is only ever a link: opening it reads that id under this
-  // team's own tenant and app, where another tenant's request matches nothing.
+  // The caller's id is its claim, so it is only ever a link: opening it reads that id in the
+  // calling app, under this team's own tenant, where another tenant's request matches nothing.
   const parentAt = record?.parentInvocationId ? ulidTime(record.parentInvocationId) : null;
   if (record?.parentInvocationId && parentAt !== null) {
-    add({ relation: 'caused-by', invocationId: record.parentInvocationId, at: new Date(parentAt).toISOString(), via: 'peer call' });
+    add({
+      relation: 'caused-by',
+      invocationId: record.parentInvocationId,
+      at: new Date(parentAt).toISOString(),
+      via: 'peer call',
+      scopeId: record.parentScopeId ?? null,
+    });
   }
   for (const c of causes) {
     const cause = c.chain.slice(1).find((e) => e.invocationId !== null && e.invocationId !== own);
