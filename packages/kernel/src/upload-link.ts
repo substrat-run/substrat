@@ -508,7 +508,7 @@ async function resolveLink(
   if (target && (row.entity_type !== target.entityType || row.entity_id !== target.entityId)) throw wrongTarget();
   const state = stateOf(row, now);
   if (state === 'pending') return { row };
-  if (keyHash !== undefined && row.redeemed_at !== null && now < replayHorizon(row)) {
+  if (keyHash !== undefined && row.redeemed_at !== null) {
     // The key is compared in SQL, as the secret is: a hash of it is all the row holds.
     const attachment = sql.query<AttachmentRowShape>(
       `SELECT a.id, a.entity_type, a.entity_id, a.filename, a.content_type, a.size, a.sha256,

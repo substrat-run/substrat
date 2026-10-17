@@ -477,6 +477,31 @@ preview or a fork, and for a provider with no platform consent round. A refusal 
 secret. The tenant's admin also sees your outstanding links on the dashboard's integrations
 card and can revoke them there.
 
+## `mountUploadLinkRedeem(app, options)`
+
+Mounts `PUT` and `POST` at `/api/attachment-uploads/:entityType/:entityId/:secret`, the path
+`ctx.attachments.mintUploadUrl` returns, and redeems one upload link per request through the host's
+`inspectUploadLink` and `redeemUploadLink`:
+
+```ts
+import { mountUploadLinkRedeem } from '@substrat-run/vertical-host';
+
+mountUploadLinkRedeem(app, { host: () => host, node: (c) => nodeOf(c) });
+```
+
+| Request | |
+|---|---|
+| body | the file's bytes, read under the link's size ceiling |
+| `?filename=`, `Content-Disposition` | the file name, when the link fixed none |
+| `Content-Type` | the media type, unless absent or generic |
+| `Idempotency-Key` | optional: 16 to 255 visible ASCII characters, with no space, `"` or `\` (a UUID or a ULID). `"…"` is read without its quotes |
+
+The answer is `{ id, filename, contentType, size, sha256 }`: **201** when the file was stored by
+this request, and **200** when the request repeats, with the same `Idempotency-Key` and the same
+bytes, the redemption that spent the link, up to 10 minutes after the link's expiry. The refusals
+are 400, 403, 404, 410, 413, 415 and 422. [Attachments](../concepts/attachments.md#upload-with-it)
+has the table, and [A lost reply](../concepts/attachments.md#a-lost-reply) the replay's rules.
+
 ## `createModelHost(options)` — from `@substrat-run/vertical-host/model`
 
 The platform's model host: governance around one language-model call, provider-neutral.
