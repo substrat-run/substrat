@@ -110,6 +110,9 @@ import {
   splitVersionMigrationsBatch,
   versionMigrationsOf,
   versionsAwaitSplit,
+  versionsAwaitDigest,
+  deriveMigrationDigestsBatch,
+  deriveVersionMigrationDigest,
   writeVersionMigrations,
   type SystemSwitchRecordFilter,
   type SwitchKind,
@@ -460,6 +463,8 @@ export interface VersionRow {
   manifest_digest: string;
   permission_digest: string;
   migration_digest: string;
+  /** 1 once `migration_digest` is the derived one (#2339); NULL = still the pushed one. */
+  migration_digest_derived: number | null;
   deployment_ref: string | null;
   admission: string;
   admission_note: string | null;
@@ -988,6 +993,9 @@ const DIRECTORY_DDL = `
     migration_count   INTEGER,
     -- 1 once the SQL is out of manifest_json. NULL = stored before #1764, not yet backfilled.
     migrations_split  INTEGER,
+    -- 1 once migration_digest is the one derived from the stored migrations (#2339).
+    -- NULL = stored before, still the pushed digest; backfilled, and derived on read until then.
+    migration_digest_derived INTEGER,
     created_at        TEXT NOT NULL,
     UNIQUE (vertical_slug, version)
   );
@@ -1512,7 +1520,7 @@ export class ControlPlaneDO extends DurableObject {
    * instead (`importDump`).
    */
   private async armVersionMigrationsBackfill(): Promise<void> {
-    if (!versionsAwaitSplit(this.kernelSql)) return;
+    if (!versionsAwaitSplit(this.kernelSql) && !versionsAwaitDigest(this.kernelSql)) return;
     // An alarm already set is kept: it is the backfill's own next run, and a backoff retry
     // pulled forward to 1 s by any ordinary request would make the backoff meaningless.
     if ((await this.ctx.storage.getAlarm()) !== null) return;
@@ -1532,6 +1540,9 @@ export class ControlPlaneDO extends DurableObject {
     let more: boolean;
     try {
       more = this.ctx.storage.transactionSync(() => splitVersionMigrationsBatch(this.kernelSql)).more;
+      // #2339: then re-derive the migration digests of versions stored before the server did.
+      // Not in the transaction: the digest is computed between its read and its guarded write.
+      more = (await deriveMigrationDigestsBatch(this.kernelSql)).more || more;
     } catch (err) {
       const failures = ((await this.ctx.storage.get<number>(BACKFILL_FAILURES_KEY)) ?? 0) + 1;
       await this.ctx.storage.put(BACKFILL_FAILURES_KEY, failures);
@@ -1847,6 +1858,8 @@ export class ControlPlaneDO extends DurableObject {
     // #1764: the SQL migrations moved out of the manifest, and the backfill's progress.
     this.addColumn('vertical_versions', 'migration_count INTEGER');
     this.addColumn('vertical_versions', 'migrations_split INTEGER');
+    // #2339: whether the migration digest is the derived one; NULL rows are backfilled.
+    this.addColumn('vertical_versions', 'migration_digest_derived INTEGER');
     // #33: the SKU flag learns to express a plan. All nullable — a legacy row
     // reads as a perpetual boolean flag, exactly its pre-widening semantics.
     this.addColumn('_substrat_entitlements', 'expires_at TEXT');
@@ -1981,7 +1994,9 @@ export class ControlPlaneDO extends DurableObject {
     // next construction arms the backfill, since it finds none set.
     try {
       await this.ctx.storage.delete(BACKFILL_FAILURES_KEY);
-      if (versionsAwaitSplit(this.kernelSql)) await this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
+      if (versionsAwaitSplit(this.kernelSql) || versionsAwaitDigest(this.kernelSql)) {
+        await this.ctx.storage.setAlarm(Date.now() + BACKFILL_PAUSE_MS);
+      }
     } catch (err) {
       console.error('substrat: the restore committed, but its version-migrations backfill was not armed', err);
     }
@@ -3303,10 +3318,17 @@ export class ControlPlaneDO extends DurableObject {
     return this.sql.exec(sql, ...params).toArray() as unknown as VerticalRow[];
   }
 
-  readVersion(id: string): VersionRow | undefined {
-    return this.sql
-      .exec('SELECT * FROM vertical_versions WHERE id = ?', id)
-      .toArray()[0] as unknown as VersionRow | undefined;
+  /**
+   * One version. A version stored before the server derived migration digests (#2339) is derived
+   * first, so a gate never compares the digest its push sent while the backfill has not reached it.
+   */
+  async readVersion(id: string): Promise<VersionRow | undefined> {
+    const read = () =>
+      this.sql.exec('SELECT * FROM vertical_versions WHERE id = ?', id).toArray()[0] as unknown as VersionRow | undefined;
+    const row = read();
+    if (row?.migration_digest_derived !== null) return row;
+    await deriveVersionMigrationDigest(this.kernelSql, id);
+    return read();
   }
 
   /**
@@ -3327,8 +3349,8 @@ export class ControlPlaneDO extends DurableObject {
         `INSERT INTO vertical_versions
            (id, vertical_slug, version, manifest_digest, permission_digest,
             migration_digest, deployment_ref, admission, admission_note, manifest_json,
-            origin_json, migration_count, migrations_split, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+            origin_json, migration_count, migrations_split, migration_digest_derived, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)`,
         v.id, v.verticalSlug, v.version, v.manifestDigest, v.permissionDigest,
         v.migrationDigest, v.deploymentRef, v.admission, v.admissionNote, v.manifestJson,
         v.originJson, v.migrations?.length ?? null, v.createdAt,
@@ -3375,23 +3397,30 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec('UPDATE scopes SET expires_at = ? WHERE scope_id = ?', expiresAt, scopeId);
   }
 
-  listVersions(verticalSlug: string, page?: ListPage): VersionListRow[] {
+  async listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]> {
     const where: string[] = ['vertical_slug = ?'];
     const params: (string | number)[] = [verticalSlug];
     const tail = keysetTail(where, params, 'id', page);
     // Named columns, never `manifest_json` itself. `json_valid` first: a manifest that is not
     // JSON lists with null surfaces, as `outboundOfManifestJson` reads it, rather than
     // failing the whole page on `->`.
-    return this.sql
-      .exec(
-        `SELECT id, vertical_slug, version, manifest_digest, permission_digest, migration_digest,
-                deployment_ref, admission, admission_note, origin_json, created_at,
-                CASE WHEN json_valid(manifest_json) THEN manifest_json -> '$.outbound' END AS outbound_json,
-                CASE WHEN json_valid(manifest_json) THEN manifest_json -> '$.calls' END AS calls_json
-           FROM vertical_versions WHERE ${where.join(' AND ')}${tail}`,
-        ...params,
-      )
-      .toArray() as unknown as VersionListRow[];
+    const read = () =>
+      this.sql
+        .exec(
+          `SELECT id, vertical_slug, version, manifest_digest, permission_digest, migration_digest,
+                  migration_digest_derived, deployment_ref, admission, admission_note, origin_json, created_at,
+                  CASE WHEN json_valid(manifest_json) THEN manifest_json -> '$.outbound' END AS outbound_json,
+                  CASE WHEN json_valid(manifest_json) THEN manifest_json -> '$.calls' END AS calls_json
+             FROM vertical_versions WHERE ${where.join(' AND ')}${tail}`,
+          ...params,
+        )
+        .toArray() as unknown as VersionListRow[];
+    const rows = read();
+    // #2339: a page holding versions whose digest is still the pushed one derives them first.
+    const underived = rows.filter((r) => r.migration_digest_derived === null);
+    if (underived.length === 0) return rows;
+    for (const r of underived) await deriveVersionMigrationDigest(this.kernelSql, r.id);
+    return read();
   }
 
   setAdmission(id: string, admission: string, note: string | null): void {

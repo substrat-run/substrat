@@ -151,7 +151,7 @@ import type {
   TenantId,
 } from '@substrat-run/contracts';
 import type { CopyRestoreFence, CrossVerticalOptions, HostAdmin, LoadMarker, OpsFailureInput, ProvisionScopeInput, ScopeHost } from '@substrat-run/kernel';
-import { SCOPE_COPY_LEASE_MS, copyRestoreFence, replayStoreErasures, type StoreErasureReplay } from '@substrat-run/kernel';
+import { SCOPE_COPY_LEASE_MS, copyRestoreFence, publishedMigrationDigest, replayStoreErasures, type StoreErasureReplay } from '@substrat-run/kernel';
 import { attributeFailure } from './failure-attribution.js';
 import { auditedChange, withAuditedOutcomes, type AuditedChange } from './audited-change.js';
 import {
@@ -8180,6 +8180,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
 
     // §4 sandbox contract, before anything reaches the namespace.
     assertSandboxContract(manifest);
+    // #2339: a push whose migration digest is not the one its migrations give is refused here,
+    // before the upload, by the derivation `publishVersion` stores (and refuses with) again.
+    await publishedMigrationDigest({
+      id: 'push', migrationDigest: manifest.digests.migration, manifestJson: JSON.stringify(manifest),
+      migrations: manifest.migrations ?? null,
+    });
 
     // The workspace this push is FOR — the project's pin (package.json `substrat.tenant`),
     // sent by the CLI alongside the bundle. The pin is intent, and intent is honored or

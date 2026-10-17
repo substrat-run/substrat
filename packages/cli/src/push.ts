@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
 import {
+  migrationDigestOf,
   DECLARED_OUTPUT_FIELDS_MAX,
   ASSET_PART_PREFIX,
   assetHash,
@@ -289,36 +290,23 @@ function declarationsOf(key: 'moves' | 'discards', value: unknown): Partial<Pick
 }
 
 /**
- * The promotion gate covers store classes and every SQL migration the host would apply.
- * Hash SQL separately so the digest input stays small even for an omitted manifest list.
- *
- * A migration's declared `moves` and `discards` (#2322) join its entry only when it declares
- * any, so a declaration-free entry hashes exactly as it did before them, and adding, removing
- * or rewording a declaration moves the digest — a promote of it then asks for the migration
- * acknowledgement. This digest is computed HERE, by the pushing client, and nothing on the
- * platform re-derives it: the promote review shows the declarations the control plane stored,
- * never what this hash claims, so a client that hashed something else cannot hide one.
+ * The promotion gate covers store classes and every SQL migration the host would apply, with
+ * what each declares (#2322): `migrationDigestOf`, the one function the control plane also
+ * derives the digest with (#2339). It re-derives it from the migrations this push carries and
+ * refuses the push when the two disagree, so it must hash exactly what is sent. The complete set
+ * is hashed even when the manifest leaves it out: the control plane then cannot check the digest,
+ * stores one that equals no other version's, and every promote of the version asks for the
+ * migration acknowledgement.
  */
 export async function migrationDigest(
   doClasses: string[],
   declared: ReturnType<typeof flattenDeclaredMigrations>,
 ): Promise<string> {
-  const sql = await Promise.all(
-    declared.digestMigrations.map(async ({ moduleId, version, sql, moves, discards }) => ({
-      moduleId,
-      version,
-      sqlHash: await fullSha256(Buffer.from(sql)),
-      ...(moves ? { moves } : {}),
-      ...(discards ? { discards } : {}),
-    })),
-  );
-  return sha256(
-    Buffer.from(stableStringify({
-      doClasses,
-      sql,
-      ...(declared.unresolvedIndexes ? { unresolvedIndexes: declared.unresolvedIndexes } : {}),
-    })),
-  );
+  return migrationDigestOf({
+    doClasses,
+    migrations: declared.digestMigrations,
+    ...(declared.unresolvedIndexes ? { unresolvedIndexes: declared.unresolvedIndexes } : {}),
+  });
 }
 
 /**

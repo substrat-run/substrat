@@ -475,6 +475,7 @@ import {
   recordConnectorCall,
   settleConnectionUse,
   splitManifestMigrations,
+  publishedMigrationDigest,
   type ConnectionUseOutcome,
   type ConnectorCallRecorder,
   unknownRoleError,
@@ -7765,6 +7766,10 @@ export class CloudflareScopeHost implements ScopeHost {
         const split = splitManifestMigrations(manifestJson ?? null, 'push');
         await this.directory('insertVersion', {
           ...audited,
+          // #2339: the digest a promote compares is the one derived from what is stored, never the pushed one.
+          migrationDigest: await publishedMigrationDigest({
+            id: audited.id, migrationDigest: audited.migrationDigest, manifestJson: manifestJson ?? null, migrations: split.migrations,
+          }),
           manifestJson: split.manifestJson,
           migrations: split.migrations,
           originJson: origin ? JSON.stringify(origin) : null,
