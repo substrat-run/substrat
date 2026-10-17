@@ -34,6 +34,9 @@ import { mapBounded, message } from './map-bounded.js';
 import { runningImportsOf } from './export-break.js';
 import type { OrphanSweepReport } from './attachment-sweep.js';
 
+// #2314: the one record of deleted keys when the admin log could not take it.
+declare const console: { error(message: string): void };
+
 // setTimeout/clearTimeout are web-standard (Node, Workers, browsers) but the
 // kernel pulls in no platform lib typings; declared locally, returning an opaque
 // handle, the same move `api.ts` makes for `AbortSignal`.
@@ -2662,7 +2665,7 @@ async function sweepOrphanAttachmentWindow(
       out.orphans += r.orphans;
       out.deleted += r.deleted;
       if (r.orphans > 0 || r.deleted > 0) {
-        await host.admin.recordOrphanSweep(options.actor, {
+        const entry = {
           tenantId: s.tenantId,
           scopeId: s.id,
           dryRun: r.dryRun,
@@ -2672,7 +2675,20 @@ async function sweepOrphanAttachmentWindow(
           deleted: r.deleted,
           keys: r.keys,
           ...(r.fencedUntil !== undefined ? { fencedUntil: r.fencedUntil } : {}),
-        });
+        };
+        try {
+          await host.admin.recordOrphanSweep(options.actor, entry);
+        } catch (err) {
+          // The bytes are already gone when a real pass deleted any: this line is then the only
+          // record of which ones, so it carries the whole entry, keys and all, before the error.
+          if (r.deleted > 0) {
+            console.error(`orphan-attachment sweep: deleted ${r.deleted} object(s) but the admin-log row was not written: ${JSON.stringify(entry)}`);
+          }
+          throw new Error(
+            `the admin-log row was not written (${message(err)})` +
+              (r.deleted > 0 ? `; ${r.deleted} object(s) were deleted, and the log line names them` : ''),
+          );
+        }
       }
     } catch (err) {
       report.errors.push({ kind: 'attachment-sweep', id: s.id, error: message(err) });

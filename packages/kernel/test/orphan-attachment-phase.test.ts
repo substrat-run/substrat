@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import type { AdminLogEntry, OrphanSweepAudit, ScopeId, TenantId } from '@substrat-run/contracts';
 import { runPlatformSweep, ORPHAN_SWEEP_DRY_RUN_WINDOW_MS } from '../src/platform-sweep.js';
@@ -186,6 +186,30 @@ describe('runPlatformSweep · orphan attachments (#2314)', () => {
     }));
     expect(r.errors).toEqual([{ kind: 'attachment-sweep', id: a, error: 'transport' }]);
     expect(r.orphanAttachments).toMatchObject({ dryRuns: 1, orphans: 1 });
+  });
+
+  it('a row that cannot be written after a real delete leaves the deleted keys in the log, and an error', async () => {
+    const s = sid(1);
+    const { host } = fakeHost([{ id: s, tenantId: T }]);
+    (host.admin as unknown as { recordOrphanSweep: () => Promise<void> }).recordOrphanSweep = async () => {
+      throw new Error('plane down');
+    };
+    const keys = [`scope/${s}/att/01H00000000000000000000001`, `scope/${s}/att/01H00000000000000000000002`];
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const r = await runPlatformSweep(host, opts({ sweepScopeFn: async () => ({ swept: report({ dryRun: false, orphans: 2, deleted: 2, keys }) }) }));
+      expect(r.errors).toEqual([{ kind: 'attachment-sweep', id: s, error: expect.stringMatching(/plane down.*2 object\(s\) were deleted/) }]);
+      expect(logged).toHaveBeenCalledTimes(1);
+      const line = String(logged.mock.calls[0]![0]);
+      for (const key of keys) expect(line).toContain(key);
+      expect(line).toContain(s);
+      // A dry run deleted nothing: the error, and no line.
+      logged.mockClear();
+      await runPlatformSweep(host, opts({ sweepScopeFn: async () => ({ swept: report({ orphans: 2, keys }) }) }));
+      expect(logged).not.toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it("reports the deployment's word on what it did, not the mode it was asked for", async () => {
