@@ -393,6 +393,19 @@ export const connectionCertificate = z.object({
   thumbprint: z.string().min(1).max(128),
   /** When the certificate stops working — the connection's `expiresAt`. */
   notAfter: instant,
+  /**
+   * The successor being rotated in, when there is one: generated beside the certificate above,
+   * which keeps signing until the tenant has uploaded this one. Absent when no rotation is under
+   * way, and on a plane that predates rotation. The fields above always describe the certificate
+   * in use, so a consumer that ignores this one still shows the truth, only not the next step.
+   */
+  next: z
+    .object({
+      pem: z.string().min(1).max(8192),
+      thumbprint: z.string().min(1).max(128),
+      notAfter: instant,
+    })
+    .optional(),
 });
 export type ConnectionCertificate = z.infer<typeof connectionCertificate>;
 

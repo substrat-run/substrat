@@ -123,7 +123,27 @@ first send is the check.
 ## Rotation and revocation
 
 A generated certificate is valid for a year, and its end is the connection's expiry. Editing the
-connection's other fields keeps the same certificate. Switching the connection to a client secret
-drops the certificate and clears that expiry with it, since Microsoft does not report a client
-secret's end to the app. Disabling or deleting the app under
-**Enterprise applications** revokes everything at once.
+connection's other fields keeps the same certificate.
+
+**Rotating a certificate** never stops mail:
+
+1. **A new certificate is generated beside the current one** when you save the connection within
+   30 days of the current certificate's end, or when you tick **Generate a new certificate now**
+   while saving. The current certificate keeps signing, and the connection's expiry stays its end:
+   that is your deadline.
+2. **Download the new certificate** from the connection (**Download new certificate**) and upload it
+   under **Certificates & secrets → Certificates**, beside the current one. **Test connection**
+   says whether Entra accepts the new one yet.
+3. **Save the connection again.** Once Entra accepts the new certificate, the connection switches
+   to it and the platform drops the old key. You can then delete the old certificate from the app
+   registration. Until Entra accepts the new one, nothing changes: a new certificate that is not
+   uploaded yet never affects the one in use.
+
+If you remove the old certificate from the app registration before that save, sends switch to the
+new one on their own. If the current certificate lapses before you save, the new one takes its
+place at the next save. A new certificate already waiting is kept when you save again, even with
+the box ticked, so the one you downloaded stays the one to upload.
+
+Switching the connection to a client secret drops both certificates and clears the expiry with
+them, since Microsoft does not report a client secret's end to the app. Disabling or deleting the
+app under **Enterprise applications** revokes everything at once.

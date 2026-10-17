@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react';
-import { Button, Dialog, Input, Select } from '@substrat-run/ui';
+import { Button, Checkbox, Dialog, Input, Select } from '@substrat-run/ui';
 import {
   api,
   ApiError,
@@ -432,6 +432,35 @@ function IntegrationDetail({
               Upload it to your app registration under Certificates &amp; secrets, then test the connection. The
               thumbprint Entra shows should match the one above. The private key stays with the platform.
             </div>
+            {activity.certificate.next && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>
+                  New certificate
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '4px 12px', fontSize: 12 }}>
+                  <span style={{ color: 'var(--text-tertiary)' }}>Thumbprint</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
+                    {activity.certificate.next.thumbprint}
+                  </span>
+                  <span style={{ color: 'var(--text-tertiary)' }}>Expires</span>
+                  <span style={{ color: 'var(--text-secondary)' }}>{activity.certificate.next.notAfter.slice(0, 10)}</span>
+                </div>
+                <div style={{ marginTop: 6 }}>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => downloadCertificate(activity.certificate!.next!.pem, `${provider.provider}-new`)}
+                  >
+                    Download new certificate (.cer)
+                  </Button>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>
+                  Upload it beside the current one before {activity.certificate.notAfter.slice(0, 10)}, then save the
+                  connection: it switches to the new certificate once Entra accepts it, and you can then remove the old
+                  one from the app registration. Until then the current certificate keeps signing.
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -806,17 +835,26 @@ function ConnectDialog({
         )}
 
         {(!redirect || manual) &&
-          provider.fields.map((f) => (
-            <Input
-              key={f.key}
-              label={f.optional ? `${f.label} (optional)` : f.label}
-              type={f.secret ? 'password' : 'text'}
-              placeholder={f.placeholder ?? (f.secret ? '••••••••' : '')}
-              value={values[f.key] ?? ''}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-              mono
-            />
-          ))}
+          provider.fields.map((f) =>
+            f.toggle ? (
+              <Checkbox
+                key={f.key}
+                label={f.label}
+                checked={values[f.key] === 'yes'}
+                onChange={(on) => setValues((v) => ({ ...v, [f.key]: on ? 'yes' : '' }))}
+              />
+            ) : (
+              <Input
+                key={f.key}
+                label={f.optional ? `${f.label} (optional)` : f.label}
+                type={f.secret ? 'password' : 'text'}
+                placeholder={f.placeholder ?? (f.secret ? '••••••••' : '')}
+                value={values[f.key] ?? ''}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                mono
+              />
+            ),
+          )}
         {redirect && (
           <div>
             <Button variant="ghost" size="sm" onClick={() => setManual((m) => !m)}>
