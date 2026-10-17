@@ -1,8 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { OUTBOUND_CALL_LOG_CAP } from '@substrat-run/kernel/invocation-line';
 import { invocationLog, type InvocationLogLine, withInvocationLog } from '../src/invocation-log.js';
 import {
+  EGRESS_REFUSAL_HEADER,
   installOutboundRecorder,
   keepsSegment,
   markRequestStart,
@@ -119,6 +121,16 @@ describe('recordingFetch — the wrapper in front of the runtime’s fetch', () 
     expect(runtime.calls[0]?.input).toBe(request);
     expect(request.bodyUsed).toBe(false);
     expect(recording.outboundCalls?.[0]).toMatchObject({ host: 'api.example.com', path: '/v1/items', method: 'PATCH', outcome: 'ok' });
+  });
+
+  it('the refusal mark it reads is the one the egress worker writes, spelled the same in both', () => {
+    // The worker is not a package this one can import, so its literal is read off its source
+    // (a `READS` row in tools/ci-scope.mjs runs this suite when that file changes).
+    const worker = readFileSync(new URL('../../../apps/vertical-egress/src/worker.ts', import.meta.url), 'utf8');
+    const header = /^const EGRESS_HEADER = '([^']+)';$/m.exec(worker)?.[1];
+    expect(header).toBe(EGRESS_REFUSAL_HEADER);
+    // …and the value it marks a refusal with.
+    expect(worker).toContain("[EGRESS_HEADER]: 'refused'");
   });
 
   it('a platform refusal is recorded as refused, not as the destination’s 403', async () => {

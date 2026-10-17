@@ -420,6 +420,13 @@ export const READS = [
     paths: /^apps\/router\/src\/store-calls/,
     suite: 'apps/vertical-egress/test/store-hop.workerd.test.ts',
   },
+  // #2192: the caller-side recorder reads the egress worker's refusal mark, and the worker is
+  // not a package vertical-host can depend on, so the suite reads the literal off the source.
+  {
+    reader: '@substrat-run/vertical-host',
+    paths: /^apps\/vertical-egress\/src\/worker\.ts$/,
+    suite: 'packages/vertical-host/test/outbound-calls.test.ts',
+  },
 ];
 
 /** The packages that read one of `files` off disk (READS), sorted. */

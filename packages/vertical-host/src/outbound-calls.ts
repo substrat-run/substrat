@@ -43,8 +43,12 @@ import {
   type OutboundCallTally,
 } from '@substrat-run/kernel/invocation-line';
 
-/** The response header the egress worker marks its own refusals with (`apps/vertical-egress`). */
-const EGRESS_REFUSAL_HEADER = 'x-substrat-egress';
+/**
+ * The response header the egress worker marks its own refusals with — its `EGRESS_HEADER`
+ * (`apps/vertical-egress/src/worker.ts`). Spelled twice, because the worker is not a package
+ * this one can import; `outbound-calls.test.ts` holds the two equal.
+ */
+export const EGRESS_REFUSAL_HEADER = 'x-substrat-egress';
 
 /** The scope-store transport's host: those calls are already named, as `storeCalls` (#2245). */
 const STORE_CALL_HOST = 'store.substrat.internal';
