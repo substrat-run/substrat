@@ -121,7 +121,7 @@ export interface InvocationRecord extends StoreCallTally, OutboundRecording {
   /*
    * #2245: `storeCalls` and `storeCallsDropped` (from `StoreCallTally`) — the store calls
    * made during this request. Filled with no help from the vertical: the request runs in
-   * an `AsyncLocalStorage` holding this record ({@link runRecordingStoreCalls}), and a
+   * an `AsyncLocalStorage` holding this record ({@link runRecording}), and a
    * store stub reads it from there (RFC §6).
    *
    * #2192: `outboundCalls` and `outboundCallsDropped` (from `OutboundRecording`) — the

@@ -44,7 +44,7 @@ import {
 } from '@substrat-run/kernel/invocation-line';
 
 /** The response header the egress worker marks its own refusals with (`apps/vertical-egress`). */
-export const EGRESS_REFUSAL_HEADER = 'x-substrat-egress';
+const EGRESS_REFUSAL_HEADER = 'x-substrat-egress';
 
 /** The scope-store transport's host: those calls are already named, as `storeCalls` (#2245). */
 const STORE_CALL_HOST = 'store.substrat.internal';
