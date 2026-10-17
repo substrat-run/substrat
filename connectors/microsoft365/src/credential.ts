@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { deriveExpiryWarning } from '@substrat-run/contracts';
 import type { FetchLike } from '@substrat-run/kernel';
 import { certificateMatchesKey, fromBase64, generateCertificate, thumbprintS256, toBase64Url } from './x509.js';
 
@@ -110,8 +111,10 @@ export async function prepareMicrosoft365Candidate(
   if (secret.clientSecret?.trim()) return { secret, expiresAt: null };
   delete secret.clientSecret;
 
-  let current = await storedKeypair(previous, 'current', opts.now);
-  let next = await storedKeypair(previous, 'next', opts.now);
+  let [current, next] = await Promise.all([
+    storedKeypair(previous, 'current', opts.now),
+    storedKeypair(previous, 'next', opts.now),
+  ]);
   if (!current && next) {
     current = next;
     next = undefined;
@@ -137,7 +140,7 @@ export async function prepareMicrosoft365Candidate(
 
 /** Is the certificate ending at `notAfter` within the rotation window at `now`? Inclusive. */
 const rotationDue = (notAfter: string, now: Date): boolean =>
-  Date.parse(notAfter) - now.getTime() <= ROTATION_WINDOW_DAYS * 86_400_000;
+  deriveExpiryWarning(notAfter, now, ROTATION_WINDOW_DAYS) !== null;
 
 interface Keypair {
   privateKey: string;
@@ -180,15 +183,18 @@ async function mint(opts: { now: Date; commonName: string }): Promise<Keypair> {
   return { privateKey: minted.privateKey, certificate: minted.certificate, notAfter: minted.notAfter };
 }
 
-/** The credential signing with the successor only — what checks whether the tenant uploaded it. */
+/**
+ * The credential signing with the successor only — what checks whether the tenant uploaded it.
+ * `undefined` when no rotation is under way, or the credential signs in with a client secret.
+ */
 export function withNextOnly(secret: Microsoft365Secret): Microsoft365Secret | undefined {
-  if (!secret.nextPrivateKey || !secret.nextCertificate) return undefined;
-  const { nextPrivateKey, nextCertificate, nextCertificateNotAfter, certificateNotAfter: _current, ...rest } = secret;
+  const { nextPrivateKey, nextCertificate, nextCertificateNotAfter, ...rest } = secret;
+  if (authMethodOf(secret) !== 'certificate' || !nextPrivateKey || !nextCertificate || !nextCertificateNotAfter) {
+    return undefined;
+  }
   return {
     ...rest,
-    privateKey: nextPrivateKey,
-    certificate: nextCertificate,
-    ...(nextCertificateNotAfter ? { certificateNotAfter: nextCertificateNotAfter } : {}),
+    ...slot({ privateKey: nextPrivateKey, certificate: nextCertificate, notAfter: nextCertificateNotAfter }, 'current'),
   };
 }
 
@@ -200,6 +206,8 @@ export type TokenOutcome =
       /** Entra refused the credential for good (wrong ids, a bad secret) — not "try later". */
       refused: boolean;
       error: string;
+      /** Entra says the assertion's key is not on the app registration (AADSTS700027). */
+      notRegistered?: true;
     };
 
 /**
@@ -218,21 +226,21 @@ export async function acquireToken(
   secret: Microsoft365Secret,
   opts: { loginBase?: string; now: Date },
 ): Promise<TokenOutcome> {
-  const next = authMethodOf(secret) === 'certificate' ? withNextOnly(secret) : undefined;
-  if (!next) return (await requestToken(fetchImpl, secret, opts)).outcome;
+  const next = withNextOnly(secret);
+  if (!next) return requestToken(fetchImpl, secret, opts);
   const lapsed = secret.certificateNotAfter !== undefined && !(Date.parse(secret.certificateNotAfter) > opts.now.getTime());
-  if (lapsed) return (await requestToken(fetchImpl, next, opts)).outcome;
+  if (lapsed) return requestToken(fetchImpl, next, opts);
   const first = await requestToken(fetchImpl, secret, opts);
-  if (first.outcome.ok || !first.notRegistered) return first.outcome;
+  if (first.ok || !first.notRegistered) return first;
   const second = await requestToken(fetchImpl, next, opts);
-  return second.outcome.ok ? second.outcome : first.outcome;
+  return second.ok ? second : first;
 }
 
 async function requestToken(
   fetchImpl: FetchLike,
   secret: Microsoft365Secret,
   opts: { loginBase?: string; now: Date },
-): Promise<{ outcome: TokenOutcome; notRegistered: boolean }> {
+): Promise<TokenOutcome> {
   const loginBase = opts.loginBase ?? LOGIN_BASE;
   const endpoint = `${loginBase}/${encodeURIComponent(secret.tenantId)}/oauth2/v2.0/token`;
   const form = new URLSearchParams({
@@ -244,10 +252,7 @@ async function requestToken(
     form.set('client_secret', secret.clientSecret!.trim());
   } else {
     if (!secret.privateKey || !secret.certificate) {
-      return {
-        outcome: { ok: false, refused: true, error: 'no client secret and no certificate is stored for this connection' },
-        notRegistered: false,
-      };
+      return { ok: false, refused: true, error: 'no client secret and no certificate is stored for this connection' };
     }
     form.set('client_assertion_type', 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer');
     form.set('client_assertion', await clientAssertion(secret, endpoint, opts.now));
@@ -260,10 +265,7 @@ async function requestToken(
       body: form.toString(),
     });
   } catch (e) {
-    return {
-      outcome: { ok: false, refused: false, error: `Microsoft sign-in could not be reached: ${errorText(e)}` },
-      notRegistered: false,
-    };
+    return { ok: false, refused: false, error: `Microsoft sign-in could not be reached: ${errorText(e)}` };
   }
   const body = (await res.json().catch(() => ({}))) as {
     access_token?: string;
@@ -271,11 +273,8 @@ async function requestToken(
     error_description?: string;
     error_codes?: number[];
   };
-  if (res.ok && body.access_token) return { outcome: { ok: true, accessToken: body.access_token }, notRegistered: false };
-  return {
-    outcome: classifyTokenError(res.status, body),
-    notRegistered: (body.error_codes ?? []).includes(KEY_NOT_REGISTERED),
-  };
+  if (res.ok && body.access_token) return { ok: true, accessToken: body.access_token };
+  return classifyTokenError(res.status, body);
 }
 
 /** AADSTS700027: the assertion's key is not registered on the app (or not yet propagated). */
@@ -299,6 +298,7 @@ export function classifyTokenError(
     return {
       ok: false,
       refused: false,
+      notRegistered: true,
       error:
         'the certificate is not on the app registration yet — download it here, upload it under ' +
         'Certificates & secrets, then test the connection again',

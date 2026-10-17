@@ -114,15 +114,18 @@ async function probeWith(
   secret: Microsoft365Secret,
   options: Microsoft365Options,
 ): Promise<ConnectionProbe> {
+  const [token, successor] = await Promise.all([
+    acquireToken(fetchImpl, secret, { now: nowOf(options), ...loginOf(options) }),
+    successorFacts(secret, options),
+  ]);
   const facts = [
     { label: 'Signs in with', value: authMethodOf(secret) === 'certificate' ? 'certificate' : 'client secret' },
     { label: 'Sends as', value: sendersOf(secret).join(', ').slice(0, 400) },
     ...(secret.certificateNotAfter
       ? [{ label: 'Certificate expires', value: secret.certificateNotAfter.slice(0, 10) }]
       : []),
-    ...(await successorFacts(secret, options)),
+    ...successor,
   ];
-  const token = await acquireToken(fetchImpl, secret, { now: nowOf(options), ...loginOf(options) });
   if (!token.ok) return probeOf({ ok: false, refused: token.refused, error: token.error, facts });
   try {
     const site = await readSite(graph(fetchImpl, token.accessToken, options), secret.siteUrl);
@@ -156,11 +159,11 @@ async function probeWith(
  * state of a rotation, not a failure of the connection, and must not read as one in its health.
  */
 async function successorFacts(secret: Microsoft365Secret, options: Microsoft365Options) {
-  const next = authMethodOf(secret) === 'certificate' ? withNextOnly(secret) : undefined;
+  const next = withNextOnly(secret);
   if (!next) return [];
   const token = await acquireToken(options.fetch, next, { now: nowOf(options), ...loginOf(options) });
   return [
-    { label: 'New certificate expires', value: (next.certificateNotAfter ?? 'unknown').slice(0, 10) },
+    { label: 'New certificate expires', value: next.certificateNotAfter!.slice(0, 10) },
     {
       label: 'New certificate',
       value: token.ok
@@ -208,7 +211,7 @@ export async function microsoft365CredentialSummary(
       fields.push({
         key: 'nextCertificateNotAfter',
         label: 'New certificate expires',
-        value: next.certificateNotAfter ?? 'unknown',
+        value: next.certificateNotAfter!,
         masked: false,
       });
     }
@@ -224,21 +227,18 @@ export async function microsoft365Certificate(
   const { secret } = await openSecret(host.admin, connection);
   if (authMethodOf(secret) !== 'certificate' || !secret.certificate || !secret.certificateNotAfter) return null;
   const next = withNextOnly(secret);
-  return {
-    pem: certificatePem(secret.certificate),
-    thumbprint: await thumbprintSha1Hex(secret.certificate),
-    notAfter: instant.parse(secret.certificateNotAfter),
-    ...(next?.certificateNotAfter
-      ? {
-          next: {
-            pem: certificatePem(next.certificate!),
-            thumbprint: await thumbprintSha1Hex(next.certificate!),
-            notAfter: instant.parse(next.certificateNotAfter),
-          },
-        }
-      : {}),
-  };
+  const [view, nextView] = await Promise.all([
+    certificateView(secret.certificate, secret.certificateNotAfter),
+    next ? certificateView(next.certificate!, next.certificateNotAfter!) : undefined,
+  ]);
+  return { ...view, ...(nextView ? { next: nextView } : {}) };
 }
+
+const certificateView = async (certificate: string, notAfter: string) => ({
+  pem: certificatePem(certificate),
+  thumbprint: await thumbprintSha1Hex(certificate),
+  notAfter: instant.parse(notAfter),
+});
 
 /**
  * The platform's half of a candidate credential (`ConnectionInspector.prepareCandidate`): the

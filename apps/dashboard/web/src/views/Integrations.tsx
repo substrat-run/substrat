@@ -6,6 +6,7 @@ import {
   type AccountIntegration,
   type AppIntegration,
   type AppRow,
+  type CertificateView,
   type ConnectionActivityView,
   type ConnectionFact,
   type ConnectionIntentView,
@@ -412,53 +413,22 @@ function IntegrationDetail({
             private key never leaves the plane — and the tenant's next step until it is uploaded. */}
         {activity?.certificate && (
           <div>
-            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>
-              Certificate
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '4px 12px', fontSize: 12 }}>
-              <span style={{ color: 'var(--text-tertiary)' }}>Thumbprint</span>
-              <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
-                {activity.certificate.thumbprint}
-              </span>
-              <span style={{ color: 'var(--text-tertiary)' }}>Expires</span>
-              <span style={{ color: 'var(--text-secondary)' }}>{activity.certificate.notAfter.slice(0, 10)}</span>
-            </div>
-            <div style={{ marginTop: 6 }}>
-              <Button variant="secondary" size="sm" onClick={() => downloadCertificate(activity.certificate!.pem, provider.provider)}>
-                Download certificate (.cer)
-              </Button>
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>
-              Upload it to your app registration under Certificates &amp; secrets, then test the connection. The
-              thumbprint Entra shows should match the one above. The private key stays with the platform.
-            </div>
+            <CertificateCard
+              title="Certificate"
+              certificate={activity.certificate}
+              download="Download certificate (.cer)"
+              filename={provider.provider}
+              note="Upload it to your app registration under Certificates & secrets, then test the connection. The thumbprint Entra shows should match the one above. The private key stays with the platform."
+            />
             {activity.certificate.next && (
               <div style={{ marginTop: 10 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>
-                  New certificate
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '4px 12px', fontSize: 12 }}>
-                  <span style={{ color: 'var(--text-tertiary)' }}>Thumbprint</span>
-                  <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
-                    {activity.certificate.next.thumbprint}
-                  </span>
-                  <span style={{ color: 'var(--text-tertiary)' }}>Expires</span>
-                  <span style={{ color: 'var(--text-secondary)' }}>{activity.certificate.next.notAfter.slice(0, 10)}</span>
-                </div>
-                <div style={{ marginTop: 6 }}>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => downloadCertificate(activity.certificate!.next!.pem, `${provider.provider}-new`)}
-                  >
-                    Download new certificate (.cer)
-                  </Button>
-                </div>
-                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>
-                  Upload it beside the current one before {activity.certificate.notAfter.slice(0, 10)}, then save the
-                  connection: it switches to the new certificate once Entra accepts it, and you can then remove the old
-                  one from the app registration. Until then the current certificate keeps signing.
-                </div>
+                <CertificateCard
+                  title="New certificate"
+                  certificate={activity.certificate.next}
+                  download="Download new certificate (.cer)"
+                  filename={`${provider.provider}-new`}
+                  note={`Upload it beside the current one before ${activity.certificate.notAfter.slice(0, 10)}, then save the connection: it switches to the new certificate once Entra accepts it, and you can then remove the old one from the app registration. Until then the current certificate keeps signing.`}
+                />
               </div>
             )}
           </div>
@@ -1242,6 +1212,41 @@ export function Integrations() {
         />
       )}
     </Page>
+  );
+}
+
+/** One public certificate: its thumbprint and end, a download, and what to do with it. */
+function CertificateCard({
+  title,
+  certificate,
+  download,
+  filename,
+  note,
+}: {
+  title: string;
+  certificate: CertificateView;
+  download: string;
+  filename: string;
+  note: string;
+}) {
+  return (
+    <>
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 6 }}>{title}</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '4px 12px', fontSize: 12 }}>
+        <span style={{ color: 'var(--text-tertiary)' }}>Thumbprint</span>
+        <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
+          {certificate.thumbprint}
+        </span>
+        <span style={{ color: 'var(--text-tertiary)' }}>Expires</span>
+        <span style={{ color: 'var(--text-secondary)' }}>{certificate.notAfter.slice(0, 10)}</span>
+      </div>
+      <div style={{ marginTop: 6 }}>
+        <Button variant="secondary" size="sm" onClick={() => downloadCertificate(certificate.pem, filename)}>
+          {download}
+        </Button>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>{note}</div>
+    </>
   );
 }
 
