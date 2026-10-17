@@ -135,8 +135,42 @@ const request = (over: Record<string, unknown> = {}) => ({
  * runtime import stays out of every module these node tests load.
  */
 const entrypoint = (env: Partial<Env>) => ({
-  invoke: (caller: unknown, request: unknown) =>
-    handlePeerCall({ PLATFORM_SECRET: SECRET, ...env } as unknown as Env, caller, request),
+  invoke: (caller: unknown, request: unknown, context?: unknown) =>
+    handlePeerCall({ PLATFORM_SECRET: SECRET, ...env } as unknown as Env, caller, request, context),
+});
+
+describe('the calling request’s id reaches the target as a header (#2192)', () => {
+  const PARENT = '01JABCDEFGHJKMNPQRSTVWXYZ0';
+
+  it('a well-formed parent and the target’s slug ride as headers; the strict body is unchanged', async () => {
+    const d = dispatch();
+    const outcome = await entrypoint({ CONTROL_PLANE: directory(), DISPATCH: d as never }).invoke(caller(), request(), {
+      parentInvocationId: PARENT,
+    });
+    expect(outcome).toMatchObject({ ok: true });
+    const sent = d.seen()[0]!.request!;
+    expect(sent.headers.get('x-substrat-parent-request-id')).toBe(PARENT);
+    expect(sent.headers.get('x-substrat-vertical')).toBe('acme/crm');
+    expect(await sent.json()).toEqual({
+      caller: { vertical: 'acme/board-room', scope: CALLER_SCOPE },
+      tenantId: TENANT,
+      scopeId: TARGET_SCOPE,
+      operation: 'customer/list',
+    });
+  });
+
+  it.each([
+    ['no context', undefined],
+    ['a null context', null],
+    ['a string context', PARENT],
+    ['a malformed parent', { parentInvocationId: 'nope' }],
+    ['a joined parent', { parentInvocationId: `${PARENT}, ${PARENT}` }],
+  ])('%s sends no parent header, and the call still runs', async (_name, context) => {
+    const d = dispatch();
+    const outcome = await entrypoint({ CONTROL_PLANE: directory(), DISPATCH: d as never }).invoke(caller(), request(), context);
+    expect(outcome).toMatchObject({ ok: true });
+    expect(d.seen()[0]!.request!.headers.has('x-substrat-parent-request-id')).toBe(false);
+  });
 });
 
 describe('the router’s peer entrypoint (#1706)', () => {

@@ -35,6 +35,8 @@ import {
   type PeerCaller,
   PLATFORM_REQUEST_HEADER,
   PLATFORM_SECRET_HEADER,
+  PARENT_REQUEST_ID_HEADER,
+  parentRequestIdOf,
   evaluateRateLimits,
   parseRateLimits,
   RATE_LIMIT_POLICY_HEADER,
@@ -638,6 +640,12 @@ export async function handlePeerCall(
   env: Env,
   rawCaller: unknown,
   rawRequest: unknown,
+  /**
+   * #2192: what egress passes beside the caller — the calling request's id, the caller's own
+   * claim. Read only as one ULID and only ever written onto the target's line as its parent;
+   * it decides nothing here.
+   */
+  rawContext?: unknown,
 ): Promise<PeerCallOutcome> {
   const secret = env.PLATFORM_SECRET;
   if (!secret) {
@@ -676,6 +684,9 @@ export async function handlePeerCall(
     primary: true,
   };
   const target = env.DISPATCH.get(decision.deploymentRef, {}, { outbound: { OUTBOUND_POLICY: policy } });
+  const parent = parentRequestIdOf(
+    rawContext !== null && typeof rawContext === 'object' ? (rawContext as { parentInvocationId?: unknown }).parentInvocationId : undefined,
+  );
   // A fresh Request per attempt: a POST body is a stream and is consumed by the first one.
   const invocation = (): Request =>
     new Request('https://vertical/internal/vertical-invoke', {
@@ -685,6 +696,11 @@ export async function handlePeerCall(
         // The same wire constant `kickDrain` sends. A public request can never carry it — this
         // router strips every `x-substrat-*` header before it forwards one.
         [PLATFORM_SECRET_HEADER]: secret,
+        // #2192: for the target's line, which the target writes behind the secret above: its own
+        // slug, as the routed path asserts it, and the calling request's id. Headers, not body
+        // fields, so a target built before them ignores them where its strict body would refuse.
+        'x-substrat-vertical': decision.vertical,
+        ...(parent ? { [PARENT_REQUEST_ID_HEADER]: parent } : {}),
       },
       body: JSON.stringify({
         // `tenantSlug` from the directory read, never from the caller's dispatch parameters.
