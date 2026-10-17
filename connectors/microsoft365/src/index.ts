@@ -34,10 +34,11 @@ import { settleConnectionUse, type FetchLike, type HostAdmin, type MailSender, t
 import {
   acquireToken,
   authMethodOf,
-  requestToken,
   microsoft365Secret,
   prepareMicrosoft365Candidate,
+  requestToken,
   sendersOf,
+  signingCredential,
   withNextOnly,
   type Microsoft365Secret,
 } from './credential.js';
@@ -115,11 +116,16 @@ async function probeWith(
   secret: Microsoft365Secret,
   options: Microsoft365Options,
 ): Promise<ConnectionProbe> {
-  // The current certificate alone: the successor is judged by `successorFacts`, unrecorded, so a
-  // rotation's expected "not uploaded yet" never lands in the connection's health.
+  // The certificate that signs a send right now, and no fallback: before a lapse that is the current
+  // one, and the successor is judged by `successorFacts`, unrecorded, so a rotation's expected "not
+  // uploaded yet" never lands in the connection's health. After a lapse the successor IS what
+  // signs, so it is the probe's own sign-in and asked about once.
+  const now = nowOf(options);
+  const signing = signingCredential(secret, now);
+  const lapsed = signing !== secret;
   const [token, successor] = await Promise.all([
-    requestToken(fetchImpl, secret, { now: nowOf(options), ...loginOf(options) }),
-    successorFacts(secret, options),
+    requestToken(fetchImpl, signing, { now, ...loginOf(options) }),
+    lapsed ? [] : successorFacts(secret, options),
   ]);
   const facts = [
     { label: 'Signs in with', value: authMethodOf(secret) === 'certificate' ? 'certificate' : 'client secret' },
@@ -128,6 +134,15 @@ async function probeWith(
       ? [{ label: 'Certificate expires', value: secret.certificateNotAfter.slice(0, 10) }]
       : []),
     ...successor,
+    ...(lapsed
+      ? [
+          { label: 'New certificate expires', value: signing.certificateNotAfter!.slice(0, 10) },
+          {
+            label: 'Certificate',
+            value: 'lapsed — signing with the new certificate; save the connection to switch to it for good',
+          },
+        ]
+      : []),
   ];
   if (!token.ok) return probeOf({ ok: false, refused: token.refused, error: token.error, facts });
   try {

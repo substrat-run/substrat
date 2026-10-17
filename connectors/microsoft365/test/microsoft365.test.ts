@@ -788,6 +788,29 @@ describe('rotating the certificate before it lapses', () => {
       expect(h.uses).toEqual([expect.objectContaining({ ok: false, status: 401 })]);
     });
 
+    it('a second after the current certificate lapses, Test connection signs with the successor, as a send does', async () => {
+      const { secret } = await rotating();
+      const lapsed = new Date(Date.parse(secret.certificateNotAfter!) + 1000);
+      const nxt = await thumbprintS256(secret.nextCertificate!);
+      const ms = entra([nxt], siteOk);
+      const h = hostWith(secret);
+      const p = await probeMicrosoft365Connection(h.host, conn, { fetch: ms.fetchImpl, now: () => lapsed });
+      expect(p).toMatchObject({ ok: true, accountLabel: 'Team' });
+      expect(p.facts.find((f) => f.label === 'Certificate')?.value).toContain('save the connection');
+      // The successor, asked once, as the probe's own (recorded, healthy) sign-in.
+      expect(ms.signedWith).toEqual([nxt]);
+      expect(h.uses.length).toBeGreaterThan(0);
+      expect(h.uses.every((u) => u.ok)).toBe(true);
+    });
+
+    it('lapsed with a successor not uploaded, Test connection says to upload it', async () => {
+      const { secret } = await rotating();
+      const lapsed = new Date(Date.parse(secret.certificateNotAfter!) + 1000);
+      const p = await probeMicrosoft365Connection(hostWith(secret).host, conn, { fetch: entra([]).fetchImpl, now: () => lapsed });
+      expect(p).toMatchObject({ ok: false, refused: false });
+      expect(p.error).toContain('not on the app registration yet');
+    });
+
     it('a send that falls back to the successor records one sign-in, the one that decided it', async () => {
       const { secret, at } = await rotating();
       const ms = entra([await thumbprintS256(secret.nextCertificate!)], { '/sendMail': { status: 202, body: {} } });

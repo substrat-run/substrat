@@ -233,13 +233,23 @@ export async function acquireToken(
   opts: { loginBase?: string; now: Date },
 ): Promise<TokenOutcome> {
   const next = withNextOnly(secret);
-  if (!next) return requestToken(fetchImpl, secret, opts);
-  const lapsed = secret.certificateNotAfter !== undefined && !(Date.parse(secret.certificateNotAfter) > opts.now.getTime());
-  if (lapsed) return requestToken(fetchImpl, next, opts);
+  const signing = signingCredential(secret, opts.now);
+  if (!next || signing !== secret) return requestToken(fetchImpl, signing, opts);
   const first = await requestToken(fetchImpl, secret, opts);
   if (first.ok || !first.notRegistered) return first;
   const second = await requestToken(fetchImpl, next, opts);
   return second.ok ? second : first;
+}
+
+/**
+ * The credential that signs at `now`: the successor once the current certificate has lapsed,
+ * otherwise the credential as stored. A caller tells which it got by
+ * identity: anything but `secret` itself is the successor.
+ */
+export function signingCredential(secret: Microsoft365Secret, now: Date): Microsoft365Secret {
+  const next = withNextOnly(secret);
+  const lapsed = secret.certificateNotAfter !== undefined && !(Date.parse(secret.certificateNotAfter) > now.getTime());
+  return next && lapsed ? next : secret;
 }
 
 /**
