@@ -843,6 +843,22 @@ describe('reads: the sync lands what is in the folder', () => {
       expect(w.landed).toEqual([expect.objectContaining({ change: 'delete', itemId: held, reason: 'moved-out' })]);
     });
 
+    // r3 #4: the lookup walks up through folders the pass never presented.
+    it('a held file under a folder the feed never presents is found inside by walking up, and stays', async () => {
+      const w = await world();
+      const f = w.drive.put(w.general, 'f.txt', 'f');
+      await w.bind();
+      await w.sync();
+      w.landed.length = 0;
+      const hidden = w.drive.mkdir(w.general, 'Unseen folder');
+      w.drive.move(f, hidden);
+      w.drive.hiddenFromFeed.add(hidden);
+      await w.sync();
+      expect(w.landed.filter((c) => c.change === 'delete')).toEqual([]);
+      expect(w.landed.find((c) => c.itemId === f)).toMatchObject({ change: 'upsert', path: 'Unseen folder/f.txt', previousPath: 'f.txt' });
+      expect(w.landed.find((c) => c.itemId === hidden)).toMatchObject({ change: 'upsert', kind: 'folder' });
+    });
+
     it('a verification that cannot reach the drive stops the pass and deletes nothing', async () => {
       const w = await world();
       const gone = w.drive.put(w.general, 'gone.txt', 'gone');
