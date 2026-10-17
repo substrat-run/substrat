@@ -569,16 +569,16 @@ export function orphanSweepContractSuite(adapterName: string, makeFixture: () =>
         // A dump never carries the licence's rows.
         const table = dump.tables.find((t) => t.name === '_substrat_attachment_sweep_licence');
         expect(table?.rows ?? []).toEqual([]);
-        // A hand-made dump that does is dropped on load all the same.
-        if (table) {
-          const row: unknown[] = table.columns.map(() => null);
-          row[table.columns.indexOf('id')] = orphan;
-          row[table.columns.indexOf('licensed_at')] = new Date(aged(now)).toISOString();
-          table.rows.push(row);
-        }
-        await host.restoreScope(staff, t1, s, dump);
-        // The restore fenced the scope too, so this pass is past both the fence and the age floor.
+        // The restore fences the scope too, so the passes after it run past both the fence and the
+        // age floor.
         const later = Date.now() + ORPHAN_SWEEP_FENCE_MS + DAY;
+        // A hand-made dump that does, stamped to be in force then, is dropped on load all the same.
+        expect(table).toBeDefined();
+        const row: unknown[] = table!.columns.map(() => null);
+        row[table!.columns.indexOf('id')] = orphan;
+        row[table!.columns.indexOf('licensed_at')] = new Date(later).toISOString();
+        table!.rows.push(row);
+        await host.restoreScope(staff, t1, s, dump);
         expect(reasonOf(await refusal(pass(later, { scope: s })))).toBe(ORPHAN_SWEEP_UNLICENSED);
         expect(await present(attachmentBlobKey(s, orphan))).toBe(true);
         // The twin: the dry run it needs, then the delete.
