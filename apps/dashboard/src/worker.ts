@@ -1328,7 +1328,7 @@ async function listAppsPage(c: Context<{ Bindings: Env }>, host: CloudflareScope
         a.hostname = healed.hostname;
       }
     }
-    // Reconcile the row's LINEAGE against the directory (#389): a staff
+    // Reconcile the row's LINEAGE against the directory (#389): a
     // rebind-vertical moves the scope onto a different lineage (builtin
     // 'manyfold' → tenant-owned 'acme/manyfold') and only the directory knows —
     // the stale slug here misroutes the Update path (prod channels resolve by

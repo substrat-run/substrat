@@ -752,10 +752,11 @@ export class TenantNarrowedControlPlane {
    * update-rebind, data first: the target's serving script receives the data and the
    * source script keeps its copy, which is the backout.
    *
-   * The plane's route is staff-only and this seam holds the staff-level service token, so
-   * the narrowing is the caller's to do — and `bound-scopes.ts` does it: the scope must be
-   * one this tenant has bound to the vertical being left, and the target must be a
-   * vertical this tenant owns. This method pins the TENANT (the path), not the target.
+   * This seam sends the tenant credential it holds, pinned to the tenant in the path; the plane
+   * judges the crossing by the one rule it shares with the review read (both verticals readable
+   * by the tenant: its own, or listed), and answers anything else with the same 404. The
+   * dashboard narrows further in `bound-scopes.ts`: the scope must be one this tenant has bound
+   * to the vertical being left, and the target must be a vertical this tenant owns.
    *
    * `ackMigrations` is the operator's statement that they have read what the crossing applies;
    * without it the plane refuses a crossing whose digests differ. #2347: `review` names the
@@ -2095,7 +2096,7 @@ export class TenantNarrowedControlPlane {
    * for reconciling the dashboard's own install row against it (#424 case 4: a
    * retried install can leave the dashboard row at 'provisioning' forever while the
    * directory has been 'active' all along). Carries the scope's `vertical` too — a
-   * staff rebind-vertical moves a scope onto a different lineage and only the
+   * rebind-vertical moves a scope onto a different lineage and only the
    * directory knows (#389); the read-path reconcile heals the row's slug from it.
    * `null` when the scope can't be read — callers treat that as "unknown, change nothing".
    */

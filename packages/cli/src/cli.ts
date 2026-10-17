@@ -225,7 +225,8 @@ Usage:
                                               lineage's serving script, data carried;
                                               the old copy is deleted once the move is
                                               confirmed, so snapshot first to keep a way
-                                              back (staff; --ack-migrations with the
+                                              back (staff, or a workspace for its own
+                                              scope; --ack-migrations with the
                                               --review token its refusal prints, to
                                               cross a differing migration surface;
                                               --abandon-data for a source script that

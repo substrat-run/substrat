@@ -6618,10 +6618,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   });
 
   // Rebind ONE scope onto a different vertical lineage (#389) — the update-rebind that
-  // retires a platform-owned lineage in favour of a tenant-owned one. Deliberately NOT
-  // in BUILDER_ROUTES: a lineage crossing re-homes a customer's data under a different
-  // registry owner, which is a staff decision like admission — the allowlist's
-  // default-deny 403s a builder without a line here.
+  // retires a platform-owned lineage in favour of a tenant-owned one. Callers: staff, and a
+  // tenant credential pinned to the tenant in the path (TENANT_ROUTES); the crossing is judged
+  // by `crossingHidden`, the rule the review read shares. Deliberately NOT in BUILDER_ROUTES:
+  // a builder's push token is default-denied it.
   app.post('/tenants/:tenantId/scopes/:scopeId/rebind-vertical', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));

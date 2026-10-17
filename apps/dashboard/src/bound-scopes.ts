@@ -17,10 +17,11 @@ import { ControlPlaneError, type RebindReview, type TenantNarrowedControlPlane }
  *
  * ## Why the narrowing lives here
  *
- * The dashboard reaches the plane over a staff-level service token, and the plane's
- * `rebind-vertical` and `reap` routes are staff routes — a builder is default-denied them
- * on the plane itself (`BUILDER_ROUTES`). The tenant narrowing is therefore this seam's,
- * and it has three parts, each held below:
+ * The dashboard reaches the plane with its tenant credential, pinned to the tenant in the
+ * path (a builder's push token is default-denied `rebind-vertical` and `reap` on the plane,
+ * `BUILDER_ROUTES`). The plane keeps the tenant to its own scopes and, for a rebind, to
+ * verticals it can read; what a Move and a Retire may touch on this page is narrower still,
+ * and that narrowing is this seam's, in three parts, each held below:
  *
  * - a scope id is acted on only if it is in the pinned tenant's own bound list for this
  *   vertical (`pick`) — a foreign or unrelated id never reaches a mutating call;

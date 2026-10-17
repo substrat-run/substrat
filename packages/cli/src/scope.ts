@@ -445,7 +445,8 @@ export async function bindScopeVersion(opts: {
 /**
  * `substrat scope rebind <scopeId> --to <slug>` — move ONE scope onto a DIFFERENT vertical
  * lineage's serving script (#389): the update-rebind behind retiring a platform-owned lineage
- * in favour of a tenant-owned one. Staff-only server-side. Refused when the two lineages'
+ * in favour of a tenant-owned one. Server-side: staff, or a workspace for its own scope between
+ * verticals it can see (its own, or listed). Refused when the two lineages'
  * migration digests differ, unless `--ack-migrations` says the diff was read.
  *
  * #2347: that acknowledgement answers ONE review — the target's serving version over the version

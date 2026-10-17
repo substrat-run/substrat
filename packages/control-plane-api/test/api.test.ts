@@ -5669,7 +5669,7 @@ describe('control-plane API — builder authz', () => {
         tenantId: acme, scopeId: scopeId.parse(ulid()), owner: ulid(), slug: 'x', name: 'X',
       })).status,
     ).toBe(403);
-    // A lineage crossing re-homes data under a different registry owner — staff-only (#389).
+    // A lineage crossing is not a builder push token's to make (#389): not in BUILDER_ROUTES.
     expect(
       (await acmeReq(`/tenants/${acme}/scopes/${scopeId.parse(ulid())}/rebind-vertical`, 'POST', {
         vertical: 'acme-co/helpdesk',
