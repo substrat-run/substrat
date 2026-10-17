@@ -942,20 +942,7 @@ function fenceOf(folderId: string, changed: Map<string, DriveItem>, index: Map<s
     }
     return names.join('/');
   };
-  /** Why a held item left: it, or a folder above it, was deleted — or it was moved out. */
-  const goneReason = (id: string): 'deleted' | 'moved-out' => {
-    const seen = new Set<string>();
-    let at: string | null = id;
-    while (at && at !== folderId && !seen.has(at)) {
-      seen.add(at);
-      const c = changed.get(at);
-      if (c?.deleted) return 'deleted';
-      if (c) return 'moved-out';
-      at = index.get(at)?.parentId ?? null;
-    }
-    return 'moved-out';
-  };
-  return { inside, pathOf, goneReason };
+  return { inside, pathOf };
 }
 
 type Planned =
@@ -978,7 +965,11 @@ function planChanges(
     const path = fence.inside(id) ? fence.pathOf(id) : null;
     if (path === null) {
       if (!prior) continue; // outside the folder, and never inside: not ours to see
-      deletes.push({ change: 'delete', id, prior, reason: fence.goneReason(id) });
+      // Deleted only on the item's OWN deleted facet. Anything else — moved somewhere this page
+      // cannot place, or under a folder the page shows deleted — is 'moved-out' here, which the
+      // caller never lands on a page's word: a later page may place it, and otherwise it is looked
+      // up on its own at the end of the pass.
+      deletes.push({ change: 'delete', id, prior, reason: item?.deleted ? 'deleted' : 'moved-out' });
       continue;
     }
     // Inside, but the pass did not mention it: an ancestor moved or was renamed.

@@ -531,19 +531,41 @@ describe('reads: the sync lands what is in the folder', () => {
     expect(everything).not.toContain('Leadership');
   });
 
-  it('a folder delete lands its held children as deleted', async () => {
+  it('a folder delete lands its held children as deleted, each on its own answer', async () => {
     const w = await world();
     const sub = w.drive.mkdir(w.general, 'Minutes');
-    w.drive.put(sub, 'm1.txt', 'one');
+    const m1 = w.drive.put(sub, 'm1.txt', 'one');
     await w.bind();
     await w.sync();
     w.landed.length = 0;
     w.drive.remove(sub);
     await w.sync();
+    // The folder on its own deleted facet; the file it held on its own 404, not by inference.
     expect(w.landed.map((c) => [c.change, c.path, c.change === 'delete' ? c.reason : null])).toEqual([
-      ['delete', 'Minutes/m1.txt', 'deleted'],
       ['delete', 'Minutes', 'deleted'],
+      ['delete', 'Minutes/m1.txt', 'deleted'],
     ]);
+    expect(w.drive.calls.some((c) => c.url.includes(`/items/${m1}?`))).toBe(true);
+  });
+
+  // r3 #3: a deletion inferred from a held parent is held until the feed ends.
+  it('a held file whose old folder the feed shows deleted, and which a later page shows alive, is moved, not deleted', async () => {
+    const w = await world();
+    const old = w.drive.mkdir(w.general, 'Old');
+    const x = w.drive.put(old, 'x.txt', 'x');
+    await w.bind();
+    await w.sync();
+    w.landed.length = 0;
+    w.drive.move(x, w.general);
+    w.drive.remove(old);
+    w.drive.rename(x, 'x2.txt'); // so the feed presents Old first, then x
+    w.drive.pageSize = 1;
+    const downloads = () => w.drive.calls.filter((c) => c.url.includes(`/items/${x}/content`)).length;
+    const before = downloads();
+    while (!(await w.sync(1)).complete);
+    expect(w.landed.filter((c) => c.change === 'delete').map((c) => c.itemId)).toEqual([old]);
+    expect(w.landed.find((c) => c.itemId === x)).toMatchObject({ change: 'upsert', path: 'x2.txt', previousPath: 'Old/x.txt', content: 'unchanged' });
+    expect(downloads()).toBe(before);
   });
 
   it('an unchanged folder lands nothing on the next pass', async () => {
