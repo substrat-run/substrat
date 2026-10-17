@@ -854,6 +854,13 @@ export {
   isBindExportBreakRefusal,
 } from './export-break.js';
 export {
+  promoteReviewDigest,
+  assertPromoteReviewCurrent,
+  promoteReviewRefusalOf,
+  promoteRaceRefusal,
+  type ReviewedVersion,
+} from './promote-review.js';
+export {
   PROVISIONED_VERSIONS_SQL,
   installsReconciledOf,
   installsReconciledNote,

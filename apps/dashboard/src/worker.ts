@@ -23,7 +23,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
-import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, hostnameStatus, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, promotionAcknowledgement, promoteReviewReasonIn, substratError, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, hostnameStatus, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
@@ -808,9 +808,8 @@ async function oidcProviderSlugsFor(
 const promoteBody = z.object({
   channel: z.enum(['prod']),
   versionId: z.string().min(1),
-  acknowledge: z
-    .object({ permissionChange: z.boolean().optional(), migrationChange: z.boolean().optional(), exportBreak: z.boolean().optional() })
-    .optional(),
+  // #2333: `review` binds the acknowledgements to the review they answer (`promotionAcknowledgement`).
+  acknowledge: promotionAcknowledgement.optional(),
 });
 
 // #1756: what an Update or a Bind may acknowledge — the plane refuses a version that drops an
@@ -5334,7 +5333,15 @@ app.post('/api/deployments/:slug/promote', async (c) => {
   if (body.channel === 'prod' && target.listed) {
     throw new HTTPException(403, { message: 'production for a published vertical is promoted by the Substrat team' });
   }
-  await cp.promote(slug, body.channel, body.versionId, body.acknowledge);
+  try {
+    await cp.promote(slug, body.channel, body.versionId, body.acknowledge);
+  } catch (e) {
+    // #2333: a review that moved under the acknowledgement (or a migration acknowledgement with
+    // none) is answered with its reason, which the dialog reads to re-read the review and ask again.
+    const reason = e instanceof ControlPlaneError ? promoteReviewReasonIn(e.body) : undefined;
+    if (reason) throw substratError('precondition_failed', e instanceof Error ? e.message : String(e), { reason });
+    throw e;
+  }
   return c.body(null, 204);
 });
 

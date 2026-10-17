@@ -1,4 +1,4 @@
-import type { MigrationDiff } from '@substrat-run/contracts';
+import { promoteReviewReasonIn, type MigrationDiff, type PromotionReviewBinding } from '@substrat-run/contracts';
 import { diffRegistries, hasRegistryChange, type RegistryDiff, type RegistryLike } from './registry-diff.js';
 
 /**
@@ -24,6 +24,12 @@ export interface PromoteReviewWire {
   migrations: MigrationDiff | null;
   /** #1705 PR 3: whom the promotion breaks (this tenant's apps by name, others as a count). */
   exportBreaks?: ExportBreakListing | null;
+  /**
+   * #2333: what an acknowledgement of THIS review is bound to — read in the same answer as
+   * `migrations`, so it names exactly the diff shown. Sent with the promote, which the registry
+   * refuses once prod has moved. Absent or null: nothing serves, or an older worker.
+   */
+  review?: PromotionReviewBinding | null;
 }
 
 /** The installed apps a promotion breaks, as the plane lists them to this tenant. */
@@ -38,6 +44,9 @@ export interface Acks {
   migrationChange?: true;
   exportBreak?: true;
 }
+
+/** What a promote sends: the acknowledgements given, and the review they answer (#2333). */
+export type SentAcks = Acks & { review?: PromotionReviewBinding };
 
 /**
  * #1705 PR 3: the export-break half. `listing` is the review's (read before promoting); a refusal
@@ -104,6 +113,11 @@ export interface Checkpoint {
   exportBreak?: ExportBreakSection | null;
   /** Kinds already acknowledged in this promote — shown as such, not asked for again. */
   acknowledged: Acks;
+  /**
+   * #2333: prod moved since the review this promote began with, so this checkpoint is a new
+   * review and every earlier tick was dropped. The dialog says so.
+   */
+  reviewMoved?: true;
 }
 
 /** The export-break section a review yields before anything is sent, or null when nothing breaks. */
@@ -137,8 +151,12 @@ export function planPermission(review: PromoteReviewWire): PermissionSection | n
   return hasRegistryChange(diff) ? { kind: 'diff', diff, from, to } : null;
 }
 
-/** A refusal the registry's gate made, read out of its message. */
-export type Refusal = { kind: 'permission' | 'migration'; digests: string | null } | { kind: 'export-break'; summary: string };
+/** A refusal the registry's gate made, read out of its message (and, for a review, its reason). */
+export type Refusal =
+  | { kind: 'permission' | 'migration'; digests: string | null }
+  | { kind: 'export-break'; summary: string }
+  /** #2333: the review the acknowledgements were bound to is not the one prod would apply now. */
+  | { kind: 'review-moved' };
 
 const NEEDS_ACK = 'acknowledge it explicitly';
 /** How the export-break refusal begins (`EXPORT_BREAK_REFUSAL`, #1705 PR 3). */
@@ -151,7 +169,9 @@ const EXPORT_BREAK = 'promotion drops or re-versions';
  * no section for: it is surfaced as the error it is rather than guessed at, because the
  * guess is the click-through this file exists to end.
  */
-export function classifyRefusal(message: string): Refusal | 'unrecognised' | null {
+export function classifyRefusal(message: string, reason?: unknown): Refusal | 'unrecognised' | null {
+  // #2333: read off the problem's `reason`, never its sentence.
+  if (promoteReviewReasonIn({ reason }) !== undefined) return { kind: 'review-moved' };
   const at = message.indexOf(EXPORT_BREAK);
   if (at >= 0) return { kind: 'export-break', summary: message.slice(at) };
   if (!message.includes(NEEDS_ACK)) return null;
@@ -205,7 +225,7 @@ export interface PromoteDeps {
   /** The permission review; a rejection blocks the promote — see `promoteWithCheckpoint`. */
   review(): Promise<PromoteReviewWire>;
   /** The promote itself, with the acknowledgements to send (`undefined` = none, as before). */
-  promote(acknowledge: Acks | undefined): Promise<void>;
+  promote(acknowledge: SentAcks | undefined): Promise<void>;
   /** The dialog. Resolves the boxes the person ticked, or `null` if they backed out. */
   ask(checkpoint: Checkpoint): Promise<Acks | null>;
 }
@@ -213,6 +233,11 @@ export interface PromoteDeps {
 export type PromoteOutcome = 'promoted' | 'cancelled';
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+/** The problem `reason` a failed call carried: `ApiError.reason`, or a platform error's own extension. */
+const reasonOf = (e: unknown): unknown => {
+  const err = e as { reason?: unknown; extensions?: { reason?: unknown } } | null;
+  return err?.reason ?? err?.extensions?.reason;
+};
 
 /**
  * Promote through the checkpoint.
@@ -227,16 +252,22 @@ const messageOf = (e: unknown): string => (e instanceof Error ? e.message : Stri
  *    SQL to show; the permission digest can differ where no diff could be drawn), show that
  *    kind in the same dialog and ask again. A refusal for a kind already acknowledged is not
  *    retried — the state moved under the person, and they are told.
+ * 5. #2333: every promote carries the review's binding. If prod moved since the review was read
+ *    (the registry refuses the binding, or a first promote's review meets a digest refusal),
+ *    the review is read again and the new one asked from scratch: no tick given against the old
+ *    review is carried over, because it acknowledged a diff that is no longer the one applied.
  */
 export async function promoteWithCheckpoint(deps: PromoteDeps): Promise<PromoteOutcome> {
-  const review = await deps.review();
-
-  let checkpoint: Checkpoint = {
-    permission: planPermission(review),
-    migration: planMigration(review),
-    exportBreak: planExportBreak(review),
+  let review = await deps.review();
+  const planOf = (r: PromoteReviewWire): Checkpoint => ({
+    permission: planPermission(r),
+    migration: planMigration(r),
+    exportBreak: planExportBreak(r),
     acknowledged: {},
-  };
+  });
+
+  let checkpoint: Checkpoint = planOf(review);
+  const asks = (c: Checkpoint) => c.permission !== null || c.migration !== null || (c.exportBreak ?? null) !== null;
 
   // A section is acknowledged only when the dialog shows it and the person ticks it; the
   // rest of the function never sets a flag any other way.
@@ -247,22 +278,31 @@ export async function promoteWithCheckpoint(deps: PromoteDeps): Promise<PromoteO
     return readyToPromote(outstanding(checkpoint));
   };
 
-  if (
-    (checkpoint.permission !== null || checkpoint.migration !== null || checkpoint.exportBreak !== null) &&
-    !(await confirm())
-  ) {
+  if (asks(checkpoint) && !(await confirm())) {
     return 'cancelled';
   }
 
-  // Three kinds exist, so a fourth refusal is not a next step but a loop.
-  for (let round = 0; round < 4; round++) {
-    const sent = { ...checkpoint.acknowledged };
+  // Three kinds exist, so a fourth refusal is not a next step but a loop; and prod moving under
+  // the review a third time is reported rather than chased. A move starts a new review, so it
+  // does not count as one of the kinds' rounds.
+  let moves = 0;
+  for (let round = 0; round < 4; ) {
+    const sent: SentAcks = { ...checkpoint.acknowledged, ...(review.review ? { review: review.review } : {}) };
     try {
-      await deps.promote(sent.permissionChange || sent.migrationChange || sent.exportBreak ? sent : undefined);
+      await deps.promote(sent.permissionChange || sent.migrationChange || sent.exportBreak || sent.review ? sent : undefined);
       return 'promoted';
     } catch (e) {
-      const refusal = classifyRefusal(messageOf(e));
+      const refusal = classifyRefusal(messageOf(e), reasonOf(e));
       if (refusal === null || refusal === 'unrecognised') throw e;
+      // A first promote's review had nothing to diff; a digest refusal means something serves now.
+      const moved = refusal.kind === 'review-moved' || (review.serving === null && refusal.kind !== 'export-break');
+      if (moved) {
+        if (++moves > 2) throw new Error('Prod kept changing while this promotion was reviewed — reload and try again.');
+        review = await deps.review();
+        checkpoint = { ...planOf(review), reviewMoved: true };
+        if (asks(checkpoint) && !(await confirm())) return 'cancelled';
+        continue;
+      }
       if (refusal.kind === 'export-break') {
         if (sent.exportBreak === true) throw e;
         checkpoint = { ...checkpoint, exportBreak: { kind: 'server-reported', summary: refusal.summary } };
@@ -275,6 +315,7 @@ export async function promoteWithCheckpoint(deps: PromoteDeps): Promise<PromoteO
             : { ...checkpoint, migration: { digests: refusal.digests, sql: review.migrations, enforced: true } };
       }
       if (!(await confirm())) return 'cancelled';
+      round++;
     }
   }
   throw new Error('The registry kept refusing the promotion — reload and try again.');

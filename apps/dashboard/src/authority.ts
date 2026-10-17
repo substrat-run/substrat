@@ -34,6 +34,8 @@ import type {
   PermissionDenial,
   MigrationDiff,
   PermissionRegistry,
+  PromotionAcknowledgement,
+  PromotionReviewBinding,
   PlatformRequestEntry,
   PreviewAuth,
   PrincipalId,
@@ -967,14 +969,15 @@ export class TenantNarrowedControlPlane {
           return res.registry ?? null;
         },
         migrations: async (id, baseId) => {
-          const res = await this.call<{ migrations?: MigrationDiff | null } | undefined>(
+          const res = await this.call<{ migrations?: MigrationDiff | null; review?: PromotionReviewBinding } | undefined>(
             `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(id)}/migrations?base=${encodeURIComponent(baseId)}`,
           );
           // The same rule as the registry: an OK answer with no readable body is no answer.
           if (!res || typeof res !== 'object' || !('migrations' in res)) {
             throw new ControlPlaneError(502, `the migrations of version ${id} could not be read`);
           }
-          return res.migrations ?? null;
+          // #2333: the binding comes from this same answer, so it names exactly the diff above.
+          return { migrations: res.migrations ?? null, review: res.review ?? null };
         },
         exportBreaks: async (id) => {
           const res = await this.call<ExportBreaks | undefined>(
@@ -1651,7 +1654,7 @@ export class TenantNarrowedControlPlane {
     verticalSlug: string,
     channel: string,
     versionId: string,
-    acknowledge?: { permissionChange?: boolean; migrationChange?: boolean; exportBreak?: boolean },
+    acknowledge?: PromotionAcknowledgement,
   ): Promise<void> {
     return this.post(
       `/verticals/${encodeURIComponent(verticalSlug)}/channels/${encodeURIComponent(channel)}/promote`,

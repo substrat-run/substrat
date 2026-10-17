@@ -13,6 +13,7 @@ import type {
   HostnameRow,
   ListingRecord,
   PromoteAcknowledge,
+  PromoteReviewBinding,
   PromoteResult,
   ProvisionScopeResult,
   PulledDump,
@@ -130,8 +131,15 @@ export class ControlPlaneBuilderClient extends ControlPlaneTransport {
     return this.read(`/verticals/${seg(slug)}/versions/${seg(versionId)}/registry`);
   }
 
-  /** The migrations a version adds over `base`, as the control plane diffs them. */
-  getVersionMigrations<M>(slug: string, versionId: string, base: string): Promise<{ migrations: M | null }> {
+  /**
+   * The migrations a version adds over `base`, as the control plane diffs them, and the binding a
+   * promote's acknowledgement of them carries (#2333; absent from a control plane before it).
+   */
+  getVersionMigrations<M>(
+    slug: string,
+    versionId: string,
+    base: string,
+  ): Promise<{ migrations: M | null; review?: PromoteReviewBinding }> {
     return this.read(`/verticals/${seg(slug)}/versions/${seg(versionId)}/migrations?base=${seg(base)}`);
   }
 

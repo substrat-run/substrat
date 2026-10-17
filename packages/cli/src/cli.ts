@@ -40,7 +40,7 @@ import {
 } from './push.js';
 import { printVersions } from './versions.js';
 import { checkOutboundDeclared } from './outbound-scan.js';
-import { exportBreakLines, promote, type PromoteResult } from './promote.js';
+import { exportBreakLines, parseReviewToken, promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
 import { isReleaseSha, packedFilesOf, packStoreDriverDir, rollBackStoreDriver, sourceCommitOf, rollOutStoreDriver, storeDriverStatus, storeDriverStatusLines, uploadStoreDriverRelease } from './store-driver.js';
 import { fetchWhoami } from './whoami.js';
@@ -163,6 +163,7 @@ Usage:
                                                the registry as data instead of prose
   substrat promote  <slug> --version <versionId>
                     [--ack-permissions] [--ack-migrations] [--ack-export-break]  (prod is the only channel)
+                    [--review <token>]           the review the acks answer, as the refusal printed it
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
   substrat store-driver upload --driver <driver> --dir <dir> --entry <driver_x/…/module.py> [--commit <sha>]
                                               store a release of a scope-store driver (staff, signed in)
@@ -285,7 +286,9 @@ so '--promote prod' is a complete deploy. Once a vertical is LISTED on the marke
 pushes land PENDING and prod promotion + admission are a staff decision again. A promotion
 that changes the permission or migration surface is refused until the change is
 acknowledged (--ack-permissions / --ack-migrations) — the refusal prints the permission
-diff and each new migration's SQL; read them first. For a non-prod environment, run the version against a copy of the data with 'substrat preview
+diff and each new migration's SQL; read them first. It also prints a --review token: the
+acknowledgement answers that review, and is refused if prod moved since it was read (a
+migration acknowledgement is refused without one). For a non-prod environment, run the version against a copy of the data with 'substrat preview
 create' — dev/staging channels were retired (#509).
 
 Auth resolves: explicit --token/SUBSTRAT_SERVICE_TOKEN → stored browser session →
@@ -594,8 +597,15 @@ async function cmdPromote(): Promise<void> {
   const version = flag('version');
   if (!slug || slug.startsWith('--') || !version) {
     console.error(
-      'usage: substrat promote <slug> --version <versionId> [--ack-permissions] [--ack-migrations] [--ack-export-break]',
+      'usage: substrat promote <slug> --version <versionId> [--ack-permissions] [--ack-migrations] [--ack-export-break] [--review <token>]',
     );
+    process.exit(1);
+  }
+  // #2333: the review the acknowledgements answer, as a refusal printed it.
+  const reviewFlag = flag('review');
+  const review = reviewFlag === undefined ? undefined : parseReviewToken(reviewFlag);
+  if (review === null) {
+    console.error('--review takes the token a refused promote printed (<base>:<digest>)');
     process.exit(1);
   }
   const { controlPlaneUrl, header, as } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
@@ -606,8 +616,11 @@ async function cmdPromote(): Promise<void> {
           ...(argv.includes('--ack-permissions') ? { permissionChange: true } : {}),
           ...(argv.includes('--ack-migrations') ? { migrationChange: true } : {}),
           ...(argv.includes('--ack-export-break') ? { exportBreak: true } : {}),
+          ...(review ? { review } : {}),
         }
-      : undefined;
+      : review
+        ? { review }
+        : undefined;
   const ch = await promote({ controlPlaneUrl, header, slug, channel, versionId: version, acknowledge });
   console.log(`✓ ${slug} → ${ch.channel} now points at ${ch.versionId}`);
   if (ch.exportBreaks) {

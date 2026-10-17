@@ -299,7 +299,7 @@ for the wrong owner. A non-interactive push (CI) with no pin refuses instead of 
 ### `promote`
 
 ```bash
-substrat promote helpdesk --version 01J… --ack-migrations
+substrat promote helpdesk --version 01J… --ack-migrations --review 01J…:5f3c…
 ```
 
 Points **`prod`** at an **admitted** version — a rebind of the live scope(s) to new code, same
@@ -311,6 +311,12 @@ refused until you acknowledge the diff (`--ack-permissions` / `--ack-migrations`
 prints the permission diff and each migration the version adds on top of the live one, with its
 SQL, so the flag answers something you have read. A version pushed before migrations were carried
 in the manifest says its SQL is not available.
+
+The refusal also prints a `--review <token>`: the review those diffs are, bound to the version prod
+pointed at when they were read. Re-run with it. If prod moved since, the promote is refused as
+stale and the current diffs are printed with a new token. `--ack-migrations` without a token is
+refused when the migrations changed (`--ack-permissions` alone is still honoured); see
+[An acknowledgement answers one review](/guide/deploying#acknowledgement-answers-one-review).
 
 For a non-production environment — test, canary, a PR preview — you do **not** promote a second
 channel; you run the version against a scope with data. See [`preview`](#preview),

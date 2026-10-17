@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { MigrationDiff, PermissionRegistry } from '@substrat-run/contracts';
-import { formatMigrationDiff, formatRegistryDiff, promote } from '../src/promote.js';
+import { formatMigrationDiff, formatRegistryDiff, parseReviewToken, promote, reviewToken } from '../src/promote.js';
 
 /**
  * `substrat promote` refusing with the two diffs (#1677), not only the digests. The plane is
@@ -41,14 +41,24 @@ function plane(o: {
   registries?: { v1: PermissionRegistry; v2: PermissionRegistry };
   /** #1705 PR 3: the listing an export-break refusal carries in its body. */
   exportBreaks?: { affected: { scopeId: string; vertical: string; type: string; schemaVersion: number; incoming: number | null }[] };
+  /** #2333: the problem's `reason`, answered as a 412 the way the gate's review refusals are. */
+  reason?: string;
+  /** #2333: the binding the migrations read answers beside its diff. */
+  review?: { base: string | null; digest: string };
+  /** The promote bodies sent. */
+  bodies?: unknown[];
 }) {
   const seen: string[] = [];
   globalThis.fetch = (async (input: string, init?: RequestInit) => {
     const url = new URL(input);
     seen.push(`${init?.method ?? 'GET'} ${url.pathname}${url.search}`);
     if (url.pathname.endsWith('/promote')) {
+      o.bodies?.push(JSON.parse(String(init?.body)));
       return o.refusal
-        ? Response.json({ error: o.refusal, ...(o.exportBreaks ? { exportBreaks: o.exportBreaks } : {}) }, { status: 409 })
+        ? Response.json(
+            { error: o.refusal, ...(o.exportBreaks ? { exportBreaks: o.exportBreaks } : {}), ...(o.reason ? { reason: o.reason } : {}) },
+            { status: o.reason ? 412 : 409 },
+          )
         : Response.json({ channel: 'prod', versionId: 'v2' });
     }
     if (url.pathname.endsWith('/channels')) {
@@ -59,7 +69,7 @@ function plane(o: {
       if (o.registries) return Response.json({ registry: url.pathname.includes('/v1/') ? o.registries.v1 : o.registries.v2 });
       return Response.json({ registry: url.pathname.includes('/v1/') ? reg() : reg([{ key: 'desk:admin', description: 'Administer' }], ['desk:admin']) });
     }
-    if (url.pathname.endsWith('/migrations')) return Response.json({ migrations: o.migrations });
+    if (url.pathname.endsWith('/migrations')) return Response.json({ migrations: o.migrations, ...(o.review ? { review: o.review } : {}) });
     return new Response('unexpected', { status: 599 });
   }) as typeof fetch;
   return seen;
@@ -301,5 +311,75 @@ describe('the diff formatters', () => {
   it('formatMigrationDiff: says "at least" when the answer is cut (#2322 r1)', () => {
     const out = formatMigrationDiff(diff({ added: [{ moduleId: 'd', version: '1', sql: 's', discards: { t: 'why' } }], total: 300, truncated: true }), false);
     expect(out[0]).toBe("! this promote deliberately discards data in at least 1 place; each reason is the migration author's own");
+  });
+});
+
+describe('substrat promote — the acknowledgement answers the review it printed (#2333)', () => {
+  const D1 = 'a'.repeat(64);
+  const D2 = 'b'.repeat(64);
+  const STALE = 'the promote review is stale: it was read against version v0, and prod now points at version v1. Read the review again and acknowledge what it shows now';
+  const UNBOUND = "acknowledging a migration change needs the review it answers: send acknowledge.review (…). From the command line, upgrade to a CLI release whose 'substrat promote' supports --review, and run it without --ack-migrations: it prints the migrations and the --review token to acknowledge them with (https://substrat.net/guide/deploying#acknowledgement-answers-one-review)";
+
+  it('a digest refusal prints the token the migrations read answered beside the diff it prints', async () => {
+    const seen = plane({ refusal: MIG_REFUSAL, migrations: diff(), review: { base: 'v1', digest: D1 } });
+    const text = await refusalOf();
+    expect(text).toMatch(/migration changes:\n {2}\+ desk 0002-priority/);
+    expect(text).toContain(`--review v1:${D1}`);
+    // One read gave both: there is no second migrations read the token could have come from.
+    expect(seen.filter((l) => l.includes('/migrations'))).toEqual(['GET /api/verticals/desk/versions/v2/migrations?base=v1']);
+  });
+
+  it('a stale review is answered by the diffs as they stand now, and the new token', async () => {
+    plane({ refusal: STALE, reason: 'promote_review_stale', migrations: diff(), review: { base: 'v1', digest: D2 } });
+    const text = await refusalOf();
+    expect(text).toContain('the promote review is stale');
+    expect(text).toContain('prod serves v1; promoting v2.');
+    expect(text).toContain('permission changes:');
+    expect(text).toContain(`--review v1:${D2}`);
+  });
+
+  it('a migration acknowledgement sent without a token is answered with the migrations and one', async () => {
+    plane({ refusal: UNBOUND, reason: 'promote_review_unbound', migrations: diff(), review: { base: 'v1', digest: D1 } });
+    const text = await refusalOf();
+    expect(text).toContain('supports --review');
+    expect(text).toMatch(/migration changes:\n {2}\+ desk 0002-priority/);
+    expect(text).toContain(`--review v1:${D1}`);
+  });
+
+  it('a review sentence with no reason is any other failure — no diff reads', async () => {
+    const seen = plane({ refusal: STALE, migrations: diff() });
+    await refusalOf();
+    expect(seen).toEqual(['POST /api/verticals/desk/channels/prod/promote']);
+  });
+
+  it('a control plane that hands out no token is said so, never printed as one', async () => {
+    plane({ refusal: MIG_REFUSAL, migrations: diff() });
+    const text = await refusalOf();
+    expect(text).toContain('hands out no review token');
+    expect(text).not.toContain('--review v1');
+  });
+
+  it('a base id that is not plain is quoted, so it cannot forge a line', async () => {
+    plane({ refusal: MIG_REFUSAL, migrations: diff(), serving: 'v1\n+ forged', review: { base: 'v1\n+ forged', digest: D1 } });
+    const text = await refusalOf();
+    expect(text).toContain(`--review "v1\\n+ forged:${D1}"`);
+    expect(text).not.toMatch(/^\+ forged/m);
+  });
+
+  it('sends the binding it was given', async () => {
+    const bodies: unknown[] = [];
+    plane({ refusal: null, migrations: diff(), bodies });
+    const review = { base: 'v1', digest: D1 };
+    await promote({ controlPlaneUrl: 'http://cp/api', header: {}, slug: 'desk', channel: 'prod', versionId: 'v2', acknowledge: { migrationChange: true, review } });
+    expect(bodies).toEqual([{ versionId: 'v2', acknowledge: { migrationChange: true, review } }]);
+  });
+
+  it('the token round-trips, a first promote included, and anything else is refused', () => {
+    for (const review of [{ base: 'v1', digest: D1 }, { base: null, digest: D2 }, { base: 'a:b', digest: D1 }]) {
+      expect(parseReviewToken(reviewToken(review))).toEqual(review);
+    }
+    for (const bad of ['', D1, `v1:${D1.slice(1)}`, `v1:${D1.toUpperCase()}`, `:${D1}`, 'v1:']) {
+      expect(parseReviewToken(bad)).toBeNull();
+    }
   });
 });

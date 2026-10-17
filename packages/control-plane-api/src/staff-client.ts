@@ -36,6 +36,7 @@ import type {
   PermissionRegistry,
   PlatformRequestBacklog,
   PromotionAcknowledgement,
+  PromotionReviewBinding,
   Scope,
   ScopeBackup,
   ScopeId,
@@ -685,7 +686,12 @@ export class ControlPlaneStaffClient extends ControlPlaneTransport {
     this.call(
       `/verticals/${seg(slug)}/versions/${seg(versionId)}/registry`,
     );
-  versionMigrations = (slug: string, versionId: string, base?: string): Promise<{ migrations: MigrationDiff | null }> =>
+  // #2333: `review` is the binding a promote's acknowledgement of this diff carries.
+  versionMigrations = (
+    slug: string,
+    versionId: string,
+    base?: string,
+  ): Promise<{ migrations: MigrationDiff | null; review?: PromotionReviewBinding }> =>
     this.call(
       `/verticals/${seg(slug)}/versions/${seg(versionId)}/migrations${
         base === undefined ? '' : `?base=${seg(base)}`

@@ -376,8 +376,31 @@ export const promotionAcknowledgement = z.object({
    * also trips: this one is about OTHER apps' deployed code, and the refusal lists them.
    */
   exportBreak: z.boolean().optional(),
+  /**
+   * #2333: the review these acknowledgements were given against. A promote review is computed
+   * from the version being promoted over the channel's CURRENT version, and a concurrent promote
+   * between showing it and acknowledging it changes that base — so a bare flag would acknowledge
+   * a diff that is no longer the one applied. The binding names what was shown, as the
+   * migrations read answered it (`/versions/:id/migrations?base=` → `review`): the base version
+   * (null for a first promote) and the digest of the stored rows that review was computed from.
+   *
+   * The host recomputes the digest from its own stored rows and refuses (`precondition_failed`,
+   * reason `promote_review_stale`) when the channel no longer points at `base` or the digest
+   * differs. The sent digest is only ever compared, never read as the diff. A consumed
+   * `migrationChange` without a binding is refused too (`promote_review_unbound`); a
+   * permission-only acknowledgement without one is still honoured, so an older client keeps
+   * promoting wherever no migration — and so no declared data loss — is involved.
+   */
+  review: z
+    .object({
+      base: z.string().min(1).nullable(),
+      digest: z.string().regex(/^[0-9a-f]{64}$/),
+    })
+    .strict()
+    .optional(),
 });
 export type PromotionAcknowledgement = z.infer<typeof promotionAcknowledgement>;
+export type PromotionReviewBinding = NonNullable<PromotionAcknowledgement['review']>;
 
 /**
  * #1756: what a scope bind may acknowledge. Only `exportBreak` — a bind has no digest
@@ -387,3 +410,31 @@ export type PromotionAcknowledgement = z.infer<typeof promotionAcknowledgement>;
  */
 export const bindAcknowledgement = promotionAcknowledgement.pick({ exportBreak: true }).strict();
 export type BindAcknowledgement = z.infer<typeof bindAcknowledgement>;
+
+/**
+ * #2333: the `reason` on the promote gate's two refusals of a review binding (both
+ * `precondition_failed`): `stale`, the binding's base or digest no longer holds, and `unbound`, a
+ * migration acknowledgement sent without one. A client answers either by reading the review again.
+ */
+export const PROMOTE_REVIEW_REASONS = {
+  stale: 'promote_review_stale',
+  unbound: 'promote_review_unbound',
+} as const;
+export type PromoteReviewReason = (typeof PROMOTE_REVIEW_REASONS)[keyof typeof PROMOTE_REVIEW_REASONS];
+
+/**
+ * Which review refusal a problem body is, read from its `reason`, or undefined for any other
+ * answer. Takes the body as text (a transport's raw body) or already parsed.
+ */
+export function promoteReviewReasonIn(body: unknown): PromoteReviewReason | undefined {
+  let parsed = body;
+  if (typeof body === 'string') {
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      return undefined;
+    }
+  }
+  const reason = (parsed as { reason?: unknown } | null)?.reason;
+  return reason === PROMOTE_REVIEW_REASONS.stale || reason === PROMOTE_REVIEW_REASONS.unbound ? reason : undefined;
+}

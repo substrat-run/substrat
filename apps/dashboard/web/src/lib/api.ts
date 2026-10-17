@@ -1,7 +1,7 @@
 import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
 import { createClient, type DashboardClient } from './api.generated';
 import { tenantLogsQuery } from './logs-query';
-import type { PromoteReviewWire } from './promote-review';
+import type { PromoteReviewWire, SentAcks } from './promote-review';
 import { exportBreaksIn } from './bind-ack';
 import type { EdgeHealthReport, ImportCursorMove, ImportCursorMoved, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PreviewAuth, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
@@ -1535,6 +1535,8 @@ export class ApiError extends Error {
      * quotes to find the request. Absent where the answer carried none.
      */
     readonly requestId?: string,
+    /** The problem's `reason` slug, when it carried one: what a caller branches on (#2333). */
+    readonly reason?: string,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -1580,7 +1582,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     // `problemDetail` is the one reading of a failed body (#971) — the problem body's
     // sentence, then the deprecated duplicate every SPA read before it. The `probe`
     // beside it is the dashboard's own extension (#605) and stays read here.
-    const body = (await res.json().catch(() => null)) as { probe?: ConnectionProbeView; requestId?: unknown } | null;
+    const body = (await res.json().catch(() => null)) as { probe?: ConnectionProbeView; requestId?: unknown; reason?: unknown } | null;
     // Only something shaped like an id is surfaced as one: it is shown, and people copy it.
     const plausible = (v: unknown): string | undefined => (typeof v === 'string' && /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/i.test(v) ? v : undefined);
     const fromBody = plausible(body?.requestId);
@@ -1590,6 +1592,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
       body?.probe,
       exportBreaksIn<ExportBreakRow>(body),
       plausible(res.headers.get(REQUEST_ID_HEADER)) ?? fromBody,
+      typeof body?.reason === 'string' ? body.reason : undefined,
     );
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
@@ -2095,7 +2098,7 @@ export const api = {
     slug: string,
     channel: 'prod',
     versionId: string,
-    acknowledge?: { permissionChange?: boolean; migrationChange?: boolean; exportBreak?: boolean },
+    acknowledge?: SentAcks,
   ) =>
     call<void>(`/deployments/${encodeURIComponent(slug)}/promote`, {
       method: 'POST',

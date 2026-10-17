@@ -171,6 +171,11 @@ export const PROBLEM_EXTENSIONS = {
      * gives its user something to merge.
      */
     entity: entityRef.optional(),
+    /**
+     * Narrows a refusal a client acts on by re-reading: `promote_review_stale` (#2333), the
+     * review a promote's acknowledgement was bound to is no longer the one it would apply.
+     */
+    reason: z.string().min(1).optional(),
     ...storeCarry,
   }),
   rate_limited: z.object({ retryAfter: z.number().int().nonnegative().optional(), ...storeCarry }),

@@ -1,4 +1,4 @@
-import type { ExportBreak, MigrationDiff, PermissionRegistry } from '@substrat-run/contracts';
+import type { ExportBreak, MigrationDiff, PermissionRegistry, PromotionReviewBinding } from '@substrat-run/contracts';
 
 /**
  * The installed apps a promotion would break (#1705 PR 3), as the plane lists them to this
@@ -38,6 +38,13 @@ export interface PromotionReview {
    * installed app imports what it drops). Read BEFORE the promote so the dialog asks up front.
    */
   exportBreaks: ExportBreaks | null;
+  /**
+   * #2333: what an acknowledgement of this review is bound to — the base and digest the
+   * migrations read answered beside `migrations`, so it describes exactly the diff shown. The
+   * promote sends it, and the registry refuses it once prod has moved. Null when nothing serves
+   * or the version already does (no migrations read), or from a plane that hands none out.
+   */
+  review: PromotionReviewBinding | null;
 }
 
 /**
@@ -51,8 +58,8 @@ export interface PromotionReviewReader {
   /** The version the `prod` channel points at, or null when no version has been promoted. */
   prodVersionId(): Promise<string | null>;
   registry(versionId: string): Promise<PermissionRegistry | null>;
-  /** What `versionId` adds on top of `baseId`, or null when its manifest carries no SQL. */
-  migrations(versionId: string, baseId: string): Promise<MigrationDiff | null>;
+  /** What `versionId` adds on top of `baseId` (null when its manifest carries no SQL), and the binding read with it. */
+  migrations(versionId: string, baseId: string): Promise<{ migrations: MigrationDiff | null; review: PromotionReviewBinding | null }>;
   /** #1705 PR 3: the plane's impact read for promoting `versionId`. Throws when it did not answer. */
   exportBreaks(versionId: string): Promise<ExportBreaks>;
 }
@@ -73,6 +80,7 @@ export async function readPromotionReview(
       incomingRegistry: null,
       migrations: null,
       exportBreaks: null,
+      review: null,
     };
   }
   const same = servingId === incomingVersionId;
@@ -88,7 +96,8 @@ export async function readPromotionReview(
     servingRegistry,
     // Promoting the version prod already serves changes nothing; one read answers both.
     incomingRegistry: incomingRegistry === undefined ? servingRegistry : incomingRegistry,
-    migrations,
+    migrations: migrations?.migrations ?? null,
     exportBreaks: breaks && (breaks.affected.length > 0 || (breaks.otherTenants ?? 0) > 0) ? breaks : null,
+    review: migrations?.review ?? null,
   };
 }

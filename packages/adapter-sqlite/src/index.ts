@@ -674,6 +674,9 @@ import {
   importCursorSourceOf,
   exportBreaksOf,
   exportBreakRefusal,
+  assertPromoteReviewCurrent,
+  promoteRaceRefusal,
+  type ReviewedVersion,
   bindExportBreaksOf,
   bindExportBreakRefusal,
   scopeMoveOf,
@@ -9440,6 +9443,19 @@ export class SqliteScopeHost implements ScopeHost {
           served || owned.length > 0 ? this.provisionedVersionsOf(verticalSlug, served, owned.length > 0 ? owning!.ownerTenant : null) : [],
         );
 
+        // #2333: the acknowledgements answer the review they were given against, or none at all.
+        const reviewed = (v: VerticalVersion): ReviewedVersion => ({
+          ...v,
+          migrations: versionMigrationsOf(switchSqlOf(this.directory), v.id)?.migrations ?? null,
+        });
+        await assertPromoteReviewCurrent({
+          ack,
+          channel,
+          baseId: outgoing?.id ?? null,
+          migrationsChange: outgoing !== undefined && outgoing.migrationDigest !== incoming.migrationDigest,
+          read: async () => ({ base: outgoing ? reviewed(outgoing) : null, incoming: reviewed(incoming) }),
+        });
+
         // §4's two checkpoints, fired where the blast radius is. A FIRST promotion
         // has nothing to diff against, so there is nothing to acknowledge — the
         // gate is about change, not about existence.
@@ -9464,22 +9480,34 @@ export class SqliteScopeHost implements ScopeHost {
         }
 
         const promotedAt = new Date().toISOString();
-        this.directory
-          .prepare(
-            `INSERT INTO vertical_channels (vertical_slug, channel, version_id, updated_at)
-             VALUES (?, ?, ?, ?)
-             ON CONFLICT (vertical_slug, channel) DO UPDATE SET version_id = ?, updated_at = ?`,
-          )
-          .run(verticalSlug, channel, versionId, promotedAt, versionId, promotedAt);
-        // The timeline row: what makes rollback a choice among recorded moments, and
-        // `at` the PITR anchor a data rollback would rewind to.
-        this.directory
-          .prepare(
-            `INSERT INTO vertical_channel_history
-               (id, vertical_slug, channel, version_id, from_version_id, actor, at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(ulid(), verticalSlug, channel, versionId, outgoing?.id ?? null, actor, promotedAt);
+        // #2333: a compare-and-set. Every gate above — the review binding, the digest checkpoints,
+        // the export breaks — was judged against `outgoing`, across awaits another promote can run
+        // in. So the pointer moves only if it still names `outgoing`, read and written in one
+        // transaction; the promote that lost the race is refused as stale and writes nothing.
+        const moved = this.directory.transaction(() => {
+          const now = this.directory
+            .prepare('SELECT version_id FROM vertical_channels WHERE vertical_slug = ? AND channel = ?')
+            .get(verticalSlug, channel) as { version_id: string } | undefined;
+          if ((now?.version_id ?? null) !== (outgoing?.id ?? null)) return false;
+          this.directory
+            .prepare(
+              `INSERT INTO vertical_channels (vertical_slug, channel, version_id, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT (vertical_slug, channel) DO UPDATE SET version_id = ?, updated_at = ?`,
+            )
+            .run(verticalSlug, channel, versionId, promotedAt, versionId, promotedAt);
+          // The timeline row: what makes rollback a choice among recorded moments, and
+          // `at` the PITR anchor a data rollback would rewind to.
+          this.directory
+            .prepare(
+              `INSERT INTO vertical_channel_history
+                 (id, vertical_slug, channel, version_id, from_version_id, actor, at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(ulid(), verticalSlug, channel, versionId, outgoing?.id ?? null, actor, promotedAt);
+          return true;
+        })();
+        if (!moved) throw promoteRaceRefusal(channel);
 
         // For a PRIVATE vertical, prod IS what the owner's apps run: re-point the
         // owning tenant's live scopes in the same act, so merge-to-main (push +
