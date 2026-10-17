@@ -704,7 +704,7 @@ describe('rotating the certificate before it lapses', () => {
       expect((out as { error: string }).error).toContain('not on the app registration yet');
     });
 
-    it("a successor that fails differently never replaces the current certificate's answer", async () => {
+    it("once the current certificate is unregistered, a successor that fails differently gives the answer", async () => {
       const { secret, at } = await rotating();
       let n = 0;
       const fetchImpl: FetchLike = async () => {
@@ -713,8 +713,25 @@ describe('rotating the certificate before it lapses', () => {
       };
       const out = await acquireToken(fetchImpl, secret as Microsoft365Secret, { now: at });
       expect(n).toBe(2);
-      expect(out).toMatchObject({ ok: false, refused: false });
-      expect((out as { error: string }).error).toContain('not on the app registration yet');
+      expect(out).toMatchObject({ ok: false, refused: true });
+      expect((out as { error: string }).error).toContain('no application');
+    });
+
+    it('a send whose successor cannot be reached after a 700027 throws and records the same attempt', async () => {
+      const { secret, at } = await rotating();
+      let n = 0;
+      const fetchImpl: FetchLike = async () => {
+        if (n++ === 0) {
+          const r = entraError([700027], 401)['/oauth2/v2.0/token']!;
+          return { ok: false, status: r.status, json: async () => r.body, text: async () => '' } as never;
+        }
+        throw new TypeError('network down');
+      };
+      const h = hostWith(secret);
+      await expect(microsoft365MailSender({ fetch: fetchImpl, now: () => at }).send(h.host, conn, mail())).rejects.toThrow(
+        /could not be reached: network down/,
+      );
+      expect(h.uses).toEqual([expect.objectContaining({ ok: false, error: 'network down' })]);
     });
 
     it('a refusal other than "not registered" is not retried with the successor', async () => {

@@ -224,8 +224,10 @@ export type TokenOutcome =
  *
  * During a rotation the current certificate signs. The successor signs only when the current one
  * has lapsed, or when Entra says the current one is not on the app registration (the tenant
- * removed it after uploading the successor). If the successor is refused too, the answer is the
- * current certificate's, so a successor not uploaded yet never changes what a send reports.
+ * removed it after uploading the successor). Then the successor's answer is the answer, success or
+ * not: the current certificate is known to be unusable, so what blocks the sign-in is whatever the
+ * successor met (not uploaded either reads the same; a network error reads as one). It is also the
+ * attempt a send records, so the health log and the error agree.
  */
 export async function acquireToken(
   fetchImpl: FetchLike,
@@ -237,8 +239,7 @@ export async function acquireToken(
   if (!next || signing !== secret) return requestToken(fetchImpl, signing, opts);
   const first = await requestToken(fetchImpl, secret, opts);
   if (first.ok || !first.notRegistered) return first;
-  const second = await requestToken(fetchImpl, next, opts);
-  return second.ok ? second : first;
+  return requestToken(fetchImpl, next, opts);
 }
 
 /**
