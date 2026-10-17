@@ -375,14 +375,16 @@ connector's own calls that no event drove (a sweep, a callback), a vertical's de
 silent about those paths would read as complete. Making the issue's rule ("PII leaves only
 through a connection") a gate is a separate decision and is not taken here.
 
-**Costs, stated.** It answers *handed to*, not *sent* and not *kept*. **Today it covers one
-provider**: Scrive is the only connector that receives events, so the derived edges name Scrive
-or nothing. That is the strongest argument against building more than the read. A table, a
-writer or a gate for one connector would cost more than the answer it improves, and the
+**Costs, stated.** It answers *handed to*, not *sent* and not *kept*. **When this was written it
+covered one provider**: Scrive was the only connector that received events, so the derived edges
+named Scrive or nothing. That was the strongest argument against building more than the read. A
+table, a writer or a gate for one connector would cost more than the answer it improves, and the
 `uncovered` list is the larger half of an honest answer. The read is still worth having, because
 it costs no migration and already covers the history. A second dispatching connector is what
 would make the register more than a Scrive lookup, and that connector should arrive with
-`discloses` already declared (Q4). It covers nothing a vertical reaches on its own. Its
+`discloses` already declared (Q4). microsoft365 is that second connector since #2101 (its
+`microsoft365.channel-files-requested` deliveries), and it arrived without `discloses`, since
+Q4 is still open. It covers nothing a vertical reaches on its own. Its
 precision is limit 1's: one subject per event, so an event about a meeting with five people is
 an edge for one of them. It adds no migration and no write on any outbound path, which is why it
 is cheap, and the same fact is why it can never be more truthful than the journals it reads.
