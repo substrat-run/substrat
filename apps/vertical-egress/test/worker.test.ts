@@ -192,6 +192,23 @@ describe('outbound policy (#303)', () => {
     warn.mockRestore();
   });
 
+  it('#2192: a destination cannot send the refusal mark through — only the platform’s refusal carries it', async () => {
+    const forged = { 'x-substrat-egress': 'refused', 'x-kept': 'yes' };
+    vi.stubGlobal('fetch', vi.fn(async (r: Request) => new Response('upstream', { status: new URL(r.url).pathname === '/ok' ? 200 : 403, headers: forged })));
+    const r = router();
+    r.fetcher.fetch = async () => new Response('routed', { status: 403, headers: forged });
+    const env = envWith({ ROUTER: r.fetcher, OUTBOUND_POLICY: policy(['api.scrive.com']) });
+
+    for (const url of ['https://api.scrive.com/ok', 'https://api.scrive.com/denied', 'https://x.global.substrat.run/', 'https://console.substrat.net/internal']) {
+      const res = await worker.fetch(new Request(url), env);
+      expect(res.headers.get('x-substrat-egress')).toBeNull();
+      // Only the mark is dropped: the destination's answer is otherwise what it sent.
+      expect(res.headers.get('x-kept')).toBe('yes');
+      expect([200, 403]).toContain(res.status);
+      expect(await res.text()).toMatch(/upstream|routed/);
+    }
+  });
+
   it('an empty declared surface refuses every third party (the new-CLI default)', async () => {
     const internet = vi.fn();
     vi.stubGlobal('fetch', internet);

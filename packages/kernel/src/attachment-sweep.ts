@@ -175,8 +175,13 @@ export function condemnOrphanAttachments(sql: ScopedSql, ids: readonly string[],
       [id, now],
     );
   }
-  const horizon = new Date(Date.parse(now) - ORPHAN_TOMBSTONE_RETENTION_MS).toISOString();
-  sql.exec('DELETE FROM _substrat_attachment_condemned WHERE condemned_at < ?', [horizon]);
+  // Only a call that condemned something writes at all, so a pass that finds nothing leaves the
+  // scope's write revision where it was (a carry or a kept-copy release is fenced on it). The prune
+  // still never reaches this call's own tombstones, stamped `now`, past a horizon well before it.
+  if (rowless.length > 0) {
+    const horizon = new Date(Date.parse(now) - ORPHAN_TOMBSTONE_RETENTION_MS).toISOString();
+    sql.exec('DELETE FROM _substrat_attachment_condemned WHERE condemned_at < ?', [horizon]);
+  }
   return rowless;
 }
 
@@ -205,6 +210,18 @@ export function unsettledCopyRefusal(scopeId: string, copies: readonly { state: 
     'conflict',
     `refused: scope ${scopeId} has a copy in another script that may hold rows this copy lacks ` +
       `(${unsettled.map((c) => `${c.scriptRef}: ${c.state}`).join(', ')}). Settle it (#1722) before its bytes are swept`,
+  );
+}
+
+/**
+ * What a pass throws when the deployment holds no attachment store for the tenant, yet the scope
+ * holds attachment rows (#2314): its store binding is missing, which is a failure to fix, never the
+ * `bucket: 'none'` of a scope that keeps no files.
+ */
+export function missingAttachmentStore(tenantId: string, scopeId: string): Error {
+  return new Error(
+    `scope ${scopeId} holds attachment rows, but this deployment holds no attachment store for tenant ${tenantId}: ` +
+      'its store binding is missing. Re-push the vertical so the store is declared, then sweep again',
   );
 }
 
@@ -251,6 +268,36 @@ export interface OrphanSweepRequest {
    * lacks. It refuses unless its caller says it checked the ledger and found no such copy.
    */
   copiesSettled?: boolean;
+  /**
+   * The version the platform routed this pass to: the one the scope runs, by the directory. A host
+   * that knows the version its own code is deployed as refuses a pass routed to another (a stale
+   * script, a dispatch mixup, a promote mid-pass). See {@link orphanSweepVersionRefusal}.
+   */
+  expectedVersionId?: string;
+}
+
+/**
+ * Why a pass may not run in a script deployed as `deployed`, when the platform routed it to the
+ * script running `expected` (#2314), or null. A script deployed as another version refuses any
+ * pass. A deployed script that carries no version identity cannot be told it is the one routed to,
+ * so it refuses a destructive pass and lets a dry run proceed, since a dry run deletes nothing.
+ * No `expected` (a host the platform does not route to, a self-host) asks nothing.
+ */
+export function orphanSweepVersionRefusal(deployed: string | null, expected: string | undefined, destructive: boolean): Error | null {
+  if (expected === undefined) return null;
+  if (deployed === null) {
+    return destructive
+      ? substratError(
+          'conflict',
+          `refused: this script carries no version identity, so a destructive pass cannot be told it reached ` +
+            `the script running version ${expected}, the one the platform routed it to`,
+        )
+      : null;
+  }
+  if (deployed !== expected) {
+    return substratError('conflict', `refused: this script runs version ${deployed}, not ${expected}, the one the platform routed this pass to`);
+  }
+  return null;
 }
 
 /** The options the kernel's pass takes from its host: the request, and the host's clock. */
@@ -281,6 +328,12 @@ export interface OrphanSweepReport {
   /** Set when the restore fence held the pass: the instant until which it holds. */
   fencedUntil?: string;
   dryRun: boolean;
+  /**
+   * `'none'` when the deployment holds no attachment store for the tenant at all, so nothing was
+   * listed (#2314). Set apart from a pass that listed an empty store, so a store binding missing
+   * from a vertical that does keep files cannot pass for a clean sweep.
+   */
+  bucket?: 'none';
 }
 
 /** What the scope side of a pass is: the read for a dry run, the condemnation otherwise. */

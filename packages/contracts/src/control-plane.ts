@@ -250,6 +250,10 @@ export const adminAction = z.enum([
   // #2309 — a staff request ran a pass of the platform's rebuild of every script of a driver at the
   // release it runs (after a key list changed). Names the driver and what the pass walked.
   'rebuildStoreDriver',
+  // #2314 — the platform's pass over one scope's attachment bytes found objects no row names, and
+  // condemned and deleted them (or, in a dry run, reported the ones it would). Names the scope, the
+  // pass's counts and every key it deleted or would delete.
+  'sweepOrphanAttachments',
   // Historic, never written: the same three actions as #2300 wrote them, before K-53 renamed a
   // store's code its driver. Kept so a log that already holds one still reads.
   ...HISTORIC_ADMIN_ACTIONS,
@@ -283,6 +287,28 @@ export const copyMarkAudit = z.discriminatedUnion('action', [
     .strict(),
 ]);
 export type CopyMarkAudit = z.infer<typeof copyMarkAudit>;
+
+/**
+ * One pass of the platform's orphan-attachment sweep over one scope (#2314), as its admin-log row
+ * (`sweepOrphanAttachments`). Written only when the pass found an orphan or deleted one, so a scope
+ * with nothing to collect leaves no row. `keys` are the objects deleted, or in a dry run the ones a
+ * pass would delete; the pass bounds them by its own limit.
+ */
+export const orphanSweepAudit = z
+  .object({
+    tenantId,
+    scopeId,
+    dryRun: z.boolean(),
+    listed: z.number().int().nonnegative(),
+    candidates: z.number().int().nonnegative(),
+    orphans: z.number().int().nonnegative(),
+    deleted: z.number().int().nonnegative(),
+    keys: z.array(z.string().min(1)),
+    /** Set when the restore fence held the pass before its deletes. */
+    fencedUntil: z.string().min(1).optional(),
+  })
+  .strict();
+export type OrphanSweepAudit = z.infer<typeof orphanSweepAudit>;
 
 /**
  * A scope's kind and lineage as the platform's directory records them (#2005) — what every

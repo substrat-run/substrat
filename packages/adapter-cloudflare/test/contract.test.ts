@@ -6494,10 +6494,12 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     list: async () => ({ objects: [...objs.keys()].map((key) => ({ key })), truncated: false as const }),
   };
   const later = () => new Date(Date.now() + ORPHAN_SWEEP_GRACE_MS + DAY).toISOString();
+  /** #2314: whether this script holds no attachment store for any tenant (a vertical keeping no files). */
+  let storeless = false;
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
-    attachmentBuckets: () => bucket,
+    attachmentBuckets: () => (storeless ? undefined : bucket),
     // Every pass here runs eight days ahead, past the age floor; the fence is stamped the same way.
     orphanSweepClock: later,
   });
@@ -6526,6 +6528,84 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     expect(objs.has(orphan)).toBe(true);
     expect((await sweep(s)).keys).toEqual([orphan]);
     expect(objs.has(orphan)).toBe(false);
+  });
+
+  it('a script with no attachment store answers so, marked, after the copy has judged, and fails for a scope that holds files; a store that held nothing answers unmarked', async () => {
+    const s = await newScope();
+    const orphan = plant(s);
+    storeless = true;
+    try {
+      expect(await sweep(s)).toEqual({ listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: false, bucket: 'none' });
+      // The copy's refusals still come first: a foreign tenant is refused, not answered "no store".
+      await expect(sweep(s, other)).rejects.toThrow(/may not judge orphan attachments/);
+    } finally {
+      storeless = false;
+    }
+    expect(objs.has(orphan)).toBe(true);
+    // A scope that holds an attachment row does keep files: no store there is a missing binding, a failure.
+    const kept = await newScope();
+    await (await host.attachments(owner, t, kept)).upload({
+      entity: { entityType: 'udoc', entityId: 'doc-1' },
+      filename: 'a.txt',
+      contentType: 'text/plain',
+      visibility: 'internal',
+      body: new TextEncoder().encode('kept'),
+    });
+    storeless = true;
+    try {
+      await expect(sweep(kept)).rejects.toThrow(/holds attachment rows.*store binding is missing/);
+    } finally {
+      storeless = false;
+    }
+    const empty = await newScope();
+    const clean = await sweep(empty);
+    expect(clean).toMatchObject({ orphans: 0, deleted: 0 });
+    expect(clean).not.toHaveProperty('bucket');
+  });
+
+  it('a pass routed to another version than this script runs is refused, in either mode; the routed version sweeps', async () => {
+    const s = await newScope();
+    const orphan = plant(s);
+    const deployed = (env as unknown as { SUBSTRAT_VERSION_ID: string }).SUBSTRAT_VERSION_ID;
+    const routed = (expectedVersionId: string, dryRun: boolean) =>
+      host.sweepOrphanAttachments(t, s, { copiesSettled: true, expectedVersionId, ...(dryRun ? { dryRun: true } : {}) });
+    for (const dryRun of [true, false]) {
+      await expect(routed('01JTESTVRSN00000000000OTHR', dryRun)).rejects.toThrow(/runs version .*, not 01JTESTVRSN00000000000OTHR/);
+    }
+    expect(objs.has(orphan)).toBe(true);
+    expect((await routed(deployed, false)).keys).toEqual([orphan]);
+    // Refused before anything is listed, so a misrouted destructive pass is refused with nothing to condemn too.
+    const empty = await newScope();
+    await expect(
+      host.sweepOrphanAttachments(t, empty, { copiesSettled: true, expectedVersionId: '01JTESTVRSN00000000000OTHR' }),
+    ).rejects.toThrow(/runs version .*, not 01JTESTVRSN00000000000OTHR/);
+  });
+
+  it("a destructive pass that condemns nothing leaves the scope's write revision alone; one that condemns moves it", async () => {
+    const revisionOf = async (s: ScopeId) => (await host.exportScopeStampedLocal(s)).revision;
+    // (a) A scope with nothing under its prefix.
+    const empty = await newScope();
+    const before = await revisionOf(empty);
+    expect((await sweep(empty)).deleted).toBe(0);
+    expect(await revisionOf(empty)).toBe(before);
+    // (b) A scope whose only old object has its row: judged, condemned nothing.
+    const live = await newScope();
+    await (await host.attachments(owner, t, live)).upload({
+      entity: { entityType: 'udoc', entityId: 'doc-1' },
+      filename: 'a.txt',
+      contentType: 'text/plain',
+      visibility: 'internal',
+      body: new TextEncoder().encode('kept'),
+    });
+    const held = await revisionOf(live);
+    const judged = await sweep(live);
+    expect(judged).toMatchObject({ orphans: 0, deleted: 0 });
+    expect(judged.candidates).toBeGreaterThan(0);
+    expect(await revisionOf(live)).toBe(held);
+    // The twin: an orphan condemned is a write, and the revision moves.
+    const orphan = plant(live);
+    expect((await sweep(live)).keys).toEqual([orphan]);
+    expect(await revisionOf(live)).not.toBe(held);
   });
 
   it('with no directory, a pass needs its caller to have read the copy ledger', async () => {
