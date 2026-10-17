@@ -2,10 +2,12 @@
  * `@substrat-run/connector-microsoft365` — a tenant's own Microsoft 365, over Microsoft Graph
  * with app-only client credentials in the tenant's own Entra directory (#2100).
  *
- * Host code, never module code. What it does today is send mail as the tenant: it implements
- * the kernel's `MailSender`, so the platform's email relay routes a vertical's message to it
- * when the message's `from` is one of the connection's addresses (#2098). Documents in a Teams
- * channel's SharePoint folder are #2101.
+ * Host code, never module code. It sends mail as the tenant: it implements the kernel's
+ * `MailSender`, so the platform's email relay routes a vertical's message to it when the
+ * message's `from` is one of the connection's addresses (#2098). And it keeps documents in one
+ * Teams channel's SharePoint folder (#2101, `files.ts`): writes requested by an event
+ * (`microsoft365.channel-files-requested`, dispatched), reads by a sweep of the library's change
+ * feed, landed through the vertical's own operation.
  *
  * **Least privilege is the tenant's, and this connector assumes it.** The app registration
  * holds only `Sites.Selected` in Entra; the right to send is granted in Exchange with RBAC for
@@ -181,7 +183,7 @@ async function probeWith(
       return probeOf({
         ok: false,
         refused: false,
-        error: `signed in, but this app has no access to ${secret.siteUrl} yet — grant it Read on the site (Sites.Selected)`,
+        error: `signed in, but this app has no access to ${secret.siteUrl} yet — grant it Write on the site (Sites.Selected; Read is enough for mail alone)`,
         facts,
       });
     }
