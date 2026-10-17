@@ -17,6 +17,7 @@ described already picks one, say which and go.
 | "build me a …", "scaffold a vertical", "add a feature to this vertical" | `substrat` | Routes into the build flow. Scaffolds with `npm create substrat` if the directory is empty, then reads the project's own `AGENTS.md` and `.substrat/playbook.md` and follows those. |
 | "wire this project up", "the agent doesn't know the rules" | `substrat-plugin-init` | Writes the knowledge import (`CLAUDE.md` → `AGENTS.md`) into a project that has none, and records the kernel version the session hook reports against. Re-run it after upgrading the plugin. |
 | "ship it", "deploy to prod" | `substrat-deploy` | `substrat login` → `substrat push --promote prod`, and presents the permission / migration checkpoints when a promotion is refused until they are acknowledged. |
+| "review this", "check my change", "before I push" | `substrat-review` | Checks the diff against Substrat's own rules: scope isolation, permission checks, generated files, migration losses, personal data, lifecycles, secrets, tests. Reports findings with `file:line`; never edits or acknowledges a checkpoint. |
 
 Plus a **SessionStart hook**, which needs no invoking: it is silent in any project that is
 not a Substrat vertical, and in one that is, it says where the rules live and which docs
