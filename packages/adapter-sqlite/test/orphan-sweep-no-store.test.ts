@@ -73,7 +73,9 @@ describe('orphan sweep over a scope with no blob store (#2314)', () => {
   it('a vertical whose store holds nothing answers unmarked', async () => {
     await host.provisionBlobStore(staff, { tenantId: t, vertical: 'with-files', binding: 'ATTACHMENTS' });
     const s = await scope('with-files');
-    const report = await host.sweepOrphanAttachments(t, s);
-    expect(report).toEqual({ listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: false });
+    const report = await host.sweepOrphanAttachments(t, s, { dryRun: true });
+    expect(report).toEqual({ listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: true });
+    // A dry run that found nothing licenses no destructive pass (#2350).
+    await expect(host.sweepOrphanAttachments(t, s)).rejects.toThrow(/no orphan-sweep dry run/);
   });
 });

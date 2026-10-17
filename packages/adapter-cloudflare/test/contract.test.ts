@@ -6522,7 +6522,14 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     objs.set(key, new Uint8Array([1]));
     return key;
   };
-  const sweep = (s: ScopeId, tenant: TenantId = t) => host.sweepOrphanAttachments(tenant, s, { copiesSettled: true });
+  /**
+   * A pass as the platform's phase runs one: the dry run that licenses it (#2350), then the
+   * destructive pass, unless the dry run found nothing to license, when its report is the answer.
+   */
+  const sweep = async (s: ScopeId, tenant: TenantId = t) => {
+    const dry = await host.sweepOrphanAttachments(tenant, s, { copiesSettled: true, dryRun: true });
+    return dry.keys.length === 0 ? dry : host.sweepOrphanAttachments(tenant, s, { copiesSettled: true });
+  };
   const raw = (s: ScopeId, run: (sql: SqlStorage) => void) =>
     runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(s)), (_, state) => run(state.storage.sql));
 
@@ -6540,7 +6547,7 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     const orphan = plant(s);
     storeless = true;
     try {
-      expect(await sweep(s)).toEqual({ listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: false, bucket: 'none' });
+      expect(await sweep(s)).toEqual({ listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: true, bucket: 'none' });
       // The copy's refusals still come first: a foreign tenant is refused, not answered "no store".
       await expect(sweep(s, other)).rejects.toThrow(/may not judge orphan attachments/);
     } finally {
@@ -6578,6 +6585,7 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
       await expect(routed('01JTESTVRSN00000000000OTHR', dryRun)).rejects.toThrow(/runs version .*, not 01JTESTVRSN00000000000OTHR/);
     }
     expect(objs.has(orphan)).toBe(true);
+    expect((await routed(deployed, true)).keys).toEqual([orphan]);
     expect((await routed(deployed, false)).keys).toEqual([orphan]);
     // Refused before anything is listed, so a misrouted destructive pass is refused with nothing to condemn too.
     const empty = await newScope();
@@ -6586,12 +6594,14 @@ describe('#2314 — the orphan sweep on a CP-less deployment', { timeout: 20_000
     ).rejects.toThrow(/runs version .*, not 01JTESTVRSN00000000000OTHR/);
   });
 
-  it("a destructive pass that condemns nothing leaves the scope's write revision alone; one that condemns moves it", async () => {
+  it("a pass that condemns nothing leaves the scope's write revision alone; one that condemns moves it", async () => {
     const revisionOf = async (s: ScopeId) => (await host.exportScopeStampedLocal(s)).revision;
-    // (a) A scope with nothing under its prefix.
+    // (a) A scope with nothing under its prefix: the dry run licenses nothing, and the destructive
+    // pass it would license is refused (#2350), each writing nothing.
     const empty = await newScope();
     const before = await revisionOf(empty);
     expect((await sweep(empty)).deleted).toBe(0);
+    await expect(host.sweepOrphanAttachments(t, empty, { copiesSettled: true })).rejects.toThrow(/no orphan-sweep dry run/);
     expect(await revisionOf(empty)).toBe(before);
     // (b) A scope whose only old object has its row: judged, condemned nothing.
     const live = await newScope();
@@ -6807,7 +6817,11 @@ describe('#2314 r1 — a co-located host judges only a scope it holds, live', { 
       visibility: 'internal',
       body: new TextEncoder().encode('committed'),
     });
-  const sweep = (s: ScopeId) => host.sweepOrphanAttachments(t, s);
+  /** The dry run that licenses a pass (#2350), then the pass, unless the dry run found nothing. */
+  const sweep = async (s: ScopeId) => {
+    const dry = await host.sweepOrphanAttachments(t, s, { dryRun: true });
+    return dry.keys.length === 0 ? dry : host.sweepOrphanAttachments(t, s);
+  };
 
   it('the reviewer\'s case: archived, reaped with a backup, evicted, then a pass: refused, and the file keeps its bytes', async () => {
     const s = await newScope();
