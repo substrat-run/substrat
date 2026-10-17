@@ -212,6 +212,12 @@ interface SyncPass {
    * queue is empty. In-folder item ids only.
    */
   verify?: { deltaLink: string; queue: string[] };
+  /**
+   * Held items a page showed outside the folder without showing why: their new parent is in
+   * neither the page nor the held state. It may be a folder a later page presents, so nothing lands
+   * for them until the end of the pass checks them (`verify`). In-folder item ids only.
+   */
+  pending?: string[];
 }
 
 interface ItemEntry {
@@ -738,10 +744,15 @@ export async function syncMicrosoft365Scope(
         if (found.at === 'inside') {
           // Still in the folder: the feed only failed to say so. Land it where it is, if that moved.
           const changed = new Map(found.chain.map((i) => [i.id, i]));
-          const plan = planChanges(binding.folderItemId, changed, index, fenceOf(binding.folderItemId, changed, index));
+          const later: string[] = [];
+          const plan = planChanges(binding.folderItemId, changed, index, fenceOf(binding.folderItemId, changed, index)).filter((p) => {
+            if (p.change !== 'delete' || p.reason !== 'moved-out') return true;
+            later.push(p.id); // the same rule as a page's: checked, never taken on this read's word
+            return false;
+          });
           for (const p of plan) await land(p);
           landed = plan.length;
-          queue = queue.slice(1);
+          queue = [...queue.slice(1), ...later.filter((l) => !queue.includes(l))];
         } else {
           const reason = found.at === 'gone' ? 'deleted' : 'moved-out';
           const settled = [...heldUnder(id), id];
@@ -790,7 +801,18 @@ export async function syncMicrosoft365Scope(
       }
     }
     const fence = fenceOf(binding.folderItemId, changed, index);
-    const plan = planChanges(binding.folderItemId, changed, index, fence);
+    // A held item that only LOOKS outside — moved somewhere this page cannot place — is not landed
+    // as moved-out on this page's word. It waits for the end-of-pass check; if a later page
+    // presents it inside first, it lands there and leaves the queue.
+    const pending = new Set(pass.pending ?? []);
+    const plan = planChanges(binding.folderItemId, changed, index, fence).filter((p) => {
+      if (p.change === 'delete' && p.reason === 'moved-out') {
+        pending.add(p.id);
+        return false;
+      }
+      if (p.change === 'upsert') pending.delete(p.item.id);
+      return true;
+    });
     for (const p of plan) await land(p);
     changes += plan.length;
     // An item a full pass presents unchanged still has to be marked seen by it.
@@ -801,13 +823,15 @@ export async function syncMicrosoft365Scope(
       }
     }
     pages += 1;
-    pass = { ...pass, changes: pass.changes + plan.length };
+    pass = { ...pass, changes: pass.changes + plan.length, pending: [...pending] };
 
     if (page.delta) {
       // A full enumeration that never presented a held item has not shown it is gone: an
-      // enumeration spanning minutes can miss one. Each is checked before anything lands.
-      const queue = pass.full ? [...index.entries()].filter(([, e]) => e.seenIn !== pass.id).map(([id]) => id) : [];
-      pass = { ...pass, verify: { deltaLink: page.delta, queue } };
+      // enumeration spanning minutes can miss one. Each is checked before anything lands, with the
+      // items pages could not place.
+      const unseen = pass.full ? [...index.entries()].filter(([, e]) => e.seenIn !== pass.id).map(([id]) => id) : [];
+      const queue = [...new Set([...pending, ...unseen])];
+      pass = { ...pass, pending: [], verify: { deltaLink: page.delta, queue } };
       if (!(await save({ pass }))) return superseded(pages, changes, pass.full);
       continue;
     }

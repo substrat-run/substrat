@@ -716,6 +716,41 @@ describe('reads: the sync lands what is in the folder', () => {
       expect(w.landed.map((c) => c.itemId).sort()).toEqual([...gone].sort());
     });
 
+    // r2 #2: a held file moved into a new folder the feed presents on a LATER page.
+    it('a held file moved into a folder presented later is moved, never deleted or downloaded again', async () => {
+      const w = await world();
+      const held = w.drive.put(w.general, 'held.txt', 'held');
+      await w.bind();
+      await w.sync();
+      w.landed.length = 0;
+      const fresh = w.drive.mkdir(w.general, 'New');
+      w.drive.move(held, fresh);
+      // The folder changes after the file, so the feed presents the file first.
+      w.drive.rename(fresh, 'New folder');
+      w.drive.pageSize = 1;
+      const downloadsBefore = w.drive.calls.filter((c) => c.url.includes(`/items/${held}/content`)).length;
+      while (!(await w.sync(1)).complete);
+      expect(w.landed.filter((c) => c.change === 'delete')).toEqual([]);
+      expect(w.landed.find((c) => c.change === 'upsert' && c.itemId === held)).toMatchObject({
+        path: 'New folder/held.txt',
+        previousPath: 'held.txt',
+        content: 'unchanged',
+      });
+      expect(w.drive.calls.filter((c) => c.url.includes(`/items/${held}/content`)).length).toBe(downloadsBefore);
+    });
+
+    it('a held file moved out of the folder lands as moved-out once the pass has checked it', async () => {
+      const w = await world();
+      const held = w.drive.put(w.general, 'held.txt', 'held');
+      await w.bind();
+      await w.sync();
+      w.landed.length = 0;
+      w.drive.move(held, w.leadership);
+      await w.sync();
+      expect(w.landed).toEqual([expect.objectContaining({ change: 'delete', itemId: held, reason: 'moved-out' })]);
+      for (const name of OUTSIDE_NAMES) expect(await w.state()).not.toContain(name);
+    });
+
     it('a file the feed presents before its folder still lands', async () => {
       const w = await world();
       const late = w.drive.mkdir(w.general, 'Late');
