@@ -94,6 +94,8 @@ function useRequestDetail(scopeId: string, invocationId: string, atMs: number): 
     const logsRead = window
       ? api.appTenantLogs(scopeId, { invocationId, since: window.since, until: window.until, limit: 200 })
       : Promise.reject(new Error('no usable time within the 72-hour log window'));
+    // #2192: the related list reads the request's own line too, for the request that called it.
+    const recordRead = logsRead.then(recordFromLogs).catch(() => null);
     logsRead
       .then(async (logs) => {
         const record = recordFromLogs(logs);
@@ -140,7 +142,8 @@ function useRequestDetail(scopeId: string, invocationId: string, atMs: number): 
           r.events.length > EFFECTS_MAX ? `only the first ${EFFECTS_MAX} of ${r.events.length} events were followed` : null,
           allReacting.length > CAUSES_MAX ? `only the first ${CAUSES_MAX} of ${allReacting.length} events that reacted to another were traced back` : null,
         ].filter(Boolean);
-        set({ related: { state: 'ready', value: { requests: relatedRequests(invocationId, trees, causes), incomplete: reasons.length ? reasons.join('; ') : null } } });
+        const record = await recordRead;
+        set({ related: { state: 'ready', value: { requests: relatedRequests(invocationId, trees, causes, record), incomplete: reasons.length ? reasons.join('; ') : null } } });
       })
       .catch((e) => set({ events: { state: 'error', message: errorText(e) }, followUps: { state: 'error', message: errorText(e) }, related: { state: 'error', message: errorText(e) } }));
     return () => {
@@ -550,7 +553,7 @@ function Related({ part, scopeId }: { part: Detail['related']; scopeId: string }
         {partial}
       </>
     ) : (
-      <Quiet>No other request is recorded as sharing a cause with this one. A schedule, peer or MCP call that started another request leaves no link to follow.</Quiet>
+      <Quiet>No other request is recorded as sharing a cause with this one. A schedule's own run, an MCP call or a platform request that started another request leaves no link to follow.</Quiet>
     );
   }
   return (

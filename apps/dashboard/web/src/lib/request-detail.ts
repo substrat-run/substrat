@@ -1,4 +1,5 @@
 import type { CauseChain, EffectsTree, EmittedLifecycle, HistoryEntry } from '@substrat-run/contracts';
+import { ulidTime } from './palette';
 
 /** A log line, as far as this file reads one — the client's `LogLine` is assignable. */
 export interface LogLine {
@@ -39,7 +40,15 @@ export interface RequestRecord {
   eventId?: string | null;
   attempt?: number | null;
   latenessMs?: number | null;
+  /**
+   * #2192: the request that started this one through a peer call, as the caller named it.
+   * Absent on a line that names none; only ever read as one ULID.
+   */
+  parentInvocationId?: string | null;
 }
+
+/** #2192: a line's parent, only as a ULID — anything else is no parent. */
+const parentOf = (v: unknown): string | null => (typeof v === 'string' && ulidTime(v) !== null ? v : null);
 
 /** #1901: a line's kind, absent read as `request`. */
 export function kindOf(v: unknown): 'request' | 'consumer' | 'schedule' {
@@ -115,6 +124,7 @@ export function recordFromLogs(logs: LogLine[]): RequestRecord | null {
       eventId: str(source['eventId']),
       attempt: num(source['attempt']),
       latenessMs: num(source['latenessMs']),
+      parentInvocationId: parentOf(source['parentInvocationId']),
     };
   }
   return null;
@@ -272,8 +282,10 @@ export function msLabel(ms: number): string {
  *   retry or a drain), or an event emitted downstream under a different call.
  *
  * Consumers delivered inside the call share its id, so they are not listed here: they are
- * the request's own. Nothing records a request that started another through a path with no
- * event (a schedule's own run, a peer or MCP call), so those cannot appear.
+ * the request's own. A peer call is the one path with no event that is recorded: the called
+ * request's line names its caller (`parentInvocationId`, #2192), so it lists that caller as
+ * `caused-by`. The caller's side does not list the peer calls it made, and an MCP call or a
+ * platform request records no parent, so those cannot appear.
  */
 export interface RelatedRequest {
   relation: 'caused-by' | 'set-off';
@@ -291,12 +303,24 @@ export interface RelatedResult {
   incomplete: string | null;
 }
 
-export function relatedRequests(own: string, trees: EffectsTree[], causes: CauseChain[]): RelatedRequest[] {
+export function relatedRequests(
+  own: string,
+  trees: EffectsTree[],
+  causes: CauseChain[],
+  /** #2192: the request's own line, whose `parentInvocationId` names the request that called it. */
+  record?: Pick<RequestRecord, 'parentInvocationId'> | null,
+): RelatedRequest[] {
   const out = new Map<string, RelatedRequest>();
   const add = (r: RelatedRequest) => {
     // The first sighting wins, so a cause is not relabelled by a later delivery.
     if (r.invocationId !== own && !out.has(r.invocationId)) out.set(r.invocationId, r);
   };
+  // The caller's id is its claim, so it is only ever a link: opening it reads that id under this
+  // team's own tenant and app, where another tenant's request matches nothing.
+  const parentAt = record?.parentInvocationId ? ulidTime(record.parentInvocationId) : null;
+  if (record?.parentInvocationId && parentAt !== null) {
+    add({ relation: 'caused-by', invocationId: record.parentInvocationId, at: new Date(parentAt).toISOString(), via: 'peer call' });
+  }
   for (const c of causes) {
     const cause = c.chain.slice(1).find((e) => e.invocationId !== null && e.invocationId !== own);
     if (cause) add({ relation: 'caused-by', invocationId: cause.invocationId!, at: cause.occurredAt, via: cause.type });

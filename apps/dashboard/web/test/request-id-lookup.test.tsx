@@ -6,7 +6,7 @@ import { RequestSlideOver } from '../src/views/RequestSlideOver';
 import { RequestIdNote } from '../src/components/RequestIdNote';
 import { api, ApiError, type CauseChain, type EffectsTree, type HistoryEntry, type InvocationEvents } from '../src/lib/api';
 import { parseRequestId, requestLookup, REQUEST_WINDOW_MS } from '../src/lib/request-url';
-import { relatedRequests } from '../src/lib/request-detail';
+import { recordFromLogs, relatedRequests } from '../src/lib/request-detail';
 
 /** #2192: finding a request by the id a caller was given, and the requests that share its cause. */
 
@@ -94,6 +94,39 @@ describe('relatedRequests', () => {
     const chain = { chain: [entry('E1', 'a.b', OWN), entry('E0', 'a.root', OTHER)], terminal: 'operation' } as unknown as CauseChain;
     const t = tree({ event: entry('E1', 'a.b', OWN), deliveries: [delivery(OTHER), delivery(OWN)], effects: [] } as unknown as EffectsTree['root']);
     expect(relatedRequests(OWN, [t], [chain])).toMatchObject([{ relation: 'caused-by', invocationId: OTHER }]);
+  });
+});
+
+describe('a peer call’s parent (#2192)', () => {
+  const line = (source: Record<string, unknown>) => ({
+    timestamp: MINTED,
+    level: 'info',
+    message: null,
+    raw: { timestamp: MINTED, source: { substrat: 'invocation', invocationId: OWN, method: 'POST', ...source } },
+  });
+
+  it('lists the calling request as the cause, at the instant its id was minted', () => {
+    const record = recordFromLogs([line({ parentInvocationId: OTHER })]);
+    expect(record?.parentInvocationId).toBe(OTHER);
+    expect(relatedRequests(OWN, [], [], record)).toEqual([
+      { relation: 'caused-by', invocationId: OTHER, at: new Date(MINTED - 60_000).toISOString(), via: 'peer call' },
+    ]);
+  });
+
+  it.each([
+    ['absent', {}],
+    ['not an id', { parentInvocationId: 'drop table' }],
+    ['lowercased', { parentInvocationId: OTHER.toLowerCase() }],
+    ['two joined', { parentInvocationId: `${OTHER}, ${OTHER}` }],
+    ['not a string', { parentInvocationId: 7 }],
+  ])('reads no parent from a line whose parent is %s', (_name, source) => {
+    const record = recordFromLogs([line(source)]);
+    expect(record?.parentInvocationId).toBeNull();
+    expect(relatedRequests(OWN, [], [], record)).toEqual([]);
+  });
+
+  it('never lists the request as its own parent', () => {
+    expect(relatedRequests(OWN, [], [], { parentInvocationId: OWN })).toEqual([]);
   });
 });
 
@@ -211,6 +244,29 @@ describe('the request-finding surfaces', () => {
     expect(text).toContain('Set off');
     expect(text).toContain('acme.root');
     expect(text).toContain('acme.assigned → notify');
+  });
+
+  it('a peer call’s parent is a link, opened by id under this app — the plane reads it under this team’s tenant only', async () => {
+    const at = Date.now() - 60_000;
+    const child = ulidAt(at, 'D');
+    const parent = ulidAt(at - 1_000, 'E');
+    const logs = vi.spyOn(api, 'appTenantLogs').mockImplementation(async (_scope, q) =>
+      (q as { invocationId?: string }).invocationId === child
+        ? ([{ timestamp: at, level: 'info', message: null, raw: { timestamp: at, source: { substrat: 'invocation', invocationId: child, method: 'POST', parentInvocationId: parent } } }] as never)
+        : [],
+    );
+    vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: [], truncated: false } as InvocationEvents);
+    await renderPanel(child, at);
+    const text = container.textContent!;
+    expect(text).toContain('Caused by');
+    expect(text).toContain('peer call');
+    // What the panel read about the parent: nothing. Opening it is a fresh read by its id, in
+    // this app, which the plane binds to the team's own tenant.
+    expect(logs.mock.calls.every(([scope, q]) => scope === 'app-a' && (q as { invocationId?: string }).invocationId === child)).toBe(true);
+    // A parent id naming another tenant's request: the plane has no line for it under ours.
+    await renderPanel(parent, at - 1_000);
+    expect(logs.mock.calls.at(-1)).toEqual(['app-a', expect.objectContaining({ invocationId: parent })]);
+    expect(container.textContent).toContain('was found in this app within the log window');
   });
 
   describe('related requests that could not all be checked', () => {
