@@ -79,12 +79,8 @@ function pushOrigin(): VersionOrigin {
 }
 
 async function sha256(bytes: Uint8Array): Promise<string> {
-  return (await fullSha256(bytes)).slice(0, 32);
-}
-
-async function fullSha256(bytes: Uint8Array): Promise<string> {
   const digest = await webcrypto.subtle.digest('SHA-256', bytes);
-  return Buffer.from(digest).toString('hex');
+  return Buffer.from(digest).toString('hex').slice(0, 32);
 }
 
 /** Deterministic JSON: object keys sorted recursively, array order preserved. Makes the

@@ -362,8 +362,8 @@ const DIGEST_BATCH_VERSIONS = 10;
  *
  * Two statements, not a transaction: the digest is computed between them (Web Crypto is
  * asynchronous), and the write is guarded on the row still being underived, so two derivations
- * racing write the same value once. A version's migrations and `doClasses` never change after
- * it is published, so what was read is what is recorded.
+ * racing write once. A version's migrations and `doClasses` never change after it is published,
+ * so both derive the same value, and what was read is what is recorded.
  */
 export async function deriveVersionMigrationDigest(db: SwitchSql, versionId: string): Promise<string | undefined> {
   const row = db.all(
@@ -391,7 +391,7 @@ export async function deriveVersionMigrationDigest(db: SwitchSql, versionId: str
     'UPDATE vertical_versions SET migration_digest = ?, migration_digest_derived = 1 WHERE id = ? AND migration_digest_derived IS NULL',
     digest, versionId,
   );
-  return (db.all('SELECT migration_digest FROM vertical_versions WHERE id = ?', versionId)[0] as { migration_digest: string }).migration_digest;
+  return digest;
 }
 
 /**
