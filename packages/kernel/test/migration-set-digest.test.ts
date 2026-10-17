@@ -3,7 +3,7 @@
  * and what a scope host compares its registered steps with before it applies a migration.
  */
 import { describe, expect, it } from 'vitest';
-import { migrationSetDigest, migrationSetDivergence, migrationSteps } from '../src/index.js';
+import { isDerivedMigrationVersion, migrationSetDigest, migrationSetDivergence, migrationSteps, moduleMigrations } from '../src/index.js';
 
 const a1 = { moduleId: 'a', version: '0001', sql: 'CREATE TABLE a (id TEXT);' };
 const a2 = { moduleId: 'a', version: '0002', sql: 'ALTER TABLE a ADD COLUMN n TEXT;' };
@@ -50,3 +50,44 @@ describe('migrationSetDivergence (#2349)', () => {
     expect(error).toContain(`registered: ${many.slice(0, 20).map((m) => `a@${m.version}`).join(', ')} and 3 more.`);
   });
 });
+
+/**
+ * What the set digest rests on (#2349 r2): both sides drop derived migrations BY NAME, so every
+ * step `moduleMigrations` derives must be named under a prefix `isDerivedMigrationVersion`
+ * knows. A fourth kind of derived step under a new prefix fails here, rather than as a refusal
+ * that fails every scope of a correct deployment closed.
+ */
+describe('isDerivedMigrationVersion against moduleMigrations (#2349)', () => {
+  const authored = [
+    { version: '0001-init', sql: 'CREATE TABLE ticket (id TEXT PRIMARY KEY, title TEXT, status TEXT, created_at TEXT);' },
+    { version: '0002-note', sql: 'ALTER TABLE ticket ADD COLUMN note TEXT;' },
+  ];
+  /** Every kind of declaration the kernel derives migrations from, each in its widest form. */
+  const manifest = {
+    id: 'everything',
+    searchables: [{ entityType: 'ticket', fields: ['title'], table: 'ticket', idColumn: 'id', tokenizer: 'unicode61' as const }],
+    lists: [{ entityType: 'ticket', sortable: ['created_at', 'id'], filterable: ['status'], table: 'ticket', idColumn: 'id' }],
+    entityStates: [
+      {
+        entityType: 'ticket',
+        archivePermission: 'ticket:archive',
+        trashPermission: 'ticket:trash',
+        purgeAfterDays: 30,
+        table: 'ticket',
+        idColumn: 'id',
+      },
+    ],
+  };
+
+  it('names every derived step as derived, and no authored one', () => {
+    const steps = moduleMigrations({ manifest, migrations: authored } as never);
+    const derived = steps.slice(authored.length);
+    expect(steps.slice(0, authored.length)).toEqual(authored);
+    // One of each kind: the search index, the archive and trash columns, their guard, the purge
+    // index, and the list index. A kind dropped from the module would shrink this, not pass it.
+    expect(derived.map((m) => m.version.split(':')[0]!.split('/')[0])).toEqual(['search', 'state', 'state', 'state', 'state', 'list']);
+    for (const m of derived) expect(isDerivedMigrationVersion(m.version), m.version).toBe(true);
+    for (const m of authored) expect(isDerivedMigrationVersion(m.version), m.version).toBe(false);
+  });
+});
+
