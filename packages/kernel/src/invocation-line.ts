@@ -153,6 +153,13 @@ export interface InvocationLogLine {
    * when none were dropped, so 16 calls and 500 do not read the same.
    */
   storeCallsDropped?: number;
+  /**
+   * #2192: the invocation that started this one through a path that leaves no event chain:
+   * a peer call (the calling request's id), or a delivery run by a schedule's own drain (the
+   * run's id). Omitted when there is none, so every other line stays what it was. For relating
+   * requests only: it is the caller's word for its own id, never authority.
+   */
+  parentInvocationId?: string;
   /*
    * #1901: the async line's own fields. Present only when `kind` is, and written by
    * `asyncInvocationLine` (`async-invocation-log.ts`) — ids, names, counts and codes only,
@@ -246,6 +253,8 @@ export interface InvocationLineFields {
   storeCalls?: readonly StoreCallLine[];
   /** #2245: written only when calls past the cap were dropped. */
   storeCallsDropped?: number;
+  /** #2192: written only when there is one. */
+  parentInvocationId?: string;
   async?: Pick<
     InvocationLogLine,
     'outcome' | 'eventType' | 'eventId' | 'attempt' | 'dueAt' | 'latenessMs' | 'suppressed' | 'suppressedBy'
@@ -279,6 +288,7 @@ export function invocationLine(f: InvocationLineFields): InvocationLogLine {
     ...(f.outputFields ? { outputFields: f.outputFields, ...(f.fieldCoverageId ? { fieldCoverageId: f.fieldCoverageId } : {}) } : {}),
     ...(f.storeCalls && f.storeCalls.length > 0 ? { storeCalls: f.storeCalls } : {}),
     ...(f.storeCallsDropped ? { storeCallsDropped: f.storeCallsDropped } : {}),
+    ...(f.parentInvocationId ? { parentInvocationId: f.parentInvocationId } : {}),
     ...(f.async ?? {}),
   };
 }

@@ -40,6 +40,29 @@ export const REQUEST_ID_HEADER = 'x-substrat-request-id';
  */
 export const REQUEST_ID_EXPOSED_HEADERS = [REQUEST_ID_HEADER] as const;
 
+/**
+ * #2192: the request header a peer call carries its CALLER's request id on, from the caller's
+ * peer client through the egress worker and the router to the target's
+ * `/internal/vertical-invoke`, whose invocation line names it as `parentInvocationId`.
+ *
+ * A claim, used for relating two requests and for nothing else: it is the calling vertical's
+ * word for its own id, and every hop takes it only through {@link parentRequestIdOf}. A header
+ * rather than a body field because both bodies on the way are strict, and an older egress or
+ * target would refuse a field it does not know where it ignores a header.
+ */
+export const PARENT_REQUEST_ID_HEADER = 'x-substrat-parent-request-id';
+
+const REQUEST_ID_SHAPE = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+/**
+ * #2192: a parent request id as a hop may pass it on — exactly one ULID, or `undefined`. A
+ * repeated header (which `Headers.get` joins with a comma), an oversized or lowercased value, or
+ * anything else is dropped whole, never trimmed or kept in part.
+ */
+export function parentRequestIdOf(value: unknown): string | undefined {
+  return typeof value === 'string' && REQUEST_ID_SHAPE.test(value) ? value : undefined;
+}
+
 /** The fields the header carries. Every one is optional: a request may reach no operation. */
 export interface InvocationRecordFields {
   operation?: string | null | undefined;
