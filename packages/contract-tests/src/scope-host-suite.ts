@@ -6911,6 +6911,12 @@ export function scopeHostContractSuite(
       // A version that stores none cannot be checked: never refused, and it equals no other version.
       const bare = await publish(digestOfA);
       expect((await host.admin.getVersion(staff, bare, slug))?.migrationDigest).toBe(unheldMigrationDigest(bare));
+      // The admin log records the digest the registry holds, not the one the push sent; so does a held one's.
+      const published = async (id: string) =>
+        ((await host.admin.auditLog(staff, {})).find((e) => e.action === 'publishVersion' && (e.after as { id?: string } | null)?.id === id)
+          ?.after as { migrationDigest?: string } | undefined)?.migrationDigest;
+      expect(await published(bare)).toBe(unheldMigrationDigest(bare));
+      expect(await published(a)).toBe(digestOfA);
       await host.admin.admitVersion(staff, bare);
       await expectRefusal(host.admin.promoteVersion(staff, slug, 'prod', bare), 'conflict', /holds no migrations the platform can compare/);
     });

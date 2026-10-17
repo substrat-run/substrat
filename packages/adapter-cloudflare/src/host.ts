@@ -7901,12 +7901,13 @@ export class CloudflareScopeHost implements ScopeHost {
         // The SQL migrations are stored apart from the manifest (#1764), so no read of the
         // version but the promote review's carries them.
         const split = splitManifestMigrations(manifestJson ?? null, 'push');
+        // #2339: the digest a promote compares is the one derived from what is stored, never the pushed one.
+        const migrationDigest = await publishedMigrationDigest({
+          id: audited.id, migrationDigest: audited.migrationDigest, manifestJson: manifestJson ?? null, migrations: split.migrations,
+        });
         await this.directory('insertVersion', {
           ...audited,
-          // #2339: the digest a promote compares is the one derived from what is stored, never the pushed one.
-          migrationDigest: await publishedMigrationDigest({
-            id: audited.id, migrationDigest: audited.migrationDigest, manifestJson: manifestJson ?? null, migrations: split.migrations,
-          }),
+          migrationDigest,
           manifestJson: split.manifestJson,
           migrations: split.migrations,
           originJson: origin ? JSON.stringify(origin) : null,
@@ -7916,6 +7917,8 @@ export class CloudflareScopeHost implements ScopeHost {
         });
         await this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
           ...audited,
+          // The digest the registry holds, which differs from the pushed one only for an unheld version.
+          migrationDigest,
           ...(origin ? { origin } : {}),
           admission: selfAdmits ? 'admitted' : 'pending',
         });

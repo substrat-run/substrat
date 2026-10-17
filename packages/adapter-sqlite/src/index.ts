@@ -9321,6 +9321,8 @@ export class SqliteScopeHost implements ScopeHost {
         })();
         this.recordAdmin(actor, 'publishVersion', { tenantId: null }, null, {
           ...audited,
+          // The digest the registry holds, which differs from the pushed one only for an unheld version.
+          migrationDigest,
           ...(origin ? { origin } : {}),
           admission: selfAdmits ? 'admitted' : 'pending',
         });
