@@ -309,9 +309,15 @@ or userinfo. The path is redacted segment by segment, and redaction is the defau
 is kept only when it is exactly a UUID, a ULID or an integer, a word of letters (with `-`, `_`,
 `.`) under 20 characters, or a letter-and-digit mix of at most 8. Anything 20 characters or
 longer, anything holding `:` `=` `%` `@`, and anything with a run of 16 letters and digits
-(hex, base64url) is written `[redacted]`. **The limit, stated:** the rule is a heuristic. A
-short secret made only of letters, or only of digits, still reads as a word or an id and is
-written as it is; the opposite error, a long plain word redacted, is the accepted cost. Calls to the scope-store transport are already named in
+(hex, base64url) is written `[redacted]`. **Limitations.** The rule is a heuristic, and these
+are written as they are:
+
+- a path segment under 20 characters made only of letters (with `-`, `_`, `.`), with no run of
+  16 letters, which reads as a word;
+- an integer of 16 to 19 digits, which reads as an id;
+- a secret in the host, such as a subdomain, since the host is always written.
+
+A long plain word being redacted is the opposite error, and the accepted one. Calls to the scope-store transport are already named in
 `storeCalls` and are not recorded twice. Sixteen calls are named and the rest counted, so the
 line grows by at most a few kilobytes; no new store, event or dataset is added.
 

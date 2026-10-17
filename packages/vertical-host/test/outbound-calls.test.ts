@@ -46,8 +46,12 @@ describe('redactOutboundPath — a segment is kept only when it is plainly a nam
     expect(redactOutboundPath(path)).toBe(written);
   });
 
-  it('the limitation, stated: a short secret made only of letters still reads as a word', () => {
+  it('the limitations, stated as the docs state them: these shapes are written as they are', () => {
+    // A short all-letter segment reads as a word, and an integer of up to 19 digits as an id.
     expect(keepsSegment('hunter')).toBe(true);
+    expect(keepsSegment('1234567890123456789')).toBe(true);
+    // The 20th digit is past the integer rule and the length cap.
+    expect(keepsSegment('12345678901234567890')).toBe(false);
   });
 
   it('a very long path is cut after redaction', () => {
