@@ -129,7 +129,7 @@ const commonChange = {
  *   was renamed. For a file, `content` says whether bytes follow: `follows` means the operation
  *   should answer `{ entity }`, the attachment target the bytes land on, and a `content` change
  *   comes next. `unchanged` means only metadata moved; `too-large` means the file is over
- *   {@link MAX_FILE_BYTES} and its bytes are not brought in.
+ *   {@link MAX_FILE_BYTES}, or Graph did not state its size, and its bytes are not brought in.
  * - `content`: the bytes landed as `attachment` on the entity the upsert named. `replaces` is the
  *   attachment the previous content landed as, if any — the vertical decides whether to keep it.
  * - `delete`: the item is gone from the folder — `deleted` in Teams, or `moved-out` of the folder
@@ -606,7 +606,7 @@ export async function syncMicrosoft365Scope(
     if (p.content === 'follows') {
       const target = upsertAnswer.safeParse(answer);
       if (target.success && target.data.entity) {
-        const body = await contentOf(client, binding.driveId, item.id);
+        const body = await contentOf(client, binding.driveId, item.id, MAX_FILE_BYTES);
         attachments ??= await host.getConnectorAttachments(connectionId, scopeRef);
         const record = await attachments.upload({
           entity: target.data.entity,
@@ -806,8 +806,15 @@ function planChanges(
     };
     const contentChanged = kind === 'file' && (!prior || prior.cTag !== entry.cTag);
     if (prior && prior.path === entry.path && prior.eTag === entry.eTag && !contentChanged) continue;
+    // A size Graph does not state is not taken as small: those bytes are not brought in either.
     const content =
-      kind === 'folder' ? null : !contentChanged ? 'unchanged' : (source.size ?? 0) > MAX_FILE_BYTES ? 'too-large' : 'follows';
+      kind === 'folder'
+        ? null
+        : !contentChanged
+          ? 'unchanged'
+          : source.size === undefined || source.size > MAX_FILE_BYTES
+            ? 'too-large'
+            : 'follows';
     upserts.push({ change: 'upsert', item: source, entry, prior, content });
   }
   const depth = (p: string) => p.split('/').length;

@@ -648,6 +648,16 @@ describe('reads: the sync lands what is in the folder', () => {
     expect(w.drive.calls.some((c) => c.url.includes(`/items/${big}/content`))).toBe(false);
   });
 
+  it('lands a file whose size Graph does not state without its bytes', async () => {
+    const w = await world();
+    const unknown = w.drive.put(w.general, 'unsized.bin', 'x');
+    w.drive.sizeless.add(unknown);
+    await w.bind();
+    await w.sync();
+    expect(w.landed).toEqual([expect.objectContaining({ change: 'upsert', itemId: unknown, size: null, content: 'too-large' })]);
+    expect(w.drive.calls.some((c) => c.url.includes(`/items/${unknown}/content`))).toBe(false);
+  });
+
   it('follows the folder by id when it is renamed', async () => {
     const w = await world();
     w.drive.put(w.general, 'agenda.txt', 'agenda');

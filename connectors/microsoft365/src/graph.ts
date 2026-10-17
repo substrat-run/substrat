@@ -247,9 +247,17 @@ export async function childrenOf(client: GraphClient, driveId: string, itemId: s
   return out;
 }
 
-export async function contentOf(client: GraphClient, driveId: string, itemId: string): Promise<Uint8Array> {
+/**
+ * A file's bytes, at most `maxBytes` of them: refused on the declared `content-length` before the
+ * body is read when Graph sends one, and on what arrived when it does not.
+ */
+export async function contentOf(client: GraphClient, driveId: string, itemId: string, maxBytes: number): Promise<Uint8Array> {
   const res = await call(client, 'GET', `drives/${enc(driveId)}/items/${enc(itemId)}/content`);
-  return new Uint8Array(await res.arrayBuffer());
+  const tooLarge = () => new GraphError(413, 'tooLarge', `the file is larger than the ${maxBytes} bytes a sync brings in`);
+  if (Number(res.headers?.get('content-length') ?? 0) > maxBytes) throw tooLarge();
+  const body = new Uint8Array(await res.arrayBuffer());
+  if (body.byteLength > maxBytes) throw tooLarge();
+  return body;
 }
 
 export type ConflictBehavior = 'replace' | 'rename' | 'fail';

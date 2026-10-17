@@ -57,6 +57,8 @@ export class FakeDrive {
   lostAnswers: { when: (c: Call) => boolean; once?: boolean }[] = [];
   /** Delta tokens older than this answer 410 (Graph's "resync required"). */
   expiredBefore = 0;
+  /** Items whose size the drive leaves out, as Graph may. */
+  sizeless = new Set<string>();
   /** Items per delta page — small, so every test pages. */
   pageSize = 3;
   /** A `nextLink` to hand back instead of the real one (the foreign-link test). */
@@ -305,7 +307,7 @@ export class FakeDrive {
         : i.kind === 'folder'
           ? { folder: { childCount: 0 } }
           : { file: { mimeType: i.mimeType, hashes: { quickXorHash: quickXorHash(i.content) } } }),
-      size: i.content.byteLength,
+      ...(this.sizeless.has(i.id) ? {} : { size: i.content.byteLength }),
       eTag: `"{${i.id}},${i.version}"`,
       cTag: `"c:{${i.id}},${i.contentVersion}"`,
       lastModifiedDateTime: this.now.toISOString(),
