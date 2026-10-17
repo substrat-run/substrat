@@ -1928,7 +1928,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await ledgerByRef(sid)).toEqual({ [from]: 'retained', [stable]: 'retained' });
       expect(bodiesIn(await hostFor('v1').exportScopeLocal(sid))).toEqual(['kept']);
     });
-    it('a promote on the target landing while a rebind copies: refused as stale, nothing routed, both copies kept (#2347)', async () => {
+    // Twice, as on SQLite: once refused by the host's pre-check, and once with that pre-check made to
+    // pass (as a serve landing between it and the write would), so only the DO's own compare-and-set
+    // in the write (`SERVES_NOW_PREDICATE`) can refuse it.
+    for (const window of ['before the host pre-check', 'between the pre-check and the write'] as const) it(`a promote on the target landing while a rebind copies (${window}): refused as stale, nothing routed, both copies kept (#2347)`, async () => {
       const { target, targetServing } = await servingSetup();
       const sid = await legacyInstall();
       const before = await dir.admin.getScopeRecord(staff, t, sid);
@@ -1939,8 +1942,28 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         migrationDigest: 'g', deploymentRef: `${target}-${next.toLowerCase()}`, manifestJson: JSON.stringify({ doClasses: ['ScopeDO'] }),
       }));
       // The rebind has judged both sides; the target's serving script moves on while the bytes are in flight.
+      // The host's handle on the control-plane DO, wrapped so its next `servesNow` answers true. Every
+      // other call goes through an arrow on the real stub (a workerd stub must not be `.bind`-ed).
+      const holder = dir as unknown as { cp: Record<string, (...a: unknown[]) => unknown> };
+      const realCp = holder.cp;
+      let passOnce = false;
+      let passed = false;
+      if (window.startsWith('between')) {
+        holder.cp = new Proxy(realCp, {
+          get: (stub, name: string) => (...a: unknown[]) => {
+            if (name === 'servesNow' && passOnce) {
+              passOnce = false;
+              passed = true;
+              return Promise.resolve(true);
+            }
+            return stub[name]!(...a);
+          },
+        });
+      }
       hooks.restore = async (ref, s) => {
-        if (ref === targetServing && s === sid) await dir.admin.setVerticalServing(staff, target, { ...serving, versionId: next });
+        if (ref !== targetServing || s !== sid) return;
+        await dir.admin.setVerticalServing(staff, target, { ...serving, versionId: next });
+        passOnce = true;
       };
       try {
         const res = await api.request(`/tenants/${t}/scopes/${sid}/rebind-vertical`, {
@@ -1948,8 +1971,11 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         });
         expect(res.status, await res.clone().text()).toBe(412);
         expect(((await res.json()) as { reason?: string }).reason).toBe('rebind_review_stale');
+        // The forced pass was taken: the refusal came from the write.
+        expect(passed).toBe(window.startsWith('between'));
       } finally {
         delete hooks.restore;
+        holder.cp = realCp;
         await dir.admin.setVerticalServing(staff, target, serving);
       }
       const after = await dir.admin.getScopeRecord(staff, t, sid);
