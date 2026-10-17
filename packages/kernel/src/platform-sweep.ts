@@ -689,7 +689,7 @@ export const ORPHAN_ATTACHMENT_SWEEP_BATCH = 25;
 export const ORPHAN_SWEEP_DRY_RUN_WINDOW_MS = 7 * 86_400_000;
 
 /** How many scope ids each standing-condition count of the report carries; the count stays exact. */
-export const ORPHAN_ATTACHMENT_REPORTED_IDS = 50;
+const ORPHAN_ATTACHMENT_REPORTED_IDS = 50;
 
 /** What the orphan-attachment phase did in one pass (#2314). */
 export interface OrphanAttachmentSweepReport {
