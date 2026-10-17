@@ -57,6 +57,7 @@ import {
   type SecretBox,
   type SweepRunInput,
   type HostAdmin,
+  type OrphanAttachmentSweepOptions,
 } from '@substrat-run/kernel';
 import {
   CloudflareScopeHost,
@@ -158,6 +159,8 @@ import {
 import {
   ControlPlaneError,
   VerticalClient,
+  isRouteMiss,
+  sweepScopeAttachments,
   hostedCrossVerticalReach,
   retireClientsOfReapedScope,
   settleUnrecordedOutcomes,
@@ -389,6 +392,17 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * value falls back to the default rather than to either extreme.
    */
   PROVISION_RECONCILE_BATCH?: string;
+  /**
+   * #2314: the orphan-attachment sweep. Unset or `off` (the default) skips it. `dry-run` reports, in
+   * the admin log, what each visited scope's pass would delete and deletes nothing. `delete`
+   * deletes, but only on a scope whose dry-run row is in the admin log from the last 7 days; any
+   * other scope gets a dry run instead. Any other value is `off`, with a warning in the tail.
+   * Without script dispatch the phase never runs: no script but the one serving a scope may judge
+   * its bytes. docs/runbooks/orphan-attachment-sweep.md has the rollout.
+   */
+  ORPHAN_ATTACHMENT_SWEEP?: string;
+  /** #2314: scopes one orphan-attachment pass visits (kernel default 25). `0` pauses. Garbled is the default. */
+  ORPHAN_ATTACHMENT_SWEEP_BATCH?: string;
   /**
    * #2309: the subrequests the scheduled pass may spend rebuilding store scripts after the key
    * lists, the store entry or its verifier changed (`STORE_REBUILD_PASS_SUBREQUESTS` by default,
@@ -957,6 +971,39 @@ export function parseReconcileBatch(raw: string | undefined): number | undefined
   return parseNonNegativeInteger(raw);
 }
 
+/**
+ * `ORPHAN_ATTACHMENT_SWEEP` → the sweep's mode (#2314), or `undefined` for off. Only the two
+ * spellings turn it on. A garbled value is off, never `delete`: the phase deletes tenant bytes, so
+ * a typo must not start it, and the warning says why nothing ran.
+ */
+export function parseOrphanSweepMode(raw: string | undefined): 'dry-run' | 'delete' | undefined {
+  const v = raw?.trim();
+  if (v === undefined || v === '' || v === 'off') return undefined;
+  if (v === 'dry-run' || v === 'delete') return v;
+  console.warn(`ORPHAN_ATTACHMENT_SWEEP='${v}' is not off, dry-run or delete; the orphan-attachment sweep is off`);
+  return undefined;
+}
+
+/**
+ * The orphan-attachment phase's options (#2314), or `undefined` when it is off: no mode, or no
+ * script dispatch to reach the deployment that serves a scope. Never a fallback to this worker's
+ * own host, whose scope namespace holds none of a scope's rows.
+ */
+export function orphanAttachmentSweepFor(
+  env: Pick<Env, 'ORPHAN_ATTACHMENT_SWEEP' | 'ORPHAN_ATTACHMENT_SWEEP_BATCH'>,
+  admin: HostAdmin,
+  resolveRef: ((ref: string) => Promise<VerticalClient | undefined>) | undefined,
+): OrphanAttachmentSweepOptions | undefined {
+  const mode = parseOrphanSweepMode(env.ORPHAN_ATTACHMENT_SWEEP);
+  if (!mode || !resolveRef) return undefined;
+  const batch = parseNonNegativeInteger(env.ORPHAN_ATTACHMENT_SWEEP_BATCH);
+  return {
+    mode,
+    sweepScopeFn: (t, s, opts) => sweepScopeAttachments({ admin, actor: SWEEP_ACTOR, resolveRef }, t, s, opts),
+    ...(batch !== undefined ? { batch } : {}),
+  };
+}
+
 function parseNonNegativeInteger(raw: string | undefined): number | undefined {
   if (raw === undefined || raw.trim() === '') return undefined;
   const n = Number(raw);
@@ -1495,22 +1542,6 @@ function deploymentForScopeFor(
     const bySlug = resolveSlug ? await resolveSlug(slug, SWEEP_ACTOR) : undefined;
     return bySlug ? { client: bySlug, via: 'slug' } : undefined;
   };
-}
-
-/**
- * A 404 the vertical's router answered because it has no such route: a non-empty body that is
- * not JSON (Hono's miss is plain text). vertical-host's `classifyError` and a vertical's own
- * `mapError` also answer 404, for a scope or row it could not find, and those come as the JSON
- * envelope. A 404 whose body is empty or could not be read proves nothing, so it is not a miss.
- */
-function isRouteMiss(err: ControlPlaneError): boolean {
-  if (err.status !== 404 || !err.body?.trim()) return false;
-  try {
-    JSON.parse(err.body);
-    return false;
-  } catch {
-    return true;
-  }
 }
 
 /**
@@ -2121,6 +2152,7 @@ export default {
       ? await failureDigestWatermark({ admin: host.admin, actor: SWEEP_ACTOR, passStartedAt: new Date() })
       : undefined;
     const crossVertical = crossVerticalFor(env, host);
+    const orphanAttachments = orphanAttachmentSweepFor(env, host.admin, resolveRef);
     // #1840: what the drain row is stamped with — the drain phase's end, or the pass start
     // when the phase reached no scope at all.
     const passStartedAt = new Date();
@@ -2223,6 +2255,9 @@ export default {
       // importer costs the directory reads and nothing else. The router kick runs one
       // producer's edges sooner (`/internal/drain-scope`); this is the backstop.
       ...(crossVertical ? { crossVertical } : {}),
+      // #2314: attachment bytes no row names, collected through the script that serves each scope.
+      // Off unless ORPHAN_ATTACHMENT_SWEEP says otherwise, and a dry run before any delete.
+      ...(orphanAttachments ? { orphanAttachments } : {}),
     });
     // #1713 — the lifecycle heal: re-deliver to every hosted scope whose deployment did not
     // acknowledge the directory's lifecycle, and to every scope held now. Each failed delivery is
@@ -2253,6 +2288,10 @@ export default {
     // its reason is already a `vertical-events` sweep-run row.
     const cv = report.crossVertical;
     const cvActive = cv != null && (cv.delivered > 0 || cv.withheld > 0 || cv.paused > 0 || cv.unresolved > 0);
+    // #2314: a pass that found, deleted or could not judge anything says so; each scope's finding is
+    // also its admin-log row.
+    const oa = report.orphanAttachments;
+    const orphansActive = oa != null && (oa.orphans > 0 || oa.deleted > 0 || oa.refused.count > 0 || oa.unsupported.count > 0 || oa.noStore.count > 0);
     if (
       report.snapshotsReaped > 0 ||
       report.archivedScopesReaped > 0 ||
@@ -2265,7 +2304,8 @@ export default {
       (al !== null && (al.shipped > 0 || al.pruned > 0)) ||
       skipped !== undefined ||
       unsettleable !== undefined ||
-      cvActive
+      cvActive ||
+      orphansActive
     ) {
       console.log('platform-sweep', {
         snapshotsReaped: report.snapshotsReaped,
@@ -2290,6 +2330,7 @@ export default {
               },
             }
           : {}),
+        ...(orphansActive ? { orphanAttachments: oa } : {}),
         errors: report.errors,
       });
     }
