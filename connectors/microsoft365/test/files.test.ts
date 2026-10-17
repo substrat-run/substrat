@@ -786,6 +786,23 @@ describe('reads: the sync lands what is in the folder', () => {
       for (const name of OUTSIDE_NAMES) expect(await w.state()).not.toContain(name);
     });
 
+    it('a folder the feed shows moved out takes a held file out only on the file\'s own lookup', async () => {
+      const w = await world();
+      const out = w.drive.mkdir(w.general, 'Out');
+      const y = w.drive.put(out, 'y.txt', 'y');
+      await w.bind();
+      await w.sync();
+      w.landed.length = 0;
+      // An incremental pass: the feed presents the moved folder alone, never the file it held.
+      w.drive.move(out, w.leadership);
+      await w.sync();
+      expect(w.landed.map((c) => [c.itemId, c.change === 'delete' && c.reason])).toEqual([
+        [y, 'moved-out'],
+        [out, 'moved-out'],
+      ]);
+      expect(w.drive.calls.some((c) => c.url.includes(`/items/${y}?`))).toBe(true);
+    });
+
     it('a verification that cannot reach the drive stops the pass and deletes nothing', async () => {
       const w = await world();
       const gone = w.drive.put(w.general, 'gone.txt', 'gone');
