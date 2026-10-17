@@ -64,10 +64,19 @@ sign-in pages carry it for you: open the Console, the Dashboard or the builder s
   way, so an expired one re-authenticates at the default. Federated sign-out reads the
   issuer off the login's ID token, so it ends the session at the issuer that made it.
 
-Which account you get is the issuer's call: an alternate issuer that returns a different
-`sub` is a different login to anything keyed on it (a Dashboard team, a vertical's owner
-seat). The Console and control plane's staff roster is keyed on a *verified address*, so
-the same address works at both.
+**The alternate issuer is trusted exactly as much as the default one**, for every account,
+on every app that mounts these routes. Whoever controls it, or its client configuration,
+can sign in as any account the default issuer could. Treat its keys and its configuration
+like the default issuer's.
+
+Identity is keyed the same way whichever issuer made the login, because the session does
+not record which one did. Anything keyed on `sub` (a Dashboard team, a vertical's owner
+seat) sees the `sub` the issuer returns, so an alternate issuer that returns a different
+`sub` is a different login there. The Console and control plane's staff roster is keyed on
+a *verified address*, so the same address is the same staff member at both.
+
+**To switch it off, delete the three `OIDC_ALT_*` secrets** from the app. Blanking them in
+the env file you push from does not remove secrets the app already holds.
 
 ## Surface
 
