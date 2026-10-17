@@ -5,6 +5,7 @@ import { invocationLog, type InvocationLogLine, withInvocationLog } from '../src
 import {
   installOutboundRecorder,
   keepsSegment,
+  markRequestStart,
   type OutboundRecording,
   recordingFetch,
   redactOutboundPath,
@@ -81,7 +82,8 @@ describe('recordingFetch — the wrapper in front of the runtime’s fetch', () 
   it('inside a request it records the call and hands back the runtime’s own response', async () => {
     const answer = { status: 403, headers: new Headers() };
     const runtime = runtimeFetch(async () => answer);
-    const recording: OutboundRecording = { outboundSince: Date.now() };
+    const recording: OutboundRecording = {};
+    markRequestStart(recording, Date.now() - 50);
     const wrapped = recordingFetch(runtime.fn, () => recording);
     const res = await wrapped('https://User:pw@API.example.com:8443/v1/users/42?token=abc#frag', { method: 'post' });
     expect(res).toBe(answer);
@@ -89,6 +91,9 @@ describe('recordingFetch — the wrapper in front of the runtime’s fetch', () 
     expect(recording.outboundCalls).toEqual([
       { host: 'api.example.com:8443', path: '/v1/users/42', method: 'POST', status: 403, outcome: 'http-error', durationMs: expect.any(Number), atMs: expect.any(Number) },
     ]);
+    // Measured from the request's start, which is kept beside the record and never on it.
+    expect(recording.outboundCalls?.[0]?.atMs).toBeGreaterThanOrEqual(50);
+    expect(Object.keys(recording)).toEqual(['outboundCalls']);
     const written = JSON.stringify(recording);
     for (const secret of ['token', 'abc', 'frag', 'User', 'pw']) expect(written).not.toContain(secret);
   });
@@ -259,7 +264,6 @@ describe('the line names the request’s outbound calls (#2192)', () => {
       { host: 'undeclared.example.com', path: '/oauth2/token', method: 'POST', status: 403, outcome: 'refused', durationMs: expect.any(Number), atMs: expect.any(Number) },
     ]);
     expect(JSON.stringify(lines[0])).not.toContain('sekret-code');
-    expect(lines[0]).not.toHaveProperty('outboundSince');
     expect(lines[1]).not.toHaveProperty('outboundCalls');
     expect(lines[1]).not.toHaveProperty('outboundCallsDropped');
   });

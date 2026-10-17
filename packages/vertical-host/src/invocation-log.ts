@@ -75,7 +75,7 @@ import {
   type StoreCallTally,
 } from '@substrat-run/kernel/invocation-line';
 import { ulid } from '@substrat-run/kernel/ulid';
-import { installOutboundRecorder, type OutboundRecording } from './outbound-calls.js';
+import { installOutboundRecorder, markRequestStart, type OutboundRecording } from './outbound-calls.js';
 import { readRoutedNode, ROUTED_ID, RouterAssertionError } from './routed-node.js';
 import type { HeaderReader } from './routed-node.js';
 
@@ -126,8 +126,7 @@ export interface InvocationRecord extends StoreCallTally, OutboundRecording {
    *
    * #2192: `outboundCalls` and `outboundCallsDropped` (from `OutboundRecording`) — the
    * `fetch` calls made during this request, recorded the same way by the platform's wrapped
-   * `fetch` (`outbound-calls.ts`). `outboundSince` is when the request started, which each
-   * call's `atMs` is measured from; it is never written to the line.
+   * `fetch` (`outbound-calls.ts`).
    */
 }
 
@@ -227,7 +226,7 @@ function currentRecording(): OutboundRecording | undefined {
 function runRecording<R>(record: InvocationRecord, started: number, provided: AsyncLocalStorageClass | undefined, fn: () => R): R {
   const slot = storeCallSlot(provided);
   if (!slot) return fn();
-  record.outboundSince = started;
+  markRequestStart(record, started);
   installOutboundRecorder(currentRecording);
   return slot.run(record, fn);
 }

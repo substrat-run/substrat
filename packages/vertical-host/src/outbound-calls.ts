@@ -118,10 +118,29 @@ function rejectedOutcome(e: unknown): { outcome: OutboundCallOutcome; reason?: s
   return name ? { outcome: 'failed', reason: name } : { outcome: 'failed' };
 }
 
-/** The tally a request's calls go on, with when that request started. */
-export interface OutboundRecording extends OutboundCallTally {
-  /** Epoch milliseconds the request started — what a call's `atMs` is measured from. */
-  outboundSince?: number;
+/** The tally a request's calls go on: the invocation record, or anything shaped like it. */
+export type OutboundRecording = OutboundCallTally;
+
+/**
+ * When each recording's request started — what a call's `atMs` is measured from. Kept beside
+ * the record rather than on it, since the record is handed to the vertical's handler chain, and
+ * under a GLOBAL symbol, since the copy that starts a request and the copy that recorded the
+ * call may be different module instances (the stamp registry's reason).
+ */
+const SINCE = Symbol.for('substrat.outbound-since');
+
+function sinceMap(): WeakMap<object, number> {
+  const g = globalThis as unknown as Record<symbol, WeakMap<object, number> | undefined>;
+  return (g[SINCE] ??= new WeakMap());
+}
+
+/** Note when the request a recording belongs to started. Never throws. */
+export function markRequestStart(recording: OutboundRecording, started: number): void {
+  try {
+    sinceMap().set(recording, started);
+  } catch {
+    /* calls then sit at the request's start */
+  }
 }
 
 /** What the wrapper needs from the platform: the recording of the request now running. */
@@ -158,7 +177,7 @@ function record(
       status: end.status,
       outcome: end.outcome,
       durationMs: Math.max(0, Date.now() - startedAt),
-      atMs: Math.max(0, startedAt - (recording.outboundSince ?? startedAt)),
+      atMs: Math.max(0, startedAt - (sinceMap().get(recording) ?? startedAt)),
       ...(end.reason !== undefined ? { reason: end.reason } : {}),
     };
     tallyOutboundCall(recording, call);
