@@ -85,6 +85,7 @@ import { PermissionDenied, type ScopeStub } from '@substrat-run/kernel';
 import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, requestIdOf, type InvocationRecord } from './invocation-log.js';
 import { classifyError, messageOf, problemResponse } from './errors.js';
 import { observeOutputFields, outputWalkOf, type OutputWalk } from './field-coverage.js';
+import { bearerClaims, carriesAct, patternAnswers } from './mcp-guard.js';
 
 /** What `invocationLog` handed this request (#1746, #1237). Both absent without the middleware. */
 interface McpInvocation {
@@ -516,27 +517,6 @@ function audienceRefusal(authorization: string | undefined, resource: string): s
 }
 
 /**
- * The claims of a presented JWS bearer, read WITHOUT checking its signature, or `null` when
- * there is no bearer or it is not a JWS. Only ever used to refuse (see `audienceRefusal`).
- */
-function bearerClaims(authorization: string | undefined): Record<string, unknown> | null {
-  if (!authorization?.toLowerCase().startsWith('bearer ')) return null;
-  const segments = authorization.slice(7).trim().split('.');
-  if (segments.length !== 3) return null;
-  let claims: unknown;
-  try {
-    const b64 = segments[1]!.replace(/-/g, '+').replace(/_/g, '/');
-    const bytes = Uint8Array.from(atob(b64.padEnd(b64.length + ((4 - (b64.length % 4)) % 4), '=')), (ch) =>
-      ch.charCodeAt(0),
-    );
-    claims = JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    return null; // not a JWS payload, so not a token whose claims can be read here
-  }
-  return claims !== null && typeof claims === 'object' ? (claims as Record<string, unknown>) : null;
-}
-
-/**
  * A delegation the vertical admitted (#1824): who acts for the user, and within which of
  * this vertical's permission keys. The shape `AuthSubject.delegation` carries in
  * `@substrat-run/vertical-auth`, restated structurally so this package does not depend on it.
@@ -577,7 +557,7 @@ function ceilingOf(c: Context): McpCeiling {
     const scope = (handed as { scope?: unknown } | null)?.scope;
     return { scope: new Set(Array.isArray(scope) ? scope.filter((s): s is string => typeof s === 'string') : []) };
   }
-  return bearerClaims(c.req.header('authorization'))?.['act'] !== undefined ? 'unhanded' : undefined;
+  return carriesAct(c.req.header('authorization')) ? 'unhanded' : undefined;
 }
 
 /** Why a delegated call may not reach `tool`, or `null` when the ceiling admits it. */
@@ -625,6 +605,14 @@ function statusOf(err: unknown): number | undefined {
  * `GET` is a 405, which the transport explicitly permits for a server that opens no
  * server-to-client stream — this one has nothing to push, since every tool is a
  * request/response call into a scope.
+ *
+ * **Nothing else answers at this path** (#1824). A delegated token is admitted only on a
+ * request to the MCP endpoint, because this mount is what holds it to its scope. So a route
+ * registered BEFORE it that would answer here instead — an operation at `/mcp`, a
+ * hand-written `app.post('/api/mcp', …)`, a `/:slug` parameter route — refuses the mount,
+ * loudly, at boot. A route registered AFTER it never runs here: every method but `OPTIONS`
+ * is answered by this mount. Middleware and `*` catch-alls are not judged; they meet every
+ * path and are not handlers written for this one.
  */
 export function mountMcp(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -635,6 +623,15 @@ export function mountMcp(
 ): { path: string; tools: number } {
   const tools = mcpToolsOf(operations);
   const path = options.path ?? mcpEndpointPath(options.basePath);
+  const shadow = (app.routes as readonly { method: string; path: string }[]).find(
+    (r) => r.method !== 'ALL' && patternAnswers(r.path, path),
+  );
+  if (shadow) {
+    throw new Error(
+      `mountMcp: ${shadow.method} ${shadow.path} is registered before the MCP endpoint and would answer at ${path} ` +
+        'in its place — move that route off the path, or mount it after the endpoint',
+    );
+  }
   const wellKnown = `/.well-known/oauth-protected-resource${path}`;
   const byName = new Map(tools.map((t) => [t.name, t]));
   const serverInfo = {
@@ -1001,6 +998,9 @@ export function mountMcp(
 
   // No server-initiated stream, so no SSE to open. The transport allows saying so.
   app.get(path, (c) => c.json(rpcError(null, -32601, 'This server opens no event stream'), 405));
+  // #1824: and every other method is this mount's too, so a route registered after it can
+  // never answer here (see the header). `OPTIONS` is left to a CORS middleware.
+  app.on(['PUT', 'PATCH', 'DELETE'], path, (c) => c.json(rpcError(null, -32601, 'Only POST is served here'), 405));
 
   return { path, tools: tools.length };
 }

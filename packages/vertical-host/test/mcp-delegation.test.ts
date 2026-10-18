@@ -19,6 +19,7 @@ import type { AuthProvider } from '@substrat-run/vertical-auth/provider';
 import { INVOCATION_RECORD_KEY, type InvocationRecord } from '../src/invocation-log.js';
 import { mountOperations } from '../src/operations-routes.js';
 import { MCP_DELEGATION_KEY, mcpToolsOf, setMcpDelegation, type McpDelegation } from '../src/mcp.js';
+import { patternAnswers } from '../src/mcp-guard.js';
 
 const ISSUER = 'https://team-auth.test';
 const A = 'https://desk-a.example';
@@ -212,6 +213,99 @@ describe('a delegated call is held to the delegated scope before the operation r
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
     expect(((await res.json()) as any).result.tools).toHaveLength(5);
+  });
+});
+
+/**
+ * The verifier admits a delegated token on a request to the MCP path, so nothing but the MCP
+ * mount may answer there: a route that did would run with the user's grants and no ceiling.
+ */
+describe('nothing but the MCP endpoint answers at its path', () => {
+  const stub = async () => ({ invoke: async () => ({ ok: true }) }) as never;
+  const at = (path: string, method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'PUT') => ({
+    'desk/odd': { summary: 'Odd', permission: 'tickets:read', http: { method, path } },
+  });
+
+  it('refuses to mount an operation whose route answers at the MCP path, by any method', () => {
+    for (const method of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const) {
+      expect(() => mountOperations(new Hono(), at('/mcp', method), stub)).toThrow(/'desk\/odd' is bound to .* \/mcp, which answers at the MCP endpoint/);
+    }
+    expect(() => mountOperations(new Hono(), at('/{slug}', 'POST'), stub)).toThrow(/answers at the MCP endpoint/);
+  });
+
+  it('mounts an operation beside the path, and one at it when the endpoint is off — the twins', () => {
+    for (const path of ['/mcps', '/mcp/{id}', '/tickets/{id}', '/a/{b}']) {
+      expect(() => mountOperations(new Hono(), at(path), stub)).not.toThrow();
+    }
+    expect(() => mountOperations(new Hono(), at('/mcp'), stub, { mcp: false })).not.toThrow();
+  });
+
+  it('judges the path the endpoint is actually mounted at', () => {
+    expect(() => mountOperations(new Hono(), at('/agents'), stub, { mcp: { path: '/api/agents' } })).toThrow(/\/api\/agents/);
+    expect(() => mountOperations(new Hono(), at('/mcp'), stub, { mcp: { path: '/api/agents' } })).not.toThrow();
+  });
+
+  it('refuses a hand-written route registered before the endpoint that would answer in its place', () => {
+    const handler = () => new Response('mine');
+    for (const register of [
+      (a: Hono) => a.put('/api/mcp', handler),
+      (a: Hono) => a.post('/api/:slug', handler),
+      (a: Hono) => a.on('PATCH', '/api/:slug{[a-z]+}', handler),
+      (a: Hono) => a.delete('/api/:x?', handler),
+    ]) {
+      const app = new Hono();
+      register(app);
+      expect(() => mountOperations(app, operations, stub)).toThrow(/is registered before the MCP endpoint/);
+    }
+  });
+
+  it('leaves middleware and catch-alls alone: they meet every path', async () => {
+    const app = new Hono();
+    let seen = 0;
+    app.use('/api/mcp', async (_c, next) => {
+      seen++;
+      await next();
+    });
+    app.get('*', () => new Response('spa'));
+    expect(() => mountOperations(app, operations, stub)).not.toThrow();
+    const res = await app.request(`${A}/api/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+    });
+    expect(res.status).toBe(200);
+    expect(seen).toBe(1);
+  });
+
+  it('answers every method but OPTIONS itself, so a route registered after it never runs there', async () => {
+    const app = new Hono();
+    mountOperations(app, operations, stub);
+    let ran = 0;
+    const handler = () => {
+      ran++;
+      return new Response('mine');
+    };
+    app.put('/api/mcp', handler);
+    app.patch('/api/:slug', handler);
+    app.delete('/api/mcp', handler);
+    app.get('/api/mcp', handler);
+    for (const method of ['PUT', 'PATCH', 'DELETE', 'GET']) {
+      expect((await app.request(`${A}/api/mcp`, { method })).status).toBe(405);
+    }
+    expect(ran).toBe(0);
+  });
+
+  it('reads Hono patterns the way Hono does', () => {
+    expect(patternAnswers('/api/mcp', '/api/mcp')).toBe(true);
+    expect(patternAnswers('/api/:x', '/api/mcp')).toBe(true);
+    expect(patternAnswers('/api/:x{[0-9]+}', '/api/mcp')).toBe(false);
+    expect(patternAnswers('/api/:x?', '/api/mcp')).toBe(true);
+    expect(patternAnswers('/api/mcp/:x?', '/api/mcp')).toBe(true);
+    expect(patternAnswers('/:a/:b', '/api/mcp')).toBe(true);
+    expect(patternAnswers('/api/mcp/:x', '/api/mcp')).toBe(false);
+    expect(patternAnswers('/api/mcps', '/api/mcp')).toBe(false);
+    expect(patternAnswers('/api/*', '/api/mcp')).toBe(false);
+    expect(patternAnswers('*', '/api/mcp')).toBe(false);
   });
 });
 
