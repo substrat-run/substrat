@@ -17,15 +17,18 @@
  * **It never prints a match.** Output is `file:line` and the shape's name, nothing of the value,
  * because the output is a CI log and a log is public text too.
  *
- * **Known, intended literals** are listed in `ACCEPTED` below: a file, a shape, how many
- * matches it holds, and why. A file whose count differs from its entry, up or down, is
- * refused, so a second key added to an accepted file is reviewed rather than waved through;
- * the entry covers that file only, so the same shape in any other file is refused. An entry
- * matching nothing is refused as stale.
+ * **Known, intended literals** are listed in `ACCEPTED` below: a file, a shape, the sha256 of each
+ * accepted match (the matched text, so the value itself is never committed or printed a second
+ * time), and why. Any other value of that shape in that file is refused, so a key swapped for
+ * another of the same shape is reviewed rather than waved through, and so is a second one added
+ * beside it; the entry covers that file only, so the same shape in any other file is refused. A
+ * pinned digest no longer in the file, and an entry for a file not read, are refused as stale.
+ * A refused match prints its digest, never its text: that is what an entry would pin.
  *
  * Exit 0: clean. 1: a literal found, or an entry out of step. Fixtures: `secret-literals.test.mjs`.
  */
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,18 +53,19 @@ export const SHAPES = [
 ];
 
 /**
- * Literals the repo holds on purpose. `file → { shape, count, reason }`. Adding an entry is a
- * reviewed act: say why the value is not a secret.
+ * Literals the repo holds on purpose. `file → { shape, digests, reason }`, each digest the sha256
+ * of one accepted match. Adding an entry or a digest is a reviewed act: say why the value is not
+ * a secret.
  */
 export const ACCEPTED = {
   'packages/dev-issuer/src/keys.ts': {
     shape: 'JWK private exponent',
-    count: 1,
+    digests: ['94842336b540949844f01325272c8b214955e975931d0a836846cc787af650f8'],
     reason: "the dev issuer's signing key, checked in on purpose so a local login needs no setup; it signs for no deployed issuer (CLAUDE.md, packages/dev-issuer)",
   },
   'packages/contracts/test/errors.test.ts': {
     shape: 'connection URL with a password',
-    count: 1,
+    digests: ['f69a32207c70044fac192847546f3085cbf43a94451a002f710703e1939e064b'],
     reason: 'a made-up connection string the test throws to prove an internal error message is never returned',
   },
 };
@@ -69,11 +73,13 @@ export const ACCEPTED = {
 /** Files never read: lockfiles hold integrity hashes and nothing anyone wrote. */
 const SKIP = [/(?:^|\/)pnpm-lock\.yaml$/, /(?:^|\/)node_modules\//, /\.(?:png|jpe?g|gif|webp|ico|pdf|woff2?|ttf|otf|zip|gz|wasm|sqlite|db)$/i];
 
-/** Each match in one file, as `{ line, shape }` — never the matched text. */
+const sha256 = (text) => createHash('sha256').update(text).digest('hex');
+
+/** Each match in one file, as `{ line, shape, digest }` — never the matched text. */
 export function scan(text) {
   const out = [];
   for (const { name, re } of SHAPES) {
-    for (const m of text.matchAll(re)) out.push({ line: lineOf(text, m.index), shape: name });
+    for (const m of text.matchAll(re)) out.push({ line: lineOf(text, m.index), shape: name, digest: sha256(m[0]) });
   }
   return out.sort((a, b) => a.line - b.line);
 }
@@ -85,11 +91,15 @@ export function findLiterals(files, accepted = ACCEPTED) {
     const hits = scan(text);
     const entry = accepted[path];
     if (entry) {
-      const theirs = hits.filter((h) => h.shape === entry.shape);
-      if (theirs.length !== entry.count) {
-        offences.push(`${path}: accepted for ${entry.count} ${entry.shape} match(es), holds ${theirs.length} — review the change and update the entry in tools/secret-literals.mjs`);
+      for (const h of hits) {
+        if (h.shape !== entry.shape) offences.push(`${path}:${h.line}: ${h.shape}`);
+        else if (!entry.digests.includes(h.digest)) {
+          offences.push(`${path}:${h.line}: ${h.shape} — not an accepted value (sha256 ${h.digest}); review it, and pin the digest in tools/secret-literals.mjs only if it is no secret`);
+        }
       }
-      for (const h of hits.filter((x) => x.shape !== entry.shape)) offences.push(`${path}:${h.line}: ${h.shape}`);
+      for (const d of entry.digests) {
+        if (!hits.some((h) => h.digest === d)) offences.push(`${path}: the accepted ${entry.shape} sha256 ${d} is no longer in the file — remove it from the entry`);
+      }
       continue;
     }
     for (const h of hits) offences.push(`${path}:${h.line}: ${h.shape}`);
