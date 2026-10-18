@@ -264,6 +264,24 @@ describe('model.json — entities', () => {
     expect(both.changes).toEqual([expect.objectContaining({ detail: expect.stringMatching(/enum value\(s\) added: "snoozed"/) })]);
   });
 
+  it("an array `type` reordered beside another change is compared as a set by the type rule itself", () => {
+    // Beside a real change neither early check can answer, so this reaches the `type` rule:
+    // ['string','null'] → ['null','string'] is the same type, and only the tightened bound (an
+    // output: readers get less, minor) ranks.
+    const nullable = clone(MODEL);
+    nullable.entities.item.fields.properties.text.type = ['string', 'null'];
+    const head = clone(nullable);
+    head.entities.item.fields.properties.text.type = ['null', 'string'];
+    head.entities.item.fields.properties.text.maxLength = 100;
+    expect(classifyModel(JSON.stringify(nullable), JSON.stringify(head))).toMatchObject({
+      bump: 'minor',
+      changes: [expect.objectContaining({ detail: expect.stringMatching(/maxLength' tightened/) })],
+    });
+    // The twin: a member of the type set really dropped is still major.
+    head.entities.item.fields.properties.text.type = ['string'];
+    expect(classifyModel(JSON.stringify(nullable), JSON.stringify(head)).bump).toBe('major');
+  });
+
   it('readOnly or writeOnly written out as false is the same as absent; true on an input is still major', () => {
     expect(oas((d) => (createBody(d).properties.name.readOnly = false)).bump).toBe('none');
     expect(oas((d) => (d.components.schemas.List.properties.name.writeOnly = false)).bump).toBe('none');
