@@ -52,6 +52,7 @@ import { printInstalls } from './installs.js';
 import { createPreview, deletePreview, listPreviews, formatPreviewLogin, formatPreviews, parseTtlHours } from './preview.js';
 import { writeCiWorkflow, detectDefaultBranch, nextStepsMessage } from './init.js';
 import { writeModelView } from './model.js';
+import { syncConceptFile } from './concept.js';
 import {
   listVerticalHostnames,
   bindSurfaceHostname,
@@ -264,6 +265,11 @@ Usage:
                                               open it in a browser. Reads the checked-in
                                               model.json, so it needs no login and no push.
                                               Writes a temp file unless --out places it
+  substrat concept sync [dir] [--check]       rewrite the generated regions of spec/concept.md —
+                                              roles and permissions, the entity diagram, one state
+                                              diagram per lifecycle — from model.json and
+                                              PERMISSIONS.md. Idempotent; --check writes nothing
+                                              and exits 1 when the file is stale
   substrat init --ci github [dir]             write .github/workflows/substrat-deploy.yml —
                     [--branch <b>] [--path <packageDir>] [--release trunk|changesets]
                     [--out <path>] [--force]
@@ -1230,6 +1236,27 @@ async function cmdModel(): Promise<void> {
   console.log(file);
 }
 
+/**
+ * `substrat concept sync [dir] [--check]` — keep `spec/concept.md`'s generated regions true.
+ * Offline like `model view`: it reads the checked-in `model.json` and `PERMISSIONS.md`.
+ */
+async function cmdConcept(): Promise<void> {
+  if (argv[1] !== 'sync') {
+    console.error(
+      'usage: substrat concept sync [dir] [--check]' +
+        (argv[1] && !argv[1].startsWith('--') ? `\n\n'concept ${argv[1]}' is not a subcommand — 'sync' is the only one.` : ''),
+    );
+    process.exit(1);
+  }
+  const check = argv.includes('--check');
+  const { file, changed } = syncConceptFile(positional(1, ['check']) ?? '.', { check });
+  if (check && changed) {
+    console.error(`✗ ${file} is stale — run \`substrat concept sync\``);
+    process.exit(1);
+  }
+  console.log(changed ? `✓ rewrote the generated sections of ${file}` : `✓ ${file} is up to date`);
+}
+
 async function cmdWhoami(): Promise<void> {
   const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   const { user, tenants } = await fetchWhoami(controlPlaneUrl, header);
@@ -1284,6 +1311,8 @@ async function main(): Promise<void> {
       return cmdInit();
     case 'model':
       return cmdModel();
+    case 'concept':
+      return cmdConcept();
     case 'version':
     case '--version':
     case '-v':
