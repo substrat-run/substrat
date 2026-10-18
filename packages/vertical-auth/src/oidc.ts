@@ -287,10 +287,10 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
         ...(cfg.audience ? { audience: cfg.audience } : {}),
       });
       if (!payload.sub) return null;
-      // A delegation ASSERTION — the first step of the exchange, which `may_act` or a
-      // `substrat_delegation` claim with no `act` marks — is a bearer at no app, on every
-      // configuration: it is a credential for the exchange, and only the exchange takes it.
-      if (payload['may_act'] !== undefined) return null;
+      // A delegation ASSERTION — the first step of the exchange, which a `substrat_delegation`
+      // claim with no `act` marks — is a bearer at no app, on every configuration: it is a
+      // credential for the exchange, and only the exchange takes it. `may_act` alone decides
+      // nothing here: RFC 8693 §4.4 lets any issuer put it on an ordinary subject token.
       if (payload['substrat_delegation'] !== undefined && payload['act'] === undefined) return null;
       // A token carrying `act` is a delegation, on every configuration: admitted only through
       // the opt-in, and never by the rules below, which would take it as the user's own.

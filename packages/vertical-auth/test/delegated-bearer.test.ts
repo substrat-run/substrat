@@ -328,9 +328,15 @@ describe("the exchange's first step is a bearer nowhere", () => {
     }
   });
 
-  it('refuses it on either marker alone', async () => {
-    expect(await resolveAt(actorWithAudience, await token(assertionClaims({ substrat_delegation: undefined })), REST_A)).toBeNull();
+  it('refuses it on the assertion claim alone', async () => {
     expect(await resolveAt(actorWithAudience, await token(assertionClaims({ may_act: undefined })), REST_A)).toBeNull();
+  });
+
+  it('does not refuse a token for carrying may_act: any issuer may put it on a subject token', async () => {
+    const withMayAct = { may_act: { sub: 'some-client' } };
+    expect(await subAt(actorWithAudience, await token(assertionClaims({ substrat_delegation: undefined })), REST_A)).toBe('user-1');
+    expect(await subAt(actorExternal, await token({ aud: 'crm-web', ...withMayAct }), REST_A)).toBe('user-1');
+    expect(await subAt(plain, await token({ aud: 'desk-a', ...withMayAct }), REST_A)).toBe('user-1');
   });
 
   it('twin: the same audience rule still admits a token with neither marker', async () => {
