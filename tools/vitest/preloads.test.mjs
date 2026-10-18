@@ -29,11 +29,31 @@ export function nodeOptionLines(text, isLine) {
   return text.split('\n').filter(isLine);
 }
 
+/**
+ * A line with its comment cut off: from the first `#` that starts a word outside quotes, which is
+ * where both YAML and the shell start one. A preload named after it is not required (#2399).
+ */
+export function withoutComment(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote) {
+      if (c === quote) quote = null;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    } else if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) {
+      return line.slice(0, i);
+    }
+  }
+  return line;
+}
+
 /** The preloads one line does not `--require`. */
 export function missingFrom(text, names) {
   // A path token, where a workflow expression (`${{ github.workspace }}`) may hold spaces.
   const path = String.raw`(?:\$\{\{[^}]*\}\}|[^\s"'\`])*`;
-  return names.filter((name) => !new RegExp(`--require=${path}tools/vitest/${name.replace(/\./g, '\\.')}`).test(text));
+  const code = text.split('\n').map(withoutComment).join('\n');
+  return names.filter((name) => !new RegExp(`--require=${path}tools/vitest/${name.replace(/\./g, '\\.')}`).test(code));
 }
 
 /** Each line that leaves a preload out, with what it leaves out. */
@@ -83,6 +103,14 @@ test('a line that leaves one out is named — and one that requires all is not',
   assert.deepEqual(missingFrom('--require=$PWD/tools/vitest/a.cjs', ['a.cjs', 'b.cjs']), ['b.cjs']);
   // Named in a comment, or without `--require`, is not required.
   assert.deepEqual(missingFrom('# tools/vitest/b.cjs\n--require=$PWD/tools/vitest/a.cjs', ['a.cjs', 'b.cjs']), ['b.cjs']);
+  // Named after an inline comment is not required either — YAML's ` #`, or the shell's.
+  assert.deepEqual(
+    missingFrom('NODE_OPTIONS: --require=$PWD/tools/vitest/a.cjs # --require=$PWD/tools/vitest/b.cjs', ['a.cjs', 'b.cjs']),
+    ['b.cjs'],
+  );
+  // Twin: a `#` inside quotes, or inside a word, does not start a comment.
+  assert.deepEqual(missingFrom(`NODE_OPTIONS: "--title='x #y' --require=$PWD/tools/vitest/a.cjs"`, ['a.cjs']), []);
+  assert.deepEqual(missingFrom('--require=$PWD/a#b/tools/vitest/a.cjs', ['a.cjs']), []);
   // A name that is only a prefix of another does not count as the other.
   assert.deepEqual(missingFrom('--require=$PWD/tools/vitest/ab.cjs', ['b.cjs']), ['b.cjs']);
 });
