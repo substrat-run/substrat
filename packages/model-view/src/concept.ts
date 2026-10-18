@@ -207,7 +207,11 @@ function attributeNames(fields: readonly string[]): Map<string, string> {
   return out;
 }
 
-function renderEntities({ model }: ConceptInputs): string {
+/**
+ * The entity model as a Mermaid `erDiagram` block — the `entities` region of a concept document,
+ * and each side of `substrat plan`'s before/after view, so both read with one alias scheme.
+ */
+export function entityDiagram(model: EmittedModel): string {
   const names = Object.keys(model.entities).sort();
   if (names.length === 0) return '_No entities are declared._';
   // Every box is an alias with the real name as its label, so a name with a hyphen, a space or a
@@ -236,7 +240,8 @@ function renderEntities({ model }: ConceptInputs): string {
   return ['```mermaid', 'erDiagram', ...edges, ...nodes, '```'].join('\n');
 }
 
-function renderLifecycle(entity: string, lc: EmittedLifecycle): string {
+/** One declared lifecycle as a `### <entity>` heading over a Mermaid `stateDiagram-v2` block. */
+export function lifecycleDiagram(entity: string, lc: EmittedLifecycle): string {
   const states = lc.states as Record<string, { on?: Record<string, string>; terminal?: boolean }>;
   // A state is any value of the field's enum, so its spelling is not Mermaid's to restrict:
   // `in-progress` is a parse error as an id. Each is declared once, as an alias with its name as the label.
@@ -259,14 +264,14 @@ function renderProcesses({ model }: ConceptInputs): string {
   return entities
     .map((entity) => {
       const lc = lifecycles[entity];
-      return lc ? renderLifecycle(entity, lc) : '';
+      return lc ? lifecycleDiagram(entity, lc) : '';
     })
     .join('\n\n');
 }
 
 const RENDER: Record<ConceptSection, (i: ConceptInputs) => string> = {
   roles: renderRoles,
-  entities: renderEntities,
+  entities: ({ model }) => entityDiagram(model),
   processes: renderProcesses,
 };
 

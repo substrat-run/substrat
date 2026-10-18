@@ -1,5 +1,18 @@
 # @substrat-run/console
 
+## 0.14.64
+
+### Patch Changes
+
+- da133bb: Tenants, Domains and Verticals get a search box and the Scopes pager (25, 50 or 100 per page). Tenants hide reaped tombstones by default, with a status filter to bring them back; Domains can be filtered by hostname status. Domains and Verticals now filter and page over the full list in the browser instead of loading it a cursor page at a time.
+- Updated dependencies [57700ea]
+- Updated dependencies [52cc41f]
+- Updated dependencies [9024575]
+- Updated dependencies [5f77e74]
+  - @substrat-run/kernel@0.150.0
+  - @substrat-run/control-plane-api@0.150.0
+  - @substrat-run/contracts@0.150.0
+
 ## 0.14.63
 
 ### Patch Changes

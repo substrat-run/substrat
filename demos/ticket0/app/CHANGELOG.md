@@ -1,5 +1,14 @@
 # @substrat-run/demo-ticket0-app
 
+## 0.1.8
+
+### Patch Changes
+
+- Updated dependencies [52cc41f]
+- Updated dependencies [9024575]
+- Updated dependencies [5f77e74]
+  - @substrat-run/contracts@0.150.0
+
 ## 0.1.7
 
 ### Patch Changes
