@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { EmittedLifecycle, EmittedModel } from '@substrat-run/contracts';
 import { decisionsLog, entityDiagram, lifecycleDiagram, parseModel, parsePermissions } from '@substrat-run/model-view';
-import { type Bump, type Change, classify } from './bump.js';
+import { type Artifacts, type Bump, type Change, classify } from './bump.js';
 import { baseCommit, CannotRun, changesetDirFor, defaultBase, gitRoot, packageNameOf, readArtifacts } from './changeset.js';
 import { syncConceptFile } from './concept.js';
 
@@ -138,17 +138,14 @@ const readModelText = (text: string | null, what: string): EmittedModel | null =
   text === null ? null : parseModel(JSON.parse(text) as unknown, what);
 
 /** The delta between two sets of artifact texts. Pure: the git and filesystem half is {@link planFor}. */
-export function conceptDelta(
-  pkg: string,
-  base: { model: string | null; openapi: string | null; permissions: string | null },
-  head: { model: string | null; openapi: string | null; permissions: string | null },
-): ConceptDelta {
+export function conceptDelta(pkg: string, base: Artifacts, head: Artifacts): ConceptDelta {
+  // First: the classifier refuses an artifact that is not JSON with a message naming the file.
+  const impact = classify(base, head);
   const baseModel = readModelText(base.model, 'model.json (base)');
   const headModel = readModelText(head.model, 'model.json');
   if (headModel === null) {
     throw new CannotRun('no model.json in the working tree — declare the change in spec/model.ts and re-emit model.json first');
   }
-  const impact = classify(base, head);
   const modelChanges = impact.changes.filter((c) => c.artifact === 'model');
 
   const be = new Set(Object.keys(baseModel?.entities ?? {}));
