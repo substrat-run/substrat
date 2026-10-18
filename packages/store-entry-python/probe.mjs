@@ -28,6 +28,7 @@ import {
 } from '../contracts/dist/scope-store-envelope.js';
 import * as entry from '../control-plane-api/src/store-entry.generated.ts';
 import { withPythonStoreEntry } from '../control-plane-api/src/store-entry.ts';
+import { classifyPythonStoreModule } from '../contracts/src/deploy.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const vector = JSON.parse(readFileSync(join(here, '../contracts/test/vectors/scope-store-envelope.json'), 'utf8'));
@@ -370,6 +371,26 @@ try {
   check(JSON.stringify(env.given) === JSON.stringify(['DRIVER_SETTING']), "the driver's env has none of the entry's bindings", env);
   check(env.importable.length === 0, 'an importable env reads nothing (disallow_importable_env)', env);
   check(env.exports === false, 'the driver has no ctx.exports (disable_ctx_exports)', env);
+
+  // Asked before the vendored module is imported, so everything loaded is the runtime's, the
+  // entry's, the probe's main or the driver's own.
+  const modules = result(await send(await signed(name, 'modules')));
+  const ours = new Set([DRIVER_PACKAGE, 'probe_entry']);
+  const shadowable = [...new Set([...modules.stdlib, ...modules.loaded])].filter((top) => !ours.has(top));
+  const vendorable = shadowable.filter((top) => {
+    try {
+      classifyPythonStoreModule(`python_modules/${top}.py`);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  check(
+    modules.stdlib.length > 0 && modules.loaded.includes('workers') && vendorable.length === 0,
+    "a release may vendor no name the runtime's standard library holds or the running worker has loaded",
+    { vendorable },
+  );
+  check(!modules.loaded.includes('vendor_probe'), 'and the vendored module was not loaded before the driver imported it', modules.loaded);
 
   const vendored = result(await send(await signed(name, 'vendored')));
   check(vendored.label === 'vendor-probe' && vendored.payload === 'payload-ok', 'the driver imports a vendored module and reads its data file', vendored);

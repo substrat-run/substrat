@@ -410,6 +410,38 @@ const PYTHON_DRIVER_MODULE = /^(driver_[a-z0-9_]+)(?:\/[A-Za-z_][A-Za-z0-9_]*)*\
 const VENDORED_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/;
 
 /**
+ * Python 3.13's standard library, as `sys.stdlib_module_names` lists it: the Python the store
+ * entry's compatibility date selects (Pyodide 3.13.2, whose list is CPython 3.13's). A vendored
+ * copy of one of these could shadow the module the entry, its verifier glue or the runtime
+ * imports. Hand-copied, and held to the runtime by `packages/store-entry-python/probe.mjs`, which
+ * asks the running worker for its own list and for every top-level module it has loaded.
+ */
+const PYTHON_STDLIB_MODULES: readonly string[] = (
+  '__future__ _abc _aix_support _android_support _apple_support _ast _asyncio _bisect _blake2 _bz2 _codecs _codecs_cn _codecs_hk ' +
+  '_codecs_iso2022 _codecs_jp _codecs_kr _codecs_tw _collections _collections_abc _colorize _compat_pickle _compression ' +
+  '_contextvars _csv _ctypes _curses _curses_panel _datetime _dbm _decimal _elementtree _frozen_importlib ' +
+  '_frozen_importlib_external _functools _gdbm _hashlib _heapq _imp _interpchannels _interpqueues _interpreters _io ' +
+  '_ios_support _json _locale _lsprof _lzma _markupbase _md5 _multibytecodec _multiprocessing _opcode _opcode_metadata ' +
+  '_operator _osx_support _overlapped _pickle _posixshmem _posixsubprocess _py_abc _pydatetime _pydecimal _pyio _pylong ' +
+  '_pyrepl _queue _random _scproxy _sha1 _sha2 _sha3 _signal _sitebuiltins _socket _sqlite3 _sre _ssl _stat _statistics ' +
+  '_string _strptime _struct _suggestions _symtable _sysconfig _thread _threading_local _tkinter _tokenize _tracemalloc ' +
+  '_typing _uuid _warnings _weakref _weakrefset _winapi _wmi _zoneinfo abc antigravity argparse array ast asyncio atexit ' +
+  'base64 bdb binascii bisect builtins bz2 cProfile calendar cmath cmd code codecs codeop collections colorsys compileall ' +
+  'concurrent configparser contextlib contextvars copy copyreg csv ctypes curses dataclasses datetime dbm decimal difflib ' +
+  'dis doctest email encodings ensurepip enum errno faulthandler fcntl filecmp fileinput fnmatch fractions ftplib ' +
+  'functools gc genericpath getopt getpass gettext glob graphlib grp gzip hashlib heapq hmac html http idlelib imaplib ' +
+  'importlib inspect io ipaddress itertools json keyword linecache locale logging lzma mailbox marshal math mimetypes ' +
+  'mmap modulefinder msvcrt multiprocessing netrc nt ntpath nturl2path numbers opcode operator optparse os pathlib pdb ' +
+  'pickle pickletools pkgutil platform plistlib poplib posix posixpath pprint profile pstats pty pwd py_compile pyclbr ' +
+  'pydoc pydoc_data pyexpat queue quopri random re readline reprlib resource rlcompleter runpy sched secrets select ' +
+  'selectors shelve shlex shutil signal site smtplib socket socketserver sqlite3 sre_compile sre_constants sre_parse ssl ' +
+  'stat statistics string stringprep struct subprocess symtable sys sysconfig syslog tabnanny tarfile tempfile termios ' +
+  'textwrap this threading time timeit tkinter token tokenize tomllib trace traceback tracemalloc tty turtle turtledemo ' +
+  'types typing unicodedata unittest urllib uuid venv warnings wave weakref webbrowser winreg winsound wsgiref xml ' +
+  'xmlrpc zipapp zipfile zipimport zlib zoneinfo'
+).split(' ');
+
+/**
  * The top-level names a vendored path may not take (#2390), each with why. A path's top-level
  * name is its first segment under `python_modules/` up to the first `.` or `-`, so a package
  * directory, a module, a compiled extension and a distribution's metadata all read as the name
@@ -420,10 +452,24 @@ const VENDORED_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/;
 const PYTHON_VENDORED_RESERVED: readonly { readonly match: 'name' | 'prefix'; readonly names: readonly string[]; readonly why: string }[] = [
   { match: 'prefix', names: ['driver_'], why: 'it takes the driver package prefix' },
   { match: 'prefix', names: ['substrat_'], why: "it takes the entry's prefix" },
-  { match: 'name', names: ['workers', 'workers_runtime_sdk', 'workers_py'], why: "it is the workers runtime SDK, which is the platform's runtime, not a vendored copy" },
-  { match: 'prefix', names: ['_workers_sdk'], why: "it is the workers runtime SDK, which is the platform's runtime, not a vendored copy" },
-  { match: 'name', names: ['js', 'pyodide'], why: 'the Python workers runtime provides it' },
+  // The SDK's own files, as workers-runtime-sdk 1.9 installs them: its package, the `asgi` module
+  // beside it, its patch loader and the two stubs it ships for the runtime's private modules.
+  { match: 'name', names: ['workers', 'workers_runtime_sdk', 'workers_py', 'asgi'], why: "it is the workers runtime SDK, which is the platform's runtime, not a vendored copy" },
+  { match: 'prefix', names: ['_workers_sdk', '_cloudflare'], why: "it is the workers runtime SDK, which is the platform's runtime, not a vendored copy" },
+  { match: 'name', names: ['js', 'pyodide', 'pyodide_js'], why: 'the Python workers runtime provides it' },
+  { match: 'prefix', names: ['_pyodide'], why: 'the Python workers runtime provides it' },
+  { match: 'name', names: ['__main__', 'sitecustomize', 'usercustomize'], why: 'the interpreter runs it when it starts' },
+  { match: 'name', names: PYTHON_STDLIB_MODULES, why: "it is in Python's standard library" },
+  // `sysconfig`'s data module, named for the platform (`_sysconfigdata__emscripten_wasm32-emscripten`
+  // under Pyodide), so it is not in `sys.stdlib_module_names`. The probe found the runtime loads it.
+  { match: 'prefix', names: ['_sysconfigdata'], why: "it is in Python's standard library" },
 ];
+const PYTHON_VENDORED_RESERVED_NAMES = new Map(
+  PYTHON_VENDORED_RESERVED.filter((row) => row.match === 'name').flatMap((row) => row.names.map((name) => [name, row.why] as const)),
+);
+const PYTHON_VENDORED_RESERVED_PREFIXES = PYTHON_VENDORED_RESERVED.filter((row) => row.match === 'prefix').flatMap((row) =>
+  row.names.map((prefix) => [prefix, row.why] as const),
+);
 
 /** The file names a vendored path may not end in, each with why: installer output, not a dependency. */
 const PYTHON_VENDORED_FILES: readonly { readonly match: 'name' | 'suffix'; readonly names: readonly string[]; readonly why: string }[] = [
@@ -465,10 +511,8 @@ export function classifyPythonStoreModule(name: string): PythonStoreModuleClass 
   }
   const rest = parts.slice(1);
   const top = rest[0]!.split(/[.-]/)[0]!;
-  const reserved = PYTHON_VENDORED_RESERVED.find((row) =>
-    row.names.some((reservedName) => (row.match === 'name' ? top === reservedName : top.startsWith(reservedName))),
-  );
-  if (reserved) refusePythonStoreModule(name, `a vendored path may not take the top-level name '${top}': ${reserved.why}`);
+  const reserved = PYTHON_VENDORED_RESERVED_NAMES.get(top) ?? PYTHON_VENDORED_RESERVED_PREFIXES.find(([prefix]) => top.startsWith(prefix))?.[1];
+  if (reserved) refusePythonStoreModule(name, `a vendored path may not take the top-level name '${top}': ${reserved}`);
   const file = rest[rest.length - 1]!;
   const installer = PYTHON_VENDORED_FILES.find((row) =>
     row.names.some((fileName) => (row.match === 'name' ? file === fileName : file.endsWith(fileName))),
