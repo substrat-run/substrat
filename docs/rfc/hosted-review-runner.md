@@ -184,7 +184,9 @@ A gate result counts as *script-confirmed* in the sense of D4 only when all of t
 The archive itself is the first customer input the runner parses, so the **unpacker** (§4) holds
 no credential: its read access is a single-use handle to the review's archive and its base archive,
 issued per review and expiring with it. Before extracting, it checks each archive's digest against
-the digest the version record holds (D5) and refuses a mismatch. It extracts under these rules:
+the digest the version record holds (D5) — or, for a phase-1 review of one of Substrat's own
+branches, which has no version record, the digests recorded when staff uploaded the archives and
+named in the review request (Q8) — and refuses a mismatch. It extracts under these rules:
 
 - no absolute paths and no `..` entries;
 - no symlinks or hardlinks at all, which also rules out writing through a link an earlier entry
@@ -236,11 +238,11 @@ credential.
 - **The reader half** takes the diff, the checklist, the procedure and the gate half's structured
   results, asks one model about the `judgement` items only, and returns candidate findings.
 - **The assembler** is the only part that writes. It checks each candidate finding against the
-  diff (Q6a), combines the findings with the gate results, and writes the **review record**, keyed
-  by its owner (the tenant, and the vertical where there is one; for a phase-1 review of one of
-  Substrat's own branches, the platform's own staff subject, Q8), the source archive's digest, the
-  base archive's digest, the checklist digest and the model (Q3a A), through the one endpoint that
-  accepts it (Q6c). Every surface in Q3 reads that record. It also builds the model host (D-59) in platform code, so the usage line is
+  diff (Q6a), combines the findings with the gate results, and writes the **review record**, identified
+  by its review id and selected by its owner (the tenant, and the vertical where there is one; for
+  a phase-1 review of one of Substrat's own branches, the platform's own staff subject, Q8), the
+  source archive's digest, the base archive's digest, the checklist digest and the model (Q3a A),
+  through the one endpoint that accepts it (Q6c). Every surface in Q3 reads that record. It also builds the model host (D-59) in platform code, so the usage line is
   observed rather than self-reported — the shape #1073 wants for every model call, which a review
   gets without waiting for it.
 
@@ -355,12 +357,14 @@ once reviews are billed (phase 3). **The review entitlement key must not be one 
 itself**, by any path; only staff grant it, and later the plan. #2388 tracks the structural fix:
 entitlement keys namespaced by the vertical that declares them.
 
-*For a listed vertical (Q4):* once the promote gate is mandatory at admission, the review
+*For a listed vertical (Q4). Derived, for the human to confirm; not one of the human's
+answers:* once the promote gate is mandatory at admission, the review
 entitlement is granted by staff as part of admission, and the owner's per-vertical switch does not
 reach the admission gate: a version submitted for admission is always reviewed. What the owner can
 still switch off is everything else: reviews of versions that are not submitted for admission
 (pushes and previews never promoted to the listed channel) and the optional surfaces, the
-pull-request comment (Q3a D) and a published summary (Q10).
+pull-request comment (Q3a D) and a published summary (Q10). *Open for phase 3:* who pays for a
+review that admission makes mandatory, since the owner cannot turn it off (Q1b).
 
 - **A. Per tenant, by entitlement only.** Staff grant it from the console, like the builder
   studio's entitlement; every vertical of the tenant is reviewed.
@@ -391,9 +395,11 @@ the review record is a **first-class platform object with its own API**, and eve
 CLI read, the dashboard, the push headline, a pull-request comment) is a view of it through that
 API.
 
-- **A. The record and a CLI read.** One review record per (owner tenant, vertical or the
-  platform's own staff subject, source digest, base digest, checklist digest, model), tied to the
-  vertical version where there is one, stored platform-side and read through its own API, and a CLI verb (`substrat review
+- **A. The record and a CLI read.** One review record per review id, selected by (owner
+  tenant, vertical or the platform's own staff subject, source digest, base digest, checklist
+  digest, model) with the newest first, so a re-review of the same inputs after a runner,
+  gate-image or exclusion change is a second record rather than an overwrite; tied to the vertical
+  version where there is one, stored platform-side and read through its own API, and a CLI verb (`substrat review
   <version>`, or a field on `substrat versions`) that prints it as text, so an agent driving the
   CLI reads findings without a browser. Every other surface reads the same record through the same
   API; none holds its own copy.
@@ -435,13 +441,22 @@ What every option shares:
 
 - *When an archive is stored:* only for a vertical with review enabled (Q2), until the controlled
   build (D5 C) makes the archive the build input for every vertical. A push to a vertical without
-  review uploads no archive.
+  review uploads no archive, with two exceptions:
+  - *A listed vertical, once the promote gate is mandatory at admission (Q2, Q4):* the archive of
+    every version submitted for admission is uploaded and reviewed whatever the owner's switch says.
+    Its record is read as Q10 says (the owner tenant's own team and the pushing credential), and
+    the archive and record are kept by the rules below like any other.
+  - *A phase-1 review of one of Substrat's own branches (Q8):* the branch archive and its base are
+    stored on staff upload, with their digests recorded in the review request, and are kept 30 days
+    from the review, then deleted; staff may delete them earlier.
 - *Where:* the archive's store is placed at upload, by the jurisdiction rule of Q3d evaluated at
   upload. If no placement satisfies it, no archive is stored and the version's record says
   `skipped: no placement in jurisdiction`. If jurisdiction is stricter at review start than at
   upload, the review does not run, the archive is deleted, and the record says
   `skipped: jurisdiction changed since upload`.
-- *The diff base:* the archive of the last reviewed version of the same vertical. If that archive
+- *The diff base:* the archive of the last reviewed version of the same vertical, where
+  *reviewed* means a review that completed: not `skipped`, not `incomplete`, and not `partial`
+  through a customer exclusion. If that archive
   has expired, or there is none, the review is a full-tree review and the record says so (`base:
   none, full tree`).
 - *The record:* each finding (item, severity, confirmation, `file:line`, a bounded quote,
@@ -699,7 +714,7 @@ sub-question) that ships sooner; the cost of B is the gap it leaves.
 | The archive itself | The unpacker's extraction rules and bounds (§2.2), with no credential. |
 | A boundaries gate run through a project script | The runner's pinned boundary-lint, never `npm run lint:boundaries` (§2.2, condition 1). |
 | The uploaded tree differing from the deployed bundle | D5's controlled build before phase 4; until then no finding blocks. |
-| A bad change split across many pushes | The diff base is the last **reviewed** version's archive, not the last pushed one; a full-tree review can be requested. |
+| A bad change split across many pushes | The diff base is the last **reviewed** version's archive (a review that completed, with no skip and no customer exclusion; Q3b), not the last pushed one; a full-tree review can be requested. |
 | A change too large to review | `skipped: too large`, never clean (Q1c). |
 | Customer-declared exclusions covering source | The review is `partial`, with the globs shown (Q3c); the gate half still gets the full tree. |
 | The runner turned off | The switch is recorded (Q2). For a listed vertical, admission sees that the version has no review; once the gate is mandatory at admission, the switch does not reach a version submitted for admission, which is always reviewed (Q2, Q4). |
@@ -805,7 +820,9 @@ a maintainer's review (Q6c). A review is triggered by staff through the same int
 uses, a CLI upload of the branch's tree (D5 A), and not by a workflow in this repository (D2, §8).
 Such a review has no tenant, vertical or version, so:
 
-- *its record* is owned by the platform's own staff subject and keyed like any other (§4, Q3a A);
+- *its record* is owned by the platform's own staff subject and selected like any other (§4, Q3a
+  A); it is read by the maintainers who triggered it, through the CLI. That is not a staff findings
+  view: staff still get none of a customer's record (Q3a, Q10);
 - *its diff base* is the archive of the branch's merge-base with `main`, uploaded the same way, or
   none, in which case it is a full-tree review;
 - *its retention*: the archives and the record are kept 30 days from the review and then deleted,
@@ -877,9 +894,9 @@ All decided by the human on 2026-10-18, except Q9 (decided earlier, D5).
 | Q1a | Which model | A: one platform-chosen model, pinned per checklist version; a model change ships only after it passes the seeded corpus (criterion set by the human at phase 3; until then human sign-off against the baseline); reached through the platform gateway, no vendor tie | C on #1073 |
 | Q1b | Who pays | A: metered to the tenant through the model ledger; zero-rated in phases 1–2 | attribution form on #1073 |
 | Q1c | Per-review budget | A + B: refuse before the call, hard cap during it; per-tenant spend limit in the guard; over budget never shown as clean | nothing |
-| Q2 | Enable surface | C: staff-granted entitlement per tenant, switch per vertical held by tenant owner and admin; every state change recorded; off deletes nothing; plan-shaped once billed; the key is never one a tenant can grant itself; for a listed vertical the admission gate is outside the owner's switch | Q1b; #2388 or an equivalent before phase 2 |
-| Q3a | Surfaces | A, then B, then C; D last and optional (turning it on publishes the headline); not the console. The record is a first-class platform object with its own API, keyed by owner, source digest, base digest, checklist digest and model; every surface is a view of it | A and C on D5 |
-| Q3b | Stored and retention | A: archive only where review is on, placed at upload; kept while anything serves the version (channel, scope pin or preview), then 180 days (30 days from push if never served); findings, digests and run metadata, no transcript or prompt; full-tree review once the base has expired; every non-run recorded | Q2, Q3d |
+| Q2 | Enable surface | C: staff-granted entitlement per tenant, switch per vertical held by tenant owner and admin; every state change recorded; off deletes nothing; plan-shaped once billed; the key is never one a tenant can grant itself; for a listed vertical the admission gate is outside the owner's switch (derived, for the human to confirm; who pays for it open for phase 3) | Q1b; #2388 or an equivalent before phase 2 |
+| Q3a | Surfaces | A, then B, then C; D last and optional (turning it on publishes the headline); not the console. The record is a first-class platform object with its own API, identified by review id and selected by owner, source digest, base digest, checklist digest and model; every surface is a view of it | A and C on D5 |
+| Q3b | Stored and retention | A: archive only where review is on (plus every version submitted for a mandatory admission review, and phase-1 branch archives kept 30 days), placed at upload; kept while anything serves the version (channel, scope pin or preview), then 180 days (30 days from push if never served); findings, digests and run metadata, no transcript or prompt; diff base the last completed review, full tree once it has expired; every non-run recorded | Q2, Q3d |
 | Q3c | Path exclusions | C: platform and customer exclusions, each recorded in the review record; customer globs make a review `partial` | Q2 |
 | Q3d | Jurisdiction | B: every part follows it; evaluated at upload and at review start | regional placements (§9) |
 | Q3e | Model path | A: the HTTP gateway row only | Q1a |
