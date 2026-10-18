@@ -88,18 +88,59 @@ export function parseLedger(text: string): LedgerRow[] {
   }));
 }
 
-/** What a head refuses against its base: a base row now missing, or now holding other SQL. */
+/** A version's leading number (`0002-add-due` → 2), or undefined for a version that has none. */
+const numberOf = (version: string): number | undefined => {
+  const m = /^(\d+)/.exec(version);
+  return m ? Number(m[1]) : undefined;
+};
+
+/**
+ * What a head refuses against its base. A base row now missing, or now holding other SQL — a scope
+ * that applied it fails closed. And, per module, a NEW row that a scope which already applied the
+ * base would run out of order: one placed before a row the base shipped (a scope runs whatever it
+ * has not applied, so it would run the new one last, and its schema would part from a fresh
+ * scope's), or, where versions are numbered, one not numbered after everything before it — not
+ * above the base's highest, skipping a number, or repeating one. A version registered twice in a
+ * module is refused too.
+ */
 export function appendOnlyOffences(label: string, base: readonly LedgerRow[], head: readonly LedgerRow[]): string[] {
-  const now = new Map(head.map((r) => [`${r.module}@${r.version}`, r.digest]));
-  return base.flatMap((r) => {
-    const key = `${r.module}@${r.version}`;
-    const digest = now.get(key);
+  const key = (r: LedgerRow): string => `${r.module}@${r.version}`;
+  const now = new Map(head.map((r) => [key(r), r.digest]));
+  const shipped = new Set(base.map(key));
+  const out = base.flatMap((r) => {
+    const digest = now.get(key(r));
     if (digest === undefined) {
-      return [`${label}: ${key} is on the base branch and gone here (removed, or its version renamed)`];
+      return [`${label}: ${key(r)} is on the base branch and gone here (removed, or its version renamed)`];
     }
-    if (digest !== r.digest) return [`${label}: ${key} has other SQL than the base branch shipped (sha256 ${r.digest} → ${digest})`];
+    if (digest !== r.digest) return [`${label}: ${key(r)} has other SQL than the base branch shipped (sha256 ${r.digest} → ${digest})`];
     return [];
   });
+  for (const module of new Set(head.map((r) => r.module))) {
+    const rows = head.filter((r) => r.module === module);
+    const lastShipped = rows.map((r) => shipped.has(key(r))).lastIndexOf(true);
+    const baseNumbers = base.filter((r) => r.module === module).map((r) => numberOf(r.version)).filter((n) => n !== undefined);
+    const baseMax = baseNumbers.length > 0 ? Math.max(...baseNumbers) : undefined;
+    const seen = new Set<string>();
+    let last = baseMax;
+    rows.forEach((r, i) => {
+      if (seen.has(r.version)) {
+        out.push(`${label}: ${key(r)} is registered twice`);
+        return;
+      }
+      seen.add(r.version);
+      const n = numberOf(r.version);
+      if (shipped.has(key(r))) {
+        if (n !== undefined) last = Math.max(last ?? n, n);
+        return;
+      }
+      if (i < lastShipped) out.push(`${label}: ${key(r)} is new but sits before ${key(rows[lastShipped]!)}, which the base branch shipped`);
+      if (n === undefined) return;
+      if (baseMax !== undefined && n <= baseMax) out.push(`${label}: ${key(r)} is numbered ${n}, not above ${baseMax}, the highest the base branch shipped`);
+      else if (last !== undefined && n !== last + 1) out.push(`${label}: ${key(r)} is numbered ${n}; the next number is ${last + 1}`);
+      last = Math.max(last ?? n, n);
+    });
+  }
+  return out;
 }
 
 /** The package of every ledger in a `git ls-files` listing: `demos/todo/MIGRATIONS.md` → `demos/todo`. */

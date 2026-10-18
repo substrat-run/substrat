@@ -27,7 +27,9 @@ test('a migration removed is refused', () => {
 
 test('a renamed version is refused even though the SQL is identical', () => {
   const offences = appendOnlyOffences('demos/x', [row('0001', A)], [row('0001_init', A)]);
-  assert.equal(offences.length, 1);
+  // Gone under its old version, and the new one reuses a number the base shipped.
+  assert.equal(offences.length, 2);
+  assert.match(offences[1]!, /notes@0001_init is numbered 1, not above 1/);
   assert.match(offences[0]!, /notes@0001 is on the base branch and gone here \(removed, or its version renamed\)/);
 });
 
@@ -67,4 +69,32 @@ test('a base the checkout does not hold is exit 2, in the ledger\'s own terms', 
 
 test('every tracked ledger is a candidate, so one no package emits any more is caught as orphaned', () => {
   assert.deepEqual(ledgerPackages('demos/todo/MIGRATIONS.md\nengines/x/MIGRATIONS.md\nMIGRATIONS.md\ndemos/todo/docs/MIGRATIONS.md\n'), ['demos/todo', 'engines/x']);
+});
+
+test('a new migration back-dated between two shipped ones is refused: an existing scope would apply it last', () => {
+  const offences = appendOnlyOffences('demos/x', [row('0001', A), row('0003', C)], [row('0001', A), row('0002', B), row('0003', C)]);
+  assert.equal(offences.length, 2);
+  assert.match(offences[0]!, /notes@0002 is new but sits before notes@0003, which the base branch shipped/);
+  assert.match(offences[1]!, /notes@0002 is numbered 2, not above 3, the highest the base branch shipped/);
+});
+
+test('a new migration appended after the shipped ones but numbered below them is refused', () => {
+  assert.match(appendOnlyOffences('demos/x', [row('0001', A), row('0003', C)], [row('0001', A), row('0003', C), row('0002', B)])[0]!, /numbered 2, not above 3/);
+});
+
+test('a new migration that skips a number is refused, and one that repeats a number is too', () => {
+  assert.match(appendOnlyOffences('demos/x', [row('0001', A)], [row('0001', A), row('0003-add', B)])[0]!, /notes@0003-add is numbered 3; the next number is 2/);
+  const dup = appendOnlyOffences('demos/x', [row('0001', A)], [row('0001', A), row('0002-a', B), row('0002-b', C)]);
+  assert.match(dup[0]!, /notes@0002-b is numbered 2; the next number is 3/);
+});
+
+test('the same version twice in one module is refused', () => {
+  assert.match(appendOnlyOffences('demos/x', [], [row('0001', A), row('0001', B)])[0]!, /notes@0001 is registered twice/);
+});
+
+test('the next number, appended, passes; so does a first migration of a new module, and named versions are held to position only', () => {
+  assert.deepEqual(appendOnlyOffences('demos/x', [row('0001', A)], [row('0001', A), row('0002-due', B)]), []);
+  assert.deepEqual(appendOnlyOffences('demos/x', [row('0001', A)], [row('0001', A), row('0001', B, 'tasks')]), []);
+  assert.deepEqual(appendOnlyOffences('demos/x', [row('init', A)], [row('init', A), row('add-due', B)]), []);
+  assert.match(appendOnlyOffences('demos/x', [row('init', A), row('due', B)], [row('init', A), row('early', C), row('due', B)])[0]!, /sits before notes@due/);
 });
