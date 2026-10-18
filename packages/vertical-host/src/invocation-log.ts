@@ -65,6 +65,7 @@ import {
   parentRequestIdOf,
   REQUEST_ID_HEADER,
 } from '@substrat-run/contracts/invocation-record';
+import { installedTraceSink } from '@substrat-run/contracts/trace-sink';
 import type { EmittedReport, ScopeStoreStubOptions } from '@substrat-run/kernel';
 import {
   invocationLine,
@@ -516,6 +517,9 @@ function writeInvocationLine<Env>(stamp: InvocationStamp, done: Finished<Env>, o
   // Called from a `finally`: a throw here would replace the vertical's answer, or its own
   // error, with a logging failure. The platform wraps every uploaded script in this (#1893),
   // so nothing in it may escape — a line that cannot be written is one missing line.
+  // #2358 first, and outside the gate below: a local request carries no router assertion, and
+  // that is exactly where a trace is wanted. A no-op unless `substrat dev` installed a sink.
+  traceRequest(stamp, done);
   try {
     writeLineOrThrow(stamp, done, options);
   } catch (e) {
@@ -524,6 +528,72 @@ function writeInvocationLine<Env>(stamp: InvocationStamp, done: Finished<Env>, o
     } catch {
       /* the console itself is gone; there is nowhere left to say so */
     }
+  }
+}
+
+/**
+ * #2358: the HTTP half of a request trace — method, path, status, duration, what the operation
+ * emitted, and the outbound calls — handed to the installed sink, which then writes the trace.
+ *
+ * The event fields are the line's own, built by the same `invocationLine`, so a local trace and a
+ * hosted line cannot disagree about what "eventTypes" means. The scope host sends the other half
+ * (operation, principal, the steps inside the call). Nothing here may fail a request.
+ */
+function traceRequest<Env>(stamp: InvocationStamp, done: Finished<Env>): void {
+  const sink = installedTraceSink();
+  if (!sink) return;
+  try {
+    const { record, invocationId } = stamp;
+    const durationMs = Date.now() - done.started;
+    const line = invocationLine({
+      tenantId: '',
+      scopeId: null,
+      vertical: null,
+      surface: null,
+      method: done.request.method,
+      path: pathOf(done.request.url),
+      status: done.status,
+      threw: done.threw,
+      durationMs,
+      invocationId,
+      level: invocationLevelOf(done.status, done.threw, record.problemCode),
+      operation: record.operation,
+      problemCode: record.problemCode,
+      principalKind: record.principalKind,
+      ...(record.emitted ? { emitted: record.emitted } : {}),
+      versionId: versionIdOf(done.env),
+    });
+    sink.head(invocationId, {
+      startedAt: new Date(done.started).toISOString(),
+      method: line.method,
+      path: line.path,
+      status: line.status,
+      threw: line.threw,
+      durationMs: line.durationMs,
+      level: line.level,
+      operation: line.operation,
+      problemCode: line.problemCode,
+      principalKind: line.principalKind,
+      eventCount: line.eventCount,
+      eventTypes: line.eventTypes,
+      entities: line.entities,
+      versionId: line.versionId,
+    });
+    for (const call of record.outboundCalls ?? []) {
+      sink.step(invocationId, {
+        type: 'outbound',
+        atMs: call.atMs,
+        durationMs: call.durationMs,
+        host: call.host,
+        path: call.path,
+        method: call.method,
+        status: call.status,
+        outcome: call.outcome,
+      });
+    }
+    sink.end(invocationId);
+  } catch {
+    /* a trace is a convenience; the request it describes is already answered */
   }
 }
 

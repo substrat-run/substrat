@@ -238,6 +238,7 @@ import {
   redrainEventsInput,
   REDRAIN_BATCH,
   type OperationTarget,
+  errorCodeOf,
 } from '@substrat-run/contracts';
 import {
   actorOf,
@@ -838,6 +839,7 @@ import { GRANT_CHILDREN_INDEX_DDL, SHAPE_MARKER_INDEX_DDL, grantedEntitiesForCon
 import { LEGACY_SCOPE_ROWS_BACKFILL, assertSpineTablesBuilt, capabilitiesForLoad, dumpRowsInsert, isSpineTable, loadDirectoryDump, repointScopeGrants, settleCopiedWork, emittedHere, spineColumnAdditions } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker, directoryTenantReader } from './checker.js';
+import { decidedByOf, entityString, forgetInvocationTrace, invocationTrace, tracedSql } from './trace.js';
 
 export { scopeStoreRunnersFor } from './scope-store-runners.js';
 
@@ -6149,6 +6151,12 @@ export class SqliteScopeHost implements ScopeHost {
           // `finally` so a later consumer carries none rather than the last caller's,
           // which is the leak `causedBy` had to be moved off the host to avoid.
           rt.invocationId = invokeOptions?.invocationId ?? null;
+          // #2358: this call's trace, when `substrat dev` has installed a sink; undefined otherwise.
+          const trace = invocationTrace(rt.invocationId);
+          // #1672: the secrets this invocation mints — withheld from its idempotency recording,
+          // and what the tripwire on its writes looks for. Declared here, outside the `try`, so the
+          // trace's error step can withhold them from a message too.
+          const minted: string[] = [];
           // The outbox's insertion mark, inside the actor task so nothing else writes between it
           // and this invoke (`OUTBOX_MARK_SQL` says why rowid and not the id).
           const exportMark =
@@ -6176,9 +6184,6 @@ export class SqliteScopeHost implements ScopeHost {
               : authority.kind === 'vertical-peer'
                 ? admitPeer(switchSqlOf(rt.db), this.peerDeclarations(), authority.caller, operation)
                 : authority;
-          // #1672: the secrets this invocation mints — withheld from its idempotency recording,
-          // and what the tripwire on its writes looks for.
-          const minted: string[] = [];
           // Fresh per operation: the context carries the K-34 authorization accumulator,
           // which must not leak across operations (invokes are serialized per scope).
           // #119: the keys the module's system principal holds only for its purge schedules are
@@ -6190,6 +6195,7 @@ export class SqliteScopeHost implements ScopeHost {
             subject.kind === 'system'
               ? withheldKeysFor(this.modules.get(subject.id)?.purgeOnlyKeys, target, purging)
               : undefined;
+          trace?.head({ operation, tenantId, scopeId, principalKind: subject.kind, principal: actorOf(subject) });
           const ctx = this.operationContext(
             rt, subject, undefined, signals, session, operation, minted, undefined, undefined, withheld,
           );
@@ -6203,9 +6209,19 @@ export class SqliteScopeHost implements ScopeHost {
           // schedule. That is the point — parsing at the mount alone would leave
           // the demos' own suites exercising an unparsed path, and the wire is
           // where the untrusted input actually arrives.
-          const parsed = this.operationInput.has(operation)
-            ? (this.operationInput.get(operation) as { parse(v: unknown): unknown }).parse(clonedInput)
-            : clonedInput;
+          let parsed: unknown;
+          try {
+            parsed = this.operationInput.has(operation)
+              ? (this.operationInput.get(operation) as { parse(v: unknown): unknown }).parse(clonedInput)
+              : clonedInput;
+          } catch (err) {
+            // #2358: the issues a refused input carries, with the dotted path of each.
+            const issues = (err as { issues?: { path: PropertyKey[]; message: string }[] } | null)?.issues;
+            if (trace && Array.isArray(issues)) {
+              trace.step({ type: 'validation', issues: issues.map((i) => ({ path: i.path.map(String).join('.'), message: i.message })) });
+            }
+            throw err;
+          }
           // #116: fingerprinted from the PARSED input, so a retry that omits an
           // optional field the original sent at its default value is still the
           // same request. Computed before `BEGIN` — it is a pure hash of what the
@@ -6363,7 +6379,17 @@ export class SqliteScopeHost implements ScopeHost {
             exported = Number((rt.db.prepare(q.sql).get(...q.params) as { n: number }).n);
           }
           return structuredClone(result);
+          } catch (err) {
+            // #2358: the error that ended the call, with the secrets this call minted withheld.
+            trace?.step({
+              type: 'error',
+              code: errorCodeOf(err) ?? null,
+              message: redactSecretText(err instanceof Error ? err.message : String(err), minted),
+              ...(err instanceof Error && err.stack ? { stack: redactSecretText(err.stack, minted) } : {}),
+            });
+            throw err;
           } finally {
+            forgetInvocationTrace(rt.invocationId);
             // Cleared on BOTH paths, inside the task. The actor runs one task at a
             // time, so a value left set here would be read by whichever task ran next
             // and did not set its own — a connector drain, say — stamping its events
@@ -13370,7 +13396,7 @@ export class SqliteScopeHost implements ScopeHost {
     // Lifted out of the object literal so `grant` can reuse it: a delegation
     // check has to be the SAME check the operation itself passes, or the two
     // could disagree about what the caller holds.
-    const runCheck: OperationContext['check'] = async (unparsed, entity?) => {
+    const decideCheck: OperationContext['check'] = async (unparsed, entity?) => {
       // #1642: parsed before the override actor's early return, which never reaches
       // the checker — a cast key would otherwise become that path's proof relation.
       const permission = assertPermissionKey(unparsed);
@@ -13406,6 +13432,42 @@ export class SqliteScopeHost implements ScopeHost {
       }
       return decision;
     };
+    // #2358: the same check, recorded. It reads the decision `decideCheck` already made and
+    // changes nothing about it; the explanation of a refusal (which roles would have allowed it,
+    // which the caller holds) is gathered only when a sink is installed.
+    const trace = invocationTrace(rt.invocationId ?? delivery?.invocationId ?? null);
+    const runCheck: OperationContext['check'] = trace
+      ? async (unparsed, entity?) => {
+          const started = trace.now();
+          const decision = await decideCheck(unparsed, entity);
+          let requires: string[] = [];
+          let callerHas: string[] = [];
+          if (!decision.allowed) {
+            try {
+              const prefix = `${rt.tenantId}/`;
+              requires = [...this.roles.entries()]
+                .filter(([key, role]) => key.startsWith(prefix) && role.permissions.includes(decision.checked))
+                .map(([, role]) => role.key);
+              if (subject.kind === 'principal' && this.checker.holdings) {
+                callerHas = (await this.checker.holdings(asPrincipal(subject.id), { tenantId: rt.tenantId, scopeId: rt.scopeId })).roles;
+              }
+            } catch {
+              /* an explanation that cannot be gathered is left empty, never an error */
+            }
+          }
+          trace.step({
+            type: 'check',
+            permission: decision.allowed ? String(unparsed) : decision.checked,
+            entity: entityString(entity),
+            allowed: decision.allowed,
+            decidedBy: decision.allowed ? decidedByOf(decision.proof) : null,
+            requires,
+            callerHas,
+            durationMs: Math.max(0, Math.round(trace.now() - started)),
+          });
+          return decision;
+        }
+      : decideCheck;
 
     const runCanAssign: OperationContext['canAssign'] = (roleKey) =>
       this.assignmentBound(subject, rt.tenantId, rt.scopeId, roleKey);
@@ -13473,6 +13535,8 @@ export class SqliteScopeHost implements ScopeHost {
           rt.invocationId,
           full.payload === undefined ? null : JSON.stringify(full.payload),
         );
+      // #2358: type and entity only; the payload stays out of the trace.
+      trace?.step({ type: 'emit', eventType: full.type, entity: `${full.entity.entityType}:${full.entity.entityId}` });
     };
     // #2192: the call's invocation id, one reader for `ctx.log` and `ctx.requestId`.
     const requestIdNow = (): string | null => rt.invocationId ?? delivery?.invocationId ?? null;
@@ -13487,20 +13551,26 @@ export class SqliteScopeHost implements ScopeHost {
         () => ctxRef.log.info('legacy filtered-list cursor accepted', { list }),
         impersonation?.mode !== 'read-only' && this.isPrimaryInDirectory(rt.scopeId),
       ),
-      sql: guardSecrets(
-        guardSqlLimits(
-          scopedSql(
-            rt.db,
-            true,
-            statefulTablesOf(statePlans),
-            // #119 / #2090: after runtime DDL, inside this operation's transaction, what the kernel
-            // derived onto any table is repaired — and a lost state column fails the operation.
-            derivesAnything(this.derivedPlans())
-              ? () => afterRuntimeDdl(spineSql(rt.db), (ddl) => execSqlStatements(rt.db, ddl), this.derivedPlans())
-              : undefined,
+      // #2358: the outermost layer, so a statement refused by a guard below is recorded too.
+      sql: tracedSql(
+        guardSecrets(
+          guardSqlLimits(
+            scopedSql(
+              rt.db,
+              true,
+              statefulTablesOf(statePlans),
+              // #119 / #2090: after runtime DDL, inside this operation's transaction, what the kernel
+              // derived onto any table is repaired — and a lost state column fails the operation.
+              derivesAnything(this.derivedPlans())
+                ? () => afterRuntimeDdl(spineSql(rt.db), (ddl) => execSqlStatements(rt.db, ddl), this.derivedPlans())
+                : undefined,
+            ),
           ),
+          minted,
         ),
-        minted,
+        trace,
+        (text) => redactSecretText(text, minted),
+        (value) => redactSecrets(value, minted),
       ),
       now: () => at,
       // #1746/#1747: the host stamps who and where; module code supplies only the template
@@ -13518,7 +13588,12 @@ export class SqliteScopeHost implements ScopeHost {
           // log's text is not JSON.
           redact: (text) => redactSecretText(text, minted),
         },
-        this.logSink,
+        trace
+          ? (line) => {
+              trace.step({ type: 'log', level: line.level, message: line.message });
+              this.logSink(line);
+            }
+          : this.logSink,
       ),
       // #2192: the same id the log lines carry.
       get requestId() {
