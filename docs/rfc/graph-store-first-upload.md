@@ -65,8 +65,9 @@ labelled with the commit you named. The only guard left is the sha256 comparison
 substrat store-driver upload --driver graph --dir <packed-release-dir> --entry driver_graph/store.py --commit f49ef6bb16691517a38fd36268ceb79834d6fbc6
 ```
 
-The answer is `stored graph 1fb0bb0be73c05239b5e769280461c3049ef295f2f92cab90cba9c15ba5ad122`
-and `pinned`. Any other sha256 means these are not the pinned bytes: stop, and do not
+The answer is `✓ stored graph 1fb0bb0be73c05239b5e769280461c3049ef295f2f92cab90cba9c15ba5ad122 (commit f49ef6bb…)`
+followed by the line `pinned: roll it out with …`. The line `not pinned yet: …` means the
+control plane does not hold this sha256 and commit as a pin: stop. Any other sha256 means these are not the pinned bytes: stop, and do not
 roll them out. This upload is also the check that a Python bundle of this size, with
 `python_modules/`, is accepted. The script the canary later puts carries
 `compatibility_flags: ["python_workers"]`.
