@@ -66,6 +66,8 @@ describe('classifyPythonStoreModule', () => {
     ['python_modules/pkg/extra.pth', /a path file runs code/],
     ['python_modules/pyvenv.cfg', /virtual environment/],
     ['python_modules/pkg/marker.synced', /sync marker/],
+    // The two markers `substrat store-driver upload` skips are still refused by the upload's own rule.
+    ['python_modules/.synced', /sync marker/],
     ['python_modules/../store.py', /does not climb/],
     ['/python_modules/six.py', /relative/],
     ['C:/python_modules/six.py', /relative/],
