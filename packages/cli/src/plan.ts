@@ -237,7 +237,7 @@ export function summaryOf(d: ConceptDelta): string {
   ];
   if (keys.length) parts.push(`Permissions: ${keys.join('; ')}.`);
   else if (p.changes.length) parts.push(`Permissions: ${p.changes.length} change(s) to roles or grant shapes.`);
-  if (parts.length === 0 && d.impact.changes.length) parts.push('The API surface changed; no entity, lifecycle or permission did.');
+  if (parts.length === 0 && d.impact.changes.length) parts.push('The operations or the API surface changed; no entity, lifecycle or permission did.');
   return parts.join(' ');
 }
 
@@ -313,7 +313,7 @@ export function renderDelta(d: ConceptDelta, opts: { base: string; digest: strin
       }
       out.push(
         '',
-        'Who may trigger a transition is whoever may run its operation: the permission that operation checks, and the roles below that hold it.',
+        'Who may trigger a transition is whoever may run its operation. The artifacts do not yet record which key each operation checks, so the operation is named here; who holds each key is the roles table in spec/concept.md, and any change to it is under Permissions below.',
       );
     }
     const other = l.changes.filter((c) => !/\.on\./.test(c.path));

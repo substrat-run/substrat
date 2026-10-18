@@ -29,6 +29,7 @@ The package has no runtime dependencies and ships web-standard + `node:*` only. 
 | `substrat model view [dir]` | Render the entity model as a self-contained HTML page and print its path — the design gate, as something you can look at. Offline. |
 | `substrat changeset [dir]` | Write a `.changeset` file whose bump is **computed** from what your model, API and permissions changed, instead of chosen. `--check` refuses a changeset that declares less. Offline. |
 | `substrat concept sync [dir]` | Rewrite the generated sections of `spec/concept.md` — roles and permissions, the entity diagram, one state diagram per lifecycle — from `model.json` and `PERMISSIONS.md`. Offline, idempotent; `--check` writes nothing and exits 1 when the file is stale. |
+| `substrat plan [dir]` | The **concept delta** a design gate shows: entities before and after, lifecycle and permission changes, the spec-version impact, and the decisions-log entry approving it writes. `--approve <digest>` records a person's approval. Offline. |
 | `substrat login` | Sign in via the browser (per-human), or store a CI service token with `--token`. |
 | `substrat whoami` | Print who you are and the workspaces you can build for. |
 | `substrat push [dir]` | Build the vertical and push a version — **admitted** for a private vertical, **pending** for a listed one. No flags needed from inside the project. |
@@ -99,7 +100,38 @@ changes nothing.
 
 `pnpm lint:concept` is the gate: it fails when a generated section is stale, and, given
 `--base <ref>`, when `model.json` or `PERMISSIONS.md` changed without a new entry in the
-document's *Decisions log*. Write that entry yourself; it is the part a tool cannot.
+document's *Decisions log*. Write that entry yourself; it is the part a tool cannot — or let
+[`substrat plan --approve`](#plan) write it when the change was approved at the design gate.
+
+### `plan`
+
+```bash
+substrat plan                             # the concept delta against the merge-base
+substrat plan --why "Owners asked to tag items"   # the reason, in the proposed entry
+substrat plan --json                      # the same delta, for an agent
+substrat plan --approve 04efc4b846a3 --by "Ada" --why "Owners asked to tag items"
+```
+
+The **design gate** of a change, as something an owner can read. Declare the change in
+`spec/model.ts` (and its roles), re-emit `model.json` and `PERMISSIONS.md`, then run it: it
+compares those artifacts and `openapi.json` in the working tree with the merge-base of your
+base branch (`--base <ref>`; by default the changesets `baseBranch`, else `main`, on `origin`
+when fetched) and prints:
+
+| Section | What it shows |
+|---|---|
+| Entities | Each entity added, changed or removed, with what changed in it, and the model as a Mermaid `erDiagram` before and after — the same diagram `concept sync` draws |
+| Lifecycles | States added or removed, and every transition added, removed or retargeted, with the operation that triggers it |
+| Permissions | The permission-diff table — key, description, which roles held it before and hold it now — and each change listed for the human checkpoint |
+| Spec-version impact | `none`, `patch`, `minor` or `major`, from the [`changeset`](#changeset) classifier, with the changes that set it — so the bump approved is the bump the release is held to |
+| Proposed decisions-log entry | The entry approving it writes, and the command that does |
+
+Nothing is written until a person approves. `--approve <digest>` takes the digest the delta was
+shown with, `--by` the person who approved it and `--why` their reason; it appends the entry
+to the *Decisions log* of `spec/concept.md` and re-syncs the generated sections. A digest that
+no longer matches — the model was edited after it was shown — is refused, so an approval
+always records the delta that was actually read. The same two trees give the same output and
+digest on every run. Offline; no login.
 
 ### `model view`
 

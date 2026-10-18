@@ -17,6 +17,10 @@ In Claude Desktop: **+** → Plugins → Add plugin.
   it scaffolds one with `npm create substrat` first.
 - **`/substrat-help`** — what the plugin can do, and which skill fits. The discovery
   surface for everything else here.
+- **`/substrat-plan`** — the design gate of a change, as a concept delta: `substrat plan`
+  renders the entities before and after, the lifecycle and permission changes, the
+  spec-version impact and the decisions-log entry, then stops. Only the user's approval runs
+  `substrat plan --approve`, which records it in `spec/concept.md`.
 - **`/substrat-plugin-init`** — writes the knowledge import (`CLAUDE.md` → `AGENTS.md`)
   into a vertical the scaffold never reached, and records the kernel version the session
   hook reports against. Re-run it after upgrading the plugin.
