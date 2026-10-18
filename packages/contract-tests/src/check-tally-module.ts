@@ -37,6 +37,7 @@ export const checkTallyOperations = defineOperations(entities, PERMISSIONS)({
   'tally/malformed': { summary: 'Asks with a key that does not parse', permission: 'tally:act', output: nothing },
   'tally/in-atomic': { summary: 'Asks inside a sub-transaction', permission: 'tally:act', output: nothing },
   'tally/throws': { summary: 'Fails before asking', permission: 'tally:act', output: nothing },
+  'tally/guarded-silent': { summary: 'Behind a guard that asks; asks nothing itself', permission: 'tally:act', output: nothing },
   'tally/count': { summary: 'How many rows `silent` left', permission: 'tally:act', output: written },
   'tally/declared-none': {
     summary: 'Declares that it checks nothing',
@@ -61,6 +62,9 @@ const manifest = moduleManifest.parse({
   }),
   attachmentTargets: [],
   entitlementKey: 'check-tally',
+  // A guard runs on the operation's own context before the handler, and this one asks a key
+  // without asserting it: its check is the guard's, never the handler's.
+  guards: [{ before: 'tally/guarded-silent', predicate: 'tally/asks-and-allows', config: {} }],
 });
 
 /** A check made somewhere other than the handler's own body — the shape a real one usually takes. */
@@ -71,6 +75,11 @@ async function mayAct(ctx: OperationContext): Promise<boolean> {
 export const checkTallyMod: ModuleRegistration = {
   manifest,
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE tally_rows (id INTEGER PRIMARY KEY AUTOINCREMENT);' }],
+  predicates: {
+    'tally/asks-and-allows': async (ctx) => {
+      await ctx.check(NEVER_HELD);
+    },
+  },
   ...operationsFor(checkTallyOperations)({
     'tally/checks': async (ctx) => ({ allowed: (await ctx.check(ACT)).allowed }),
     'tally/silent': async (ctx) => {
@@ -111,6 +120,7 @@ export const checkTallyMod: ModuleRegistration = {
       const [row] = ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM tally_rows', []);
       return { written: Number(row?.n ?? 0) };
     },
+    'tally/guarded-silent': async () => ({ ok: true }),
     'tally/declared-none': async () => ({ ok: true }),
     'tally/empty-walk': async () => ({ ok: true }),
   }),

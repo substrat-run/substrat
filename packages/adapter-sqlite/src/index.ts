@@ -6310,6 +6310,9 @@ export class SqliteScopeHost implements ScopeHost {
             // transaction, before the handler. A throw here blocks the operation
             // and rolls back exactly like a handler throw — fail closed.
             await this.runGuards(operation, ctx, parsed as I | undefined);
+            // #2387: the handler's own checks only. A guard that asked a key is not the handler
+            // asking, so the tally starts here.
+            checks.calls = 0;
             result = await (handler as OperationHandler<I | undefined, O>)(ctx, parsed as I | undefined);
             // #2387: a declared-permission operation that asked nothing. Recorded; refused only
             // under a test run's flag, and then it rolls back like any throw from here.

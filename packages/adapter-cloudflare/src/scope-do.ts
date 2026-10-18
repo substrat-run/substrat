@@ -3041,6 +3041,8 @@ export function defineScopeDO(
               purging ? { gate: this.purgeGateFacts(systemDoor!.moduleId, tenantId) } : undefined,
             );
             await this.runGuards(operation, ctx, parsed);
+            // #2387: the handler's own checks only — the pure adapter's reset, for its reason.
+            checks.calls = 0;
             result = await (handler as OperationHandler<unknown, unknown>)(ctx, parsed);
             // #2387: the pure adapter's record, through the same kernel function.
             noteUncheckedCompletion(ctx, operation, checks, this.operationCheckHeld.has(operation));

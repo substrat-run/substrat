@@ -126,6 +126,18 @@ export function checkTallyContractSuite(
       expect((await run('tally/in-atomic')).lines).toEqual([]);
     });
 
+    it('a guard that asks is not the handler asking: the handler behind it is still recorded', async () => {
+      const { result, lines } = await run('tally/guarded-silent');
+      expect(result).toEqual({ ok: true });
+      expect(lines.map((l) => l.operation)).toEqual(['tally/guarded-silent']);
+    });
+
+    it('under a run that refuses, a guard that asked does not let the handler behind it through', async () => {
+      await withRefusal(true, () =>
+        expect(() => stub.invoke('tally/guarded-silent')).rejects.toThrow(/tally\/guarded-silent declares a permission/),
+      );
+    });
+
     it('an operation that declares it checks nothing (`narrows.unchecked`) is not recorded', async () => {
       expect((await run('tally/declared-none')).lines).toEqual([]);
     });

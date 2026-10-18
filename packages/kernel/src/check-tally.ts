@@ -19,9 +19,13 @@
  * that threw (a malformed key): each is the operation asking, which is the whole question. A
  * check made inside a helper, an engine function or a kernel verb (`ctx.grant` re-checks the
  * caller's own decision, `ctx.archive` checks the declared key) counts too, because it went
- * through the same `ctx.check`. So does a check the host made on the operation's behalf before
- * the handler (the trashed-target refusal, a guard): that is the declared key on the declared
- * entity, asked for this caller.
+ * through the same `ctx.check`.
+ *
+ * Only checks made while the HANDLER runs count: each adapter resets the tally just before it
+ * calls the handler. A guard (K-17) runs on the same context first, and may ask any key it likes
+ * without asserting it, so its check says nothing about the handler. The host's trashed-target
+ * refusal also checks before the handler, but it always ends the invocation when it does, so the
+ * handler never runs behind it.
  *
  * The tally is the context's, and a context belongs to one invocation, so two invocations in one
  * request are counted apart.
