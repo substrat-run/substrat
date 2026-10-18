@@ -99,7 +99,8 @@ export class BoundOperations<H = HandlerMap> {
    * name → the check each operation declares (#2384), read by the permission checkpoint so
    * `PERMISSIONS.md` names the key each operation checks. Empty for `undeclaredOperations`, whose
    * handlers check in code with nothing declared; absent only on a value an older kernel bound.
-   * The host does not read it: each handler still makes its own check.
+   * The host does not read it: each handler still makes its own check. Tools read it as a
+   * contract — its shape is `OperationCheck`, and like an engine's event payload it only grows.
    */
   readonly checks?: Readonly<Record<string, OperationCheck>>;
 

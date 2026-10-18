@@ -72,7 +72,7 @@ shapes.
 | `todo/add-item` | `list:contribute` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/archive-list` | `list:archive` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/create-list` | `list:create` | the scope | `@substrat-run/demo-todo` |
-| `todo/delete-item` | `list:manage` | one `list`, resolved in the handler | `@substrat-run/demo-todo` |
+| `todo/delete-item` | `list:manage` | one `list`, resolved in the handler: the list the item is on | `@substrat-run/demo-todo` |
 | `todo/delete-list` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/join` | `list:create` | the scope | `@substrat-run/demo-todo` |
 | `todo/list-items` | `list:contribute` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
@@ -80,10 +80,10 @@ shapes.
 | `todo/my-lists` | `list:contribute` | each row, by a proof walk | `@substrat-run/demo-todo` |
 | `todo/rename-list` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/restore-list` | `list:trash` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
-| `todo/revoke-share` | `list:manage` | one `list`, resolved in the handler | `@substrat-run/demo-todo` |
+| `todo/revoke-share` | `list:manage` | one `list`, resolved in the handler: the list the share is on | `@substrat-run/demo-todo` |
 | `todo/search-items` | `list:contribute` | each row, by a proof walk | `@substrat-run/demo-todo` |
 | `todo/search-list-items` | `list:contribute` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
-| `todo/set-item-done` | `list:contribute` | one `list`, resolved in the handler | `@substrat-run/demo-todo` |
+| `todo/set-item-done` | `list:contribute` | one `list`, resolved in the handler: the list the item is on | `@substrat-run/demo-todo` |
 | `todo/share-list` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/trash-list` | `list:trash` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
 | `todo/trashed-lists` | `list:trash` | each row, by a proof walk | `@substrat-run/demo-todo` |

@@ -2098,7 +2098,12 @@ export function operationConcurrencyOf(
 
 /**
  * What an operation declares it checks, copied as plain data (#2384): its leading `permission`
- * (a scope-wide key, or `{ key, … }` saying what it narrows to) or its `narrows` walk.
+ * (a scope-wide key, or `{ key, … }` saying what it narrows to) or its `narrows` walk —
+ * `unchecked: true` with its reason for an operation that checks nothing by declaration.
+ *
+ * A read contract, not an internal: the permission checkpoint and other tools read it off
+ * `BoundOperations.checks`, so it evolves additively only — a field may be added, never renamed,
+ * retyped or removed.
  */
 export type OperationCheck =
   | {

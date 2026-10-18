@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { classifyPermissions, parsePermissions } from '../packages/cli/src/bump.ts';
 
 interface Target {
   entityType: string;
@@ -155,7 +156,7 @@ test('each declared check gets its row: the key and what it narrows to, in the r
     assert.ok(md.includes(`| \`${op}\` | ${key} | ${on} | \`@fixture/docs\` |`), `${op} row: ${md}`);
   row('docs/create', '`doc:write`', 'the scope');
   row('docs/edit', '`doc:write`', 'one `doc`, id from `docId`');
-  row('docs/line', '`doc:write`', 'one `doc`, resolved in the handler');
+  row('docs/line', '`doc:write`', 'one `doc`, resolved in the handler: the doc a line sits on');
   row('docs/timeline', '`doc:read`', 'one entity, type from `type`, id from `id`');
   row('docs/attach', '`doc:write`', 'one entity, whole ref from `subject`');
   row('docs/mine', '`doc:read`', 'each row, by a proof walk');
@@ -185,4 +186,35 @@ test('moving an operation to another key is drift: --check refuses until the art
   assert.match(check.stderr, /out of date/);
   assert.equal(run(dir).status, 0);
   assert.match(rendered(dir), /\| `docs\/edit` \| `doc:read` \| the scope \|/);
+});
+
+test('a changed resolution is a changed row: the stated reason is part of the check, and --check refuses', () => {
+  const at = (resolved: string) => ({
+    handlers: handlers('docs/line'),
+    checks: { 'docs/line': { permission: { key: 'doc:write', entity: 'doc', resolved } } },
+  });
+  const dir = writeOpsFixture(fresh(), at('the doc a line sits on'));
+  assert.equal(run(dir).status, 0);
+  const before = rendered(dir);
+  writeOpsFixture(dir, at("the line's owner"));
+  assert.equal(run(dir, '--check').status, 1, 'a reworded resolution must be drift');
+  assert.equal(run(dir).status, 0);
+  const after = rendered(dir);
+  assert.match(after, /resolved in the handler: the line's owner \|/);
+  // And the classifier sees it, flagged, on the very rows the emitter wrote.
+  const r = classifyPermissions(before, after);
+  assert.deepEqual(r.changes.map((c) => [c.path, c.level, c.flagged]), [['operation docs/line', 'minor', true]]);
+});
+
+test('round trip: a reason with a pipe reads back as one cell, so "Declared by" stays in its column', () => {
+  const dir = writeOpsFixture(fresh(), {
+    handlers: handlers('docs/accept'),
+    checks: { 'docs/accept': { narrows: { reason: 'the invite | is the authority', checks: [], unchecked: true } } },
+  });
+  assert.equal(run(dir).status, 0);
+  const ops = parsePermissions(rendered(dir)).operations;
+  assert.deepEqual(ops?.['docs/accept'], {
+    keys: [],
+    terms: ['— none —', 'nothing: the invite | is the authority', '`@fixture/docs`'],
+  });
 });

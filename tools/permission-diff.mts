@@ -190,7 +190,7 @@ const rerun =
 function operationRow(check: CheckLike | undefined): { key: string; on: string } {
   if (check === undefined) return { key: '— checked in code, not declared —', on: '—' };
   if ('narrows' in check) {
-    if (check.narrows.unchecked) return { key: '— none —', on: `nothing: ${check.narrows.reason.replace(/\s+/g, ' ').replaceAll('|', '\\|')}` };
+    if (check.narrows.unchecked) return { key: '— none —', on: `nothing: ${prose(check.narrows.reason)}` };
     return { key: sorted(check.narrows.checks).map(code).join(', ') || '—', on: 'each row, by a proof walk' };
   }
   const p = check.permission;
@@ -198,8 +198,13 @@ function operationRow(check: CheckLike | undefined): { key: string; on: string }
   if (p.refFrom) return { key: code(p.key), on: `one entity, whole ref from ${code(p.refFrom)}` };
   if (!p.entity && !p.entityFrom) return { key: code(p.key), on: 'the scope' };
   const type = p.entity ? `one ${code(p.entity)}` : `one entity, type from ${code(p.entityFrom!)}`;
-  return { key: code(p.key), on: p.idFrom ? `${type}, id from ${code(p.idFrom)}` : `${type}, resolved in the handler` };
+  if (p.idFrom) return { key: code(p.key), on: `${type}, id from ${code(p.idFrom)}` };
+  // The stated resolution is part of the check: a changed one is a changed row, not a silent one.
+  return { key: code(p.key), on: `${type}, resolved in the handler${p.resolved ? `: ${prose(p.resolved)}` : ''}` };
 }
+
+/** A declared reason as one table cell: one line, its pipes escaped. */
+const prose = (s: string): string => s.replace(/\s+/g, ' ').trim().replaceAll('|', '\\|');
 
 const byKey = <T extends { key: string }>(a: T, b: T) => a.key.localeCompare(b.key);
 const sorted = (keys: string[]) => [...keys].sort((a, b) => a.localeCompare(b));
