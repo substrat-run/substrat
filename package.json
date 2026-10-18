@@ -22,6 +22,8 @@
     "lint:permissions": "tsx tools/permission-diff.mts",
     "lint:schedule-sweeper": "tsx tools/schedule-sweeper.mts",
     "lint:migration-fence": "tsx tools/migration-fence.mts",
+    "lint:migration-ledger": "tsx tools/migration-ledger.mts",
+    "test:migration-ledger": "tsx --test tools/migration-ledger.test.mts",
     "test:schedule-sweeper": "tsx --test tools/schedule-sweeper.test.mts",
     "test:reserved-keys": "tsx --test tools/reserved-keys.test.mts",
     "store-keys": "tsx tools/store-keys.mts",

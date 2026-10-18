@@ -88,12 +88,14 @@ gates: `pnpm lint:model --check` · `pnpm lint:api --check` · `pnpm lint:client
 ### S4 · Migrations are append-only and declare what they lose: blocking
 
 - *Gate:* `pnpm lint:migration-fence` replays every authored migration against populated
-  data and refuses an undeclared loss.
-- *Reader:* a shipped migration edited; a declared `discards` whose reason does not match
+  data and refuses an undeclared loss. `pnpm lint:migration-ledger --base origin/main`
+  refuses a migration the base branch shipped that is now edited, removed or renumbered
+  (each package's `MIGRATIONS.md` records the digest a scope checks).
+- *Reader:* a declared `discards` whose reason does not match
   what the SQL does (a declaration is not a pass). This is the **migration-diff
   checkpoint**: present the diff plainly, and stop there.
 
-gates: `pnpm lint:migration-fence` · `pnpm lint:migrations --check` · judgement
+gates: `pnpm lint:migration-fence` · `pnpm lint:migration-ledger --base <ref>` · `pnpm lint:migration-ledger --check` · `pnpm lint:migrations --check` · judgement
 
 ### S5 · Personal data is classified and erasable: blocking
 

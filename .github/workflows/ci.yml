@@ -164,6 +164,12 @@ jobs:
       # instead of closing a populated scope after a promote. Loads the same registrations
       # lint:permissions does, so it needs the build above for the same reason.
       - run: pnpm lint:migration-fence
+      # The migration ledger (#2365): each package's MIGRATIONS.md lists the digest of every migration
+      # its own modules author, as the kernel computes it. In step with the code here; append-only
+      # against the base branch in the step below, where the base is fetched. A scope fails closed
+      # on a migration whose SQL changed after it applied it (#2066), so the edit is red in its PR.
+      - run: pnpm test:migration-ledger
+      - run: pnpm lint:migration-ledger --check
       # The API-surface checkpoint (design/api-surface.md §2.4): re-emit each
       # opted-in vertical's OpenAPI document from its operation catalog and fail
       # on drift — a surface change must appear in the PR diff.
@@ -208,6 +214,7 @@ jobs:
           fi
           pnpm lint:export-schemas --base "$base"
           pnpm lint:concept --base "$base"
+          pnpm lint:migration-ledger --base "$base"
       # The computed changeset bump (#2364): each vertical's model.json, openapi.json and
       # PERMISSIONS.md diffed against the merge-base — removed or narrowed → major, added → minor,
       # docs → patch — and a changeset that names the vertical with a LOWER bump is red. A vertical
