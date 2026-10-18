@@ -234,9 +234,66 @@ function c(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET total = (SELECT count
   assert.deepEqual(at(text), [2, 3]);
 });
 
-test('KNOWN LIMIT: a semicolon inside a SQL string literal ends the SET list early', () => {
-  // Reading past it would let the match leave the SQL string and run into the code after it.
+test('a semicolon inside a SQL string literal does not end the SET list', () => {
   const text = `
 function a(ctx, id) { ctx.sql.exec("UPDATE shop_orders SET note = 'a;b', status = ? WHERE id = ?", ['x', id]); }`;
+  assert.deepEqual(at(text), [2]);
+});
+
+test('nesting of any depth, and a paren inside a literal, before the state column do not hide the write', () => {
+  const text = `
+function a(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET total = coalesce(nullif(sum(x), 0), 1), status = ? WHERE id = ?', ['x', id]); }
+function b(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET total = (SELECT coalesce(sum(x), 0) FROM shop_lines), status = ? WHERE id = ?', ['x', id]); }
+function c(ctx, id) { ctx.sql.exec("UPDATE shop_orders SET note = 'see (1', status = ? WHERE id = ?", ['x', id]); }
+function d(ctx, id) { ctx.sql.exec("UPDATE shop_orders SET meta = json_set(meta, '$.a', json(?)), status = ? WHERE id = ?", ['{}', 'x', id]); }`;
+  assert.deepEqual(at(text), [2, 3, 4, 5]);
+});
+
+test('the state read inside a SET value is not a write of it', () => {
+  const text = `
+function a(ctx, id) { ctx.sql.exec("UPDATE shop_orders SET priority = CASE WHEN status = 'open' THEN 1 ELSE 0 END WHERE id = ?", [id]); }
+function b(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET note = status || ? WHERE id = ?', ['!', id]); }
+function c(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET (note, title) = (SELECT status, title FROM shop_lines WHERE id = ?) WHERE id = ?', [id, id]); }`;
   assert.deepEqual(at(text), []);
+});
+
+test('REPLACE INTO with no column list replaces every column, the state among them', () => {
+  const text = `
+function a(ctx, id) { ctx.sql.exec('REPLACE INTO shop_orders SELECT * FROM shop_orders_staging WHERE id = ?', [id]); }
+function b(ctx, id) { ctx.sql.exec('INSERT OR REPLACE INTO shop_orders VALUES (?, ?)', [id, 'x']); }`;
+  assert.deepEqual(at(text), [2, 3]);
+});
+
+test('a guard in a sibling branch does not cover the write; one in an enclosing block does', () => {
+  const text = `
+function a(ctx, row, fast) {
+  if (fast) {
+    assertTransition(lc, 'order', row.status, 'shop/ship');
+  } else {
+    ctx.sql.exec("UPDATE shop_orders SET status = 'shipped' WHERE id = ?", [row.id]);
+  }
+}
+function b(ctx, row, fast) {
+  assertTransition(lc, 'order', row.status, 'shop/ship');
+  if (fast) {
+    ctx.sql.exec("UPDATE shop_orders SET status = 'shipped' WHERE id = ?", [row.id]);
+  }
+}`;
+  assert.deepEqual(at(text), [6]);
+});
+
+test('the scan is linear: a 30-deep run of open parens and a very long SET list finish in milliseconds', () => {
+  const wrap = (set) => "function a(ctx) { ctx.sql.exec('UPDATE shop_orders SET " + set + "'); }";
+  const deep = wrap('total = ' + '('.repeat(30) + '1, status = ?');
+  const nested = wrap('total = ' + '('.repeat(30) + '1' + ')'.repeat(30) + ', status = ?');
+  const items = Array.from({ length: 5000 }, (_, i) => 'c' + i + ' = ' + '('.repeat(i % 7) + '?' + ')'.repeat(i % 7));
+  const long = wrap(items.join(', ') + ', status = ?');
+  for (const text of [deep, nested, long]) {
+    const started = performance.now();
+    at(text);
+    assert.ok(performance.now() - started < 500, `took ${performance.now() - started} ms`);
+  }
+  // Thirty unclosed parens leave the state at depth 30, which is no SET target; closed, it is one.
+  assert.deepEqual(at(nested), [1]);
+  assert.deepEqual(at(long), [1]);
 });

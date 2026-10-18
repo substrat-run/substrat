@@ -14,26 +14,29 @@
  * So this reads every package that declares lifecycles in its checked-in `model.json` (held to
  * the code by `lint:model --check`): for each lifecycle, the entity's table and state field.
  * In the package's shipped source (`src/`, not tests, not `seed.ts`, not a migrations module,
- * whose backfill is no operation), every write of the field — an `UPDATE` or an upsert's
- * `DO UPDATE` whose SET list names it, or a `REPLACE INTO` whose column list does (`stateWrite`
- * below has the forms) — must be covered by a
- * lifecycle question: a call of `assertTransition` or `transitionFor` (the one an engine uses when
- * it keeps its own refusal reason), or of a function in the same file whose body calls one
- * directly (`requireTransition`). Covered means before the write, in its function or one
- * enclosing it (the function reading of `attachment-writers.mjs`); or, for a write inside a
- * named helper that is the one place a state is written, every call of the helper is covered
- * the same way, or passes a guard's answer as an argument (`settle(ctx, row, step(row, op))`).
- * An INSERT is not judged: a new row's state is the lifecycle's `initial`, which the compiler
- * checks.
+ * whose backfill is no operation), the SQL inside each JS string is read for writes of the field:
+ * an `UPDATE` or an upsert's `DO UPDATE` whose SET clause assigns it, and a `REPLACE INTO` whose
+ * column list names it or that has none (`stateWrites` below has the forms). The SET clause is
+ * read by a linear scanner, not a regex: literals and quoted names are skipped whole, parentheses
+ * are counted, and only each depth-0 item's target is judged, so a state read in a value
+ * (`CASE WHEN status = …`, a subquery) is not a write and no nesting before the column hides one.
  *
- * **What this is, and is not.** A tripwire that reads text: SQL assembled across modules, a
- * table name interpolated, or a guard asked in another file gets past it, or is reported when it
- * should not be. A `;` inside a SQL string literal ends a SET list early (reading past it would let
- * the match leave the SQL and run into the code after it), so a state column after one is not seen.
- * A guard also counts whichever lifecycle it names, so asking about one entity
- * covers a write of another's state in the same function (a fixture pins that gap). Which edge an
- * operation takes is the compiler's and the reader's. On main and
- * across the 208 commits before it that touched a package with a lifecycle, it reports nothing.
+ * Each write must be covered by a lifecycle question: a call of `assertTransition` or
+ * `transitionFor` (the one an engine uses when it keeps its own refusal reason), or of a function
+ * in the same file whose body calls one directly (`requireTransition`). Covered means before the
+ * write, in a block that encloses it — a guard in a sibling `if` branch does not count; or, for a
+ * write inside a named helper that is the one place a state is written, every call of the helper
+ * is covered the same way, or passes a guard's answer as an argument
+ * (`settle(ctx, row, step(row, op))`). An INSERT is not judged: a new row's state is the
+ * lifecycle's `initial`, which the compiler checks.
+ *
+ * **What this is, and is not.** A tripwire that reads source text. These get past it, or are
+ * reported when they should not be: SQL concatenated from several strings or assembled across
+ * modules, a table name interpolated, a guard asked in another file, and a JS regex literal with a
+ * quote in it (read as a string). A guard also counts whichever lifecycle it names, so asking
+ * about one entity covers a write of another's state in the same function (a fixture pins that
+ * gap). Which edge an operation takes is the compiler's and the reader's. On main, and across the
+ * 208 commits before it that touched a package with a lifecycle, it reports nothing.
  *
  * Exit 0: every declared state write asks first. 1: at least one does not (each printed).
  * Fixtures: `lifecycle-writes.test.mjs`.
@@ -42,7 +45,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lex } from './bare-regexp.mjs';
-import { blankComments, callsOf, covers, functionChains, inScope as shippedSource, lineOf, stringTokenAt } from './attachment-writers.mjs';
+import { blankComments, callsOf, functionChains, inScope as shippedSource, lineOf, stringTokenAt } from './attachment-writers.mjs';
 import { isMainModule, repoRoot } from './repo-path.mjs';
 
 /** Shipped source of a package: under `src/`, and not the seed or a migrations module (a backfill). */
@@ -116,61 +119,230 @@ export function lifecyclesOf(model) {
   });
 }
 
+/**
+ * Every JS string in a comment-blanked source, as `{ at, body }`: `at` is the offset of the body's
+ * first character, and `body` is the text between the quotes with each escape's backslash and each
+ * `${…}` interpolation blanked to spaces (an interpolation leaves a `?` in its place), so offsets
+ * in the body are offsets in the source. SQL is read only inside one string: a statement assembled
+ * by concatenating strings is not seen.
+ */
+export function jsStrings(text) {
+  const out = [];
+  let i = 0;
+  while (i < text.length) {
+    const q = text[i];
+    if (q !== "'" && q !== '"' && q !== '\x60') {
+      i += 1;
+      continue;
+    }
+    const at = i + 1;
+    let body = '';
+    let j = at;
+    for (; j < text.length && text[j] !== q; j += 1) {
+      if (q !== '\x60' && text[j] === '\n') break; // an unterminated quote: not a string
+      if (text[j] === '\\') {
+        body += ' ' + (text[j + 1] ?? '');
+        j += 1;
+      } else if (q === '\x60' && text[j] === '$' && text[j + 1] === '{') {
+        let depth = 0;
+        let k = j + 1;
+        for (; k < text.length; k += 1) {
+          if (text[k] === '{') depth += 1;
+          else if (text[k] === '}' && (depth -= 1) === 0) break;
+        }
+        body += '?' + ' '.repeat(k - j);
+        j = k;
+      } else body += text[j];
+    }
+    out.push({ at, body });
+    i = j + 1;
+  }
+  return out;
+}
+
+const WORD = /[A-Za-z0-9_$]/;
+
+/** The identifier at `i` (bare, or quoted with `"`, `[]` or a backtick), unquoted, and where it ends. */
+function identAt(sql, i) {
+  const close = { '"': '"', '[': ']', '\x60': '\x60' }[sql[i]];
+  if (close) {
+    const end = sql.indexOf(close, i + 1);
+    return end < 0 ? null : { name: sql.slice(i + 1, end), end: end + 1 };
+  }
+  let end = i;
+  while (end < sql.length && WORD.test(sql[end])) end += 1;
+  return end === i ? null : { name: sql.slice(i, end), end };
+}
+
+const skipSpace = (sql, i) => {
+  while (i < sql.length && /\s/.test(sql[i])) i += 1;
+  return i;
+};
+
+/** Past a SQL string literal opening at `i` (`''` is an escaped quote). */
+function pastLiteral(sql, i) {
+  for (let j = i + 1; j < sql.length; j += 1) {
+    if (sql[j] !== "'") continue;
+    if (sql[j + 1] === "'") j += 1;
+    else return j + 1;
+  }
+  return sql.length;
+}
+
+/** The names in a parenthesised list opening at `i` (a column list, a row value), and where it ends. */
+function namesIn(sql, i) {
+  const names = [];
+  let depth = 0;
+  let j = i;
+  while (j < sql.length) {
+    const c = sql[j];
+    if (c === "'") j = pastLiteral(sql, j);
+    else if (c === '(') (depth += 1), (j += 1);
+    else if (c === ')') {
+      j += 1;
+      if ((depth -= 1) === 0) break;
+    } else if (depth === 1 && (c === '"' || c === '[' || c === '\x60' || WORD.test(c))) {
+      const id = identAt(sql, j);
+      if (!id) break;
+      names.push(id.name);
+      j = id.end;
+    } else j += 1;
+  }
+  return { names, end: j };
+}
+
+const STOP = new Set(['where', 'returning', 'from']);
+
+/**
+ * Does the SET clause starting at `i` assign `field`? A linear scan: string literals and quoted
+ * identifiers are skipped whole, parentheses are counted, the clause is split into items at
+ * depth-0 commas and ends at a depth-0 WHERE, RETURNING, FROM or `;` (or at an unmatched `)`).
+ * Only each item's TARGET is judged — `<field> =`, or `(…, <field>, …) =` — so the state read in a
+ * value (`CASE WHEN status = …`, a subquery) is not a write.
+ */
+export function setAssigns(sql, i, field) {
+  const want = field.toLowerCase();
+  let depth = 0;
+  let item = true;
+  while (i < sql.length) {
+    i = skipSpace(sql, i);
+    if (i >= sql.length) break;
+    if (item && depth === 0) {
+      item = false;
+      if (sql[i] === '(') {
+        const list = namesIn(sql, i);
+        const eq = skipSpace(sql, list.end);
+        if (sql[eq] === '=' && list.names.some((n) => n.toLowerCase() === want)) return true;
+        i = list.end;
+        continue;
+      }
+      const id = identAt(sql, i);
+      if (id) {
+        if (STOP.has(id.name.toLowerCase())) return false;
+        const eq = skipSpace(sql, id.end);
+        if (sql[eq] === '=' && sql[eq + 1] !== '=' && id.name.toLowerCase() === want) return true;
+        i = id.end;
+        continue;
+      }
+    }
+    const c = sql[i];
+    if (c === "'") i = pastLiteral(sql, i);
+    else if (c === '"' || c === '[' || c === '\x60') i = identAt(sql, i)?.end ?? i + 1;
+    else if (c === '(') (depth += 1), (i += 1);
+    else if (c === ')') {
+      if ((depth -= 1) < 0) return false;
+      i += 1;
+    } else if (depth === 0 && c === ',') (item = true), (i += 1);
+    else if (depth === 0 && c === ';') return false;
+    else if (WORD.test(c)) {
+      let end = i;
+      while (end < sql.length && WORD.test(sql[end])) end += 1;
+      if (depth === 0 && STOP.has(sql.slice(i, end).toLowerCase())) return false;
+      i = end;
+    } else i += 1;
+  }
+  return false;
+}
+
 /** One identifier as SQLite reads it: bare, or quoted with `"`, `[]` or a backtick. */
 const IDENT = String.raw`(?:"[^"\n]+"|\[[^\]\n]+\]|\x60[^\x60\n]+\x60|\w+)`;
 
 /**
- * A statement that writes `field` of `table`:
- * - `UPDATE [OR …] [schema.]<table> … SET …` naming the field, as `<field> =` or inside a row-value
- *   list, `(a, <field>) =`;
- * - an upsert, `INSERT [OR …] INTO [schema.]<table> … ON CONFLICT … DO UPDATE SET …`, the same way;
- * - `REPLACE INTO` / `INSERT OR REPLACE INTO <table> (…, <field>, …)`, which replaces a row's state.
- * Table and field may each be quoted. The SET list ends at WHERE or RETURNING, so a state named in
- * the condition is a read; a quote does not end it, so a literal before the column
- * (`SET note = 'x', status = ?`) does not hide the write.
+ * The offsets in `sql` of each statement that writes `field` of `table`:
+ * - `UPDATE [OR …] [schema.]<table> … SET …` whose SET clause assigns it (`setAssigns`);
+ * - an upsert, `INSERT [OR …] INTO [schema.]<table> … DO UPDATE SET …`, the same way;
+ * - `REPLACE INTO` / `INSERT OR REPLACE INTO <table>` whose column list names it, or that has no
+ *   column list (`… SELECT`, `… VALUES`), which replaces every column.
+ * The heads are matched by regex with no nested quantifier; everything after them is the scan.
  */
-export function stateWrite(table, field) {
+export function stateWrites(sql, table, field) {
   const t = escape(table);
-  const fl = escape(field);
   const target = String.raw`(?:${IDENT}\s*\.\s*)?(?:"${t}"|\[${t}\]|\x60${t}\x60|${t}\b)`;
-  const col = String.raw`(?:"${fl}"|\[${fl}\]|\x60${fl}\x60|\b${fl}\b)`;
-  // A parenthesised group (a subquery, a call), two levels deep, is read whole, so its WHERE does
-  // not end the list; anything else ends at WHERE, RETURNING or `;`.
-  const group = String.raw`\((?:[^();\x60]|\([^();\x60]*\))*\)`;
-  const rowValue = String.raw`\((?:[^()=;\x60]*,\s*)?${col}(?:\s*,[^()=;\x60]*)?\)\s*=`;
-  const set = String.raw`SET\b(?:${group}|(?!\b(?:WHERE|RETURNING)\b)[^;\x60()])*?(?:${col}\s*=|${rowValue})`;
-  const update = String.raw`\bUPDATE\s+(?:OR\s+\w+\s+)?${target}(?:\s+AS\s+\w+)?\s+${set}`;
-  const upsert = String.raw`\bINSERT\s+(?:OR\s+\w+\s+)?INTO\s+${target}[^;\x60]*?\bDO\s+UPDATE\s+${set}`;
-  const replace = String.raw`\bREPLACE\s+INTO\s+${target}\s*\([^)]*?${col}`;
-  return new RegExp(`${update}|${upsert}|${replace}`, 'gi');
+  const out = [];
+  for (const m of sql.matchAll(new RegExp(String.raw`\bUPDATE\s+(?:OR\s+\w+\s+)?${target}(?:\s+AS\s+\w+)?\s+SET\b`, 'gi'))) {
+    if (setAssigns(sql, m.index + m[0].length, field)) out.push(m.index);
+  }
+  for (const m of sql.matchAll(new RegExp(String.raw`\bINSERT\s+(?:OR\s+\w+\s+)?INTO\s+${target}`, 'gi'))) {
+    const rest = sql.slice(m.index + m[0].length);
+    const end = rest.search(/;|\bINSERT\b|\bUPDATE\s+(?!SET)/i);
+    const doUpdate = /\bDO\s+UPDATE\s+SET\b/i.exec(end < 0 ? rest : rest.slice(0, end));
+    if (doUpdate && setAssigns(sql, m.index + m[0].length + doUpdate.index + doUpdate[0].length, field)) out.push(m.index);
+  }
+  for (const m of sql.matchAll(new RegExp(String.raw`\bREPLACE\s+INTO\s+${target}`, 'gi'))) {
+    const at = skipSpace(sql, m.index + m[0].length);
+    const named = sql[at] === '(' ? namesIn(sql, at).names : null;
+    if (!named || named.some((n) => n.toLowerCase() === field.toLowerCase())) out.push(m.index);
+  }
+  return [...new Set(out)].sort((x, y) => x - y);
 }
+
+/** Each token's chain of enclosing blocks (`{`…`}`), innermost last, as ids. */
+function blockChains(t) {
+  const chains = new Array(t.length);
+  const stack = [];
+  let next = 1;
+  for (let k = 0; k < t.length; k += 1) {
+    if (t[k].text === '}' && t[k].kind === 'punct') stack.pop();
+    chains[k] = [...stack];
+    if (t[k].text === '{' && t[k].kind === 'punct') stack.push(next++);
+  }
+  return chains;
+}
+
+/** A guard at `g` covers `k`: before it, and in a block that encloses it (never a sibling branch). */
+const blockCovers = (blocks, g, k) => {
+  if (g >= k) return false;
+  const inner = blocks[g][blocks[g].length - 1];
+  return inner === undefined || blocks[k].includes(inner);
+};
 
 /**
  * Writes of a declared state with no lifecycle question before them. Covered means a guard call
- * before the write, in its function or one enclosing it — or, for a write inside a named helper
- * (`moveTo(ctx, row, next)`, the one place a state is written), every call of that helper in the
- * file is itself covered, or passes a guard's answer as an argument, to a depth of three helpers.
- * A helper nothing calls is not covered.
+ * before the write, in a block that encloses it (a guard in a sibling `if` branch does not count)
+ * — or, for a write inside a named helper (`moveTo(ctx, row, next)`, the one place a state is
+ * written), every call of that helper in the file is itself covered, or passes a guard's answer
+ * as an argument, to a depth of three helpers. A helper nothing calls is not covered.
  */
 export function unguardedWrites(files, lifecycles) {
-  const writes = lifecycles.map((l) => ({ ...l, re: stateWrite(l.table, l.field) }));
   const out = [];
   for (const { path, text: source } of files) {
     if (!inScope(path)) continue;
     const text = blankComments(source);
     let c;
-    for (const { entity, field, re } of writes) {
-      for (const m of text.matchAll(re)) {
-        if (!c) {
-          const t = lex(text);
-          const chains = functionChains(t);
-          const named = namedFunctions(t, chains);
-          c = { t, chains, named, guards: [...guardsOf(t, chains, named)].flatMap((n) => callsTo(t, n)) };
+    for (const { at, body } of jsStrings(text)) {
+      for (const { entity, table, field } of lifecycles) {
+        for (const offset of stateWrites(body, table, field)) {
+          if (!c) {
+            const t = lex(text);
+            const chains = functionChains(t);
+            const named = namedFunctions(t, chains);
+            c = { t, chains, blocks: blockChains(t), named, guards: [...guardsOf(t, chains, named)].flatMap((n) => callsTo(t, n)) };
+          }
+          const line = lineOf(text, at + offset);
+          const w = stringTokenAt(c.t, line);
+          if (w >= 0 && coveredAt(c, w, 3)) continue;
+          out.push({ path, line, entity, field });
         }
-        const line = lineOf(text, m.index);
-        const w = stringTokenAt(c.t, line);
-        if (w >= 0 && coveredAt(c, w, 3)) continue;
-        out.push({ path, line, entity, field });
       }
     }
   }
@@ -179,7 +351,7 @@ export function unguardedWrites(files, lifecycles) {
 
 /** Is token `k` covered by a guard, directly or through every call of the helper it sits in? */
 function coveredAt(c, k, depth) {
-  if (c.guards.some((g) => covers(c.chains, g, k))) return true;
+  if (c.guards.some((g) => blockCovers(c.blocks, g, k))) return true;
   if (depth === 0) return false;
   const around = c.chains[k];
   const helper = c.named.filter((f) => around.includes(f.id)).sort((x, y) => around.indexOf(y.id) - around.indexOf(x.id))[0];
