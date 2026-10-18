@@ -13,8 +13,9 @@
  * So this reads each package's own modules (the set `lint:migration-fence` reads, without the
  * template), takes the operations whose declared surface addresses an entity by id
  * (`declaredSurfaceOf`, the record `operationInputsOf` keeps), and refuses a package whose tests
- * call `entityCheckConformanceSuite(` fewer times than it has modules declaring such operations —
- * the suite takes one module's operations — counting calls in code only, comments blanked. Which operations the suite then
+ * never call `entityCheckConformanceSuite(` (in code: comments are blanked), and one with a module
+ * whose entity-checked operations are not all in the operations its conformance declaration
+ * (`substrat.conformance`, the object the suite is handed) names. Which operations the suite then
  * covers, and which it lists as uncovered, is the suite's own assertion.
  *
  * What this does not reach: an operation with a bare scope-wide key that checks nothing at all.
@@ -25,6 +26,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { blankComments } from './attachment-writers.mjs';
 import { declaredSurfaceOf } from '../packages/contracts/dist/index.js';
 import { isMainModule } from './repo-path.mjs';
@@ -43,36 +45,61 @@ export interface Judged {
   /** Each own module that declares entity checks, with those operations. */
   readonly modules: readonly { readonly id: string; readonly targeted: readonly string[] }[];
   readonly tests: readonly string[];
+  /**
+   * The operations the package's conformance declaration (`substrat.conformance`) hands the suite,
+   * or undefined when it names none.
+   */
+  readonly covered: ReadonlySet<string> | undefined;
 }
 
 /**
- * A package whose modules declare entity checks calls the suite once per such module: the suite
- * takes one module's operations. Calls are counted in the test code, comments blanked, so a
- * suite mentioned in prose or commented out is not one.
+ * A package whose modules declare entity checks calls the suite in its test code (comments
+ * blanked, so a call in prose or commented out is not one), and every such operation, module by
+ * module, is in the conformance declaration the suite runs over. Two calls over one module's
+ * operations leave the other module's uncovered, and that is refused by name.
  */
 export function adoptionOffences(packages: readonly Judged[]): string[] {
-  return packages.flatMap(({ label, modules, tests }) => {
+  return packages.flatMap(({ label, modules, tests, covered }) => {
     const declaring = modules.filter((m) => m.targeted.length > 0);
     if (declaring.length === 0) return [];
-    const calls = tests.reduce((n, text) => n + [...blankComments(text).matchAll(SUITE_CALL)].length, 0);
-    if (calls >= declaring.length) return [];
     const ops = declaring.flatMap((m) => m.targeted);
-    const named = `${ops.length} operation(s) declare an entity check (${ops.slice(0, 3).join(', ')}${ops.length > 3 ? ', …' : ''})`;
-    return [
-      calls === 0
-        ? `${label}: ${named} and no test calls entityCheckConformanceSuite`
-        : `${label}: ${declaring.length} module(s) declare entity checks (${declaring.map((m) => m.id).join(', ')}) and the tests call entityCheckConformanceSuite ${calls} time(s) — once per module`,
-    ];
+    const list = (xs: readonly string[]): string => `${xs.slice(0, 3).join(', ')}${xs.length > 3 ? ', …' : ''}`;
+    const calls = tests.reduce((n, text) => n + [...blankComments(text).matchAll(SUITE_CALL)].length, 0);
+    if (calls === 0) return [`${label}: ${ops.length} operation(s) declare an entity check (${list(ops)}) and no test calls entityCheckConformanceSuite`];
+    if (!covered) return [`${label}: calls entityCheckConformanceSuite but names no conformance declaration (substrat.conformance), so what it covers cannot be read`];
+    return declaring.flatMap((m) => {
+      const missing = m.targeted.filter((op) => !covered.has(op));
+      return missing.length === 0 ? [] : [`${label}: module ${m.id} declares entity checks the conformance suite is not given (${list(missing)})`];
+    });
   });
+}
+
+/** The operations every export of a conformance declaration hands the suite. */
+async function coveredBy(label: string): Promise<Set<string> | undefined> {
+  const entry = (JSON.parse(readFileSync(join(label, 'package.json'), 'utf8')) as { substrat?: { conformance?: unknown } }).substrat?.conformance;
+  if (typeof entry !== 'string') return undefined;
+  const mod = (await import(pathToFileURL(join(process.cwd(), label, entry)).href)) as Record<string, unknown>;
+  return new Set(
+    Object.values(mod).flatMap((v) => {
+      const ops = (v as { operations?: unknown } | null)?.operations;
+      return typeof ops === 'object' && ops !== null ? Object.keys(ops) : [];
+    }),
+  );
 }
 
 async function main(): Promise<void> {
   const packages = await registrations('entity-check-adoption', { template: false });
-  const judged = packages.map(({ label, own }) => ({
-    label,
-    modules: own.map((m) => ({ id: m.manifest.id, targeted: targetedOperations(m) })),
-    tests: testFiles(join(process.cwd(), label)).map((f) => readFileSync(f, 'utf8')),
-  }));
+  const judged: Judged[] = [];
+  for (const { label, own } of packages) {
+    const modules = own.map((m) => ({ id: m.manifest.id, targeted: targetedOperations(m) }));
+    const declares = modules.some((m) => m.targeted.length > 0);
+    judged.push({
+      label,
+      modules,
+      tests: declares ? testFiles(join(process.cwd(), label)).map((f) => readFileSync(f, 'utf8')) : [],
+      covered: declares ? await coveredBy(label) : undefined,
+    });
+  }
   const offences = adoptionOffences(judged);
   if (offences.length > 0) {
     console.error(`entity-check-adoption: ${offences.length} package(s) declare entity checks nothing verifies:\n`);
