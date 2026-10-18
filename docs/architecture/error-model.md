@@ -338,7 +338,8 @@ already answer their expected refusal as a value.
      `x-substrat-live` header values are unchanged; the media type is served with `c.body`.
      `test/refusals-problem.test.ts` reaches every one of those routes and holds
      `index.ts` and `live.ts` to writing no bare `.json({ error` again.
-   - **Still open, surface by surface:** the control-plane worker's own routes (`apps/control-plane`), CLI auth, the
+   - **Still open, surface by surface:** `adapter-cloudflare`'s live-read refusals (`host.ts`
+     and `scope-do.ts`), which still answer `text/plain`; the control-plane worker's own routes (`apps/control-plane`), CLI auth, the
      builder and the dashboard's 401s, `dev-issuer`; a `requestId` on the control plane's
      problems (#2192). A repo-wide source gate waits until a second surface is converted.
    - **Then, and only then:** the `error` duplicate can go, since every client reads
