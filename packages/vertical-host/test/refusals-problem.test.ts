@@ -155,13 +155,21 @@ describe('every status these routes emit has a real title', () => {
   });
 });
 
+/** Whole-file, whitespace-normalised: a wrapped `c.json(\n  { error: … }, 501)` is the same offence. */
+function bareErrorCalls(src: string): string[] {
+  const flat = src.replace(/\s+/g, ' ');
+  return [...flat.matchAll(/\.(?:json|body|text)\(\s*\{\s*error\b[^)]{0,80}/g)].map((m) => m[0]);
+}
+
 describe('no route in index.ts or live.ts answers a bare { error } again', () => {
+  it('sees the wrapped form, not only the one-line one', () => {
+    expect(bareErrorCalls("return c.json({ error: 'x' }, 501);")).toHaveLength(1);
+    expect(bareErrorCalls("return c.json(\n  { error: 'x' },\n  501,\n);")).toHaveLength(1);
+    expect(bareErrorCalls("return refuseStatus(c, 501, 'x');")).toEqual([]);
+  });
+
   it.each(['../src/index.ts', '../src/live.ts'])('%s', (file) => {
     const src = readFileSync(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
-    const offences = src
-      .split('\n')
-      .map((text, i) => ({ text, line: i + 1 }))
-      .filter(({ text }) => /\.json\(\s*\{\s*error\b/.test(text) && !/^\s*(\/\/|\*)/.test(text));
-    expect(offences).toEqual([]);
+    expect(bareErrorCalls(src)).toEqual([]);
   });
 });
