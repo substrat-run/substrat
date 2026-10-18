@@ -163,7 +163,7 @@ stop. Do not scaffold.
 ## Step 3 — Write the design document
 
 **This is the deliverable.** Everything before now was learning; this is where it lands
-somewhere the user can hold. Write a **checked-in `spec/concept.md`** — beside
+somewhere the user can hold. Fill in the **checked-in `spec/concept.md`** (the scaffold ships it) — beside
 `spec/model.ts`, which is this same design one rung more concrete — in the user's own
 vocabulary — no Substrat internals, no decision refs, no cross-references to
 platform docs. Someone who has never heard of Substrat must be able to read it and recognise
@@ -174,6 +174,12 @@ their own business.
 ```
 Status: draft v0.1 · Last updated: <date> · For review before any code
 ```
+
+**The layout is fixed by the scaffold**: keep its seven headings and the `substrat:` markers —
+purpose and users, roles and permissions, entity model, processes, screens and dashboard,
+decisions log, open questions. Roles, entities and processes are generated from the code
+(Step 5); what follows describes the authored parts, and the denials preview below is prose that
+sits beside the generated roles table, not instead of it.
 
 **The template** — the coverage map (Step 2) is sections 3–4, already done; the rest is the
 interview written down. Two sections deliberately *preview* the code checkpoints of Step 7 in
@@ -311,6 +317,16 @@ and event subjects all need one id, so naming such an entity in `parents`,
 `attachmentTargets`, `relations`, `emits.entity` or a narrowed `permission.entity` is a
 compile error. It is still a full model member with migrations and a row type. A
 single-column key that is not called `id` stays fully pointable.
+
+**Run `substrat concept sync` after every change to the model or to a permission.** Write the
+emitted model to `model.json` beside `package.json`, then sync: it rewrites the three regions of
+`spec/concept.md` between the `<!-- substrat:roles|entities|processes -->` markers (roles and
+permissions from `PERMISSIONS.md`, a Mermaid ER diagram and one state diagram per lifecycle
+from `model.json`). Never edit between those markers by hand — the next sync overwrites it, and
+`pnpm lint:concept` fails on a stale region. **Write the decisions-log entry yourself**, in the
+document's *Decisions log* section: the date, what changed in the model or the permissions, and
+why. Sync cannot write that part, and `lint:concept --base` fails a change to either artifact
+that has none.
 
 Behaviour stays prose in `spec/concept.md`. Inventing a way to declare a state *transition*
 means the boundary slipped.

@@ -611,3 +611,185 @@ Named so the review is about a bounded thing:
    how far back a correction is ever re-run. If corrections routinely reach further back
    than that, the window is wrong and the design should say so before the first row is
    stored rather than after.
+
+
+## Roles and permissions (generated)
+
+<!-- substrat:roles -->
+
+| Role | What they can do |
+| --- | --- |
+| `admin` | `report:read` — Read counts, schemas, runs and findings<br>`row:read` — Read the mapped rows of a run, and download the file it came from<br>`run:manage` — Upload a file and take a run through profiling, mapping and counting<br>`schema:manage` — Declare a source and write new versions of its shape |
+| `analyst` | `report:read` — Read counts, schemas, runs and findings<br>`row:read` — Read the mapped rows of a run, and download the file it came from<br>`run:manage` — Upload a file and take a run through profiling, mapping and counting |
+| `modeller` | `report:read` — Read counts, schemas, runs and findings<br>`row:read` — Read the mapped rows of a run, and download the file it came from<br>`run:manage` — Upload a file and take a run through profiling, mapping and counting<br>`schema:manage` — Declare a source and write new versions of its shape |
+| `viewer` | `report:read` — Read counts, schemas, runs and findings |
+
+<!-- /substrat:roles -->
+
+## Entity model (generated)
+
+<!-- substrat:entities -->
+
+```mermaid
+erDiagram
+    source ||--o{ mapping : has
+    run ||--o{ observation : has
+    source ||--o{ output_schema : has
+    run ||--o{ row : has
+    run ||--o{ rule_state : has
+    source ||--o{ run : has
+    source ||--o{ schema : has
+    run ||--o{ source_file : has
+    source ||--o{ variant : has
+    field_history {
+        string day PK
+        string field PK
+        string first_seen
+        string last_seen
+        number n
+        string source_key PK
+    }
+    label {
+        string captured_at
+        string dim PK
+        string label
+        string run_id PK
+        string value PK
+    }
+    mapping {
+        string created_at
+        string created_by
+        string id PK
+        string output_key
+        string rules_json
+        string source_key
+        string variant_key
+        number version
+    }
+    observation {
+        number declared
+        number distinct_estimate
+        string field
+        string id PK
+        string inferred_type
+        number null_count
+        number present_count
+        string run_id
+        string variant_key
+    }
+    output_schema {
+        string created_at
+        string created_by
+        string fields_json
+        string id PK
+        string key
+        string source_key
+        number version
+    }
+    rollup {
+        string dim1 PK
+        string dim2 PK
+        string dim_set PK
+        number events
+        string grain PK
+        string measure
+        string output_key PK
+        string period_start PK
+        string run_id PK
+        string source_key PK
+        string unit
+    }
+    row {
+        string dims_json
+        string id PK
+        string metrics_json
+        string occurred_at
+        string run_id
+        string subject_key
+        string variant_key
+    }
+    rule_state {
+        string captured_at
+        string content_hash
+        string id PK
+        string identifier
+        string rule_kind
+        string run_id
+    }
+    run {
+        number byte_size
+        string content_hash
+        string count_state_json
+        string counted_at
+        string counted_through
+        string delimiter
+        string filename
+        string format
+        string id PK
+        string period_from
+        string period_to
+        string received_at
+        string received_by
+        number rejected_count
+        number row_count
+        number schema_version
+        string source_key
+        string status
+        string subject_field
+        string time_field
+    }
+    salt {
+        string created_at
+        string day PK
+        string destroyed_at
+        string salt_id
+        string secret
+    }
+    schema {
+        string created_at
+        string created_by
+        string fields_json
+        string id PK
+        string source_key
+        string variant_key
+        number version
+    }
+    source {
+        string created_at
+        string discriminators
+        string expected_cadence
+        string key PK
+        string title
+    }
+    source_file {
+        number byte_size
+        string content_hash
+        string purge_after
+        string run_id PK
+        string storage_key
+        string stored_at
+    }
+    variant {
+        string created_at
+        string id PK
+        string key
+        string selector
+        string source_key
+    }
+```
+
+<!-- /substrat:entities -->
+
+## Processes (generated)
+
+<!-- substrat:processes -->
+
+_No lifecycle is declared: nothing here moves through stages._
+
+<!-- /substrat:processes -->
+
+## Decisions log
+
+- 2026-10-18: The three sections above are generated by `substrat concept sync` from `model.json` and
+  `PERMISSIONS.md`, and `pnpm lint:concept` fails when they are stale. Add a line here, by hand,
+  on every change to the model or to a permission.

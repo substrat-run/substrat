@@ -84,7 +84,7 @@ describe('syncConcept', () => {
     const out = syncConcept(DOC, inputs);
     expect(out).toContain('| `member` | `list:create` — Create lists of your own |');
     expect(out).toContain('| `list` | `list:manage` — Rename and share a list |');
-    expect(out).toContain('erDiagram\n    owner ||--o{ list : has\n    list ||--o{ item : has');
+    expect(out).toContain('erDiagram\n    list ||--o{ item : has\n    owner ||--o{ list : has');
     expect(out).toContain('        string id PK');
     expect(out).toContain('        number done');
     expect(out).toContain('        string note');

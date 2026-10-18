@@ -544,3 +544,355 @@ score; knowledge bases that live in Notion or Confluence; a public help centre; 
    what runs today — email-less, widget-less, an inbox with an assistant and a knowledge
    base — and the two platform pieces sequenced as their own work, or is this demo the
    thing that justifies building them?
+
+
+## Roles and permissions (generated)
+
+<!-- substrat:roles -->
+
+| Role | What they can do |
+| --- | --- |
+| `agent` | `contact:read` — See the people who have asked something<br>`conversation:assign` — Assign, snooze, wake and tag a conversation, and move a new one in or out of the suspended queue<br>`conversation:draft` — Write an internal note or record a drafted answer — never leaves the building<br>`conversation:forward` — Put another address on a conversation — copy someone in on the customer’s thread, take them off, or forward a question to a third party<br>`conversation:read` — See every conversation in this desk, internal notes included<br>`conversation:reply-public` — Send a reply the customer will receive<br>`conversation:resolve` — Resolve and close a conversation<br>`kb:read` — Read and search the knowledge base<br>`notification:read-own` — See and dismiss your own notifications<br>`saved-reply:manage` — Add, change and remove the desk’s shared saved replies and their folders, and share a personal reply with the desk |
+| `assistant` | `conversation:draft` — Write an internal note or record a drafted answer — never leaves the building<br>`conversation:read` — See every conversation in this desk, internal notes included<br>`kb:read` — Read and search the knowledge base<br>`metering:configure` — Configure meters (register keys; kind/unit are frozen after creation)<br>`metering:record` — Record usage entries against a meter |
+| `assistant-autonomous` | `conversation:draft` — Write an internal note or record a drafted answer — never leaves the building<br>`conversation:read` — See every conversation in this desk, internal notes included<br>`conversation:reply-public` — Send a reply the customer will receive<br>`kb:read` — Read and search the knowledge base<br>`metering:configure` — Configure meters (register keys; kind/unit are frozen after creation)<br>`metering:record` — Record usage entries against a meter |
+| `customer` | `notification:read-own` — See and dismiss your own notifications |
+| `desk-admin` | `contact:invite` — Invite a contact to their portal with a link that binds whoever claims it to that contact, or unbind them — the portal itself is the contact shape, not this key<br>`contact:read` — See the people who have asked something<br>`conversation:assign` — Assign, snooze, wake and tag a conversation, and move a new one in or out of the suspended queue<br>`conversation:discard` — Discard a suspended conversation — deletes what the customer wrote, for good<br>`conversation:draft` — Write an internal note or record a drafted answer — never leaves the building<br>`conversation:forward` — Put another address on a conversation — copy someone in on the customer’s thread, take them off, or forward a question to a third party<br>`conversation:merge` — Fold one conversation into another<br>`conversation:read` — See every conversation in this desk, internal notes included<br>`conversation:reply-public` — Send a reply the customer will receive<br>`conversation:resolve` — Resolve and close a conversation<br>`desk:configure` — Change the desk’s settings and rotate its verification secret<br>`kb:manage` — Add a documentation source, and mint or revoke its refresh hook<br>`kb:read` — Read and search the knowledge base<br>`kb:refresh` — Re-read a source and record what it found — held by desk-admins, who press Re-read, and by the desk’s ingest service, which holds this and nothing else; a request carrying a hook token is narrowed to the source that token names, a signed-in admin is not<br>`metering:close` — Close a billing period, freezing its aggregates<br>`metering:configure` — Configure meters (register keys; kind/unit are frozen after creation)<br>`metering:read` — Read meters, usage entries, totals and closed periods<br>`metering:record` — Record usage entries against a meter<br>`notification:read-own` — See and dismiss your own notifications<br>`saved-reply:manage` — Add, change and remove the desk’s shared saved replies and their folders, and share a personal reply with the desk<br>`signup:read` — See the waiting list and the newsletter list — real addresses, so it sits with the money rather than with the inbox<br>`usage:read` — See token usage, prices and what the desk has spent |
+| `ingest` | `kb:refresh` — Re-read a source and record what it found — held by desk-admins, who press Re-read, and by the desk’s ingest service, which holds this and nothing else; a request carrying a hook token is narrowed to the source that token names, a signed-in admin is not |
+| `relay` | `conversation:relay` — Bring messages in from email and read the ones going out — the relay only, no human role |
+| `signup` | `signup:submit` — Take a signup from a public form, and spend a confirm or unsubscribe token — held by the desk’s signup service alone; which row is decided by the token, not by this key |
+| `widget` | `conversation:widget` — Serve the embedded chat widget — held by the desk’s widget service alone; a visitor is confined by their session token, not by this key |
+
+Shared one record at a time, without a role:
+
+| Record | What the person it is shared with can do |
+| --- | --- |
+| `contact` | `conversation:read-own` — See a conversation that is yours, public messages only |
+| `conversation` | `conversation:read` — See every conversation in this desk, internal notes included |
+
+<!-- /substrat:roles -->
+
+## Entity model (generated)
+
+<!-- substrat:entities -->
+
+```mermaid
+erDiagram
+    conversation ||--o{ aiTurn : has
+    contact ||--o{ conversation : has
+    contact ||--o{ conversationParticipant : has
+    conversation ||--o{ conversationParticipant : has
+    kbSource ||--o{ kbArticle : has
+    conversation ||--o{ message : has
+    publicThread ||--o{ message : has
+    conversation ||--o{ publicThread : has
+    widgetSession ||--o{ publicThread : has
+    conversation ||--o{ widgetSession : has
+    agentProfile {
+        string avatar_url
+        string created_at
+        string display_name
+        string offboarded_at
+        string principal PK
+        string signature
+    }
+    aiTurn {
+        string cited_article_ids
+        number confidence
+        string conversation_id
+        string created_at
+        string error
+        string id PK
+        number input_tokens
+        string message_id
+        string meter_entry_id
+        string model
+        string outcome
+        number output_tokens
+    }
+    behaviourRun {
+        string behaviour PK
+        number last_count
+        string last_fired_at
+    }
+    blockRule {
+        string created_at
+        string created_by
+        string id PK
+        string kind
+        string reason
+        string value
+    }
+    contact {
+        string created_at
+        string display_name
+        string email
+        string external_id
+        string id PK
+        string principal
+        string verified_at
+    }
+    conversation {
+        string assignee
+        string auto_tagged_at
+        string channel
+        string contact_id
+        string created_at
+        string first_assigned_at
+        string first_public_reply_at
+        string first_response_breached_at
+        string first_response_due_at
+        string follows
+        string id PK
+        string merged_into
+        string no_reply_candidate_at
+        string no_reply_notified_at
+        string no_reply_notified_message_id
+        string no_reply_waiting_since
+        string priority
+        string quarantine
+        string resolution_breached_at
+        string resolution_due_at
+        string resolved_at
+        string snoozed_at
+        number snoozed_ms
+        string snoozed_until
+        string state
+        string subject
+        string suspended_at
+        string suspicion
+        string updated_at
+    }
+    conversationFollow {
+        string conversation_id PK
+        string principal PK
+    }
+    conversationParticipant {
+        string added_by
+        string contact_id
+        string conversation_id
+        string created_at
+        string id PK
+        string role
+    }
+    conversationTag {
+        string conversation_id PK
+        string created_at
+        string tag PK
+    }
+    csat {
+        string comment
+        string conversation_id PK
+        number score
+        string submitted_at
+    }
+    deskSettings {
+        number abandoned_after_days
+        string allowed_origins
+        number assistant_autonomous
+        string business_hours
+        string created_at
+        string from_address
+        string greeting
+        string id PK
+        string round_robin_last
+        string settings
+        string updated_at
+        string verification_secret
+    }
+    kbArticle {
+        string body
+        string content_hash
+        string heading_path
+        string id PK
+        string ingested_at
+        string source_id
+        string title
+        string url
+    }
+    kbSource {
+        string created_at
+        string id PK
+        string kind
+        string label
+        string last_error
+        string last_ingested_at
+        string refresh_token_hash
+        string refresh_token_hint
+        string status
+        string token_created_at
+        string token_last_used_at
+        string url
+    }
+    mailDelivery {
+        string conversation_id
+        string direction
+        string email_message_id PK
+        string message_id
+        string recorded_at
+    }
+    message {
+        string author_contact_id
+        string author_kind
+        string author_principal
+        string body_html
+        string body_text
+        string cited_article_ids
+        string conversation_id
+        string created_at
+        string delivered_at
+        string email_in_reply_to
+        string email_message_id
+        string id PK
+        string third_party_contact_id
+        string visibility
+        string withdrawn_at
+    }
+    notification {
+        string conversation_id
+        string created_at
+        string id PK
+        string kind
+        string principal
+        string read_at
+    }
+    publicThread {
+        string id PK
+    }
+    savedReply {
+        string actions
+        string body
+        string created_at
+        string created_by
+        string folder_id
+        string id PK
+        string last_used_at
+        string owner
+        string title
+        number use_count
+    }
+    savedReplyFolder {
+        string created_at
+        string created_by
+        string id PK
+        string name
+    }
+    signup {
+        string confirm_token_hash
+        string confirmed_at
+        string created_at
+        string email
+        string id PK
+        string kind
+        string note
+        string origin
+        string requested_at
+        string state
+        string unsubscribe_token
+        string unsubscribed_at
+    }
+    usageRate {
+        string currency
+        string effective_from PK
+        string meter_key PK
+        string unit_price
+    }
+    widgetOpening {
+        string browser
+        string browser_version
+        string city
+        string contact_id
+        string country
+        string device
+        string id PK
+        string language
+        string last_seen_at
+        string origin
+        string os
+        string os_version
+        string region
+        string started_at
+        string timezone
+        string token_hash
+        string user_agent
+    }
+    widgetSession {
+        string browser
+        string browser_version
+        string city
+        string contact_id
+        string conversation_id
+        string country
+        string device
+        string id PK
+        string language
+        string last_seen_at
+        string origin
+        string os
+        string os_version
+        string region
+        string started_at
+        string timezone
+        string token_hash
+        string user_agent
+    }
+```
+
+<!-- /substrat:entities -->
+
+## Processes (generated)
+
+<!-- substrat:processes -->
+
+### conversation
+
+Moves through its `state`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> new
+    closed --> [*]
+    new --> open : ticket0/assign
+    new --> closed : ticket0/close
+    new --> closed : ticket0/discard
+    new --> closed : ticket0/discard-suspended
+    new --> open : ticket0/post-public-reply
+    new --> closed : ticket0/reap-abandoned
+    new --> resolved : ticket0/resolve
+    open --> closed : ticket0/close
+    open --> resolved : ticket0/resolve
+    open --> snoozed : ticket0/snooze
+    resolved --> closed : ticket0/auto-close
+    resolved --> closed : ticket0/close
+    resolved --> open : ticket0/ingest-message
+    resolved --> open : ticket0/post-public-reply
+    resolved --> open : ticket0/request-human
+    resolved --> open : ticket0/widget-post
+    snoozed --> closed : ticket0/close
+    snoozed --> open : ticket0/ingest-message
+    snoozed --> open : ticket0/request-human
+    snoozed --> resolved : ticket0/resolve
+    snoozed --> open : ticket0/wake
+    snoozed --> open : ticket0/wake-snoozed
+    snoozed --> open : ticket0/widget-post
+```
+
+### signup
+
+Moves through its `state`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending
+    confirmed --> unsubscribed : ticket0/unsubscribe-signup
+    pending --> confirmed : ticket0/confirm-signup
+    pending --> unsubscribed : ticket0/unsubscribe-signup
+    unsubscribed --> pending : ticket0/submit-signup
+```
+
+<!-- /substrat:processes -->
+
+## Decisions log
+
+- 2026-10-18: The three sections above are generated by `substrat concept sync` from `model.json` and
+  `PERMISSIONS.md`, and `pnpm lint:concept` fails when they are stale. Add a line here, by hand,
+  on every change to the model or to a permission.
