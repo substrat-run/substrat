@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { syncConceptFile } from '../src/concept.js';
+import { renderConceptFor, syncConceptFile } from '../src/concept.js';
 
 /**
  * `substrat concept sync` — the filesystem half over `@substrat-run/model-view`'s `syncConcept`
@@ -67,5 +67,15 @@ describe('syncConceptFile', () => {
   it('refuses a document without the markers rather than writing nothing', () => {
     writeFileSync(join(dir, 'spec/concept.md'), '# C\n');
     expect(() => syncConceptFile(dir)).toThrow(/substrat:roles/);
+  });
+});
+
+describe('renderConceptFor', () => {
+  it('renders given text in memory and writes nothing — a doubled marker throws, the file untouched', () => {
+    const { after } = renderConceptFor(dir, DOC);
+    expect(after).toContain('erDiagram');
+    expect(readFileSync(join(dir, 'spec/concept.md'), 'utf8')).toBe(DOC);
+    expect(() => renderConceptFor(dir, `${DOC}- x <!-- substrat:entities --> y\n`)).toThrow(/appears more than once/);
+    expect(readFileSync(join(dir, 'spec/concept.md'), 'utf8')).toBe(DOC);
   });
 });
