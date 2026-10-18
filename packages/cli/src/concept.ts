@@ -19,8 +19,12 @@ export interface ConceptSyncResult {
   readonly changed: boolean;
 }
 
-/** `dir` is the vertical's package directory; a `model.json` path is accepted and its directory used. */
-export function syncConceptFile(dir: string, opts: { readonly check?: boolean } = {}): ConceptSyncResult {
+/**
+ * Where the vertical at `dir` keeps its concept document, and `markdown` with its generated
+ * regions rendered from the `model.json` and `PERMISSIONS.md` beside it — written nowhere.
+ * Throws `ConceptMarkerError` when the markers cannot be read.
+ */
+export function renderConceptFor(dir: string, markdown?: string): { file: string; before: string; after: string } {
   const modelFile = resolveModelPath(dir);
   const root = modelFile.slice(0, modelFile.length - 'model.json'.length);
   const file = join(root, 'spec', 'concept.md');
@@ -32,11 +36,17 @@ export function syncConceptFile(dir: string, opts: { readonly check?: boolean } 
     );
   }
   const permissionsFile = join(root, 'PERMISSIONS.md');
-  const before = readFileSync(file, 'utf8');
+  const before = markdown ?? readFileSync(file, 'utf8');
   const after = syncConcept(before, {
     model: readModel(modelFile),
     ...(existsSync(permissionsFile) ? { permissionsMd: readFileSync(permissionsFile, 'utf8') } : {}),
   });
+  return { file, before, after };
+}
+
+/** `dir` is the vertical's package directory; a `model.json` path is accepted and its directory used. */
+export function syncConceptFile(dir: string, opts: { readonly check?: boolean } = {}): ConceptSyncResult {
+  const { file, before, after } = renderConceptFor(dir);
   if (!opts.check && after !== before) writeFileSync(file, after);
   return { file, changed: after !== before };
 }

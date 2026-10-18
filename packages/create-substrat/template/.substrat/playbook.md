@@ -254,6 +254,19 @@ say so rather than letting them wave it through — a design nobody understands 
 reproduces exactly the failure Substrat exists to prevent. Iterate the document until they
 can, and only then take explicit approval.
 
+**A change to a vertical that already has a `model.json`** goes through this same gate, and what
+the gate shows is the **concept delta**, not prose. Declare the change in `spec/model.ts` and
+its roles only — no handler, no screen — re-emit the artifacts, and run `substrat plan`. It
+prints the entities added, changed and removed (the model before and after), the lifecycle
+changes with the operation that triggers each transition, the permission-diff table, the
+spec-version impact (patch / minor / major, from the same classifier `substrat changeset`
+uses), and the decisions-log entry approval would write. Show it to the user as printed, walk
+them through it in their vocabulary, and **stop**. Only once they approve, run the
+`substrat plan --approve <digest> --by "<their name>" --why "<their reason>"` line it printed:
+that records the approval in the Decisions log of `spec/concept.md`. Never run `--approve`
+on your own judgement, and if the model moves after they read it, show the delta again — the
+old digest is refused.
+
 Approval of the design is what unlocks Step 5. Until you have it, you are still in design.
 
 ---

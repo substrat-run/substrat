@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import type { EmittedModel } from '@substrat-run/contracts';
-import { ConceptMarkerError, PermissionsFormatError, decisionsLog, parsePermissions, syncConcept } from '../src/index.js';
+import {
+  ConceptMarkerError,
+  PermissionsFormatError,
+  decisionsLog,
+  entityDiagram,
+  lifecycleDiagram,
+  parsePermissions,
+  syncConcept,
+} from '../src/index.js';
 
 const MODEL: EmittedModel = {
   entities: {
@@ -244,5 +252,13 @@ describe('parsePermissions / decisionsLog', () => {
     expect(decisionsLog(DOC)).toBe('- 2026-01-01 first entry\n');
     expect(decisionsLog('# x\n\n## Decisions log\nA\n## Next\nB')).toBe('A');
     expect(decisionsLog('# x')).toBeUndefined();
+  });
+});
+
+describe('entityDiagram / lifecycleDiagram', () => {
+  it('are the generated regions themselves, so `substrat plan` draws what concept.md draws', () => {
+    const synced = syncConcept(DOC, inputs);
+    expect(synced).toContain(`<!-- substrat:entities -->\n\n${entityDiagram(MODEL)}\n\n<!-- /substrat:entities -->`);
+    expect(synced).toContain(lifecycleDiagram('list', MODEL.lifecycles!.list!));
   });
 });

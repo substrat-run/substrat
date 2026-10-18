@@ -15,6 +15,7 @@ described already picks one, say which and go.
 | Ask | Skill | What it does |
 |---|---|---|
 | "build me a …", "scaffold a vertical", "add a feature to this vertical" | `substrat` | Routes into the build flow. Scaffolds with `npm create substrat` if the directory is empty, then reads the project's own `AGENTS.md` and `.substrat/playbook.md` and follows those. |
+| "plan this change", "/plan", "what does this change do to the model" | `substrat-plan` | Runs `substrat plan` at the design gate: entities before and after, lifecycle and permission changes, the spec-version impact (patch / minor / major) and the decisions-log entry. Stops for your approval, and records it in `spec/concept.md` only once you give it. |
 | "wire this project up", "the agent doesn't know the rules" | `substrat-plugin-init` | Writes the knowledge import (`CLAUDE.md` → `AGENTS.md`) into a project that has none, and records the kernel version the session hook reports against. Re-run it after upgrading the plugin. |
 | "ship it", "deploy to prod" | `substrat-deploy` | `substrat login` → `substrat push --promote prod`, and presents the permission / migration checkpoints when a promotion is refused until they are acknowledged. |
 | "review this", "check my change", "before I push" | `review` | Checks the diff against Substrat's own rules: scope isolation, permission checks, generated files, migration losses, personal data, lifecycles, secrets, tests. Reports findings with `file:line`; never edits or acknowledges a checkpoint. |

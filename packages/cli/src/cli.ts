@@ -54,6 +54,7 @@ import { writeCiWorkflow, detectDefaultBranch, nextStepsMessage } from './init.j
 import { writeModelView } from './model.js';
 import { CannotRun, changesetCommand } from './changeset.js';
 import { syncConceptFile } from './concept.js';
+import { planCommand } from './plan.js';
 import {
   listVerticalHostnames,
   bindSurfaceHostname,
@@ -280,6 +281,15 @@ Usage:
                                               diagram per lifecycle — from model.json and
                                               PERMISSIONS.md. Idempotent; --check writes nothing
                                               and exits 1 when the file is stale
+  substrat plan [dir] [--base <ref>]          the concept delta the design gate shows: entities
+                    [--why <text>] [--json]   added/changed/removed (Mermaid before and after),
+                                              lifecycle changes, the permission-diff table, the
+                                              spec-version impact (changeset's classifier) and
+                                              the decisions-log entry approving it would write.
+                                              Offline; --json prints the delta for an agent
+  substrat plan [dir] --approve <digest>      record a person's approval in the Decisions log of
+                    --by <name> --why <text>  spec/concept.md, then re-sync it. Refused when the
+                                              delta is no longer the one <digest> named
   substrat init --ci github [dir]             write .github/workflows/substrat-deploy.yml —
                     [--branch <b>] [--path <packageDir>] [--release trunk|changesets]
                     [--out <path>] [--force]
@@ -1302,6 +1312,44 @@ async function cmdConcept(): Promise<void> {
   console.log(changed ? `✓ rewrote the generated sections of ${file}` : `✓ ${file} is up to date`);
 }
 
+/**
+ * `substrat plan [dir] [--base <ref>] [--why <text>] [--json]` — the concept delta the design gate
+ * shows (#2363); `--approve <digest> --by <name> --why <text>` records a person's approval of it in
+ * spec/concept.md's Decisions log. Offline like `changeset`: artifacts at the merge-base and now.
+ */
+async function cmdPlan(): Promise<void> {
+  const usage =
+    'usage: substrat plan [dir] [--base <ref>] [--why <text>] [--json]\n' +
+    '       substrat plan [dir] --approve <digest> --by <name> --why <text> [--base <ref>]';
+  for (const f of ['base', 'why', 'approve', 'by']) {
+    const v = flag(f);
+    if (argv.includes(`--${f}`) && (!v || v.startsWith('--'))) {
+      console.error(`${usage}\n\n--${f} needs a value.`);
+      process.exit(1);
+    }
+  }
+  const dir = resolvePath(positional(0, ['json']) ?? '.');
+  try {
+    const r = await planCommand(dir, {
+      json: argv.includes('--json'),
+      date: new Date().toISOString().slice(0, 10),
+      ...(flag('base') ? { base: flag('base')! } : {}),
+      ...(flag('why') ? { why: flag('why')! } : {}),
+      ...(flag('approve') ? { approve: flag('approve')! } : {}),
+      ...(flag('by') ? { by: flag('by')! } : {}),
+    });
+    for (const l of r.out) console.log(l);
+    for (const l of r.err) console.error(l);
+    if (r.code !== 0) process.exit(r.code);
+  } catch (err) {
+    if (err instanceof CannotRun) {
+      console.error(`error: ${err.message}`);
+      process.exit(2);
+    }
+    throw err;
+  }
+}
+
 async function cmdWhoami(): Promise<void> {
   const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   const { user, tenants } = await fetchWhoami(controlPlaneUrl, header);
@@ -1360,6 +1408,8 @@ async function main(): Promise<void> {
       return cmdChangeset();
     case 'concept':
       return cmdConcept();
+    case 'plan':
+      return cmdPlan();
     case 'version':
     case '--version':
     case '-v':
