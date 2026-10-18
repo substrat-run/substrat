@@ -79,8 +79,8 @@ searchDataInstances
   `python_modules/_pyodide_entrypoint_helper.pyi`. Whether those should be
   refused is open.
 - A dispatch upload, the reserved-operation canary, and a rollout have not
-  been run. Local packing does not establish that a production upload of this
-  size succeeds.
+  been run. The commands, the answers they must give, and what to collect when
+  they fail are in [the first-upload checklist](./graph-store-first-upload.md).
 
 Use the existing `substrat store-driver upload`, `rollout`, `rollback` and `status`
 flow, with a human staff sign-in for writes. Uploading bytes can precede the pin;
