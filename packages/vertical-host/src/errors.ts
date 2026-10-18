@@ -295,7 +295,20 @@ export function problemResponse(c: Context, err: unknown): Response {
   if (attached instanceof Response) return attached;
   if (err instanceof HTTPException && err.res) return err.getResponse();
   const { status, body } = problemFor(err, c.req.path);
-  return c.body(JSON.stringify(withRequestIdMember(body, c)), status, { 'content-type': PROBLEM_CONTENT_TYPE });
+  return serveProblem(c, status, body);
+}
+
+/** A problem document on the wire: the media type, the request id member, any extra headers. */
+function serveProblem(
+  c: Context,
+  status: ContentfulStatusCode,
+  body: Problem,
+  headers: Readonly<Record<string, string>> = {},
+): Response {
+  return c.body(JSON.stringify(withRequestIdMember(body, c)), status, {
+    ...headers,
+    'content-type': PROBLEM_CONTENT_TYPE,
+  });
 }
 
 /**
@@ -321,11 +334,12 @@ export function refuse(
   detail: string,
   headers: Readonly<Record<string, string>> = {},
 ): Response {
-  const body = toProblem(substratError(code, detail), c.req.path);
-  return c.body(JSON.stringify(withRequestIdMember(body, c)), PROBLEM_CATALOG[code].status as ContentfulStatusCode, {
-    ...headers,
-    'content-type': PROBLEM_CONTENT_TYPE,
-  });
+  return serveProblem(
+    c,
+    PROBLEM_CATALOG[code].status as ContentfulStatusCode,
+    toProblem(substratError(code, detail), c.req.path),
+    headers,
+  );
 }
 
 /**
@@ -338,9 +352,5 @@ export function refuseStatus(
   detail: string,
   headers: Readonly<Record<string, string>> = {},
 ): Response {
-  const body = problemForStatus(status, detail, c.req.path);
-  return c.body(JSON.stringify(withRequestIdMember(body, c)), status, {
-    ...headers,
-    'content-type': PROBLEM_CONTENT_TYPE,
-  });
+  return serveProblem(c, status, problemForStatus(status, detail, c.req.path), headers);
 }
