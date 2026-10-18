@@ -34,7 +34,7 @@
  * checkout does not hold, a registration that does not load). Needs the build.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { migrationSteps } from '../packages/kernel/dist/index.js';
@@ -102,6 +102,11 @@ export function appendOnlyOffences(label: string, base: readonly LedgerRow[], he
   });
 }
 
+/** The package of every ledger in a `git ls-files` listing: `demos/todo/MIGRATIONS.md` → `demos/todo`. */
+export function ledgerPackages(listing: string): string[] {
+  return listing.split('\n').filter((p) => p.split('/').length === 3 && p.endsWith(`/${LEDGER}`)).map((p) => p.slice(0, -(LEDGER.length + 1)));
+}
+
 const git = (args: string[]): string => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
 async function main(): Promise<void> {
@@ -126,6 +131,8 @@ async function main(): Promise<void> {
       const label = path.slice(0, -(LEDGER.length + 1));
       const before = parseLedger(git(['show', `${base}:${path}`]));
       const headPackage = packages.find((p) => p.label === label);
+      // A package with no registrations here is either gone or has dropped `substrat.permissions`,
+      // which `lint:permissions` refuses on its own; `--check` refuses the ledger it left behind.
       if (!headPackage) {
         console.log(`migration-ledger: ${label} ships no registrations here any more; its ${before.length} migration(s) are not judged.`);
         continue;
@@ -146,14 +153,15 @@ async function main(): Promise<void> {
   }
 
   const drift: string[] = [];
-  const candidates = new Set([...packages.map((p) => p.label), ...emitted.keys()]);
+  const candidates = new Set([...packages.map((p) => p.label), ...emitted.keys(), ...ledgerPackages(git(['ls-files', '--', '*/*/' + LEDGER]))]);
   for (const label of [...candidates].sort()) {
     const path = join(label, LEDGER);
     const want = emitted.get(label)?.text;
     const have = existsSync(path) ? readFileSync(path, 'utf8') : undefined;
     if (want === have) continue;
-    if (check) drift.push(want === undefined ? `${path}: authors no migrations, but the ledger exists` : `${path}: ${have === undefined ? 'missing' : 'stale'}`);
+    if (check) drift.push(want === undefined ? `${path}: no package emits it (none authors migrations there any more)` : `${path}: ${have === undefined ? 'missing' : 'stale'}`);
     else if (want !== undefined) writeFileSync(path, want);
+    else rmSync(path);
   }
   if (check && drift.length > 0) {
     console.error(`migration-ledger: ${drift.length} ledger(s) out of step with the code:\n`);

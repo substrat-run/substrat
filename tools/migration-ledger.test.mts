@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { migrationDigest } from '../packages/kernel/dist/index.js';
-import { appendOnlyOffences, ledgerRows, parseLedger, renderLedger, type LedgerRow } from './migration-ledger.mts';
+import { appendOnlyOffences, ledgerPackages, ledgerRows, parseLedger, renderLedger, type LedgerRow } from './migration-ledger.mts';
 import type { Registration } from './package-registrations.mts';
 
 const row = (version: string, digest: string, module = 'notes'): LedgerRow => ({ module, version, digest });
@@ -63,4 +63,8 @@ test('a base the checkout does not hold is exit 2, in the ledger\'s own terms', 
   assert.equal(run.status, 2);
   assert.match(run.stderr, /no migration the base shipped would be compared/);
   assert.doesNotMatch(run.stderr, /export/);
+});
+
+test('every tracked ledger is a candidate, so one no package emits any more is caught as orphaned', () => {
+  assert.deepEqual(ledgerPackages('demos/todo/MIGRATIONS.md\nengines/x/MIGRATIONS.md\nMIGRATIONS.md\ndemos/todo/docs/MIGRATIONS.md\n'), ['demos/todo', 'engines/x']);
 });
