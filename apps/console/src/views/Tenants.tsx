@@ -33,7 +33,7 @@ export function Tenants({ api, tenants, scopes, entitlements, onOpen, onChanged,
   const [provenance, setProvenance] = useState<Provenance>('all');
   // Status facet: reaped tenants are tombstones (storage gone, slug burned), so the
   // default view leaves them out; 'all' brings them back.
-  const [statusFilter, setStatusFilter] = useState('live');
+  const [statusFilter, setStatusFilter] = useState('not-reaped');
   const [q, setQ] = useState('');
 
   const tenantName = useMemo(() => new Map(tenants.map((t) => [t.id, t.name])), [tenants]);
@@ -41,7 +41,7 @@ export function Tenants({ api, tenants, scopes, entitlements, onOpen, onChanged,
   const filtered = useMemo(
     () =>
       tenants.filter((t) => {
-        if (statusFilter === 'live' ? t.status === 'reaped' : statusFilter !== 'all' && t.status !== statusFilter) {
+        if (statusFilter === 'not-reaped' ? t.status === 'reaped' : statusFilter !== 'all' && t.status !== statusFilter) {
           return false;
         }
         const needle = q.trim().toLowerCase();
@@ -159,7 +159,7 @@ export function Tenants({ api, tenants, scopes, entitlements, onOpen, onChanged,
         />
         <Select
           options={[
-            { value: 'live', label: `Hide reaped (${tenants.length - reapedCount})` },
+            { value: 'not-reaped', label: `Hide reaped (${tenants.length - reapedCount})` },
             { value: 'all', label: `All statuses (${tenants.length})` },
             { value: 'active', label: 'Active' },
             { value: 'suspended', label: 'Suspended' },
@@ -170,13 +170,14 @@ export function Tenants({ api, tenants, scopes, entitlements, onOpen, onChanged,
           onChange={(e) => setStatusFilter(e.target.value)}
           style={{ width: 190 }}
         />
-        {(q !== '' || statusFilter !== 'live') && (
+        {(q !== '' || statusFilter !== 'not-reaped' || provenance !== 'all') && (
           <Button
             variant="ghost"
             size="sm"
             onClick={() => {
               setQ('');
-              setStatusFilter('live');
+              setStatusFilter('not-reaped');
+              setProvenance('all');
             }}
           >
             Clear filters
@@ -189,7 +190,13 @@ export function Tenants({ api, tenants, scopes, entitlements, onOpen, onChanged,
           columns={columns}
           rows={paged.rows}
           onRowClick={(t) => onOpen(t.id)}
-          emptyText={tenants.length === 0 ? 'No tenants yet.' : 'No tenants match this filter.'}
+          emptyText={
+            tenants.length === 0
+              ? 'No tenants yet.'
+              : provenance === 'provisioned' && q === '' && statusFilter === 'not-reaped'
+                ? 'No provisioned tenants.'
+                : 'No tenants match this filter.'
+          }
         />
         <Pager p={paged} />
       </Card>

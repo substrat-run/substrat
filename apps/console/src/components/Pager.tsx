@@ -15,6 +15,13 @@ export interface Paged<T> {
   setPage: (n: number) => void;
 }
 
+/** The page arithmetic: the page count, and the requested index clamped into range. */
+export function pageWindow(total: number, pageSize: number, pageIndex: number) {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.max(0, Math.min(pageIndex, pageCount - 1));
+  return { pageCount, page, start: page * pageSize };
+}
+
 /**
  * Client-side paging over an already-filtered list. Resets to the first page when
  * `resetKey` changes (a filter or search edit can shrink the result below the current
@@ -25,9 +32,7 @@ export function usePaged<T>(items: T[], resetKey: string): Paged<T> {
   const [pageIndex, setPage] = useState(0);
   useEffect(() => setPage(0), [resetKey, pageSize]);
   const total = items.length;
-  const pageCount = Math.max(1, Math.ceil(total / pageSize));
-  const page = Math.min(pageIndex, pageCount - 1);
-  const start = page * pageSize;
+  const { pageCount, page, start } = pageWindow(total, pageSize, pageIndex);
   return {
     rows: items.slice(start, start + pageSize),
     total,

@@ -4,7 +4,6 @@ import { Badge, Button, Card, Dialog, Input, Pager, Select, Table, Tag, usePaged
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
 import type { Api } from '../lib/api';
-import { usePagedList } from '../lib/use-paged-list';
 import { VerticalDetail } from './VerticalDetail';
 
 /**
@@ -27,21 +26,26 @@ export interface VerticalsProps {
 }
 
 export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToast }: VerticalsProps) {
-  // Bumped after every mutation — the paged list's refresh signal (the hook re-reads the
-  // loaded window, so a flag flip on page 3 still shows) and the detail-resolve
-  // dependency, so a mutation in the detail re-reads the row it drilled into.
+  // Bumped after every mutation — re-walks the registry so a flag flip anywhere still
+  // shows, and re-resolves the detail the operator drilled into.
   const [refresh, setRefresh] = useState(0);
-  const verticalsPage = usePagedList(
-    (p) => api.listVerticals(p),
-    [api, refresh],
-    (e) => onToast('Failed to load verticals', e.message, 'danger'),
-  );
-  // The registry is small: walk it to the end so search and paging see every row, the
-  // same as the Scopes table (which filters the whole walked fleet).
+  // The registry is small: walked to the end, like Tenants, Domains and App do, so search,
+  // paging and the deep-link resolve all see every row.
+  const [verticals, setVerticals] = useState<Vertical[]>([]);
   useEffect(() => {
-    if (verticalsPage.nextCursor) void verticalsPage.loadMore();
-  }, [verticalsPage.nextCursor]); // eslint-disable-line react-hooks/exhaustive-deps
-  const verticals = verticalsPage.entries;
+    let cancelled = false;
+    void walkAll((p) => api.listVerticals(p))
+      .then((all) => {
+        if (!cancelled) setVerticals(all);
+      })
+      .catch((e: Error) => {
+        if (!cancelled) onToast('Failed to load verticals', e.message, 'danger');
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- onToast is a fresh closure per render
+  }, [api, refresh]);
   const [q, setQ] = useState('');
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -50,31 +54,11 @@ export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToa
   }, [verticals, q]);
   const paged = usePaged(filtered, q);
 
-  // The opened vertical, resolved from the loaded window. A deep link may target a slug
-  // outside the first page — walk the registry once to find it (it is small).
-  const [resolved, setResolved] = useState<Vertical | undefined>();
-  useEffect(() => {
-    if (!openSlug) {
-      setResolved(undefined);
-      return;
-    }
-    const inWindow = verticals.find((v) => v.slug === openSlug);
-    if (inWindow) {
-      setResolved(inWindow);
-      return;
-    }
-    let cancelled = false;
-    void walkAll((p) => api.listVerticals(p))
-      .then((all) => {
-        if (!cancelled) setResolved(all.find((v) => v.slug === openSlug));
-      })
-      .catch(() => {
-        if (!cancelled) setResolved(undefined);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [openSlug, verticals, api, refresh]);
+  // The opened vertical, resolved from the walked registry.
+  const resolved = useMemo(
+    () => (openSlug ? verticals.find((v) => v.slug === openSlug) : undefined),
+    [openSlug, verticals],
+  );
 
   const [showRegister, setShowRegister] = useState(false);
   const [reg, setReg] = useState<{ slug: string; name: string; source: VerticalSource }>({

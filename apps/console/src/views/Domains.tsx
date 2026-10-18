@@ -242,7 +242,7 @@ export function Domains({ api, scopes, tenants, hostnames, onChanged, onToast }:
         <Select
           options={[
             { value: 'all', label: 'All statuses' },
-            ...(Object.keys(STATUS_TONE) as HostnameStatus[]).map((v) => ({ value: v, label: v })),
+            ...(Object.keys(STATUS_TONE) as HostnameStatus[]).map((v) => ({ value: v, label: v[0]!.toUpperCase() + v.slice(1) })),
           ]}
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
