@@ -4,8 +4,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { STORE_RELEASE_MAX_BYTES, STORE_RELEASE_MAX_MODULES, storeDriverReleaseUpload } from '@substrat-run/contracts';
-import { isReleaseSha, packedFilesOf, packStoreDriverDir, sourceCommitOf, storeDriverStatusLines } from '../src/store-driver.js';
+import { STORE_RELEASE_MAX_BYTES, STORE_RELEASE_MAX_MODULES, storeDriverReleaseDigest, storeDriverReleaseUpload } from '@substrat-run/contracts';
+import {
+  INSTALLER_MARKERS,
+  isReleaseSha,
+  packedFilesOf,
+  packStoreDriverDir,
+  skippedInstallerMarkersOf,
+  sourceCommitOf,
+  storeDriverPackLines,
+  storeDriverStatusLines,
+} from '../src/store-driver.js';
 
 const COMMIT = 'a'.repeat(40);
 
@@ -72,7 +81,8 @@ describe('packStoreDriverDir (#2300)', () => {
       [{ 'driver_graph/store.py': '', 'python_modules/pyodide/ffi.py': '' }, /pyodide/],
       [{ 'driver_graph/store.py': '', 'python_modules/_workers_sdk_patch_loader.py': '' }, /_workers_sdk/],
       [{ 'driver_graph/store.py': '', 'python_modules/pkg/extra.pth': '' }, /\.pth/],
-      [{ 'driver_graph/store.py': '', 'python_modules/pyvenv.cfg': '' }, /pyvenv\.cfg/],
+      // Only the installer's own markers, where it writes them, are skipped: anywhere else they are refused.
+      [{ 'driver_graph/store.py': '', 'python_modules/pkg/pyvenv.cfg': '' }, /pyvenv\.cfg/],
       [{ 'driver_graph/store.py': '', 'python_modules/pkg/marker.synced': '' }, /\.synced/],
     ];
     for (const [files, refusal] of cases) {
@@ -90,6 +100,50 @@ describe('packStoreDriverDir (#2300)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("skips pywrangler's two markers and names them, while its runtime SDK is still refused (#2391)", () => {
+    const synced = {
+      'driver_graph/store.py': 'class Store:\n    pass\n',
+      'python_modules/.synced': '1.17.7',
+      'python_modules/pyvenv.cfg': '',
+      'python_modules/six.py': 'X = 6\n',
+    };
+    const dir = driverDir(synced);
+    try {
+      expect(INSTALLER_MARKERS).toEqual(['python_modules/.synced', 'python_modules/pyvenv.cfg']);
+      expect(packedFilesOf(dir)).toEqual(['driver_graph/store.py', 'python_modules/six.py']);
+      expect(skippedInstallerMarkersOf(dir)).toEqual(['python_modules/.synced', 'python_modules/pyvenv.cfg']);
+      expect(packStoreDriverDir(dir, 'driver_graph/store.py', COMMIT).modules.map((m) => m.name)).toEqual(['driver_graph/store.py', 'python_modules/six.py']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    // Twin: without the markers, nothing is said to be skipped.
+    const clean = driverDir({ 'driver_graph/store.py': '', 'python_modules/six.py': '' });
+    try {
+      expect(skippedInstallerMarkersOf(clean)).toEqual([]);
+    } finally {
+      rmSync(clean, { recursive: true, force: true });
+    }
+    // The SDK a sync installs beside them is refused loudly, never dropped.
+    for (const sdk of ['python_modules/workers/__init__.py', 'python_modules/asgi.py', 'python_modules/_workers_sdk_patch_loader.pth', 'python_modules/workers_runtime_sdk-1.9.3.dist-info/METADATA']) {
+      const withSdk = driverDir({ ...synced, [sdk]: '' });
+      try {
+        expect(() => packStoreDriverDir(withSdk, 'driver_graph/store.py', COMMIT), sdk).toThrow(/may not ship/);
+      } finally {
+        rmSync(withSdk, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('says the vendored bytes are vouched for by the sha256 only, pinned or not, and names what it skipped', () => {
+    const sha = 'c'.repeat(64);
+    expect(storeDriverPackLines({ files: ['driver_graph/store.py', 'python_modules/six.py', 'python_modules/a/b.py'], skipped: ['python_modules/.synced'], sha256: sha, sourceCommit: COMMIT })).toEqual([
+      "  skipped the installer's markers: python_modules/.synced",
+      `  python_modules/: 2 file(s) vouched for by sha256 ${sha} only, not by commit ${COMMIT}; the commit vouches for the driver package and the pyproject/lock it was installed from`,
+    ]);
+    // Twin: a release of the driver package alone is the commit, and says nothing more.
+    expect(storeDriverPackLines({ files: ['driver_graph/store.py'], skipped: [], sha256: sha, sourceCommit: COMMIT })).toEqual([]);
   });
 
   it('refuses a release over the module count, at the walk and with the release limit, or the byte cap', () => {
@@ -163,8 +217,59 @@ describe('the files a release packs, and the commit they are (#2300)', () => {
       // An untracked one, likewise.
       writeFileSync(join(dir, 'driver_graph/new.py'), 'Y = 1\n');
       expect(() => sourceCommitOf(dir, driverOnly(packedFilesOf(dir)))).toThrow(/new\.py is not committed/);
+      rmSync(join(dir, 'driver_graph/new.py'));
+      // A deleted one: it is not packed, and the commit still has it.
+      rmSync(join(dir, 'driver_graph/store.py'));
+      expect(() => sourceCommitOf(dir, driverOnly(packedFilesOf(dir)))).toThrow(/uncommitted changes/);
+      git('checkout', '--', 'driver_graph/store.py');
+      expect(sourceCommitOf(dir, driverOnly(packedFilesOf(dir)))).toBe(head);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not hold python_modules to the commit: the sha256 vouches for those bytes (#2391)', async () => {
+    // The checkout's root holds .git; --dir is the src/ beside it, as a pywrangler project lays it out.
+    const root = driverDir({ 'src/driver_graph/store.py': 'class Store:\n    pass\n', '.gitignore': 'python_modules/\n' });
+    const dir = join(root, 'src');
+    const git = (...args: string[]) => {
+      const run = spawnSync('git', ['-C', root, '-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args], { encoding: 'utf8' });
+      if (run.status !== 0) throw new Error(run.stderr);
+      return run.stdout.trim();
+    };
+    const digestOf = (body: ReturnType<typeof packStoreDriverDir>) =>
+      storeDriverReleaseDigest({ entry: body.entry, modules: body.modules.map((m) => ({ name: m.name, content: Uint8Array.from(atob(m.contentBase64), (c) => c.charCodeAt(0)) })) });
+    try {
+      git('init', '-q');
+      git('add', '.');
+      git('commit', '-qm', 'driver');
+      const head = git('rev-parse', 'HEAD');
+      // An ignored install, the markers it writes included, is packed and is not asked to be the commit.
+      mkdirSync(join(dir, 'python_modules/vendor_probe'), { recursive: true });
+      writeFileSync(join(dir, 'python_modules/vendor_probe/__init__.py'), 'V = 1\n');
+      writeFileSync(join(dir, 'python_modules/.synced'), '1.17.7');
+      writeFileSync(join(dir, 'python_modules/pyvenv.cfg'), '');
+      expect(sourceCommitOf(dir, packedFilesOf(dir))).toBe(head);
+      // The driver package is still held to it: an untracked driver file beside the install is refused.
+      writeFileSync(join(dir, 'driver_graph/new.py'), 'Y = 1\n');
+      expect(() => sourceCommitOf(dir, packedFilesOf(dir))).toThrow(/driver_graph\/new\.py is not committed/);
+      rmSync(join(dir, 'driver_graph/new.py'));
+      // A vendored file that IS tracked, then edited, does not refuse either, and is not silently
+      // the commit's bytes: the pack carries the edit, and the sha256 names it.
+      git('add', '-f', 'src/python_modules/vendor_probe/__init__.py');
+      git('commit', '-qm', 'vendor');
+      const vendoredHead = git('rev-parse', 'HEAD');
+      const committed = await digestOf(packStoreDriverDir(dir, 'driver_graph/store.py', vendoredHead));
+      writeFileSync(join(dir, 'python_modules/vendor_probe/__init__.py'), 'V = 2\n');
+      expect(sourceCommitOf(dir, packedFilesOf(dir))).toBe(vendoredHead);
+      const edited = packStoreDriverDir(dir, 'driver_graph/store.py', vendoredHead);
+      expect(atob(edited.modules.find((m) => m.name === 'python_modules/vendor_probe/__init__.py')!.contentBase64)).toBe('V = 2\n');
+      expect(await digestOf(edited)).not.toBe(committed);
+      // Twin: the same edit to a driver file is refused.
+      writeFileSync(join(dir, 'driver_graph/store.py'), 'class Store:\n    v = 2\n');
+      expect(() => sourceCommitOf(dir, packedFilesOf(dir))).toThrow(/uncommitted changes/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

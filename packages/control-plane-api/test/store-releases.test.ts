@@ -1176,6 +1176,8 @@ describe('a Python release may carry python_modules (#2390)', () => {
     ['a path file', 'python_modules/pkg/extra.pth'],
     ['pyvenv.cfg', 'python_modules/pyvenv.cfg'],
     ['a sync marker', 'python_modules/pkg/marker.synced'],
+    // The CLI skips these two where pywrangler writes them; the upload refuses them all the same.
+    ["the installer's sync marker", 'python_modules/.synced'],
     ['the runtime SDK', 'python_modules/_workers_sdk_patch_loader.py'],
   ])('refuses %s', (_label, name) => {
     expect(() => decodeStoreDriverRelease(body([py('driver_graph/store.py'), py(name)]))).toThrow(ControlPlaneError);

@@ -42,7 +42,7 @@ import { printVersions } from './versions.js';
 import { checkOutboundDeclared } from './outbound-scan.js';
 import { exportBreakLines, parseReviewToken, promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
-import { isReleaseSha, packedFilesOf, packStoreDriverDir, rebuildStoreDriver, rollBackStoreDriver, sourceCommitOf, rollOutStoreDriver, storeDriverRebuildLines, storeDriverStatus, storeDriverStatusLines, uploadStoreDriverRelease } from './store-driver.js';
+import { isReleaseSha, packedFilesOf, packStoreDriverDir, rebuildStoreDriver, rollBackStoreDriver, skippedInstallerMarkersOf, sourceCommitOf, rollOutStoreDriver, storeDriverPackLines, storeDriverRebuildLines, storeDriverStatus, storeDriverStatusLines, uploadStoreDriverRelease } from './store-driver.js';
 import { fetchWhoami } from './whoami.js';
 import { planeFor } from './plane.js';
 import { dataLossCheckRequired, formatDataLossCheck } from './data-loss-check.js';
@@ -741,9 +741,11 @@ async function cmdStoreDriver(): Promise<void> {
       for (const line of STORE_DRIVER_USAGE) console.error(line);
       process.exit(1);
     }
-    const body = packStoreDriverDir(dir, entry, flag('commit') ?? sourceCommitOf(dir, packedFilesOf(dir)));
+    const files = packedFilesOf(dir);
+    const body = packStoreDriverDir(dir, entry, flag('commit') ?? sourceCommitOf(dir, files));
     const { release, pinned } = await uploadStoreDriverRelease({ ...plane, body });
     console.log(`✓ stored ${driver} ${release.sha256} (commit ${release.sourceCommit})`);
+    for (const line of storeDriverPackLines({ files, skipped: skippedInstallerMarkersOf(dir), sha256: release.sha256, sourceCommit: release.sourceCommit })) console.log(line);
     console.log(pinned ? '  pinned: roll it out with `substrat store-driver rollout`' : '  not pinned yet: it runs once a reviewed change pins this sha256 and commit');
     return;
   }

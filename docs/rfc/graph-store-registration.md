@@ -74,7 +74,9 @@ searchDataInstances
   claimed to be met.
 - The release is one `driver_` package plus `python_modules/<path>` for its
   dependencies. It does not ship `workers`, `js`, `pyodide` or the workers
-  runtime SDK. Three files in the pin are refused since #2391's deny table:
+  runtime SDK. The current rule also refuses a vendored path that takes the
+  driver's or the entry's name, a standard-library name or the rest of the
+  runtime's glue. Three files in the pin are refused since #2391's deny table:
   `python_modules/asgi.py`, `python_modules/_cloudflare_compat_flags.pyi` and
   `python_modules/_pyodide_entrypoint_helper.pyi`. The release must be repacked
   without them, and the new digest pinned, before this registration merges.
