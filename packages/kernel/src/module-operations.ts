@@ -188,14 +188,43 @@ type Exact<Ops, H> = { readonly [K in Exclude<keyof H, keyof Ops>]: never } & ([
 export function operationsFor<const Ops extends Record<string, object>>(declaration: Ops) {
   return <const H extends OperationImpl<Ops, OperationContext>>(
     handlers: H & Exact<Omit<Ops, DerivedKeys<Ops>>, H>,
-  ): { operations: BoundOperations<H> } => ({
-    operations: new BoundOperations<H>(MINT, withDerivedHandlers(declaration, handlers), {
+  ): { operations: BoundOperations<H> } => {
+    const operations = new BoundOperations<H>(MINT, withDerivedHandlers(declaration, handlers), {
       inputs: operationInputsOf(declaration),
       concurrency: operationConcurrencyOf(declaration),
       idempotencyOptOuts: operationIdempotencyOptOutsOf(declaration),
-    }),
-  });
+    });
+    CHECK_EXEMPT.set(operations, checkExemptOf(declaration));
+    return { operations };
+  };
 }
+
+/**
+ * #2387: the operations the host does not expect to call `ctx.check` — the derived ones, whose
+ * handler the kernel wrote check included, and the ones that declare `narrows.unchecked` with a
+ * reason. Module-private and keyed by the value's identity, like the declared surface contracts
+ * records for an inputs map: nothing on the value carries it, so a copy has none.
+ */
+const CHECK_EXEMPT = new WeakMap<object, ReadonlySet<string>>();
+
+function checkExemptOf(declaration: Readonly<Record<string, object>>): ReadonlySet<string> {
+  const exempt = new Set<string>();
+  for (const [name, op] of Object.entries(declaration)) {
+    const decl = op as { derive?: unknown; narrows?: { unchecked?: unknown } };
+    if (decl.derive !== undefined || decl.narrows?.unchecked === true) exempt.add(name);
+  }
+  return exempt;
+}
+
+/**
+ * The operations of a bound value the host does not expect to check (#2387). Empty for
+ * `undeclaredOperations` and the test seam, which carry no declaration to read an exception from.
+ */
+export function checkExemptOperationsOf(operations: BoundOperations | undefined): ReadonlySet<string> {
+  return (operations && CHECK_EXEMPT.get(operations)) ?? EMPTY;
+}
+
+const EMPTY: ReadonlySet<string> = new Set();
 
 /**
  * The authored handlers, plus one written from each `derive` declaration's plan (#1773).

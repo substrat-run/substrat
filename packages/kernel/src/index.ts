@@ -182,11 +182,19 @@ export {
 } from './scope-host.js';
 export {
   assertBoundOperations,
+  checkExemptOperationsOf,
   operationsFor,
   undeclaredOperations,
   type BoundOperations,
   type HandlerMap,
 } from './module-operations.js';
+export {
+  countChecks,
+  noteUncheckedCompletion,
+  UNCHECKED_OPERATION_FINDING,
+  UNCHECKED_OPERATION_TEMPLATE,
+  type CheckTally,
+} from './check-tally.js';
 export {
   isSecretBoxConfigured,
   SecretBoxUnconfiguredError,
