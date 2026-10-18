@@ -327,7 +327,7 @@ describe('the declared checks travel with the handlers (#2384)', () => {
     });
     // Frozen to the leaf, like the other derived maps: a moved key cannot be written in after binding.
     expect(() => Object.assign(operations.checks!['notes/rename']!, { permission: 'other:key' })).toThrow(TypeError);
-    expect(() => (operations.checks!['notes/mine'] as { narrows: { checks: string[] } }).narrows.checks.push('x')).toThrow(TypeError);
+    expect(() => (operations.checks!['notes/mine'] as unknown as { narrows: { checks: string[] } }).narrows.checks.push('x')).toThrow(TypeError);
   });
 
   it('its twin: an undeclared module carries an EMPTY map — nothing declared, which is not the same as not carried', () => {
