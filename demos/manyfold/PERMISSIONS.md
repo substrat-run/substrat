@@ -41,7 +41,39 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `content:read` | `admin`, `author`, `editor`, `publisher`, `viewer` |
 | `content:review` | `admin`, `editor`, `publisher` |
 
-## 4. Not covered by this artifact
+## 4. Operations — which key each checks
+
+The check each registered operation DECLARES it opens with, and what it narrows to. A
+proof walk lists this module's keys only; a composed engine's key it reaches is declared by
+the engine. "Checked in code, not declared" is an operation whose handler makes its own check
+with nothing declared, so no artifact can name its key. Who holds a key is §3 and the grant
+shapes.
+
+| Operation | Key | Checked on | Declared by |
+| --- | --- | --- | --- |
+| `manyfold/approve` | `content:review` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/archive` | `content:publish` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/archive-site` | `content:manage-sites` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/create-entry` | `content:author` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/delete-type` | `content:admin` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/deliver` | `content:read` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/get-entry` | `content:read` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/list-delivery` | `content:read` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/list-entries` | `content:read` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/list-types` | `content:read` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/publish` | `content:publish` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/reject` | `content:review` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/request-site` | `content:manage-sites` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/restore-revision` | `content:author` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/review-queue` | `content:review` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/save-draft` | `content:author` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/save-type` | `content:admin` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/submit-for-review` | `content:author` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/timeline` | `content:read` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/unpublish` | `content:publish` | the scope | `@substrat-run/demo-manyfold` |
+| `manyfold/whoami` | `content:read` | the scope | `@substrat-run/demo-manyfold` |
+
+## 5. Not covered by this artifact
 
 - **The grants themselves** — per-principal, per-entity, minted at runtime with
   random ULIDs. Only their shapes above are representable deterministically.

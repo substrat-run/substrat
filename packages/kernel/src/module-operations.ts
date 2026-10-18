@@ -122,7 +122,7 @@ export class BoundOperations<H = HandlerMap> {
       );
     }
     if (derived.idempotencyOptOuts !== undefined) this.idempotencyOptOuts = Object.freeze([...derived.idempotencyOptOuts]);
-    if (derived.checks !== undefined) this.checks = deepFreeze(structuredClone(derived.checks));
+    if (derived.checks !== undefined) this.checks = deepFreeze(derived.checks);
     Object.freeze(this);
   }
 

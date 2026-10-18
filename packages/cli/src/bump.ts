@@ -704,6 +704,11 @@ export interface PermissionSnapshot {
   readonly grantShapes: Record<string, { keys: string[]; terms: string[] }>;
   /** Scheduled operation → the keys its system principal holds, then the remaining cells. */
   readonly schedules: Record<string, { keys: string[]; terms: string[] }>;
+  /**
+   * Operation → the key it declares it checks, then how it narrows and who declares it (#2384).
+   * `undefined` when the artifact has no Operations section: an emitter that predates it.
+   */
+  operations?: Record<string, { keys: string[]; terms: string[] }>;
   /** Sections this parser does not read, by heading, with their text: judged whole. */
   readonly unread: Record<string, string>;
 }
@@ -740,7 +745,7 @@ export function parsePermissions(text: string): PermissionSnapshot {
     grantShapes: {} as Record<string, { keys: string[]; terms: string[] }>,
     schedules: {} as Record<string, { keys: string[]; terms: string[] }>,
     unread: {} as Record<string, string>,
-  };
+  } as PermissionSnapshot;
   const sections = text.split(/^## /m).slice(1);
   for (const section of sections) {
     const nl = section.indexOf('\n');
@@ -758,6 +763,12 @@ export function parsePermissions(text: string): PermissionSnapshot {
       for (const cells of rowsOf(section)) {
         snap.schedules[firstKey(cells)] = { keys: codesIn(cells[cells.length - 1] ?? ''), terms: cells.slice(0, -1) };
       }
+    } else if (/^Operations\b/.test(heading)) {
+      // | Operation | Key | Checked on | Declared by | — the key cell's prose ("checked in code,
+      // not declared") is a term, so an operation losing its declaration is still a change.
+      const ops: Record<string, { keys: string[]; terms: string[] }> = {};
+      for (const cells of rowsOf(section)) ops[firstKey(cells)] = { keys: codesIn(cells[1] ?? ''), terms: cells.slice(1) };
+      snap.operations = ops;
     } else if (!DERIVED_SECTIONS.some((re) => re.test(heading))) {
       snap.unread[heading] = section.slice(nl === -1 ? section.length : nl).trim();
     }
@@ -805,6 +816,27 @@ export function classifyPermissions(baseText: string | null, headText: string | 
         flag(`${what} ${name}`, 'its terms changed (how it is given, bound or scheduled)');
       }
     }
+  }
+
+  // #2384: which key each operation checks. An operation moved to another key, or checked on
+  // something else, is a permission change the checkpoint reads — never an unread section.
+  if (b.operations && h.operations) {
+    keyed(b.operations, h.operations, {
+      removed: (op, o) => flag(`operation ${op}`, `removed (checked: ${o.keys.join(', ') || 'no declared key'})`),
+      added: (op, o) => flag(`operation ${op}`, `added (checks: ${o.keys.join(', ') || 'no declared key'})`),
+      both: (op, bo, ho) => {
+        if (canon(bo.keys, false) !== canon(ho.keys, false)) {
+          flag(`operation ${op}`, `now checks ${ho.keys.join(', ') || 'no declared key'} (was ${bo.keys.join(', ') || 'no declared key'})`);
+        } else if (canon(bo.terms, false) !== canon(ho.terms, false)) {
+          flag(`operation ${op}`, 'its check changed (what it narrows to, or whether it is declared)');
+        }
+      },
+    });
+  } else if (h.operations) {
+    // The base's emitter had no such section: nothing to compare, and nothing about an operation moved.
+    push('patch', 'operations', 'section added — the artifact now names the key each operation checks');
+  } else if (b.operations) {
+    push('major', 'operations', 'section removed — which key each operation checks can no longer be compared', true);
   }
 
   for (const heading of [...new Set([...Object.keys(b.unread), ...Object.keys(h.unread)])].sort()) {
