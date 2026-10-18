@@ -97,7 +97,10 @@ function readCursor(cursor: string): { ms: number; id: string } {
 
 /**
  * One page of a query. The cursor is a keyset (the last request's position, not an offset),
- * so a request arriving mid-walk shifts nothing.
+ * so a NEW request arriving mid-walk shifts nothing. A re-recorded one is different: requests
+ * are deduplicated by `invocationId`, last record wins, so a re-record that moves `startedAt`
+ * across the cursor during a walk can be skipped or seen twice. That is inherent to keyset
+ * paging over a moving key; a reader that must not miss one re-reads it by id.
  */
 export function pageOf(heads: Iterable<TraceHead>, query: RequestQuery): RequestPage {
   assertQuery(query);

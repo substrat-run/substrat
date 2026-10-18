@@ -35,7 +35,9 @@ export interface ConsoleDataSource {
   /**
    * Present exactly when `capabilities.tail` is declared. Calls `listener` with each request
    * that finishes inside the query's filters after the call (the window is ignored: a tail is
-   * open-ended), until the returned function is called.
+   * open-ended), until the returned function is called. A re-recorded request is delivered
+   * again under the same `invocationId`: a listener that keeps a list replaces by id rather
+   * than appending, the same last-record-wins rule the reads follow.
    */
   tail?(query: Omit<RequestQuery, 'from' | 'to' | 'cursor' | 'limit'>, listener: (request: TraceHead) => void): () => void;
 }
