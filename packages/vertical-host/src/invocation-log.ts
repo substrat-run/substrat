@@ -65,7 +65,7 @@ import {
   parentRequestIdOf,
   REQUEST_ID_HEADER,
 } from '@substrat-run/contracts/invocation-record';
-import { installedTraceSink } from '@substrat-run/contracts/trace-sink';
+import { forgetTraceStart, installedTraceSink, markTraceStart } from '@substrat-run/contracts/trace-sink';
 import type { EmittedReport, ScopeStoreStubOptions } from '@substrat-run/kernel';
 import {
   invocationLine,
@@ -461,6 +461,9 @@ export function fieldCoverageArmed(request: object): boolean {
 
 function beginStamp<Env>(request: { headers: HeaderReader }, env: Env, options: InvocationLogOptions<Env>): InvocationStamp {
   const stamp: InvocationStamp = { invocationId: ulid(), record: {} };
+  // #2358: the request's zero on the trace's shared time axis. Every step the scope host records
+  // counts from here, so an outbound call recorded below and a check recorded there agree.
+  if (installedTraceSink()) markTraceStart(stamp.invocationId);
   const fieldCoverageId = armedFieldCoverageId(request.headers, env, options);
   if (fieldCoverageId) stamp.fieldCoverageId = fieldCoverageId;
   stamps().set(request, stamp);
@@ -578,6 +581,8 @@ function traceRequest<Env>(stamp: InvocationStamp, done: Finished<Env>): void {
       eventTypes: line.eventTypes,
       entities: line.entities,
       versionId: line.versionId,
+      // Calls the record kept no room for: a truncated list must read as truncated.
+      ...(record.outboundCallsDropped ? { stepsDropped: record.outboundCallsDropped } : {}),
     });
     for (const call of record.outboundCalls ?? []) {
       sink.step(invocationId, {
@@ -589,9 +594,11 @@ function traceRequest<Env>(stamp: InvocationStamp, done: Finished<Env>): void {
         method: call.method,
         status: call.status,
         outcome: call.outcome,
+        ...(call.reason ? { reason: call.reason } : {}),
       });
     }
     sink.end(invocationId);
+    forgetTraceStart(invocationId);
   } catch {
     /* a trace is a convenience; the request it describes is already answered */
   }

@@ -839,6 +839,50 @@ describe('the request trace the middleware hands a sink (#2358)', () => {
     }
   });
 
+  it('forwards each outbound call with its failure class, and says how many the record had no room for', async () => {
+    const got = collect();
+    try {
+      const app = new Hono();
+      app.use('*', invocationLog({ allowUnsigned: () => true }));
+      app.get('/x', (c) => {
+        const record = c.get(INVOCATION_RECORD_KEY as never) as InvocationRecord;
+        record.outboundCalls = [
+          { host: 'hooks.example', path: '/notify', method: 'POST', status: null, outcome: 'failed', durationMs: 3, atMs: 5, reason: 'TypeError' },
+        ];
+        record.outboundCallsDropped = 2;
+        return c.text('ok');
+      });
+      const id = (await app.request('/x')).headers.get('x-substrat-request-id')!;
+      expect(got.heads[id]).toMatchObject({ stepsDropped: 2 });
+      expect(got.steps[id]).toEqual([
+        expect.objectContaining({ type: 'outbound', host: 'hooks.example', outcome: 'failed', reason: 'TypeError', atMs: 5 }),
+      ]);
+    } finally {
+      delete slots[KEY];
+    }
+  });
+
+  it('marks the request start on the shared axis and releases it when the trace ends', async () => {
+    collect();
+    const starts = (globalThis as Record<symbol, Map<string, number> | undefined>)[Symbol.for('substrat.trace-starts')];
+    let seenDuring: boolean | undefined;
+    try {
+      const app = new Hono();
+      app.use('*', invocationLog({ allowUnsigned: () => true }));
+      app.get('/x', (c) => {
+        const id = c.get('substratInvocationId' as never) as string;
+        seenDuring = (globalThis as Record<symbol, Map<string, number> | undefined>)[Symbol.for('substrat.trace-starts')]?.has(id);
+        return c.text('ok');
+      });
+      const id = (await app.request('/x')).headers.get('x-substrat-request-id')!;
+      expect(seenDuring).toBe(true);
+      expect((globalThis as Record<symbol, Map<string, number> | undefined>)[Symbol.for('substrat.trace-starts')]?.has(id)).toBe(false);
+      void starts;
+    } finally {
+      delete slots[KEY];
+    }
+  });
+
   it('answers as before when no sink is installed', async () => {
     const lines = capture();
     try {

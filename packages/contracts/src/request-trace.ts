@@ -71,6 +71,7 @@ export const traceOutboundStep = z.object({
   method: z.string(),
   status: z.number().int().nullable(),
   outcome: z.string(),
+  reason: z.string().optional(),
 });
 
 export const traceStoreStep = z.object({

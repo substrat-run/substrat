@@ -12,7 +12,9 @@
  * role table and the checker's own `holdings`, the same sources a console would read.
  */
 import {
+  forgetTraceStart,
   installedTraceSink,
+  traceOffsetMs,
   type EntityRef,
   type RelationTuple,
   type TraceHeadPatch,
@@ -25,27 +27,24 @@ export type TraceStepInput = TraceStep extends infer S ? (S extends TraceStep ? 
 
 /** One invocation's handle on the installed sink. */
 export interface InvocationTrace {
+  /** Whether the sink asked for the values bound to a statement. */
+  readonly sqlParams: boolean;
   step(step: TraceStepInput): void;
   head(patch: TraceHeadPatch): void;
   /** Milliseconds on the same clock a step's `atMs` reads, for timing a span. */
   now(): number;
 }
 
-/** Where each live invocation started, so a consumer's steps share the request's time axis. */
-const starts = new Map<string, number>();
-
 const clock = (): number => performance.now();
 
-/** The handle for an invocation, or `undefined` when tracing is off or the call has no id. */
+/**
+ * The handle for an invocation, or `undefined` when tracing is off or the call has no id.
+ * Steps are stamped on the time axis the request layer started (`traceOffsetMs`), so a check
+ * here and an outbound call there sort in the order they happened.
+ */
 export function invocationTrace(invocationId: string | null | undefined): InvocationTrace | undefined {
   const sink = installedTraceSink();
   if (!sink || !invocationId) return undefined;
-  let start = starts.get(invocationId);
-  if (start === undefined) {
-    start = clock();
-    starts.set(invocationId, start);
-  }
-  const t0 = start;
   const guard = (fn: () => void): void => {
     try {
       fn();
@@ -54,16 +53,17 @@ export function invocationTrace(invocationId: string | null | undefined): Invoca
     }
   };
   return {
+    sqlParams: sink.capture?.sqlParams === true,
     step: (step) =>
-      guard(() => sink.step(invocationId, { ...step, atMs: Math.max(0, Math.round(clock() - t0)) } as TraceStep)),
+      guard(() => sink.step(invocationId, { ...step, atMs: traceOffsetMs(invocationId) } as TraceStep)),
     head: (patch) => guard(() => sink.head(invocationId, patch)),
     now: clock,
   };
 }
 
-/** The invocation is over on this host: forget its start. (The sink's `end` is the HTTP layer's.) */
+/** The invocation is over on this host: release its start. (The sink's `end` is the HTTP layer's.) */
 export function forgetInvocationTrace(invocationId: string | null | undefined): void {
-  if (invocationId) starts.delete(invocationId);
+  if (invocationId) forgetTraceStart(invocationId);
 }
 
 export const entityString = (entity: EntityRef | undefined | null): string | null =>
@@ -101,7 +101,8 @@ export function tracedSql(
       type: 'sql' as const,
       operation,
       statement: redactText(statement),
-      params: redactValue([...params]),
+      // Only what the sink asked for: a bound value is as likely a person's data as an id.
+      ...(trace.sqlParams ? { params: redactValue([...params]) } : {}),
       durationMs: Math.max(0, Math.round(trace.now() - started)),
       ...(error === undefined ? {} : { error }),
     });

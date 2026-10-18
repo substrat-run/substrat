@@ -56,7 +56,11 @@ interface TraceStepBase {
  * `grant:<entity>`, `system:<module>` — read off the proof tuples. A DENY has no rule to
  * name (the checker returns only the key it checked), so the recorder fills `requires` with
  * the roles that hold the permission and `callerHas` with the roles the caller holds: that
- * pair is "requires finance; caller has member".
+ * pair is "requires finance; caller has member". For a check on one entity the missing piece may
+ * be a grant rather than a role, so `requires` also names `grant:<permission>@<entity>` and
+ * `callerHas` lists the grants the caller holds for that permission. `callerHas` is empty for a
+ * subject that is not a principal (a system module, a connection), which holds no role to list:
+ * empty there means "not explained", not "holds nothing".
  */
 export interface TraceCheckStep extends TraceStepBase {
   type: 'check';
@@ -69,7 +73,15 @@ export interface TraceCheckStep extends TraceStepBase {
   callerHas: string[];
 }
 
-/** One `ctx.sql` statement. `params` is optional: a source that must not hold values omits it. */
+/**
+ * One `ctx.sql` statement, as it RAN. A statement in an operation that later rolled back (a
+ * refused check, a failed `ctx.atomic`) is still listed: a trace says what the call did, and the
+ * `error` step says how it ended, not which writes survived.
+ *
+ * `params` is present only when the sink asked for it ({@link TraceSink.capture}): a host never
+ * sends values a sink did not request, because a bound value is as likely to be a person's data
+ * or a password hash as an id.
+ */
 export interface TraceSqlStep extends TraceStepBase {
   type: 'sql';
   operation: 'query' | 'exec';
@@ -112,6 +124,8 @@ export interface TraceOutboundStep extends TraceStepBase {
   method: string;
   status: number | null;
   outcome: string;
+  /** A failed call's error class, never its message. */
+  reason?: string;
 }
 
 /** One store call (a blob, a scope store). The input is not a field. */
@@ -176,7 +190,13 @@ export interface TraceHead {
  * Two parts of one request report themselves: the HTTP middleware (method, path, status,
  * duration) and the scope host (operation, principal, events). Each sends the keys it knows.
  */
-export type TraceHeadPatch = Partial<TraceHead>;
+export type TraceHeadPatch = Partial<TraceHead> & {
+  /**
+   * Steps the host knew of and did not send (outbound calls past the cap), so a reader sees a
+   * truncated list as truncated. The recorder adds it to `capture.stepsDropped`.
+   */
+  stepsDropped?: number;
+};
 // A key whose value is `undefined` means "this part does not know", never "erase": a sink
 // skips it when merging, so the middleware cannot blank what the scope host reported.
 
@@ -185,12 +205,51 @@ export type TraceHeadPatch = Partial<TraceHead>;
  * batches and writes elsewhere, and a host calls them inside a guard.
  */
 export interface TraceSink {
+  /**
+   * What this sink wants a host to send beyond the default. Absent reads as everything off.
+   * `sqlParams` is the one such request today: the values bound to a statement.
+   */
+  readonly capture?: { readonly sqlParams?: boolean };
   /** Merge what one part of the host knows about the invocation; `undefined` values are skipped. */
   head(invocationId: string, patch: TraceHeadPatch): void;
   /** Append one step. */
   step(invocationId: string, step: TraceStep): void;
   /** The invocation is over: the head is as complete as it will get, so write the trace. */
   end(invocationId: string): void;
+}
+
+/**
+ * One time axis per invocation, shared by whoever records a step.
+ *
+ * The HTTP layer starts the request and the scope host runs inside it, so each used to count
+ * from its own zero and a step from one could sort before the step that caused it. The layer
+ * that starts the request calls {@link markTraceStart}; every step is stamped with
+ * {@link traceOffsetMs}, which counts from that mark, or from its own first call when nothing
+ * marked one (a call that did not come through HTTP). {@link forgetTraceStart} releases it.
+ * Held on a `globalThis` slot, like the sink, so two copies of a package agree.
+ */
+const STARTS_KEY: unique symbol = Symbol.for('substrat.trace-starts') as never;
+
+function starts(): Map<string, number> {
+  const slots = globalThis as Record<symbol, unknown>;
+  return (slots[STARTS_KEY] ??= new Map<string, number>()) as Map<string, number>;
+}
+
+/** Note that an invocation started now (or at `at`, on the `performance.now()` clock). */
+export function markTraceStart(invocationId: string, at: number = performance.now()): void {
+  const map = starts();
+  if (!map.has(invocationId)) map.set(invocationId, at);
+}
+
+/** Milliseconds since the invocation started, starting it now when nothing has. */
+export function traceOffsetMs(invocationId: string): number {
+  markTraceStart(invocationId);
+  return Math.max(0, Math.round(performance.now() - starts().get(invocationId)!));
+}
+
+/** The invocation is over: release its start. */
+export function forgetTraceStart(invocationId: string): void {
+  starts().delete(invocationId);
 }
 
 /** The sink installed on this runtime, or `undefined` when tracing is off. */

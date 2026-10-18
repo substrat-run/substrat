@@ -6157,6 +6157,9 @@ export class SqliteScopeHost implements ScopeHost {
           // and what the tripwire on its writes looks for. Declared here, outside the `try`, so the
           // trace's error step can withhold them from a message too.
           const minted: string[] = [];
+          // #2358: the input error already recorded as a `validation` step, so the `error` step
+          // below does not repeat its message.
+          let refusedInput: unknown;
           // The outbox's insertion mark, inside the actor task so nothing else writes between it
           // and this invoke (`OUTBOX_MARK_SQL` says why rowid and not the id).
           const exportMark =
@@ -6219,6 +6222,7 @@ export class SqliteScopeHost implements ScopeHost {
             const issues = (err as { issues?: { path: PropertyKey[]; message: string }[] } | null)?.issues;
             if (trace && Array.isArray(issues)) {
               trace.step({ type: 'validation', issues: issues.map((i) => ({ path: i.path.map(String).join('.'), message: i.message })) });
+              refusedInput = err;
             }
             throw err;
           }
@@ -6381,11 +6385,16 @@ export class SqliteScopeHost implements ScopeHost {
           return structuredClone(result);
           } catch (err) {
             // #2358: the error that ended the call, with the secrets this call minted withheld.
+            // A refused input was recorded above, issue by issue. Its error's message is those
+            // issues as JSON, which can carry the values that failed, so it is not repeated here.
             trace?.step({
               type: 'error',
               code: errorCodeOf(err) ?? null,
-              message: redactSecretText(err instanceof Error ? err.message : String(err), minted),
-              ...(err instanceof Error && err.stack ? { stack: redactSecretText(err.stack, minted) } : {}),
+              message:
+                err === refusedInput
+                  ? 'input failed validation'
+                  : redactSecretText(err instanceof Error ? err.message : String(err), minted),
+              ...(err !== refusedInput && err instanceof Error && err.stack ? { stack: redactSecretText(err.stack, minted) } : {}),
             });
             throw err;
           } finally {
@@ -13435,11 +13444,16 @@ export class SqliteScopeHost implements ScopeHost {
     // #2358: the same check, recorded. It reads the decision `decideCheck` already made and
     // changes nothing about it; the explanation of a refusal (which roles would have allowed it,
     // which the caller holds) is gathered only when a sink is installed.
-    const trace = invocationTrace(rt.invocationId ?? delivery?.invocationId ?? null);
+    // Only inside a call that has an id on the runtime: a background delivery's fresh id would
+    // open a trace nothing ever ends.
+    const trace = invocationTrace(rt.invocationId);
     const runCheck: OperationContext['check'] = trace
       ? async (unparsed, entity?) => {
           const started = trace.now();
           const decision = await decideCheck(unparsed, entity);
+          // Taken before the explanation below, which reads the role table and the checker's
+          // holdings: the step times the check, not the work of describing a refusal.
+          const durationMs = Math.max(0, Math.round(trace.now() - started));
           let requires: string[] = [];
           let callerHas: string[] = [];
           if (!decision.allowed) {
@@ -13448,8 +13462,18 @@ export class SqliteScopeHost implements ScopeHost {
               requires = [...this.roles.entries()]
                 .filter(([key, role]) => key.startsWith(prefix) && role.permissions.includes(decision.checked))
                 .map(([, role]) => role.key);
+              // On one entity, a grant on that entity would also have allowed it: say so, so the
+              // trace does not point at assigning a role when the missing piece is a grant.
+              if (entity) requires.push(`grant:${decision.checked}@${entityString(entity)}`);
               if (subject.kind === 'principal' && this.checker.holdings) {
-                callerHas = (await this.checker.holdings(asPrincipal(subject.id), { tenantId: rt.tenantId, scopeId: rt.scopeId })).roles;
+                const held = await this.checker.holdings(asPrincipal(subject.id), { tenantId: rt.tenantId, scopeId: rt.scopeId });
+                callerHas = [
+                  ...held.roles,
+                  ...held.granted.filter((p) => p === decision.checked).map((p) => `grant:${p}`),
+                  ...held.narrowed
+                    .filter((n) => n.permission === decision.checked)
+                    .map((n) => `grant:${n.permission}@${entityString(n.entity)}`),
+                ];
               }
             } catch {
               /* an explanation that cannot be gathered is left empty, never an error */
@@ -13463,7 +13487,7 @@ export class SqliteScopeHost implements ScopeHost {
             decidedBy: decision.allowed ? decidedByOf(decision.proof) : null,
             requires,
             callerHas,
-            durationMs: Math.max(0, Math.round(trace.now() - started)),
+            durationMs,
           });
           return decision;
         }
