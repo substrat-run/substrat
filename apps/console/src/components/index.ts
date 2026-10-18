@@ -6,3 +6,5 @@ export * from '@substrat-run/ui';
 // design system the dashboard also consumes.
 export { Stat } from './Stat';
 export { SelectBox } from './SelectBox';
+export { Pager, usePaged, PAGE_SIZES } from './Pager';
+export type { Paged } from './Pager';

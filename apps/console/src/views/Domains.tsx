@@ -7,11 +7,10 @@ import type {
   Tenant,
   TenantId,
 } from '@substrat-run/contracts';
-import { Badge, Button, Card, Table, Tag } from '../components';
+import { Badge, Button, Card, Input, Pager, Select, Table, Tag, usePaged } from '../components';
 import type { TableColumn } from '../components';
 import { scopeHandle } from '../lib/fleet';
 import type { Api } from '../lib/api';
-import { usePagedList } from '../lib/use-paged-list';
 
 /**
  * Domains — the hostname map (control-plane.md §4.7, K-26).
@@ -60,18 +59,25 @@ export function Domains({ api, scopes, tenants, hostnames, onChanged, onToast }:
   const [canonical, setCanonical] = useState(true);
   const [busy, setBusy] = useState(false);
 
-  // The table pages (cursor-walked); the `hostnames` prop stays the walked map —
-  // portal links elsewhere read it — and doubles as the mutation-refresh signal.
-  // The bind form's scope dropdown keeps the walked `scopes`: picking a scope is a
-  // whole-directory computation, not a page of one.
-  const paged = usePagedList(
-    (p) => api.listHostnames(p),
-    [api, hostnames],
-    (e) => onToast('Failed to load hostnames', e.message, 'danger'),
-  );
+  const [q, setQ] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
 
   const bindable = useMemo(() => scopes.filter((s) => s.status !== 'archived'), [scopes]);
   const scopeById = useMemo(() => new Map(scopes.map((s) => [s.id, s])), [scopes]);
+
+  // Search and paging are client-side over the walked `hostnames` map (App refreshes it
+  // after every mutation), the same as the Scopes table.
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return hostnames.filter((h) => {
+      if (statusFilter !== 'all' && h.status !== statusFilter) return false;
+      if (!needle) return true;
+      const scope = scopeById.get(h.scopeId);
+      const handle = scope ? scopeHandle(scope, tenants) : h.scopeId;
+      return `${h.hostname} ${handle} ${h.surface} ${h.statusNote ?? ''}`.toLowerCase().includes(needle);
+    });
+  }, [hostnames, q, statusFilter, scopeById, tenants]);
+  const paged = usePaged(filtered, `${q}|${statusFilter}`);
 
   async function run(fn: () => Promise<unknown>, title: string, detail?: string) {
     setBusy(true);
@@ -226,19 +232,49 @@ export function Domains({ api, scopes, tenants, hostnames, onChanged, onToast }:
         </div>
       </Card>
 
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <Input
+          ariaLabel="Search hostnames"
+          placeholder="Search hostname, scope, or surface…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          style={{ width: 320 }}
+        />
+        <Select
+          ariaLabel="Filter hostnames by status"
+          options={[
+            { value: 'all', label: 'All statuses' },
+            ...(Object.keys(STATUS_TONE) as HostnameStatus[]).map((v) => ({ value: v, label: v[0]!.toUpperCase() + v.slice(1) })),
+          ]}
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          style={{ width: 160 }}
+        />
+        {(q !== '' || statusFilter !== 'all') && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setQ('');
+              setStatusFilter('all');
+            }}
+          >
+            Clear filters
+          </Button>
+        )}
+      </div>
+
       <Card padding={0}>
         <Table
           columns={columns}
-          rows={paged.entries}
-          emptyText="No hostnames bound. A scope with no hostname is unreachable — the router will not serve a name it does not know."
+          rows={paged.rows}
+          emptyText={
+            hostnames.length === 0
+              ? 'No hostnames bound. A scope with no hostname is unreachable — the router will not serve a name it does not know.'
+              : 'No hostnames match this filter.'
+          }
         />
-        {paged.nextCursor && (
-          <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
-            <Button variant="ghost" size="sm" onClick={() => void paged.loadMore()}>
-              Load more
-            </Button>
-          </div>
-        )}
+        <Pager p={paged} />
       </Card>
 
       <Card title="Not built yet" description="Stated rather than implied, so the gap is visible.">
