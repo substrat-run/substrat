@@ -128,13 +128,23 @@ The answer is `409` and `driver 'graph' has no previous good release to roll bac
 Run `status` again. The current sha256 is unchanged. Any other status, or a current
 sha256 that moved, is a failure: collect the problem body and stop.
 
-## 7. One vertical, then a caller-signed call
+## 7. One vertical, then a caller-signed call: BLOCKED
+
+This step cannot be carried out today. Do not mark the pass complete without it.
 
 A caller-signed call is a vertical operation that does
 `getScopeStore(principal, tenantId, scopeId, 'GRAPH')` and `invoke`s a catalog
 operation, for example `getSession`. The router signs that call. No command does it
-from the CLI, and no demo operation calls the store. The canary's calls are
-platform-signed. They are not this step.
+from the CLI, and no operation of any vertical in this repo calls the store: outside
+the adapters and the kernel, `getScopeStore` is not called from any vertical code. The canary's
+calls are platform-signed. They are not this step. A push that finishes proves the script
+was uploaded; it says nothing about a caller-signed call, so a finished push is not a pass.
+
+What would make it passable: a vertical operation that takes the store handle for a
+declared `GRAPH` binding and invokes one catalog operation on it, in a vertical whose
+`runtimeNeeds.scopeStores` declares `{ binding: 'GRAPH', driver: 'graph' }`. That
+operation does not exist and this page does not add one. Whether to write it, in which
+vertical, and under which permission is for the reviewer to decide.
 
 The smallest declaration is on `ticket0`, in a separate commit on this branch:
 `runtimeNeeds.scopeStores: [{ binding: 'GRAPH', driver: 'graph' }]`. It does not add
@@ -143,11 +153,9 @@ an operation. Merging it means the next push of that vertical uploads
 one script. Drop the commit unless that is intended. Do not push it as part of reading
 this page.
 
-After that push, the answer that the store script exists is a push that finishes, and
-`status` still showing the same sha256. Then a scope of that vertical invokes
-`getSession` through its own operation. The answer is a result, not a router refusal
-and not `bad_envelope`. Collect the status and the error code if it is not a result.
-There is no vertical operation to name until one is added.
+Once an operation exists, the pass criterion is: a scope of that vertical invokes it,
+and the answer is a result, not a router refusal and not `bad_envelope`. Collect the
+status and the error code if it is not a result.
 
 ## What a failure should keep
 
