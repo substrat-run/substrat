@@ -396,11 +396,90 @@ export const STORE_DRIVERS: readonly StoreDriverRegistration[] = [];
 /** The most module bytes one release bundle may carry (#2300), decoded. A bigger upload is 413. */
 export const STORE_RELEASE_MAX_BYTES = 10 * 1024 * 1024;
 
+/** The most modules one release bundle may carry (#2300, #2390). A bigger upload is 422. */
+export const STORE_RELEASE_MAX_MODULES = 1000;
+
+/**
+ * A driver's own module: one top-level package that starts with `driver_`, then identifiers,
+ * ending in `.py`. The prefix keeps it off every name the Python entry imports or the runtime
+ * provides.
+ */
+const PYTHON_DRIVER_MODULE = /^(driver_[a-z0-9_]+)(?:\/[A-Za-z_][A-Za-z0-9_]*)*\/[A-Za-z_][A-Za-z0-9_]*\.py$/;
+
+/** One segment of a vendored path: no empty segment, no `.` or `..`, no leading dot. */
+const VENDORED_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/;
+
+/** Top-level names the Python workers runtime provides. A release must not shadow them. */
+const PYTHON_RUNTIME_TOP = new Set(['workers', 'js', 'pyodide']);
+
+export type PythonStoreModuleClass = { readonly kind: 'driver'; readonly packageName: string } | { readonly kind: 'vendored' };
+
+function refusePythonStoreModule(name: string, why: string): never {
+  throw new Error(`a store driver release may not ship a module named '${name}': ${why}`);
+}
+
+/**
+ * Which kind of module a Python store-driver release is shipping (#2390).
+ *
+ * The driver's own code is one `driver_<package>/…/<module>.py` file. Beside that package a
+ * release may carry `python_modules/<path>`, the driver's dependencies, which the upload sends
+ * as Data modules under the same names. Refused: a path that climbs (`..`), is absolute, or
+ * contains a backslash; a vendored top-level name that starts with `driver_` or `substrat_`;
+ * `workers`, `js`, `pyodide` and the workers runtime SDK (its package, its JavaScript, and the
+ * files it ships beside them); a `.pth` file, `pyvenv.cfg`, or a `.synced` marker.
+ *
+ * The script imports `workers` from the Python workers runtime the upload selects, not from a
+ * copy in the bundle. A lock file is not a module here.
+ */
+export function classifyPythonStoreModule(name: string): PythonStoreModuleClass {
+  if (name.includes('\\') || name.startsWith('/') || /^[A-Za-z]:/.test(name)) {
+    refusePythonStoreModule(name, 'a path is relative and uses no backslash');
+  }
+  const parts = name.split('/');
+  if (parts.some((part) => part === '' || part === '.' || part === '..')) {
+    refusePythonStoreModule(name, 'a path does not climb out of the release');
+  }
+  const driver = PYTHON_DRIVER_MODULE.exec(name);
+  if (driver) return { kind: 'driver', packageName: driver[1]! };
+  if (!name.startsWith('python_modules/')) {
+    refusePythonStoreModule(name, 'a driver module is driver_<package>/…/<module>.py, or a dependency is python_modules/<path>');
+  }
+  const rest = parts.slice(1);
+  const top = rest[0]!;
+  const file = rest[rest.length - 1]!;
+  const stem = top.replace(/\.[^.]+$/, '');
+  if (top.startsWith('driver_') || top.startsWith('substrat_') || stem.startsWith('driver_') || stem.startsWith('substrat_')) {
+    refusePythonStoreModule(name, 'a vendored path may not take the driver package prefix or the entry prefix');
+  }
+  if (
+    PYTHON_RUNTIME_TOP.has(top) ||
+    PYTHON_RUNTIME_TOP.has(stem) ||
+    top.startsWith('_workers_sdk') ||
+    stem.startsWith('_workers_sdk') ||
+    top.startsWith('workers_runtime_sdk') ||
+    top.startsWith('workers-runtime-sdk') ||
+    top === 'workers-py' ||
+    top === 'workers_py'
+  ) {
+    refusePythonStoreModule(name, "the workers runtime SDK is the platform's runtime, not a vendored copy");
+  }
+  if (file.endsWith('.pth') || file === 'pyvenv.cfg' || file.endsWith('.synced')) {
+    refusePythonStoreModule(name, 'a vendored path may not carry a path file, pyvenv.cfg or a sync marker');
+  }
+  if (parts.some((part) => part.endsWith('.js') && (part.startsWith('_workers_sdk') || part.startsWith('workers_runtime')))) {
+    refusePythonStoreModule(name, "the workers runtime SDK is the platform's runtime, not a vendored copy");
+  }
+  if (!rest.every((part) => VENDORED_SEGMENT.test(part))) {
+    refusePythonStoreModule(name, 'a vendored path is relative segments');
+  }
+  return { kind: 'vendored' };
+}
+
 /**
  * A release bundle as `substrat store-driver upload` sends it (#2300): the commit it was built from,
  * the module the platform's entry imports, and every module, base64. The control plane stores it
  * keyed by its {@link storeDriverReleaseDigest}, which it computes itself. Module names are judged
- * by the Python entry's package rule when the bundle arrives, the same rule its upload applies.
+ * by {@link classifyPythonStoreModule} when the bundle arrives, the same rule its upload applies.
  */
 export const storeDriverReleaseUpload = z
   .object({
@@ -409,7 +488,7 @@ export const storeDriverReleaseUpload = z
     modules: z
       .array(z.object({ name: z.string().min(1), contentBase64: z.string() }).strict())
       .min(1)
-      .max(1000),
+      .max(STORE_RELEASE_MAX_MODULES),
   })
   .strict();
 export type StoreDriverReleaseUpload = z.infer<typeof storeDriverReleaseUpload>;
@@ -423,9 +502,11 @@ const RELEASE_DIGEST_NAME = /^[\x21-\x7e]+$/;
 /**
  * The sha256 that pins a store driver's release (D-63), as lowercase hex. It covers everything that
  * decides what runs, apart from the class the registration names: the module the platform's
- * entry imports, and every module's name and bytes. Framed as {@link STORE_RELEASE_DIGEST_TAG}
+ * entry imports, and every module's name and bytes, a vendored `python_modules/` file included.
+ * Framed as {@link STORE_RELEASE_DIGEST_TAG}
  * and one zero byte, the entry's name and one zero byte, then each module in name order: its
  * name, one zero byte, its length as an unsigned 64-bit big-endian integer, then its exact bytes.
+ * A vendored `python_modules/` module is a module, so its name and bytes are covered the same way.
  *
  * The framing is what makes the digest name one release, so its preconditions are held here,
  * not left to a caller: every name (the entry's included) is non-empty printable ASCII without

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -9,6 +10,7 @@ import {
   platformActorId,
   RESERVED_STORE_OPERATIONS,
   STORE_RELEASE_MAX_BYTES,
+  STORE_RELEASE_MAX_MODULES,
   storeDriverReleaseDigest,
   type PlatformActorId,
   type ReservedStoreOperation,
@@ -16,6 +18,7 @@ import {
 } from '@substrat-run/contracts';
 import {
   canaryStoreRelease,
+  decodeStoreDriverRelease,
   createControlPlaneApi,
   createScopeStoreEnsurer,
   createStoreCanaryEnsurer,
@@ -1131,5 +1134,68 @@ describe('the real ensurer holds every move to the schema a script runs (#2300)'
     // The way forward is forward: rolling out 2 again converges both.
     expect((await call('POST', '/store-drivers/graph/rollouts', { sha256: s2 })).status).toBe(200);
     expect([release('substrat-store-graph-va'), release('substrat-store-graph-vb')]).toEqual([s2, s2]);
+  });
+});
+
+describe('a Python release may carry python_modules (#2390)', () => {
+  const commit = 'b'.repeat(40);
+  const b64 = (text: string) => btoa(text);
+  const body = (modules: { name: string; contentBase64: string }[], entry = 'driver_graph/store.py') => ({
+    sourceCommit: commit,
+    entry,
+    modules,
+  });
+  const py = (name: string) => ({ name, contentBase64: b64('class Store: pass\n') });
+
+  it('accepts a vendored .py, a data file and a nested package', () => {
+    const decoded = decodeStoreDriverRelease(
+      body([
+        py('driver_graph/store.py'),
+        py('python_modules/six.py'),
+        { name: 'python_modules/vendor_probe/payload.txt', contentBase64: b64('payload-ok') },
+        py('python_modules/vendor_probe/nested/mod.py'),
+      ]),
+    );
+    expect(decoded.modules.map((m) => m.name)).toEqual([
+      'driver_graph/store.py',
+      'python_modules/six.py',
+      'python_modules/vendor_probe/payload.txt',
+      'python_modules/vendor_probe/nested/mod.py',
+    ]);
+  });
+
+  it.each([
+    ['workers', 'python_modules/workers/__init__.py'],
+    ['js', 'python_modules/js/ffi.py'],
+    ['pyodide', 'python_modules/pyodide/ffi.py'],
+    ['a driver_ prefix', 'python_modules/driver_other/x.py'],
+    ['a substrat_ prefix', 'python_modules/substrat_store/x.py'],
+    ['a climb', 'python_modules/../x.py'],
+    ['a backslash', 'python_modules\\six.py'],
+    ['an absolute path', '/python_modules/six.py'],
+    ['a path file', 'python_modules/pkg/extra.pth'],
+    ['pyvenv.cfg', 'python_modules/pyvenv.cfg'],
+    ['a sync marker', 'python_modules/pkg/marker.synced'],
+    ['the runtime SDK', 'python_modules/_workers_sdk_patch_loader.py'],
+  ])('refuses %s', (_label, name) => {
+    expect(() => decodeStoreDriverRelease(body([py('driver_graph/store.py'), py(name)]))).toThrow(ControlPlaneError);
+    try {
+      decodeStoreDriverRelease(body([py('driver_graph/store.py'), py(name)]));
+    } catch (e) {
+      expect(e).toMatchObject({ status: 422, message: expect.stringMatching(/may not ship/) });
+    }
+  });
+
+  it('refuses a duplicate and a release over the module cap; the byte cap stays 10 MiB', () => {
+    expect(() => decodeStoreDriverRelease(body([py('driver_graph/store.py'), py('driver_graph/store.py')]))).toThrow(/twice/);
+    const modules = [py('driver_graph/store.py')];
+    for (let i = 0; i < STORE_RELEASE_MAX_MODULES; i++) modules.push(py(`python_modules/m${i}.py`));
+    try {
+      decodeStoreDriverRelease(body(modules));
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toMatchObject({ status: 422, message: expect.stringMatching(/not a store driver release/) });
+    }
+    expect(STORE_RELEASE_MAX_BYTES).toBe(10 * 1024 * 1024);
   });
 });

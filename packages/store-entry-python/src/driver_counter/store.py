@@ -58,6 +58,10 @@ class CounterStore(DurableObject):
             return _json(True)
         if operation == "alarms":
             return _json(self._row().alarms)
+        if operation == "vendored":
+            import vendor_probe
+
+            return _json({"label": vendor_probe.label(), "payload": vendor_probe.payload()})
         return Response("unknown operation", status=400)
 
     async def alarm(self, alarm_info=None):

@@ -192,7 +192,10 @@ is never a tenant's scope. It calls every reserved operation (`substrat.export`,
 `substrat.import`, `substrat.size`, `substrat.wipe`, `substrat.erase`) and asserts each
 answer before the rollout continues. A rollback goes to the immediately previous good
 release. The module names in a release are validated, and the names the platform's entry
-module imports are reserved. No driver written outside this repo is registered until a driver
+module imports are reserved. A Python release is one `driver_<package>` package of `.py`
+modules and may also carry `python_modules/<path>` for its dependencies (#2390). It does
+not ship the workers runtime SDK: the script imports that from the runtime the upload
+selects. No driver written outside this repo is registered until a driver
 cannot affect data outside the object it serves by construction: a script per tenant, no
 outbound access, envelope verification outside the driver.
 

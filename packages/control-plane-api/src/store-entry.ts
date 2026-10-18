@@ -1,4 +1,4 @@
-import { scopeStorePublicKeysFrom, type DeclaredBinding } from '@substrat-run/contracts';
+import { classifyPythonStoreModule, scopeStorePublicKeysFrom, type DeclaredBinding } from '@substrat-run/contracts';
 import type { VerticalBundle } from './deploy.js';
 import {
   STORE_CALLER_KEYS_VAR,
@@ -181,25 +181,27 @@ export interface PythonStoreScript {
 }
 
 /**
- * A Python driver module's path: one top-level package that starts with `driver_`, then
- * identifiers, ending in `.py`. The prefix keeps a driver's modules off every name the Python
- * entry imports or the runtime provides (`workers`, `js`, `pyodide`, the entry, its verifier),
- * and off `metadata`, the upload's own form part.
+ * Workers' Data module type. Vendored `python_modules/` files, `.py` included, upload as this:
+ * that is the multipart type a Data module uses, and it is what the upload already sends for
+ * opaque bytes. The driver's own `.py` modules stay `text/x-python`.
  */
-const PYTHON_DRIVER_MODULE = /^(driver_[a-z0-9_]+)(?:\/[A-Za-z_][A-Za-z0-9_]*)*\/[A-Za-z_][A-Za-z0-9_]*\.py$/;
+export const STORE_PYTHON_DATA_CONTENT_TYPE = 'application/octet-stream';
 
 /**
  * The store script as uploaded for a Python driver (#2290, #2210). The Python entry is the main
  * module, with the driver's module and class in place of its two placeholders, and the verifier
  * it imports is shipped beside it, so it runs the JavaScript entry's check. The driver's modules
- * follow, byte for byte. The bindings and the two flags are the JavaScript entry's
- * (`withStoreEntry`), with `python_workers`.
+ * follow, byte for byte, and so do its vendored `python_modules/` (#2390), as Data modules. The
+ * bindings and the two flags are the JavaScript entry's (`withStoreEntry`), with `python_workers`.
+ *
+ * The script imports `workers` from the Python workers runtime those flags and
+ * {@link STORE_PYTHON_COMPATIBILITY_DATE} select. The release does not ship that SDK.
  *
  * Refused, before anything is built (D-63): a class name that is not a Python identifier or is
- * the entry's own class; a module that is not `driver_<package>/…/<module>.py`; modules under more
- * than one package; a module named twice; an entry that is not one of the modules; and
- * whatever `withStoreEntry` refuses of the script name and the keys. A reserved module name
- * cannot pass the path rule, and is refused again by name.
+ * the entry's own class; a module {@link classifyPythonStoreModule} refuses; modules under more
+ * than one `driver_` package; a module named twice; an entry that is not one of the modules, or
+ * not a driver module; and whatever `withStoreEntry` refuses of the script name and the keys. A
+ * reserved module name is refused again by name.
  */
 export function withPythonStoreEntry(release: PythonStoreDriverRelease, options: StoreEntryOptions): PythonStoreScript {
   assertDriverClass(options.className, /^[A-Za-z_][A-Za-z0-9_]*$/);
@@ -219,7 +221,11 @@ export function withPythonStoreEntry(release: PythonStoreDriverRelease, options:
         content: encode(STORE_ENTRY_PYTHON_VERIFIER_SOURCE),
         contentType: 'application/javascript+module',
       },
-      ...release.modules.map((module) => ({ name: module.name, content: module.content, contentType: 'text/x-python' })),
+      ...release.modules.map((module) => ({
+        name: module.name,
+        content: module.content,
+        contentType: classifyPythonStoreModule(module.name).kind === 'vendored' ? STORE_PYTHON_DATA_CONTENT_TYPE : 'text/x-python',
+      })),
     ],
     compatibilityDate: STORE_PYTHON_COMPATIBILITY_DATE,
     compatibilityFlags: [...STORE_PYTHON_COMPATIBILITY_FLAGS, STORE_DISALLOW_IMPORTABLE_ENV, STORE_DISABLE_CTX_EXPORTS],
@@ -228,26 +234,33 @@ export function withPythonStoreEntry(release: PythonStoreDriverRelease, options:
 }
 
 /**
- * The module rule of a Python driver's release (D-63): every module is `driver_<package>/…/<module>.py`
- * under one package, none twice, and the entry is one of them. The upload applies it when a
- * release arrives (#2300), and `withPythonStoreEntry` again before every script it builds.
+ * The module rule of a Python driver's release (D-63, #2390): one `driver_<package>` of `.py`
+ * modules, optionally `python_modules/<path>` beside it, none twice, and the entry one of the
+ * driver modules. The upload applies it when a release arrives (#2300), and `withPythonStoreEntry`
+ * again before every script it builds.
  */
 export function assertPythonDriverModules(release: PythonStoreDriverRelease): void {
   const packages = new Set<string>();
   const names = new Set<string>();
   for (const module of release.modules) {
-    const path = PYTHON_DRIVER_MODULE.exec(module.name);
-    if (!path || STORE_RESERVED_MODULES.includes(module.name)) {
-      throw new Error(`a store driver release may not ship a module named '${module.name}': a driver module is driver_<package>/…/<module>.py`);
+    if (STORE_RESERVED_MODULES.includes(module.name)) {
+      throw new Error(
+        `a store driver release may not ship a module named '${module.name}': a driver module is driver_<package>/…/<module>.py, or a dependency is python_modules/<path>`,
+      );
     }
+    const classified = classifyPythonStoreModule(module.name);
     if (names.has(module.name)) throw new Error(`a store driver release ships '${module.name}' twice`);
     names.add(module.name);
-    packages.add(path[1]!);
+    if (classified.kind === 'driver') packages.add(classified.packageName);
   }
   if (packages.size > 1) {
     throw new Error(`a store driver release ships more than one package (${[...packages].sort().join(', ')})`);
   }
+  if (packages.size === 0) throw new Error('a store driver release ships no driver_ package');
   if (!names.has(release.entry)) {
     throw new Error(`store driver entry '${release.entry}' is not one of the release's modules`);
+  }
+  if (classifyPythonStoreModule(release.entry).kind !== 'driver') {
+    throw new Error(`store driver entry '${release.entry}' is not a driver module`);
   }
 }

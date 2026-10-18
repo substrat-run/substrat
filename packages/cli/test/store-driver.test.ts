@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { storeDriverReleaseUpload } from '@substrat-run/contracts';
+import { STORE_RELEASE_MAX_BYTES, STORE_RELEASE_MAX_MODULES, storeDriverReleaseUpload } from '@substrat-run/contracts';
 import { isReleaseSha, packedFilesOf, packStoreDriverDir, sourceCommitOf, storeDriverStatusLines } from '../src/store-driver.js';
 
 const COMMIT = 'a'.repeat(40);
@@ -37,12 +37,43 @@ describe('packStoreDriverDir (#2300)', () => {
     }
   });
 
-  it('refuses a vendored package or any other file by name, a second package, and a missing entry', () => {
+  it('packs python_modules beside the one driver package: a .py, a data file and a nested package', () => {
+    const dir = driverDir({
+      'driver_graph/store.py': 'class Store:\n    pass\n',
+      'python_modules/six.py': 'def six():\n    return 6\n',
+      'python_modules/vendor_probe/payload.txt': 'payload-ok',
+      'python_modules/vendor_probe/nested/mod.py': 'N = 1\n',
+      'python_modules/vendor_probe/__pycache__/mod.cpython-314.pyc': 'bytecode',
+    });
+    try {
+      const body = packStoreDriverDir(dir, 'driver_graph/store.py', COMMIT);
+      expect(body.modules.map((m) => m.name)).toEqual([
+        'driver_graph/store.py',
+        'python_modules/six.py',
+        'python_modules/vendor_probe/nested/mod.py',
+        'python_modules/vendor_probe/payload.txt',
+      ]);
+      expect(storeDriverReleaseUpload.safeParse(body).success).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a file outside the driver package and python_modules, a second package, and a missing entry', () => {
     const cases: [Record<string, string>, RegExp][] = [
-      [{ 'driver_graph/store.py': '', 'python_modules/six.py': '' }, /refused: python_modules\/six\.py.*Vendored/],
-      [{ 'driver_graph/store.py': '', 'driver_graph/data.json': '{}' }, /refused: driver_graph\/data\.json/],
-      [{ 'driver_graph/store.py': '', 'wrangler.toml': '' }, /refused: wrangler\.toml/],
+      [{ 'driver_graph/store.py': '', 'driver_graph/data.json': '{}' }, /driver_graph\/data\.json/],
+      [{ 'driver_graph/store.py': '', 'wrangler.toml': '' }, /wrangler\.toml/],
       [{ 'driver_graph/store.py': '', 'driver_other/x.py': '' }, /exactly one driver_ package/],
+      [{ 'driver_graph/store.py': '', 'python_modules/driver_other/x.py': '' }, /driver_other/],
+      [{ 'driver_graph/store.py': '', 'python_modules/substrat_store/x.py': '' }, /substrat_store/],
+      [{ 'driver_graph/store.py': '', 'python_modules/workers/__init__.py': '' }, /workers/],
+      [{ 'driver_graph/store.py': '', 'python_modules/workers.py': '' }, /workers\.py/],
+      [{ 'driver_graph/store.py': '', 'python_modules/js/ffi.py': '' }, /js\/ffi\.py/],
+      [{ 'driver_graph/store.py': '', 'python_modules/pyodide/ffi.py': '' }, /pyodide/],
+      [{ 'driver_graph/store.py': '', 'python_modules/_workers_sdk_patch_loader.py': '' }, /_workers_sdk/],
+      [{ 'driver_graph/store.py': '', 'python_modules/pkg/extra.pth': '' }, /\.pth/],
+      [{ 'driver_graph/store.py': '', 'python_modules/pyvenv.cfg': '' }, /pyvenv\.cfg/],
+      [{ 'driver_graph/store.py': '', 'python_modules/pkg/marker.synced': '' }, /\.synced/],
     ];
     for (const [files, refusal] of cases) {
       const dir = driverDir(files);
@@ -55,8 +86,26 @@ describe('packStoreDriverDir (#2300)', () => {
     const dir = driverDir({ 'driver_graph/store.py': '' });
     try {
       expect(() => packStoreDriverDir(dir, 'driver_graph/missing.py', COMMIT)).toThrow(/missing\.py/);
+      expect(() => packStoreDriverDir(dir, 'python_modules/six.py', COMMIT)).toThrow(/no python_modules\/six\.py|not a driver module/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a release over the module count or the byte cap', () => {
+    const many: Record<string, string> = { 'driver_graph/store.py': '' };
+    for (let i = 0; i < STORE_RELEASE_MAX_MODULES; i++) many[`python_modules/m${i}.py`] = '';
+    const counted = driverDir(many);
+    try {
+      expect(() => packStoreDriverDir(counted, 'driver_graph/store.py', COMMIT)).toThrow(new RegExp(`${STORE_RELEASE_MAX_MODULES + 1} modules`));
+    } finally {
+      rmSync(counted, { recursive: true, force: true });
+    }
+    const huge = driverDir({ 'driver_graph/store.py': 'x'.repeat(STORE_RELEASE_MAX_BYTES + 1) });
+    try {
+      expect(() => packStoreDriverDir(huge, 'driver_graph/store.py', COMMIT)).toThrow(new RegExp(`${STORE_RELEASE_MAX_BYTES}`));
+    } finally {
+      rmSync(huge, { recursive: true, force: true });
     }
   });
 });

@@ -14,7 +14,7 @@
  */
 import { spawn } from 'node:child_process';
 import { randomUUID, webcrypto } from 'node:crypto';
-import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -50,17 +50,40 @@ function check(condition, message, extra) {
 
 check(!/ALLOW_ADDRESS|parse_qs|\?object=/.test(entry.STORE_ENTRY_PYTHON_SOURCE), 'the shipped Python entry has no address override');
 const platformPair = await generateScopeStoreKeyPair();
-const driverModules = readdirSync(join(here, 'src', DRIVER_PACKAGE))
-  .filter((file) => file.endsWith('.py'))
-  .map((file) => ({ name: `${DRIVER_PACKAGE}/${file}`, content: readFileSync(join(here, 'src', DRIVER_PACKAGE, file)) }));
+function filesUnder(dir, prefix) {
+  const found = [];
+  for (const name of readdirSync(dir, { withFileTypes: true })) {
+    if (name.name === '__pycache__' || name.name.endsWith('.pyc')) continue;
+    const rel = `${prefix}/${name.name}`;
+    if (name.isDirectory()) found.push(...filesUnder(join(dir, name.name), rel));
+    else found.push({ name: rel, content: readFileSync(join(dir, name.name)) });
+  }
+  return found;
+}
+const driverModules = [
+  ...filesUnder(join(here, 'src', DRIVER_PACKAGE), DRIVER_PACKAGE),
+  ...filesUnder(join(here, 'src', 'python_modules'), 'python_modules'),
+];
 const built = withPythonStoreEntry(
   { entry: `${DRIVER_PACKAGE}/store.py`, modules: driverModules },
   { className: DRIVER_CLASS, script: vector.script, callerPublicKeys: [vector.publicKey], platformPublicKeys: [platformPair.publicKey] },
 );
+const contentType = Object.fromEntries(built.modules.map((module) => [module.name, module.contentType]));
+check(contentType[`${DRIVER_PACKAGE}/store.py`] === 'text/x-python', 'the driver module uploads as Python');
+check(contentType['python_modules/vendor_probe/__init__.py'] === 'application/octet-stream', 'a vendored .py uploads as a Data module');
+check(contentType['python_modules/vendor_probe/payload.txt'] === 'application/octet-stream', 'a vendored data file uploads as a Data module');
+check(
+  !built.modules.some((module) => /(^|\/)(workers|js|pyodide)(\/|\.py$)/.test(module.name) || module.name.includes('_workers_sdk')),
+  'the uploaded script does not ship the workers runtime SDK',
+);
 rmSync(out, { recursive: true, force: true });
 for (const module of built.modules) {
-  mkdirSync(dirname(join(out, 'src', module.name)), { recursive: true });
-  writeFileSync(join(out, 'src', module.name), module.content);
+  // python_modules lives at the worker root, where the runtime vendors it. The entry and the
+  // driver stay under src/, which is where the upload's main module is.
+  const root = module.name.startsWith('python_modules/') ? out : join(out, 'src');
+  const dest = join(root, module.name);
+  mkdirSync(dirname(dest), { recursive: true });
+  writeFileSync(dest, module.content);
 }
 // The probe's own main. `?object=` sends the call, unverified, straight to that object, past
 // the default entrypoint, so the object's own checks are what answer it. `?unconfigured=1`
@@ -136,12 +159,37 @@ const port = await new Promise((resolve, reject) => {
     server.close(() => resolve(port));
   });
 });
+// The dev install recreates this directory. Remove the copy written above so the wait below
+// observes that install, not the files that are about to be replaced.
+rmSync(join(out, 'python_modules'), { recursive: true, force: true });
 const child = spawn('uv', ['run', '--frozen', 'pywrangler', 'dev', '--port', String(port), '--ip', '127.0.0.1'], {
   cwd: out,
   stdio: ['ignore', 'inherit', 'inherit'],
   detached: true,
 });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// pywrangler replaces python_modules with the runtime SDK it installs for dev. The upload does
+// not: withPythonStoreEntry already named the vendored files. Put them back once that install
+// has written the SDK and before wrangler reads the directory.
+const vendorSrc = join(here, 'src', 'python_modules', 'vendor_probe');
+const copyVendor = () => {
+  const dest = join(out, 'python_modules', 'vendor_probe');
+  mkdirSync(dest, { recursive: true });
+  for (const file of readdirSync(vendorSrc)) copyFileSync(join(vendorSrc, file), join(dest, file));
+};
+const vendorInstalled = async () => {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    // `.synced` is written when the dev install of the runtime SDK finishes.
+    if (existsSync(join(out, 'python_modules', '.synced')) && existsSync(join(out, 'python_modules', 'workers', '__init__.py'))) {
+      copyVendor();
+      return;
+    }
+    await sleep(50);
+  }
+  throw new Error('pywrangler did not install python_modules');
+};
 
 async function ready() {
   const deadline = Date.now() + 240_000;
@@ -229,6 +277,7 @@ async function send(call, query = '') {
 const result = (answer) => JSON.parse(answer.text).result;
 
 try {
+  await vendorInstalled();
   await ready();
   const name = `tenant/vertical/${randomUUID()}/graph`;
   const other = `tenant/vertical/${randomUUID()}/graph`;
@@ -321,6 +370,9 @@ try {
   check(JSON.stringify(env.given) === JSON.stringify(['DRIVER_SETTING']), "the driver's env has none of the entry's bindings", env);
   check(env.importable.length === 0, 'an importable env reads nothing (disallow_importable_env)', env);
   check(env.exports === false, 'the driver has no ctx.exports (disable_ctx_exports)', env);
+
+  const vendored = result(await send(await signed(name, 'vendored')));
+  check(vendored.label === 'vendor-probe' && vendored.payload === 'payload-ok', 'the driver imports a vendored module and reads its data file', vendored);
 
   check(result(await send(await signed(name, 'set-alarm'))) === true, 'the driver sets an alarm');
   let alarms = 0;

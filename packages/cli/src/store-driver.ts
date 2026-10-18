@@ -9,19 +9,17 @@
  *   fleet takes more than one request: the command says so, and running it again continues.
  * - `rollback` returns the driver to the immediately previous good release.
  *
- * What is packed is the driver's own package only: every `driver_<name>/…/*.py` under `--dir`, by
- * its path relative to it. `__pycache__` is skipped. Anything else is refused by name, vendored
- * packages included: a release is one `driver_` package (the platform's module rule), so a driver
- * that needs a third-party package cannot be published yet.
+ * What is packed is the driver's own package, every `driver_<name>/…/*.py` under `--dir`, and a
+ * `python_modules/` directory next to it (#2390). Paths are relative to `--dir`. `__pycache__`
+ * is skipped. Anything else is refused by the same module rule the upload applies: one `driver_`
+ * package, and vendored paths that do not shadow the runtime or the entry.
  */
 import { spawnSync } from 'node:child_process';
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { STORE_RELEASE_MAX_BYTES, type StoreDriverReleaseUpload } from '@substrat-run/contracts';
+import { classifyPythonStoreModule, STORE_RELEASE_MAX_BYTES, STORE_RELEASE_MAX_MODULES, type StoreDriverReleaseUpload } from '@substrat-run/contracts';
 import type { StoreDriverRebuildView, StoreDriverView } from '@substrat-run/control-plane-client';
 import { planeFor } from './plane.js';
-
-const DRIVER_MODULE = /^driver_[a-z0-9_]+\/(?:[A-Za-z_][A-Za-z0-9_]*\/)*[A-Za-z_][A-Za-z0-9_]*\.py$/;
 
 function base64(bytes: Uint8Array): string {
   let text = '';
@@ -83,16 +81,17 @@ export function sourceCommitOf(dir: string, files: readonly string[]): string {
 /** The driver's package under `dir`, as the upload body. `entry` is the module with the class. */
 export function packStoreDriverDir(dir: string, entry: string, sourceCommit: string): StoreDriverReleaseUpload {
   const files = packedFilesOf(dir);
-  const refused = files.filter((path) => !DRIVER_MODULE.test(path));
-  if (refused.length > 0) {
-    throw new Error(
-      `only the driver's own package is published (driver_<name>/…/*.py); refused: ${refused.join(', ')}. ` +
-        'Vendored packages are not supported: a release is one driver_ package.',
-    );
+  const packages = new Set<string>();
+  for (const path of files) {
+    const classified = classifyPythonStoreModule(path);
+    if (classified.kind === 'driver') packages.add(classified.packageName);
   }
-  const packages = new Set(files.map((path) => path.split('/')[0]));
   if (packages.size !== 1) throw new Error(`'${dir}' must hold exactly one driver_ package, not ${[...packages].join(', ') || 'none'}`);
   if (!files.includes(entry)) throw new Error(`'${dir}' has no ${entry}`);
+  if (classifyPythonStoreModule(entry).kind !== 'driver') throw new Error(`'${entry}' is not a driver module`);
+  if (files.length > STORE_RELEASE_MAX_MODULES) {
+    throw new Error(`the package is ${files.length} modules; a release carries at most ${STORE_RELEASE_MAX_MODULES}`);
+  }
   let total = 0;
   const modules = files.map((name) => {
     const content = readFileSync(join(dir, name));

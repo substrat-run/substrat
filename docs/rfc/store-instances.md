@@ -813,6 +813,11 @@ answered). #2302 has since merged, and so has D-63's pin (#2306).
   - the canary asserts every reserved operation, `substrat.erase` included;
   - rollback returns to the previous good release.
 
+  A Python release bundle is one `driver_<package>` package of `.py` modules and may also
+  carry `python_modules/<path>` for the driver's dependencies (#2390). Those modules are
+  part of the sha256. The workers runtime SDK is not in the bundle: the script imports it
+  from the runtime the upload's compatibility date selects.
+
   Under B the pin is unchanged. A tenant-grain driver adds its grain to the registration, and
   the canary and the rollout walk tenants (B) or partitions (B′) instead of verticals.
 - **D-64 (#2298, unpinned releases) is not accepted as written.** The statements this RFC
