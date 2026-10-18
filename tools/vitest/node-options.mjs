@@ -8,7 +8,7 @@
  * Written so a command quoted in a doc cannot fall a preload behind: `preloads.test.mjs` holds this
  * output, the root `test` script, CI's test step and `pnpm test:affected` to the same directory.
  */
-import { readdirSync } from 'node:fs';
+import { readdirSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -26,6 +26,27 @@ export function nodeOptions() {
     .join(' ');
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  process.stdout.write(nodeOptions());
+/**
+ * Run as a script, not imported. `import.meta.url` is already the real path, while `argv[1]` is
+ * the path the caller typed, so it is resolved too: compared as typed, a run through a symlink
+ * printed nothing and exited 0, and `NODE_OPTIONS=""` is every preload switched off (#2399).
+ */
+function runAsScript() {
+  const typed = process.argv[1];
+  if (!typed) return false;
+  try {
+    return realpathSync(typed) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (runAsScript()) {
+  const options = nodeOptions();
+  // Never an empty answer: an empty NODE_OPTIONS reads as success and runs with no preload at all.
+  if (options === '') {
+    process.stderr.write(`node-options: no *.cjs preload found in ${here}\n`);
+    process.exit(1);
+  }
+  process.stdout.write(options);
 }

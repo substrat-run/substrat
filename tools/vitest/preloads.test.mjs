@@ -12,7 +12,9 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { nodeOptions, preloadFiles } from './node-options.mjs';
@@ -103,4 +105,21 @@ test('one complete job does not cover an incomplete one in the same workflow', (
   );
   // Twin: both complete, nothing reported.
   assert.deepEqual(incompleteLines([lines[0], lines[0]], ['a.cjs', 'b.cjs']), []);
+});
+
+test('node-options.mjs prints every preload when started through a symlink', () => {
+  // A checkout reached through a linked path: the script must not mistake itself for an import
+  // and print nothing, which would leave NODE_OPTIONS empty and every preload off.
+  const dir = mkdtempSync(join(tmpdir(), 'node-options-'));
+  try {
+    const link = join(dir, 'node-options.mjs');
+    symlinkSync(join(here, 'node-options.mjs'), link);
+    const printed = execFileSync(process.execPath, [link], { encoding: 'utf8' });
+    assert.equal(printed, nodeOptions());
+    assert.deepEqual(missingFrom(printed, preloads), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  // Twin: started by its own path, the same answer.
+  assert.equal(execFileSync(process.execPath, [join(here, 'node-options.mjs')], { encoding: 'utf8' }), nodeOptions());
 });
