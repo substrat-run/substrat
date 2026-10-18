@@ -57,7 +57,7 @@ export const maxBump = (a: Bump, b: Bump): Bump => (rank(a) >= rank(b) ? a : b);
 export const isBump = (s: string): s is Bump => (ORDER as readonly string[]).includes(s);
 
 /** The highest level among the changes; `none` when there are none. */
-export function bumpOf(changes: readonly Change[]): Bump {
+function bumpOf(changes: readonly Change[]): Bump {
   return changes.reduce<Bump>((acc, c) => maxBump(acc, c.level), 'none');
 }
 
@@ -95,7 +95,7 @@ function canon(v: unknown, stripAnnotations: boolean): string {
  * unresolved, a break inside a shared component reads as an unchanged `{"$ref": …}` on both
  * sides. A reference that loops back is left as the reference.
  */
-export function resolveRefs(node: unknown, root: unknown, seen: readonly string[] = []): unknown {
+export function resolveRefs(node: unknown, root: unknown = node, seen: readonly string[] = []): unknown {
   if (Array.isArray(node)) return node.map((v) => resolveRefs(v, root, seen));
   if (!isRecord(node)) return node;
   const ref = node.$ref;
@@ -150,7 +150,7 @@ const propertiesOf = (s: Record<string, unknown>): Record<string, unknown> =>
  * One schema against its base, keyword by keyword, pushing a change for each difference. `push`
  * carries the artifact; `path` names the place for a reader. Both schemas must be resolved.
  */
-export function compareSchema(
+function compareSchema(
   push: (level: Level, path: string, detail: string) => void,
   dir: Direction,
   path: string,
@@ -393,7 +393,7 @@ export function classifyModel(baseText: string | null, headText: string | null):
         push('major', `exports.${type}`, `schemaVersion changed from ${String(be.schemaVersion)} to ${String(he.schemaVersion)}`);
         return;
       }
-      compareSchema(push, 'output', `exports.${type}.payload`, resolveRefs(be.payload, be.payload), resolveRefs(he.payload, he.payload));
+      compareSchema(push, 'output', `exports.${type}.payload`, resolveRefs(be.payload), resolveRefs(he.payload));
       const { schemaVersion: _a, payload: _b, ...bRest } = be;
       const { schemaVersion: _c, payload: _d, ...hRest } = he;
       wholeValue(push, `exports.${type}`, bRest, hRest);
@@ -409,7 +409,7 @@ export function classifyModel(baseText: string | null, headText: string | null):
 
 function classifyEntity(push: Push, path: string, b: Record<string, unknown>, h: Record<string, unknown>): void {
   if (b.table !== h.table) push('major', `${path}.table`, `table renamed from ${String(b.table)} to ${String(h.table)}`);
-  compareSchema(push, 'output', `${path}.fields`, resolveRefs(b.fields, b.fields), resolveRefs(h.fields, h.fields));
+  compareSchema(push, 'output', `${path}.fields`, resolveRefs(b.fields), resolveRefs(h.fields));
 
   const erasable = setDiff(b.erasable, h.erasable);
   if (erasable.added.length) push('minor', `${path}.erasable`, `now erasable: ${erasable.added.join(', ')}`);

@@ -112,7 +112,7 @@ interface ChangesetConfig {
   readonly fixed: ReadonlySet<string>;
 }
 
-export function readChangesetConfig(changesetDir: string): ChangesetConfig {
+function readChangesetConfig(changesetDir: string): ChangesetConfig {
   const raw = JSON.parse(readFileSync(join(changesetDir, 'config.json'), 'utf8')) as { baseBranch?: unknown; fixed?: unknown };
   const fixed = new Set<string>();
   for (const group of Array.isArray(raw.fixed) ? raw.fixed : []) {
@@ -185,7 +185,7 @@ export function parseChangeset(file: string, text: string): Changeset {
 }
 
 /** Every changeset in the directory (README.md and config.json are not changesets). */
-export function readChangesets(changesetDir: string): Changeset[] {
+function readChangesets(changesetDir: string): Changeset[] {
   return readdirSync(changesetDir)
     .filter((f) => f.endsWith('.md') && f !== 'README.md')
     .sort()
@@ -262,7 +262,7 @@ export function defaultBase(changesetDir: string, root: string): string {
 const ghaEscape = (s: string) => s.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
 
 /** A warning line: a GitHub annotation in CI, plain text elsewhere. */
-export function warn(message: string): string {
+function warn(message: string): string {
   return process.env.GITHUB_ACTIONS ? `::warning::${ghaEscape(message)}` : `warning: ${message}`;
 }
 
@@ -337,7 +337,7 @@ export function checkPackages(
 }
 
 /** Where `substrat changeset` writes: a name that will not collide, readable in a PR's file list. */
-export function changesetFileName(pkg: string, bump: Bump): string {
+function changesetFileName(pkg: string, bump: Bump): string {
   const slug = basename(pkg).replace(/[^a-z0-9-]+/gi, '-').toLowerCase();
   const id = Array.from(globalThis.crypto.getRandomValues(new Uint8Array(4)), (b) => b.toString(16).padStart(2, '0')).join('');
   return `${slug}-${bump}-${id}.md`;
