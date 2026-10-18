@@ -52,8 +52,14 @@ plane before any script is put. Collect which name is absent and the wrangler er
 
 `substrat store-driver upload` stores the bytes. It does not put a script in front of
 a tenant. Pack the same directory the pin was built from (one `driver_graph/` package
-and its `python_modules/`), and pass the pin's source commit so a dirty tree cannot
-change the bytes:
+and its `python_modules/`). First check out the pin's source commit with a clean tree:
+the directory must be at that commit, with nothing untracked, ignored or edited in it.
+
+`--commit` only sets the label the release is stored and pinned under. It does not
+check the tree. Without `--commit` the command reads the checkout's own `HEAD` and
+refuses a dirty tree or an untracked file (`sourceCommitOf` in `packages/cli/src/store-driver.ts`).
+With `--commit <sha>` that check is skipped, so a dirty or wrong checkout is packed and
+labelled with the commit you named. The only guard left is the sha256 comparison below:
 
 ```text
 substrat store-driver upload --driver graph --dir <packed-release-dir> --entry driver_graph/store.py --commit f49ef6bb16691517a38fd36268ceb79834d6fbc6
