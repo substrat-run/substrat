@@ -454,6 +454,27 @@ describe('unrecognised structure is major — never a silent lower bump', () => 
     expect(oas((d) => (createBody(d).properties.name['x-hint'] = 'lowercase')).bump).toBe('patch');
   });
 
+  it("a `required` naming a property declared in another allOf branch is major, never none", () => {
+    const props = { type: 'object', properties: { a: { type: 'string' }, b: { type: 'string' } } };
+    const allOf = (required: string[], description?: string) => (d: Json) =>
+      (createList(d).requestBody.content['application/json'].schema = {
+        allOf: [props, { required, ...(description ? { description } : {}) }],
+      });
+    const base = clone(OAS);
+    allOf(['a'])(base);
+    const judge = (mutate: (d: Json) => void) => {
+      const head = clone(OAS);
+      mutate(head);
+      return classifyOpenApi(JSON.stringify(base), JSON.stringify(head));
+    };
+    expect(judge(allOf(['a', 'b'])).bump).toBe('major');
+    // The twins: the same branch re-described is documentation, and the same branch is nothing.
+    expect(judge(allOf(['a'], 'which fields')).bump).toBe('patch');
+    expect(judge(allOf(['a'])).bump).toBe('none');
+    // The same net at one level: a `required` with no `properties` beside it.
+    expect(oas((d) => (createBody(d).required = ['name', 'team'])).bump).toBe('major');
+  });
+
   it('an unknown top-level key in model.json is major; a known one restated is nothing', () => {
     const r = model((m) => (m.views = { open: { entity: 'item' } }));
     expect(r.bump).toBe('major');

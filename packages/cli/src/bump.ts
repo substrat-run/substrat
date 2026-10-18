@@ -167,6 +167,16 @@ function compareSchema(
     return;
   }
 
+  // The safety net, checked at the end: the two schemas differ in more than documentation, so
+  // if no rule below ranked anything, the difference is one this classifier did not read (a
+  // `required` naming a property declared in another `allOf` branch, say) — and that is major.
+  const outer = push;
+  let ranked = false;
+  push = (level, at, detail) => {
+    ranked = true;
+    outer(level, at, detail);
+  };
+
   if (canon(base.type, false) !== canon(head.type, false)) {
     push('major', path, `type changed from ${canon(base.type, false)} to ${canon(head.type, false)}`);
   }
@@ -264,6 +274,7 @@ function compareSchema(
       push('major', path, `'${k}' changed — not a change this classifier can rank, so judged as breaking`);
     }
   }
+  if (!ranked) outer('major', path, 'changed in a way no rule here reads, so judged as breaking');
 }
 
 // ─── shared helpers ───────────────────────────────────────────────────────────────────────────
