@@ -129,7 +129,7 @@ function renderKeys(keys: readonly string[], descriptions: ReadonlyMap<string, s
 
 function renderRoles({ permissionsMd }: ConceptInputs): string {
   if (permissionsMd === undefined) {
-    return '_No `PERMISSIONS.md` yet — run `pnpm lint:permissions`, then `substrat concept sync`._';
+    return '_No `PERMISSIONS.md` beside `model.json`, so no roles are listed. A vertical in the Substrat repository gets one from `pnpm lint:permissions`; a scaffolded project has no such command yet, so describe its roles in prose until it has._';
   }
   const view = parsePermissions(permissionsMd);
   const out: string[] = [];

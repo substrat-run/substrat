@@ -13,7 +13,7 @@ const model = (fields: string[]) =>
       list: { table: 't_lists', fields: { type: 'object', properties: Object.fromEntries(fields.map((f) => [f, { type: 'string' }])) } },
     },
   });
-const PERMISSIONS = '# P\n\n## 2. Roles\n\n| Role | Permissions |\n| --- | --- |\n| `member` | `list:create` |\n';
+const PERMISSIONS = '# P\n\n## 1. Registry\n\n| Key | Description | Declared by |\n| --- | --- | --- |\n| `list:create` | Create | `x` |\n\n## 2. Roles\n\n| Role | Permissions |\n| --- | --- |\n| `member` | `list:create` |\n';
 const DOC = `# Concept
 
 <!-- substrat:roles -->
@@ -129,4 +129,26 @@ test('a base that is not in the checkout is a refusal, never a pass', () => {
   const r = repo();
   seed(r);
   assert.throws(() => run(r.root, 'origin/nope'));
+});
+
+// A scaffold has no `lint:*` scripts (those are this repository's), so nothing it ships may
+// send its owner or agent to one: the review of #2373 found three such dead references.
+const TEMPLATE = join(import.meta.dirname, '../packages/create-substrat/template');
+
+test('the scaffold names no monorepo command in the concept document or the playbook text', () => {
+  const doc = readFileSync(join(TEMPLATE, 'spec/concept.md'), 'utf8');
+  const playbook = readFileSync(join(TEMPLATE, '.substrat/playbook.md'), 'utf8');
+  const section = playbook.slice(playbook.indexOf('**Run `substrat concept sync`'), playbook.indexOf('Behaviour stays prose'));
+  assert.ok(section.length > 100, 'the playbook paragraph was found');
+  for (const text of [doc, section]) assert.doesNotMatch(text, /lint:(concept|permissions|model)/);
+  assert.match(doc, /substrat concept sync --check/);
+});
+
+test('the scaffold concept document syncs cleanly, and a second sync changes nothing', () => {
+  const doc = readFileSync(join(TEMPLATE, 'spec/concept.md'), 'utf8');
+  const input = { model: JSON.parse(model(['id'])) };
+  const once = syncConcept(doc, input);
+  assert.match(once, /No `PERMISSIONS.md` beside `model.json`/);
+  assert.doesNotMatch(once, /lint:permissions`, then/);
+  assert.equal(syncConcept(once, input), once);
 });

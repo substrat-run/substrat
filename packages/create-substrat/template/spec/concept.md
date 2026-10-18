@@ -3,9 +3,10 @@ Status: draft v0.1 · Last updated: <date> · For review before any code
 # <The name of the thing you are building>
 
 This is the readable description of the app, for the people who own it. Three sections are
-written by the tools from the code (roles, entity model, processes) and the rest by hand.
-Do not edit between the `substrat:` markers: `substrat concept sync` rewrites them, and
-`pnpm lint:concept` fails when they are stale.
+written by `substrat concept sync` from the code (entity model and processes from `model.json`;
+roles from a `PERMISSIONS.md` beside it, when there is one) and the rest by hand. Do not edit
+between the `substrat:` markers: the next sync overwrites it, and `substrat concept sync --check`
+exits 1 while one is stale.
 
 ## 1. Purpose and users
 
