@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { PermissionDenied, type ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { externalInput, externalJson, problemResponse } from '@substrat-run/vertical-host';
+import { externalInput, externalJson, problemResponse, invocationLog } from '@substrat-run/vertical-host';
 import { resolvePrincipal, type AuthAdapter, type AuthResult } from './auth-adapters.js';
 
 /**
@@ -20,6 +20,10 @@ export function shopApi(
   auth: (req: Request) => Response | Promise<Response>,
 ): Hono {
   const app = new Hono();
+  // The request's stamp: an id on every response (`x-substrat-request-id`) and, under
+  // `substrat dev`, the HTTP half of its trace. FIRST, so it wraps every route below. Bare on
+  // purpose: no router fronts this server, so there is nothing to verify and no line to write.
+  app.use('*', invocationLog());
 
   async function resolve(c: Context): Promise<AuthResult> {
     const r = await resolvePrincipal(adapters, c.req.raw.headers);

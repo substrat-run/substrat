@@ -13,7 +13,7 @@ import {
   type TimelineEntry,
 } from '@substrat-run/contracts';
 import { PermissionDenied, ulid, type ScopeStub } from '@substrat-run/kernel';
-import { externalJson, mountOperations, problemResponse } from '@substrat-run/vertical-host';
+import { externalJson, mountOperations, problemResponse, invocationLog } from '@substrat-run/vertical-host';
 import {
   handlebarInvoicingRoutes,
   handlebarNotificationsRoutes,
@@ -55,6 +55,10 @@ const login = devLogin({ directory: host.admin, actor: staff, provider: DEV_PROV
 await linkDevPersonas(host, world);
 
 const app = new Hono();
+// The request's stamp: an id on every response (`x-substrat-request-id`) and, under
+// `substrat dev`, the HTTP half of its trace. FIRST, so it wraps every route below. Bare on
+// purpose: no router fronts this server, so there is nothing to verify and no line to write.
+app.use('*', invocationLog());
 
 /**
  * The caller, and the node they belong to. `login.caller` asks the directory which tenant

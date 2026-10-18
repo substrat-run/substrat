@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
+import { invocationLog } from '@substrat-run/vertical-host';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { platformActorId } from '@substrat-run/contracts';
@@ -71,6 +72,10 @@ const login = devLogin({
 });
 
 const app = new Hono();
+// The request's stamp: an id on every response (`x-substrat-request-id`) and, under
+// `substrat dev`, the HTTP half of its trace. FIRST, so it wraps every route below. Bare on
+// purpose: no router fronts this server, so there is nothing to verify and no line to write.
+app.use('*', invocationLog());
 
 // Login, callback, logout. Accounts and passwords live at the issuer; this vertical
 // runs no credential store of its own.

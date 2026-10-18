@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { globalFetch, startPlatformSweeper, ulid, type FetchLike, type ScopeStub } from '@substrat-run/kernel';
-import { externalInput, externalJson, problemResponse } from '@substrat-run/vertical-host';
+import { externalInput, externalJson, problemResponse, invocationLog } from '@substrat-run/vertical-host';
 import {
   ScriveMock,
   SCRIVE_TESTBED,
@@ -162,6 +162,10 @@ async function stub(c: Context): Promise<ScopeStub> {
 }
 
 const app = new Hono();
+// The request's stamp: an id on every response (`x-substrat-request-id`) and, under
+// `substrat dev`, the HTTP half of its trace. FIRST, so it wraps every route below. Bare on
+// purpose: no router fronts this server, so there is nothing to verify and no line to write.
+app.use('*', invocationLog());
 
 // The shared vocabulary decides the status and renders the body (#113 phase 4). An
 // explicit `HTTPException` status still wins — 401 for "nobody", which is not a refusal.

@@ -24,7 +24,7 @@ import type { Context } from 'hono';
 import { platformActorId } from '@substrat-run/contracts';
 import { devLogin } from '@substrat-run/dev-issuer';
 import { globalFetch, type ScopeHost } from '@substrat-run/kernel';
-import { mountLiveReads } from '@substrat-run/vertical-host';
+import { mountLiveReads, invocationLog } from '@substrat-run/vertical-host';
 import { createModelHost, type ModelAttribution, type ModelHost } from '@substrat-run/vertical-host/model';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { ticket0Manifest } from './manifest.js';
@@ -102,6 +102,10 @@ async function boot() {
   const model = describeModel(modelHost, process.env.TICKET0_MODEL);
 
   const app = new Hono();
+  // The request's stamp: an id on every response (`x-substrat-request-id`) and, under
+  // `substrat dev`, the HTTP half of its trace. FIRST, so it wraps every route below. Bare on
+  // purpose: no router fronts this server, so there is nothing to verify and no line to write.
+  app.use('*', invocationLog());
   const login = devLogin({ directory: host.admin, actor: staff, provider: DEV_PROVIDER });
 
   // ── The staff and portal surface ─────────────────────────────────────────
