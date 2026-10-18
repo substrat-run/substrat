@@ -1,5 +1,5 @@
 ---
-description: "A platform-run object per scope. The vertical declares a binding and a driver and calls it through getScopeStore. The graph driver is registered; its release is not uploaded, so nothing is live for a vertical today."
+description: "A platform-run object per scope, declared by a binding and a driver and called through getScopeStore. The graph driver is registered and its release is not uploaded, so nothing is live yet."
 ---
 
 # Scope stores
