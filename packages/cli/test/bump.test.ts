@@ -497,6 +497,17 @@ describe('openapi.json — what a caller reads (output)', () => {
     expect(oas((d) => (list(d).properties.due.anyOf = [{ type: 'string' }])).bump).toBe('major');
   });
 
+  it('the two documented limits hold: alternatives reordered are major, a component renamed is none', () => {
+    expect(oas((d) => list(d).properties.due.anyOf.reverse()).bump).toBe('major');
+    const renamed = oas((d) => {
+      d.components.schemas.ListView = d.components.schemas.List;
+      delete d.components.schemas.List;
+      const json = JSON.stringify(d.paths).replaceAll('#/components/schemas/List"', '#/components/schemas/ListView"');
+      d.paths = JSON.parse(json);
+    });
+    expect(renamed.bump).toBe('none');
+  });
+
   it('a response schema reached through components.responses is compared too', () => {
     expect(oas((d) => delete d.components.responses.Forbidden.content['application/problem+json'].schema.properties.title).bump).toBe('major');
     expect(oas((d) => (d.components.responses.Forbidden.content['application/problem+json'].schema.properties.code = { type: 'string' })).bump).toBe('minor');

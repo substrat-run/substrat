@@ -33,6 +33,16 @@
  * patch. A false major costs a reviewed override line in the changeset; a false patch costs a
  * broken consumer. Teach this file the new shape instead.
  *
+ * Two known limits, both stated rather than fixed:
+ *
+ *   - **Alternatives reordered rank major.** `anyOf`/`oneOf`/`allOf` branches are compared by
+ *     position (the emitter writes them in declaration order), so a reorder with no other change
+ *     reads as every branch changing. The safe direction: a reviewed override covers it.
+ *   - **A component renamed with identical content ranks none.** `$ref`s are resolved before
+ *     comparing, so `#/components/schemas/A` → `B` is invisible, although a client generated from
+ *     `openapi.json` names its types after components. Nothing a caller sends or reads changed,
+ *     and this repo's browser client is generated from `spec/model.ts`, not from component names.
+ *
  * Pure: two texts in, a classification out. The filesystem and git half is `changeset.ts`. It
  * reads the artifacts, never the TypeScript, which is what keeps it valid across a change of
  * authoring notation (`tools/model-diff.mts`). The same classifier is what `substrat changeset`
