@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { ulid, type OrphanSweepReport } from '@substrat-run/kernel';
-import { platformActorId, scopeId, tenantId, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import { ORPHAN_SWEEP_UNLICENSED, refuseUnlicensedOrphanSweep, ulid, type OrphanSweepReport } from '@substrat-run/kernel';
+import { platformActorId, scopeId, tenantId, toProblem, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { ControlPlaneError, sweepScopeAttachments, VerticalClient } from '../src/index.js';
 
 /**
@@ -188,6 +188,30 @@ describe('sweepScopeAttachments (#2314)', () => {
       expect(await sweepScopeAttachments(failing(promoted), t, s, { dryRun: false })).toEqual({ refused: expect.stringMatching(/runs version B, not A/) });
     });
 
+    it("a destructive pass the scope refuses for want of its own licence (#2350) is unlicensed, read off the wire", async () => {
+      const s = await provision();
+      // The kernel's own refusal, rendered as a deployment renders it, and read back by the client.
+      const thrown = (() => {
+        try {
+          refuseUnlicensedOrphanSweep({ query: () => [], exec: () => ({ changes: 0 }) }, new Date().toISOString());
+        } catch (e) {
+          return e;
+        }
+        throw new Error('expected a refusal');
+      })();
+      const body = toProblem(thrown);
+      expect(body).toMatchObject({ reason: ORPHAN_SWEEP_UNLICENSED });
+      const client = new VerticalClient({
+        platformSecret: 'x',
+        fetch: async () => new Response(JSON.stringify(body), { status: 409, headers: { 'content-type': 'application/problem+json' } }),
+      });
+      const wired = { admin: host.admin, actor: staff, resolveRef: async () => client };
+      expect(await sweepScopeAttachments(wired, t, s, { dryRun: false })).toEqual({ unlicensed: expect.stringMatching(/no orphan-sweep dry run/) });
+      // The twin: the same status with any other reason stays a refusal.
+      const other = new ControlPlaneError(409, 'is a copy', undefined, { body: JSON.stringify({ code: 'conflict', reason: 'something_else' }) });
+      expect(await sweepScopeAttachments(failing(other), t, s, { dryRun: false })).toEqual({ refused: 'is a copy' });
+    });
+
     it("the deployment's own refusal (a conflict, a JSON not-found) is a refusal", async () => {
       const s = await provision();
       for (const err of [new ControlPlaneError(409, 'is a copy'), new ControlPlaneError(404, 'unknown scope', undefined, { body: '{"error":"unknown scope"}' })]) {
@@ -220,6 +244,11 @@ describe('VerticalClient.sweepOrphanAttachments (#2314)', () => {
     const report = { listed: 0, candidates: 0, orphans: 0, deleted: 0, keys: [], dryRun: false, bucket: 'none' };
     expect(await clientAnswering(200, report, sent).sweepOrphanAttachments({ tenantId: t, scopeId: s, dryRun: false, copiesSettled: true, expectedVersionId: 'v9' })).toEqual(report);
     expect(sent).toEqual([{ tenantId: t, scopeId: s, dryRun: false, copiesSettled: true, expectedVersionId: 'v9' }]);
+  });
+
+  it('carries a failed licence consume through (#2350)', async () => {
+    const report = { listed: 1, candidates: 1, orphans: 1, deleted: 1, keys: ['k'], dryRun: false, consumeFailed: true };
+    expect(await clientAnswering(200, report).sweepOrphanAttachments({ tenantId: t, scopeId: s, dryRun: false, copiesSettled: true, expectedVersionId: 'v9' })).toEqual(report);
   });
 
   it('a 200 that is not a report throws rather than reading as a clean pass', async () => {

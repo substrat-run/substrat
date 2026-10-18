@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { NO_APPLICATION_DETAIL, projectedConnectionGrant, PLATFORM_SECRET_HEADER, SCOPE_GATE_REASONS, substratError } from '@substrat-run/contracts';
+import { ORPHAN_SWEEP_UNLICENSED } from '@substrat-run/kernel';
 import { mountPlatformSurface, type VerticalScopeHost } from '../src/index.js';
 import { registeredScopeSweepHost } from '../src/scope-sweep-host.js';
 
@@ -629,6 +630,43 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     const refused = await post(fakeHost(), body);
     expect(refused.status).toBe(501);
     expect((await refused.json()).error).toMatch(/orphan attachments/);
+  });
+
+  // #2350: a destructive pass that could not bring the scope's licence up to date says so in the
+  // deployment's own line too, beside the keys it deleted.
+  it("names a failed licence update in a destructive pass's log line", async () => {
+    const report = { listed: 1, candidates: 1, orphans: 1, deleted: 1, keys: ['k'], dryRun: false, consumeFailed: true as const };
+    const host = fakeHost({ sweepOrphanAttachments: async () => report });
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const res = await appWith(host).request('/internal/attachment-sweep', {
+        method: 'POST',
+        headers: { ...authed(), 'content-type': 'application/json' },
+        body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, dryRun: false, copiesSettled: true, expectedVersionId: 'v1' }),
+      }, ENV);
+      expect(res.status).toBe(200);
+      expect(JSON.parse(String(logged.mock.calls[0]![0]))).toMatchObject({ host: 'orphan-attachment-sweep', deleted: 1, consumeFailed: true, keys: ['k'] });
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  // #2350: a destructive pass the scope refuses for want of its own dry-run licence answers a 409
+  // whose problem document carries the reason, which is what the platform's phase reads to dry-run
+  // the scope in the same visit instead of counting it refused.
+  it('answers an unlicensed destructive pass with a conflict that carries its reason', async () => {
+    const host = fakeHost({
+      sweepOrphanAttachments: async () => {
+        throw substratError('conflict', 'refused: this scope holds no orphan-sweep dry run', { reason: ORPHAN_SWEEP_UNLICENSED });
+      },
+    });
+    const res = await appWith(host).request('/internal/attachment-sweep', {
+      method: 'POST',
+      headers: { ...authed(), 'content-type': 'application/json' },
+      body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, dryRun: false, copiesSettled: true, expectedVersionId: 'v1' }),
+    }, ENV);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'conflict', reason: ORPHAN_SWEEP_UNLICENSED });
   });
 
   // #618: the journal read is the platform's door to a settled intent's full `last_error`,
