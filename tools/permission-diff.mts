@@ -333,7 +333,7 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
   if (reserved.length) cannot(reservedKeyMessage(rel, entry, reserved));
 
   const holders = new Map<string, string[]>();
-  for (const r of roles) for (const p of r.permissions) holders.set(p, [...(holders.get(p) ?? []), r.holder === 'system' ? `${r.key} (system)` : r.key]);
+  for (const r of roles) for (const p of r.permissions) holders.set(p, [...(holders.get(p) ?? []), r.key]);
 
   const registry = [...declaredBy.entries()].map(([key, v]) => ({ key, ...v })).sort(byKey);
   const out: string[] = [];

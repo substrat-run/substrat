@@ -106,3 +106,29 @@ test('…and refuses a system-held role holding a person-grade key', () => {
   assert.equal(r.status, 2);
   assert.match(r.stderr, /system-held role assistant-host → assistant:use/);
 });
+
+test('a system-held role holding no reserved key is an offence, not a vacuous pass', () => {
+  const o = reservedKeyOffences({ ...none, roles: [{ key: 'x', holder: 'system', permissions: [] }] });
+  assert.deepEqual(o, [{ where: 'system-held role x', key: '(none)', notReserved: true, empty: true }]);
+});
+
+test('the message header follows the offence kind, and the remedy is not circular', () => {
+  const m = reservedKeyMessage('demos/x', 'src/p.ts', [
+    { where: 'system-held role h', key: 'assistant:use', notReserved: true },
+  ]);
+  assert.match(m, /declares a system-held role that is not made of keys reserved/);
+  assert.doesNotMatch(m, /to a person's role or grant shape/);
+});
+
+test('…and the tool refuses an empty system-held role end to end', () => {
+  const r = run(fixture([{ key: 'assistant-host', holder: 'system', permissions: [] }]));
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /at least one key reserved/);
+});
+
+test('the Held-by column keeps the bare role key', () => {
+  const dir = fixture([{ key: 'assistant-host', holder: 'system', permissions: ['assistant:run'] }]);
+  assert.equal(run(dir).status, 0);
+  const md = readFileSync(join(dir, 'PERMISSIONS.md'), 'utf8');
+  assert.doesNotMatch(md, /\(system\)/);
+});
