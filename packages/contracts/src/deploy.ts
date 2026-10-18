@@ -409,8 +409,28 @@ const PYTHON_DRIVER_MODULE = /^(driver_[a-z0-9_]+)(?:\/[A-Za-z_][A-Za-z0-9_]*)*\
 /** One segment of a vendored path: no empty segment, no `.` or `..`, no leading dot. */
 const VENDORED_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/;
 
-/** Top-level names the Python workers runtime provides. A release must not shadow them. */
-const PYTHON_RUNTIME_TOP = new Set(['workers', 'js', 'pyodide']);
+/**
+ * The top-level names a vendored path may not take (#2390), each with why. A path's top-level
+ * name is its first segment under `python_modules/` up to the first `.` or `-`, so a package
+ * directory, a module, a compiled extension and a distribution's metadata all read as the name
+ * they would be imported or installed as: `workers/`, `workers.py`, `workers.cpython-312.so` and
+ * `workers_runtime_sdk-1.9.3.dist-info` are `workers`, `workers`, `workers` and
+ * `workers_runtime_sdk`. A `prefix` row refuses every name that starts with one of its `names`.
+ */
+const PYTHON_VENDORED_RESERVED: readonly { readonly match: 'name' | 'prefix'; readonly names: readonly string[]; readonly why: string }[] = [
+  { match: 'prefix', names: ['driver_'], why: 'it takes the driver package prefix' },
+  { match: 'prefix', names: ['substrat_'], why: "it takes the entry's prefix" },
+  { match: 'name', names: ['workers', 'workers_runtime_sdk', 'workers_py'], why: "it is the workers runtime SDK, which is the platform's runtime, not a vendored copy" },
+  { match: 'prefix', names: ['_workers_sdk'], why: "it is the workers runtime SDK, which is the platform's runtime, not a vendored copy" },
+  { match: 'name', names: ['js', 'pyodide'], why: 'the Python workers runtime provides it' },
+];
+
+/** The file names a vendored path may not end in, each with why: installer output, not a dependency. */
+const PYTHON_VENDORED_FILES: readonly { readonly match: 'name' | 'suffix'; readonly names: readonly string[]; readonly why: string }[] = [
+  { match: 'suffix', names: ['.pth'], why: 'a path file runs code when the interpreter starts' },
+  { match: 'name', names: ['pyvenv.cfg'], why: "it is a virtual environment's marker" },
+  { match: 'suffix', names: ['.synced'], why: "it is an installer's sync marker" },
+];
 
 export type PythonStoreModuleClass = { readonly kind: 'driver'; readonly packageName: string } | { readonly kind: 'vendored' };
 
@@ -424,9 +444,8 @@ function refusePythonStoreModule(name: string, why: string): never {
  * The driver's own code is one `driver_<package>/…/<module>.py` file. Beside that package a
  * release may carry `python_modules/<path>`, the driver's dependencies, which the upload sends
  * as Data modules under the same names. Refused: a path that climbs (`..`), is absolute, or
- * contains a backslash; a vendored top-level name that starts with `driver_` or `substrat_`;
- * `workers`, `js`, `pyodide` and the workers runtime SDK (its package, its JavaScript, and the
- * files it ships beside them); a `.pth` file, `pyvenv.cfg`, or a `.synced` marker.
+ * contains a backslash; a vendored top-level name in {@link PYTHON_VENDORED_RESERVED}; a vendored
+ * file in {@link PYTHON_VENDORED_FILES}.
  *
  * The script imports `workers` from the Python workers runtime the upload selects, not from a
  * copy in the bundle. A lock file is not a module here.
@@ -445,30 +464,16 @@ export function classifyPythonStoreModule(name: string): PythonStoreModuleClass 
     refusePythonStoreModule(name, 'a driver module is driver_<package>/…/<module>.py, or a dependency is python_modules/<path>');
   }
   const rest = parts.slice(1);
-  const top = rest[0]!;
+  const top = rest[0]!.split(/[.-]/)[0]!;
+  const reserved = PYTHON_VENDORED_RESERVED.find((row) =>
+    row.names.some((reservedName) => (row.match === 'name' ? top === reservedName : top.startsWith(reservedName))),
+  );
+  if (reserved) refusePythonStoreModule(name, `a vendored path may not take the top-level name '${top}': ${reserved.why}`);
   const file = rest[rest.length - 1]!;
-  const stem = top.replace(/\.[^.]+$/, '');
-  if (top.startsWith('driver_') || top.startsWith('substrat_') || stem.startsWith('driver_') || stem.startsWith('substrat_')) {
-    refusePythonStoreModule(name, 'a vendored path may not take the driver package prefix or the entry prefix');
-  }
-  if (
-    PYTHON_RUNTIME_TOP.has(top) ||
-    PYTHON_RUNTIME_TOP.has(stem) ||
-    top.startsWith('_workers_sdk') ||
-    stem.startsWith('_workers_sdk') ||
-    top.startsWith('workers_runtime_sdk') ||
-    top.startsWith('workers-runtime-sdk') ||
-    top === 'workers-py' ||
-    top === 'workers_py'
-  ) {
-    refusePythonStoreModule(name, "the workers runtime SDK is the platform's runtime, not a vendored copy");
-  }
-  if (file.endsWith('.pth') || file === 'pyvenv.cfg' || file.endsWith('.synced')) {
-    refusePythonStoreModule(name, 'a vendored path may not carry a path file, pyvenv.cfg or a sync marker');
-  }
-  if (parts.some((part) => part.endsWith('.js') && (part.startsWith('_workers_sdk') || part.startsWith('workers_runtime')))) {
-    refusePythonStoreModule(name, "the workers runtime SDK is the platform's runtime, not a vendored copy");
-  }
+  const installer = PYTHON_VENDORED_FILES.find((row) =>
+    row.names.some((fileName) => (row.match === 'name' ? file === fileName : file.endsWith(fileName))),
+  );
+  if (installer) refusePythonStoreModule(name, installer.why);
   if (!rest.every((part) => VENDORED_SEGMENT.test(part))) {
     refusePythonStoreModule(name, 'a vendored path is relative segments');
   }
