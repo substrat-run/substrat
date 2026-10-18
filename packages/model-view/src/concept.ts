@@ -175,11 +175,37 @@ function attributeType(schema: unknown): string {
 /** Mermaid's escape for a double quote inside a quoted label. */
 const label = (text: string): string => `"${text.replace(/"/g, '#quot;').replace(/\s+/g, ' ')}"`;
 
-/** An ER attribute name Mermaid accepts: word characters only, and not one of its key words. */
-const attributeName = (field: string): string => {
-  const word = field.replace(/[^A-Za-z0-9_]/g, '_');
-  return /^(PK|FK|UK)$/i.test(word) ? `${word}_` : word;
-};
+const PLAIN_ATTRIBUTE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const ATTRIBUTE_KEYWORD = /^(PK|FK|UK)$/i;
+
+/**
+ * An id Mermaid accepts for each field, distinct within the entity. A field that is already a
+ * plain word keeps its name (claimed first, so no other field can take it); the rest are made
+ * into words and suffixed `_2`, `_3`… on a clash, in sorted order so the result is stable. The
+ * real name rides along as the attribute's quoted comment whenever the id differs from it.
+ */
+function attributeNames(fields: readonly string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const taken = new Set<string>();
+  const sorted = [...fields].sort();
+  for (const f of sorted) {
+    if (PLAIN_ATTRIBUTE.test(f) && !ATTRIBUTE_KEYWORD.test(f)) {
+      out.set(f, f);
+      taken.add(f);
+    }
+  }
+  for (const f of sorted) {
+    if (out.has(f)) continue;
+    let base = f.replace(/[^A-Za-z0-9_]/g, '_');
+    if (!/^[A-Za-z_]/.test(base)) base = `f_${base}`;
+    if (ATTRIBUTE_KEYWORD.test(base)) base = `${base}_`;
+    let id = base;
+    for (let n = 2; taken.has(id); n++) id = `${base}_${n}`;
+    out.set(f, id);
+    taken.add(id);
+  }
+  return out;
+}
 
 function renderEntities({ model }: ConceptInputs): string {
   const names = Object.keys(model.entities).sort();
@@ -198,9 +224,11 @@ function renderEntities({ model }: ConceptInputs): string {
     for (const parent of [...(e.parents ?? [])].sort()) edges.push(`    ${alias.get(parent)} ||--o{ ${alias.get(name)} : has`);
     const props = ((e.fields as { properties?: Record<string, unknown> }).properties ?? {}) as Record<string, unknown>;
     const pk = new Set(e.primaryKey ?? ['id']);
-    const attrs = Object.keys(props)
-      .sort()
-      .map((f) => `        ${attributeType(props[f])} ${attributeName(f)}${pk.has(f) ? ' PK' : ''}`);
+    const ids = attributeNames(Object.keys(props));
+    const attrs = [...ids.keys()].sort().map((f) => {
+      const id = ids.get(f);
+      return `        ${attributeType(props[f])} ${id}${pk.has(f) ? ' PK' : ''}${id === f ? '' : ` ${label(f)}`}`;
+    });
     nodes.push(`    ${alias.get(name)}[${label(name)}] {`, ...attrs, '    }');
   }
   // A parent no entity declares (the platform's `owner`, say) still gets its edge, as a bare box.

@@ -151,8 +151,27 @@ describe('syncConcept', () => {
     expect(out).toContain('e1["my entity"] {');
     expect(out).toContain('e2 ||--o{ e1 : has');
     expect(out).toContain('e2["own-er"] {');
-    expect(out).toContain('string PK_');
+    expect(out).toContain('string PK_ "PK"');
     expect(out).not.toMatch(/^ {4}(to-do|in-progress|own-er)\b/m);
+  });
+
+  it('gives colliding and non-ASCII field names distinct ids, with the real name as the comment', () => {
+    const fields = ['with-dash', 'with_dash', 'PK', 'PK_', 'größe', '1st', 'id'];
+    const m: EmittedModel = {
+      entities: { t: { table: 't', fields: { type: 'object', properties: Object.fromEntries(fields.map((f) => [f, { type: 'string' }])) } } },
+    };
+    const out = syncConcept(DOC, { model: m });
+    const attrs = [...out.matchAll(/^ {8}string (\S+)(?: PK)?(?: "(.*)")?$/gm)].map((x) => [x[1], x[2]]);
+    expect(new Set(attrs.map((a) => a[0])).size).toBe(fields.length);
+    expect(Object.fromEntries(attrs.map(([id, real]) => [real ?? id, id]))).toEqual({
+      '1st': 'f_1st',
+      PK: 'PK__2',
+      PK_: 'PK_',
+      id: 'id',
+      'with-dash': 'with_dash_2',
+      with_dash: 'with_dash',
+      größe: 'gr__e',
+    });
   });
 
   it('goes stale when the model changes — a new field changes the output', () => {
