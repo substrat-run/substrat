@@ -6,6 +6,17 @@ import { MOCK_APP_DEPLOYMENTS } from '../src/lib/mock-deployments';
 import { updatePlacement } from '../src/lib/release-ledger';
 import { Deployments } from '../src/views/AppDetail';
 
+// The team client the cards reach through `teamApi(teamId)` (#2170); the wire is `deployments-client.test.ts`.
+const client = vi.hoisted(() => ({
+  getDeploymentReleases: vi.fn(),
+  listChannelHistory: vi.fn(),
+  getPromotionReview: vi.fn(),
+}));
+vi.mock('../src/lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/lib/api')>()),
+  teamApi: () => client,
+}));
+
 /**
  * The Update action is the one action on the Deployments tab (#1767). It moved from the
  * Running bar into the comparison card's header, so where it renders — and that it
@@ -35,13 +46,13 @@ describe('Deployments tab — the Update action', () => {
     // Every secondary read fails: the Update action must not depend on any of them.
     const refuse = () => Promise.reject(new Error('not served'));
     vi.spyOn(api, 'appBookmarks').mockImplementation(refuse);
-    vi.spyOn(api, 'listReleases').mockImplementation(refuse);
-    vi.spyOn(api, 'channelHistory').mockImplementation(refuse);
+    client.getDeploymentReleases.mockImplementation(refuse);
+    client.listChannelHistory.mockImplementation(refuse);
     vi.spyOn(api, 'releaseComparison').mockImplementation(refuse);
     vi.spyOn(api, 'appPermissions').mockImplementation(refuse);
     vi.spyOn(api, 'appModel').mockImplementation(refuse);
     vi.spyOn(api, 'appMigrations').mockImplementation(refuse);
-    vi.spyOn(api, 'promoteReview').mockImplementation(refuse);
+    client.getPromotionReview.mockImplementation(refuse);
   });
   afterEach(() => {
     act(() => root.unmount());
@@ -51,7 +62,7 @@ describe('Deployments tab — the Update action', () => {
 
   const render = async (dep: AppDeployments) => {
     vi.spyOn(api, 'appDeployments').mockResolvedValue(dep);
-    await act(async () => root.render(<Deployments app={app} />));
+    await act(async () => root.render(<Deployments teamId="T1" app={app} />));
   };
   const updateButtons = () => [...container.querySelectorAll('button')].filter((b) => /^Update (this app|to latest)$/.test(b.textContent ?? ''));
   const comparisonHeader = () => [...container.querySelectorAll('span')].find((s) => s.textContent === 'Release comparison')!.parentElement!;
@@ -102,7 +113,7 @@ describe('Deployments tab — the Update action', () => {
 
     it('walks older pages until an admitted version is found, then offers the promotion', async () => {
       const spy = vi.spyOn(api, 'appDeployments').mockImplementation((_s, o) => Promise.resolve(o?.cursor === 'c1' ? page2 : page1));
-      await act(async () => root.render(<Deployments app={app} />));
+      await act(async () => root.render(<Deployments teamId="T1" app={app} />));
       expect(spy).toHaveBeenCalledTimes(2);
       const header = comparisonHeader();
       expect(header.textContent).toContain('0.4.0-beta.7');
@@ -111,7 +122,7 @@ describe('Deployments tab — the Update action', () => {
 
     it('when the look fails, says it does not know rather than claiming the latest', async () => {
       vi.spyOn(api, 'appDeployments').mockImplementation((_s, o) => (o?.cursor === 'c1' ? Promise.reject(new Error('down')) : Promise.resolve(page1)));
-      await act(async () => root.render(<Deployments app={app} />));
+      await act(async () => root.render(<Deployments teamId="T1" app={app} />));
       expect(container.textContent).toContain('Could not check whether a newer version is waiting for prod.');
       expect(container.textContent).not.toContain('Running the latest version');
       expect(updateButtons()).toHaveLength(0);

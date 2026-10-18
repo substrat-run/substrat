@@ -11,7 +11,7 @@ import type { PromotionReview } from '../src/promotion-review.js';
 import { classifyRefusal, planPermission, promoteWithCheckpoint, type Acks, type Checkpoint, type PromoteReviewWire, type SentAcks } from '../web/src/lib/promote-review.js';
 
 /**
- * `GET /api/deployments/:slug/promote-review` and the dialog's logic against the REAL gate
+ * `GET /api/teams/:teamId/deployments/:slug/promote-review` and the dialog's logic against the REAL gate
  * (#1677). Same harness as `deployments-role-gate.test.ts` — the worker driven the way a
  * request reaches it, the control plane behind the service binding the real
  * `createControlPlaneApi` over a SQLite host — except that nothing about the promote is
@@ -193,7 +193,7 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
 
   const get = (sub: string | null, path: string) =>
     app.request(path, { method: 'GET', headers: sub ? { cookie: `sb_session=${sub}` } : {} }, env);
-  const reviewPath = (versionId: string, slug = SLUG) => `/api/deployments/${encodeURIComponent(slug)}/promote-review?versionId=${versionId}`;
+  const reviewPath = (versionId: string, slug = SLUG) => `/api/teams/${tenant}/deployments/${encodeURIComponent(slug)}/promote-review?versionId=${versionId}`;
   const promoteTo = (id: string, ack?: SentAcks) => host.admin.promoteVersion(staff, SLUG, 'prod', id, ack);
   const prod = async () => (await host.admin.listChannels(staff, SLUG)).find((c) => c.channel === 'prod')?.versionId ?? null;
 
@@ -241,7 +241,7 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
 
     it('is refused without a session, without a version, and for a vertical the team does not own', async () => {
       expect((await get(null, reviewPath(v.v2))).status).toBe(401);
-      expect((await get(subs.owner, `/api/deployments/${encodeURIComponent(SLUG)}/promote-review`)).status).toBe(400);
+      expect((await get(subs.owner, `/api/teams/${tenant}/deployments/${encodeURIComponent(SLUG)}/promote-review`)).status).toBe(400);
       await host.admin.registerVertical(staff, { slug: 'other/billing', name: 'Billing', source: 'cli', ownerTenant: tenantId.parse(ulid()) });
       expect((await get(subs.owner, reviewPath(v.v2, 'other/billing'))).status).toBe(404);
     });
@@ -510,7 +510,7 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
   describe('the worker relays a review refusal with its reason (#2333)', () => {
     const post = (body: unknown) =>
       app.request(
-        `/api/deployments/${encodeURIComponent(SLUG)}/promote`,
+        `/api/teams/${tenant}/deployments/${encodeURIComponent(SLUG)}/promote`,
         { method: 'POST', headers: { cookie: `sb_session=${subs.owner}`, 'content-type': 'application/json' }, body: JSON.stringify(body) },
         env,
       );
@@ -528,7 +528,8 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
 
       const again = ((await (await get(subs.owner, reviewPath(v.v3))).json()) as PromoteReviewWire).review!;
       const ok = await post({ channel: 'prod', versionId: v.v3, acknowledge: { permissionChange: true, migrationChange: true, review: again } });
-      expect(ok.status).toBe(204);
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toEqual({ promoted: true });
       expect(await prod()).toBe(v.v3);
     });
 
@@ -543,7 +544,7 @@ describe('the promote review and the checkpoint against the real gate (#1677)', 
       await promoteTo(v.v1);
       const shown = ((await (await get(subs.viewer, reviewPath(v.v3))).json()) as PromoteReviewWire).review!;
       const res = await app.request(
-        `/api/deployments/${encodeURIComponent(SLUG)}/promote`,
+        `/api/teams/${tenant}/deployments/${encodeURIComponent(SLUG)}/promote`,
         { method: 'POST', headers: { cookie: `sb_session=${subs.viewer}`, 'content-type': 'application/json' }, body: JSON.stringify({ channel: 'prod', versionId: v.v3, acknowledge: { migrationChange: true, review: shown } }) },
         env,
       );

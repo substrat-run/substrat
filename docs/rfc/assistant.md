@@ -950,8 +950,8 @@ What that buys:
 
 **How a dashboard tool is authorized, which is not how §6.1 describes a vertical's.** The
 dashboard's reads are Hono routes in `apps/dashboard/src/worker.ts`, not scope operations,
-and no `assertAllowed` stands in front of them. Take `/api/deployments/:slug/issues`: it
-resolves the account from the session and team cookies (`resolveAccount`), takes a control
+and no `assertAllowed` stands in front of them. Take `/api/teams/:teamId/deployments/:slug/issues`: it
+resolves the account from the session and the team its path names (`teamContext`), takes a control
 plane narrowed to that tenant by a tenant token, and checks ownership of the slug
 (`assertOwnedFromCp`); only then does it call the pure `deriveFailureGroups`, which checks
 nothing. So for P1:
