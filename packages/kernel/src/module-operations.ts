@@ -198,16 +198,14 @@ type Exact<Ops, H> = { readonly [K in Exclude<keyof H, keyof Ops>]: never } & ([
 export function operationsFor<const Ops extends Record<string, object>>(declaration: Ops) {
   return <const H extends OperationImpl<Ops, OperationContext>>(
     handlers: H & Exact<Omit<Ops, DerivedKeys<Ops>>, H>,
-  ): { operations: BoundOperations<H> } => {
-    return {
-      operations: new BoundOperations<H>(MINT, withDerivedHandlers(declaration, handlers), {
-        inputs: operationInputsOf(declaration),
-        concurrency: operationConcurrencyOf(declaration),
-        idempotencyOptOuts: operationIdempotencyOptOutsOf(declaration),
-        checkHeld: checkHeldOf(declaration),
-      }),
-    };
-  };
+  ): { operations: BoundOperations<H> } => ({
+    operations: new BoundOperations<H>(MINT, withDerivedHandlers(declaration, handlers), {
+      inputs: operationInputsOf(declaration),
+      concurrency: operationConcurrencyOf(declaration),
+      idempotencyOptOuts: operationIdempotencyOptOutsOf(declaration),
+      checkHeld: checkHeldOf(declaration),
+    }),
+  });
 }
 
 /**
