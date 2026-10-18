@@ -225,3 +225,18 @@ function d(ctx, id) { ctx.sql.exec('REPLACE INTO shop_orders (id, note) VALUES (
 function e(ctx, id) { ctx.sql.exec('REPLACE INTO shop_lines (id, status) VALUES (?, ?)', [id, 'x']); }`;
   assert.deepEqual(at(text), [2, 3]);
 });
+
+test('a subquery before the state column does not end the SET list at its WHERE', () => {
+  const text = `
+function a(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET total = (SELECT sum(x) FROM shop_lines WHERE shop_lines.o = ?), status = ? WHERE id = ?', [id, 'x', id]); }
+function b(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET (note, status) = (SELECT n, s FROM shop_lines WHERE id = ?) WHERE id = ?', [id, id]); }
+function c(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET total = (SELECT count(*) FROM shop_lines WHERE status = ?) WHERE id = ?', ['x', id]); }`;
+  assert.deepEqual(at(text), [2, 3]);
+});
+
+test('KNOWN LIMIT: a semicolon inside a SQL string literal ends the SET list early', () => {
+  // Reading past it would let the match leave the SQL string and run into the code after it.
+  const text = `
+function a(ctx, id) { ctx.sql.exec("UPDATE shop_orders SET note = 'a;b', status = ? WHERE id = ?", ['x', id]); }`;
+  assert.deepEqual(at(text), []);
+});

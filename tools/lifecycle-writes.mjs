@@ -28,7 +28,9 @@
  *
  * **What this is, and is not.** A tripwire that reads text: SQL assembled across modules, a
  * table name interpolated, or a guard asked in another file gets past it, or is reported when it
- * should not be. A guard also counts whichever lifecycle it names, so asking about one entity
+ * should not be. A `;` inside a SQL string literal ends a SET list early (reading past it would let
+ * the match leave the SQL and run into the code after it), so a state column after one is not seen.
+ * A guard also counts whichever lifecycle it names, so asking about one entity
  * covers a write of another's state in the same function (a fixture pins that gap). Which edge an
  * operation takes is the compiler's and the reader's. On main and
  * across the 208 commits before it that touched a package with a lifecycle, it reports nothing.
@@ -132,7 +134,11 @@ export function stateWrite(table, field) {
   const fl = escape(field);
   const target = String.raw`(?:${IDENT}\s*\.\s*)?(?:"${t}"|\[${t}\]|\x60${t}\x60|${t}\b)`;
   const col = String.raw`(?:"${fl}"|\[${fl}\]|\x60${fl}\x60|\b${fl}\b)`;
-  const set = String.raw`SET\b(?:(?!\b(?:WHERE|RETURNING)\b)[^;\x60])*?(?:${col}\s*=|${col}(?:\s*,[^()=;]*)?\)\s*=)`;
+  // A parenthesised group (a subquery, a call), two levels deep, is read whole, so its WHERE does
+  // not end the list; anything else ends at WHERE, RETURNING or `;`.
+  const group = String.raw`\((?:[^();\x60]|\([^();\x60]*\))*\)`;
+  const rowValue = String.raw`\((?:[^()=;\x60]*,\s*)?${col}(?:\s*,[^()=;\x60]*)?\)\s*=`;
+  const set = String.raw`SET\b(?:${group}|(?!\b(?:WHERE|RETURNING)\b)[^;\x60()])*?(?:${col}\s*=|${rowValue})`;
   const update = String.raw`\bUPDATE\s+(?:OR\s+\w+\s+)?${target}(?:\s+AS\s+\w+)?\s+${set}`;
   const upsert = String.raw`\bINSERT\s+(?:OR\s+\w+\s+)?INTO\s+${target}[^;\x60]*?\bDO\s+UPDATE\s+${set}`;
   const replace = String.raw`\bREPLACE\s+INTO\s+${target}\s*\([^)]*?${col}`;
