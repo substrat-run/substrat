@@ -1,6 +1,6 @@
 import { SHARED_ISSUER_CONFIG_KEY, parsePlatformBaseDomains, resolveScopedEnvSpec, z, type EnvVarSpec } from '@substrat-run/contracts';
 import { issuerRefusal } from '@substrat-run/oidc-rp/discovery';
-import { oidcAuthProvider } from './oidc.js';
+import { oidcAuthProvider, type DelegationOption } from './oidc.js';
 import { oidcRpAuthProvider } from './oidc-rp-provider.js';
 import type { IdentityStub } from './identity-do.js';
 import type { AuthProvider } from './provider.js';
@@ -93,6 +93,8 @@ export async function instanceAuthFor(opts: {
   envSpec: EnvVarSpec[];
   /** The worker's own environment — the binding layer under the delivered map. */
   env: Record<string, unknown>;
+  /** Accept delegated bearers from these actors (#1824) — see `selectAuthProvider`. */
+  delegation?: DelegationOption;
 }): Promise<InstanceAuth> {
   const wiring = await opts.directory.authWiring(opts.scopeId);
   const identity = parseAuthChoice(wiring.config[AUTH_CONFIG_KEY]);
@@ -108,6 +110,7 @@ export async function instanceAuthFor(opts: {
         sessionSecret: wiring.sessionSecret,
         settings,
         sharedIssuer: wiring.config[SHARED_ISSUER_CONFIG_KEY] === 'true',
+        ...(opts.delegation ? { delegation: opts.delegation } : {}),
         platformBaseDomains: parsePlatformBaseDomains(
           typeof opts.env.PLATFORM_BASE_DOMAINS === 'string' ? opts.env.PLATFORM_BASE_DOMAINS : undefined,
         ),
@@ -181,6 +184,13 @@ export function selectAuthProvider(opts: {
    * choice only — the deployment default's issuer is the operator's own.
    */
   sharedIssuer?: boolean;
+  /**
+   * Accept delegated bearers from these actors at this app's MCP endpoint (#1824). Applies to
+   * the delivered choice on a shared issuer only, for the reason `sharedIssuer` does: that is
+   * the issuer that mints them, and the only one whose resources this app can name. Absent,
+   * every bearer carrying `act` is refused.
+   */
+  delegation?: DelegationOption;
   platformBaseDomains?: readonly string[];
 }): AuthProvider {
   const { identity, settings } = opts;
@@ -205,6 +215,7 @@ export function selectAuthProvider(opts: {
       ...(identity.audience ? { audience: identity.audience } : {}),
       ...(identity.cookieDomain ? { cookieDomain: identity.cookieDomain } : {}),
       ...(opts.sharedIssuer ? { sharedIssuer: true } : {}),
+      ...(opts.delegation ? { delegation: opts.delegation } : {}),
       platformBaseDomains: opts.platformBaseDomains,
     });
   }

@@ -35,6 +35,14 @@ export interface AuthSubject {
    * request on this subject's strength — a live-read socket (#938) — ends at it.
    */
   expiresAt?: string;
+  /**
+   * Present only when the credential is a DELEGATED token (#1824): another app, the actor,
+   * is acting for this user, and may do so only within `scope` — permission keys of this
+   * app, a ceiling over what the user may do rather than a grant. Absent means the user is
+   * acting directly. A provider admits a delegated token only when the host opted in
+   * (`OidcConfig.delegation`), so a caller that never reads this field never sees one.
+   */
+  delegation?: { actor: string; scope: string[] };
 }
 
 export interface AuthProvider {

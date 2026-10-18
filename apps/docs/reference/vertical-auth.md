@@ -24,8 +24,16 @@ interface AuthSubject {
   email: string | null;
   name: string | null;
   emailVerified?: boolean; // what the provider says about `email` — three states, not two
+  delegation?: { actor: string; scope: string[] }; // another app acting for this user, within `scope`
 }
 ```
+
+`delegation` is set only on a **delegated** bearer: another app of the team calling this app's
+MCP endpoint for the user, with a token the team auth server minted by token exchange. It is
+admitted only when the vertical opts in with `instanceAuthFor({ …, delegation: { actors } })`
+(the actors' client ids), and only on a request to the MCP endpoint itself. Without the option,
+any bearer carrying `act` is refused. See [calls made for a user by another
+app](/concepts/mcp#a-call-made-for-a-user-by-another-app).
 
 The provider proves *who* a caller is and nothing more. [Authorization stays in the
 kernel](/concepts/permissions) — roles, grants and tenancy are never this package's concern.

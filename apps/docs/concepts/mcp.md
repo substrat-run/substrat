@@ -151,6 +151,48 @@ The rest of the API does not apply this check by default. Setting `OIDC_AUDIENCE
 you also serve MCP, set it to the endpoint's resource, because a token then has to name
 that string for both checks.
 
+### A call made for a user by another app
+
+Another app of the same team can call this endpoint **for** one of your users: a help desk's
+assistant looking up that user's orders, say. It does not hold the user's token. The team
+auth server mints it one by [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693) token
+exchange, and only when the platform has recorded that your app delegates to it, for a
+named set of your permission keys. The token's `sub` is the user, `act` names the acting
+app, `aud` is this endpoint, and `scope` is the keys it may act with. It lives five minutes.
+
+Nothing accepts such a token until the vertical opts in, in two places:
+
+```ts
+const instance = await instanceAuthFor({ directory, scopeId, envSpec, env, delegation: { actors: [actorClientId] } });
+
+async function stub(c: Context) {
+  const subject = await providerOf(instance).resolve(c.req.raw.headers, c.req.url);
+  if (!subject) throw new HTTPException(401, { message: 'unauthorized' });
+  setMcpDelegation(c, subject.delegation); // from @substrat-run/vertical-host
+  // … map subject.sub to a principal and return the scope stub, as before
+}
+```
+
+What each half does:
+
+- **The verifier admits it only here.** A token carrying `act` is refused unless `actors`
+  names the acting app, and unless the request is to the MCP resource the token names. That
+  needs the request URL, so a call to `resolve(headers)` without one, and every REST route,
+  refuses it.
+- **The endpoint holds every call to the scope.** A tool runs only when its leading
+  permission key is in `scope`, and then the operation's own check still asks whether the
+  user holds it. So a delegated call does at most what the user may and what was delegated.
+  A tool whose operation declares no single leading key (`narrows`) is outside every scope.
+  A refusal is an in-band tool error, the same as a denied permission.
+
+If the endpoint is handed nothing (`setMcpDelegation` was not called), every tool call
+made with a bearer carrying `act` is refused. That covers a vertical that opted in to the
+verifier and forgot the second line.
+
+The scope is checked against the tool's declared leading key, not each check the
+operation makes. An operation whose handler checks another key as well checks it against
+everything the user holds.
+
 ### What is deliberately not here
 
 **Client registration.** How a client obtains a `client_id` — dynamic registration

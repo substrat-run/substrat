@@ -18,7 +18,7 @@ import {
 } from '@substrat-run/oidc-rp';
 import { mcpResourceOf } from '@substrat-run/contracts';
 import type { AuthProvider, AuthSubject } from './provider.js';
-import { oidcAuthProvider } from './oidc.js';
+import { oidcAuthProvider, type DelegationOption } from './oidc.js';
 import { cookieDomainDecision } from './cookie-domain.js';
 
 /**
@@ -52,6 +52,12 @@ export interface OidcRpConfig {
    * issuer happened to sign. Unset, the bearer path is exactly what it was.
    */
   sharedIssuer?: boolean;
+  /**
+   * Accept delegated bearers from these actors at this app's MCP endpoint (#1824) — see
+   * `OidcConfig.delegation`. Takes effect only with `sharedIssuer`, which is what names the
+   * resource such a token is for. Absent, a bearer carrying `act` is refused.
+   */
+  delegation?: DelegationOption;
   /**
    * Share the login across every surface under this parent domain (`acme.se` covers
    * `crm.` and `eka.` alike) — the session cookie is set with `Domain=…` instead of
@@ -147,21 +153,24 @@ function redirectWith(location: string, cookies: string[]): Response {
   return new Response(null, { status: 302, headers });
 }
 
-// Bearer verifiers cached per issuer+audience(+own client, on a shared issuer) so the JWKS
-// fetch survives across requests in an isolate even though the provider object itself is
-// per-request. The client is part of the key because two apps on one team auth-server
-// share an issuer and must never share a verifier that admits the other's tokens.
+// Bearer verifiers cached per issuer+audience(+own client, on a shared issuer)(+delegation)
+// so the JWKS fetch survives across requests in an isolate even though the provider object
+// itself is per-request. The client is part of the key because two apps on one team
+// auth-server share an issuer and must never share a verifier that admits the other's
+// tokens; the delegation is, because a verifier built with it admits tokens one built
+// without it refuses (#1824).
 const bearerCache = new Map<string, AuthProvider>();
 function bearerVerifier(cfg: OidcRpConfig): AuthProvider {
   // A delivered `audience` still wins over it; `oidcAuthProvider` is where that is decided.
   const own = cfg.sharedIssuer ? cfg.clientId : undefined;
-  const key = `${cfg.issuer}|${cfg.audience ?? ''}|${own ?? ''}`;
+  const key = JSON.stringify([cfg.issuer, cfg.audience ?? '', own ?? '', cfg.delegation ? [...cfg.delegation.actors].sort() : null]);
   let p = bearerCache.get(key);
   if (!p) {
     p = oidcAuthProvider({
       issuer: cfg.issuer,
       ...(cfg.audience ? { audience: cfg.audience } : {}),
       ...(own ? { clientId: own, resourceOf: (origin: string) => mcpResourceOf(origin) } : {}),
+      ...(cfg.delegation ? { delegation: { actors: [...cfg.delegation.actors] } } : {}),
     });
     bearerCache.set(key, p);
   }
