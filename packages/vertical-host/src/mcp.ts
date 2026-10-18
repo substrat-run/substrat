@@ -629,7 +629,7 @@ export function mountMcp(
   if (shadow) {
     throw new Error(
       `mountMcp: ${shadow.method} ${shadow.path} is registered before the MCP endpoint and would answer at ${path} ` +
-        'in its place — move that route off the path, or mount it after the endpoint',
+        'in its place — move that route off the path',
     );
   }
   const wellKnown = `/.well-known/oauth-protected-resource${path}`;

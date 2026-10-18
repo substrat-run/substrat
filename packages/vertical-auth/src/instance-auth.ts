@@ -99,7 +99,6 @@ export async function instanceAuthFor(opts: {
   const wiring = await opts.directory.authWiring(opts.scopeId);
   const identity = parseAuthChoice(wiring.config[AUTH_CONFIG_KEY]);
   const settings = resolveScopedEnvSpec(opts.envSpec, opts.env, wiring.config).values;
-  const delegation = opts.delegation;
   return {
     identity,
     sessionSecret: wiring.sessionSecret,
@@ -111,7 +110,7 @@ export async function instanceAuthFor(opts: {
         sessionSecret: wiring.sessionSecret,
         settings,
         sharedIssuer: wiring.config[SHARED_ISSUER_CONFIG_KEY] === 'true',
-        ...(delegation ? { delegation: resolveDelegation(delegation, { identity, config: wiring.config }) } : {}),
+        ...(opts.delegation ? { delegation: resolveDelegation(opts.delegation, { identity, config: wiring.config }) } : {}),
         platformBaseDomains: parsePlatformBaseDomains(
           typeof opts.env.PLATFORM_BASE_DOMAINS === 'string' ? opts.env.PLATFORM_BASE_DOMAINS : undefined,
         ),
