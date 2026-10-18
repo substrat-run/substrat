@@ -12,6 +12,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import { TrieRouter } from 'hono/router/trie-router';
 import { z, mcpResourceOf } from '@substrat-run/contracts';
 import { PermissionDenied } from '@substrat-run/kernel';
 import { oidcAuthProvider } from '@substrat-run/vertical-auth/oidc';
@@ -354,6 +355,50 @@ describe('nothing but the MCP endpoint answers at its path', () => {
     expect(routeAnsweringAt([{ method: 'ALL', path: '/api/mcp' }], '/api/mcp')).toBeUndefined();
     expect(routeAnsweringAt([{ method: 'OPTIONS', path: '/api/mcp' }], '/api/mcp')).toBeUndefined();
     expect(routeAnsweringAt([{ method: 'GET', path: '/api/*' }], '/api/mcp')).toBeUndefined();
+    expect(routeAnsweringAt([{ method: 'POST', path: '/api/mc*' }], '/api/mcp')).toBeUndefined();
+    // A `*` inside a parameter's regex is the regex's, and judged.
+    expect(routeAnsweringAt([{ method: 'POST', path: '/api/:p{m.*}' }], '/api/mcp')).toEqual({ method: 'POST', path: '/api/:p{m.*}' });
+  });
+
+  it('judges the path the endpoint answers at under a Hono basePath(), not the unprefixed one', async () => {
+    // A root route at the unprefixed path is not in the way of an endpoint at /v1/api/mcp…
+    const root = new Hono();
+    root.post('/api/mcp', (c) => c.text('root'));
+    expect(() => mountOperations(root.basePath('/v1'), operations, stub)).not.toThrow();
+    const res = await root.request(`${A}/v1/api/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+    });
+    expect([res.status, await res.json()]).toEqual([200, { jsonrpc: '2.0', id: 1, result: {} }]);
+    // …and an earlier route on the basePath app that answers there refuses the mount.
+    const v1 = new Hono().basePath('/v1');
+    v1.post('/api/:x', (c) => c.text('mine'));
+    expect(() => mountOperations(v1, operations, stub)).toThrow(
+      'mountMcp: POST /v1/api/:x is registered before the MCP endpoint and would answer at /v1/api/mcp',
+    );
+  });
+
+  it('does not judge a * inside a segment, on which Hono routers differ, nor routes app.route() mounts it under', async () => {
+    const dispatches = async (app: Hono) => {
+      let hit = false;
+      app.post('/api/*cp', (c) => ((hit = true), c.text('mine')));
+      await app.request(`${A}/api/mcp`, { method: 'POST' });
+      return hit;
+    };
+    // The default router dispatches it to the endpoint's path; TrieRouter does not.
+    expect([await dispatches(new Hono()), await dispatches(new Hono({ router: new TrieRouter() }))]).toEqual([true, false]);
+    for (const pattern of ['/api/*cp', '/ap*/mcp', '/api/mc*']) {
+      const app = new Hono();
+      app.post(pattern, (c) => c.text('mine'));
+      expect(() => mountOperations(app, operations, stub), pattern).not.toThrow();
+    }
+    // A prefix added later: the routes of the app it is mounted into are not seen.
+    const sub = new Hono();
+    mountOperations(sub, operations, stub);
+    const parent = new Hono();
+    parent.post('/v2/api/:x', (c) => c.text('mine'));
+    expect(() => parent.route('/v2', sub)).not.toThrow();
   });
 });
 

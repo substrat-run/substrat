@@ -199,17 +199,25 @@ What each half does:
   carrying `act` unless `actors` names the acting app, the caller passed the channel, the
   token's `aud` is exactly the channel's resource, and that resource is on the request's own
   origin. A call without the channel — `resolve(headers)`, a REST route, a stray handler —
-  refuses it. Because the resource is the channel's, an endpoint mounted under another
-  `basePath` or `mcp.path` is judged by its own. Every route `mountOperations` mounts also
-  refuses a bearer carrying `act`, with a `401`, before resolving anyone.
-- **The endpoint is the only route at its path.** A route registered before it that Hono
-  would dispatch a request for that path to, by any method but `OPTIONS` (`/mcp`, `/:slug`,
-  `/:slug?`, a regex parameter), stops the vertical from mounting; so does a second
-  `mountOperations` on the same base path. A route registered after it never runs there,
-  since the endpoint answers every method but `OPTIONS` itself, with a `405` for all but
-  `POST`. Not judged: `app.use`, `app.all` and `app.mount`, which Hono records alike as
-  middleware, `OPTIONS` routes, and `*` catch-alls. None of them is handed the channel, so
-  none admits a delegated token.
+  refuses it. Because the resource is the channel's, an endpoint moved by `mountOperations`'
+  own `basePath` or `mcp.path` option is judged by its own. A prefix Hono adds
+  (`app.basePath()`, `app.route()`) does not move the resource: it still names the unprefixed
+  path, as the endpoint's metadata does. Every route `mountOperations` mounts also refuses a
+  bearer carrying `act`, with a `401`, before resolving anyone.
+- **The endpoint is the only route at its path.** A route registered before it that Hono's
+  `TrieRouter` would dispatch a request for that path to, by any method but `OPTIONS` (`/mcp`,
+  `/:slug`, `/:slug?`, a regex parameter), stops the vertical from mounting; so does a second
+  `mountOperations` on the same base path. The path judged is the one the endpoint really
+  answers at, an `app.basePath()` prefix included. A route registered after it never runs
+  there, since the endpoint answers every method but `OPTIONS` itself, with a `405` and
+  `Allow: POST` for all but `POST`. Not judged:
+  - `app.use`, `app.all` and `app.mount`, which Hono records alike as middleware, and
+    `OPTIONS` routes;
+  - a pattern with a `*` outside a parameter's regex: a `*` catch-all, and a `*` inside a
+    segment (`/api/*cp`), which Hono's routers do not dispatch alike;
+  - the routes of an app this one is mounted into later with `app.route()`.
+
+  None of them is handed the channel, so none admits a delegated token.
 - **A hand-written MCP surface owns its ceiling.** A vertical that serves its own MCP
   endpoint and passes `delegated` to the verifier itself takes on what the derived endpoint
   does: holding every call to `subject.delegation.scope`. Nothing checks that it does.

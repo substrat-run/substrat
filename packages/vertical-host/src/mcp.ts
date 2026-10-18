@@ -643,11 +643,15 @@ function statusOf(err: unknown): number | undefined {
  * request to the MCP endpoint, because this mount is what holds it to its scope. So a route
  * registered BEFORE it that would answer here instead — an operation at `/mcp`, a
  * hand-written `app.post('/api/mcp', …)`, a `/:slug` parameter route — refuses the mount,
- * loudly, at boot, judged by Hono's own router (`routeAnsweringAt`). A route registered AFTER
- * it never runs here: every method but `OPTIONS` is answered by this mount. Not judged:
- * `app.use`, `app.all` and `app.mount` (Hono records all three alike), `OPTIONS` routes, and
- * `*` catch-alls — they meet every path and are not handlers written for this one. The
- * channel (`mcpChannelOf`) is what keeps a delegated token away from them all the same.
+ * loudly, at boot, judged by Hono's `TrieRouter` (`routeAnsweringAt`) against the path the
+ * endpoint really answers at, a Hono `basePath()` included. A route registered AFTER it never
+ * runs here: every method but `OPTIONS` is answered by this mount. Not judged:
+ *  - `app.use`, `app.all` and `app.mount` (Hono records all three alike), and `OPTIONS` routes;
+ *  - a pattern with a `*` outside a parameter's regex, whether a catch-all segment or a `*`
+ *    inside a segment (`/api/*cp`), on which Hono's routers disagree;
+ *  - a prefix added after the mount by `app.route()`: the routes of the app it is mounted
+ *    into are not seen here.
+ * The channel (`mcpChannelOf`) is what keeps a delegated token away from them all the same.
  */
 export function mountMcp(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -658,13 +662,9 @@ export function mountMcp(
 ): { path: string; tools: number } {
   const tools = mcpToolsOf(operations);
   const path = options.path ?? mcpEndpointPath(options.basePath);
-  const shadow = routeAnsweringAt(app.routes, path);
-  if (shadow) {
-    throw new Error(
-      `mountMcp: ${shadow.method} ${shadow.path} is registered before the MCP endpoint and would answer at ${path} ` +
-        'in its place — move that route off the path',
-    );
-  }
+  // The routes registered before this mount, which the endpoint is judged against once it is
+  // registered itself (below).
+  const earlier = app.routes.length;
   const wellKnown = `/.well-known/oauth-protected-resource${path}`;
   const byName = new Map(tools.map((t) => [t.name, t]));
   const serverInfo = {
@@ -1038,6 +1038,19 @@ export function mountMcp(
     if (replies.length === 0) return c.body(null, 202);
     return c.json(Array.isArray(body) ? replies : (replies[0] as object));
   });
+
+  // Judged only now: the endpoint's own route record is what says where it answers. An app
+  // made by Hono's `basePath()` prefixes every path it registers, and `path` does not know
+  // the prefix, so earlier routes are judged against the prefixed path, and a root route at
+  // the unprefixed one is not in the way. A prefix added later, by `app.route()`, is not seen.
+  const answersAt = app.routes[app.routes.length - 1]!.path;
+  const shadow = routeAnsweringAt(app.routes.slice(0, earlier), answersAt);
+  if (shadow) {
+    throw new Error(
+      `mountMcp: ${shadow.method} ${shadow.path} is registered before the MCP endpoint and would answer at ${answersAt} ` +
+        'in its place — move that route off the path',
+    );
+  }
 
   // A 405 names the methods that are served (RFC 9110 §15.5.6): `POST` is the only one.
   const allow = { Allow: 'POST' };
