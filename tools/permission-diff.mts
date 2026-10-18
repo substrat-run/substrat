@@ -77,8 +77,16 @@ interface ModuleLike {
     }[];
   };
   /** A registration's operations — present on a ModuleRegistration, absent on a bare manifest (#1835). */
-  operations?: { handlers: Record<string, unknown> };
+  operations?: { handlers: Record<string, unknown>; checks?: Record<string, CheckLike> };
 }
+/** #2384: what an operation declares it checks, as the binder carries it (`operationChecksOf`). */
+type CheckLike =
+  | {
+      permission:
+        | string
+        | { key: string; entity?: string; entityFrom?: string; idFrom?: string; resolved?: string; refFrom?: string };
+    }
+  | { narrows: { reason: string; checks: string[]; unchecked?: true } };
 interface RoleLike {
   key: string;
   permissions: string[];
@@ -174,6 +182,24 @@ const rerun =
   rootArg === undefined
     ? 'pnpm lint:permissions'
     : `pnpm exec tsx tools/permission-diff.mts --root ${rootArg}`;
+
+/**
+ * #2384: one row of the Operations section — the declared key and what the check narrows to,
+ * in the conformance receipt's grammar. Never guessed: no declaration reads as exactly that.
+ */
+function operationRow(check: CheckLike | undefined): { key: string; on: string } {
+  if (check === undefined) return { key: '— checked in code, not declared —', on: '—' };
+  if ('narrows' in check) {
+    if (check.narrows.unchecked) return { key: '— none —', on: `nothing: ${check.narrows.reason.replace(/\s+/g, ' ').replaceAll('|', '\\|')}` };
+    return { key: sorted(check.narrows.checks).map(code).join(', ') || '—', on: 'each row, by a proof walk' };
+  }
+  const p = check.permission;
+  if (typeof p === 'string') return { key: code(p), on: 'the scope' };
+  if (p.refFrom) return { key: code(p.key), on: `one entity, whole ref from ${code(p.refFrom)}` };
+  if (!p.entity && !p.entityFrom) return { key: code(p.key), on: 'the scope' };
+  const type = p.entity ? `one ${code(p.entity)}` : `one entity, type from ${code(p.entityFrom!)}`;
+  return { key: code(p.key), on: p.idFrom ? `${type}, id from ${code(p.idFrom)}` : `${type}, resolved in the handler` };
+}
 
 const byKey = <T extends { key: string }>(a: T, b: T) => a.key.localeCompare(b.key);
 const sorted = (keys: string[]) => [...keys].sort((a, b) => a.localeCompare(b));
@@ -553,6 +579,40 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
     );
     section += 1;
   }
+
+  // §_. Operations (#2384): the key each registered operation declares it checks, read off the
+  // declaration the binder carries. Always present beside a registry, so its absence in an older
+  // artifact means "not emitted yet", never "no operations".
+  const operations = modules
+    .flatMap((m) =>
+      Object.keys(m.operations?.handlers ?? {}).map((name) => ({
+        name,
+        module: m.manifest.id,
+        row: m.operations!.checks === undefined
+          ? { key: '— not readable: bound by a kernel that does not carry declarations —', on: '—' }
+          : operationRow(m.operations!.checks[name]),
+      })),
+    )
+    .sort((a, b) => a.name.localeCompare(b.name) || a.module.localeCompare(b.module));
+  out.push(
+    `## ${section}. Operations — which key each checks`,
+    ``,
+    `The check each registered operation DECLARES it opens with, and what it narrows to. A`,
+    `proof walk lists this module's keys only; a composed engine's key it reaches is declared by`,
+    `the engine. "Checked in code, not declared" is an operation whose handler makes its own check`,
+    `with nothing declared, so no artifact can name its key. Who holds a key is §3 and the grant`,
+    `shapes.`,
+    ``,
+    ...(operations.length
+      ? [
+          `| Operation | Key | Checked on | Declared by |`,
+          `| --- | --- | --- | --- |`,
+          ...operations.map((o) => `| ${code(o.name)} | ${o.row.key} | ${o.row.on} | ${code(o.module)} |`),
+        ]
+      : [`_No module here registers an operation._`]),
+    ``,
+  );
+  section += 1;
 
   out.push(
     `## ${section}. Not covered by this artifact`,
