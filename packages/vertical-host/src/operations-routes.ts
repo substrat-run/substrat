@@ -48,7 +48,7 @@ import { classifyError } from './errors.js';
 import { observeOutputFields, outputWalkOf } from './field-coverage.js';
 import { defOf, transparentInner } from './zod-structural.js';
 import { mountMcp, type MountMcpOptions } from './mcp.js';
-import { patternAnswers } from './mcp-guard.js';
+import { carriesAct, patternAnswers } from './mcp-guard.js';
 
 export type ResolveStub = (c: Context) => Promise<ScopeStub>;
 
@@ -417,6 +417,12 @@ export function mountOperations(
     const unsafe = method !== 'GET';
 
     const invoke = async (c: Context, record: InvocationRecord | undefined) => {
+      // #1824: no operation route takes a delegated token. Only the MCP endpoint holds one to
+      // its scope, so here it is refused before anything resolves it, whatever the vertical's
+      // verifier would have said — an older one, or one that admits it at this path.
+      if (carriesAct(c.req.header('authorization'))) {
+        throw new HTTPException(401, { message: 'a delegated token is accepted only at the MCP endpoint' });
+      }
       const stub = await resolveStub(c);
       // #1746: who the call runs as, from the door that minted the stub. Set here rather
       // than after the invoke so a refused call still says who was refused.

@@ -175,10 +175,14 @@ async function stub(c: Context) {
 
 What each half does:
 
-- **The verifier admits it only here.** A token carrying `act` is refused unless `actors`
+- **It is admitted only here.** The verifier refuses a token carrying `act` unless `actors`
   names the acting app, and unless the request is to the MCP resource the token names. That
-  needs the request URL, so a call to `resolve(headers)` without one, and every REST route,
-  refuses it.
+  needs the request URL, so a call to `resolve(headers)` without one refuses it. Every route
+  `mountOperations` mounts refuses it too, with a `401`, before resolving anyone. And the
+  endpoint is the only route at its path: an operation or a hand-written route registered
+  before it that would answer there (`/mcp`, `/:slug`) stops the vertical from mounting, and
+  one registered after it never runs there, since the endpoint answers every method but
+  `OPTIONS`.
 - **The endpoint holds every call to the scope.** A tool runs only when its leading
   permission key is in `scope`, and then the operation's own check still asks whether the
   user holds it. So a delegated call does at most what the user may and what was delegated.

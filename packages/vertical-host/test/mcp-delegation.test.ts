@@ -309,6 +309,36 @@ describe('nothing but the MCP endpoint answers at its path', () => {
   });
 });
 
+describe('an operation route refuses a delegated bearer', () => {
+  const bearer = `Bearer ${unsigned(delegatedClaims('tickets:read tickets:write'))}`;
+
+  it('answers 401 before resolving the caller, whatever the resolver would admit', async () => {
+    let resolved = 0;
+    const { app, invoked } = desk({ resolve: () => void resolved++ });
+    expect((await app.request(`${A}/api/tickets`, { headers: { authorization: bearer } })).status).toBe(401);
+    expect((await app.request(`${A}/api/tickets/t1/close`, { method: 'POST', headers: { authorization: bearer } })).status).toBe(401);
+    expect(resolved).toBe(0);
+    expect(invoked).toEqual([]);
+    // Twins: the same routes serve a bearer without `act`, and no bearer at all.
+    expect((await app.request(`${A}/api/tickets`, { headers: { authorization: `Bearer ${unsigned({ aud: 'desk-a' })}` } })).status).toBe(200);
+    expect((await app.request(`${A}/api/tickets`)).status).toBe(200);
+    expect(invoked).toEqual(['desk/list-tickets', 'desk/list-tickets']);
+  });
+
+  it('refuses it at an operation on the MCP path when the derived endpoint is off', async () => {
+    const app = new Hono();
+    let invoked = 0;
+    mountOperations(
+      app,
+      { 'desk/odd': { summary: 'Odd', permission: 'tickets:read', http: { method: 'POST', path: '/mcp' } } },
+      async () => ({ invoke: async () => ((invoked++, { ok: true })) }) as never,
+      { mcp: false },
+    );
+    expect((await app.request(`${A}/api/mcp`, { method: 'POST', headers: { authorization: bearer } })).status).toBe(401);
+    expect(invoked).toBe(0);
+  });
+});
+
 describe('a delegated bearer with no delegation handed over fails closed', () => {
   const bearer = `Bearer ${unsigned(delegatedClaims('tickets:read tickets:write'))}`;
 
@@ -418,6 +448,27 @@ describe('end to end through the bearer verifier', () => {
     expect(invoked).toEqual([]);
     expect((await rest(`Bearer ${await signed({ aud: 'desk-a' })}`)).status).toBe(200);
     expect(invoked).toEqual(['desk/list-tickets']);
+  });
+
+  it('an operation at the MCP path, with the endpoint off, refuses a token the verifier admits there', async () => {
+    const auth = provider({ actors: [ACTOR] });
+    const t = `Bearer ${await signed(delegatedClaims('tickets:read'))}`;
+    // The verifier's half holds the request URL to the token's resource, and this is it.
+    expect((await auth.resolve(new Headers({ authorization: t }), `${A}/api/mcp`))?.delegation?.actor).toBe(ACTOR);
+    const app = new Hono();
+    let invoked = 0;
+    mountOperations(
+      app,
+      { 'desk/odd': { summary: 'Odd', permission: 'tickets:write', http: { method: 'PUT', path: '/mcp' } } },
+      async (c) => {
+        const subject = await auth.resolve(c.req.raw.headers, c.req.url);
+        if (!subject) throw new HTTPException(401, { message: 'unauthorized' });
+        return { invoke: async () => ((invoked++, { ok: true })) } as never;
+      },
+      { mcp: false },
+    );
+    expect((await app.request(`${A}/api/mcp`, { method: 'PUT', headers: { authorization: t } })).status).toBe(401);
+    expect(invoked).toBe(0);
   });
 
   it("an ordinary user's MCP token is unchanged: no ceiling, every tool the user holds", async () => {
