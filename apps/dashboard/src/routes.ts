@@ -651,7 +651,7 @@ export const dashboardRoutes = defineRoutes({
   },
   'dashboard/get-deployment-traffic': {
     summary: "A vertical's traffic over the last `hours` (1–72, default 24) with every push and go-live marked",
-    input: z.object({ slug: z.string().min(1), hours: z.number().optional() }),
+    input: z.object({ slug: z.string().min(1), hours: z.number().int().min(1).max(72).optional() }),
     output: trafficSeries,
     http: { method: 'GET', path: '/deployments/{slug}/traffic' },
   },

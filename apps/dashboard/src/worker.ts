@@ -5349,9 +5349,9 @@ async function deploymentReleasesIn(ctx: TeamContext, slug: string) {
  * markers come from the registry, so a push that produced no traffic still gets
  * its line — exactly the case worth seeing.
  */
-async function deploymentTrafficIn(ctx: TeamContext, slug: string, rawHours: number | undefined) {
-  // The window is also the marker grid, so a fractional one is meaningless — see chartHours.
-  const hours = chartHours(rawHours === undefined ? undefined : String(rawHours));
+async function deploymentTrafficIn(ctx: TeamContext, slug: string, hours = 24) {
+  // The window is also the marker grid, so it is a whole number of hours (1–72): the route's
+  // input says so, and a value outside it is a 400 rather than a clamp.
   const cp = teamPlane(ctx);
   const deployment = await ownedDeploymentOrThrow(cp, slug); // your vertical, or 4xx
   const [prodHistory, buckets] = await Promise.all([

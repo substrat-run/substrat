@@ -397,6 +397,13 @@ describe('deployments: reads and the two writes', () => {
   it('a bad hours or a missing version is a 400 in a team the caller is in — the twin of the 404s above', async () => {
     const { a } = await teams();
     expect((await req('GET', inTeam(a, `${slugPath(a.vertical)}/traffic?hours=lots`))).status).toBe(400);
+    // The window is a whole number of hours, 1 to 72: the schema says so, the client and the OpenAPI too.
+    for (const hours of ['0', '-3', '1.5', '73', '500']) {
+      expect((await req('GET', inTeam(a, `${slugPath(a.vertical)}/traffic?hours=${hours}`))).status, hours).toBe(400);
+    }
+    for (const hours of ['1', '72']) {
+      expect((await req('GET', inTeam(a, `${slugPath(a.vertical)}/traffic?hours=${hours}`))).status, hours).toBe(200);
+    }
     expect((await req('GET', inTeam(a, `${slugPath(a.vertical)}/promote-review`))).status).toBe(400);
     expect((await req('GET', inTeam(a, `${slugPath(a.vertical)}/channels/dev/history`))).status).toBe(400);
   });
