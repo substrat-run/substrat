@@ -284,6 +284,26 @@ export const CONTRACT_CHECKS: readonly ContractCheck[] = [
     },
   },
   {
+    name: 'facets.order-and-cap',
+    async run({ source }) {
+      // Estimated or not, a facet lists at most FACET_TOP values, most frequent first, ties by value.
+      for (const q of [WORLD_ALL, WORLD_WINDOW]) {
+        const got = await source.facets(q);
+        for (const key of FACET_KEYS) {
+          const values = got.facets[key] ?? [];
+          if (values.length > FACET_TOP) fail(`facet ${key} lists ${values.length} values; at most ${FACET_TOP}`);
+          for (let i = 1; i < values.length; i++) {
+            const a = values[i - 1]!;
+            const b = values[i]!;
+            if (a.count < b.count || (a.count === b.count && a.value >= b.value)) {
+              fail(`facet ${key} lists ${a.value} (${a.count}) before ${b.value} (${b.count}); want most frequent first, ties by value`);
+            }
+          }
+        }
+      }
+    },
+  },
+  {
     name: 'traces.get',
     async run({ source, world }) {
       for (const t of world.traces) {

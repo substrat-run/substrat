@@ -2,6 +2,7 @@ import type { RequestTrace } from '@substrat-run/contracts';
 import {
   blankUnfilled,
   createLocalSource,
+  FACET_TOP,
   facetsOf,
   headOf,
   matchesWhere,
@@ -137,6 +138,32 @@ export const LIARS: readonly { readonly lie: string; readonly fails: string; rea
           const f = await s.facets(q);
           const scaled = Object.fromEntries(Object.entries(f.facets).map(([k, vs]) => [k, vs.map((v) => ({ ...v, count: v.count * 2 }))]));
           return { ...f, facets: scaled as unknown as typeof f.facets, total: f.total * 2, estimated: false };
+        },
+      }),
+    ),
+  },
+  {
+    lie: 'lists each facet least frequent first',
+    fails: 'facets.order-and-cap',
+    harness: wrapLocal((s) =>
+      lie(s, {
+        async facets(q) {
+          const f = await s.facets(q);
+          const reversed = Object.fromEntries(Object.entries(f.facets).map(([k, vs]) => [k, [...vs].reverse()]));
+          return { ...f, facets: reversed as unknown as typeof f.facets };
+        },
+      }),
+    ),
+  },
+  {
+    lie: 'lists more facet values than the cap',
+    fails: 'facets.order-and-cap',
+    harness: headOnlyHarness((s) =>
+      lie(s, {
+        async facets(q) {
+          const f = await s.facets(q);
+          const padding = Array.from({ length: FACET_TOP + 1 }, (_, i) => ({ value: `zz-${String(i).padStart(2, '0')}`, count: 0 }));
+          return { ...f, facets: { ...f.facets, operation: [...f.facets.operation, ...padding] } };
         },
       }),
     ),

@@ -58,7 +58,7 @@ every source runs against one fixed world. Each declared capability is a promise
 holds the source to. A source that declares less passes with less. The package's own tests
 show the suite bites: an honest head-only source in the hosted shape passes, and each liar
 (exact counts that are estimates, bound values handed out without `rawPayloads`, a declared
-tail that never delivers, steps from a source that declares none, a window ignored, a field
+tail that never delivers or hands out the whole trace, facets out of order or past the cap, steps from a source that declares none, a window ignored, a field
 filled that was not declared, a model from a source that declares none) fails exactly the one
 check named for its lie.
 
