@@ -16,7 +16,7 @@ const MODEL = {
     list: { table: 't_lists', fields: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' } } } },
   },
 };
-const PERMISSIONS = '## 2. Roles\n\n| Role | Permissions |\n| --- | --- |\n| `member` | `list:create` |\n';
+const PERMISSIONS = '## 1. Registry\n\n| Key | Description | Declared by |\n| --- | --- | --- |\n| `list:create` | Create | `x` |\n\n## 2. Roles\n\n| Role | Permissions |\n| --- | --- |\n| `member` | `list:create` |\n';
 const DOC = `# C
 
 <!-- substrat:roles -->
