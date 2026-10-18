@@ -201,6 +201,23 @@ jobs:
             base="HEAD^1"
           fi
           pnpm lint:export-schemas --base "$base"
+      # The computed changeset bump (#2364): each vertical's model.json, openapi.json and
+      # PERMISSIONS.md diffed against the merge-base — removed or narrowed → major, added → minor,
+      # docs → patch — and a changeset that names the vertical with a LOWER bump is red. A vertical
+      # no changeset names is a warning carrying the computed bump; a permission change is flagged
+      # for the human checkpoint. The classifier is @substrat-run/cli's, so `substrat changeset`
+      # writes what this checks; its tests run in the cli package's suite. Same base as above.
+      - name: changeset bumps vs the computed bump
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            base="origin/$BASE_REF"
+          else
+            base="HEAD^1"
+          fi
+          pnpm lint:changeset-bump --base "$base"
       # The conformance receipt (#866, kernel-design §11.2): re-emit each package's
       # CONFORMANCE.md from its declared `substrat.conformance` module and fail on
       # drift. Also the only gate on §1's kernel citations — it verifies each named

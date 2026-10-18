@@ -27,6 +27,7 @@ The package has no runtime dependencies and ships web-standard + `node:*` only. 
 |---|---|
 | `substrat init --ci github` | Write `.github/workflows/substrat-deploy.yml` — the deploy + preview workflow, generated rather than re-derived. |
 | `substrat model view [dir]` | Render the entity model as a self-contained HTML page and print its path — the design gate, as something you can look at. Offline. |
+| `substrat changeset [dir]` | Write a `.changeset` file whose bump is **computed** from what your model, API and permissions changed, instead of chosen. `--check` refuses a changeset that declares less. Offline. |
 | `substrat login` | Sign in via the browser (per-human), or store a CI service token with `--token`. |
 | `substrat whoami` | Print who you are and the workspaces you can build for. |
 | `substrat push [dir]` | Build the vertical and push a version — **admitted** for a private vertical, **pending** for a listed one. No flags needed from inside the project. |
@@ -105,6 +106,40 @@ next to your source: a rendered view is something you look at, not something you
 The point of it is the **design gate**: approving a diagram of your own domain is a
 categorically better checkpoint than approving prose about it, and it needs no login and no
 push, so it works before any code exists.
+
+### `changeset`
+
+```bash
+substrat changeset                        # write .changeset/<name>.md with the computed bump
+substrat changeset --summary "Add tags"   # your own first line above the computed list
+substrat changeset --check                # refuse a changeset that declares less (exit 1)
+substrat changeset --json                 # the classification, for a script or a status line
+```
+
+For a vertical released with [changesets](https://github.com/changesets/changesets): the bump
+is read off the diff of the three checked-in artifacts — `model.json`, `openapi.json` and
+`PERMISSIONS.md` — against the merge-base with your base branch (the changesets `baseBranch`,
+on `origin` when it is fetched; `--base <ref>` overrides). A breaking change marked `patch`
+looks exactly like a green release, so the bump is not left to judgement:
+
+| Change | Bump |
+|---|---|
+| Something removed or narrowed — an operation, field, entity, state, transition, response or enum value; an input now required; an output that may now be omitted; a type changed | **major** |
+| Something added — an operation, field, entity, state or key; an input now optional | **minor** |
+| Only descriptions, summaries and titles | **patch** |
+| Any permission change | at least **minor**, and listed for review |
+
+A change the classifier cannot rank — a schema keyword whose direction it cannot tell, or a
+key it does not know — counts as **major**, so an unknown shape can never lower the bump.
+When that is wrong for your change, keep the lower bump and say why in the changeset, where a
+reviewer reads it:
+
+```md
+<!-- bump-override: @acme/helpdesk minor — the removed field was added in this same release -->
+```
+
+The override names the package and the level the changeset declares for it, and must give a
+reason; `--check` refuses one that does not.
 
 ### `login`
 
