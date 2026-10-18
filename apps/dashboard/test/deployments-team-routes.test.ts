@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -607,5 +607,12 @@ describe('rows that contracts already define are picked from it, not retyped', (
     for (const [key, schema] of Object.entries(channelHistoryRow.shape)) {
       expect(schema, `history.${key}`).toBe(channelHistoryEntry.shape[key as keyof typeof channelHistoryEntry.shape]);
     }
+  });
+});
+
+describe('the removed cookie paths are not left behind in the worker', () => {
+  it('names /api/deployments nowhere — no handler, no comment pointing at one', () => {
+    const source = readFileSync(new URL('../src/worker.ts', import.meta.url), 'utf8');
+    expect(source.match(/\/api\/deployments/g)).toBeNull();
   });
 });

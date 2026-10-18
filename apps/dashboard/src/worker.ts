@@ -4870,7 +4870,7 @@ function chartHours(raw: string | undefined, fallback = 24): number {
 /**
  * The app's own chart series (#1447 step 2) — the same traffic with a time axis, at
  * TENANT grain. It sits beside the deployment route rather than reusing it because the
- * two answer different questions: `/api/deployments/:slug/traffic` plots the script,
+ * two answer different questions: `/api/teams/:teamId/deployments/{slug}/traffic` plots the script,
  * which serves every team that installed the vertical, while an app page answers about
  * this one installation — for the owner too.
  *
@@ -5051,7 +5051,7 @@ app.get('/api/apps/:scopeId/overlays', async (c) => {
  * (#1595). `resolveAccount` says who the caller is and an owned-slug check says the vertical
  * is theirs; neither says what they may DO, and nothing below the seam can — the plane sees
  * the dashboard's credential, not the person. The role is only known here, so every write
- * under `/api/deployments/:slug` calls this before it acts. It is the
+ * under a team's `/deployments/{slug}` (promote, delete, the installs, previews) calls this before it acts. It is the
  * `dashboard:provision-app` check the app-install operations already begin with, invoked as
  * an operation that writes nothing (`dashboard/authorize-scope-change`): no new permission
  * key, so no role changed. Reads stay open — a `viewer` still sees what they may not touch.
