@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { EmittedModel } from '@substrat-run/contracts';
-import { ConceptMarkerError, decisionsLog, parsePermissions, syncConcept } from '../src/index.js';
+import { ConceptMarkerError, PermissionsFormatError, decisionsLog, parsePermissions, syncConcept } from '../src/index.js';
 
 const MODEL: EmittedModel = {
   entities: {
@@ -145,6 +145,29 @@ describe('parsePermissions / decisionsLog', () => {
     expect(v.roles).toEqual([{ role: 'member', keys: ['list:create'] }]);
     expect(v.entityGrants).toEqual([{ entityType: 'list', keys: ['list:manage'] }]);
     expect(v.descriptions.get('list:manage')).toBe('Rename and share a list');
+  });
+
+  it('finds the grant shapes by title, not number: schedules and no grants is not a grant table', () => {
+    // permission-diff numbers every section after §3 by which ones the vertical has, so here §4 is
+    // the schedules. Read by the literal "## 4." this rendered them as an entity-grant row.
+    const withSchedules = PERMISSIONS.replace(
+      /## 4\. Entity-narrowed grant shapes[\s\S]*$/,
+      '## 4. Scheduled work — the system principal\'s grants\n\n| Operation | Cadence | System principal | Permissions |\n| --- | --- | --- | --- |\n| `todo/purge` — purges | every 60 min | `system:x` | `list:manage` |\n',
+    );
+    const v = parsePermissions(withSchedules);
+    expect(v.entityGrants).toEqual([]);
+    expect(v.roles).toEqual([{ role: 'member', keys: ['list:create'] }]);
+    expect(syncConcept(DOC, { model: MODEL, permissionsMd: withSchedules })).not.toContain('Shared one record at a time');
+  });
+
+  it('finds the grant shapes when they come later, and still reads the roles before them', () => {
+    const later = PERMISSIONS.replace('## 4. Entity-narrowed', '## 6. Entity-narrowed');
+    expect(parsePermissions(later).entityGrants).toEqual([{ entityType: 'list', keys: ['list:manage'] }]);
+  });
+
+  it('refuses a file whose registry or roles section is gone, but not an empty permission surface', () => {
+    expect(() => parsePermissions(PERMISSIONS.replace('## 2. Roles', '## 2. People'))).toThrow(PermissionsFormatError);
+    expect(() => parsePermissions('# P\n\n## No permission surface\n')).not.toThrow();
   });
 
   it('finds the decisions log section, numbered or not', () => {

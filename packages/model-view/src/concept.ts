@@ -55,11 +55,22 @@ function cells(line: string): string[] {
   return body.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'));
 }
 
-/** The table rows under the `## <n>.` heading that starts with `prefix`, header and rule dropped. */
-function tableUnder(md: string, prefix: string): string[][] {
+/**
+ * A `PERMISSIONS.md` that is not the artifact `lint:permissions` writes: a section this reader
+ * depends on is gone. Refusing beats rendering "no roles" for a file whose layout moved.
+ */
+export class PermissionsFormatError extends Error {}
+
+/**
+ * The table rows under the `## <n>. <title>` heading whose title starts with `title`, header and
+ * rule dropped; `undefined` when no such section exists. Found by TITLE, never by number:
+ * `permission-diff` numbers everything after §3 by which sections a vertical has, so §4 is the
+ * grant shapes in one file and the schedules in the next.
+ */
+function tableUnder(md: string, title: string): string[][] | undefined {
   const lines = md.split('\n');
-  const at = lines.findIndex((l) => l.startsWith(prefix));
-  if (at < 0) return [];
+  const at = lines.findIndex((l) => new RegExp(`^## \\d+\\.\\s+${title}\\b`).test(l));
+  if (at < 0) return undefined;
   const rows: string[][] = [];
   for (const line of lines.slice(at + 1)) {
     if (line.startsWith('## ')) break;
@@ -81,14 +92,21 @@ const keysOf = (cell: string): string[] =>
  * running code, so reading it keeps this package free of the verticals it describes.
  */
 export function parsePermissions(md: string): PermissionsView {
+  const registry = tableUnder(md, 'Registry');
+  const roleRows = tableUnder(md, 'Roles');
+  if ((registry === undefined || roleRows === undefined) && !/^## No permission surface/m.test(md)) {
+    throw new PermissionsFormatError(
+      `PERMISSIONS.md has no "${registry === undefined ? 'Registry' : 'Roles'}" section — regenerate it with \`pnpm lint:permissions\``,
+    );
+  }
   const descriptions = new Map<string, string>();
-  for (const [key, description] of tableUnder(md, '## 1.')) {
+  for (const [key, description] of registry ?? []) {
     if (key && description) descriptions.set(unquote(key), description);
   }
-  const roles = tableUnder(md, '## 2.')
+  const roles = (roleRows ?? [])
     .map(([role, keys]) => ({ role: unquote(role ?? ''), keys: keysOf(keys ?? '') }))
     .filter((r) => r.role !== '');
-  const entityGrants = tableUnder(md, '## 4.')
+  const entityGrants = (tableUnder(md, 'Entity-narrowed grant shapes') ?? [])
     .map(([entityType, keys]) => ({ entityType: unquote(entityType ?? ''), keys: keysOf(keys ?? '') }))
     .filter((g) => g.entityType !== '');
   return { roles, entityGrants, descriptions };
