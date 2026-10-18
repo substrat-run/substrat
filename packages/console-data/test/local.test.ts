@@ -114,6 +114,42 @@ describe('local source: paging', () => {
   });
 });
 
+describe('local source: a re-recorded request', () => {
+  // The buffer may hold an id twice; the last record is the complete one, everywhere.
+  const first = world.traces[0]!;
+  const again = { ...first, status: 500, threw: true, level: 'error' as const };
+  const { source: s } = source({ traces: [...world.traces, again] });
+
+  it('is listed once, as its last record', async () => {
+    const page = await s.queryRequests({ ...WORLD_ALL, limit: MAX_PAGE });
+    const copies = page.requests.filter((r) => r.invocationId === first.invocationId);
+    expect(page.requests).toHaveLength(world.traces.length);
+    expect(copies).toEqual([expect.objectContaining({ status: 500, level: 'error' })]);
+    expect((await s.getTrace(first.invocationId))?.status).toBe(500);
+  });
+
+  it('is counted once, under its last record', async () => {
+    const f = await s.facets(WORLD_ALL);
+    expect(f.total).toBe(world.traces.length);
+    const statusCounts = Object.fromEntries(f.facets.status.map((v) => [v.value, v.count]));
+    const plain = Object.fromEntries((await source().source.facets(WORLD_ALL)).facets.status.map((v) => [v.value, v.count]));
+    expect(statusCounts['500']).toBe((plain['500'] ?? 0) + 1);
+    expect(statusCounts[String(first.status)]).toBe((plain[String(first.status)] ?? 0) - 1);
+  });
+
+  it('walks one request at a time to the same list, its last record included', async () => {
+    const walked: unknown[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await s.queryRequests({ ...WORLD_ALL, limit: 1, ...(cursor === undefined ? {} : { cursor }) });
+      walked.push(...page.requests);
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor !== undefined);
+    expect(walked).toEqual((await s.queryRequests({ ...WORLD_ALL, limit: MAX_PAGE })).requests);
+    expect(walked).toContainEqual(expect.objectContaining({ invocationId: first.invocationId, status: 500 }));
+  });
+});
+
 describe('local source: tail', () => {
   it('is declared exactly when the reader can subscribe', () => {
     expect(source().source.describe().capabilities.tail).toBe(true);

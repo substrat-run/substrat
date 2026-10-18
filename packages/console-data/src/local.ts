@@ -101,8 +101,17 @@ export function createLocalSource(options: LocalSourceOptions): ConsoleDataSourc
     }
     return trace;
   };
-  const traces = async (): Promise<RequestTrace[]> =>
-    (await reader.traces()).map(parse).filter((t): t is RequestTrace => t !== null);
+  // One record per request: the buffer may hold an id twice (a re-recorded request), and the
+  // last record is the complete one. Every read goes through this, so the list, the facet
+  // counts, a paged walk (whose keyset cursor needs ids unique) and `getTrace` agree.
+  const traces = async (): Promise<RequestTrace[]> => {
+    const byId = new Map<string, RequestTrace>();
+    for (const raw of await reader.traces()) {
+      const t = parse(raw);
+      if (t) byId.set(t.invocationId, t);
+    }
+    return [...byId.values()];
+  };
   const heads = async (): Promise<TraceHead[]> => (await traces()).map(headOf);
 
   const source: ConsoleDataSource = {
@@ -120,8 +129,7 @@ export function createLocalSource(options: LocalSourceOptions): ConsoleDataSourc
     queryRequests: async (query: RequestQuery) => pageOf(await heads(), query),
     facets: async (query: RequestQuery) => facetsOf(await heads(), query),
     async getTrace(invocationId: string) {
-      // The buffer may hold an id twice (a re-recorded request); the last record is the complete one.
-      const trace = (await traces()).findLast((t) => t.invocationId === invocationId);
+      const trace = (await traces()).find((t) => t.invocationId === invocationId);
       if (!trace) return null;
       // Steps leave the source only here, so this is where bound values are withheld.
       return rawPayloads ? trace : withoutRawPayloads(trace);
