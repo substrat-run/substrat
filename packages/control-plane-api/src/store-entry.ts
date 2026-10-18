@@ -1,4 +1,4 @@
-import { classifyPythonStoreModule, scopeStorePublicKeysFrom, type DeclaredBinding } from '@substrat-run/contracts';
+import { classifyPythonStoreModule, scopeStorePublicKeysFrom, type DeclaredBinding, type PythonStoreModuleClass } from '@substrat-run/contracts';
 import type { VerticalBundle } from './deploy.js';
 import {
   STORE_CALLER_KEYS_VAR,
@@ -205,7 +205,7 @@ export const STORE_PYTHON_DATA_CONTENT_TYPE = 'application/octet-stream';
  */
 export function withPythonStoreEntry(release: PythonStoreDriverRelease, options: StoreEntryOptions): PythonStoreScript {
   assertDriverClass(options.className, /^[A-Za-z_][A-Za-z0-9_]*$/);
-  assertPythonDriverModules(release);
+  const classes = assertPythonDriverModules(release);
   const bindings = storeEntryBindings(options);
   const driverModule = release.entry.replace(/\.py$/, '').replaceAll('/', '.');
   const source = STORE_ENTRY_PYTHON_SOURCE.split(STORE_DRIVER_PLACEHOLDER)
@@ -224,7 +224,7 @@ export function withPythonStoreEntry(release: PythonStoreDriverRelease, options:
       ...release.modules.map((module) => ({
         name: module.name,
         content: module.content,
-        contentType: classifyPythonStoreModule(module.name).kind === 'vendored' ? STORE_PYTHON_DATA_CONTENT_TYPE : 'text/x-python',
+        contentType: classes.get(module.name)!.kind === 'vendored' ? STORE_PYTHON_DATA_CONTENT_TYPE : 'text/x-python',
       })),
     ],
     compatibilityDate: STORE_PYTHON_COMPATIBILITY_DATE,
@@ -237,11 +237,11 @@ export function withPythonStoreEntry(release: PythonStoreDriverRelease, options:
  * The module rule of a Python driver's release (D-63, #2390): one `driver_<package>` of `.py`
  * modules, optionally `python_modules/<path>` beside it, none twice, and the entry one of the
  * driver modules. The upload applies it when a release arrives (#2300), and `withPythonStoreEntry`
- * again before every script it builds.
+ * again before every script it builds. Returns each module's class, so nothing classifies twice.
  */
-export function assertPythonDriverModules(release: PythonStoreDriverRelease): void {
+export function assertPythonDriverModules(release: PythonStoreDriverRelease): ReadonlyMap<string, PythonStoreModuleClass> {
   const packages = new Set<string>();
-  const names = new Set<string>();
+  const classes = new Map<string, PythonStoreModuleClass>();
   for (const module of release.modules) {
     if (STORE_RESERVED_MODULES.includes(module.name)) {
       throw new Error(
@@ -249,18 +249,16 @@ export function assertPythonDriverModules(release: PythonStoreDriverRelease): vo
       );
     }
     const classified = classifyPythonStoreModule(module.name);
-    if (names.has(module.name)) throw new Error(`a store driver release ships '${module.name}' twice`);
-    names.add(module.name);
+    if (classes.has(module.name)) throw new Error(`a store driver release ships '${module.name}' twice`);
+    classes.set(module.name, classified);
     if (classified.kind === 'driver') packages.add(classified.packageName);
   }
   if (packages.size > 1) {
     throw new Error(`a store driver release ships more than one package (${[...packages].sort().join(', ')})`);
   }
   if (packages.size === 0) throw new Error('a store driver release ships no driver_ package');
-  if (!names.has(release.entry)) {
-    throw new Error(`store driver entry '${release.entry}' is not one of the release's modules`);
-  }
-  if (classifyPythonStoreModule(release.entry).kind !== 'driver') {
-    throw new Error(`store driver entry '${release.entry}' is not a driver module`);
-  }
+  const entry = classes.get(release.entry);
+  if (!entry) throw new Error(`store driver entry '${release.entry}' is not one of the release's modules`);
+  if (entry.kind !== 'driver') throw new Error(`store driver entry '${release.entry}' is not a driver module`);
+  return classes;
 }

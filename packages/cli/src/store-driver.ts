@@ -82,13 +82,12 @@ export function sourceCommitOf(dir: string, files: readonly string[]): string {
 export function packStoreDriverDir(dir: string, entry: string, sourceCommit: string): StoreDriverReleaseUpload {
   const files = packedFilesOf(dir);
   const packages = new Set<string>();
-  for (const path of files) {
-    const classified = classifyPythonStoreModule(path);
-    if (classified.kind === 'driver') packages.add(classified.packageName);
-  }
+  const classes = new Map(files.map((path) => [path, classifyPythonStoreModule(path)] as const));
+  for (const classified of classes.values()) if (classified.kind === 'driver') packages.add(classified.packageName);
   if (packages.size !== 1) throw new Error(`'${dir}' must hold exactly one driver_ package, not ${[...packages].join(', ') || 'none'}`);
-  if (!files.includes(entry)) throw new Error(`'${dir}' has no ${entry}`);
-  if (classifyPythonStoreModule(entry).kind !== 'driver') throw new Error(`'${entry}' is not a driver module`);
+  const entryClass = classes.get(entry);
+  if (!entryClass) throw new Error(`'${dir}' has no ${entry}`);
+  if (entryClass.kind !== 'driver') throw new Error(`'${entry}' is not a driver module`);
   if (files.length > STORE_RELEASE_MAX_MODULES) {
     throw new Error(`the package is ${files.length} modules; a release carries at most ${STORE_RELEASE_MAX_MODULES}`);
   }
