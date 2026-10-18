@@ -358,6 +358,13 @@ jobs:
       # dump load can then write a row for that id. Held by its own fixtures first.
       - run: pnpm test:attachment-writers
       - run: pnpm lint:attachment-writers
+      # The review checklist (plugin/substrat/review/checklist.md, #2365) names, per item, the gates
+      # that already refuse it, and a review runner trusts that list instead of re-reading what a
+      # gate decides. So every command an item's `gates:` line names must exist and be run in
+      # this workflow; a gate listed there and run nowhere would be reported as covered. Held by
+      # its own fixtures first.
+      - run: pnpm test:review-checklist
+      - run: pnpm lint:review-checklist
       # No promise in a workerd suite floats (#2131). A forgotten `await` is a rejection nobody
       # handles, and the workerd setup file fails a test on one only when the test drives that
       # path; oxlint's type-aware `no-floating-promises` sees every path. Reads the built

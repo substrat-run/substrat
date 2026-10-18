@@ -60,6 +60,7 @@
     "todo-demo": "pnpm --filter @substrat-run/demo-todo",
     "lint:tests": "node tools/test-independence.mjs",
     "lint:attachment-writers": "node tools/attachment-writers.mjs",
+    "lint:review-checklist": "node tools/review-checklist.mjs",
     "lint:floating-promises": "node tools/floating-promises.mjs",
     "test:workerd-rejections": "node --test tools/vitest/workerd-rejections.test.mjs",
     "lint:docs": "node tools/lint-docs.mjs",
@@ -95,7 +96,8 @@
     "lint:publish-manifests": "node tools/publish-manifests.mjs",
     "test:publish-manifests": "node --test tools/publish-manifests.test.mjs",
     "test:bare-regexp": "node --test tools/bare-regexp.test.mjs",
-    "test:attachment-writers": "node --test tools/attachment-writers.test.mjs"
+    "test:attachment-writers": "node --test tools/attachment-writers.test.mjs",
+    "test:review-checklist": "node --test tools/review-checklist.test.mjs"
   },
   "devDependencies": {
     "@babel/parser": "^7.29.7",

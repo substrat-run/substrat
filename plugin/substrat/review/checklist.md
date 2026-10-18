@@ -29,6 +29,12 @@ Substrat's rules can see.
   mechanical check, where there is one. Run it, and report its failure instead of
   re-deriving it. Spend your reading on the part no gate can see, which the item's *Look
   for* lines say.
+- **Each item ends with a `gates:` line**, the machine-read list of the commands that refuse
+  it: monorepo commands (`pnpm …`, `node tools/…`) and the scaffold's (`npm …`). `judgement`
+  in that list marks what no script can decide, which is the part to read; an item that is
+  `gates: judgement` alone has no mechanical half. `pnpm lint:review-checklist` holds every
+  command named there to one that exists and that CI runs, so a gate listed here is a gate
+  that bites. `<ref>` stands for the base branch (`origin/main`).
 - Severity is per item. **blocking**: the change is unsafe to merge as written.
   **advisory**: worth a comment, never a stop.
 - No finding is a valid result. Say which items you checked and found clean. Do not invent
@@ -51,6 +57,8 @@ Tenant data is reached through `ctx.sql`, inside an operation, and nowhere else.
 - *Reader:* spellings a linter cannot see: another module's table named in SQL, a binding or
   stub that reaches a different scope, `fetch` in module code.
 
+gates: `node tools/boundary-lint.mjs` · `npm run lint:boundaries` · judgement
+
 ### S2 · Every operation checks a permission: blocking
 
 The first line of a handler is `assertAllowed(await ctx.check(PERM))`, and `PERM` exists in
@@ -65,6 +73,8 @@ the permissions source.
   for every operation the change touches, open `spec/model.ts` and compare the key it
   declares with the key the handler checks.
 
+gates: `pnpm lint:permissions --check` · `pnpm test` · judgement
+
 ### S3 · Generated files and kernel packages are not edited by hand: blocking
 
 - *Gate:* each generated artifact has a `--check` re-emit (`lint:model`, `lint:api`,
@@ -72,6 +82,8 @@ the permissions source.
   source file to edit instead.
 - *Reader:* a diff to a `*.generated.*` file, `model.json`, `openapi.json`, an emitted
   migration or `@substrat-run/*` code, with no change to the source it comes from.
+
+gates: `pnpm lint:model --check` · `pnpm lint:api --check` · `pnpm lint:client --check` · `pnpm lint:permissions --check` · `pnpm lint:migrations --check` · `pnpm lint:generated-marks` · judgement
 
 ### S4 · Migrations are append-only and declare what they lose: blocking
 
@@ -81,6 +93,8 @@ the permissions source.
   what the SQL does (a declaration is not a pass). This is the **migration-diff
   checkpoint**: present the diff plainly, and stop there.
 
+gates: `pnpm lint:migration-fence` · `pnpm lint:migrations --check` · judgement
+
 ### S5 · Personal data is classified and erasable: blocking
 
 - *Gate:* the compiler refuses an `erasable` field in an event payload. `pnpm lint:model`
@@ -89,11 +103,15 @@ the permissions source.
   name, email, phone, address or free text they wrote must be in `erasable`; list each field
   you judged and why.
 
+gates: `pnpm typecheck` · `npm run typecheck` · `pnpm lint:model --check` · judgement
+
 ### S6 · State changes go through declared lifecycles: blocking
 
 - *Gate:* the compiler checks the joins between a lifecycle and its operations.
 - *Reader:* a raw `UPDATE … SET status = …`; a transition coded but not declared; a guard
   rewritten inline beside a lifecycle that already draws that edge.
+
+gates: `pnpm typecheck` · `npm run typecheck` · judgement
 
 ### S7 · Secrets stay out of source and logs: blocking
 
@@ -102,12 +120,16 @@ the permissions source.
   error, an event payload or a response; a secret name in public text (a PR description, a
   comment).
 
+gates: judgement
+
 ### S8 · A new operation has an acceptance test: advisory
 
 - *Gate:* `pnpm lint:tests` refuses a test that reads the emitted model to decide what to
   assert.
 - *Reader:* an operation added with no scenario calling it, or only a happy path where it
   has a permission failure and a not-found.
+
+gates: `pnpm lint:tests` · judgement
 
 ## Not listed here
 
