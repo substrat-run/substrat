@@ -71,7 +71,8 @@ test('the digest pinned is of the matched text, and an accepted file passes with
 
 test('a DIFFERENT value of the accepted shape in the accepted file is refused: the entry pins values, not a count', () => {
   const swapped = jwk.replace('a1B2', 'z9Y8');
-  const [offence, ...rest] = findLiterals([file('a/dev-key.ts', swapped)], accepted);
+  // Off CI, so the whole digest is printed whatever environment runs this suite.
+  const [offence, ...rest] = findLiterals([file('a/dev-key.ts', swapped)], accepted, { ci: false });
   assert.match(offence, /^a\/dev-key\.ts:1: JWK private exponent — not an accepted value \(sha256 [0-9a-f]{64}\)/);
   assert.ok(!offence.includes('z9Y8'), 'the value must not be printed');
   assert.match(rest[0], /sha256 [0-9a-f]{64} is no longer in the file/);
@@ -103,4 +104,16 @@ test('every accepted entry carries a reason', () => {
     assert.ok(SHAPES.some((s) => s.name === entry.shape), `${path} names an unknown shape`);
     assert.ok(entry.digests.length > 0 && entry.digests.every((d) => /^[0-9a-f]{64}$/.test(d)), `${path} pins sha256 digests`);
   }
+});
+
+test('in CI a refused value prints only a 12-hex prefix of its digest; locally the whole digest, to pin', () => {
+  const swapped = jwk.replace('a1B2', 'z9Y8');
+  const full = scan(swapped)[0].digest;
+  const [inCi] = findLiterals([file('a/dev-key.ts', swapped)], accepted, { ci: true });
+  assert.ok(inCi.includes(`sha256 ${full.slice(0, 12)}…`), inCi);
+  assert.ok(!inCi.includes(full), 'the full digest must not reach a CI log');
+  const [local] = findLiterals([file('a/dev-key.ts', swapped)], accepted, { ci: false });
+  assert.ok(local.includes(`sha256 ${full})`), local);
+  const [stale] = findLiterals([file('a/dev-key.ts', 'nothing')], accepted, { ci: true });
+  assert.ok(!stale.includes(accepted['a/dev-key.ts'].digests[0]) && stale.includes(accepted['a/dev-key.ts'].digests[0].slice(0, 12)));
 });

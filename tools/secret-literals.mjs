@@ -27,7 +27,8 @@
  * another of the same shape is reviewed rather than waved through, and so is a second one added
  * beside it; the entry covers that file only, so the same shape in any other file is refused. A
  * pinned digest no longer in the file, and an entry for a file not read, are refused as stale.
- * A refused match prints its digest, never its text: that is what an entry would pin.
+ * A refused match prints its digest, never its text — whole when run locally, which is what an
+ * entry pins, and only a 12-hex prefix in CI.
  *
  * Exit 0: clean. 1: a literal found, or an entry out of step. Fixtures: `secret-literals.test.mjs`.
  */
@@ -99,8 +100,14 @@ export function scan(text) {
   return out.sort((a, b) => a.line - b.line);
 }
 
-/** Offences across `files` (`{ path, text }[]`), judged against `accepted`. */
-export function findLiterals(files, accepted = ACCEPTED) {
+/**
+ * Offences across `files` (`{ path, text }[]`), judged against `accepted`. A digest is printed whole
+ * only off CI, where it is what a person pins; in a CI log (`ci`, from the `CI` variable every CI
+ * service sets) only its first 12 hex digits are, enough to tell two apart and too few to test
+ * guesses at a short value against.
+ */
+export function findLiterals(files, accepted = ACCEPTED, { ci = Boolean(process.env.CI) } = {}) {
+  const shown = (digest) => (ci ? `${digest.slice(0, 12)}…` : digest);
   const offences = [];
   for (const { path, text } of files) {
     const hits = scan(text);
@@ -109,11 +116,11 @@ export function findLiterals(files, accepted = ACCEPTED) {
       for (const h of hits) {
         if (h.shape !== entry.shape) offences.push(`${path}:${h.line}: ${h.shape}`);
         else if (!entry.digests.includes(h.digest)) {
-          offences.push(`${path}:${h.line}: ${h.shape} — not an accepted value (sha256 ${h.digest}); review it, and pin the digest in tools/secret-literals.mjs only if it is no secret`);
+          offences.push(`${path}:${h.line}: ${h.shape} — not an accepted value (sha256 ${shown(h.digest)}); review it, and pin its digest (printed whole when run locally) in tools/secret-literals.mjs only if it is no secret`);
         }
       }
       for (const d of entry.digests) {
-        if (!hits.some((h) => h.digest === d)) offences.push(`${path}: the accepted ${entry.shape} sha256 ${d} is no longer in the file — remove it from the entry`);
+        if (!hits.some((h) => h.digest === d)) offences.push(`${path}: the accepted ${entry.shape} sha256 ${shown(d)} is no longer in the file — remove it from the entry`);
       }
       continue;
     }
