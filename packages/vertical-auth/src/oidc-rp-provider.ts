@@ -54,8 +54,8 @@ export interface OidcRpConfig {
   sharedIssuer?: boolean;
   /**
    * Accept delegated bearers from these actors at this app's MCP endpoint (#1824) — see
-   * `OidcConfig.delegation`. Takes effect only with `sharedIssuer`, which is what names the
-   * resource such a token is for. Absent, a bearer carrying `act` is refused.
+   * `OidcConfig.delegation`. Takes effect only with `sharedIssuer`: a team auth server is the
+   * issuer that mints them. Absent, a bearer carrying `act` is refused.
    */
   delegation?: DelegationOption;
   /**

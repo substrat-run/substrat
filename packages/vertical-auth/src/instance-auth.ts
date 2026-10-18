@@ -228,9 +228,8 @@ export function selectAuthProvider(opts: {
   sharedIssuer?: boolean;
   /**
    * Accept delegated bearers from these actors at this app's MCP endpoint (#1824). Applies to
-   * the delivered choice on a shared issuer only, for the reason `sharedIssuer` does: that is
-   * the issuer that mints them, and the only one whose resources this app can name. Absent,
-   * every bearer carrying `act` is refused.
+   * the delivered choice on a shared issuer only: a team auth server is the issuer that mints
+   * them. Absent, every bearer carrying `act` is refused.
    */
   delegation?: DelegationOption;
   platformBaseDomains?: readonly string[];
