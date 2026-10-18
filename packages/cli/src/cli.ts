@@ -20,7 +20,7 @@
  * (in the console) still gates serving.
  */
 import { bindConnectionScope, listConnectionBindings } from './connections.js';
-import { join } from 'node:path';
+import { join, resolve as resolvePath } from 'node:path';
 import { createInterface } from 'node:readline';
 import { loadConfig, saveConfig, resolveAuth } from './config.js';
 import { browserLogin } from './login.js';
@@ -52,6 +52,7 @@ import { printInstalls } from './installs.js';
 import { createPreview, deletePreview, listPreviews, formatPreviewLogin, formatPreviews, parseTtlHours } from './preview.js';
 import { writeCiWorkflow, detectDefaultBranch, nextStepsMessage } from './init.js';
 import { writeModelView } from './model.js';
+import { CannotRun, changesetDirFor, checkPackages, computeFor, defaultBase, gitRoot, writeChangeset } from './changeset.js';
 import {
   listVerticalHostnames,
   bindSurfaceHostname,
@@ -264,7 +265,16 @@ Usage:
                                               open it in a browser. Reads the checked-in
                                               model.json, so it needs no login and no push.
                                               Writes a temp file unless --out places it
-  substrat init --ci github [dir]             write .github/workflows/substrat-deploy.yml —
+  substrat changeset [dir] [--base <ref>]     write a .changeset file whose bump is COMPUTED
+                    [--summary <text>]        from the diff of model.json, openapi.json and
+                    [--check] [--json]        PERMISSIONS.md against the merge-base: removed
+                                              or narrowed → major, added → minor, docs → patch;
+                                              permission changes are flagged for review.
+                                              --check refuses a changeset declaring less than
+                                              the computed bump (exit 1); --json prints the
+                                              classification. --base defaults to the
+                                              changesets baseBranch on origin
+  substrat init --ci github [dir]           write .github/workflows/substrat-deploy.yml —
                     [--branch <b>] [--path <packageDir>] [--release trunk|changesets]
                     [--out <path>] [--force]
                                               the same workflow the dashboard's one-click CI
@@ -1230,6 +1240,56 @@ async function cmdModel(): Promise<void> {
   console.log(file);
 }
 
+/**
+ * `substrat changeset [dir] [--base <ref>] [--summary <text>] [--check] [--json]` — the bump,
+ * computed from the artifacts of record rather than chosen (#2364). No control plane and no
+ * auth: it reads the checked-in artifacts at the merge-base and in the working tree.
+ */
+function cmdChangeset(): void {
+  const usage = 'usage: substrat changeset [dir] [--base <ref>] [--summary <text>] [--check] [--json]';
+  for (const f of ['base', 'summary']) {
+    const v = flag(f);
+    if (argv.includes(`--${f}`) && (!v || v.startsWith('--'))) {
+      console.error(`${usage}\n\n--${f} needs a value.`);
+      process.exit(1);
+    }
+  }
+  const booleans = ['check', 'json'];
+  const dir = resolvePath(positional(0, booleans) ?? '.');
+  try {
+    const root = gitRoot(dir);
+    const changesetDir = changesetDirFor(dir, root);
+    const base = flag('base') ?? defaultBase(changesetDir, root);
+    const { pkg, result } = computeFor(dir, base);
+    if (argv.includes('--json')) {
+      console.log(JSON.stringify({ package: pkg, base, ...result }, null, 2));
+      return;
+    }
+    if (argv.includes('--check')) {
+      const { lines, failed } = checkPackages([{ pkg, result }], changesetDir);
+      for (const l of lines) (failed ? console.error : console.log)(l);
+      if (failed) process.exit(1);
+      return;
+    }
+    if (result.bump === 'none') {
+      console.log(`${pkg}: model.json, openapi.json and PERMISSIONS.md are unchanged against ${base} — no changeset to write`);
+      return;
+    }
+    const file = writeChangeset(changesetDir, pkg, result, flag('summary'));
+    console.log(`✓ ${pkg}: ${result.bump}, computed from ${result.changes.length} change(s) against ${base}`);
+    for (const c of result.changes.filter((c) => c.flagged)) {
+      console.log(`  review: ${c.path} — ${c.detail}`);
+    }
+    console.log(file);
+  } catch (err) {
+    if (err instanceof CannotRun) {
+      console.error(`error: ${err.message}`);
+      process.exit(2);
+    }
+    throw err;
+  }
+}
+
 async function cmdWhoami(): Promise<void> {
   const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   const { user, tenants } = await fetchWhoami(controlPlaneUrl, header);
@@ -1284,6 +1344,8 @@ async function main(): Promise<void> {
       return cmdInit();
     case 'model':
       return cmdModel();
+    case 'changeset':
+      return cmdChangeset();
     case 'version':
     case '--version':
     case '-v':
