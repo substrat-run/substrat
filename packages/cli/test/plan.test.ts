@@ -156,6 +156,17 @@ describe('conceptDelta — each section, and its twin when nothing changed', () 
     expect(text).toContain('declares none, so no artifact names its key');
   });
 
+  it('an Operations table the classifier cannot read is shown as unreadable — never as "not listed"', () => {
+    const md = withOps(PERMS, ['| `acme/cancel` | `list:manage` | `@acme/vertical` |']);
+    const d = conceptDelta(PKG, art(MODEL, md), art(cancelled(), md));
+    expect(d.lifecycles.transitions[0]).toMatchObject({ checkUnreadable: expect.stringMatching(/cells/) });
+    expect(d.lifecycles.transitions[0]!.check).toBeUndefined();
+    const text = renderDelta(d, OPTS);
+    expect(text).toContain('| added | — unreadable: the Operations table is not the emitter’s — |');
+    expect(text).toContain('The Operations section of PERMISSIONS.md cannot be read');
+    expect(text).not.toContain('predates its Operations section');
+  });
+
   it('a removed transition reads its check at the base, where the operation still existed', () => {
     const base = withOps(PERMS, [`| \`acme/finish\` | \`list:create\` | the scope | \`${PKG}\` |`]);
     const head = withOps(PERMS, []);

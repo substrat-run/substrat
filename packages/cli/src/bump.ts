@@ -48,6 +48,7 @@
  * authoring notation (`tools/model-diff.mts`). The same classifier is what `substrat changeset`
  * writes, what `--check` holds a hand-written changeset to, and what a status line can show.
  */
+import { operationsTableProblem } from '@substrat-run/model-view';
 
 export type Level = 'patch' | 'minor' | 'major';
 export type Bump = 'none' | Level;
@@ -743,23 +744,6 @@ function rowsOf(section: string): string[][] {
     rows.push(cells);
   }
   return rows.slice(1); // the header row
-}
-
-const OPERATIONS_HEADER = ['Operation', 'Key', 'Checked on', 'Declared by'];
-const NO_OPERATIONS = '_No module here registers an operation._';
-
-/** Why an Operations section's table is not the emitter's, or `undefined` when it is (#2384). */
-function operationsTableProblem(section: string): string | undefined {
-  const lines = section.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('|'));
-  if (lines.length === 0) return section.includes(NO_OPERATIONS) ? undefined : 'no table, and no line saying there are no operations';
-  const split = (l: string) => l.replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim());
-  const header = split(lines[0]!);
-  if (header.join('|') !== OPERATIONS_HEADER.join('|')) return `its header is not | ${OPERATIONS_HEADER.join(' | ')} |`;
-  if (lines.length < 2 || !split(lines[1]!).every((c) => /^:?-+:?$/.test(c))) return 'its header has no separator row';
-  const bad = lines.slice(2).find((l) => split(l).length !== OPERATIONS_HEADER.length);
-  if (bad !== undefined) return `a row has ${split(bad).length} cells, not ${OPERATIONS_HEADER.length}`;
-  if (lines.length === 2) return 'its table has no rows';
-  return undefined;
 }
 
 /**

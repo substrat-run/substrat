@@ -192,6 +192,17 @@ const perms = (edit: (t: string) => string): Classification => {
 const createList = (d: Json) => d.paths['/api/lists'].post;
 const createBody = (d: Json) => createList(d).requestBody.content['application/json'].schema;
 
+const FIXTURE_PATH = join(__dirname, '..', '..', 'model-view', 'test', 'fixtures', 'operations-tables.json');
+/** The shared Operations-table fixture (#2384), read from disk so both packages' tests load one file. */
+const OPERATIONS_FIXTURE = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8')) as {
+  readable: Record<string, { body: string; operations: number }>;
+  malformed: Record<string, string>;
+};
+const READABLE_OPERATIONS = OPERATIONS_FIXTURE.readable;
+const MALFORMED_OPERATIONS = OPERATIONS_FIXTURE.malformed;
+const withOperations = (permissionsMd: string, body: string): string =>
+  `${permissionsMd.trimEnd()}\n\n## 9. Operations — which key each checks\n${body}`;
+
 describe('identity', () => {
   it('unchanged artifacts are no bump, whatever their formatting', () => {
     expect(classifyModel(JSON.stringify(MODEL), JSON.stringify(MODEL, null, 2)).bump).toBe('none');
@@ -784,6 +795,23 @@ describe('PERMISSIONS.md — which key each operation checks (#2384)', () => {
       expect(classifyPermissions(edit(WITH), WITH).bump, why).toBe('major');
     }
   });
+
+  // The shared fixture: the shapes model-view's reader judges, judged here the same way.
+  for (const [shape, body] of Object.entries(MALFORMED_OPERATIONS)) {
+    it(`shared fixture, unreadable → major at head and at base: ${shape}`, () => {
+      const bad = withOperations(PERMS, body);
+      const good = withOperations(PERMS, READABLE_OPERATIONS['a table with rows']!.body);
+      expect(classifyPermissions(good, bad).changes).toEqual([expect.objectContaining({ path: 'operations', level: 'major', flagged: true })]);
+      expect(classifyPermissions(bad, good).bump).toBe('major');
+    });
+  }
+  for (const [shape, { body, operations }] of Object.entries(READABLE_OPERATIONS)) {
+    it(`shared fixture, readable: ${shape}`, () => {
+      const snap = parsePermissions(withOperations(PERMS, body));
+      expect(snap.operationsUnreadable).toBeUndefined();
+      expect(Object.keys(snap.operations ?? {})).toHaveLength(operations);
+    });
+  }
 
   it('its twin: a section saying there are no operations is readable, and empty', () => {
     const none = WITH.replace(/\| Operation \| Key \|[\s\S]*$/, '_No module here registers an operation._\n');

@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { EmittedModel } from '@substrat-run/contracts';
 import {
   ConceptMarkerError,
@@ -86,6 +88,17 @@ stale
 `;
 
 const inputs = { model: MODEL, permissionsMd: PERMISSIONS };
+
+const FIXTURE_PATH = join(__dirname, 'fixtures', 'operations-tables.json');
+/** The shared Operations-table fixture (#2384), read from disk so both packages' tests load one file. */
+const OPERATIONS_FIXTURE = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8')) as {
+  readable: Record<string, { body: string; operations: number }>;
+  malformed: Record<string, string>;
+};
+const READABLE_OPERATIONS = OPERATIONS_FIXTURE.readable;
+const MALFORMED_OPERATIONS = OPERATIONS_FIXTURE.malformed;
+const withOperations = (permissionsMd: string, body: string): string =>
+  `${permissionsMd.trimEnd()}\n\n## 9. Operations — which key each checks\n${body}`;
 
 describe('syncConcept', () => {
   it('renders the three regions from the model and the permissions', () => {
@@ -284,6 +297,23 @@ describe('parsePermissions — the Operations section (#2384)', () => {
   it('its twin: a file with no Operations section has no `operations` — absent, never "none"', () => {
     expect(parsePermissions(PERMISSIONS).operations).toBeUndefined();
   });
+});
+
+describe('parsePermissions — the Operations table, judged as the classifier judges it (#2384)', () => {
+  for (const [shape, { body, operations }] of Object.entries(READABLE_OPERATIONS)) {
+    it(`readable: ${shape}`, () => {
+      const v = parsePermissions(withOperations(PERMISSIONS, body));
+      expect(v.operationsUnreadable).toBeUndefined();
+      expect(v.operations?.size).toBe(operations);
+    });
+  }
+  for (const [shape, body] of Object.entries(MALFORMED_OPERATIONS)) {
+    it(`unreadable, and says so: ${shape}`, () => {
+      const v = parsePermissions(withOperations(PERMISSIONS, body));
+      expect(v.operationsUnreadable).toEqual(expect.any(String));
+      expect(v.operations).toBeUndefined();
+    });
+  }
 });
 
 describe('entityDiagram / lifecycleDiagram', () => {

@@ -53,6 +53,11 @@ export interface PermissionsView {
    * file has no Operations section — one emitted before it existed — never "no operations".
    */
   readonly operations?: ReadonlyMap<string, OperationCheckView>;
+  /**
+   * Set when the Operations heading is there but its table is not the emitter's — the same shapes
+   * the bump classifier ranks major ({@link operationsTableProblem}). `operations` is then absent.
+   */
+  readonly operationsUnreadable?: string;
 }
 
 /** One row of `PERMISSIONS.md`'s Operations section. */
@@ -92,6 +97,38 @@ function tableUnder(md: string, title: string): string[][] | undefined {
   return rows.slice(2);
 }
 
+const OPERATIONS_HEADER = ['Operation', 'Key', 'Checked on', 'Declared by'];
+const NO_OPERATIONS = '_No module here registers an operation._';
+
+/**
+ * Why an Operations section's table is not the one `lint:permissions` writes, or `undefined` when
+ * it is (#2384). `section` is the text under the heading. The ONE judgement both readers make —
+ * this package's `parsePermissions` and the CLI's bump classifier — so `substrat plan` never renders
+ * a table the classifier ranks major as unreadable.
+ */
+export function operationsTableProblem(section: string): string | undefined {
+  const lines = section.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('|'));
+  if (lines.length === 0) return section.includes(NO_OPERATIONS) ? undefined : 'no table, and no line saying there are no operations';
+  const split = (l: string) => l.replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim());
+  const header = split(lines[0]!);
+  if (header.join('|') !== OPERATIONS_HEADER.join('|')) return `its header is not | ${OPERATIONS_HEADER.join(' | ')} |`;
+  if (lines.length < 2 || !split(lines[1]!).every((c) => /^:?-+:?$/.test(c))) return 'its header has no separator row';
+  const bad = lines.slice(2).find((l) => split(l).length !== OPERATIONS_HEADER.length);
+  if (bad !== undefined) return `a row has ${split(bad).length} cells, not ${OPERATIONS_HEADER.length}`;
+  if (lines.length === 2) return 'its table has no rows';
+  return undefined;
+}
+
+
+/** The text under the `## <n>. <title>` heading, up to the next `## `; `undefined` when absent. */
+function sectionUnder(md: string, title: string): string | undefined {
+  const lines = md.split('\n');
+  const at = lines.findIndex((l) => new RegExp(`^## \\d+\\.\\s+${title}\\b`).test(l));
+  if (at < 0) return undefined;
+  const end = lines.findIndex((l, i) => i > at && l.startsWith('## '));
+  return lines.slice(at + 1, end < 0 ? undefined : end).join('\n');
+}
+
 const unquote = (s: string): string => s.replace(/`/g, '');
 const keysOf = (cell: string): string[] =>
   cell
@@ -122,6 +159,9 @@ export function parsePermissions(md: string): PermissionsView {
   const entityGrants = (tableUnder(md, 'Entity-narrowed grant shapes') ?? [])
     .map(([entityType, keys]) => ({ entityType: unquote(entityType ?? ''), keys: keysOf(keys ?? '') }))
     .filter((g) => g.entityType !== '');
+  const opSection = sectionUnder(md, 'Operations');
+  const operationsUnreadable = opSection === undefined ? undefined : operationsTableProblem(opSection);
+  if (operationsUnreadable !== undefined) return { roles, entityGrants, descriptions, operationsUnreadable };
   const opRows = tableUnder(md, 'Operations');
   const operations =
     opRows === undefined

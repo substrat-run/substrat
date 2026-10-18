@@ -50,6 +50,8 @@ export interface TransitionChange {
    * operation (it predates the Operations section, or there is no file): nothing is guessed.
    */
   readonly check?: TransitionCheck;
+  /** Set instead of `check` when that `PERMISSIONS.md`'s Operations table cannot be read, with why. */
+  readonly checkUnreadable?: string;
 }
 
 /** One operation's declared check, joined to the roles and per-entity grant shapes holding it. */
@@ -154,10 +156,11 @@ function permissionRows(baseMd: string | null, headMd: string | null): Permissio
 }
 
 /** operation → its declared check and holders, from one side's `PERMISSIONS.md`. */
-function checksIn(md: string | null): Map<string, TransitionCheck> {
+function checksIn(md: string | null): { checks: Map<string, TransitionCheck>; unreadable?: string } {
   const out = new Map<string, TransitionCheck>();
-  if (md === null) return out;
+  if (md === null) return { checks: out };
   const v = parsePermissions(md);
+  if (v.operationsUnreadable !== undefined) return { checks: out, unreadable: v.operationsUnreadable };
   for (const [op, c] of v.operations ?? []) {
     const holds = (keys: readonly string[]) => keys.some((k) => c.keys.includes(k));
     out.set(op, {
@@ -168,7 +171,7 @@ function checksIn(md: string | null): Map<string, TransitionCheck> {
       grantShapes: sorted(v.entityGrants.filter((g) => holds(g.keys)).map((g) => g.entityType)),
     });
   }
-  return out;
+  return { checks: out };
 }
 
 const readModelText = (text: string | null, what: string): EmittedModel | null =>
@@ -178,7 +181,9 @@ function withChecks(ts: TransitionChange[], baseMd: string | null, headMd: strin
   const before = checksIn(baseMd);
   const now = checksIn(headMd);
   return ts.map((t) => {
-    const check = (t.change === 'removed' ? before : now).get(t.operation);
+    const side = t.change === 'removed' ? before : now;
+    if (side.unreadable !== undefined) return { ...t, checkUnreadable: side.unreadable };
+    const check = side.checks.get(t.operation);
     return check ? { ...t, check } : t;
   });
 }
@@ -363,13 +368,18 @@ export function renderDelta(d: ConceptDelta, opts: { base: string; digest: strin
       out.push('', '| Entity | From | Triggered by | To | Change | Checks — held by |', '| --- | --- | --- | --- | --- | --- |');
       for (const t of l.transitions) {
         const change = t.change === 'retargeted' ? `retargeted (was \`${t.was}\`)` : t.change;
-        out.push(`| \`${t.entity}\` | \`${t.from}\` | \`${t.operation}\` | \`${t.to}\` | ${change} | ${checkCell(t.check)} |`);
+        const checks = t.checkUnreadable !== undefined ? '— unreadable: the Operations table is not the emitter’s —' : checkCell(t.check);
+        out.push(`| \`${t.entity}\` | \`${t.from}\` | \`${t.operation}\` | \`${t.to}\` | ${change} | ${checks} |`);
       }
       out.push(
         '',
         'Who may trigger a transition is whoever may run its operation: the last column is the key that operation declares it checks, from the Operations section of PERMISSIONS.md, and the roles and per-record grant shapes holding it. Any change to who holds a key is under Permissions below.',
       );
-      if (l.transitions.some((t) => t.check === undefined)) {
+      const unreadable = [...new Set(l.transitions.flatMap((t) => (t.checkUnreadable === undefined ? [] : [t.checkUnreadable])))];
+      if (unreadable.length) {
+        out.push('', `The Operations section of PERMISSIONS.md cannot be read (${unreadable.join('; ')}), so no key is named. The classifier ranks this major; re-emit PERMISSIONS.md.`);
+      }
+      if (l.transitions.some((t) => t.check === undefined && t.checkUnreadable === undefined)) {
         out.push('', 'An operation PERMISSIONS.md does not list is named without a key: that file predates its Operations section, the operation is not registered, or its module was bound by a kernel too old to carry declarations. Re-emit PERMISSIONS.md to fill it in.');
       }
       if (l.transitions.some((t) => t.check?.declared === false)) {
