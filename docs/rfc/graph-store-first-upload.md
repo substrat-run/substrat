@@ -6,10 +6,19 @@ description: The hosted checks for the graph driver's first release. None of the
 
 # First upload of the graph store driver
 
-The pin is in `STORE_DRIVERS` ([graph store registration](./graph-store-registration.md)).
-Its sha256 is `1fb0bb0be73c05239b5e769280461c3049ef295f2f92cab90cba9c15ba5ad122`,
-595 modules, 4530224 bytes, schema 0, entry `driver_graph/store.py`, source commit
-`f49ef6bb16691517a38fd36268ceb79834d6fbc6`. Nothing below has been run. Do not run it
+The pin is in `STORE_DRIVERS` (`packages/contracts/src/deploy.ts`; see the
+[graph store registration](./graph-store-registration.md)). Its sha256 is
+`1fb0bb0be73c05239b5e769280461c3049ef295f2f92cab90cba9c15ba5ad122`, schema 0, source
+commit `f49ef6bb16691517a38fd36268ceb79834d6fbc6`, entry `driver_graph/store.py`, as that
+entry read when this page was written; the bundle is 595 modules and 4530224 bytes by the
+author's build.
+
+**Verify these values against `STORE_DRIVERS` before running anything.** This page copies
+the sha256 and the commit into four commands and their expected outputs, and nothing
+updates them if the pin changes during review. Read the `releases` entry of the `graph`
+driver, and use its values wherever this page shows them. The module count and byte size
+are not in `STORE_DRIVERS`; a bundle that differs in either is different bytes, which the
+sha256 comparison in step 3 catches. Nothing below has been run. Do not run it
 until that pin is on the deployed control plane. A write uses a person's
 `substrat login`. The service token is refused. The line `authenticating with` must
 name that sign-in. If it names the service token, stop.
