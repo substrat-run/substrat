@@ -48,16 +48,17 @@ export interface RegisteredRoute {
  *  - a route registered for every method (`app.use`, `app.all`, `app.mount`, which Hono records
  *    alike as `ALL`);
  *  - an `OPTIONS` route (a CORS preflight);
- *  - a pattern with a `*` anywhere outside a parameter's regex: a `*` segment (a catch-all) and
- *    a `*` inside one (`/api/*cp`, `/ap*` + `/mcp`) alike. Hono's routers do not agree on the
- *    second kind (the default router dispatches both of those to `/api/mcp`, and `TrieRouter`
- *    neither), so judging it would refuse boots that are fine on one router and miss
- *    shadowing on another.
+ *  - a pattern with a segment that is exactly `*`, a catch-all, which meets every path.
+ *
+ * Any other `*` is judged as `TrieRouter` reads it: inside a segment (`/api/mc*`, `/ap*`, which
+ * both Hono routers dispatch to `/api/mcp`, are returned) and inside a parameter's regex
+ * (`/api/:p{m.*}`) alike. The default router also dispatches some mid-segment forms that
+ * `TrieRouter` does not match, such as `/api/*cp` and `/ap*` + `/mcp`; those are not returned.
  */
 export function routeAnsweringAt(routes: readonly RegisteredRoute[], path: string): RegisteredRoute | undefined {
   for (const route of routes) {
     if (route.method === 'ALL' || route.method === 'OPTIONS') continue;
-    if (splitRoutingPath(route.path).some((segment) => !segment.startsWith(':') && segment.includes('*'))) continue;
+    if (splitRoutingPath(route.path).includes('*')) continue;
     const probe = new TrieRouter<true>();
     try {
       probe.add(route.method, route.path, true);

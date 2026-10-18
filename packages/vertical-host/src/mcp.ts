@@ -647,11 +647,13 @@ function statusOf(err: unknown): number | undefined {
  * endpoint really answers at, a Hono `basePath()` included. A route registered AFTER it never
  * runs here: every method but `OPTIONS` is answered by this mount. Not judged:
  *  - `app.use`, `app.all` and `app.mount` (Hono records all three alike), and `OPTIONS` routes;
- *  - a pattern with a `*` outside a parameter's regex, whether a catch-all segment or a `*`
- *    inside a segment (`/api/*cp`), on which Hono's routers disagree;
+ *  - a pattern with a segment that is exactly `*`, a catch-all;
  *  - a prefix added after the mount by `app.route()`: the routes of the app it is mounted
  *    into are not seen here.
- * The channel (`mcpChannelOf`) is what keeps a delegated token away from them all the same.
+ * Any other `*` is judged as `TrieRouter` reads it, so `/api/mc*` refuses the mount. The
+ * default router also dispatches some mid-segment forms `TrieRouter` does not match, such as
+ * `/api/*cp`; those are not refused. The channel (`mcpChannelOf`) is what keeps a delegated
+ * token away from every one of these all the same.
  */
 export function mountMcp(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -213,11 +213,13 @@ What each half does:
   `Allow: POST` for all but `POST`. Not judged:
   - `app.use`, `app.all` and `app.mount`, which Hono records alike as middleware, and
     `OPTIONS` routes;
-  - a pattern with a `*` outside a parameter's regex: a `*` catch-all, and a `*` inside a
-    segment (`/api/*cp`), which Hono's routers do not dispatch alike;
+  - a pattern with a segment that is exactly `*`, a catch-all;
   - the routes of an app this one is mounted into later with `app.route()`.
 
-  None of them is handed the channel, so none admits a delegated token.
+  Any other `*` is judged as `TrieRouter` reads it, so `/api/mc*` or `/ap*` stops the vertical
+  from mounting. The default router also dispatches some mid-segment forms that `TrieRouter`
+  does not match, such as `/api/*cp`; those are not refused. None of these routes is handed
+  the channel, so none admits a delegated token.
 - **A hand-written MCP surface owns its ceiling.** A vertical that serves its own MCP
   endpoint and passes `delegated` to the verifier itself takes on what the derived endpoint
   does: holding every call to `subject.delegation.scope`. Nothing checks that it does.

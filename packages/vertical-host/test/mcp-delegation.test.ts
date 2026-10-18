@@ -355,9 +355,29 @@ describe('nothing but the MCP endpoint answers at its path', () => {
     expect(routeAnsweringAt([{ method: 'ALL', path: '/api/mcp' }], '/api/mcp')).toBeUndefined();
     expect(routeAnsweringAt([{ method: 'OPTIONS', path: '/api/mcp' }], '/api/mcp')).toBeUndefined();
     expect(routeAnsweringAt([{ method: 'GET', path: '/api/*' }], '/api/mcp')).toBeUndefined();
-    expect(routeAnsweringAt([{ method: 'POST', path: '/api/mc*' }], '/api/mcp')).toBeUndefined();
-    // A `*` inside a parameter's regex is the regex's, and judged.
+    // A `*` inside a segment is judged as TrieRouter reads it.
+    for (const path of ['/api/mc*', '/api/mcp*', '/api/m*', '/a*', '/ap*']) {
+      expect(routeAnsweringAt([{ method: 'POST', path }], '/api/mcp'), path).toEqual({ method: 'POST', path });
+    }
+    expect(routeAnsweringAt([{ method: 'POST', path: '/api/x*' }], '/api/mcp')).toBeUndefined();
+    // A `*` inside a parameter's regex is the regex's, not a catch-all: it is judged the same way.
     expect(routeAnsweringAt([{ method: 'POST', path: '/api/:p{m.*}' }], '/api/mcp')).toEqual({ method: 'POST', path: '/api/:p{m.*}' });
+    expect(routeAnsweringAt([{ method: 'POST', path: '/api/:p{x.*}' }], '/api/mcp')).toBeUndefined();
+  });
+
+  it('refuses a * inside a segment that both Hono routers dispatch to the MCP path', async () => {
+    for (const pattern of ['/api/mc*', '/api/mcp*', '/api/m*', '/a*', '/ap*']) {
+      // The oracle: the default router and TrieRouter both answer a request there with this route.
+      for (const app of [new Hono(), new Hono({ router: new TrieRouter() })]) {
+        let hit = false;
+        app.post(pattern, (c) => ((hit = true), c.text('mine')));
+        await app.request(`${A}/api/mcp`, { method: 'POST' });
+        expect(hit, pattern).toBe(true);
+      }
+      const app = new Hono();
+      app.post(pattern, (c) => c.text('mine'));
+      expect(() => mountOperations(app, operations, stub), pattern).toThrow(/is registered before the MCP endpoint/);
+    }
   });
 
   it('judges the path the endpoint answers at under a Hono basePath(), not the unprefixed one', async () => {
@@ -379,16 +399,16 @@ describe('nothing but the MCP endpoint answers at its path', () => {
     );
   });
 
-  it('does not judge a * inside a segment, on which Hono routers differ, nor routes app.route() mounts it under', async () => {
-    const dispatches = async (app: Hono) => {
+  it('does not refuse a mid-segment * that only the default router dispatches there, nor see routes app.route() mounts it under', async () => {
+    const dispatches = async (app: Hono, pattern: string) => {
       let hit = false;
-      app.post('/api/*cp', (c) => ((hit = true), c.text('mine')));
+      app.post(pattern, (c) => ((hit = true), c.text('mine')));
       await app.request(`${A}/api/mcp`, { method: 'POST' });
       return hit;
     };
-    // The default router dispatches it to the endpoint's path; TrieRouter does not.
-    expect([await dispatches(new Hono()), await dispatches(new Hono({ router: new TrieRouter() }))]).toEqual([true, false]);
-    for (const pattern of ['/api/*cp', '/ap*/mcp', '/api/mc*']) {
+    for (const pattern of ['/api/*cp', '/ap*/mcp']) {
+      // The default router dispatches it to the endpoint's path; TrieRouter does not.
+      expect([await dispatches(new Hono(), pattern), await dispatches(new Hono({ router: new TrieRouter() }), pattern)], pattern).toEqual([true, false]);
       const app = new Hono();
       app.post(pattern, (c) => c.text('mine'));
       expect(() => mountOperations(app, operations, stub), pattern).not.toThrow();
