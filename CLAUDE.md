@@ -529,7 +529,8 @@ The re-emit gates today: `lint:permissions`, `lint:model`, `lint:api`, `lint:cli
 each package's `MIGRATIONS.md`, the digest of every migration its own modules author as the
 kernel's `migrationSteps` computes it; its `--base <ref>` half refuses a row the base branch
 shipped that is now changed, missing or renumbered, since a scope that applied it fails closed on
-the edit at its next migration pass, #2066), plus `lint:decisions`, `lint:playbook`, `lint:docs`,
+the edit at its next migration pass, #2066, and a new one placed or numbered before what the base
+shipped, which an existing scope would run out of order), plus `lint:decisions`, `lint:playbook`, `lint:docs`,
 `lint:llms`, `lint:agent-rules`, `lint:launch`, `lint:plugin`, `lint:pins`,
 `lint:platform-entry` (`tools/platform-entry-emit.mts`: the entry module the uploader puts
 in front of every vertical's bundle, #1893, bundled from vertical-host's `withInvocationLog` —
@@ -715,13 +716,15 @@ gives each item a machine-read `gates:` line, and a review runner trusts what it
 `lint:review-checklist` (`tools/review-checklist.mjs`: every command a `gates:` line names is a
 root script or file that exists AND that this workflow runs with those arguments, or a gate the
 scaffold ships; `judgement` marks what no script decides), `lint:secret-literals`
-(`tools/secret-literals.mjs`: no credential-shaped literal — PEM or JWK private key, a provider
-token prefix, a connection URL with a password — in any tracked file; prints `file:line` and the
-shape, never the value; an intended literal is an `ACCEPTED` entry with its reason and exact
-count), `lint:entity-check-adoption` (`tools/entity-check-adoption.mts`: a package whose operations
-declare `{ key, entity, idFrom }` has a test calling `entityCheckConformanceSuite`, the only thing
+(`tools/secret-literals.mjs`: no credential-shaped literal — a PEM, PGP or JWK private key, a
+provider token prefix, a chat webhook URL, a URL with `user:password@` — in any tracked file;
+prints `file:line` and the shape, never the value; an intended literal is an `ACCEPTED` entry
+with its reason and the sha256 of each accepted match, so a different value of the same shape
+is refused; a shapeless secret, or a shaped one encoded or split, gets past it), `lint:entity-check-adoption` (`tools/entity-check-adoption.mts`: a package whose operations
+declare `{ key, entity, idFrom }` calls `entityCheckConformanceSuite` for each module that does, the only thing
 that holds a handler to that declaration), `lint:lifecycle-writes` (`tools/lifecycle-writes.mjs`:
-every `UPDATE` of a declared lifecycle's state field has `assertTransition`/`transitionFor`, or a
+every write of a declared lifecycle's state field — an `UPDATE`, an upsert's `DO UPDATE`, a
+`REPLACE INTO` — has `assertTransition`/`transitionFor`, or a
 local wrapper of one, before it — in its function or in every caller of the one helper that
 writes), and `lint:operation-tests --base <ref>`, which is advisory and never fails (a
 `::warning` for an operation new since the base that no test in its package names) — and
