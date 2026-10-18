@@ -7,9 +7,8 @@ description: The platform-hosted half of the Substrat review checklist (#2365). 
 # RFC: the hosted review runner
 
 **Status: accepted** (every question of §6 decided by the human on 2026-10-18; §7 collects the
-answers; the direction is drafted as
-[D-64](../decisions/D-064-the-hosted-review-runner-advises-by-a-pinned-model-and-blocks-only-promotion.md),
-awaiting the human's ratification; nothing here is built yet). It answers the part of
+answers; no decision-log entry yet, so this RFC is the record of what was decided; nothing here
+is built yet). It answers the part of
 [#2365](https://github.com/substrat-run/substrat/issues/2365) that #2368 left open: the hosted
 runner. §2 records what was decided before the questions were asked, and §2.2 is now decided as
 well (Q6d). Each question in §6 keeps its options, the reasoning and the cost of being wrong, and
@@ -238,9 +237,10 @@ credential.
   results, asks one model about the `judgement` items only, and returns candidate findings.
 - **The assembler** is the only part that writes. It checks each candidate finding against the
   diff (Q6a), combines the findings with the gate results, and writes the **review record**, keyed
-  by the source archive's digest and, where there is one, the vertical version (a phase-1 review
-  of one of Substrat's own branches has none, Q8), through the one endpoint that accepts it (Q6c). Every surface in Q3
-  reads that record. It also builds the model host (D-59) in platform code, so the usage line is
+  by its owner (the tenant, and the vertical where there is one; for a phase-1 review of one of
+  Substrat's own branches, the platform's own staff subject, Q8), the source archive's digest, the
+  base archive's digest, the checklist digest and the model (Q3a A), through the one endpoint that
+  accepts it (Q6c). Every surface in Q3 reads that record. It also builds the model host (D-59) in platform code, so the usage line is
   observed rather than self-reported — the shape #1073 wants for every model call, which a review
   gets without waiting for it.
 
@@ -373,7 +373,8 @@ pull-request comment (Q3a D) and a published summary (Q10).
   service billed to the tenant, not an operation of the vertical.
 - *Depends on:* Q1b. Under Q1b B there is no spend to commit, and the switch could sit with
   whoever may change the vertical's settings. And #2388, or an equivalent guarantee, before
-  phase 2: until it holds, the review entitlement must not be grantable to any tenant.
+  phase 2: until it holds, no tenant may be able to grant the review entitlement to itself, and
+  phase 2 does not start.
 - *Recommendation:* **C**, with the switch on the vertical's Settings and every change of state
   recorded with who made it and when. Turning it off stops new reviews and deletes nothing.
   Only staff grant the review entitlement through phases 1–2, and no tenant may grant it to
@@ -390,8 +391,9 @@ the review record is a **first-class platform object with its own API**, and eve
 CLI read, the dashboard, the push headline, a pull-request comment) is a view of it through that
 API.
 
-- **A. The record and a CLI read.** One review record per (source digest, checklist digest,
-  model), tied to the vertical version where there is one, stored platform-side and read through its own API, and a CLI verb (`substrat review
+- **A. The record and a CLI read.** One review record per (owner tenant, vertical or the
+  platform's own staff subject, source digest, base digest, checklist digest, model), tied to the
+  vertical version where there is one, stored platform-side and read through its own API, and a CLI verb (`substrat review
   <version>`, or a field on `substrat versions`) that prints it as text, so an agent driving the
   CLI reads findings without a browser. Every other surface reads the same record through the same
   API; none holds its own copy.
@@ -739,11 +741,13 @@ sub-question) that ships sooner; the cost of B is the gap it leaves.
   when engines are declared (§2.2, condition 3) — and everything else is `not run`.
 - *Depends on:* the container's cost and placement (§9); Q3d.
 - *Recommendation:* **A, with B as the state before the container exists.** Phase 1 reviews only
-  our own code (our demo verticals and branches maintainers pushed to this repository, Q8), so its
-  gate half may run without a container, still holding no credential. That holds **only** because
-  the input is maintainers' own: a pull request from outside, or from a fork, is never reviewed by
-  a gate that loads the tree's code outside the container, and **the container is a precondition
-  of any input not authored by a maintainer**, the first customer's review (phase 2) included.
+  our own code (our demo verticals and branches of this repository whose content a maintainer
+  authored or reviewed, Q8), so its gate half may run without a container, still holding no
+  credential. That holds **only** because a maintainer authored or reviewed the input: a pull
+  request from outside or from a fork, and a dependency-bot or automation branch before a
+  maintainer has reviewed it, is never reviewed by a gate that loads the tree's code outside the
+  container, and **the container is a precondition of any other input**, the first customer's
+  review (phase 2) included.
   *If wrong:* a gate
   half that holds any credential gives code in the reviewed tree that credential's reach; there is
   no "mostly isolated" version of this.
@@ -795,11 +799,18 @@ thresholds at phase 3.
 ### Q8 — Rollout
 
 **Decided: A**, with one addition: phase 1 also reviews **Substrat's own changes** (dogfooding).
-That means maintainers' branches in this repository only, never a pull request from outside or
-from a fork (Q6c). A review is triggered by staff through the same intake a customer uses, a CLI
-upload of the branch's tree (D5 A), and not by a workflow in this repository (D2, §8). Such a
-review has no vertical version, so its record is keyed by the source archive's digest (§4, Q3a A),
-and its cost is the platform's own, zero-rated like the rest of phase 1.
+That means branches of this repository whose content a maintainer authored or reviewed; never a
+pull request from outside or from a fork, and never a dependency-bot or automation branch without
+a maintainer's review (Q6c). A review is triggered by staff through the same intake a customer
+uses, a CLI upload of the branch's tree (D5 A), and not by a workflow in this repository (D2, §8).
+Such a review has no tenant, vertical or version, so:
+
+- *its record* is owned by the platform's own staff subject and keyed like any other (§4, Q3a A);
+- *its diff base* is the archive of the branch's merge-base with `main`, uploaded the same way, or
+  none, in which case it is a full-tree review;
+- *its retention*: the archives and the record are kept 30 days from the review and then deleted,
+  and staff may delete them earlier; nothing serves them, so Q3b's serving window never applies;
+- *its cost* is the platform's own, zero-rated like the rest of phase 1.
 
 - **A. The phases below.**
 - **B. The phases below without phase 1**, starting with invited tenants.
@@ -810,7 +821,7 @@ and its cost is the platform's own, zero-rated like the rest of phase 1.
 | Phase | Who | What runs | Exit when |
 |---|---|---|---|
 | 0 | — | This RFC answered; the `judgement` marks and the gates work (D3) landed; the checklist digest printed by the local skill; the CLI uploads the source archive (D5 A). | Every checklist item is either a gate or marked `judgement`. |
-| 1 | Staff, on our own demo verticals, the seeded corpus and maintainers' branches of this repository (uploaded by staff through the CLI) | Gates under §2.2, without a container (maintainer input only, Q6c), holding no credential; reader half on one model; records stored; CLI read only. Zero-rated. | Q1c's caps set from real numbers; Q7 C has a baseline per item; the container gate half works. |
+| 1 | Staff, on our own demo verticals, the seeded corpus and branches of this repository a maintainer authored or reviewed (uploaded by staff through the CLI, kept 30 days) | Gates under §2.2, without a container (maintainer-authored or -reviewed input only, Q6c), holding no credential; reader half on one model; records stored; CLI read only. Zero-rated. | Q1c's caps set from real numbers; Q7 C has a baseline per item; the container gate half works. |
 | 2 | Invited tenants, by staff-granted entitlement | Advisory only. Record, CLI read, dashboard, push headline. Container gate half from the first customer review. Metered, zero-rated. | Owner feedback (Q7 A) over at least four weeks; cost per review known, model and container. |
 | 3 | Any tenant that enables it | Advisory only. Metered and billed (Q1b). Plan-shaped entitlement. | Per-item thresholds published; **the controlled build (D5 C) builds the bundle from the uploaded archive**. |
 | 4 | Opt-in per vertical, default off; mandatory at staff admission for listed verticals once Q7's per-item thresholds are met | Q4 B: script-confirmed blocking findings refuse promote on versions the platform built, with a recorded owner override for a private vertical and staff admission's for a listed one. Possibly only S1 (boundary-lint) can refuse; every other item stays advisory (§2.2, Q4). The seeded corpus keeps running (Q7). | — |
@@ -827,13 +838,12 @@ Where the reviewed change comes from is decided: §2, D5.
 **Decided: D**, which the first revision did not offer and which replaces its recommendation (C).
 A record is read by the **owner tenant's roles that may already see source-bearing views** of the
 vertical, and by the **credential that pushed the version**. *Source-bearing views* means the views
-that already show the vertical's own code or its effect on data, the version's migration SQL and
-its production history; the audience is the one that can read those today, the vertical's own
-team in the owner tenant, and nobody else. Installers of a listed vertical see at
+that already show the vertical's own source, today the version's migration SQL; the audience is
+the one that can read it today, the vertical's own team in the owner tenant, and nobody else. Installers of a listed vertical see at
 most a pass/fail summary, and only one the owner chooses to publish. The reason: the findings
 quote source, and a listed vertical is readable by every tenant that installs it, so a rule keyed
 on who may see the vertical (A, C) would reach past its owner. It is the same
-rule that keeps a version's migration SQL and the production history owner-only.
+rule that keeps a version's migration SQL readable only by the vertical's own team.
 
 - **A. Anyone who may see the vertical's versions** in the dashboard.
 - **B. Tenant owners and admins only.**
@@ -868,7 +878,7 @@ All decided by the human on 2026-10-18, except Q9 (decided earlier, D5).
 | Q1b | Who pays | A: metered to the tenant through the model ledger; zero-rated in phases 1–2 | attribution form on #1073 |
 | Q1c | Per-review budget | A + B: refuse before the call, hard cap during it; per-tenant spend limit in the guard; over budget never shown as clean | nothing |
 | Q2 | Enable surface | C: staff-granted entitlement per tenant, switch per vertical held by tenant owner and admin; every state change recorded; off deletes nothing; plan-shaped once billed; the key is never one a tenant can grant itself; for a listed vertical the admission gate is outside the owner's switch | Q1b; #2388 or an equivalent before phase 2 |
-| Q3a | Surfaces | A, then B, then C; D last and optional (turning it on publishes the headline); not the console. The record is a first-class platform object with its own API, keyed by source digest and, where there is one, the vertical version; every surface is a view of it | A and C on D5 |
+| Q3a | Surfaces | A, then B, then C; D last and optional (turning it on publishes the headline); not the console. The record is a first-class platform object with its own API, keyed by owner, source digest, base digest, checklist digest and model; every surface is a view of it | A and C on D5 |
 | Q3b | Stored and retention | A: archive only where review is on, placed at upload; kept while anything serves the version (channel, scope pin or preview), then 180 days (30 days from push if never served); findings, digests and run metadata, no transcript or prompt; full-tree review once the base has expired; every non-run recorded | Q2, Q3d |
 | Q3c | Path exclusions | C: platform and customer exclusions, each recorded in the review record; customer globs make a review `partial` | Q2 |
 | Q3d | Jurisdiction | B: every part follows it; evaluated at upload and at review start | regional placements (§9) |
@@ -880,12 +890,12 @@ All decided by the human on 2026-10-18, except Q9 (decided earlier, D5).
 | Q5d | Which items the model reads | A: the checklist's own `judgement` mark | D3's mark |
 | Q6a | Prompt injection | A, including gate output as untrusted data | nothing |
 | Q6b | Suppression and forgery | A: every row; §2.2 is the precondition for any blocking | D5 C, Q6d |
-| Q6c | Credentials and isolation | A; B only before the container exists, and only for maintainer input; the container before any other input | §9, Q3d |
+| Q6c | Credentials and isolation | A; B only before the container exists, and only for input a maintainer authored or reviewed; the container before any other input | §9, Q3d |
 | Q6d | Confirm §2.2 | A: confirmed as written; only gates meeting all seven conditions are script-confirmed | nothing |
 | Q7 | False positives | A + B + C; corpus first and kept running after the gate is required; zero false positives expected of script-confirmed findings; per-item thresholds set by the human at phase 3 | Q3b |
-| Q8 | Rollout | A: phases 0–4, the controlled build before phase 4; phase 1 also reviews maintainers' branches of this repository, uploaded by staff through the CLI | D5, Q6c, Q7 |
+| Q8 | Rollout | A: phases 0–4, the controlled build before phase 4; phase 1 also reviews branches of this repository a maintainer authored or reviewed, uploaded by staff through the CLI, kept 30 days | D5, Q6c, Q7 |
 | Q9 | Source of the change | D5: A (upload with the push) for phases 1–3, then C (controlled build); B dropped | — |
-| Q10 | Who reads a record | D (changed from the recommended C): the owner tenant's roles that may see source-bearing views (the audience of the version's migration SQL and production history), plus the pushing credential; installers of a listed vertical see at most an owner-published pass/fail summary (not built); staff reads access-logged, if the record's store is read through the logged path | D5 |
+| Q10 | Who reads a record | D (changed from the recommended C): the owner tenant's roles that may see source-bearing views (the audience of the version's migration SQL), plus the pushing credential; installers of a listed vertical see at most an owner-published pass/fail summary (not built); staff reads access-logged, if the record's store is read through the logged path | D5 |
 
 ## 8. Not proposed
 
