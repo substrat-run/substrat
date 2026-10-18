@@ -388,3 +388,65 @@ describe('the operations held to a check (#2387)', () => {
     expect([...checkHeldOperationsOf(older as never)].sort()).toEqual(Object.keys(handlers).sort());
   });
 });
+
+describe('the declared checks travel with the handlers (#2384)', () => {
+  const sharedOperations = {
+    'notes/add': { permission: 'note:write', input: z.object({ text: z.string() }), output: note },
+    'notes/rename': {
+      permission: { key: 'note:write', entity: 'note', idFrom: 'id' },
+      input: z.object({ id: z.string(), text: z.string() }),
+      output: note,
+    },
+    'notes/tidy': {
+      permission: { key: 'note:write', entity: 'note', resolved: 'the note a line sits on' },
+      input: z.object({ lineId: z.string() }),
+      output: note,
+    },
+    'notes/mine': { narrows: { reason: 'each note the caller may read', checks: ['note:read'] }, output: note },
+    'notes/accept': { narrows: { reason: 'the invitation is the authority', checks: [], unchecked: true }, output: note },
+  } as const;
+
+  it('carries each operation’s declared check as plain data: scope key, narrowed key, walk, unchecked', () => {
+    const { operations } = operationsFor(sharedOperations)({
+      'notes/add': addOp,
+      'notes/rename': renameOp,
+      'notes/tidy': async () => ({ id: 'n1', text: '' }),
+      'notes/mine': async () => ({ id: 'n1', text: '' }),
+      'notes/accept': async () => ({ id: 'n1', text: '' }),
+    });
+    expect(operations.checks).toEqual({
+      'notes/add': { permission: 'note:write' },
+      'notes/rename': { permission: { key: 'note:write', entity: 'note', idFrom: 'id' } },
+      'notes/tidy': { permission: { key: 'note:write', entity: 'note', resolved: 'the note a line sits on' } },
+      'notes/mine': { narrows: { reason: 'each note the caller may read', checks: ['note:read'] } },
+      'notes/accept': { narrows: { reason: 'the invitation is the authority', checks: [], unchecked: true } },
+    });
+    // Frozen to the leaf, like the other derived maps: a moved key cannot be written in after binding.
+    expect(() => Object.assign(operations.checks!['notes/rename']!, { permission: 'other:key' })).toThrow(TypeError);
+    expect(() => (operations.checks!['notes/mine'] as unknown as { narrows: { checks: string[] } }).narrows.checks.push('x')).toThrow(TypeError);
+  });
+
+  it('its twin: an undeclared module carries an EMPTY map — nothing declared, which is not the same as not carried', () => {
+    const { operations } = undeclaredOperations('a fixture with no declaration', {
+      'notes/add': addOp as OperationHandler<never, unknown>,
+    });
+    expect(operations.checks).toEqual({});
+  });
+});
+
+describe('a forged value declares only what it is handed (#2384 review)', () => {
+  it('carries an empty checks map by default — "not declared", never "bound by an older kernel"', async () => {
+    const { forgeBoundOperationsForTest } = await import('../src/testing.js');
+    const forged = forgeBoundOperationsForTest({ 'notes/add': addOp as OperationHandler<never, unknown> }, {});
+    expect(forged.checks).toEqual({});
+  });
+
+  it('its twin: checks it is handed are carried as given', async () => {
+    const { forgeBoundOperationsForTest } = await import('../src/testing.js');
+    const forged = forgeBoundOperationsForTest(
+      { 'notes/add': addOp as OperationHandler<never, unknown> },
+      { checks: { 'notes/add': { permission: 'note:write' } } },
+    );
+    expect(forged.checks).toEqual({ 'notes/add': { permission: 'note:write' } });
+  });
+});

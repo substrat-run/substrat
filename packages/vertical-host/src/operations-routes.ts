@@ -38,6 +38,7 @@ import {
   PAGE_LINK_HEADER,
   PAGE_TOTAL_HEADER,
   errorCodeOf,
+  mcpEndpointPath,
 } from '@substrat-run/contracts';
 import { externalInput, externalJson } from './wire.js';
 import type { RouteImpl } from '@substrat-run/contracts';
@@ -47,6 +48,7 @@ import { classifyError } from './errors.js';
 import { observeOutputFields, outputWalkOf } from './field-coverage.js';
 import { defOf, transparentInner } from './zod-structural.js';
 import { mountMcp, type MountMcpOptions } from './mcp.js';
+import { carriesAct, routeAnsweringAt } from './mcp-guard.js';
 
 export type ResolveStub = (c: Context) => Promise<ScopeStub>;
 
@@ -371,7 +373,17 @@ export function mountOperations(
 
   assertNoUnreachable(declared);
 
+  // #1824: the MCP endpoint mounted below must be the only route at its path. `mountMcp`
+  // refuses any earlier route there too; this says which OPERATION it was.
+  const mcpPath = options.mcp === false ? undefined : (options.mcp?.path ?? mcpEndpointPath(base));
+
   for (const [name, op] of declared) {
+    if (mcpPath !== undefined && routeAnsweringAt([{ method: op.http.method, path: `${base}${toHonoPath(op.http.path)}` }], mcpPath)) {
+      throw new Error(
+        `mountOperations: '${name}' is bound to ${op.http.method} ${op.http.path}, which answers at the MCP endpoint ` +
+          `${mcpPath} — the endpoint must be the only route there; move the operation, or mount with \`mcp: false\``,
+      );
+    }
     if (known && !known.has(name)) {
       throw new Error(
         `mountOperations: '${name}' is bound to ${op.http.method} ${op.http.path} but no ` +
@@ -405,6 +417,12 @@ export function mountOperations(
     const unsafe = method !== 'GET';
 
     const invoke = async (c: Context, record: InvocationRecord | undefined) => {
+      // #1824: no operation route takes a delegated token. Only the MCP endpoint holds one to
+      // its scope, so here it is refused before anything resolves it, whatever the vertical's
+      // verifier would have said — an older one, or one that admits it at this path.
+      if (carriesAct(c.req.header('authorization'))) {
+        throw new HTTPException(401, { message: 'a delegated token is accepted only at the MCP endpoint' });
+      }
       const stub = await resolveStub(c);
       // #1746: who the call runs as, from the door that minted the stub. Set here rather
       // than after the invoke so a refused call still says who was refused.

@@ -29,7 +29,8 @@ record instead. This skill runs it, shows it, and stops.
    `--base <ref>` when the change is not against the default base (the changesets base
    branch, else `main`). For your own reading, `--json` gives the same delta as data.
 4. **Show it as printed**: entities with the model before and after, lifecycle changes with
-   the operation that triggers each transition, the permission-diff table, the spec-version
+   the operation that triggers each transition, the key it checks and who holds that key
+   (or "checked in code, not declared" — never guess a key for it), the permission-diff table, the spec-version
    impact and its reasons, and the proposed decisions-log entry. Do not summarise it away.
    Then walk the user through it in **their** vocabulary until they can answer, without your
    help: *who can see the money, and who can see other customers' data?* If the impact is

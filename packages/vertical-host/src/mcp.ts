@@ -46,6 +46,29 @@
  * connectors (`grants(): Promise<PermissionKey[]>`, scope-host.ts). Left out here
  * deliberately: `tools/list` filtering is invisible to the protocol, so adding it
  * later breaks no client.
+ *
+ * ## Delegated calls (#1824)
+ *
+ * Another app may call this endpoint FOR a user, with a token the team auth-server minted by
+ * RFC 8693 exchange: the user as `sub`, the app acting as `act`, and a `scope` of this
+ * vertical's permission keys. That scope is a CEILING, not a grant: a call is allowed only
+ * when the tool's leading permission key is inside it, and then the operation's own
+ * `ctx.check` still asks whether the user holds it. So a delegated call does at most what
+ * the user may AND what was delegated.
+ *
+ * The bearer verifier (`@substrat-run/vertical-auth`) decides whether a delegated token is
+ * admitted at all, and only through this mount's CHANNEL: `mcpChannelOf(c)` names the resource
+ * this endpoint answers as, for the span of its own `resolveStub` call and nowhere else, and
+ * the verifier admits a delegated token only when handed it. The subject it resolves reports
+ * the delegation, the vertical's `resolveStub` hands that back with `setMcpDelegation`, and
+ * every `tools/call` is held to it before the operation is invoked. Two things fail closed:
+ *
+ *  - A tool with no single leading key (`narrows`, or no permission declared) is out of
+ *    every delegated scope, since no key says what it reaches.
+ *  - A bearer that carries `act` with no delegation handed over has every call refused.
+ *    That is a host that admitted the token without wiring the ceiling, or a verifier too
+ *    old to know `act` and taking it for the user. Read without the signature, like the
+ *    audience check below, which is safe for the same reason: it can only refuse.
  */
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -60,10 +83,11 @@ import {
   errorCodeOf,
 } from '@substrat-run/contracts';
 import { externalInput, externalResult } from './wire.js';
-import type { ScopeStub } from '@substrat-run/kernel';
+import { PermissionDenied, type ScopeStub } from '@substrat-run/kernel';
 import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, requestIdOf, type InvocationRecord } from './invocation-log.js';
 import { classifyError, messageOf, problemResponse } from './errors.js';
 import { observeOutputFields, outputWalkOf, type OutputWalk } from './field-coverage.js';
+import { bearerClaims, carriesAct, routeAnsweringAt } from './mcp-guard.js';
 
 /** What `invocationLog` handed this request (#1746, #1237). Both absent without the middleware. */
 interface McpInvocation {
@@ -92,7 +116,8 @@ export const MCP_PROTOCOL_HEADER = 'MCP-Protocol-Version';
 /** The `http` + tool fragment this derivation reads, structurally (see `HttpDecl`). */
 interface McpDecl {
   readonly summary?: string;
-  readonly permission?: string;
+  /** A scope key, or `{ key, … }` narrowing it to one entity. Absent with `narrows`. */
+  readonly permission?: unknown;
   readonly input?: z.ZodObject<z.ZodRawShape>;
   readonly output?: z.ZodType;
   readonly http?: { readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; readonly path: string };
@@ -118,6 +143,11 @@ export interface McpTool {
   readonly pinned: Record<string, unknown>;
   readonly paged: boolean;
   readonly takesInput: boolean;
+  /**
+   * The leading permission key the operation checks — the key a delegated scope is held
+   * against (#1824). Absent when it declares none (`narrows`), which no delegation reaches.
+   */
+  readonly permission?: string;
   /** #1331: how a result is walked for field coverage, read once here. Absent when the output names no fields. */
   readonly outputWalk?: OutputWalk;
   /**
@@ -166,6 +196,13 @@ function jsonSchemaOf(schema: z.ZodType): Record<string, unknown> {
   } catch {
     return { type: 'object', properties: {} };
   }
+}
+
+/** The key a declared leading `permission` checks: the string itself, or its `key`. */
+function leadingKeyOf(permission: unknown): string | undefined {
+  if (typeof permission === 'string') return permission;
+  const key = (permission as { key?: unknown } | null | undefined)?.key;
+  return typeof key === 'string' ? key : undefined;
 }
 
 /** Zod's internal definition, read structurally — the same shape `operations-routes.ts` reads. */
@@ -308,6 +345,7 @@ export function mcpToolsOf(operations: Readonly<Record<string, object>>): McpToo
         ? outputWalkOf(op.output, op.paged !== undefined, Infinity)?.fields
         : undefined;
     if (selectable) inputSchema['properties'] = { ...(inputSchema['properties'] as object), fields: fieldsParam(selectable) };
+    const permission = leadingKeyOf(op.permission);
     tools.push({
       name,
       operation,
@@ -324,6 +362,7 @@ export function mcpToolsOf(operations: Readonly<Record<string, object>>): McpToo
       pinned: literalPins(op.input),
       paged: Boolean(op.paged),
       takesInput: Boolean(op.input),
+      ...(permission === undefined ? {} : { permission }),
       ...(outputWalk ? { outputWalk } : {}),
       ...(selectable ? { selectable } : {}),
     });
@@ -471,24 +510,100 @@ function toolResult(result: unknown, select?: { walk: OutputWalk | undefined; fi
  * judge its audience. No resolver in this repo accepts an opaque token today.
  */
 function audienceRefusal(authorization: string | undefined, resource: string): string | null {
-  if (!authorization?.toLowerCase().startsWith('bearer ')) return null;
-  const segments = authorization.slice(7).trim().split('.');
-  if (segments.length !== 3) return null;
-  let claims: unknown;
-  try {
-    const b64 = segments[1]!.replace(/-/g, '+').replace(/_/g, '/');
-    const bytes = Uint8Array.from(atob(b64.padEnd(b64.length + ((4 - (b64.length % 4)) % 4), '=')), (ch) =>
-      ch.charCodeAt(0),
-    );
-    claims = JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    return null; // not a JWS payload, so not a token whose audience can be read here
-  }
-  if (claims === null || typeof claims !== 'object') return null;
-  const aud = (claims as { aud?: unknown }).aud;
+  const claims = bearerClaims(authorization);
+  if (!claims) return null;
+  const aud = claims['aud'];
   const audiences = typeof aud === 'string' ? [aud] : Array.isArray(aud) ? aud : [];
   // The reason names only this endpoint. The token's own claims are never echoed back.
   return audiences.includes(resource) ? null : `this token was not issued for ${resource}`;
+}
+
+/**
+ * A delegation the vertical admitted (#1824): who acts for the user, and within which of
+ * this vertical's permission keys. The shape `AuthSubject.delegation` carries in
+ * `@substrat-run/vertical-auth`, restated structurally so this package does not depend on it.
+ */
+export interface McpDelegation {
+  readonly actor: string;
+  readonly scope: readonly string[];
+}
+
+/** The per-request store key `setMcpDelegation` parks a delegation under. */
+export const MCP_DELEGATION_KEY = 'substratMcpDelegation';
+
+/**
+ * Hand the MCP mount the delegation this request's subject was admitted with — call it in
+ * `resolveStub`, with the resolved subject's `delegation`. `undefined` (a user acting
+ * directly) sets nothing. A request whose bearer carries `act` and that never reaches this
+ * has every tool call refused, so forgetting it fails closed.
+ */
+export function setMcpDelegation(c: Context, delegation: McpDelegation | undefined): void {
+  if (!delegation) return;
+  (c as unknown as { set(key: string, value: McpDelegation): void }).set(MCP_DELEGATION_KEY, {
+    actor: delegation.actor,
+    scope: [...delegation.scope],
+  });
+}
+
+/**
+ * The per-request store key this mount marks its own `resolveStub` call with. Deliberately
+ * not exported: nothing but `mountMcp` sets it, and a request cannot reach a context variable.
+ */
+const MCP_CHANNEL_KEY = 'substratMcpChannel';
+
+/** The MCP endpoint a request is being served by, as `mcpChannelOf` reports it. */
+export interface McpChannel {
+  /** The resource identifier the endpoint answers as — the `aud` a delegated token must name. */
+  readonly resource: string;
+}
+
+/**
+ * The MCP endpoint serving this request, or `null` (#1824): the channel a delegated token is
+ * admitted through. `mountMcp` sets it for exactly the span of its own `resolveStub` call and
+ * clears it as that call returns, so every other handler — a REST route, a middleware reading
+ * after `next()`, a stray route at the same path — sees `null`.
+ *
+ * Hand it to the verifier with the request's URL, then hand the subject's delegation back:
+ *
+ *     const subject = await provider.resolve(c.req.raw.headers, c.req.url, { delegated: mcpChannelOf(c) });
+ *     setMcpDelegation(c, subject?.delegation);
+ *
+ * A vertical serving its own MCP surface that passes `delegated` itself owns the ceiling there.
+ */
+export function mcpChannelOf(c: Context): McpChannel | null {
+  const channel = (c as { get?: (k: string) => unknown }).get?.(MCP_CHANNEL_KEY);
+  const resource = (channel as { resource?: unknown } | null | undefined)?.resource;
+  return typeof resource === 'string' ? { resource } : null;
+}
+
+/**
+ * What a request's tool calls are held to. `undefined`: nothing, a user acting directly.
+ * `'unhanded'`: the bearer carries `act` and the vertical handed no delegation over.
+ */
+type McpCeiling = { readonly scope: ReadonlySet<string> } | 'unhanded' | undefined;
+
+/** Read once per request, after `resolveStub` (which is where the delegation is handed over). */
+function ceilingOf(c: Context): McpCeiling {
+  const handed = (c as { get?: (k: string) => unknown }).get?.(MCP_DELEGATION_KEY);
+  if (handed !== undefined) {
+    // Malformed is an empty scope, which reaches nothing.
+    const scope = (handed as { scope?: unknown } | null)?.scope;
+    return { scope: new Set(Array.isArray(scope) ? scope.filter((s): s is string => typeof s === 'string') : []) };
+  }
+  return carriesAct(c.req.header('authorization')) ? 'unhanded' : undefined;
+}
+
+/** Why a delegated call may not reach `tool`, or `null` when the ceiling admits it. */
+function ceilingRefusal(ceiling: McpCeiling, tool: McpTool): string | null {
+  if (ceiling === undefined) return null;
+  if (ceiling === 'unhanded') return 'delegated calls are not accepted at this endpoint';
+  if (tool.permission === undefined) {
+    return `this delegation does not reach ${tool.name}: it declares no single permission a delegated scope could name`;
+  }
+  if (!ceiling.scope.has(tool.permission)) {
+    return `this delegation does not reach ${tool.name}: it needs ${tool.permission}, which is outside the delegated scope`;
+  }
+  return null;
 }
 
 /** A refusal the AGENT should read and adapt to, rather than a transport failure. */
@@ -523,6 +638,16 @@ function statusOf(err: unknown): number | undefined {
  * `GET` is a 405, which the transport explicitly permits for a server that opens no
  * server-to-client stream — this one has nothing to push, since every tool is a
  * request/response call into a scope.
+ *
+ * **Nothing else answers at this path** (#1824). A delegated token is admitted only on a
+ * request to the MCP endpoint, because this mount is what holds it to its scope. So a route
+ * registered BEFORE it that would answer here instead — an operation at `/mcp`, a
+ * hand-written `app.post('/api/mcp', …)`, a `/:slug` parameter route — refuses the mount,
+ * loudly, at boot, judged by Hono's own router (`routeAnsweringAt`). A route registered AFTER
+ * it never runs here: every method but `OPTIONS` is answered by this mount. Not judged:
+ * `app.use`, `app.all` and `app.mount` (Hono records all three alike), `OPTIONS` routes, and
+ * `*` catch-alls — they meet every path and are not handlers written for this one. The
+ * channel (`mcpChannelOf`) is what keeps a delegated token away from them all the same.
  */
 export function mountMcp(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -533,6 +658,13 @@ export function mountMcp(
 ): { path: string; tools: number } {
   const tools = mcpToolsOf(operations);
   const path = options.path ?? mcpEndpointPath(options.basePath);
+  const shadow = routeAnsweringAt(app.routes, path);
+  if (shadow) {
+    throw new Error(
+      `mountMcp: ${shadow.method} ${shadow.path} is registered before the MCP endpoint and would answer at ${path} ` +
+        'in its place — move that route off the path',
+    );
+  }
   const wellKnown = `/.well-known/oauth-protected-resource${path}`;
   const byName = new Map(tools.map((t) => [t.name, t]));
   const serverInfo = {
@@ -575,6 +707,7 @@ export function mountMcp(
     params: Record<string, unknown> | undefined,
     stub: ScopeStub,
     invocation: McpInvocation,
+    ceiling: McpCeiling,
   ) => {
     const name = typeof params?.['name'] === 'string' ? (params['name'] as string) : undefined;
     const tool = name ? byName.get(name) : undefined;
@@ -628,6 +761,10 @@ export function mountMcp(
       delete record.outputFields;
     }
     try {
+      // #1824: the delegated scope, BEFORE the operation runs its own check. Refused as a
+      // denial, so the agent and the record read it exactly as they would one from `ctx.check`.
+      const outside = ceilingRefusal(ceiling, tool);
+      if (outside) throw new PermissionDenied(outside);
       const result = await stub.invoke(tool.operation, externalInput(payloadOf(tool, args)), {
         // #1237: the same stamp the HTTP mount gives an operation's events.
         ...(invocationId === undefined ? {} : { invocationId }),
@@ -666,7 +803,12 @@ export function mountMcp(
     }
   };
 
-  const handle = async (msg: Req, stub: ScopeStub, invocation: McpInvocation): Promise<object | null> => {
+  const handle = async (
+    msg: Req,
+    stub: ScopeStub,
+    invocation: McpInvocation,
+    ceiling: McpCeiling,
+  ): Promise<object | null> => {
     const id = msg.id ?? null;
     const isNotification = msg.id === undefined;
     switch (msg.method) {
@@ -700,7 +842,7 @@ export function mountMcp(
         });
       }
       case 'tools/call':
-        return await call(id, msg.params, stub, invocation);
+        return await call(id, msg.params, stub, invocation, ceiling);
       default:
         return isNotification ? null : rpcError(id, -32601, `Method not found: ${msg.method ?? '(none)'}`);
     }
@@ -821,8 +963,18 @@ export function mountMcp(
        * that fails, carrying the challenge — which is what makes discovery start on its
        * own rather than after a false start. It is also the honest reading of the
        * protocol: the resource is the endpoint, not a subset of its verbs.
+       *
+       * #1824: the channel a delegated token is admitted through (`mcpChannelOf`) exists for
+       * this call alone — set as it starts, cleared as it returns, whatever it does.
        */
-      const stub = await resolveStub(c);
+      const set = (c as unknown as { set(key: string, value: McpChannel | undefined): void }).set.bind(c);
+      set(MCP_CHANNEL_KEY, { resource: resourceFor(c) });
+      let stub: ScopeStub;
+      try {
+        stub = await resolveStub(c);
+      } finally {
+        set(MCP_CHANNEL_KEY, undefined);
+      }
       // #1746/#1237: what `invocationLog` handed down, read defensively — a host without it
       // simply records nothing.
       const get = (c as { get?: (k: string) => unknown }).get;
@@ -834,12 +986,14 @@ export function mountMcp(
         fieldCoverage: fieldCoverageArmed(c.req.raw),
       };
       if (invocation.record && stub.subjectKind !== undefined) invocation.record.principalKind = stub.subjectKind;
+      // #1824: after `resolveStub`, which is where a vertical hands its delegation over.
+      const ceiling = ceilingOf(c);
       for (const msg of messages) {
         if (!msg || typeof msg !== 'object') {
           replies.push(rpcError(null, -32600, 'Invalid Request'));
           continue;
         }
-        const reply = await handle(msg, stub, invocation);
+        const reply = await handle(msg, stub, invocation, ceiling);
         if (reply) replies.push(reply);
       }
     } catch (err) {
@@ -887,6 +1041,13 @@ export function mountMcp(
 
   // No server-initiated stream, so no SSE to open. The transport allows saying so.
   app.get(path, (c) => c.json(rpcError(null, -32601, 'This server opens no event stream'), 405));
+  // #1824: and every other method is this mount's too — any verb a client sends, standard or
+  // not — so a route registered after it can never answer here (see the header). `OPTIONS`
+  // passes on, to a CORS middleware.
+  app.all(path, async (c, next) => {
+    if (c.req.method === 'OPTIONS') return next();
+    return c.json(rpcError(null, -32601, 'Only POST is served here'), 405);
+  });
 
   return { path, tools: tools.length };
 }

@@ -151,6 +151,77 @@ The rest of the API does not apply this check by default. Setting `OIDC_AUDIENCE
 you also serve MCP, set it to the endpoint's resource, because a token then has to name
 that string for both checks.
 
+### A call made for a user by another app
+
+Another app of the same team can call this endpoint **for** one of your users: a help desk's
+assistant looking up that user's orders, say. It does not hold the user's token. The team
+auth server mints it one by [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693) token
+exchange, and only when the platform has recorded that your app delegates to it, for a
+named set of your permission keys. The token's `sub` is the user, `act` names the acting
+app, `aud` is this endpoint, and `scope` is the keys it may act with. The auth server mints it
+for five minutes, with no refresh, and the vertical refuses a delegated token whose lifetime
+(`exp − iat`) is longer than that, or whose `iat` is more than 30 seconds ahead of its clock.
+`maxLifetimeSeconds` beside `actors` can lower the bound, never raise it.
+
+Nothing accepts such a token until the vertical opts in, in two places:
+
+```ts
+const instance = await instanceAuthFor({ directory, scopeId, envSpec, env, delegation: { actors: [actorClientId] } });
+
+async function stub(c: Context) {
+  // mcpChannelOf and setMcpDelegation are from @substrat-run/vertical-host
+  const subject = await providerOf(instance).resolve(c.req.raw.headers, c.req.url, { delegated: mcpChannelOf(c) });
+  if (!subject) throw new HTTPException(401, { message: 'unauthorized' });
+  setMcpDelegation(c, subject.delegation);
+  // … map subject.sub to a principal and return the scope stub, as before
+}
+```
+
+`mcpChannelOf(c)` is the MCP endpoint serving the request: the resource it answers as, set by
+the endpoint around its own `resolveStub` call and `null` everywhere else — on every REST
+route, in any other handler, and in a middleware reading after `next()`. Nothing a request
+sends can set it. The same `stub` therefore serves both doors: on a REST route it passes
+`null`, and no delegated token is admitted there.
+
+An actor's client id differs from one team auth server to the next, so `actors` may also be a
+function of the install's delivered wiring, `(wiring) => readonly string[]`. One that throws, or
+returns nothing usable, admits no delegated token.
+
+What each half does:
+
+- **It is admitted only through the endpoint's channel.** The verifier refuses a token
+  carrying `act` unless `actors` names the acting app, the caller passed the channel, the
+  token's `aud` is exactly the channel's resource, and that resource is on the request's own
+  origin. A call without the channel — `resolve(headers)`, a REST route, a stray handler —
+  refuses it. Because the resource is the channel's, an endpoint mounted under another
+  `basePath` or `mcp.path` is judged by its own. Every route `mountOperations` mounts also
+  refuses a bearer carrying `act`, with a `401`, before resolving anyone.
+- **The endpoint is the only route at its path.** A route registered before it that Hono
+  would dispatch a request for that path to, by any method but `OPTIONS` (`/mcp`, `/:slug`,
+  `/:slug?`, a regex parameter), stops the vertical from mounting; so does a second
+  `mountOperations` on the same base path. A route registered after it never runs there,
+  since the endpoint answers every method but `OPTIONS` itself, with a `405` for all but
+  `POST`. Not judged: `app.use`, `app.all` and `app.mount`, which Hono records alike as
+  middleware, `OPTIONS` routes, and `*` catch-alls. None of them is handed the channel, so
+  none admits a delegated token.
+- **A hand-written MCP surface owns its ceiling.** A vertical that serves its own MCP
+  endpoint and passes `delegated` to the verifier itself takes on what the derived endpoint
+  does: holding every call to `subject.delegation.scope`. Nothing checks that it does.
+- **The endpoint holds every call to the scope.** A tool runs only when its leading
+  permission key is in `scope`, and then the operation's own check still asks whether the
+  user holds it. So a delegated call does at most what the user may and what was delegated.
+  A tool whose operation declares no single leading key (`narrows`) is outside every scope.
+  A refusal is an in-band tool error, the same as a denied permission.
+
+If the endpoint is handed nothing (`setMcpDelegation` was not called), every tool call
+made with a bearer carrying `act` is refused. That covers a vertical that opted in to the
+verifier and forgot the second line.
+
+The scope is checked against the tool's declared leading key, not each check the
+operation makes. An operation whose handler checks another key as well checks it against
+everything the user holds. So delegate only keys whose tools check nothing wider than the
+key itself.
+
 ### What is deliberately not here
 
 **Client registration.** How a client obtains a `client_id` — dynamic registration

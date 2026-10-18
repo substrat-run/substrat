@@ -121,7 +121,7 @@ when fetched) and prints:
 | Section | What it shows |
 |---|---|
 | Entities | Each entity added, changed or removed, with what changed in it, and the model as a Mermaid `erDiagram` before and after — the same diagram `concept sync` draws |
-| Lifecycles | States added or removed, and every transition added, removed or retargeted, with the operation that triggers it. Which permission key that operation checks is not in the artifacts yet ([#2384](https://github.com/substrat-run/substrat/issues/2384)), so the delta names the operation and does not guess the key |
+| Lifecycles | States added or removed, and every transition added, removed or retargeted, with the operation that triggers it, the key that operation declares it checks (from the Operations section of `PERMISSIONS.md`), and the roles and per-record grant shapes holding that key. An operation that checks in its handler and declares nothing is marked "checked in code, not declared", and one a `PERMISSIONS.md` emitted before that section does not list is named without a key: neither is guessed |
 | Permissions | The permission-diff table — key, description, which roles held it before and hold it now — and each change listed for the human checkpoint |
 | Spec-version impact | `none`, `patch`, `minor` or `major`, from the [`changeset`](#changeset) classifier, with the changes that set it — so the bump approved is the bump the release is held to |
 | Proposed decisions-log entry | The entry approving it writes, and the command that does |
@@ -188,7 +188,7 @@ looks exactly like a green release, so the bump is not left to judgement:
 | Something removed or narrowed — an operation, field, entity, state, transition, response or enum value; an input now required, tighter or `readOnly`; an output that may now be omitted, looser or `writeOnly`; a type, key or `operationId` changed | **major** |
 | Something added — an operation, field, entity, state or key; an input now optional or looser; a `default` added, changed or dropped | **minor** |
 | Only `description`, `title`, `examples`, `$comment`, `deprecated`, `x-*`, an operation's `summary` or `tags`, or `info` | **patch** |
-| Any permission change | at least **minor**, and listed for review |
+| Any permission change — including an operation now checking a different key, or narrowing its check differently | at least **minor**, and listed for review |
 
 A change the classifier cannot rank — a schema keyword whose direction it cannot tell, or a
 key it does not know — counts as **major**, so an unknown shape can never lower the bump.
