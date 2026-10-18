@@ -250,7 +250,12 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
         return slug;
       };
-      const bound = async (scopeStores?: unknown[], platform = platformStores()) => {
+      /** `'default'` passes no `storeDrivers`, so the control plane runs `STORE_DRIVERS` (#2394). */
+      const bound = async (
+        scopeStores?: unknown[],
+        platform = platformStores(),
+        drivers: 'default' | readonly StoreDriverRegistration[] = [graph],
+      ) => {
         const slug = await ownVertical();
         const scope = await sealedScope(slug);
         const version = await publish(scopeStores, slug);
@@ -258,7 +263,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         const api = createControlPlaneApi({
           host,
           authenticate: UNSAFE_devPlatformActorAuth(),
-          storeDrivers: [graph],
+          ...(drivers === 'default' ? {} : { storeDrivers: drivers }),
           resolveVerticalRef: async (r) => (r === version.ref ? (redactOnly as unknown as VerticalClient) : undefined),
           platformScopeStores: platform.caller,
         });
@@ -449,6 +454,23 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         expect(res.status).toBe(200);
         expect(asked).toEqual([`${s}/${subject}`]);
         expect(((await res.json()) as SubjectShredReceipt).storeErasures).toEqual([{ binding: 'GRAPH', erased: 1 }]);
+        expect(await keyKept()).toBe(false);
+      });
+
+      // The registry a hosted control plane runs: `STORE_DRIVERS`, which pins the graph driver.
+      it('with the default registry, a version that declares no store is not asked, and the key is destroyed', async () => {
+        const { s, subject, keyKept, api, asked } = await bound(undefined, platformStores(), 'default');
+        const res = await shred(api, s, subject);
+        expect(res.status).toBe(200);
+        expect(asked).toEqual([]);
+        expect(await keyKept()).toBe(false);
+      });
+
+      it('with the default registry, a version that declares a graph store is asked before the key goes', async () => {
+        const { s, subject, keyKept, api, asked } = await bound([{ binding: 'GRAPH', driver: 'graph' }], platformStores(), 'default');
+        const res = await shred(api, s, subject);
+        expect(res.status).toBe(200);
+        expect(asked).toEqual([`${s}/${subject}`]);
         expect(await keyKept()).toBe(false);
       });
     });
