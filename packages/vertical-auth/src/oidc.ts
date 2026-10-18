@@ -1,6 +1,6 @@
 import { jwtVerify, createRemoteJWKSet, type JWTPayload, type JWTVerifyGetKey } from 'jose';
 import { discoverIssuer, isAllowedEndpoint, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
-import type { AuthProvider, AuthSubject } from './provider.js';
+import type { AuthProvider, AuthSubject, ResolveOptions } from './provider.js';
 
 /**
  * Standard OIDC as an `AuthProvider` — token-based, so it covers Supabase (now an OIDC
@@ -39,8 +39,8 @@ export interface OidcConfig {
    * Accept DELEGATED tokens (#1824, RFC 8693 `act`) for this app's MCP endpoint, from these
    * actors only. Absent, every token carrying `act` is refused, whatever else it says: a
    * host that has not opted in must never take another app's call for the user's own. Needs
-   * `resourceOf` (a shared issuer), and admits a delegated token only on a request that
-   * passes its URL — see `delegationOf`.
+   * `resourceOf` (a shared issuer), and admits a delegated token only through the MCP
+   * endpoint's channel (`ResolveOptions.delegated`) — see `delegationOf`.
    */
   delegation?: DelegationOption;
   /** Override the JWKS URI (skip discovery) — e.g. a self-hosted issuer. */
@@ -196,11 +196,14 @@ function comparablePath(pathname: string): string {
  *    exchange here mints, and nothing reads past the first.
  *  - **Issued to that actor.** Every present `azp` / `client_id` equals `act.sub`, and at
  *    least one is present.
- *  - **For this endpoint, on this request.** `aud` is exactly one value, this app's own
- *    MCP resource on the request's origin, AND the request is to that resource. Unlike a
- *    user's MCP token (`isOwnToken` rule 1, which any route admits), a delegated token
- *    stands for the user only where a ceiling is applied to it — the MCP endpoint — so a
- *    caller that passes no `url`, or a REST route, never admits one.
+ *  - **Through the MCP endpoint's own channel.** The caller passed `options.delegated` — the
+ *    resource `mcpChannelOf(c)` reports, which only the MCP mount's own handler can see —
+ *    `aud` is exactly one value equal to it, and that resource is on the request's own
+ *    origin. Unlike a user's MCP token (`isOwnToken` rule 1, which any route admits), a
+ *    delegated token stands for the user only where a ceiling is applied to it, so a caller
+ *    that passes no channel — every REST route, a stray handler, an older vertical-host that
+ *    has none — never admits one. The resource is the channel's, not a spelling assumed
+ *    here, so an endpoint mounted at another base path is judged by its own.
  *  - **A scope, and a short life.** `scope` is a non-empty space-separated list (the grammar
  *    the exchange writes, RFC 6749 §3.3). `iat` and `exp` are both present, `exp − iat` is
  *    at most the bound (`maxLifetimeSeconds`, never above the exchange's own lifetime), and
@@ -211,7 +214,7 @@ function comparablePath(pathname: string): string {
 function delegationOf(
   payload: JWTPayload,
   delegation: DelegationOption,
-  resourceOf: (origin: string) => string,
+  channel: ResolveOptions['delegated'],
   url: string | undefined,
   nowSeconds: number,
 ): { actor: string; scope: string[] } | null {
@@ -225,14 +228,13 @@ function delegationOf(
   if (parties.length === 0 || !parties.every((p) => p === actor)) return null;
 
   const aud = typeof payload.aud === 'string' ? payload.aud : Array.isArray(payload.aud) && payload.aud.length === 1 ? payload.aud[0] : null;
-  if (!aud || !url) return null;
-  let target: URL;
+  const resource = channel?.resource;
+  if (!aud || typeof resource !== 'string' || aud !== resource || !url) return null;
   try {
-    target = new URL(url);
+    if (new URL(resource).origin !== new URL(url).origin) return null;
   } catch {
     return null;
   }
-  if (aud !== resourceOf(target.origin) || aud !== `${target.origin}${target.pathname}`) return null;
 
   const { exp, iat } = payload;
   if (typeof exp !== 'number' || typeof iat !== 'number') return null;
@@ -273,7 +275,12 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
     return keysPromise;
   };
 
-  async function verify(token: string, headers: Headers, url: string | undefined): Promise<AuthSubject | null> {
+  async function verify(
+    token: string,
+    headers: Headers,
+    url: string | undefined,
+    options: ResolveOptions | undefined,
+  ): Promise<AuthSubject | null> {
     try {
       const { payload } = await jwtVerify(token, await getKeys(), {
         issuer: cfg.issuer,
@@ -291,7 +298,8 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
       if (payload['act'] !== undefined) {
         // Host code, so the real clock is right here (jose reads the same one for `exp`).
         const now = Math.floor(Date.now() / 1000);
-        const admitted = cfg.delegation && cfg.resourceOf ? delegationOf(payload, cfg.delegation, cfg.resourceOf, url, now) : null;
+        const admitted =
+          cfg.delegation && cfg.resourceOf ? delegationOf(payload, cfg.delegation, options?.delegated, url, now) : null;
         if (!admitted) return null;
         delegation = admitted;
       } else if (!cfg.audience && cfg.clientId) {
@@ -339,9 +347,9 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
         note: 'authenticate at the issuer, then present the token as `Authorization: Bearer`',
       });
     },
-    async resolve(headers, url) {
+    async resolve(headers, url, options) {
       const token = bearerFrom(headers);
-      return token ? verify(token, headers, url) : null;
+      return token ? verify(token, headers, url, options) : null;
     },
   };
 }

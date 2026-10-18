@@ -12,11 +12,11 @@ hand-rolling session handling or the owner-claim logic.
 ## The `AuthProvider` contract
 
 ```ts
-import type { AuthProvider, AuthSubject } from '@substrat-run/vertical-auth';
+import type { AuthProvider, AuthSubject, ResolveOptions } from '@substrat-run/vertical-auth';
 
 interface AuthProvider {
   handle(request: Request): Promise<Response>;             // /api/auth/* — login, logout, callbacks
-  resolve(headers: Headers): Promise<AuthSubject | null>;  // request → verified subject
+  resolve(headers: Headers, url?: string, options?: ResolveOptions): Promise<AuthSubject | null>; // request → verified subject
 }
 
 interface AuthSubject {
@@ -31,7 +31,8 @@ interface AuthSubject {
 `delegation` is set only on a **delegated** bearer: another app of the team calling this app's
 MCP endpoint for the user, with a token the team auth server minted by token exchange. It is
 admitted only when the vertical opts in with `instanceAuthFor({ …, delegation: { actors } })`,
-and only on a request to the MCP endpoint itself. `actors` is the acting apps' client ids: a
+and only through the MCP endpoint's channel: `resolve(headers, url, { delegated: mcpChannelOf(c) })`,
+with `mcpChannelOf` from `@substrat-run/vertical-host`. `actors` is the acting apps' client ids: a
 list, or a function of the install's delivered wiring (`{ identity, config }`) that returns one,
 since a client id is per team auth server. A resolver that throws or returns nothing usable
 admits no delegated token. `maxLifetimeSeconds` can lower the lifetime bound (five minutes).

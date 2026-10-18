@@ -45,6 +45,20 @@ export interface AuthSubject {
   delegation?: { actor: string; scope: string[] };
 }
 
+/** Per-request facts a caller may hand `resolve`. Additive: a provider ignores what it does not use. */
+export interface ResolveOptions {
+  /**
+   * This request is being served by an MCP endpoint that holds a delegated token to its scope,
+   * answering as `resource` (#1824) — `mcpChannelOf(c)` from `@substrat-run/vertical-host`,
+   * which only that endpoint's own handler can see. A delegated bearer is admitted only when
+   * this is passed, and only for exactly this resource. Absent or `null`, none is.
+   *
+   * A caller that serves its own MCP surface and passes a value here takes on the ceiling: the
+   * subject's `delegation.scope` is then that caller's to enforce.
+   */
+  delegated?: { readonly resource: string } | null;
+}
+
 export interface AuthProvider {
   handle(request: Request): Promise<Response>;
   /**
@@ -52,5 +66,5 @@ export interface AuthProvider {
    * provider that needs the origin (an OIDC bearer on a shared issuer holds an MCP token
    * to this app's own resource, #1683) falls back to the `Host` header without it.
    */
-  resolve(headers: Headers, url?: string): Promise<AuthSubject | null>;
+  resolve(headers: Headers, url?: string, options?: ResolveOptions): Promise<AuthSubject | null>;
 }

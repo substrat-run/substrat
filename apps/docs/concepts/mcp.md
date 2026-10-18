@@ -169,12 +169,19 @@ Nothing accepts such a token until the vertical opts in, in two places:
 const instance = await instanceAuthFor({ directory, scopeId, envSpec, env, delegation: { actors: [actorClientId] } });
 
 async function stub(c: Context) {
-  const subject = await providerOf(instance).resolve(c.req.raw.headers, c.req.url);
+  // mcpChannelOf and setMcpDelegation are from @substrat-run/vertical-host
+  const subject = await providerOf(instance).resolve(c.req.raw.headers, c.req.url, { delegated: mcpChannelOf(c) });
   if (!subject) throw new HTTPException(401, { message: 'unauthorized' });
-  setMcpDelegation(c, subject.delegation); // from @substrat-run/vertical-host
+  setMcpDelegation(c, subject.delegation);
   // … map subject.sub to a principal and return the scope stub, as before
 }
 ```
+
+`mcpChannelOf(c)` is the MCP endpoint serving the request: the resource it answers as, set by
+the endpoint around its own `resolveStub` call and `null` everywhere else — on every REST
+route, in any other handler, and in a middleware reading after `next()`. Nothing a request
+sends can set it. The same `stub` therefore serves both doors: on a REST route it passes
+`null`, and no delegated token is admitted there.
 
 An actor's client id differs from one team auth server to the next, so `actors` may also be a
 function of the install's delivered wiring, `(wiring) => readonly string[]`. One that throws, or
@@ -182,14 +189,16 @@ returns nothing usable, admits no delegated token.
 
 What each half does:
 
-- **It is admitted only here.** The verifier refuses a token carrying `act` unless `actors`
-  names the acting app, and unless the request is to the MCP resource the token names. That
-  needs the request URL, so a call to `resolve(headers)` without one refuses it. Every route
-  `mountOperations` mounts refuses it too, with a `401`, before resolving anyone. And the
-  endpoint is the only route at its path: an operation or a hand-written route registered
-  before it that would answer there (`/mcp`, `/:slug`) stops the vertical from mounting, and
-  one registered after it never runs there, since the endpoint answers every method but
-  `OPTIONS`.
+- **It is admitted only through the endpoint's channel.** The verifier refuses a token
+  carrying `act` unless `actors` names the acting app, the caller passed the channel, the
+  token's `aud` is exactly the channel's resource, and that resource is on the request's own
+  origin. A call without the channel — `resolve(headers)`, a REST route, a stray handler —
+  refuses it. Because the resource is the channel's, an endpoint mounted under another
+  `basePath` or `mcp.path` is judged by its own. Every route `mountOperations` mounts also
+  refuses a bearer carrying `act`, with a `401`, before resolving anyone.
+- **A hand-written MCP surface owns its ceiling.** A vertical that serves its own MCP
+  endpoint and passes `delegated` to the verifier itself takes on what the derived endpoint
+  does: holding every call to `subject.delegation.scope`. Nothing checks that it does.
 - **The endpoint holds every call to the scope.** A tool runs only when its leading
   permission key is in `scope`, and then the operation's own check still asks whether the
   user holds it. So a delegated call does at most what the user may and what was delegated.

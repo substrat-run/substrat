@@ -1,4 +1,4 @@
-export type { AuthProvider, AuthSubject } from './provider.js';
+export type { AuthProvider, AuthSubject, ResolveOptions } from './provider.js';
 export { oidcAuthProvider, type DelegationOption, type OidcConfig } from './oidc.js';
 export { oidcRpAuthProvider, type OidcRpConfig } from './oidc-rp-provider.js';
 export { IdentityDO, doAuthProvider, type IdentityDoEnv, type IdentityStub } from './identity-do.js';

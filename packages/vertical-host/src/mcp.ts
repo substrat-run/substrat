@@ -57,9 +57,11 @@
  * the user may AND what was delegated.
  *
  * The bearer verifier (`@substrat-run/vertical-auth`) decides whether a delegated token is
- * admitted at all, and reports the delegation on the subject it resolves. The vertical's
- * `resolveStub` hands that to this mount with `setMcpDelegation`, and every `tools/call` is
- * held to it before the operation is invoked. Two things fail closed:
+ * admitted at all, and only through this mount's CHANNEL: `mcpChannelOf(c)` names the resource
+ * this endpoint answers as, for the span of its own `resolveStub` call and nowhere else, and
+ * the verifier admits a delegated token only when handed it. The subject it resolves reports
+ * the delegation, the vertical's `resolveStub` hands that back with `setMcpDelegation`, and
+ * every `tools/call` is held to it before the operation is invoked. Two things fail closed:
  *
  *  - A tool with no single leading key (`narrows`, or no permission declared) is out of
  *    every delegated scope, since no key says what it reaches.
@@ -544,6 +546,37 @@ export function setMcpDelegation(c: Context, delegation: McpDelegation | undefin
 }
 
 /**
+ * The per-request store key this mount marks its own `resolveStub` call with. Deliberately
+ * not exported: nothing but `mountMcp` sets it, and a request cannot reach a context variable.
+ */
+const MCP_CHANNEL_KEY = 'substratMcpChannel';
+
+/** The MCP endpoint a request is being served by, as `mcpChannelOf` reports it. */
+export interface McpChannel {
+  /** The resource identifier the endpoint answers as — the `aud` a delegated token must name. */
+  readonly resource: string;
+}
+
+/**
+ * The MCP endpoint serving this request, or `null` (#1824): the channel a delegated token is
+ * admitted through. `mountMcp` sets it for exactly the span of its own `resolveStub` call and
+ * clears it as that call returns, so every other handler — a REST route, a middleware reading
+ * after `next()`, a stray route at the same path — sees `null`.
+ *
+ * Hand it to the verifier with the request's URL, then hand the subject's delegation back:
+ *
+ *     const subject = await provider.resolve(c.req.raw.headers, c.req.url, { delegated: mcpChannelOf(c) });
+ *     setMcpDelegation(c, subject?.delegation);
+ *
+ * A vertical serving its own MCP surface that passes `delegated` itself owns the ceiling there.
+ */
+export function mcpChannelOf(c: Context): McpChannel | null {
+  const channel = (c as { get?: (k: string) => unknown }).get?.(MCP_CHANNEL_KEY);
+  const resource = (channel as { resource?: unknown } | null | undefined)?.resource;
+  return typeof resource === 'string' ? { resource } : null;
+}
+
+/**
  * What a request's tool calls are held to. `undefined`: nothing, a user acting directly.
  * `'unhanded'`: the bearer carries `act` and the vertical handed no delegation over.
  */
@@ -930,8 +963,18 @@ export function mountMcp(
        * that fails, carrying the challenge — which is what makes discovery start on its
        * own rather than after a false start. It is also the honest reading of the
        * protocol: the resource is the endpoint, not a subset of its verbs.
+       *
+       * #1824: the channel a delegated token is admitted through (`mcpChannelOf`) exists for
+       * this call alone — set as it starts, cleared as it returns, whatever it does.
        */
-      const stub = await resolveStub(c);
+      const set = (c as unknown as { set(key: string, value: McpChannel | undefined): void }).set.bind(c);
+      set(MCP_CHANNEL_KEY, { resource: resourceFor(c) });
+      let stub: ScopeStub;
+      try {
+        stub = await resolveStub(c);
+      } finally {
+        set(MCP_CHANNEL_KEY, undefined);
+      }
       // #1746/#1237: what `invocationLog` handed down, read defensively — a host without it
       // simply records nothing.
       const get = (c as { get?: (k: string) => unknown }).get;

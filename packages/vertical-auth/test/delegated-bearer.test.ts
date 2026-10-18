@@ -89,15 +89,32 @@ const delegatedClaims = (over: Record<string, unknown> = {}): Record<string, unk
 });
 const delegated = (over: Record<string, unknown> = {}, opts?: SignOptions) => token(delegatedClaims(over), opts);
 
+/** The options a request to desk A's MCP endpoint resolves with: the channel the mount hands over. */
+const AT_MCP = { delegated: { resource: RESOURCE_A } };
+
 const bearer = (t: string, extra: Record<string, string> = {}) => new Headers({ authorization: `Bearer ${t}`, ...extra });
 
-/** Resolve `t` at `cfg` as a request to `url` (or, with `url: null`, by Host alone). */
-async function resolveAt(cfg: OidcRpConfig, t: string, url: string | null = MCP_A): Promise<AuthSubject | null> {
+/**
+ * The channel a request carries — what `mcpChannelOf(c)` reports from inside the MCP mount's
+ * own `resolveStub`: desk A's resource on a request to its endpoint, and `null` on every other.
+ */
+type Channel = { resource: string } | null;
+const channelOf = (url: string | null): Channel => (url !== null && url.split('?')[0] === RESOURCE_A ? { resource: RESOURCE_A } : null);
+
+/** Resolve `t` at `cfg` as a request to `url` (or, with `url: null`, by Host alone), with `channel`. */
+async function resolveAt(
+  cfg: OidcRpConfig,
+  t: string,
+  url: string | null = MCP_A,
+  channel: Channel = channelOf(url),
+): Promise<AuthSubject | null> {
+  const options = { delegated: channel };
   return url === null
-    ? oidcRpAuthProvider(cfg).resolve(bearer(t, { host: 'desk-a.example' }))
-    : oidcRpAuthProvider(cfg).resolve(bearer(t), url);
+    ? oidcRpAuthProvider(cfg).resolve(bearer(t, { host: 'desk-a.example' }), undefined, options)
+    : oidcRpAuthProvider(cfg).resolve(bearer(t), url, options);
 }
-const subAt = async (cfg: OidcRpConfig, t: string, url: string | null = MCP_A) => (await resolveAt(cfg, t, url))?.sub ?? null;
+const subAt = async (cfg: OidcRpConfig, t: string, url: string | null = MCP_A, channel: Channel = channelOf(url)) =>
+  (await resolveAt(cfg, t, url, channel))?.sub ?? null;
 
 describe('a delegated token is admitted only where the host opted in', () => {
   it('admits the stage-B shape at the MCP endpoint, and says who acts and within what', async () => {
@@ -111,7 +128,7 @@ describe('a delegated token is admitted only where the host opted in', () => {
     expect(await resolveAt(plain, t)).toBeNull();
     expect(await resolveAt({ ...base, clientId: 'desk-a' }, t)).toBeNull();
     expect(await resolveAt({ ...plain, audience: RESOURCE_A }, t)).toBeNull();
-    expect(await oidcAuthProvider({ issuer: ISSUER }).resolve(bearer(t), MCP_A)).toBeNull();
+    expect(await oidcAuthProvider({ issuer: ISSUER }).resolve(bearer(t), MCP_A, AT_MCP)).toBeNull();
     // Twin: the same token without `act` is a user's MCP token, which rule 1 admits as before.
     const { act: _act, substrat_delegation: _marker, ...withoutAct } = delegatedClaims();
     expect(await subAt(plain, await token(withoutAct))).toBe('user-1');
@@ -159,7 +176,7 @@ describe('the actor', () => {
   });
 });
 
-describe('the audience and the request', () => {
+describe('the audience and the channel', () => {
   it("refuses another app's resource, our client id, several audiences and none", async () => {
     for (const aud of [RESOURCE_B, 'desk-a', [RESOURCE_A, USERINFO], [RESOURCE_A, RESOURCE_A], [], undefined]) {
       expect(await resolveAt(opted, await delegated({ aud }))).toBeNull();
@@ -167,19 +184,37 @@ describe('the audience and the request', () => {
     expect(await subAt(opted, await delegated({ aud: [RESOURCE_A] }))).toBe('user-1');
   });
 
-  it('refuses it on a REST route, with no URL, and on another origin — only the MCP endpoint applies its scope', async () => {
+  it("is admitted only through the MCP endpoint's channel — no channel, no delegated subject", async () => {
     const t = await delegated();
+    // A REST route, a stray handler, an older vertical-host: each hands over nothing, even at the MCP URL.
+    expect(await resolveAt(opted, t, MCP_A, null)).toBeNull();
+    expect(await oidcRpAuthProvider(opted).resolve(bearer(t), MCP_A)).toBeNull();
+    expect(await oidcRpAuthProvider(opted).resolve(bearer(t), MCP_A, {})).toBeNull();
     expect(await resolveAt(opted, t, REST_A)).toBeNull();
     expect(await resolveAt(opted, t, null)).toBeNull();
-    expect(await resolveAt(opted, t, mcpResourceOf(APP_B))).toBeNull();
-    expect(await resolveAt(opted, t, `${APP_A}/api/mcp/extra`)).toBeNull();
-    expect(await resolveAt(opted, t, 'not a url')).toBeNull();
-    // The query string is not part of the resource.
+    // Twin: the same request with the channel the mount sets.
+    expect(await subAt(opted, t, MCP_A, { resource: RESOURCE_A })).toBe('user-1');
     expect(await subAt(opted, t, `${MCP_A}?session=1`)).toBe('user-1');
   });
 
-  it('refuses an audience that is this origin but not its MCP resource, even at that very URL', async () => {
-    expect(await resolveAt(opted, await delegated({ aud: REST_A }), REST_A)).toBeNull();
+  it("refuses a token whose aud is not the channel's resource", async () => {
+    expect(await resolveAt(opted, await delegated(), MCP_A, { resource: `${APP_A}/api/agent` })).toBeNull();
+    expect(await resolveAt(opted, await delegated({ aud: REST_A }), MCP_A)).toBeNull();
+  });
+
+  it("refuses a channel whose resource is on another origin than the request, or a request with no URL", async () => {
+    const forB = await delegated({ aud: RESOURCE_B });
+    expect(await resolveAt(opted, forB, MCP_A, { resource: RESOURCE_B })).toBeNull();
+    expect(await resolveAt(opted, await delegated(), null, { resource: RESOURCE_A })).toBeNull();
+    expect(await resolveAt(opted, await delegated(), 'not a url', { resource: RESOURCE_A })).toBeNull();
+    expect(await resolveAt(opted, await delegated({ aud: 'not a url' }), MCP_A, { resource: 'not a url' })).toBeNull();
+  });
+
+  it("judges an endpoint mounted at another path by the channel's own resource", async () => {
+    const custom = `${APP_A}/v1/mcp`;
+    expect(await subAt(opted, await delegated({ aud: custom }), custom, { resource: custom })).toBe('user-1');
+    // And the default spelling is not assumed: a token for /api/mcp is refused through that channel.
+    expect(await resolveAt(opted, await delegated(), custom, { resource: custom })).toBeNull();
   });
 });
 
@@ -340,8 +375,8 @@ describe('the option reaches the verifier, and never leaks between configuration
         })
       ).provider();
     const t = await delegated();
-    expect((await (await providerFor({ actors: [ACTOR] })).resolve(bearer(t), MCP_A))?.delegation?.actor).toBe(ACTOR);
-    expect(await (await providerFor()).resolve(bearer(t), MCP_A)).toBeNull();
+    expect((await (await providerFor({ actors: [ACTOR] })).resolve(bearer(t), MCP_A, AT_MCP))?.delegation?.actor).toBe(ACTOR);
+    expect(await (await providerFor()).resolve(bearer(t), MCP_A, AT_MCP)).toBeNull();
   });
 });
 
@@ -374,14 +409,14 @@ describe('delegation.actors read from the delivered wiring', () => {
     const t = await delegated();
     const listsIt = await providerWith({ [ACTORS_KEY]: JSON.stringify([ACTOR]) }, fromConfig);
     const listsOther = await providerWith({ [ACTORS_KEY]: JSON.stringify(['someone-else']) }, fromConfig);
-    expect((await listsIt.resolve(bearer(t), MCP_A))?.delegation?.actor).toBe(ACTOR);
-    expect(await listsOther.resolve(bearer(t), MCP_A)).toBeNull();
-    expect((await listsIt.resolve(bearer(t), MCP_A))?.delegation?.actor).toBe(ACTOR);
+    expect((await listsIt.resolve(bearer(t), MCP_A, AT_MCP))?.delegation?.actor).toBe(ACTOR);
+    expect(await listsOther.resolve(bearer(t), MCP_A, AT_MCP)).toBeNull();
+    expect((await listsIt.resolve(bearer(t), MCP_A, AT_MCP))?.delegation?.actor).toBe(ACTOR);
   });
 
   it('hands the resolver the parsed identity beside the delivered map', async () => {
     let seen: string | undefined;
-    await (await providerWith({}, { actors: (w) => ((seen = w.identity?.issuer), [ACTOR]) })).resolve(bearer(await delegated()), MCP_A);
+    await (await providerWith({}, { actors: (w) => ((seen = w.identity?.issuer), [ACTOR]) })).resolve(bearer(await delegated()), MCP_A, AT_MCP);
     expect(seen).toBe(ISSUER);
   });
 
@@ -400,7 +435,7 @@ describe('delegation.actors read from the delivered wiring', () => {
     try {
       for (const delegation of broken) {
         const p = await providerWith({}, delegation);
-        expect(await p.resolve(bearer(t), MCP_A)).toBeNull();
+        expect(await p.resolve(bearer(t), MCP_A, AT_MCP)).toBeNull();
         expect((await p.resolve(bearer(own), REST_A))?.sub).toBe('user-1');
       }
       // The line names the failure, never the message, which may quote delivered configuration.
@@ -411,8 +446,8 @@ describe('delegation.actors read from the delivered wiring', () => {
   });
 
   it('takes a static list the same way', async () => {
-    expect((await (await providerWith({}, { actors: [ACTOR] })).resolve(bearer(await delegated()), MCP_A))?.sub).toBe('user-1');
-    expect(await (await providerWith({}, { actors: ['', ACTOR] })).resolve(bearer(await delegated()), MCP_A)).toBeNull();
+    expect((await (await providerWith({}, { actors: [ACTOR] })).resolve(bearer(await delegated()), MCP_A, AT_MCP))?.sub).toBe('user-1');
+    expect(await (await providerWith({}, { actors: ['', ACTOR] })).resolve(bearer(await delegated()), MCP_A, AT_MCP)).toBeNull();
   });
 });
 

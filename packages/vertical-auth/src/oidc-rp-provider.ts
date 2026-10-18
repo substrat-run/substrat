@@ -17,7 +17,7 @@ import {
   type OidcEnv,
 } from '@substrat-run/oidc-rp';
 import { mcpResourceOf } from '@substrat-run/contracts';
-import type { AuthProvider, AuthSubject } from './provider.js';
+import type { AuthProvider, AuthSubject, ResolveOptions } from './provider.js';
 import { oidcAuthProvider, type DelegationOption } from './oidc.js';
 import { cookieDomainDecision } from './cookie-domain.js';
 
@@ -285,7 +285,7 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
     );
   }
 
-  async function resolve(headers: Headers, url?: string): Promise<AuthSubject | null> {
+  async function resolve(headers: Headers, url?: string, options?: ResolveOptions): Promise<AuthSubject | null> {
     const envelope = await verifySessionEnvelope(env, readCookie(headers.get('cookie'), SESSION_COOKIE));
     if (envelope) {
       const session = envelope.user;
@@ -301,7 +301,8 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
     }
     // No cookie session — an API client presenting the issuer's own token directly. On a
     // shared issuer it must be one minted for THIS app (#1683); `url` names our resource.
-    return bearerVerifier(cfg).resolve(headers, url);
+    // `options` carries the MCP endpoint's channel, which only a bearer can use (#1824).
+    return bearerVerifier(cfg).resolve(headers, url, options);
   }
 
   return { handle, resolve };

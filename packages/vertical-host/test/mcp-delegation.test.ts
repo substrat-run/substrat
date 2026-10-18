@@ -18,7 +18,7 @@ import { oidcAuthProvider } from '@substrat-run/vertical-auth/oidc';
 import type { AuthProvider } from '@substrat-run/vertical-auth/provider';
 import { INVOCATION_RECORD_KEY, type InvocationRecord } from '../src/invocation-log.js';
 import { mountOperations } from '../src/operations-routes.js';
-import { MCP_DELEGATION_KEY, mcpToolsOf, setMcpDelegation, type McpDelegation } from '../src/mcp.js';
+import { MCP_DELEGATION_KEY, mcpChannelOf, mcpToolsOf, setMcpDelegation, type McpDelegation } from '../src/mcp.js';
 import { patternAnswers } from '../src/mcp-guard.js';
 
 const ISSUER = 'https://team-auth.test';
@@ -309,6 +309,96 @@ describe('nothing but the MCP endpoint answers at its path', () => {
   });
 });
 
+/**
+ * The channel a delegated token is admitted through exists only inside the MCP mount's own
+ * `resolveStub` call. Everything else — a REST route, a hand-written route, a middleware
+ * reading after `next()`, anything a request carries — sees `null`.
+ */
+describe('the MCP channel', () => {
+  const ping = (app: Hono, url: string, headers: Record<string, string> = {}) =>
+    app.request(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+    });
+
+  it("is the endpoint's resource inside its resolveStub, and null in an operation route's", async () => {
+    const seen: (string | null)[] = [];
+    const app = new Hono();
+    mountOperations(app, operations, async (c) => {
+      seen.push(mcpChannelOf(c)?.resource ?? null);
+      return { invoke: async () => ({ ok: true }) } as never;
+    });
+    await ping(app, `${A}/api/mcp`);
+    await app.request(`${A}/api/tickets`);
+    expect(seen).toEqual([RESOURCE, null]);
+  });
+
+  it('names a pinned resource when the endpoint publishes one', async () => {
+    let seen: string | null | undefined;
+    const app = new Hono();
+    const pinned = 'https://desk-a.example/agents/mcp';
+    mountOperations(
+      app,
+      operations,
+      async (c) => {
+        seen = mcpChannelOf(c)?.resource ?? null;
+        return { invoke: async () => ({ ok: true }) } as never;
+      },
+      { mcp: { protectedResource: { authorizationServers: [ISSUER], resource: pinned } } },
+    );
+    await ping(app, `${A}/api/mcp`, { authorization: `Bearer ${unsigned({ aud: pinned })}` });
+    expect(seen).toBe(pinned);
+  });
+
+  it('is gone once resolveStub returns: a middleware around the endpoint reads null after next()', async () => {
+    const app = new Hono();
+    let after: unknown = 'unread';
+    app.use('*', async (c, next) => {
+      await next();
+      after = mcpChannelOf(c);
+    });
+    mountOperations(app, operations, async () => ({ invoke: async () => ({ ok: true }) }) as never);
+    await ping(app, `${A}/api/mcp`);
+    expect(after).toBeNull();
+  });
+
+  it('is gone even when resolveStub throws', async () => {
+    const app = new Hono();
+    let after: unknown = 'unread';
+    app.use('*', async (c, next) => {
+      await next();
+      after = mcpChannelOf(c);
+    });
+    mountOperations(app, operations, async () => {
+      throw new HTTPException(401, { message: 'nobody' });
+    });
+    expect((await ping(app, `${A}/api/mcp`)).status).toBe(401);
+    expect(after).toBeNull();
+  });
+
+  it('cannot be set by a request: a header, query or cookie of the same name reaches nothing', async () => {
+    const forged = JSON.stringify({ resource: 'https://forged.example/api/mcp' });
+    const app = new Hono();
+    const seen: (string | null)[] = [];
+    app.get('/api/elsewhere', (c) => c.json(mcpChannelOf(c)));
+    mountOperations(app, operations, async (c) => {
+      seen.push(mcpChannelOf(c)?.resource ?? null);
+      return { invoke: async () => ({ ok: true }) } as never;
+    });
+    const carrying = {
+      substratMcpChannel: forged,
+      'x-substrat-mcp-channel': forged,
+      cookie: `substratMcpChannel=${encodeURIComponent(forged)}`,
+    };
+    const query = `?substratMcpChannel=${encodeURIComponent(forged)}`;
+    expect(await (await app.request(`${A}/api/elsewhere${query}`, { headers: carrying })).json()).toBeNull();
+    await app.request(`${A}/api/tickets${query}`, { headers: carrying });
+    await ping(app, `${A}/api/mcp${query}`, carrying);
+    expect(seen).toEqual([null, RESOURCE]);
+  });
+});
+
 describe('an operation route refuses a delegated bearer', () => {
   const bearer = `Bearer ${unsigned(delegatedClaims('tickets:read tickets:write'))}`;
 
@@ -396,18 +486,22 @@ describe('end to end through the bearer verifier', () => {
     });
 
   /**
-   * A vertical's `resolveStub` on the upgraded pattern: resolve WITH the request URL, 401
-   * nobody, hand the delegation over. `handOff: false` is the same host forgetting the last.
+   * A vertical's `resolveStub` on the upgraded pattern: resolve with the request URL and the
+   * MCP channel, 401 nobody, hand the delegation over. `handOff: false` is the same host
+   * forgetting the last line; `channel: false` is one on a vertical-host with no channel to pass.
    */
-  function upgradedDesk(auth: AuthProvider, handOff = true) {
-    return desk({
-      resolve: async (c) => {
-        const subject = await auth.resolve(c.req.raw.headers, c.req.url);
-        if (!subject) throw new HTTPException(401, { message: 'unauthorized' });
-        if (handOff) setMcpDelegation(c, subject.delegation);
-      },
-    });
-  }
+  const upgradedResolve =
+    (auth: AuthProvider, opts: { handOff?: boolean; channel?: boolean } = {}) =>
+    async (c: Context) => {
+      const subject = await auth.resolve(
+        c.req.raw.headers,
+        c.req.url,
+        opts.channel === false ? undefined : { delegated: mcpChannelOf(c) },
+      );
+      if (!subject) throw new HTTPException(401, { message: 'unauthorized' });
+      if (opts.handOff !== false) setMcpDelegation(c, subject.delegation);
+    };
+  const upgradedDesk = (auth: AuthProvider, handOff = true) => desk({ resolve: upgradedResolve(auth, { handOff }) });
 
   it('an opted-in, wired host: the delegated scope holds, and the user is who acts', async () => {
     const t = `Bearer ${await signed(delegatedClaims('tickets:read'))}`;
@@ -428,6 +522,13 @@ describe('end to end through the bearer verifier', () => {
   it('a host that has not opted in answers a delegated token with a 401: nobody', async () => {
     const t = `Bearer ${await signed(delegatedClaims('tickets:read'))}`;
     const { app, invoked } = upgradedDesk(provider());
+    expect((await callTools(app, 'desk_list-tickets', t)).status).toBe(401);
+    expect(invoked).toEqual([]);
+  });
+
+  it('a vertical-host with no channel to hand over (a newer vertical-auth on an older host) admits no delegated token', async () => {
+    const t = `Bearer ${await signed(delegatedClaims('tickets:read'))}`;
+    const { app, invoked } = desk({ resolve: upgradedResolve(provider({ actors: [ACTOR] }), { channel: false }) });
     expect((await callTools(app, 'desk_list-tickets', t)).status).toBe(401);
     expect(invoked).toEqual([]);
   });
@@ -453,15 +554,16 @@ describe('end to end through the bearer verifier', () => {
   it('an operation at the MCP path, with the endpoint off, refuses a token the verifier admits there', async () => {
     const auth = provider({ actors: [ACTOR] });
     const t = `Bearer ${await signed(delegatedClaims('tickets:read'))}`;
-    // The verifier's half holds the request URL to the token's resource, and this is it.
-    expect((await auth.resolve(new Headers({ authorization: t }), `${A}/api/mcp`))?.delegation?.actor).toBe(ACTOR);
+    // Handed the channel for this resource, the verifier would admit it: the route is what has none.
+    const at = new Headers({ authorization: t });
+    expect((await auth.resolve(at, `${A}/api/mcp`, { delegated: { resource: RESOURCE } }))?.delegation?.actor).toBe(ACTOR);
     const app = new Hono();
     let invoked = 0;
     mountOperations(
       app,
       { 'desk/odd': { summary: 'Odd', permission: 'tickets:write', http: { method: 'PUT', path: '/mcp' } } },
       async (c) => {
-        const subject = await auth.resolve(c.req.raw.headers, c.req.url);
+        const subject = await auth.resolve(c.req.raw.headers, c.req.url, { delegated: mcpChannelOf(c) });
         if (!subject) throw new HTTPException(401, { message: 'unauthorized' });
         return { invoke: async () => ((invoked++, { ok: true })) } as never;
       },
@@ -469,6 +571,52 @@ describe('end to end through the bearer verifier', () => {
     );
     expect((await app.request(`${A}/api/mcp`, { method: 'PUT', headers: { authorization: t } })).status).toBe(401);
     expect(invoked).toBe(0);
+  });
+
+  /**
+   * The channel follows the endpoint, wherever it is mounted, and nothing else has one. Each
+   * setup below moves the endpoint off `/api/mcp` (or turns it off) and puts a hand-written
+   * route that resolves the caller the upgraded way at `/api/mcp`: it gets no channel, so the
+   * verifier admits no delegated subject there.
+   */
+  it.each([
+    ['basePath /v1', { basePath: '/v1' }, `${A}/v1/mcp`],
+    ['mcp.path /api/agent', { mcp: { path: '/api/agent' } }, `${A}/api/agent`],
+    ['mcp off', { mcp: false as const }, undefined],
+  ])('%s: the endpoint admits through its own resource, and a route at /api/mcp admits nothing', async (_name, options, endpoint) => {
+    const auth = provider({ actors: [ACTOR] });
+    const app = new Hono();
+    let invoked = 0;
+    app.put('/api/mcp', async (c) => {
+      const subject = await auth.resolve(c.req.raw.headers, c.req.url, { delegated: mcpChannelOf(c) });
+      return subject ? c.json({ as: subject.sub }) : c.json({ error: 'unauthorized' }, 401);
+    });
+    mountOperations(
+      app,
+      operations,
+      async (c) => {
+        await upgradedResolve(auth)(c);
+        return { invoke: async (name: string) => ((invoked++, { ok: name })) } as never;
+      },
+      options,
+    );
+    const atDefault = `Bearer ${await signed(delegatedClaims('tickets:read'))}`;
+    expect((await app.request(`${A}/api/mcp`, { method: 'PUT', headers: { authorization: atDefault } })).status).toBe(401);
+    if (endpoint) {
+      const forEndpoint = `Bearer ${await signed({ ...delegatedClaims('tickets:read'), aud: endpoint })}`;
+      const res = await app.request(endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: forEndpoint },
+        body: JSON.stringify([
+          { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'desk_list-tickets', arguments: {} } },
+          { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'desk_close-ticket', arguments: { ticketId: 't1' } } },
+        ]),
+      });
+      const [listed, closed] = (await res.json()) as any[];
+      expect(listed.result.isError).toBeUndefined();
+      expect(closed.result.isError).toBe(true);
+      expect(invoked).toBe(1);
+    }
   });
 
   it("an ordinary user's MCP token is unchanged: no ceiling, every tool the user holds", async () => {
