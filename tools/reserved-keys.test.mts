@@ -1,7 +1,7 @@
 // tsx --test tools/reserved-keys.test.mts
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -28,6 +28,25 @@ test('its twin: use and audit on roles, and on a shape, pass', () => {
     grants: [{ entityType: 'thread', permissions: ['assistant:use'] }],
   });
   assert.deepEqual(o, []);
+});
+
+test('a system-held role may hold a reserved key (K-55), and nothing else may', () => {
+  assert.deepEqual(
+    reservedKeyOffences({ ...none, roles: [{ key: 'assistant-host', holder: 'system', permissions: ['assistant:run'] }] }),
+    [],
+  );
+  assert.deepEqual(
+    reservedKeyOffences({
+      ...none,
+      roles: [{ key: 'assistant-host', holder: 'system', permissions: ['assistant:run', 'assistant:use'] }],
+    }),
+    [{ where: 'system-held role assistant-host', key: 'assistant:use', notReserved: true }],
+  );
+});
+
+test('holder: person is the same as no holder', () => {
+  const o = reservedKeyOffences({ ...none, roles: [{ key: 'm', holder: 'person', permissions: ['assistant:run'] }] });
+  assert.deepEqual(o, [{ where: 'role m', key: 'assistant:run' }]);
 });
 
 test('the message names the vertical, the file, the grant and the remedy', () => {
@@ -70,4 +89,20 @@ test('…and passes a role with use/audit, with the run key held only by a sched
     ),
   );
   assert.equal(r.status, 0, r.stderr);
+});
+
+test('…and passes a system-held role with the run key, rendering it in its own section', () => {
+  const dir = fixture([
+    { key: 'staff', permissions: ['assistant:use'] },
+    { key: 'assistant-host', holder: 'system', permissions: ['assistant:run'] },
+  ]);
+  const r = run(dir);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(readFileSync(join(dir, 'PERMISSIONS.md'), 'utf8'), /System-held roles[\s\S]*assistant-host/);
+});
+
+test('…and refuses a system-held role holding a person-grade key', () => {
+  const r = run(fixture([{ key: 'assistant-host', holder: 'system', permissions: ['assistant:run', 'assistant:use'] }]));
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /system-held role assistant-host → assistant:use/);
 });
