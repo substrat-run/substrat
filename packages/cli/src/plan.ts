@@ -370,7 +370,7 @@ export function renderDelta(d: ConceptDelta, opts: { base: string; digest: strin
         'Who may trigger a transition is whoever may run its operation: the last column is the key that operation declares it checks, from the Operations section of PERMISSIONS.md, and the roles and per-record grant shapes holding it. Any change to who holds a key is under Permissions below.',
       );
       if (l.transitions.some((t) => t.check === undefined)) {
-        out.push('', 'An operation PERMISSIONS.md does not list is named without a key: that file predates its Operations section, or the operation is not registered. Re-emit PERMISSIONS.md to fill it in.');
+        out.push('', 'An operation PERMISSIONS.md does not list is named without a key: that file predates its Operations section, the operation is not registered, or its module was bound by a kernel too old to carry declarations. Re-emit PERMISSIONS.md to fill it in.');
       }
       if (l.transitions.some((t) => t.check?.declared === false)) {
         out.push('', 'An operation "checked in code, not declared" makes its check in its handler and declares none, so no artifact names its key.');

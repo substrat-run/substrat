@@ -265,6 +265,7 @@ describe('parsePermissions — the Operations section (#2384)', () => {
     '| `todo/mine` | `list:read`, `list:manage` | each row, by a proof walk | `@acme/todo` |',
     '| `todo/raw` | — checked in code, not declared — | — | `@acme/todo` |',
     '| `todo/accept` | — none — | nothing: the invite is the authority | `@acme/todo` |',
+    '| `todo/old` | — not readable: bound by a kernel that does not carry declarations — | — | `@acme/todo` |',
     '',
   ].join('\n');
 
@@ -276,6 +277,7 @@ describe('parsePermissions — the Operations section (#2384)', () => {
       // The cell is prose: its comma is not a list, and it names no key.
       'todo/raw': { keys: [], checkedOn: '—', declared: false },
       'todo/accept': { keys: [], checkedOn: 'nothing: the invite is the authority', declared: true },
+      // `todo/old` is absent: "not readable" says nothing about what it checks, so it is not "not declared".
     });
   });
 

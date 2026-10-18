@@ -128,11 +128,13 @@ export function parsePermissions(md: string): PermissionsView {
       ? undefined
       : new Map(
           opRows
-            .filter(([op]) => op !== undefined && op.startsWith('`'))
+            // A row an older kernel's binder left "not readable" says nothing about the operation:
+            // left out, as if unlisted, rather than read as "not declared".
+            .filter(([op, keys = '']) => op !== undefined && op.startsWith('`') && !/not readable/.test(keys))
             .map(([op, keys = '', checkedOn = '']): [string, OperationCheckView] => {
               // A cell of prose ("— checked in code, not declared —") names no key; its commas are not a list.
               const prose = keys.trim().startsWith('—');
-              return [unquote(op ?? ''), { keys: prose ? [] : keysOf(keys), checkedOn, declared: !/not declared|not readable/.test(keys) }];
+              return [unquote(op ?? ''), { keys: prose ? [] : keysOf(keys), checkedOn, declared: !/not declared/.test(keys) }];
             }),
         );
   return { roles, entityGrants, descriptions, ...(operations === undefined ? {} : { operations }) };
