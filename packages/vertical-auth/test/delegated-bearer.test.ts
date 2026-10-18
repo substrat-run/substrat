@@ -237,8 +237,25 @@ describe("a token for another app's MCP endpoint is not ours, even when issued t
     expect(await resolveAt(plain, forB, REST_A)).toBeNull();
     expect(await resolveAt(plain, forB, null)).toBeNull();
     // However the endpoint is spelled.
-    const shouted = await token({ aud: 'https://DESK-B.example/api/mcp', azp: 'desk-a' });
-    expect(await resolveAt(plain, shouted, REST_A)).toBeNull();
+    for (const aud of [
+      'https://DESK-B.example/api/mcp',
+      'https://desk-b.example:443/api/mcp',
+      `${APP_B}/api/mcp/`,
+      `${APP_B}/api/%6Dcp`,
+      `${APP_B}//api//mcp`,
+      `${APP_B}/API/MCP`,
+    ]) {
+      expect(await resolveAt(plain, await token({ aud, azp: 'desk-a' }), REST_A)).toBeNull();
+    }
+    // Twin: a URL on desk B that is not its MCP endpoint is no resource, so rule 2 judges it.
+    expect(await subAt(plain, await token({ aud: `${APP_B}/api/mcp/extra`, azp: 'desk-a' }), REST_A)).toBe('user-1');
+  });
+
+  it('refuses one for our own MCP endpoint on a sibling hostname, at a REST route here', async () => {
+    // A compatibility fact, pinned: rule 2 admitted it before, and no client mints it.
+    const sibling = await token({ aud: mcpResourceOf('https://crm.acme.example'), azp: 'desk-a', client_id: 'desk-a' });
+    expect(await resolveAt(plain, sibling, REST_A)).toBeNull();
+    expect(await resolveAt(plain, sibling, null)).toBeNull();
   });
 
   it("refuses the stage-B token at the actor's own API, with or without the actor opting in itself", async () => {

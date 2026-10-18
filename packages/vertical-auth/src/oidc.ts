@@ -151,17 +151,33 @@ function isOwnToken(
 }
 
 /**
- * Whether `value` is the MCP resource identifier of SOME origin — the one spelling
- * `resourceOf` gives every endpoint, and so every `aud` the issuer mints for one. A client
- * id or a userinfo URL is not one.
+ * Whether `value` is the MCP resource identifier of SOME origin — `resourceOf`'s spelling,
+ * which is every `aud` the issuer mints for an endpoint the platform registered. A client id
+ * or a userinfo URL is not one.
+ *
+ * Compared loosely, because this only ever REFUSES (rule 2's exception): the origin as `URL`
+ * normalises it (host case, default port), the path percent-decoded, lower-cased, with
+ * repeated and trailing slashes dropped. A resource an operator registered by hand at
+ * another path is not recognised, since nothing here knows its spelling.
  */
 function isMcpResource(value: string, resourceOf: (origin: string) => string): boolean {
   try {
     const url = new URL(value);
-    return resourceOf(url.origin) === `${url.origin}${url.pathname}`;
+    return comparablePath(url.pathname) === comparablePath(new URL(resourceOf(url.origin)).pathname);
   } catch {
     return false;
   }
+}
+
+/** A URL path as `isMcpResource` compares it. */
+function comparablePath(pathname: string): string {
+  let path = pathname;
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    // A malformed escape is compared as written.
+  }
+  return path.toLowerCase().replace(/\/{2,}/g, '/').replace(/\/+$/, '') || '/';
 }
 
 /**
