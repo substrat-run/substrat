@@ -1,14 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { EntitlementGrant, Scope, Tenant, TenantId } from '@substrat-run/contracts';
-import { Badge, Button, Card, Dialog, Input, Select, SubIcon, SubIcons, Table, Tag } from '../components';
+import { Badge, Button, Card, Dialog, Input, Pager, Select, SubIcon, SubIcons, Table, Tag, usePaged } from '../components';
 import type { TableColumn } from '../components';
 import { ulid } from '@substrat-run/kernel';
 import { tenantTone } from '../lib/fleet';
 import type { Api } from '../lib/api';
 import { CreateInstance } from './CreateInstance';
-
-/** Client-side page window over the walked set (matches the Scopes/Verticals convention). */
-const PAGE = 20;
 
 type Provenance = 'all' | 'direct' | 'provisioned';
 
@@ -34,22 +31,29 @@ export function Tenants({ api, tenants, scopes, entitlements, onOpen, onChanged,
   // or just the provisioned ones. Client-side over the walked `tenants` prop — the
   // whole directory is already in memory (App-level walkAll), same as the Scopes facets.
   const [provenance, setProvenance] = useState<Provenance>('all');
-  const [shown, setShown] = useState(PAGE);
+  // Status facet: reaped tenants are tombstones (storage gone, slug burned), so the
+  // default view leaves them out; 'all' brings them back.
+  const [statusFilter, setStatusFilter] = useState('live');
+  const [q, setQ] = useState('');
 
   const tenantName = useMemo(() => new Map(tenants.map((t) => [t.id, t.name])), [tenants]);
 
   const filtered = useMemo(
     () =>
       tenants.filter((t) => {
+        if (statusFilter === 'live' ? t.status === 'reaped' : statusFilter !== 'all' && t.status !== statusFilter) {
+          return false;
+        }
+        const needle = q.trim().toLowerCase();
+        if (needle && !`${t.name} ${t.slug} ${t.id}`.toLowerCase().includes(needle)) return false;
         if (provenance === 'direct') return t.provisionedByTenant === null;
         if (provenance === 'provisioned') return t.provisionedByTenant !== null;
         return true;
       }),
-    [tenants, provenance],
+    [tenants, provenance, statusFilter, q],
   );
-  // A filter change can shrink the set below the window — reset so no empty tail shows.
-  useEffect(() => setShown(PAGE), [provenance]);
-  const rows = filtered.slice(0, shown);
+  const paged = usePaged(filtered, `${provenance}|${statusFilter}|${q}`);
+  const reapedCount = useMemo(() => tenants.filter((t) => t.status === 'reaped').length, [tenants]);
   const provisionedCount = useMemo(() => tenants.filter((t) => t.provisionedByTenant !== null).length, [tenants]);
 
   const scopeCount = (id: TenantId) => scopes.filter((s) => s.tenantId === id).length;
@@ -146,20 +150,48 @@ export function Tenants({ api, tenants, scopes, entitlements, onOpen, onChanged,
         </span>
       </div>
 
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <Input
+          placeholder="Search name, slug, or id…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          style={{ width: 320 }}
+        />
+        <Select
+          options={[
+            { value: 'live', label: `Hide reaped (${tenants.length - reapedCount})` },
+            { value: 'all', label: `All statuses (${tenants.length})` },
+            { value: 'active', label: 'Active' },
+            { value: 'suspended', label: 'Suspended' },
+            { value: 'deleting', label: 'Deleting' },
+            { value: 'reaped', label: `Reaped (${reapedCount})` },
+          ]}
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          style={{ width: 190 }}
+        />
+        {(q !== '' || statusFilter !== 'live') && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setQ('');
+              setStatusFilter('live');
+            }}
+          >
+            Clear filters
+          </Button>
+        )}
+      </div>
+
       <Card padding={0}>
         <Table
           columns={columns}
-          rows={rows}
+          rows={paged.rows}
           onRowClick={(t) => onOpen(t.id)}
-          emptyText={provenance === 'provisioned' ? 'No provisioned tenants.' : 'No tenants yet.'}
+          emptyText={tenants.length === 0 ? 'No tenants yet.' : 'No tenants match this filter.'}
         />
-        {filtered.length > shown && (
-          <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
-            <Button variant="ghost" size="sm" onClick={() => setShown((n) => n + PAGE)}>
-              Load more
-            </Button>
-          </div>
-        )}
+        <Pager p={paged} />
       </Card>
 
       <Dialog

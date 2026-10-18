@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Vertical, VerticalSource } from '@substrat-run/contracts';
-import { Badge, Button, Card, Dialog, Input, Select, Table, Tag } from '../components';
+import { Badge, Button, Card, Dialog, Input, Pager, Select, Table, Tag, usePaged } from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
 import type { Api } from '../lib/api';
@@ -36,7 +36,19 @@ export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToa
     [api, refresh],
     (e) => onToast('Failed to load verticals', e.message, 'danger'),
   );
+  // The registry is small: walk it to the end so search and paging see every row, the
+  // same as the Scopes table (which filters the whole walked fleet).
+  useEffect(() => {
+    if (verticalsPage.nextCursor) void verticalsPage.loadMore();
+  }, [verticalsPage.nextCursor]); // eslint-disable-line react-hooks/exhaustive-deps
   const verticals = verticalsPage.entries;
+  const [q, setQ] = useState('');
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return verticals;
+    return verticals.filter((v) => `${v.slug} ${v.name} ${v.source}`.toLowerCase().includes(needle));
+  }, [verticals, q]);
+  const paged = usePaged(filtered, q);
 
   // The opened vertical, resolved from the loaded window. A deep link may target a slug
   // outside the first page — walk the registry once to find it (it is small).
@@ -156,20 +168,28 @@ export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToa
         </Button>
       </div>
 
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <Input
+          placeholder="Search slug, name, or source…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          style={{ width: 320 }}
+        />
+        {q !== '' && (
+          <Button variant="ghost" size="sm" onClick={() => setQ('')}>
+            Clear filters
+          </Button>
+        )}
+      </div>
+
       <Card padding={0}>
         <Table
           columns={verticalColumns}
-          rows={verticals}
+          rows={paged.rows}
           onRowClick={(v) => onOpen(v.slug)}
-          emptyText="No verticals registered yet."
+          emptyText={verticals.length === 0 ? 'No verticals registered yet.' : 'No verticals match this filter.'}
         />
-        {verticalsPage.nextCursor && (
-          <div style={{ padding: 12, display: 'flex', justifyContent: 'center' }}>
-            <Button variant="ghost" size="sm" onClick={() => void verticalsPage.loadMore()}>
-              Load more
-            </Button>
-          </div>
-        )}
+        <Pager p={paged} />
       </Card>
 
       {/* Register a vertical — the only producer action on this surface; publishing a
