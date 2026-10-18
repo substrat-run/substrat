@@ -287,6 +287,16 @@ export function report(v: Verdict): { lines: string[]; failed: boolean } {
       break;
     case 'ok':
       lines.push(`${v.pkg}: computed ${v.computed.bump}, declared ${v.declared} — ok`);
+      // An override with nothing to override: written for an earlier state of the branch, or
+      // never needed. Said aloud, so a reviewer does not read it as a live exception.
+      for (const o of v.overrides) {
+        lines.push(
+          warn(
+            `${v.pkg}: the bump-override (${o.level} — ${o.reason}) is a no-op — the declared ${v.declared} already ` +
+              `covers the computed ${v.computed.bump}. Remove it, so a later override is not read past.`,
+          ),
+        );
+      }
       break;
     case 'missing':
       lines.push(

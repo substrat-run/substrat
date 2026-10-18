@@ -130,6 +130,18 @@ describe('verdictFor', () => {
     expect(r.lines.join('\n')).toMatch(/OVERRIDDEN[\s\S]*the entity was added this release/);
   });
 
+  it('an override with nothing left to override is a visible warning, not a failure', () => {
+    const withOverride = cs('a.md', `'${PKG}': minor`, `<!-- bump-override: ${PKG} minor — the field was added here -->`);
+    for (const computed of ['minor', 'patch'] as const) {
+      const r = report(verdictFor(PKG, result(computed), [withOverride], NO_FIXED));
+      expect(r.failed).toBe(false);
+      expect(r.lines.join('\n')).toMatch(/bump-override .*is a no-op/);
+    }
+    // The twin: the same verdict with no override says nothing about one.
+    const plain = report(verdictFor(PKG, result('minor'), [cs('a.md', `'${PKG}': minor`)], NO_FIXED));
+    expect(plain.lines.join('\n')).not.toMatch(/no-op/);
+  });
+
   it("an override never applies to a package its changeset does not name", () => {
     // `a.md` releases OTHER and overrides it; PKG's own changeset carries no override.
     const v = verdictFor(
