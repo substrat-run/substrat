@@ -124,8 +124,19 @@ export function resolveRefs(node: unknown, root: unknown, seen: readonly string[
  */
 export type Direction = 'input' | 'output';
 
+/**
+ * Numeric limits, and which way is tighter. A lower bound rising or an upper bound falling
+ * accepts less: that breaks a caller sending it (input) and is safe for a reader (output).
+ */
+const LOWER_BOUNDS = new Set(['minLength', 'minItems', 'minProperties', 'minimum', 'exclusiveMinimum']);
+const UPPER_BOUNDS = new Set(['maxLength', 'maxItems', 'maxProperties', 'maximum', 'exclusiveMaximum']);
+const COMPOSITIONS = ['anyOf', 'oneOf', 'allOf'] as const;
+
 /** The keywords `compareSchema` judges on their meaning. Any other constraint change is major. */
-const UNDERSTOOD = new Set(['type', 'enum', 'properties', 'required', 'additionalProperties', 'items']);
+const UNDERSTOOD = new Set([
+  'type', 'enum', 'properties', 'required', 'additionalProperties', 'items',
+  ...LOWER_BOUNDS, ...UPPER_BOUNDS, ...COMPOSITIONS,
+]);
 
 const requiredOf = (s: Record<string, unknown>): Set<string> =>
   new Set(Array.isArray(s.required) ? s.required.filter((x): x is string => typeof x === 'string') : []);
@@ -213,6 +224,37 @@ export function compareSchema(
     else compareSchema(push, dir, `${path}[]`, base.items, head.items);
   }
 
+  for (const k of [...LOWER_BOUNDS, ...UPPER_BOUNDS]) {
+    const bv = base[k];
+    const hv = head[k];
+    if (bv === hv) continue;
+    if ((bv !== undefined && typeof bv !== 'number') || (hv !== undefined && typeof hv !== 'number')) {
+      push('major', path, `'${k}' changed from ${canon(bv, false)} to ${canon(hv, false)}`);
+      continue;
+    }
+    // An absent bound is no limit at all: the loosest value there is.
+    const lower = LOWER_BOUNDS.has(k);
+    const loose = lower ? -Infinity : Infinity;
+    const b = (bv as number | undefined) ?? loose;
+    const h = (hv as number | undefined) ?? loose;
+    const tighter = lower ? h > b : h < b;
+    const breaks = dir === 'input' ? tighter : !tighter;
+    push(breaks ? 'major' : 'minor', path, `'${k}' ${tighter ? 'tightened' : 'loosened'} from ${bv ?? 'none'} to ${hv ?? 'none'}`);
+  }
+
+  // Alternatives are compared position by position: the emitter writes them in declaration
+  // order, so `[X, null]` stays `[X, null]` while X changes. A different count is judged whole.
+  for (const k of COMPOSITIONS) {
+    const ba = base[k];
+    const ha = head[k];
+    if (ba === undefined && ha === undefined) continue;
+    if (!Array.isArray(ba) || !Array.isArray(ha) || ba.length !== ha.length) {
+      if (canon(ba, true) !== canon(ha, true)) push('major', path, `'${k}' alternatives changed`);
+      continue;
+    }
+    ba.forEach((branch, i) => compareSchema(push, dir, `${path}|${k}[${i}]`, branch, ha[i]));
+  }
+
   for (const k of [...new Set([...Object.keys(base), ...Object.keys(head)])].sort()) {
     if (UNDERSTOOD.has(k) || ANNOTATIONS.has(k) || k.startsWith('x-')) continue;
     if (canon(base[k], true) !== canon(head[k], true)) {
@@ -293,7 +335,9 @@ function presence(artifact: Artifact, base: unknown, head: unknown, out: Change[
 /** Top-level `model.json` keys this classifier reads. Any other key changing is judged major. */
 const MODEL_KEYS = new Set(['entities', 'lifecycles', 'handlers', 'exports', 'version']);
 /** Entity keys read on their meaning. */
-const ENTITY_KEYS = new Set(['table', 'fields', 'erasable', 'erasure', 'parents', 'key', 'primaryKey', 'archive', 'trash']);
+const ENTITY_KEYS = new Set([
+  'table', 'fields', 'erasable', 'erasure', 'parents', 'key', 'primaryKey', 'archive', 'trash', 'stamps', 'outsideText',
+]);
 
 export function classifyModel(baseText: string | null, headText: string | null): Classification {
   const out: Change[] = [];
@@ -325,7 +369,13 @@ export function classifyModel(baseText: string | null, headText: string | null):
     removed: (op) => push('major', `handlers.${op}`, 'derived handler removed'),
     added: (op) => push('minor', `handlers.${op}`, 'derived handler added'),
     both: (op, bh, hh) => {
-      if (canon(bh, false) !== canon(hh, false)) push('major', `handlers.${op}`, 'derived handler changed');
+      if (canon(bh, false) === canon(hh, false)) return;
+      // `authored` holds the reason a handler is written by hand. Two reasons are prose.
+      const authored = (v: unknown) => isRecord(v) && Object.keys(v).length === 1 && typeof v.authored === 'string';
+      if (authored(bh) && authored(hh)) push('patch', `handlers.${op}`, 'documentation only');
+      // The same operation answered by a different implementation: todo's `list-shares` went
+      // from answering a missing list with a 404 to answering it with an empty page this way.
+      else push('major', `handlers.${op}`, `implementation changed from ${canon(bh, false)} to ${canon(hh, false)}`);
     },
   });
 
@@ -375,7 +425,24 @@ function classifyEntity(push: Push, path: string, b: Record<string, unknown>, h:
   for (const k of ['archive', 'trash'] as const) {
     if (b[k] === undefined && h[k] !== undefined) push('minor', `${path}.${k}`, `${k} declared`);
     else if (b[k] !== undefined && h[k] === undefined) push('major', `${path}.${k}`, `${k} no longer declared`);
-    else wholeValue(push, `${path}.${k}`, b[k], h[k]);
+    // Its permission, its purge horizon or its purge floor: each decides who loses what, when.
+    else if (canon(b[k], false) !== canon(h[k], false)) {
+      push('major', `${path}.${k}`, `${k} terms changed from ${canon(b[k], false)} to ${canon(h[k], false)}`);
+    }
+  }
+
+  // Columns the kernel fills: a new one is a fact added, a dropped or re-pointed one is taken away.
+  keyed(recordOf(b.stamps), recordOf(h.stamps), {
+    removed: (col) => push('major', `${path}.stamps.${col}`, 'no longer stamped'),
+    added: (col) => push('minor', `${path}.stamps.${col}`, 'stamped by the kernel'),
+    both: (col, bs, hs) => {
+      if (bs !== hs) push('major', `${path}.stamps.${col}`, `stamp changed from ${String(bs)} to ${String(hs)}`);
+    },
+  });
+  // Who wrote a field's text: a declaration about provenance, which keeps the field off events.
+  const outside = setDiff(b.outsideText, h.outsideText);
+  if (outside.added.length || outside.removed.length) {
+    push('minor', `${path}.outsideText`, `outside-written text: +[${outside.added.join(', ')}] -[${outside.removed.join(', ')}]`);
   }
   for (const k of [...new Set([...Object.keys(b), ...Object.keys(h)])].sort()) {
     if (!ENTITY_KEYS.has(k)) wholeValue(push, `${path}.${k}`, b[k], h[k]);
