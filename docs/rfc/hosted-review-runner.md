@@ -1,20 +1,22 @@
 ---
-status: proposed
+status: accepted
 layer: plan
-description: The platform-hosted half of the Substrat review checklist (#2365). Records what is already decided (one runner-neutral checklist, no model key in GitHub CI, mechanical gates first, the model trusted only for judgement items, advisory until a script confirms, and the source of the reviewed change — a full-tree upload with the push, later the input of a controlled build) and lays out the open questions with lettered options, a recommended default, what each depends on and the cost of being wrong — metering and model, the enable surface, where findings live and for how long, gating a push, checklist versioning, trust and abuse, false-positive tracking, rollout, and who may read a record.
+description: The platform-hosted half of the Substrat review checklist (#2365). Accepted — every question was decided on 2026-10-18. One runner-neutral checklist, no model key in GitHub CI, mechanical gates first, the model trusted only for judgement items, advisory until a platform-owned script confirms; the reviewed change is a full-tree upload with the push, later the input of a controlled build. Decided: one pinned platform model behind the platform gateway, metered and budget-capped; a staff-granted entitlement plus a per-vertical switch; the review record as a first-class platform object that every surface views; promotion (never upload) gated on script-confirmed blocking findings once the platform builds the bundle; immutable, stored checklist versions; a seeded corpus kept running; findings readable only by the owner tenant and the pushing credential.
 ---
 
 # RFC: the hosted review runner
 
-**Status: proposed. Nothing here is agreed beyond §2**, which records decisions already taken.
-It answers the part of [#2365](https://github.com/substrat-run/substrat/issues/2365) that #2368
-left open: the hosted runner. It recommends; a human decides. The open decisions are §6,
-numbered so they can be answered as `Q1a: A, Q2: C, …`; §7 collects the recommended answers in
-one table. Q9 was open in the first revision and has since been decided (§2, D5); its number is
-kept so the other answers keep theirs.
+**Status: accepted** (every question of §6 decided by the human on 2026-10-18; §7 collects the
+answers; nothing here is built yet). It answers the part of
+[#2365](https://github.com/substrat-run/substrat/issues/2365) that #2368 left open: the hosted
+runner. §2 records what was decided before the questions were asked, and §2.2 is now decided as
+well (Q6d). Each question in §6 keeps its options, the reasoning and the cost of being wrong, and
+opens with a **Decided** line giving the answer. Where the answer differs from what the first
+revision recommended (Q10), or adds to it, the question says so. Q9 was decided before the others
+(§2, D5); its number is kept so the other answers keep theirs.
 
-Written against `origin/main` at `2a8c2712c`. References are to sections and symbols, not
-lines. Issues and PRs are cited by number only.
+Written against `origin/main` at `2a8c2712c`; the decisions were folded in against `23e90d2d2`.
+References are to sections and symbols, not lines. Issues and PRs are cited by number only.
 
 ---
 
@@ -41,9 +43,8 @@ to run it. It does not cover:
 
 ## 2. Already decided
 
-These are not open, and the questions in §6 are asked inside them — with one exception: §2.2 is a
-requirement this RFC derives and proposes, not a decision, and the human confirms or rejects it as
-Q6d.
+These were decided before §6 was asked, and the questions in §6 are asked inside them. §2.2 is a
+requirement this RFC derived from D4; the human confirmed it as written (Q6d, 2026-10-18).
 
 **D1 — One checklist, any runner.** `plugin/substrat/review/checklist.md` is the only copy of
 the rules. The local skill reads it today; the hosted runner reads the same file (Q5 says how).
@@ -67,7 +68,7 @@ does).
 **D4 — Advisory by default; only a script may block.** Every finding starts advisory. A finding
 can ever block anything only if a script confirmed it. A model's finding never blocks, whatever its
 item's severity and whatever confidence the model claims. (What "a script confirmed it" has to mean
-for a hosted runner is not part of this decision; §2.2 proposes it, for the human to confirm.)
+for a hosted runner was not part of this decision; §2.2 says it, confirmed as Q6d.)
 
 **D5 — The reviewed change is uploaded with the push now, and built from later** (decided by the
 maintainer on this RFC's first revision, where it was Q9). The platform receives a built bundle,
@@ -89,7 +90,7 @@ the first revision laid out:
 install, typecheck and run), packed in one archive format, identified by the digest of that
 archive, and stored beside the version record it was pushed with. When C arrives it builds from
 that same archive, so moving from A to C changes who builds, not what is uploaded or stored. When
-an archive is uploaded, how long it is kept and what the diff is taken against are open (Q3b).
+an archive is uploaded, how long it is kept and what the diff is taken against are Q3b's.
 
 D3, D4 and D5 together are the builder studio's verification rule applied to review: *rank checks
 by who authored the oracle* (`docs/architecture/builder/studio.md` §9). A gate whose expected
@@ -100,7 +101,7 @@ output is derived from committed artifacts is high-trust; a model's reading is a
 The checklist today has one axis, **severity**: an item is `blocking` ("the change is unsafe to
 merge as written") or `advisory` ("worth a comment, never a stop"). D4 adds a second axis that the
 checklist does not yet carry, **confirmation**: was this finding decided by a script, or by a
-reader. The two are independent. The table uses §2.2's proposed meaning of *platform-owned*:
+reader. The two are independent. The table uses §2.2's meaning of *platform-owned*:
 
 | | confirmed by a platform-owned script | judged by a reader (person or model), or by a customer-owned script |
 |---|---|---|
@@ -109,14 +110,16 @@ reader. The two are independent. The table uses §2.2's proposed meaning of *pla
 
 So "S5 · Personal data is classified and erasable: blocking" stays a blocking-severity item, and a
 model's S5 finding is still advisory, because no script confirmed it. The checklist's report shape
-already has the hook for this: a finding the reader could not settle is `[S5 unconfirmed]`. This
-RFC asks (Q5d) that the per-item `judgement` mark the gates work introduces be what the hosted
-runner reads, rather than a list kept inside the runner.
+already has the hook for this: a finding the reader could not settle is `[S5 unconfirmed]`. The
+per-item `judgement` mark the gates work introduces is what the hosted runner reads, rather than a
+list kept inside the runner (Q5d).
 
-### 2.2 Derived (proposed): what makes a script's result platform-owned
+### 2.2 Decided (Q6d): what makes a script's result platform-owned
 
-**This subsection is not a decision.** It is what this RFC derives from D4 for a hosted runner,
-and it asks the human to confirm it as Q6d. The questions below are written assuming it holds.
+This subsection is what this RFC derived from D4 for a hosted runner. The human confirmed it as
+written (Q6d, 2026-10-18): these conditions are the requirement for **any** blocking, and only a
+gate that meets all of them counts as script-confirmed. At first that may be the boundaries gate
+alone (below).
 
 A gate result counts as *script-confirmed* in the sense of D4 only when all of the following hold.
 
@@ -265,19 +268,25 @@ None of the four writes to the customer's code, the version record or any scope.
 5. **Store the code once.** The source archive is stored with the version (D5) and nowhere else;
    the record keeps findings, not code.
 
-## 6. Questions for the human
+## 6. Questions, decided
 
-Each question gives lettered options, a recommended default, what it depends on (or "nothing"),
-and what it costs if the recommendation turns out wrong. Where the recommendation combines options,
-the question says the options may be combined.
+Every question below was decided by the human on 2026-10-18. Each one opens with a **Decided**
+line, then keeps what the first revision laid out: lettered options, the recommendation and its
+reasoning, what it depends on (or "nothing"), and what it costs if the answer turns out wrong.
+Where the decision combines options, the question says the options may be combined. Where the
+decision adds to the recommendation, the addition is written into the **Decided** line; where it
+departs from it (Q10), the recommendation is kept and marked as not taken.
 
 ### Q1 — Metering, the model, and a per-review budget
 
 **Q1a — Which model.**
 
+**Decided: A**, with two additions. A model change ships only after it passes the seeded corpus
+(Q7 C), and models are reached through the platform's gateway (Q3e), with no tie to one vendor.
+
 - **A. One model, chosen by the platform, pinned per checklist version.** The review record
-  names it (Q5b). Changing it is a release of the runner, measured against the false-positive
-  corpus (Q7) before it ships.
+  names it (Q5b). Changing it is a release of the runner, which ships only once it passes the
+  seeded corpus (Q7 C).
 - **B. The tenant picks from the catalogue**, as #1054's picker intends for the assistant.
 - **C. Bring your own key**, through a tenant connection (#1073's BYOK).
 - *Depends on:* C on #1073.
@@ -289,6 +298,9 @@ the question says the options may be combined.
   scope gets no model review rather than a `global` one.
 
 **Q1b — Who pays.**
+
+**Decided: A**, always metered, zero-rated in phases 1–2. The attribution form stays an open
+detail for #1073 (below).
 
 - **A. Metered to the tenant** at list price times the platform margin, through the ledger every
   model call already lands in (`ModelUsageLine`, D-59), as a line attributed to the review.
@@ -310,6 +322,9 @@ the question says the options may be combined.
 
 **Q1c — A per-review budget, and what happens on overspend.** The options may be combined.
 
+**Decided: A and B together, never C**, plus a per-tenant spend limit checked before each call.
+A review over budget is never shown as clean.
+
 - **A. Refuse before the call.** Estimate the input from the change's size before anything is
   sent; a change over the cap is recorded as `skipped: too large`, with the size, and the gates
   still run.
@@ -328,6 +343,13 @@ the question says the options may be combined.
 
 ### Q2 — The enable surface
 
+**Decided: C.** A staff-granted entitlement makes the runner available to a tenant, and a tenant
+owner or admin turns it on per vertical. Every change of state is recorded with who made it and
+when. Turning it off stops new reviews and deletes nothing. The entitlement becomes plan-shaped
+once reviews are billed (phase 3). **The review entitlement key must not be one a tenant can grant
+itself**, by any path; only staff grant it, and later the plan. #2388 tracks the structural fix:
+entitlement keys namespaced by the vertical that declares them.
+
 - **A. Per tenant, by entitlement only.** Staff grant it from the console, like the builder
   studio's entitlement; every vertical of the tenant is reviewed.
 - **B. Per vertical, by the tenant.** A switch on the vertical, held by whoever may change its
@@ -341,9 +363,8 @@ the question says the options may be combined.
   whoever may change the vertical's settings.
 - *Recommendation:* **C**, with the switch on the vertical's Settings and every change of state
   recorded with who made it and when. Turning it off stops new reviews and deletes nothing.
-  Through phases 1–2 the platform refuses the review entitlement key to a tenant credential,
-  whatever any vertical declares: the key is reserved, as `assistant:run` is in
-  `tools/reserved-keys.mts`, so only staff grant it. It becomes plan-shaped at phase 3. *If wrong:* A
+  Only staff grant the review entitlement through phases 1–2, and no tenant may grant it to
+  itself (the requirement in the **Decided** line, #2388). It becomes plan-shaped at phase 3. *If wrong:* A
   alone cannot trial the runner on one vertical of a tenant with many, and charges for all of them;
   B alone leaves staff no lever during the advisory phases. C costs one extra switch.
 
@@ -351,10 +372,16 @@ the question says the options may be combined.
 
 **Q3a — The surfaces.** The options may be combined; the question is which, and in which order.
 
+**Decided: A, then B, then C; D last and optional per vertical; not the console.** In addition,
+the review record is a **first-class platform object with its own API**, and every surface (the
+CLI read, the dashboard, the push headline, a pull-request comment) is a view of it through that
+API.
+
 - **A. The record and a CLI read.** One review record per (vertical version, checklist digest,
-  model), stored platform-side, and a CLI verb (`substrat review <version>`, or a field on
-  `substrat versions`) that prints it as text, so an agent driving the CLI reads findings without
-  a browser. Every other surface reads the same record; none holds its own copy.
+  model), stored platform-side and read through its own API, and a CLI verb (`substrat review
+  <version>`, or a field on `substrat versions`) that prints it as text, so an agent driving the
+  CLI reads findings without a browser. Every other surface reads the same record through the same
+  API; none holds its own copy.
 - **B. The dashboard**, on the version in the Deployments tab: the headline (`n blocking, m
   advisory`, or `skipped`/`incomplete`/`partial`), the gates run, and the findings in the
   checklist's own report shape.
@@ -378,6 +405,10 @@ the question says the options may be combined.
 
 **Q3b — What is stored, and for how long.**
 
+**Decided: A, without C**, as recommended below: archive and record kept while anything serves
+the version, then 180 days (30 days from the push for a version nothing ever served), findings
+and digests only, no transcript.
+
 Two things are stored: the **source archive** (D5), which must exist from the push until the
 asynchronous review has run and which later reviews diff against, and the **review record**.
 
@@ -396,8 +427,9 @@ What every option shares:
   none, full tree`).
 - *The record:* each finding (item, severity, confirmation, `file:line`, a bounded quote,
   fails-when, fix), each gate's name, status and exit code, the checklist digest, the model spec,
-  the runner version, the archive digest and the base archive's digest, the token counts and
-  container time. Not the prompt; the diff is recomputed from the two archives while both exist. A
+  the runner version, the archive digest and the base archive's digest, every path exclusion in
+  force and the files it kept from the reader half (Q3c), the token counts and container time. Not
+  the prompt; the diff is recomputed from the two archives while both exist. A
   review that did not run still writes a record, with the reason (§5.1). The record lives in a store
   of its own (not the #1748 findings store, whose findings are recurring and fingerprinted rather
   than tied to one version) and shares the archive's retention.
@@ -439,6 +471,10 @@ The change is the customer's source code, which can contain personal data: seed 
 fixtures, a persona list, a sample import. Sending it to a model provider is a disclosure to a
 subprocessor (D-54).
 
+**Decided: C**, with the two rules of the recommendation below, and **every path exclusion is
+recorded in the review record itself**: each platform rule and each customer glob in force, and
+the files it kept from the reader half.
+
 - **A. Send the diff as it is**, to a provider listed as a subprocessor.
 - **B. A, minus platform-defined exclusions**: lockfiles, binary files, generated files and files
   over a size cap, recorded as `not sent` in the record.
@@ -455,6 +491,8 @@ subprocessor (D-54).
   the model file still is, which is where the classification lives.
 
 **Q3d — Jurisdiction (K-32).**
+
+**Decided: B**, as recommended below.
 
 - **A. The reader half follows jurisdiction; nothing else does.**
 - **B. Every part that processes the code follows it**: the archive's and the record's store, the
@@ -475,6 +513,8 @@ subprocessor (D-54).
 
 **Q3e — The model path and provider retention.**
 
+**Decided: A**, as recommended below; it is also Q1a's "reached through the platform's gateway".
+
 - **A. The HTTP gateway row only.** It sends `cf-aig-collect-log-payload: false`, so the gateway
   logs counts and cost and not the prompt.
 - **B. Any path the model host supports**, including the `env.AI` binding, which names no gateway
@@ -488,8 +528,14 @@ subprocessor (D-54).
 ### Q4 — May a finding gate `substrat push`
 
 The rule from D4 holds in every option: **only a script-confirmed finding of blocking severity
-may block**, where *script-confirmed* means §2.2's conditions held (proposed; Q6d). A
+may block**, where *script-confirmed* means §2.2's conditions held (confirmed as Q6d). A
 customer-owned script's result is reported and never blocks.
+
+**Decided: B. Promotion is gated, never the upload**, on script-confirmed blocking findings
+only, and not before the controlled build (D5 C, phase 4); until then nothing blocks. The gate is
+opt-in per vertical and off by default at first. Once Q7's numbers exist it becomes **mandatory at
+staff admission for listed verticals**. A private vertical's owner may override a refusal with a
+recorded reason; a listed vertical's override belongs to staff admission.
 
 - **A. Never.** The review is advisory forever; blocking stays with the CLI's own gates (#955)
   and with admission for listed verticals.
@@ -506,7 +552,9 @@ customer-owned script's result is reported and never blocks.
   are platform-owned); and Q7's per-item thresholds.
 - *Recommendation:* **A until phase 4; then B, opt-in per vertical, default off.** Never C: the
   review is slower than an upload, a preview is how a builder sees the problem, and refusing the
-  upload removes the one place the finding is easiest to act on.
+  upload removes the one place the finding is easiest to act on. (The decision keeps this and
+  adds the step for listed verticals: once Q7's per-item thresholds are met, admission requires
+  the gate rather than offering it.)
 - *Why blocking waits for the controlled build, even for a private vertical:* under D5's upload
   the source and the bundle arrive side by side, so a finding is about the uploaded tree, which can
   differ from what runs for ordinary reasons (an uncommitted local edit, a build step that
@@ -525,6 +573,10 @@ customer-owned script's result is reported and never blocks.
   advisory however severe; B is not a promise that S2–S6 will block.
 
 ### Q5 — Keeping the local and hosted runners on one checklist
+
+**Decided: Q5a A, Q5b A, Q5c A, Q5d A**, as recommended below, plus one addition: **every
+checklist version is immutable and stored**, keyed by its digest, so an old review record can be
+re-read against the rules it was produced under.
 
 **Q5a — How the hosted runner gets the file.**
 
@@ -553,8 +605,10 @@ customer-owned script's result is reported and never blocks.
   so a local report and a hosted record can be compared at a glance, and a builder whose local
   plugin is older sees that the two reviews used different rules. A review record pins: that one
   digest and the plugin version, the runner's own version, the model spec,
-  the gate image's version, and the archive digests (D5). *If wrong:* without a digest, a finding
-  cannot be tied to the rule text that produced it, and Q7's per-item numbers mix rule versions.
+  the gate image's version, and the archive digests (D5). The checklist and procedure text behind
+  each digest is stored once and never changed, so the digest a record pins always resolves to the
+  rules it names. *If wrong:* without a digest, a finding cannot be tied to the rule text that
+  produced it, and Q7's per-item numbers mix rule versions.
 
 **Q5c — The procedure.** The local skill's procedure (find the change, run gates read-only, read,
 disprove, report) is written in `SKILL.md`, not in the checklist.
@@ -583,6 +637,9 @@ disprove, report) is written in `SKILL.md`, not in the checklist.
   a gate or marked `judgement`) is what refuses that.
 
 ### Q6 — Trust and abuse
+
+**Decided: Q6a A, Q6b A, Q6c A** (B only as the state before the container exists), as
+recommended below, and **Q6d A** (§2.2 confirmed as written).
 
 The change, and anything a customer-owned script prints, is text the reviewed party controls.
 Q6a–c each offer **A, the structural set listed**, or **B, a narrower set** (named in the
@@ -664,12 +721,16 @@ sub-question) that ships sooner; the cost of B is the gap it leaves.
   when engines are declared (§2.2, condition 3) — and everything else is `not run`.
 - *Depends on:* the container's cost and placement (§9); Q3d.
 - *Recommendation:* **A, with B as the state before the container exists.** Phase 1 reviews only
-  our own verticals, so its gate half may run without a container, still holding no credential;
-  **the container is a precondition of the first customer's review** (phase 2). *If wrong:* a gate
+  our own code (our demo verticals and Substrat's own pull requests, Q8), so its gate half may
+  run without a container, still holding no credential; **the container is a precondition of the first customer's review** (phase 2). *If wrong:* a gate
   half that holds any credential gives code in the reviewed tree that credential's reach; there is
   no "mostly isolated" version of this.
 
 **Q6d — Confirm §2.2.**
+
+**Decided: A.** The seven conditions and the extraction rules of §2.2 are the requirement for any
+blocking. Only a gate that meets all of them counts as script-confirmed, which at first may be the
+boundaries gate (S1) alone. §2.2 is therefore decided, no longer proposed.
 
 - **A. Confirm §2.2 as written**: a gate result is platform-owned only when all seven conditions
   and the extraction rules hold.
@@ -684,6 +745,12 @@ sub-question) that ships sooner; the cost of B is the gap it leaves.
 
 The options may be combined.
 
+**Decided: all three, the corpus first.** The seeded corpus (C) is **kept running after the gate
+is required**: it is re-run on every model or checklist change and keeps measuring misses, which
+is how a blind runner is told from a quiet one. Script-confirmed findings are expected to have no
+false positives; one that does is a gate bug, fixed in the gate. The human sets the per-item
+thresholds at phase 3.
+
 - **A. Owner feedback.** Each finding can be marked *fixed*, *not a problem* (with a reason) or
   *won't fix*, from the dashboard or the CLI. Feedback never clears a promote refusal (Q4 B).
 - **B. An automatic signal.** A finding whose quoted line changed in the next reviewed version
@@ -691,7 +758,8 @@ The options may be combined.
   counts as probably ignored.
 - **C. A seeded corpus.** Our own demo verticals' history plus a set of known-bad changes, one or
   more per checklist item, run on every runner, model or checklist change, measuring both false
-  positives and misses.
+  positives and misses. It keeps running after any item's gate is required, and a model change
+  ships only once it passes (Q1a).
 - *Depends on:* Q3b (B's transcripts would feed the corpus).
 - *Recommendation:* **all three.** C first, because it needs no customer and is the only one that
   measures misses. Numbers are kept per (item, checklist digest, model), aggregated, with no code
@@ -704,6 +772,10 @@ The options may be combined.
 
 ### Q8 — Rollout
 
+**Decided: A**, with one addition: phase 1 also reviews **Substrat's own pull requests**
+(dogfooding), through the same hosted runner and review record. That is the runner reviewing a
+change the way it reviews any other, not a model key in this repository's CI (D2 holds).
+
 - **A. The phases below.**
 - **B. The phases below without phase 1**, starting with invited tenants.
 - *Depends on:* D5 (the controlled build before phase 4), Q6c (the container before phase 2), Q7
@@ -713,10 +785,10 @@ The options may be combined.
 | Phase | Who | What runs | Exit when |
 |---|---|---|---|
 | 0 | — | This RFC answered; the `judgement` marks and the gates work (D3) landed; the checklist digest printed by the local skill; the CLI uploads the source archive (D5 A). | Every checklist item is either a gate or marked `judgement`. |
-| 1 | Staff, on our own demo verticals and the seeded corpus | Gates under §2.2, without a container, holding no credential; reader half on one model; records stored; CLI read only. Zero-rated. | Q1c's caps set from real numbers; Q7 C has a baseline per item; the container gate half works. |
+| 1 | Staff, on our own demo verticals, the seeded corpus and Substrat's own pull requests | Gates under §2.2, without a container, holding no credential; reader half on one model; records stored; CLI read only. Zero-rated. | Q1c's caps set from real numbers; Q7 C has a baseline per item; the container gate half works. |
 | 2 | Invited tenants, by staff-granted entitlement | Advisory only. Record, CLI read, dashboard, push headline. Container gate half from the first customer review. Metered, zero-rated. | Owner feedback (Q7 A) over at least four weeks; cost per review known, model and container. |
 | 3 | Any tenant that enables it | Advisory only. Metered and billed (Q1b). Plan-shaped entitlement. | Per-item thresholds published; **the controlled build (D5 C) builds the bundle from the uploaded archive**. |
-| 4 | Opt-in per vertical | Q4 B: script-confirmed blocking findings refuse promote, with an owner override, on versions the platform built. Possibly only S1 (boundary-lint) can refuse; every other item stays advisory (§2.2, Q4). | — |
+| 4 | Opt-in per vertical, default off; mandatory at staff admission for listed verticals once Q7's thresholds are met | Q4 B: script-confirmed blocking findings refuse promote on versions the platform built, with a recorded owner override for a private vertical and staff admission's for a listed one. Possibly only S1 (boundary-lint) can refuse; every other item stays advisory (§2.2, Q4). The seeded corpus keeps running (Q7). | — |
 
 *If wrong:* B puts unmeasured caps in front of a customer; skipping phase 2's advisory window makes
 Q4's threshold a guess.
@@ -727,44 +799,62 @@ Where the reviewed change comes from is decided: §2, D5.
 
 ### Q10 — Who may read a review record
 
+**Decided: D**, which the first revision did not offer and which replaces its recommendation (C).
+A record is read by the **owner tenant's roles that may already see source-bearing views** of the
+vertical, and by the **credential that pushed the version**. Installers of a listed vertical see at
+most a pass/fail summary, and only one the owner chooses to publish. The reason: the findings
+quote source, and a listed vertical is readable by every tenant that installs it, so a rule keyed
+on who may see the vertical (A, C) would reach past its owner. It is the same
+rule that keeps a version's migration SQL and the production history owner-only.
+
 - **A. Anyone who may see the vertical's versions** in the dashboard.
 - **B. Tenant owners and admins only.**
 - **C. A, plus the CLI credential that pushed the version.**
-- *Depends on:* C's CLI read needs D5's upload in the CLI.
-- *Recommendation:* **C.** The findings quote the tenant's own code, so anyone who may already see
-  that vertical's deploys may see them; the pushing credential must read them for the agent case
-  (Q3a). Staff are not given a findings view (Q3a). A staff read of a record, for a support case or
-  otherwise, is recorded in the access log (K-24) only if the record's store is read through the
-  same logged path as the directory; that is a requirement on the store, not something it gets for
-  free. *If wrong:* B hides
-  findings from the builder who has to fix them.
+- **D. The owner tenant's roles that may see source-bearing views, plus the pushing credential;**
+  installers of a listed vertical get at most an owner-published pass/fail summary. *(Decided.)*
+- *Depends on:* the pushing credential's read (C, D) needs D5's upload in the CLI.
+- *Recommendation (first revision, not taken):* **C.** The findings quote the tenant's own code,
+  so anyone who may already see that vertical's deploys may see them; the pushing credential must
+  read them for the agent case (Q3a). The decision keeps the pushing credential and narrows "may
+  see the deploys" to the owner tenant's source-bearing views, because for a listed vertical those
+  are not the same set.
+- *Either way:* staff are not given a findings view (Q3a). A staff read of a record, for a support
+  case or otherwise, is recorded in the access log (K-24) only if the record's store is read through
+  the same logged path as the directory; that is a requirement on the store, not something it gets
+  for free.
+- *If wrong:* B hides findings from the builder who has to fix them; D keeps them with the builder
+  and the pushing agent. D's cost is that an installer judging a listed vertical sees no more than
+  the owner publishes, which is why admission (Q4) and not the installer is where a listed
+  vertical's review is enforced.
 
-## 7. Recommended answers, in one table
+## 7. Decided answers, in one table
 
-| Q | Topic | Recommended | Depends on |
+All decided by the human on 2026-10-18, except Q9 (decided earlier, D5).
+
+| Q | Topic | Decided | Depends on |
 |---|---|---|---|
-| Q1a | Which model | A: one platform-chosen model, pinned per checklist version | C on #1073 |
+| Q1a | Which model | A: one platform-chosen model, pinned per checklist version; a model change ships only after it passes the seeded corpus; reached through the platform gateway, no vendor tie | C on #1073 |
 | Q1b | Who pays | A: metered to the tenant through the model ledger; zero-rated in phases 1–2 | attribution form on #1073 |
-| Q1c | Per-review budget | A + B: refuse before the call, hard cap during it; per-tenant spend limit in the guard; never shown as clean | nothing |
-| Q2 | Enable surface | C: entitlement per tenant (key reserved, staff-granted in phases 1–2), switch per vertical, held by tenant owner and admin | Q1b |
-| Q3a | Surfaces | A, then B, then C; D last and optional; not the console | A and C on D5 |
-| Q3b | Stored and retention | A: archive only where review is on, placed at upload; kept while anything serves the version (channel, scope pin or preview), then 180 days (30 days from push if never served); no transcript; full-tree review once the base has expired; every non-run recorded | Q2, Q3d |
-| Q3c | Path exclusions | C: platform and customer exclusions; customer globs make a review `partial` | Q2 |
+| Q1c | Per-review budget | A + B: refuse before the call, hard cap during it; per-tenant spend limit in the guard; over budget never shown as clean | nothing |
+| Q2 | Enable surface | C: staff-granted entitlement per tenant, switch per vertical held by tenant owner and admin; every state change recorded; off deletes nothing; plan-shaped once billed; the key is never one a tenant can grant itself (#2388) | Q1b |
+| Q3a | Surfaces | A, then B, then C; D last and optional; not the console. The record is a first-class platform object with its own API; every surface is a view of it | A and C on D5 |
+| Q3b | Stored and retention | A: archive only where review is on, placed at upload; kept while anything serves the version (channel, scope pin or preview), then 180 days (30 days from push if never served); findings and digests, no transcript; full-tree review once the base has expired; every non-run recorded | Q2, Q3d |
+| Q3c | Path exclusions | C: platform and customer exclusions, each recorded in the review record; customer globs make a review `partial` | Q2 |
 | Q3d | Jurisdiction | B: every part follows it; evaluated at upload and at review start | regional placements (§9) |
 | Q3e | Model path | A: the HTTP gateway row only | Q1a |
-| Q4 | Gating push | A until phase 4; then B (gate promote, recorded owner override), opt-in; never C; possibly only S1 can block | D5 C, Q6d, Q7 |
+| Q4 | Gating | B: gate promotion, never upload, on script-confirmed blocking findings only, from phase 4 (after the controlled build); opt-in per vertical, default off, then mandatory at staff admission for listed verticals once Q7's numbers exist; recorded owner override for a private vertical, staff admission's for a listed one; possibly only S1 can block | D5 C, Q6d, Q7 |
 | Q5a | Checklist source | A: bundled from this repository at build | nothing |
-| Q5b | Versioning | A: content digest plus plugin version, printed by both runners | Q5c |
+| Q5b | Versioning | A: content digest plus plugin version, printed by both runners; every checklist version immutable and stored | Q5c |
 | Q5c | Procedure | A: move it beside the checklist and into the digest | nothing |
 | Q5d | Which items the model reads | A: the checklist's own `judgement` mark | D3's mark |
 | Q6a | Prompt injection | A, including gate output as untrusted data | nothing |
 | Q6b | Suppression and forgery | A: every row; §2.2 is the precondition for any blocking | D5 C, Q6d |
 | Q6c | Credentials and isolation | A; B only before the container exists | §9, Q3d |
-| Q6d | Confirm §2.2 | A: confirm as written | nothing |
-| Q7 | False positives | A + B + C; corpus first; thresholds set at phase 3 | Q3b |
-| Q8 | Rollout | A: phases 0–4, the controlled build before phase 4 | D5, Q6c, Q7 |
-| Q9 | Source of the change | Decided: D5 | — |
-| Q10 | Who reads a record | C: version viewers plus the pushing credential; staff reads access-logged, if the record's store is read through the logged path | D5 |
+| Q6d | Confirm §2.2 | A: confirmed as written; only gates meeting all seven conditions are script-confirmed | nothing |
+| Q7 | False positives | A + B + C; corpus first and kept running after the gate is required; zero false positives expected of script-confirmed findings; per-item thresholds set by the human at phase 3 | Q3b |
+| Q8 | Rollout | A: phases 0–4, the controlled build before phase 4; phase 1 also reviews Substrat's own pull requests | D5, Q6c, Q7 |
+| Q9 | Source of the change | D5: A (upload with the push) for phases 1–3, then C (controlled build); B dropped | — |
+| Q10 | Who reads a record | D (changed from the recommended C): the owner tenant's roles that may see source-bearing views, plus the pushing credential; installers of a listed vertical see at most an owner-published pass/fail summary; staff reads access-logged, if the record's store is read through the logged path | D5 |
 
 ## 8. Not proposed
 
@@ -794,8 +884,9 @@ Where the reviewed change comes from is decided: §2, D5.
   vertical's tree is not established.
 - **Provider routes per jurisdiction** for the model Q1a would pick: not recorded here, and the
   assistant RFC lists the same gap.
-- **Which jurisdiction a review takes** (Q3d). Every jurisdiction among the vertical's scopes is this
-  RFC's proposal; nothing in the repository decides jurisdiction for code rather than data.
+- **Which jurisdiction a review takes** (Q3d). Every jurisdiction among the vertical's scopes is
+  decided (Q3d B); nothing in the repository yet decides jurisdiction for code rather than data,
+  so whether a placement exists for each combination is unestablished.
 - **Whether `ModelAttribution` can take a review without a scope** (Q1b) without breaking the
   five-key limit's reason: unexamined.
 - **The archive format and the controlled build's input contract** (D5): to be designed together,
