@@ -92,12 +92,20 @@ describe('packStoreDriverDir (#2300)', () => {
     }
   });
 
-  it('refuses a release over the module count or the byte cap', () => {
+  it('refuses a release over the module count, at the walk and with the release limit, or the byte cap', () => {
     const many: Record<string, string> = { 'driver_graph/store.py': '' };
-    for (let i = 0; i < STORE_RELEASE_MAX_MODULES; i++) many[`python_modules/m${i}.py`] = '';
+    for (let i = 1; i < STORE_RELEASE_MAX_MODULES; i++) many[`python_modules/m${i}.py`] = '';
     const counted = driverDir(many);
     try {
-      expect(() => packStoreDriverDir(counted, 'driver_graph/store.py', COMMIT)).toThrow(new RegExp(`${STORE_RELEASE_MAX_MODULES + 1} modules`));
+      // Exactly the limit packs, and is what the control plane parses.
+      const body = packStoreDriverDir(counted, 'driver_graph/store.py', COMMIT);
+      expect(body.modules).toHaveLength(STORE_RELEASE_MAX_MODULES);
+      expect(storeDriverReleaseUpload.safeParse(body).success).toBe(true);
+      // One more is refused by the walk, before anything is read or classified, naming the release's limit.
+      writeFileSync(join(counted, 'python_modules/one_more.py'), '');
+      const over = `holds more than ${STORE_RELEASE_MAX_MODULES} files; a release carries at most ${STORE_RELEASE_MAX_MODULES} modules`;
+      expect(() => packedFilesOf(counted)).toThrow(over);
+      expect(() => packStoreDriverDir(counted, 'driver_graph/store.py', COMMIT)).toThrow(over);
     } finally {
       rmSync(counted, { recursive: true, force: true });
     }
