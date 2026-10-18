@@ -93,12 +93,13 @@ export async function instanceAuthFor(opts: {
   envSpec: EnvVarSpec[];
   /** The worker's own environment — the binding layer under the delivered map. */
   env: Record<string, unknown>;
-  /** Accept delegated bearers from these actors (#1824) — see `selectAuthProvider`. */
-  delegation?: DelegationOption;
+  /** Accept delegated bearers from these actors (#1824) — see `InstanceDelegation`. */
+  delegation?: InstanceDelegation;
 }): Promise<InstanceAuth> {
   const wiring = await opts.directory.authWiring(opts.scopeId);
   const identity = parseAuthChoice(wiring.config[AUTH_CONFIG_KEY]);
   const settings = resolveScopedEnvSpec(opts.envSpec, opts.env, wiring.config).values;
+  const delegation = opts.delegation;
   return {
     identity,
     sessionSecret: wiring.sessionSecret,
@@ -110,11 +111,53 @@ export async function instanceAuthFor(opts: {
         sessionSecret: wiring.sessionSecret,
         settings,
         sharedIssuer: wiring.config[SHARED_ISSUER_CONFIG_KEY] === 'true',
-        ...(opts.delegation ? { delegation: opts.delegation } : {}),
+        ...(delegation ? { delegation: resolveDelegation(delegation, { identity, config: wiring.config }) } : {}),
         platformBaseDomains: parsePlatformBaseDomains(
           typeof opts.env.PLATFORM_BASE_DOMAINS === 'string' ? opts.env.PLATFORM_BASE_DOMAINS : undefined,
         ),
       }),
+  };
+}
+
+/** What a delegation's actor list may be read from (#1824): this scope's delivered configuration. */
+export interface DelegationWiring {
+  /** The parsed `substrat:auth` choice, or null — the issuer the actors' client ids belong to. */
+  readonly identity: AuthChoice | null;
+  /** The whole delivered map. */
+  readonly config: Readonly<Record<string, string>>;
+}
+
+/**
+ * The delegation opt-in a vertical hands `instanceAuthFor` (#1824). An actor's client id is
+ * per team auth server, so one serving script answering many installs has no single list:
+ * `actors` may instead be read from each install's delivered wiring, as a function.
+ */
+export interface InstanceDelegation {
+  actors: readonly string[] | ((wiring: DelegationWiring) => readonly string[]);
+  /** See `DelegationOption.maxLifetimeSeconds`. */
+  maxLifetimeSeconds?: number;
+}
+
+/**
+ * The verifier's `DelegationOption` for this install. Fails CLOSED: a resolver that throws,
+ * or answers anything but a list of non-empty strings, yields no actors, which admits no
+ * delegated token — and leaves every other sign-in as it was.
+ */
+function resolveDelegation(delegation: InstanceDelegation, wiring: DelegationWiring): DelegationOption {
+  let actors: unknown;
+  try {
+    actors = typeof delegation.actors === 'function' ? delegation.actors(wiring) : delegation.actors;
+  } catch (err) {
+    // The error's name only: its message may quote the delivered configuration it was reading.
+    console.warn('vertical-auth: delegation.actors threw, so no delegated bearer is admitted', {
+      error: err instanceof Error ? err.name : typeof err,
+    });
+    actors = [];
+  }
+  const listed = Array.isArray(actors) && actors.every((a) => typeof a === 'string' && a.length > 0);
+  return {
+    actors: listed ? [...(actors as string[])] : [],
+    ...(delegation.maxLifetimeSeconds === undefined ? {} : { maxLifetimeSeconds: delegation.maxLifetimeSeconds }),
   };
 }
 

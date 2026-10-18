@@ -176,6 +176,10 @@ async function stub(c: Context) {
 }
 ```
 
+An actor's client id differs from one team auth server to the next, so `actors` may also be a
+function of the install's delivered wiring, `(wiring) => readonly string[]`. One that throws, or
+returns nothing usable, admits no delegated token.
+
 What each half does:
 
 - **It is admitted only here.** The verifier refuses a token carrying `act` unless `actors`

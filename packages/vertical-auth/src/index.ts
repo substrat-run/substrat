@@ -29,7 +29,9 @@ export {
   parseAuthChoice,
   selectAuthProvider,
   type AuthChoice,
+  type DelegationWiring,
   type InstanceAuth,
+  type InstanceDelegation,
 } from './instance-auth.js';
 // A login's places (#1670): what a vertical tells the identity pool about its own scope.
 export {

@@ -30,9 +30,12 @@ interface AuthSubject {
 
 `delegation` is set only on a **delegated** bearer: another app of the team calling this app's
 MCP endpoint for the user, with a token the team auth server minted by token exchange. It is
-admitted only when the vertical opts in with `instanceAuthFor({ …, delegation: { actors } })`
-(the actors' client ids), and only on a request to the MCP endpoint itself. Without the option,
-any bearer carrying `act` is refused. See [calls made for a user by another
+admitted only when the vertical opts in with `instanceAuthFor({ …, delegation: { actors } })`,
+and only on a request to the MCP endpoint itself. `actors` is the acting apps' client ids: a
+list, or a function of the install's delivered wiring (`{ identity, config }`) that returns one,
+since a client id is per team auth server. A resolver that throws or returns nothing usable
+admits no delegated token. `maxLifetimeSeconds` can lower the lifetime bound (five minutes).
+Without the option, any bearer carrying `act` is refused. See [calls made for a user by another
 app](/concepts/mcp#a-call-made-for-a-user-by-another-app).
 
 The provider proves *who* a caller is and nothing more. [Authorization stays in the

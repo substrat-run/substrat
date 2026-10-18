@@ -3,7 +3,7 @@ import { SignJWT, exportJWK, generateKeyPair } from 'jose';
 import { SHARED_ISSUER_CONFIG_KEY, mcpResourceOf } from '@substrat-run/contracts';
 import { oidcRpAuthProvider, type OidcRpConfig } from '../src/oidc-rp-provider.js';
 import { oidcAuthProvider } from '../src/oidc.js';
-import { AUTH_CONFIG_KEY, instanceAuthFor } from '../src/instance-auth.js';
+import { AUTH_CONFIG_KEY, instanceAuthFor, type InstanceDelegation } from '../src/instance-auth.js';
 import type { AuthSubject } from '../src/provider.js';
 
 /**
@@ -295,6 +295,77 @@ describe('the option reaches the verifier, and never leaks between configuration
     const t = await delegated();
     expect((await (await providerFor({ actors: [ACTOR] })).resolve(bearer(t), MCP_A))?.delegation?.actor).toBe(ACTOR);
     expect(await (await providerFor()).resolve(bearer(t), MCP_A)).toBeNull();
+  });
+});
+
+/**
+ * An actor's client id is per team auth server, so a script serving many installs reads each
+ * install's list from what was delivered to it. One resolver, many lists: the verifier is
+ * keyed by the list it resolved to, never by the function.
+ */
+describe('delegation.actors read from the delivered wiring', () => {
+  const choice = JSON.stringify({ mode: 'oidc', issuer: ISSUER, clientId: 'desk-a', clientSecret: 'cs' });
+  const ACTORS_KEY = 'acme:delegation-actors';
+  const providerWith = async (extra: Record<string, string>, delegation: InstanceDelegation) =>
+    (
+      await instanceAuthFor({
+        directory: {
+          authWiring: async () => ({
+            config: { [AUTH_CONFIG_KEY]: choice, [SHARED_ISSUER_CONFIG_KEY]: 'true', ...extra },
+            sessionSecret: 'session-secret-000000000000000000000001',
+          }),
+        },
+        scopeId: 'scope-1',
+        envSpec: [],
+        env: {},
+        delegation,
+      })
+    ).provider();
+  const fromConfig: InstanceDelegation = { actors: (w) => JSON.parse(w.config[ACTORS_KEY] ?? '[]') as string[] };
+
+  it('admits the actor one install lists and refuses it at an install listing another, through one resolver', async () => {
+    const t = await delegated();
+    const listsIt = await providerWith({ [ACTORS_KEY]: JSON.stringify([ACTOR]) }, fromConfig);
+    const listsOther = await providerWith({ [ACTORS_KEY]: JSON.stringify(['someone-else']) }, fromConfig);
+    expect((await listsIt.resolve(bearer(t), MCP_A))?.delegation?.actor).toBe(ACTOR);
+    expect(await listsOther.resolve(bearer(t), MCP_A)).toBeNull();
+    expect((await listsIt.resolve(bearer(t), MCP_A))?.delegation?.actor).toBe(ACTOR);
+  });
+
+  it('hands the resolver the parsed identity beside the delivered map', async () => {
+    let seen: string | undefined;
+    await (await providerWith({}, { actors: (w) => ((seen = w.identity?.issuer), [ACTOR]) })).resolve(bearer(await delegated()), MCP_A);
+    expect(seen).toBe(ISSUER);
+  });
+
+  it('fails closed when the resolver throws, or answers nothing usable — and leaves ordinary sign-in alone', async () => {
+    const t = await delegated();
+    const own = await token({ aud: 'desk-a' });
+    const broken: InstanceDelegation[] = [
+      { actors: () => { throw new Error('bad config'); } },
+      { actors: () => [] },
+      { actors: () => 'helpdesk' as unknown as string[] },
+      { actors: () => [ACTOR, ''] },
+      { actors: () => [ACTOR, 7] as unknown as string[] },
+      { actors: () => Promise.resolve([ACTOR]) as unknown as string[] },
+    ];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      for (const delegation of broken) {
+        const p = await providerWith({}, delegation);
+        expect(await p.resolve(bearer(t), MCP_A)).toBeNull();
+        expect((await p.resolve(bearer(own), REST_A))?.sub).toBe('user-1');
+      }
+      // The line names the failure, never the message, which may quote delivered configuration.
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/delegation\.actors threw/), { error: 'Error' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('takes a static list the same way', async () => {
+    expect((await (await providerWith({}, { actors: [ACTOR] })).resolve(bearer(await delegated()), MCP_A))?.sub).toBe('user-1');
+    expect(await (await providerWith({}, { actors: ['', ACTOR] })).resolve(bearer(await delegated()), MCP_A)).toBeNull();
   });
 });
 
