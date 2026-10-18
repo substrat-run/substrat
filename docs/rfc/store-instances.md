@@ -815,8 +815,10 @@ answered). #2302 has since merged, and so has D-63's pin (#2306).
 
   A Python release bundle is one `driver_<package>` package of `.py` modules and may also
   carry `python_modules/<path>` for the driver's dependencies (#2390). Those modules are
-  part of the sha256. The workers runtime SDK is not in the bundle: the script imports it
-  from the runtime the upload's compatibility date selects.
+  part of the sha256, and the sha256 alone vouches for them: the source commit vouches for
+  the driver package and the pyproject/lock it was installed from, and `python_modules/`,
+  install output git normally ignores, is not held to it. The workers runtime SDK is not in
+  the bundle: the script imports it from the runtime the upload's compatibility date selects.
 
   Under B the pin is unchanged. A tenant-grain driver adds its grain to the registration, and
   the canary and the rollout walk tenants (B) or partitions (B′) instead of verticals.

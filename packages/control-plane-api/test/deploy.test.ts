@@ -161,8 +161,19 @@ describe('assertSandboxContract', () => {
     expectRefusal([{ type: 'ai', name: 'LLM' }], /binding 'LLM' \(type 'ai'\)/);
   });
 
-  it('admits a scope store whose driver is registered', () => {
-    expect(() => assertSandboxContract({ ...manifest([]), scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] })).not.toThrow();
+  it('admits a scope store whose driver is registered, and refuses it against a registry without that driver', () => {
+    const declaring = { ...manifest([]), scopeStores: [{ binding: 'GRAPH', driver: 'graph' as const }] };
+    expect(() => assertSandboxContract(declaring)).not.toThrow();
+    let thrown: unknown;
+    try {
+      assertSandboxContract(declaring, []);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown, 'an unregistered scope store was admitted').toBeInstanceOf(Error);
+    expect(errorCodeOf(thrown)).toBe('forbidden');
+    expect((thrown as Error).message).toMatch(/not registered/);
+    expect((thrown as Error).message).toMatch(/^deploy refused: /);
   });
 
   // #2224: the control plane holds an own DO binding to the same one-name-one-store rule push

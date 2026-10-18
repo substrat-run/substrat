@@ -465,8 +465,74 @@ const PYTHON_DRIVER_MODULE = /^(driver_[a-z0-9_]+)(?:\/[A-Za-z_][A-Za-z0-9_]*)*\
 /** One segment of a vendored path: no empty segment, no `.` or `..`, no leading dot. */
 const VENDORED_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/;
 
-/** Top-level names the Python workers runtime provides. A release must not shadow them. */
-const PYTHON_RUNTIME_TOP = new Set(['workers', 'js', 'pyodide']);
+/**
+ * Python 3.13's standard library, as `sys.stdlib_module_names` lists it: the Python the store
+ * entry's compatibility date selects (Pyodide 3.13.2, whose list is CPython 3.13's). A vendored
+ * copy of one of these could shadow the module the entry, its verifier glue or the runtime
+ * imports. Hand-copied, and held to the runtime by `packages/store-entry-python/probe.mjs`, which
+ * asks the running worker for its own list and for every top-level module it has loaded.
+ */
+const PYTHON_STDLIB_MODULES: readonly string[] = (
+  '__future__ _abc _aix_support _android_support _apple_support _ast _asyncio _bisect _blake2 _bz2 _codecs _codecs_cn _codecs_hk ' +
+  '_codecs_iso2022 _codecs_jp _codecs_kr _codecs_tw _collections _collections_abc _colorize _compat_pickle _compression ' +
+  '_contextvars _csv _ctypes _curses _curses_panel _datetime _dbm _decimal _elementtree _frozen_importlib ' +
+  '_frozen_importlib_external _functools _gdbm _hashlib _heapq _imp _interpchannels _interpqueues _interpreters _io ' +
+  '_ios_support _json _locale _lsprof _lzma _markupbase _md5 _multibytecodec _multiprocessing _opcode _opcode_metadata ' +
+  '_operator _osx_support _overlapped _pickle _posixshmem _posixsubprocess _py_abc _pydatetime _pydecimal _pyio _pylong ' +
+  '_pyrepl _queue _random _scproxy _sha1 _sha2 _sha3 _signal _sitebuiltins _socket _sqlite3 _sre _ssl _stat _statistics ' +
+  '_string _strptime _struct _suggestions _symtable _sysconfig _thread _threading_local _tkinter _tokenize _tracemalloc ' +
+  '_typing _uuid _warnings _weakref _weakrefset _winapi _wmi _zoneinfo abc antigravity argparse array ast asyncio atexit ' +
+  'base64 bdb binascii bisect builtins bz2 cProfile calendar cmath cmd code codecs codeop collections colorsys compileall ' +
+  'concurrent configparser contextlib contextvars copy copyreg csv ctypes curses dataclasses datetime dbm decimal difflib ' +
+  'dis doctest email encodings ensurepip enum errno faulthandler fcntl filecmp fileinput fnmatch fractions ftplib ' +
+  'functools gc genericpath getopt getpass gettext glob graphlib grp gzip hashlib heapq hmac html http idlelib imaplib ' +
+  'importlib inspect io ipaddress itertools json keyword linecache locale logging lzma mailbox marshal math mimetypes ' +
+  'mmap modulefinder msvcrt multiprocessing netrc nt ntpath nturl2path numbers opcode operator optparse os pathlib pdb ' +
+  'pickle pickletools pkgutil platform plistlib poplib posix posixpath pprint profile pstats pty pwd py_compile pyclbr ' +
+  'pydoc pydoc_data pyexpat queue quopri random re readline reprlib resource rlcompleter runpy sched secrets select ' +
+  'selectors shelve shlex shutil signal site smtplib socket socketserver sqlite3 sre_compile sre_constants sre_parse ssl ' +
+  'stat statistics string stringprep struct subprocess symtable sys sysconfig syslog tabnanny tarfile tempfile termios ' +
+  'textwrap this threading time timeit tkinter token tokenize tomllib trace traceback tracemalloc tty turtle turtledemo ' +
+  'types typing unicodedata unittest urllib uuid venv warnings wave weakref webbrowser winreg winsound wsgiref xml ' +
+  'xmlrpc zipapp zipfile zipimport zlib zoneinfo'
+).split(' ');
+
+/**
+ * The top-level names a vendored path may not take (#2390), each with why. A path's top-level
+ * name is its first segment under `python_modules/` up to the first `.` or `-`, so a package
+ * directory, a module, a compiled extension and a distribution's metadata all read as the name
+ * they would be imported or installed as: `workers/`, `workers.py`, `workers.cpython-312.so` and
+ * `workers_runtime_sdk-1.9.3.dist-info` are `workers`, `workers`, `workers` and
+ * `workers_runtime_sdk`. A `prefix` row refuses every name that starts with one of its `names`.
+ */
+const PYTHON_VENDORED_RESERVED: readonly { readonly match: 'name' | 'prefix'; readonly names: readonly string[]; readonly why: string }[] = [
+  { match: 'prefix', names: ['driver_'], why: 'it takes the driver package prefix' },
+  { match: 'prefix', names: ['substrat_'], why: "it takes the entry's prefix" },
+  // The SDK's own files, as workers-runtime-sdk 1.9 installs them: its package, the `asgi` module
+  // beside it, its patch loader and the two stubs it ships for the runtime's private modules.
+  { match: 'name', names: ['workers', 'workers_runtime_sdk', 'workers_py', 'asgi'], why: "it is the workers runtime SDK, which is the platform's runtime, not a vendored copy" },
+  { match: 'prefix', names: ['_workers_sdk', '_cloudflare'], why: "it is the workers runtime SDK, which is the platform's runtime, not a vendored copy" },
+  { match: 'name', names: ['js', 'pyodide', 'pyodide_js'], why: 'the Python workers runtime provides it' },
+  { match: 'prefix', names: ['_pyodide'], why: 'the Python workers runtime provides it' },
+  { match: 'name', names: ['__main__', 'sitecustomize', 'usercustomize'], why: 'the interpreter runs it when it starts' },
+  { match: 'name', names: PYTHON_STDLIB_MODULES, why: "it is in Python's standard library" },
+  // `sysconfig`'s data module, named for the platform (`_sysconfigdata__emscripten_wasm32-emscripten`
+  // under Pyodide), so it is not in `sys.stdlib_module_names`. The probe found the runtime loads it.
+  { match: 'prefix', names: ['_sysconfigdata'], why: "it is in Python's standard library" },
+];
+const PYTHON_VENDORED_RESERVED_NAMES = new Map(
+  PYTHON_VENDORED_RESERVED.filter((row) => row.match === 'name').flatMap((row) => row.names.map((name) => [name, row.why] as const)),
+);
+const PYTHON_VENDORED_RESERVED_PREFIXES = PYTHON_VENDORED_RESERVED.filter((row) => row.match === 'prefix').flatMap((row) =>
+  row.names.map((prefix) => [prefix, row.why] as const),
+);
+
+/** The file names a vendored path may not end in, each with why: installer output, not a dependency. */
+const PYTHON_VENDORED_FILES: readonly { readonly match: 'name' | 'suffix'; readonly names: readonly string[]; readonly why: string }[] = [
+  { match: 'suffix', names: ['.pth'], why: 'a path file runs code when the interpreter starts' },
+  { match: 'name', names: ['pyvenv.cfg'], why: "it is a virtual environment's marker" },
+  { match: 'suffix', names: ['.synced'], why: "it is an installer's sync marker" },
+];
 
 export type PythonStoreModuleClass = { readonly kind: 'driver'; readonly packageName: string } | { readonly kind: 'vendored' };
 
@@ -480,9 +546,8 @@ function refusePythonStoreModule(name: string, why: string): never {
  * The driver's own code is one `driver_<package>/…/<module>.py` file. Beside that package a
  * release may carry `python_modules/<path>`, the driver's dependencies, which the upload sends
  * as Data modules under the same names. Refused: a path that climbs (`..`), is absolute, or
- * contains a backslash; a vendored top-level name that starts with `driver_` or `substrat_`;
- * `workers`, `js`, `pyodide` and the workers runtime SDK (its package, its JavaScript, and the
- * files it ships beside them); a `.pth` file, `pyvenv.cfg`, or a `.synced` marker.
+ * contains a backslash; a vendored top-level name in {@link PYTHON_VENDORED_RESERVED}; a vendored
+ * file in {@link PYTHON_VENDORED_FILES}.
  *
  * The script imports `workers` from the Python workers runtime the upload selects, not from a
  * copy in the bundle. A lock file is not a module here.
@@ -501,30 +566,14 @@ export function classifyPythonStoreModule(name: string): PythonStoreModuleClass 
     refusePythonStoreModule(name, 'a driver module is driver_<package>/…/<module>.py, or a dependency is python_modules/<path>');
   }
   const rest = parts.slice(1);
-  const top = rest[0]!;
+  const top = rest[0]!.split(/[.-]/)[0]!;
+  const reserved = PYTHON_VENDORED_RESERVED_NAMES.get(top) ?? PYTHON_VENDORED_RESERVED_PREFIXES.find(([prefix]) => top.startsWith(prefix))?.[1];
+  if (reserved) refusePythonStoreModule(name, `a vendored path may not take the top-level name '${top}': ${reserved}`);
   const file = rest[rest.length - 1]!;
-  const stem = top.replace(/\.[^.]+$/, '');
-  if (top.startsWith('driver_') || top.startsWith('substrat_') || stem.startsWith('driver_') || stem.startsWith('substrat_')) {
-    refusePythonStoreModule(name, 'a vendored path may not take the driver package prefix or the entry prefix');
-  }
-  if (
-    PYTHON_RUNTIME_TOP.has(top) ||
-    PYTHON_RUNTIME_TOP.has(stem) ||
-    top.startsWith('_workers_sdk') ||
-    stem.startsWith('_workers_sdk') ||
-    top.startsWith('workers_runtime_sdk') ||
-    top.startsWith('workers-runtime-sdk') ||
-    top === 'workers-py' ||
-    top === 'workers_py'
-  ) {
-    refusePythonStoreModule(name, "the workers runtime SDK is the platform's runtime, not a vendored copy");
-  }
-  if (file.endsWith('.pth') || file === 'pyvenv.cfg' || file.endsWith('.synced')) {
-    refusePythonStoreModule(name, 'a vendored path may not carry a path file, pyvenv.cfg or a sync marker');
-  }
-  if (parts.some((part) => part.endsWith('.js') && (part.startsWith('_workers_sdk') || part.startsWith('workers_runtime')))) {
-    refusePythonStoreModule(name, "the workers runtime SDK is the platform's runtime, not a vendored copy");
-  }
+  const installer = PYTHON_VENDORED_FILES.find((row) =>
+    row.names.some((fileName) => (row.match === 'name' ? file === fileName : file.endsWith(fileName))),
+  );
+  if (installer) refusePythonStoreModule(name, installer.why);
   if (!rest.every((part) => VENDORED_SEGMENT.test(part))) {
     refusePythonStoreModule(name, 'a vendored path is relative segments');
   }
@@ -947,11 +996,15 @@ export function storeNamesOfBindings(
 /**
  * A scope store whose driver has no registration is refused (#2207). The declaration
  * parses — `graph` is the driver — and still cannot be stored as if the platform
- * could run it. {@link STORE_DRIVERS} is what "registered" means.
+ * could run it. `drivers` is what "registered" means: {@link STORE_DRIVERS} unless a
+ * caller judges against another registry, as `mayHoldScopeStores` does.
  */
-export function assertScopeStoresRegistered(stores: readonly ScopeStoreNeed[]): void {
+export function assertScopeStoresRegistered(
+  stores: readonly ScopeStoreNeed[],
+  drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS,
+): void {
   for (const store of stores) {
-    if (!STORE_DRIVERS.some((driver) => driver.driver === store.driver)) {
+    if (!drivers.some((driver) => driver.driver === store.driver)) {
       throw substratError(
         'forbidden',
         `deploy refused: scope store '${store.binding}' declares driver '${store.driver}', which is not registered. ` +
@@ -968,9 +1021,11 @@ export function assertDeclaredScopeStores(input: {
   readonly blobStores?: readonly { binding: string }[];
   readonly scopeStores?: readonly ScopeStoreNeed[];
   readonly bindingNames?: readonly string[];
+  /** The registry the scope stores are judged against; {@link STORE_DRIVERS} when absent. */
+  readonly drivers?: readonly StoreDriverRegistration[];
 }): void {
   assertStoreBindingsDistinct(input);
-  assertScopeStoresRegistered(input.scopeStores ?? []);
+  assertScopeStoresRegistered(input.scopeStores ?? [], input.drivers);
 }
 
 /**
