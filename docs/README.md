@@ -137,6 +137,7 @@ How the platform works **today** — present tense. A document here may not open
 | [api-surface.md](architecture/api-surface.md) | `built` | Every vertical serves its own OpenAPI; Scalar renders it. |
 | [cms-content.md](architecture/cms-content.md) | `built` | Content types that compile to reviewed migrations. |
 | [connections.md](architecture/connections.md) | `built` | The integrations hub: connections, connectors, executor runtime. |
+| [console-data-source.md](architecture/console-data-source.md) | `building` | One query-first contract the console's views read; each source declares what it can answer. |
 | [control-plane.md](architecture/control-plane.md) | `built` | The shared platform layer N per-vertical deployments sit on. |
 | [cross-vertical-events.md](architecture/cross-vertical-events.md) | `building` | How one vertical receives another vertical's events in the same tenant — exports, imports, and a watermark the consumer keeps. |
 | [dashboard-teams.md](architecture/dashboard-teams.md) | `built` | One login, many teams; team = tenant. |

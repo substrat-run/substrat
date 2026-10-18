@@ -61,6 +61,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 | `packages/template-check` | The template, materialized as a member so the compiler sees it (#878) | private |
 | `packages/model-emit` | `spec/model.ts` → `model.json`, `openapi.json`, migrations | Apache-2.0 |
 | `packages/model-view` | An emitted `model.json` → one self-contained HTML page (ER diagram, entity cards, declared lifecycles); behind `substrat model` and the dashboard's Model tab | Apache-2.0 |
+| `packages/console-data` | The one contract the console's views read from (query-first, with capabilities each source declares), the local source over the working tree and a trace reader, and the contract suite every source passes (#2360). No React, Cloudflare or `node:*` | Apache-2.0, private |
 | `packages/boundary-lint` | The layer rules, as a package a scaffolded project can run | Apache-2.0 |
 | `packages/model-providers` | The model catalogue + rate card behind platform-provided models | AGPL + commercial |
 | `packages/psl` | The public suffix list, for hostname decisions | AGPL + commercial |
