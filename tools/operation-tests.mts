@@ -20,72 +20,45 @@
  * does not shout on every PR. Exit 2 only when it cannot run.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { registrations } from './migration-registrations.mts';
+import { baseFromArgv, registrations, testFiles } from './package-registrations.mts';
 
-const TEST_FILE = /\.(?:test|spec)\.[mc]?[jt]sx?$/;
-
-/** Every test file under `dir`: a `*.test.*` / `*.spec.*` anywhere, or any source under `test/`. */
-export function testFiles(dir: string): string[] {
-  const out: string[] = [];
-  const walk = (at: string, underTest: boolean): void => {
-    for (const name of readdirSync(at)) {
-      if (name === 'node_modules' || name === 'dist' || name.startsWith('.')) continue;
-      const full = join(at, name);
-      if (statSync(full).isDirectory()) walk(full, underTest || name === 'test' || name === 'tests' || name === '__tests__');
-      else if (TEST_FILE.test(name) || (underTest && /\.[mc]?[jt]sx?$/.test(name))) out.push(full);
-    }
-  };
-  walk(dir, false);
-  return out;
-}
-
-/** The operations no test text names. */
+/**
+ * The operations no test text names as a whole quoted string. An operation name has no space or
+ * quote in it, so the strings read are those runs alone, and an apostrophe in a test's prose
+ * cannot pair with the wrong quote.
+ */
 export function untested(operations: readonly string[], tests: readonly string[]): string[] {
-  return operations.filter((op) => !tests.some((text) => text.includes(`'${op}'`) || text.includes(`"${op}"`) || text.includes(`\`${op}\``)));
+  const named = new Set(tests.flatMap((text) => [...text.matchAll(/['"`]([^'"`\s]+)['"`]/g)].map((m) => m[1])));
+  return operations.filter((op) => !named.has(op));
 }
 
-const git = (args: string[]): string => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-
-/** Did the base branch name this operation anywhere in the package? */
-function onBase(base: string, label: string, op: string): boolean {
+/** Which of `ops` the base names anywhere in the package: one `git grep` for all of them. */
+function namedOnBase(base: string, label: string, ops: readonly string[]): Set<string> {
+  if (ops.length === 0) return new Set();
   try {
-    git(['grep', '-q', '-F', op, base, '--', label]);
-    return true;
-  } catch {
-    return false;
+    const args = ['grep', '-h', '-o', '-F', ...ops.flatMap((op) => ['-e', op]), base, '--', label];
+    return new Set(execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 26 }).split('\n'));
+  } catch (err) {
+    // Exit 1 is "no match"; anything else is a git that could not answer.
+    if ((err as { status?: number }).status === 1) return new Set();
+    throw err;
   }
 }
 
 async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
-  const baseAt = argv.indexOf('--base');
-  const base = baseAt === -1 ? undefined : argv[baseAt + 1];
-  if (baseAt !== -1 && (!base || base.startsWith('--'))) {
-    console.error('operation-tests: --base needs a ref');
-    process.exit(2);
-  }
-  if (base !== undefined) {
-    try {
-      git(['rev-parse', '--verify', '--quiet', `${base}^{commit}`]);
-    } catch {
-      console.error(`operation-tests: the base ${base} is not in this checkout; fetch it first.`);
-      process.exit(2);
-    }
-  }
-
+  const base = baseFromArgv('operation-tests', process.argv.slice(2));
   const packages = await registrations('operation-tests', { template: false });
-  const engineModules = new Set(packages.filter((p) => p.label.startsWith('engines/')).flatMap((p) => p.modules.map((m) => m.manifest.id)));
   let total = 0;
   const gaps: { label: string; op: string; isNew: boolean }[] = [];
-  for (const { label, modules } of packages) {
-    const own = label.startsWith('engines/') ? modules : modules.filter((m) => !engineModules.has(m.manifest.id));
+  for (const { label, own } of packages) {
     const operations = own.flatMap((m) => Object.keys((m.operations as { handlers?: Record<string, unknown> } | undefined)?.handlers ?? {}));
     total += operations.length;
-    const tests = testFiles(join(process.cwd(), label)).map((f) => readFileSync(f, 'utf8'));
-    for (const op of untested(operations, tests)) gaps.push({ label, op, isNew: base !== undefined && !onBase(base, label, op) });
+    const missing = untested(operations, testFiles(join(process.cwd(), label)).map((f) => readFileSync(f, 'utf8')));
+    const old = base === undefined ? new Set<string>() : namedOnBase(base, label, missing);
+    for (const op of missing) gaps.push({ label, op, isNew: base !== undefined && !old.has(op) });
   }
 
   for (const { label, op, isNew } of gaps) {
@@ -95,7 +68,7 @@ async function main(): Promise<void> {
   const fresh = gaps.filter((g) => g.isNew).length;
   console.log(
     `operation-tests (advisory): ${gaps.length} of ${total} operation(s) are named by no test in their package` +
-      (base === undefined ? '' : `; ${fresh} of them new since ${base}`) +
+      (base === undefined ? '' : `; ${fresh} of them new since the merge-base (${base.slice(0, 9)})`) +
       (base === undefined || gaps.length === 0 ? '.' : '. Run without --base to list them all.'),
   );
 }

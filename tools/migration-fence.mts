@@ -34,7 +34,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import { replayMigrations, type SqlMigration, type SqlValue } from '../packages/kernel/dist/index.js';
 import { SCOPE_SPINE_DDL } from '../packages/adapter-sqlite/dist/index.js';
-import { registrations, type Registration } from './migration-registrations.mts';
+import { registrations, type Registration } from './package-registrations.mts';
 
 interface Outcome {
   readonly failures: string[];

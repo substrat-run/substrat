@@ -27,7 +27,10 @@
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { lineOf } from './attachment-writers.mjs';
+import { repoRoot } from './repo-path.mjs';
 
 /** The shapes, each with the name that is printed instead of the value. */
 export const SHAPES = [
@@ -70,7 +73,7 @@ const SKIP = [/(?:^|\/)pnpm-lock\.yaml$/, /(?:^|\/)node_modules\//, /\.(?:png|jp
 export function scan(text) {
   const out = [];
   for (const { name, re } of SHAPES) {
-    for (const m of text.matchAll(re)) out.push({ line: text.slice(0, m.index).split('\n').length, shape: name });
+    for (const m of text.matchAll(re)) out.push({ line: lineOf(text, m.index), shape: name });
   }
   return out.sort((a, b) => a.line - b.line);
 }
@@ -78,12 +81,10 @@ export function scan(text) {
 /** Offences across `files` (`{ path, text }[]`), judged against `accepted`. */
 export function findLiterals(files, accepted = ACCEPTED) {
   const offences = [];
-  const seen = new Set();
   for (const { path, text } of files) {
     const hits = scan(text);
     const entry = accepted[path];
     if (entry) {
-      seen.add(path);
       const theirs = hits.filter((h) => h.shape === entry.shape);
       if (theirs.length !== entry.count) {
         offences.push(`${path}: accepted for ${entry.count} ${entry.shape} match(es), holds ${theirs.length} — review the change and update the entry in tools/secret-literals.mjs`);
@@ -94,13 +95,13 @@ export function findLiterals(files, accepted = ACCEPTED) {
     for (const h of hits) offences.push(`${path}:${h.line}: ${h.shape}`);
   }
   for (const path of Object.keys(accepted)) {
-    if (!seen.has(path)) offences.push(`${path}: accepted in tools/secret-literals.mjs but not read (moved or deleted) — remove the entry`);
+    if (!files.some((f) => f.path === path)) offences.push(`${path}: accepted in tools/secret-literals.mjs but not read (moved or deleted) — remove the entry`);
   }
   return offences;
 }
 
 function main() {
-  const root = fileURLToPath(new URL('..', import.meta.url));
+  const root = repoRoot(import.meta.url);
   const list = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: root, encoding: 'utf8' })
     .split('\0')
     .filter((p) => p && !SKIP.some((re) => re.test(p)));
@@ -108,8 +109,8 @@ function main() {
   for (const path of [...new Set(list)]) {
     let text;
     try {
-      if (!statSync(`${root}${path}`).isFile()) continue;
-      text = readFileSync(`${root}${path}`, 'utf8');
+      if (!statSync(join(root, path)).isFile()) continue;
+      text = readFileSync(join(root, path), 'utf8');
     } catch {
       continue; // deleted in the working tree, or not a file
     }

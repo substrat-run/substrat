@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { operationInputsOf } from '../packages/contracts/dist/index.js';
 import { adoptionOffences, targetedOperations } from './entity-check-adoption.mts';
-import type { Registration } from './migration-registrations.mts';
+import type { Registration } from './package-registrations.mts';
 
 const suite = `entityCheckConformanceSuite(conformance.subject, conformance.operations, fixture);`;
 

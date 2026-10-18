@@ -24,17 +24,20 @@
  *   argument CI computes, such as `--base "$base"`). A root script whose CI form is the recursive
  *   sweep it wraps (`pnpm test`, `pnpm typecheck`) counts when CI runs `pnpm -r … <script>`;
  * - a scaffold command (`npm test`, `npm run <script>`) that is not one of the gates a scaffolded
- *   project ships with — the `GATES` list `tools/scaffold-check.mjs` runs against a real scaffold.
+ *   project ships with — `tools/scaffold-gates.mjs`, the list `tools/scaffold-check.mjs` runs
+ *   against a real scaffold.
  *
  * Exit 0: every item names real, running gates. 1: at least one does not (each printed).
  * 2: a file this reads is missing. Fixtures: `review-checklist.test.mjs`.
  */
 import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { repoRoot } from './repo-path.mjs';
+import { GATES } from './scaffold-gates.mjs';
 
 const CHECKLIST = 'plugin/substrat/review/checklist.md';
 const CI = '.github/workflows/ci.yml';
-const SCAFFOLD_CHECK = 'tools/scaffold-check.mjs';
 
 /** Each `### S<n>` item's heading line and its `gates:` lines. */
 export function itemsOf(markdown) {
@@ -109,15 +112,9 @@ function ciRunsRecursive(script, ci) {
   return ci.some((have) => have[0] === 'pnpm' && have[1] === '-r' && have[have.length - 1] === script);
 }
 
-/** The scaffold's shipped gates, read off `tools/scaffold-check.mjs`'s GATES list. */
-export function scaffoldGates(source) {
-  const block = /const GATES = \[([\s\S]*?)\];/.exec(source);
-  return new Set(block ? [...block[1].matchAll(/name:\s*'([^']+)'/g)].map((m) => m[1]) : []);
-}
-
 /**
  * Every offence in a checklist, judged against what exists: `scripts` (root package.json),
- * `ci` (from `ciCommands`), `scaffold` (from `scaffoldGates`) and `fileExists(path)`.
+ * `ci` (from `ciCommands`), `scaffold` (the scaffold's gate names) and `fileExists(path)`.
  */
 export function findOffences(markdown, { scripts, ci, scaffold, fileExists }) {
   const offences = [];
@@ -138,7 +135,7 @@ export function findOffences(markdown, { scripts, ci, scaffold, fileExists }) {
     for (const command of parsed.commands) {
       const tokens = words(command);
       if (tokens[0] === 'npm') {
-        if (!scaffold.has(command)) offences.push(`${at(line)}: \`${command}\` is not a gate a scaffolded project ships with (${SCAFFOLD_CHECK} GATES)`);
+        if (!scaffold.has(command)) offences.push(`${at(line)}: \`${command}\` is not a gate a scaffolded project ships with (tools/scaffold-gates.mjs)`);
         continue;
       }
       if (tokens[0] === 'node') {
@@ -164,9 +161,9 @@ export function findOffences(markdown, { scripts, ci, scaffold, fileExists }) {
 }
 
 function main() {
-  const root = fileURLToPath(new URL('..', import.meta.url));
+  const root = repoRoot(import.meta.url);
   const read = (rel) => {
-    const abs = `${root}${rel}`;
+    const abs = join(root, rel);
     if (!existsSync(abs)) {
       console.error(`review-checklist: missing ${rel}`);
       process.exit(2);
@@ -176,8 +173,8 @@ function main() {
   const offences = findOffences(read(CHECKLIST), {
     scripts: JSON.parse(read('package.json')).scripts ?? {},
     ci: ciCommands(read(CI)),
-    scaffold: scaffoldGates(read(SCAFFOLD_CHECK)),
-    fileExists: (rel) => existsSync(`${root}${rel}`),
+    scaffold: new Set(GATES.map((g) => g.name)),
+    fileExists: (rel) => existsSync(join(root, rel)),
   });
   if (offences.length > 0) {
     console.error(`review-checklist: ${offences.length} item gate(s) name something that does not exist or does not run:\n`);

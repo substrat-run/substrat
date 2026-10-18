@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { migrationDigest } from '../packages/kernel/dist/index.js';
 import { appendOnlyOffences, ledgerRows, parseLedger, renderLedger, type LedgerRow } from './migration-ledger.mts';
-import type { Registration } from './migration-registrations.mts';
+import type { Registration } from './package-registrations.mts';
 
 const row = (version: string, digest: string, module = 'notes'): LedgerRow => ({ module, version, digest });
 const A = 'a'.repeat(64);

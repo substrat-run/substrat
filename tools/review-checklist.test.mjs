@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ciCommands, findOffences, parseGates, scaffoldGates } from './review-checklist.mjs';
+import { ciCommands, findOffences, parseGates } from './review-checklist.mjs';
 
 const ci = ciCommands(`
 jobs:
@@ -20,7 +20,7 @@ jobs:
 const world = {
   scripts: { 'lint:model': 'tsx tools/model-diff.mts', 'lint:tests': 'node x', 'lint:export-schemas': 'tsx y', typecheck: 'pnpm -r typecheck', 'lint:unrun': 'node z' },
   ci,
-  scaffold: scaffoldGates(`const GATES = [\n  { name: 'npm test', argv: ['test'] },\n  { name: 'npm run lint:boundaries', argv: [] },\n];`),
+  scaffold: new Set(['npm test', 'npm run lint:boundaries']),
   fileExists: (p) => p === 'tools/boundary-lint.mjs',
 };
 const item = (gates) => `# Checklist\n\n## Items\n\n### S1 · Thing: blocking\n\nProse.\n\n${gates}\n\n## Not listed here\n`;

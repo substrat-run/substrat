@@ -26,8 +26,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { declaredSurfaceOf } from '../packages/contracts/dist/index.js';
-import { registrations, type Registration } from './migration-registrations.mts';
-import { testFiles } from './operation-tests.mts';
+import { registrations, testFiles, type Registration } from './package-registrations.mts';
 
 const SUITE_CALL = /\bentityCheckConformanceSuite\s*\(/;
 
@@ -51,10 +50,9 @@ export function adoptionOffences(packages: readonly { label: string; targeted: r
 
 async function main(): Promise<void> {
   const packages = await registrations('entity-check-adoption', { template: false });
-  const engineModules = new Set(packages.filter((p) => p.label.startsWith('engines/')).flatMap((p) => p.modules.map((m) => m.manifest.id)));
-  const judged = packages.map(({ label, modules }) => ({
+  const judged = packages.map(({ label, own }) => ({
     label,
-    targeted: targetedOperations(label.startsWith('engines/') ? modules : modules.filter((m) => !engineModules.has(m.manifest.id))),
+    targeted: targetedOperations(own),
     tests: testFiles(join(process.cwd(), label)).map((f) => readFileSync(f, 'utf8')),
   }));
   const offences = adoptionOffences(judged);

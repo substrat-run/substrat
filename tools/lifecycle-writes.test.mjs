@@ -141,3 +141,13 @@ test('the lifecycles are read off model.json: entity table and declared field', 
   assert.deepEqual(lifecyclesOf(model), LC);
   assert.deepEqual(lifecyclesOf({ entities: {} }), []);
 });
+
+test('a helper is named by its own head, not by a statement above it with no semicolon', () => {
+  const text = `
+const limit = 3
+function moveTo(ctx, row, state) {
+  ctx.sql.exec('UPDATE shop_orders SET status = ? WHERE id = ?', [state, row.id]);
+}
+function ship(ctx, row) { assertTransition(lc, 'order', row.status, 'shop/ship'); moveTo(ctx, row, 'shipped'); }`;
+  assert.deepEqual(at(text), []);
+});

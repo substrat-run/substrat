@@ -38,9 +38,9 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { migrationSteps } from '../packages/kernel/dist/index.js';
-import { registrations, type Registration } from './migration-registrations.mts';
+import { baseFromArgv, registrations, type Registration } from './package-registrations.mts';
 
-export const LEDGER = 'MIGRATIONS.md';
+const LEDGER = 'MIGRATIONS.md';
 const TOOL = 'tools/migration-ledger.mts';
 
 export interface LedgerRow {
@@ -104,34 +104,20 @@ export function appendOnlyOffences(label: string, base: readonly LedgerRow[], he
 
 const git = (args: string[]): string => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
-function cannot(message: string): never {
-  console.error(`migration-ledger: ${message}`);
-  process.exit(2);
-}
-
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const check = argv.includes('--check');
-  const baseAt = argv.indexOf('--base');
-  const base = baseAt === -1 ? undefined : argv[baseAt + 1];
-  if (baseAt !== -1 && (!base || base.startsWith('--'))) cannot('--base needs a ref');
+  const base = baseFromArgv('migration-ledger', argv);
 
-  const packages = (await registrations('migration-ledger', { template: false }));
-  // A module an engine ships is in that engine's ledger, and only there.
-  const engineModules = new Set(packages.filter((p) => p.label.startsWith('engines/')).flatMap((p) => p.modules.map((m) => m.manifest.id)));
+  const packages = await registrations('migration-ledger', { template: false });
   const emitted = new Map<string, { rows: LedgerRow[]; text: string }>();
-  for (const { label, entry, modules } of packages) {
-    const own = label.startsWith('engines/') ? modules : modules.filter((m) => !engineModules.has(m.manifest.id));
+  // A module an engine ships is in that engine's ledger, and only there.
+  for (const { label, entry, own } of packages) {
     const rows = await ledgerRows(own);
     if (rows.length > 0) emitted.set(label, { rows, text: renderLedger(label, entry, rows) });
   }
 
   if (base !== undefined) {
-    try {
-      git(['rev-parse', '--verify', '--quiet', `${base}^{commit}`]);
-    } catch {
-      cannot(`the base ${base} is not in this checkout; fetch it first. Refusing to judge against nothing.`);
-    }
     const ledgers = git(['ls-tree', '-r', '--name-only', base, '--', 'demos', 'apps', 'engines'])
       .split('\n')
       .filter((p) => p.endsWith(`/${LEDGER}`) && p.split('/').length === 3);
@@ -155,7 +141,7 @@ async function main(): Promise<void> {
       );
       process.exit(1);
     }
-    console.log(`migration-ledger: ${ledgers.length} base ledger(s) — every migration ${base} shipped is unchanged here.`);
+    console.log(`migration-ledger: ${ledgers.length} base ledger(s) — every migration the merge-base (${base.slice(0, 9)}) shipped is unchanged here.`);
     return;
   }
 

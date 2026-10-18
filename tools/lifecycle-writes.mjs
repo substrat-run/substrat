@@ -34,49 +34,71 @@
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lex } from './bare-regexp.mjs';
-import { blankComments, callsOf, covers, functionChains, lineOf, stringTokenAt } from './attachment-writers.mjs';
+import { blankComments, callsOf, covers, functionChains, inScope as shippedSource, lineOf, stringTokenAt } from './attachment-writers.mjs';
+import { repoRoot } from './repo-path.mjs';
 
-/** Shipped source of a package: under `src/`, not a test, not the seed. */
+/** Shipped source of a package: under `src/`, and not the seed or a migrations module (a backfill). */
 export function inScope(path) {
-  if (!/\/src\//.test(path) || !/\.(?:ts|tsx|mts|js|mjs)$/.test(path) || /\.d\.[mc]?ts$/.test(path)) return false;
-  if (/(?:^|\/)migrations(?:\.generated)?\.[mc]?ts$/.test(path)) return false; // a backfill, not an operation
-  return !/(?:^|\/)(?:test|tests|__tests__)\//.test(path) && !/\.(?:test|spec)\.[mc]?[jt]sx?$/.test(path) && !/(?:^|\/)seed\.[mc]?ts$/.test(path);
+  return /\/src\//.test(path) && shippedSource(path) && !/(?:^|\/)(?:seed|migrations(?:\.generated)?)\.[mc]?ts$/.test(path);
 }
 
 /** The lifecycle's own questions: `assertTransition` refuses, `transitionFor` answers (#844). */
 const LIFECYCLE_CALLS = ['assertTransition', 'transitionFor'];
 
 /**
- * The guards a file can call: the lifecycle's own, and every function the file declares whose body
+ * Each function the tokens declare by name — `function name(` or `const name = (…) =>` — as its
+ * id in `functionChains`. A head the walk back cannot read (an object-literal return type stops
+ * it) leaves that function unnamed, which only ever costs a guard or a helper, never a pass.
+ */
+function namedFunctions(t, chains) {
+  const named = [];
+  for (let k = 0; k + 1 < t.length; k += 1) {
+    if (t[k].text !== '{') continue;
+    const inner = chains[k + 1] ?? [];
+    const id = inner[inner.length - 1];
+    if (id === undefined || chains[k].includes(id)) continue; // not a function opening here
+    let name;
+    for (let j = k - 1, parens = 0; j >= 0; j -= 1) {
+      const x = t[j].text;
+      if (x === ')') parens += 1;
+      else if (x === '(') parens -= 1;
+      else if (parens === 0 && (x === ';' || x === '{' || x === '}')) break;
+      if (parens !== 0 || t[j].kind !== 'word') continue;
+      // The nearest head: a statement above with no `;` (ASI) is not this function's.
+      if ((x === 'function' || x === 'const' || x === 'let') && t[j + 1]?.kind === 'word') {
+        name = t[j + 1].text;
+        break;
+      }
+    }
+    if (name) named.push({ id, name });
+  }
+  return named;
+}
+
+/** A call of `name`, not its own declaration (`function requireTransition(`). */
+const callsTo = (t, name) => callsOf(t, name).filter((k) => t[k - 1]?.text !== 'function');
+
+/**
+ * The guards a file's functions are: the lifecycle's own, and every named function whose body
  * calls one directly (`requireTransition(row, op)` wrapping `assertTransition`). One level only:
  * an operation that calls such a wrapper and then writes is a writer, not a guard, and taking it
  * for one would cover whatever its callers write.
  */
-/** Each function the file declares by name, with its body's range in `text`. */
-export function namedFunctions(text) {
-  const bodies = [];
-  for (const m of text.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)\s*[(<]|\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]+)?=>/g)) {
-    const open = text.indexOf('{', m.index + m[0].length - 1);
-    if (open < 0) continue;
-    let depth = 0;
-    let end = open;
-    for (; end < text.length; end += 1) {
-      if (text[end] === '{') depth += 1;
-      else if (text[end] === '}' && (depth -= 1) === 0) break;
-    }
-    bodies.push({ name: m[1] ?? m[2], start: open, end, body: text.slice(open, end) });
-  }
-  return bodies;
+function guardsOf(t, chains, named) {
+  const direct = LIFECYCLE_CALLS.flatMap((n) => callsTo(t, n));
+  const names = new Set(LIFECYCLE_CALLS);
+  for (const { id, name } of named) if (direct.some((g) => chains[g].includes(id))) names.add(name);
+  return names;
 }
 
+/** `guardsOf` for a source text, for the fixtures. */
 export function guardNames(text) {
-  const names = new Set(LIFECYCLE_CALLS);
-  for (const { name, body } of namedFunctions(text)) {
-    if (LIFECYCLE_CALLS.some((n) => new RegExp(`\\b${n}\\s*\\(`).test(body))) names.add(name);
-  }
-  return names;
+  const t = lex(blankComments(text));
+  const chains = functionChains(t);
+  return guardsOf(t, chains, namedFunctions(t, chains));
 }
 
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -93,35 +115,31 @@ export function lifecyclesOf(model) {
  * Writes of a declared state with no lifecycle question before them. Covered means a guard call
  * before the write, in its function or one enclosing it — or, for a write inside a named helper
  * (`moveTo(ctx, row, next)`, the one place a state is written), every call of that helper in the
- * file is itself covered, to a depth of three helpers. A helper nothing calls is not covered.
+ * file is itself covered, or passes a guard's answer as an argument, to a depth of three helpers.
+ * A helper nothing calls is not covered.
  */
 export function unguardedWrites(files, lifecycles) {
+  // `UPDATE <table>` (quoted or not), then the SET list up to its end, naming the field.
+  const writes = lifecycles.map((l) => ({
+    ...l,
+    re: new RegExp(String.raw`\bUPDATE\s+["\x60\[]?${escape(l.table)}["\x60\]]?(?:\s+AS\s+\w+)?\s+SET\b[^;'"\x60]*?\b${escape(l.field)}\s*=`, 'gi'),
+  }));
   const out = [];
   for (const { path, text: source } of files) {
     if (!inScope(path)) continue;
     const text = blankComments(source);
-    let ctx;
-    const context = () => {
-      if (ctx) return ctx;
-      const t = lex(text);
-      const chains = functionChains(t);
-      // A call, not the guard's own declaration (`function requireTransition(`), which sits
-      // outside every body and would otherwise cover the whole file.
-      const calls = (name) => callsOf(t, name).filter((k) => t[k - 1]?.text !== 'function');
-      const guards = [...guardNames(text)].flatMap(calls);
-      const named = namedFunctions(text);
-      const starts = lineStarts(text);
-      const offsetOf = (k) => starts[t[k].line - 1];
-      return (ctx = { t, chains, calls, guards, named, offsetOf });
-    };
-    for (const { entity, table, field } of lifecycles) {
-      // `UPDATE <table>` (quoted or not), then the SET list up to its end, naming the field.
-      const re = new RegExp(String.raw`\bUPDATE\s+["\x60\[]?${escape(table)}["\x60\]]?(?:\s+AS\s+\w+)?\s+SET\b[^;'"\x60]*?\b${escape(field)}\s*=`, 'gi');
+    let c;
+    for (const { entity, field, re } of writes) {
       for (const m of text.matchAll(re)) {
-        const c = context();
+        if (!c) {
+          const t = lex(text);
+          const chains = functionChains(t);
+          const named = namedFunctions(t, chains);
+          c = { t, chains, named, guards: [...guardsOf(t, chains, named)].flatMap((n) => callsTo(t, n)) };
+        }
         const line = lineOf(text, m.index);
         const w = stringTokenAt(c.t, line);
-        if (w >= 0 && coveredAt(c, w, m.index, 3)) continue;
+        if (w >= 0 && coveredAt(c, w, 3)) continue;
         out.push({ path, line, entity, field });
       }
     }
@@ -129,21 +147,15 @@ export function unguardedWrites(files, lifecycles) {
   return out;
 }
 
-function lineStarts(text) {
-  const starts = [0];
-  for (let i = 0; i < text.length; i += 1) if (text[i] === '\n') starts.push(i + 1);
-  return starts;
-}
-
-/** Is token `k` (at character `at`) covered by a guard, directly or through every caller? */
-function coveredAt(c, k, at, depth) {
+/** Is token `k` covered by a guard, directly or through every call of the helper it sits in? */
+function coveredAt(c, k, depth) {
   if (c.guards.some((g) => covers(c.chains, g, k))) return true;
   if (depth === 0) return false;
-  // The innermost named function around the write, and every call of it.
-  const helper = c.named.filter((f) => f.start < at && at < f.end).sort((a, b) => b.start - a.start)[0];
+  const around = c.chains[k];
+  const helper = c.named.filter((f) => around.includes(f.id)).sort((x, y) => around.indexOf(y.id) - around.indexOf(x.id))[0];
   if (!helper) return false;
-  const sites = c.calls(helper.name).filter((s) => !(helper.start < c.offsetOf(s) && c.offsetOf(s) < helper.end));
-  return sites.length > 0 && sites.every((s) => guardInArguments(c, s) || coveredAt(c, s, c.offsetOf(s), depth - 1));
+  const sites = callsTo(c.t, helper.name).filter((s) => !c.chains[s].includes(helper.id));
+  return sites.length > 0 && sites.every((s) => guardInArguments(c, s) || coveredAt(c, s, depth - 1));
 }
 
 /** Is a guard called inside the argument list of the call at `s`? Arguments run before the call. */
@@ -158,17 +170,17 @@ function guardInArguments(c, s) {
 }
 
 function main() {
-  const root = fileURLToPath(new URL('..', import.meta.url));
+  const root = repoRoot(import.meta.url);
   const git = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' });
   const models = git(['ls-files', '--', 'demos/*/model.json', 'engines/*/model.json', 'apps/*/model.json']).split('\n').filter(Boolean);
   const hits = [];
   let declared = 0;
   for (const modelPath of models) {
-    const lifecycles = lifecyclesOf(JSON.parse(readFileSync(`${root}${modelPath}`, 'utf8')));
+    const lifecycles = lifecyclesOf(JSON.parse(readFileSync(join(root, modelPath), 'utf8')));
     if (lifecycles.length === 0) continue;
     declared += lifecycles.length;
     const pkg = modelPath.slice(0, -'/model.json'.length);
-    const files = git(['ls-files', '--', `${pkg}/src`]).split('\n').filter(Boolean).map((path) => ({ path, text: readFileSync(`${root}${path}`, 'utf8') }));
+    const files = git(['ls-files', '--', `${pkg}/src`]).split('\n').filter(Boolean).map((path) => ({ path, text: readFileSync(join(root, path), 'utf8') }));
     hits.push(...unguardedWrites(files, lifecycles));
   }
   if (hits.length > 0) {

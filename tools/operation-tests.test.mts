@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
-import { testFiles, untested } from './operation-tests.mts';
+import { untested } from './operation-tests.mts';
+import { testFiles } from './package-registrations.mts';
 
 test('an operation named in a test, in any quote, is tested', () => {
   const ops = ['todo/a', 'todo/b', 'todo/c'];
@@ -12,6 +13,10 @@ test('an operation named in a test, in any quote, is tested', () => {
 
 test('an operation no test names is listed', () => {
   assert.deepEqual(untested(['todo/a', 'todo/b'], [`invoke('todo/a', {})`]), ['todo/b']);
+});
+
+test('an apostrophe in prose before the call does not hide it', () => {
+  assert.deepEqual(untested(['todo/a'], [`it('doesn't fail', () => invoke('todo/a'))`]), []);
 });
 
 test('a prefix of a longer name does not count as naming it', () => {
