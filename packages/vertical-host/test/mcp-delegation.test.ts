@@ -19,7 +19,7 @@ import type { AuthProvider } from '@substrat-run/vertical-auth/provider';
 import { INVOCATION_RECORD_KEY, type InvocationRecord } from '../src/invocation-log.js';
 import { mountOperations } from '../src/operations-routes.js';
 import { MCP_DELEGATION_KEY, mcpChannelOf, mcpToolsOf, setMcpDelegation, type McpDelegation } from '../src/mcp.js';
-import { patternAnswers } from '../src/mcp-guard.js';
+import { routeAnsweringAt } from '../src/mcp-guard.js';
 
 const ISSUER = 'https://team-auth.test';
 const A = 'https://desk-a.example';
@@ -245,21 +245,62 @@ describe('nothing but the MCP endpoint answers at its path', () => {
     expect(() => mountOperations(new Hono(), at('/mcp'), stub, { mcp: { path: '/api/agents' } })).not.toThrow();
   });
 
-  it('refuses a hand-written route registered before the endpoint that would answer in its place', () => {
-    const handler = () => new Response('mine');
-    for (const register of [
-      (a: Hono) => a.put('/api/mcp', handler),
-      (a: Hono) => a.post('/api/:slug', handler),
-      (a: Hono) => a.on('PATCH', '/api/:slug{[a-z]+}', handler),
-      (a: Hono) => a.delete('/api/:x?', handler),
-    ]) {
-      const app = new Hono();
-      register(app);
-      expect(() => mountOperations(app, operations, stub)).toThrow(/is registered before the MCP endpoint/);
-    }
+  /**
+   * The oracle is Hono itself: each shape is first registered on a bare app and asked for
+   * `/api/mcp`. The mount must refuse exactly the shapes Hono would dispatch there, so this
+   * grammar cannot drift from Hono's.
+   */
+  it.each([
+    ['a literal', 'PUT', '/api/mcp'],
+    ['a parameter', 'POST', '/api/:slug'],
+    ['a parameter with a hyphen in its name', 'POST', '/api/:ticket-id'],
+    ['a parameter with a dot in its name', 'PATCH', '/api/:ticket.id'],
+    ['a regex parameter', 'PATCH', '/api/:slug{[a-z]+}'],
+    ['a regex parameter spanning a slash', 'POST', '/:p{api/mcp}'],
+    ['a regex with nested braces and a star', 'DELETE', '/api/:p{m{1}cp.*}'],
+    ['an optional parameter', 'DELETE', '/api/:x?'],
+    ['two parameters', 'GET', '/:a/:b'],
+    ['a non-standard method', 'PROPFIND', '/api/mcp'],
+    ['a regex that does not match', 'POST', '/api/:x{[0-9]+}'],
+    ['a deeper path', 'POST', '/api/mcp/:x'],
+    ['a longer segment', 'POST', '/api/mcps'],
+  ])('judges %s the way Hono dispatches it', async (_name, method, pattern) => {
+    let dispatched = false;
+    const bare = new Hono();
+    bare.on(method, pattern, (c) => ((dispatched = true), c.text('mine')));
+    await bare.request(`${A}/api/mcp`, { method });
+
+    const app = new Hono();
+    app.on(method, pattern, (c) => c.text('mine'));
+    const mount = () => mountOperations(app, operations, stub);
+    if (dispatched) expect(mount).toThrow(/is registered before the MCP endpoint/);
+    else expect(mount).not.toThrow();
   });
 
-  it('leaves middleware and catch-alls alone: they meet every path', async () => {
+  it('dispatches every refused shape in the table above (the oracle is not vacuous)', async () => {
+    let hits = 0;
+    for (const [method, pattern] of [
+      ['POST', '/api/:ticket-id'],
+      ['POST', '/:p{api/mcp}'],
+      ['DELETE', '/api/:p{m{1}cp.*}'],
+      ['PROPFIND', '/api/mcp'],
+    ] as const) {
+      const bare = new Hono();
+      bare.on(method, pattern, (c) => (hits++, c.text('mine')));
+      await bare.request(`${A}/api/mcp`, { method });
+    }
+    expect(hits).toBe(4);
+  });
+
+  it('refuses a second mountOperations on the same base: the first endpoint already answers there', () => {
+    const app = new Hono();
+    mountOperations(app, operations, stub);
+    expect(() => mountOperations(app, operations, stub)).toThrow(/is registered before the MCP endpoint/);
+    // Twin: a second mount under another base has an endpoint of its own.
+    expect(() => mountOperations(app, operations, stub, { basePath: '/v2' })).not.toThrow();
+  });
+
+  it('does not judge what meets every path: use, all, mount, OPTIONS and * catch-alls', async () => {
     const app = new Hono();
     let seen = 0;
     app.use('/api/mcp', async (_c, next) => {
@@ -267,7 +308,15 @@ describe('nothing but the MCP endpoint answers at its path', () => {
       await next();
     });
     app.get('*', () => new Response('spa'));
+    app.post('/api/*', async (_c, next) => next());
+    app.options('/api/mcp', () => new Response(null, { status: 204 }));
+    app.mount('/legacy', () => new Response('legacy'));
     expect(() => mountOperations(app, operations, stub)).not.toThrow();
+    // Not judged means not refused at mount — an `app.all` there would answer in the endpoint's
+    // place, which the docs state; it still gets no channel, so no delegated token.
+    const withAll = new Hono();
+    withAll.all('/api/mcp', () => new Response('mine'));
+    expect(() => mountOperations(withAll, operations, stub)).not.toThrow();
     const res = await app.request(`${A}/api/mcp`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -289,23 +338,21 @@ describe('nothing but the MCP endpoint answers at its path', () => {
     app.patch('/api/:slug', handler);
     app.delete('/api/mcp', handler);
     app.get('/api/mcp', handler);
-    for (const method of ['PUT', 'PATCH', 'DELETE', 'GET']) {
+    app.on(['PROPFIND', 'QUERY', 'REPORT'], '/api/mcp', handler);
+    app.options('/api/mcp', () => new Response(null, { status: 204 }));
+    for (const method of ['PUT', 'PATCH', 'DELETE', 'GET', 'HEAD', 'PROPFIND', 'QUERY', 'REPORT']) {
       expect((await app.request(`${A}/api/mcp`, { method })).status).toBe(405);
     }
     expect(ran).toBe(0);
+    // Twin: OPTIONS passes on, to whatever answers a preflight.
+    expect((await app.request(`${A}/api/mcp`, { method: 'OPTIONS' })).status).toBe(204);
   });
 
-  it('reads Hono patterns the way Hono does', () => {
-    expect(patternAnswers('/api/mcp', '/api/mcp')).toBe(true);
-    expect(patternAnswers('/api/:x', '/api/mcp')).toBe(true);
-    expect(patternAnswers('/api/:x{[0-9]+}', '/api/mcp')).toBe(false);
-    expect(patternAnswers('/api/:x?', '/api/mcp')).toBe(true);
-    expect(patternAnswers('/api/mcp/:x?', '/api/mcp')).toBe(true);
-    expect(patternAnswers('/:a/:b', '/api/mcp')).toBe(true);
-    expect(patternAnswers('/api/mcp/:x', '/api/mcp')).toBe(false);
-    expect(patternAnswers('/api/mcps', '/api/mcp')).toBe(false);
-    expect(patternAnswers('/api/*', '/api/mcp')).toBe(false);
-    expect(patternAnswers('*', '/api/mcp')).toBe(false);
+  it('judges an operation the way it judges a hand-written route', () => {
+    expect(routeAnsweringAt([{ method: 'POST', path: '/api/:x' }], '/api/mcp')).toEqual({ method: 'POST', path: '/api/:x' });
+    expect(routeAnsweringAt([{ method: 'ALL', path: '/api/mcp' }], '/api/mcp')).toBeUndefined();
+    expect(routeAnsweringAt([{ method: 'OPTIONS', path: '/api/mcp' }], '/api/mcp')).toBeUndefined();
+    expect(routeAnsweringAt([{ method: 'GET', path: '/api/*' }], '/api/mcp')).toBeUndefined();
   });
 });
 

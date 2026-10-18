@@ -1,3 +1,6 @@
+import { TrieRouter } from 'hono/router/trie-router';
+import { splitRoutingPath } from 'hono/utils/url';
+
 /**
  * What the MCP mount and the operation routes share to keep a delegated token (#1824) at the
  * one endpoint that holds it to its scope. Internal: not re-exported from the package.
@@ -30,33 +33,33 @@ export function carriesAct(authorization: string | undefined): boolean {
   return bearerClaims(authorization)?.['act'] !== undefined;
 }
 
+/** A route as Hono registered it: what `app.routes` holds. */
+export interface RegisteredRoute {
+  readonly method: string;
+  readonly path: string;
+}
+
 /**
- * Whether a route registered at Hono `pattern` answers a request for the concrete `path`.
+ * The first of `routes` that would answer a request for the concrete `path`, by any method but
+ * `OPTIONS` — judged by Hono's own router and Hono's own reading of a pattern, so no grammar
+ * here can drift from what Hono dispatches.
  *
- * Literal segments, `:param`, `:param{regex}` and a trailing optional `:param?` are read as
- * Hono reads them. A pattern with a `*` wildcard is NOT judged, and answers false: that is a
- * catch-all or a middleware (`app.use`), which every path meets and none of which is a
- * handler written for this one.
+ * Not judged, and never returned: a route registered for every method (`app.use`, `app.all`,
+ * `app.mount`, which Hono records alike as `ALL`), an `OPTIONS` route (a CORS preflight), and
+ * a catch-all pattern with a `*` segment. Each meets every path; none is a handler written
+ * for this one.
  */
-export function patternAnswers(pattern: string, path: string): boolean {
-  if (pattern.replace(/\{[^}]*\}/g, '').includes('*')) return false;
-  const segments = pattern.split('/');
-  const last = segments[segments.length - 1] ?? '';
-  // An optional last parameter matches with and without its segment.
-  if (/^:[A-Za-z0-9_]+(\{[^}]*\})?\?$/.test(last)) {
-    const required = [...segments.slice(0, -1), last.slice(0, -1)].join('/');
-    return patternAnswers(required, path) || patternAnswers(segments.slice(0, -1).join('/') || '/', path);
+export function routeAnsweringAt(routes: readonly RegisteredRoute[], path: string): RegisteredRoute | undefined {
+  for (const route of routes) {
+    if (route.method === 'ALL' || route.method === 'OPTIONS') continue;
+    if (splitRoutingPath(route.path).includes('*')) continue;
+    const probe = new TrieRouter<true>();
+    try {
+      probe.add(route.method, route.path, true);
+    } catch {
+      continue; // a pattern Hono itself would not register
+    }
+    if (probe.match(route.method, path)[0].length > 0) return route;
   }
-  const source = segments
-    .map((seg) => {
-      const param = seg.match(/^:[A-Za-z0-9_]+(?:\{(.+)\})?$/);
-      if (!param) return seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return param[1] === undefined ? '[^/]+' : `(?:${param[1]})`;
-    })
-    .join('/');
-  try {
-    return new RegExp(`^${source}$`).test(path);
-  } catch {
-    return false;
-  }
+  return undefined;
 }

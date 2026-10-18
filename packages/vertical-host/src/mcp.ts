@@ -87,7 +87,7 @@ import { PermissionDenied, type ScopeStub } from '@substrat-run/kernel';
 import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, requestIdOf, type InvocationRecord } from './invocation-log.js';
 import { classifyError, messageOf, problemResponse } from './errors.js';
 import { observeOutputFields, outputWalkOf, type OutputWalk } from './field-coverage.js';
-import { bearerClaims, carriesAct, patternAnswers } from './mcp-guard.js';
+import { bearerClaims, carriesAct, routeAnsweringAt } from './mcp-guard.js';
 
 /** What `invocationLog` handed this request (#1746, #1237). Both absent without the middleware. */
 interface McpInvocation {
@@ -643,9 +643,11 @@ function statusOf(err: unknown): number | undefined {
  * request to the MCP endpoint, because this mount is what holds it to its scope. So a route
  * registered BEFORE it that would answer here instead — an operation at `/mcp`, a
  * hand-written `app.post('/api/mcp', …)`, a `/:slug` parameter route — refuses the mount,
- * loudly, at boot. A route registered AFTER it never runs here: every method but `OPTIONS`
- * is answered by this mount. Middleware and `*` catch-alls are not judged; they meet every
- * path and are not handlers written for this one.
+ * loudly, at boot, judged by Hono's own router (`routeAnsweringAt`). A route registered AFTER
+ * it never runs here: every method but `OPTIONS` is answered by this mount. Not judged:
+ * `app.use`, `app.all` and `app.mount` (Hono records all three alike), `OPTIONS` routes, and
+ * `*` catch-alls — they meet every path and are not handlers written for this one. The
+ * channel (`mcpChannelOf`) is what keeps a delegated token away from them all the same.
  */
 export function mountMcp(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -656,9 +658,7 @@ export function mountMcp(
 ): { path: string; tools: number } {
   const tools = mcpToolsOf(operations);
   const path = options.path ?? mcpEndpointPath(options.basePath);
-  const shadow = (app.routes as readonly { method: string; path: string }[]).find(
-    (r) => r.method !== 'ALL' && patternAnswers(r.path, path),
-  );
+  const shadow = routeAnsweringAt(app.routes, path);
   if (shadow) {
     throw new Error(
       `mountMcp: ${shadow.method} ${shadow.path} is registered before the MCP endpoint and would answer at ${path} ` +
@@ -1041,9 +1041,13 @@ export function mountMcp(
 
   // No server-initiated stream, so no SSE to open. The transport allows saying so.
   app.get(path, (c) => c.json(rpcError(null, -32601, 'This server opens no event stream'), 405));
-  // #1824: and every other method is this mount's too, so a route registered after it can
-  // never answer here (see the header). `OPTIONS` is left to a CORS middleware.
-  app.on(['PUT', 'PATCH', 'DELETE'], path, (c) => c.json(rpcError(null, -32601, 'Only POST is served here'), 405));
+  // #1824: and every other method is this mount's too — any verb a client sends, standard or
+  // not — so a route registered after it can never answer here (see the header). `OPTIONS`
+  // passes on, to a CORS middleware.
+  app.all(path, async (c, next) => {
+    if (c.req.method === 'OPTIONS') return next();
+    return c.json(rpcError(null, -32601, 'Only POST is served here'), 405);
+  });
 
   return { path, tools: tools.length };
 }

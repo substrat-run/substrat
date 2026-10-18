@@ -48,7 +48,7 @@ import { classifyError } from './errors.js';
 import { observeOutputFields, outputWalkOf } from './field-coverage.js';
 import { defOf, transparentInner } from './zod-structural.js';
 import { mountMcp, type MountMcpOptions } from './mcp.js';
-import { carriesAct, patternAnswers } from './mcp-guard.js';
+import { carriesAct, routeAnsweringAt } from './mcp-guard.js';
 
 export type ResolveStub = (c: Context) => Promise<ScopeStub>;
 
@@ -378,7 +378,7 @@ export function mountOperations(
   const mcpPath = options.mcp === false ? undefined : (options.mcp?.path ?? mcpEndpointPath(base));
 
   for (const [name, op] of declared) {
-    if (mcpPath !== undefined && patternAnswers(`${base}${toHonoPath(op.http.path)}`, mcpPath)) {
+    if (mcpPath !== undefined && routeAnsweringAt([{ method: op.http.method, path: `${base}${toHonoPath(op.http.path)}` }], mcpPath)) {
       throw new Error(
         `mountOperations: '${name}' is bound to ${op.http.method} ${op.http.path}, which answers at the MCP endpoint ` +
           `${mcpPath} — the endpoint must be the only route there; move the operation, or mount with \`mcp: false\``,
