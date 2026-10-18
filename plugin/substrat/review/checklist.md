@@ -94,7 +94,9 @@ gates: `pnpm lint:model --check` · `pnpm lint:api --check` · `pnpm lint:client
   data and refuses an undeclared loss. `pnpm lint:migration-ledger --base origin/main`
   refuses a migration the base branch shipped that is now edited, removed or renumbered
   (each package's `MIGRATIONS.md` records the digest a scope checks).
-- *Reader:* a declared `discards` whose reason does not match
+- *Reader:* a shipped migration edited, removed or renumbered, wherever `lint:migration-ledger`
+  is not available (a scaffolded project has no ledger, so read the diff of every migration
+  file against the base branch); a declared `discards` whose reason does not match
   what the SQL does (a declaration is not a pass). This is the **migration-diff
   checkpoint**: present the diff plainly, and stop there.
 
