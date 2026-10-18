@@ -103,6 +103,9 @@ function desk(opts: { resolve?: (c: Context) => void | Promise<void>; holds?: re
   return { app, invoked };
 }
 
+/** The tools whose input is a `ticketId`. */
+const TAKES_TICKET = new Set(['desk_get-ticket', 'desk_close-ticket']);
+
 /** One `tools/call` (or several, as a batch) at desk A's endpoint. */
 async function callTools(app: Hono, names: string | string[], authorization?: string) {
   const list = Array.isArray(names) ? names : [names];
@@ -110,7 +113,7 @@ async function callTools(app: Hono, names: string | string[], authorization?: st
     jsonrpc: '2.0',
     id: i + 1,
     method: 'tools/call',
-    params: { name, arguments: name.includes('ticket') && name !== 'desk_list-tickets' ? { ticketId: 't1' } : {} },
+    params: { name, arguments: TAKES_TICKET.has(name) ? { ticketId: 't1' } : {} },
   }));
   const res = await app.request(`${A}/api/mcp`, {
     method: 'POST',
