@@ -117,12 +117,15 @@ gates: `pnpm typecheck` · `npm run typecheck` · judgement
 
 ### S7 · Secrets stay out of source and logs: blocking
 
-- *Gate:* none that is complete.
-- *Reader:* a literal token, key or connection string; a secret reaching a log line, an
+- *Gate:* `pnpm lint:secret-literals` refuses a credential whose issuer gives it a shape (a
+  PEM or JWK private key, a provider token prefix, a connection URL with a password). A
+  secret with no shape gets past it.
+- *Reader:* a literal secret with no recognisable shape (an HMAC key, a password, an API
+  token without a prefix); a secret reaching a log line, an
   error, an event payload or a response; a secret name in public text (a PR description, a
   comment).
 
-gates: judgement
+gates: `pnpm lint:secret-literals` · judgement
 
 ### S8 · A new operation has an acceptance test: advisory
 

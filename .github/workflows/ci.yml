@@ -47,6 +47,13 @@ jobs:
       # a commit that removes one scratch importer and leaves another adds nothing and
       # passes. This reads the FILE.
       - run: pnpm run lint:lockfile
+      # No credential is written into this public repo as a literal (#2365): the shapes a credential
+      # takes when its issuer gives it one (a PEM or JWK private key, a provider token prefix, a
+      # connection URL with a password). Prints file:line and the shape's name, never the value.
+      # An intended literal (the dev issuer's key) is listed in the tool with its reason. Reads
+      # files only, so it runs before the build. Held by its own fixtures first.
+      - run: pnpm test:secret-literals
+      - run: pnpm lint:secret-literals
       # Before the build, because a cycle makes the build's result a coin flip:
       # pnpm cannot order one, so it builds the members in parallel and whether
       # that passes depends on which tsc wins. Reading the declared graph gives
