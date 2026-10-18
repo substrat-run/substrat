@@ -90,8 +90,11 @@ const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typ
 
 /** Keywords whose keys are NAMES (a field called `title`), never keywords to strip. */
 const NAME_MAPS = new Set(['properties', 'patternProperties', '$defs', 'definitions', 'schemas', 'responses', 'content']);
-/** Keywords whose value is DATA (an enum member, a constant): compared verbatim, nothing stripped. */
-const LITERALS = new Set(['enum', 'const']);
+/**
+ * Keywords whose value is DATA (an enum member, a constant, a default): compared verbatim — nothing
+ * stripped, nothing sorted. A default of `{ enum: ['a', 'b'] }` is a value, not a schema.
+ */
+const LITERALS = new Set(['enum', 'const', 'default']);
 /**
  * Keywords whose array value is a SET: order carries no meaning, so it is sorted before comparing.
  * The emitter writes `required` and `enum` in declaration order, so moving a field or a member
@@ -278,7 +281,8 @@ function compareSchema(
 
   // `default` is what a caller who omits the value gets: changed, added or dropped, every such
   // caller now sees different behaviour without having broken any contract — minor.
-  if (canon(base.default, false) !== canon(head.default, false)) {
+  // Under its key, so the value is walked as the data it is (LITERALS), never as a schema.
+  if (canon({ default: base.default }, false) !== canon({ default: head.default }, false)) {
     push('minor', path, `default changed from ${canon(base.default, false)} to ${canon(head.default, false)}`);
   }
   // `readOnly` is never sent, `writeOnly` is never returned. Each narrows one direction: a

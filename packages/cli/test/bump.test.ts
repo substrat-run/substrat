@@ -502,6 +502,20 @@ describe('default, readOnly, writeOnly — behaviour, not documentation', () => 
     expect(oas((d) => (name(d).description = 'Untitled when omitted')).bump).toBe('patch');
   });
 
+  it('a default is data: a schema-shaped value inside it is compared verbatim, not as a schema', () => {
+    // A default whose value happens to look like a schema: reordering it changes the default.
+    expect(oas((d) => (name(d).default = { enum: ['a', 'b'] })).bump).toBe('minor');
+    const base = clone(OAS);
+    name(base).default = { enum: ['a', 'b'] };
+    const head = clone(base);
+    name(head).default = { enum: ['b', 'a'] };
+    expect(classifyOpenApi(JSON.stringify(base), JSON.stringify(head)).bump).toBe('minor');
+    name(head).default = { enum: ['a', 'b'], description: 'x' };
+    expect(classifyOpenApi(JSON.stringify(base), JSON.stringify(head)).bump).toBe('minor');
+    // The twin: the same default restated is nothing.
+    expect(classifyOpenApi(JSON.stringify(base), JSON.stringify(base)).bump).toBe('none');
+  });
+
   it("a default changed in a real artifact is minor (ticket0's list order)", () => {
     const text = readFileSync(join(__dirname, '..', '..', '..', 'demos', 'ticket0', 'openapi.json'), 'utf8');
     const doc = JSON.parse(text) as Json;
