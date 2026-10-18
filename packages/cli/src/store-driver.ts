@@ -27,9 +27,8 @@ function base64(bytes: Uint8Array): string {
   return btoa(text);
 }
 
-/** How deep, and how many files, a driver's package may go: past either it is not one package. */
+/** How deep a driver's tree may go: past it, it is not one package. How many files is the release's own limit. */
 const MAX_DEPTH = 16;
-const MAX_FILES = 2000;
 
 /**
  * Every file under `dir`, by its path relative to it, `__pycache__` and `.pyc` left out. A symbolic
@@ -47,7 +46,9 @@ export function packedFilesOf(dir: string): string[] {
         if (name !== '__pycache__') walk(path, depth + 1);
       } else if (!name.endsWith('.pyc')) {
         out.push(relative(dir, path).split(sep).join('/'));
-        if (out.length > MAX_FILES) throw new Error(`'${dir}' holds more than ${MAX_FILES} files`);
+        if (out.length > STORE_RELEASE_MAX_MODULES) {
+          throw new Error(`'${dir}' holds more than ${STORE_RELEASE_MAX_MODULES} files; a release carries at most ${STORE_RELEASE_MAX_MODULES} modules`);
+        }
       }
     }
   };
@@ -82,16 +83,12 @@ export function sourceCommitOf(dir: string, files: readonly string[]): string {
 export function packStoreDriverDir(dir: string, entry: string, sourceCommit: string): StoreDriverReleaseUpload {
   const files = packedFilesOf(dir);
   const packages = new Set<string>();
-  for (const path of files) {
-    const classified = classifyPythonStoreModule(path);
-    if (classified.kind === 'driver') packages.add(classified.packageName);
-  }
+  const classes = new Map(files.map((path) => [path, classifyPythonStoreModule(path)] as const));
+  for (const classified of classes.values()) if (classified.kind === 'driver') packages.add(classified.packageName);
   if (packages.size !== 1) throw new Error(`'${dir}' must hold exactly one driver_ package, not ${[...packages].join(', ') || 'none'}`);
-  if (!files.includes(entry)) throw new Error(`'${dir}' has no ${entry}`);
-  if (classifyPythonStoreModule(entry).kind !== 'driver') throw new Error(`'${entry}' is not a driver module`);
-  if (files.length > STORE_RELEASE_MAX_MODULES) {
-    throw new Error(`the package is ${files.length} modules; a release carries at most ${STORE_RELEASE_MAX_MODULES}`);
-  }
+  const entryClass = classes.get(entry);
+  if (!entryClass) throw new Error(`'${dir}' has no ${entry}`);
+  if (entryClass.kind !== 'driver') throw new Error(`'${entry}' is not a driver module`);
   let total = 0;
   const modules = files.map((name) => {
     const content = readFileSync(join(dir, name));
