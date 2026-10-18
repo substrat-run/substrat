@@ -119,10 +119,12 @@ export function lifecyclesOf(model) {
  * A helper nothing calls is not covered.
  */
 export function unguardedWrites(files, lifecycles) {
-  // `UPDATE <table>` (quoted or not), then the SET list up to its end, naming the field.
+  // `UPDATE <table>` (quoted or not), then the SET list up to its end, naming the field. The list
+  // ends at WHERE or RETURNING, so a state named in the condition is a read; quotes do not end it,
+  // so a literal before the column (`SET note = 'x', status = ?`) does not hide the write.
   const writes = lifecycles.map((l) => ({
     ...l,
-    re: new RegExp(String.raw`\bUPDATE\s+["\x60\[]?${escape(l.table)}["\x60\]]?(?:\s+AS\s+\w+)?\s+SET\b[^;'"\x60]*?\b${escape(l.field)}\s*=`, 'gi'),
+    re: new RegExp(String.raw`\bUPDATE\s+["\x60\[]?${escape(l.table)}["\x60\]]?(?:\s+AS\s+\w+)?\s+SET\b(?:(?!\b(?:WHERE|RETURNING)\b)[^;\x60])*?\b${escape(l.field)}\s*=`, 'gi'),
   }));
   const out = [];
   for (const { path, text: source } of files) {

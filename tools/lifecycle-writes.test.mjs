@@ -151,3 +151,19 @@ function moveTo(ctx, row, state) {
 function ship(ctx, row) { assertTransition(lc, 'order', row.status, 'shop/ship'); moveTo(ctx, row, 'shipped'); }`;
   assert.deepEqual(at(text), []);
 });
+
+test('a state named only in the WHERE clause is a read, not a write', () => {
+  const text = `
+function rename(ctx, row) {
+  ctx.sql.exec('UPDATE shop_orders SET title = ?, updated_at = ? WHERE id = ? AND status = ?', [row.title, ctx.now(), row.id, 'open']);
+}`;
+  assert.deepEqual(at(text), []);
+});
+
+test('a SQL string literal before the state column does not hide the write', () => {
+  const text = `
+function close(ctx, row) {
+  ctx.sql.exec("UPDATE shop_orders SET resolution = 'fixed', status = 'closed' WHERE id = ?", [row.id]);
+}`;
+  assert.deepEqual(at(text), [3]);
+});
