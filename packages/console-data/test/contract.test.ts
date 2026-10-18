@@ -19,6 +19,12 @@ describe('the contract suite bites', () => {
     });
   }
 
+  it('a filtered page in the wrong order is reported by the ids it returned, not a count', async () => {
+    const liar = LIARS.find((l) => l.lie === 'orders a filtered page oldest first')!;
+    const outcome = (await runContract(liar.harness)).find((o) => o.name === 'requests.where');
+    expect(outcome?.error).toMatch(/returned inv-\d{3},.*; want inv-\d{3},/);
+  });
+
   it('an honest source fails nothing (the positive twin of every liar)', async () => {
     for (const harness of [localHarness(), localHarness({ tail: false }), headOnlyHarness()]) {
       expect((await runContract(harness)).filter((o) => !o.ok)).toEqual([]);

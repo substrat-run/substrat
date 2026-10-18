@@ -227,6 +227,18 @@ export const LIARS: readonly { readonly lie: string; readonly fails: string; rea
     ),
   },
   {
+    lie: 'orders a filtered page oldest first',
+    fails: 'requests.where',
+    harness: wrapLocal((s) =>
+      lie(s, {
+        async queryRequests(q) {
+          const page = await s.queryRequests(q);
+          return q.where ? { ...page, requests: [...page.requests].reverse() } : page;
+        },
+      }),
+    ),
+  },
+  {
     lie: 'fills a field it does not declare',
     fails: 'requests.unfilled-fields-are-blank',
     harness: headOnlyHarness((s, world) =>

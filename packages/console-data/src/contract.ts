@@ -235,7 +235,7 @@ export const CONTRACT_CHECKS: readonly ContractCheck[] = [
           const query = { ...WORLD_ALL, where: { [key]: chosen } };
           const got = await everyPage(source, query);
           const want = ids(matching(expected, query));
-          if (!same(ids(got), want)) fail(`where ${key} in ${chosen.join('|')} returned ${got.length} requests; want ${want.length}`);
+          if (!same(ids(got), want)) fail(`where ${key} in ${chosen.join('|')} returned ${ids(got).join(',')}; want ${want.join(',')}`);
         }
       }
     },
