@@ -133,9 +133,21 @@ A gate result counts as *script-confirmed* in the sense of D4 only when all of t
    versions, with their integrity checked — engine table ownership included. Two inputs need
    saying outright:
    - *What a gate judges.* The set of files boundary-lint judges is everything reachable from the
-     vertical's module registrations, as the platform resolves that graph from the declared entry.
-     It is not a fixed set of directories, and not the tree's own statement of which directories
-     count as module code.
+     vertical's module registrations. It is not a fixed set of directories, and not the tree's own
+     statement of which directories count as module code. Three rules make "reachable" mean
+     something:
+     - *The edges.* Reachability follows static imports, re-exports and type-only imports, under
+       resolution rules that are the platform's (path mapping, package `imports`/`exports`,
+       aliases), never the tree's. An edge the platform cannot resolve statically — a computed
+       `import()`, a `require` of an expression, code built at run time — is reported as a finding,
+       and the boundaries result for that vertical is **not clean**.
+     - *The entry.* The entry the graph starts from is declared by the tree, so it is only as good
+       as its tie to what runs. The judged entry must be the one the deployed bundle was built
+       from, which only the controlled build (D5 C) can show. Under C, the judged set is the set of
+       modules the controlled build actually bundles. Under D5 A (phases 1–3), the judged set is
+       taken from the declared entry, and the result is advisory and says so.
+     - *The compiler's input.* The compiler gate's `include`/`files` are the same reachable set,
+       not the tree's own `tsconfig` selection.
    - *What steers the compiler.* Suppressions in the source under review (`@ts-ignore`,
      `@ts-expect-error`, `@ts-nocheck`), augmentation of a platform package's module declarations,
      and type declarations supplied by third-party packages all change the compiler's verdict. They
@@ -143,7 +155,10 @@ A gate result counts as *script-confirmed* in the sense of D4 only when all of t
 
    A configuration or hatch that the change itself adds or widens — a gate's own, or one of the
    compiler hatches above — is reported as a finding of its own and is never read as clean for the
-   rule it affects.
+   rule it affects. A **full-tree review** (the first review of a vertical, or one whose diff base
+   has expired, Q3b) has no change to measure against, so it reports **every** hatch and every
+   non-default configuration in the tree as a finding; none is honoured silently because it was
+   there before.
 3. **Reading before customer code runs.** Gates that read source as text run before any customer
    code executes, in a filesystem that step never shares, with only platform-verified packages
    present. Not every text gate can run before an install: boundary-lint's engine-ownership rule
@@ -163,7 +178,9 @@ A gate result counts as *script-confirmed* in the sense of D4 only when all of t
    record (§4).
 
 The archive itself is the first customer input the runner parses, so the **unpacker** (§4) holds
-no credential and extracts under these rules:
+no credential: its read access is a single-use handle to the review's archive and its base archive,
+issued per review and expiring with it. Before extracting, it checks each archive's digest against
+the digest the version record holds (D5) and refuses a mismatch. It extracts under these rules:
 
 - no absolute paths and no `..` entries;
 - no symlinks or hardlinks at all, which also rules out writing through a link an earlier entry
@@ -240,7 +257,7 @@ None of the four writes to the customer's code, the version record or any scope.
 2. **The customer's text is data, never instructions.** The change, its comments, its file names,
    its commit messages and anything a customer-owned script prints are written by the party being
    reviewed.
-3. **Each part can do one thing.** The unpacker parses and holds only its read handles; the gate half executes
+3. **Each part can do one thing.** The unpacker parses and holds no credential, only a read handle to its archives; the gate half executes
    and holds nothing; the reader half reads and executes nothing; the assembler writes one record
    (Q6c).
 4. **What blocks is reproducible.** A blocking finding is one anyone can re-run the platform's
@@ -387,14 +404,16 @@ What every option shares:
 - *Deletion:* both are deleted when the vertical is deleted and when the tenant is reaped (#36).
 
 The options differ in how long the archive and the record are kept. Channel history is append-only
-and is removed only with the vertical, so "while the version is in channel history" never ends; the
-window is measured from the version's last *pointer* instead.
+and is removed only with the vertical, so "while the version is in channel history" never ends. A
+version can also be served with no channel pointing at it, through a scope pinned to it or a preview
+bound to it. So the window is measured from the moment **nothing serves the version**: no channel
+points at it, no scope is pinned to it and no preview is bound to it.
 
-- **A. A window after the version stops being pointed at.** Kept while any channel points at the
-  version, and for 180 days after the last channel stops pointing at it (the window the platform
-  already uses for issues and findings). A version no channel ever points at — a preview, or a push
-  never promoted — is kept for 30 days from the push, unless a channel points at it within that
-  time, in which case the first rule applies from then on.
+- **A. A window after the version stops being served.** Kept while anything serves the version,
+  and for 180 days after the last channel pointer, scope pin or preview binding goes (the window
+  the platform already uses for issues and findings). A version nothing ever serves — a push never
+  promoted, bound or previewed — is kept for 30 days from the push, unless something comes to serve
+  it within that time, in which case the first rule applies from then on.
 - **B. For the life of the version.** Kept until the vertical is deleted or the tenant is reaped,
   so every version a channel ever served can still be diffed, rebuilt (once C exists) and shown
   with its review.
@@ -408,7 +427,7 @@ window is measured from the version's last *pointer* instead.
   days, like every other model call. Quotes are bounded (one line, a fixed character cap) and pass
   the same redaction step the assistant RFC proposes for tenant text before they are stored; a quote
   that survived redaction is erased with its record under subject erasure, since a record has no
-  other copy. *If wrong:* under A, a rollback to a version unpointed for more than 180 days finds no
+  other copy. *If wrong:* under A, a rollback to a version unserved for more than 180 days finds no
   archive, so its review cannot be shown or its tree rebuilt, and the next review is full-tree; B
   avoids that at the cost of holding every served version's source for the vertical's whole life.
   Without C we cannot re-read the model's reasoning behind a disputed finding, only the finding and
@@ -618,8 +637,8 @@ sub-question) that ships sooner; the cost of B is the gap it leaves.
     the diff, the checklist and procedure, and the gate half's results. Nothing in any scope: no
     tenant data, no vertical secret or env value, no other vertical's code, no other tenant's
     anything.
-  - **What each part holds:** the unpacker holds only single-use read handles for the two
-    archives, issued per review and expiring with it. The gate half holds nothing; its tree is
+  - **What each part holds:** the unpacker holds no credential; its read access is a single-use
+    handle to the two archives, issued per review and expiring with it (§2.2). The gate half holds nothing; its tree is
     handed to it by the unpacker. The reader half never sees a model
     credential: the assembler's model host makes the call. Only the **assembler** holds a write
     credential, to one endpoint that accepts one review record for the review id it was issued,
@@ -725,7 +744,7 @@ Where the reviewed change comes from is decided: §2, D5.
 | Q1c | Per-review budget | A + B: refuse before the call, hard cap during it; per-tenant spend limit in the guard; never shown as clean | nothing |
 | Q2 | Enable surface | C: entitlement per tenant (key reserved, staff-granted in phases 1–2), switch per vertical, held by tenant owner and admin | Q1b |
 | Q3a | Surfaces | A, then B, then C; D last and optional; not the console | A and C on D5 |
-| Q3b | Stored and retention | A: archive only where review is on, placed at upload; kept while a channel points at the version, then 180 days (30 days from push if never pointed at); no transcript; full-tree review once the base has expired; every non-run recorded | Q2, Q3d |
+| Q3b | Stored and retention | A: archive only where review is on, placed at upload; kept while anything serves the version (channel, scope pin or preview), then 180 days (30 days from push if never served); no transcript; full-tree review once the base has expired; every non-run recorded | Q2, Q3d |
 | Q3c | Path exclusions | C: platform and customer exclusions; customer globs make a review `partial` | Q2 |
 | Q3d | Jurisdiction | B: every part follows it; evaluated at upload and at review start | regional placements (§9) |
 | Q3e | Model path | A: the HTTP gateway row only | Q1a |
