@@ -341,7 +341,8 @@ describe('nothing but the MCP endpoint answers at its path', () => {
     app.on(['PROPFIND', 'QUERY', 'REPORT'], '/api/mcp', handler);
     app.options('/api/mcp', () => new Response(null, { status: 204 }));
     for (const method of ['PUT', 'PATCH', 'DELETE', 'GET', 'HEAD', 'PROPFIND', 'QUERY', 'REPORT']) {
-      expect((await app.request(`${A}/api/mcp`, { method })).status).toBe(405);
+      const res = await app.request(`${A}/api/mcp`, { method });
+      expect([method, res.status, res.headers.get('allow')]).toEqual([method, 405, 'POST']);
     }
     expect(ran).toBe(0);
     // Twin: OPTIONS passes on, to whatever answers a preflight.

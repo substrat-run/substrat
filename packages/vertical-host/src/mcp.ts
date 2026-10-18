@@ -1039,14 +1039,16 @@ export function mountMcp(
     return c.json(Array.isArray(body) ? replies : (replies[0] as object));
   });
 
+  // A 405 names the methods that are served (RFC 9110 §15.5.6): `POST` is the only one.
+  const allow = { Allow: 'POST' };
   // No server-initiated stream, so no SSE to open. The transport allows saying so.
-  app.get(path, (c) => c.json(rpcError(null, -32601, 'This server opens no event stream'), 405));
+  app.get(path, (c) => c.json(rpcError(null, -32601, 'This server opens no event stream'), 405, allow));
   // #1824: and every other method is this mount's too — any verb a client sends, standard or
   // not — so a route registered after it can never answer here (see the header). `OPTIONS`
   // passes on, to a CORS middleware.
   app.all(path, async (c, next) => {
     if (c.req.method === 'OPTIONS') return next();
-    return c.json(rpcError(null, -32601, 'Only POST is served here'), 405);
+    return c.json(rpcError(null, -32601, 'Only POST is served here'), 405, allow);
   });
 
   return { path, tools: tools.length };
