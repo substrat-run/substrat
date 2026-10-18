@@ -554,7 +554,7 @@ jobs:
         env:
           SCOPE_FILTERS: ${{ steps.scope.outputs.filters }}
           SCOPE_PARTS: ${{ steps.scope.outputs.parts }}
-          NODE_OPTIONS: --require=${{ github.workspace }}/tools/vitest/like-pattern-limit.cjs --require=${{ github.workspace }}/tools/vitest/sql-limits.cjs
+          NODE_OPTIONS: --require=${{ github.workspace }}/tools/vitest/like-pattern-limit.cjs --require=${{ github.workspace }}/tools/vitest/sql-limits.cjs --require=${{ github.workspace }}/tools/vitest/unchecked-operations.cjs
         run: |
           read -ra filters <<< "$SCOPE_FILTERS"
           if [ "${#filters[@]}" -gt 0 ]; then
