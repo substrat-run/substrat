@@ -19,7 +19,7 @@ Today a vertical author can:
 
 A vertical author cannot yet:
 
-- push a vertical that declares `scopeStores`;
+- finish a hosted push that declares `scopeStores`, because the release bytes are not uploaded;
 - reach a store from a hosted deploy.
 
 ## Declaring it
@@ -34,7 +34,8 @@ A hosted vertical's upload carries no store binding. The vertical is given neith
 
 A driver is registered before a push that names it can succeed. There is one store script per
 driver and vertical; its objects keep their identities when the script changes. The upload and
-release machinery is implemented, but the empty driver registry still prevents hosted use.
+release machinery is implemented. The graph driver is registered, and its release is not uploaded,
+so a hosted push that names it still cannot finish the store script.
 
 ### Store releases and vertical deploys are separate
 
