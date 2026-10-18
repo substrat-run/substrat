@@ -52,7 +52,7 @@ import { printInstalls } from './installs.js';
 import { createPreview, deletePreview, listPreviews, formatPreviewLogin, formatPreviews, parseTtlHours } from './preview.js';
 import { writeCiWorkflow, detectDefaultBranch, nextStepsMessage } from './init.js';
 import { writeModelView } from './model.js';
-import { CannotRun, changesetDirFor, checkPackages, computeFor, defaultBase, gitRoot, writeChangeset } from './changeset.js';
+import { CannotRun, changesetCommand } from './changeset.js';
 import {
   listVerticalHostnames,
   bindSurfaceHostname,
@@ -1257,30 +1257,15 @@ function cmdChangeset(): void {
   const booleans = ['check', 'json'];
   const dir = resolvePath(positional(0, booleans) ?? '.');
   try {
-    const root = gitRoot(dir);
-    const changesetDir = changesetDirFor(dir, root);
-    const base = flag('base') ?? defaultBase(changesetDir, root);
-    const { pkg, result } = computeFor(dir, base);
-    if (argv.includes('--json')) {
-      console.log(JSON.stringify({ package: pkg, base, ...result }, null, 2));
-      return;
-    }
-    if (argv.includes('--check')) {
-      const { lines, failed } = checkPackages([{ pkg, result }], changesetDir);
-      for (const l of lines) (failed ? console.error : console.log)(l);
-      if (failed) process.exit(1);
-      return;
-    }
-    if (result.bump === 'none') {
-      console.log(`${pkg}: model.json, openapi.json and PERMISSIONS.md are unchanged against ${base} — no changeset to write`);
-      return;
-    }
-    const file = writeChangeset(changesetDir, pkg, result, flag('summary'));
-    console.log(`✓ ${pkg}: ${result.bump}, computed from ${result.changes.length} change(s) against ${base}`);
-    for (const c of result.changes.filter((c) => c.flagged)) {
-      console.log(`  review: ${c.path} — ${c.detail}`);
-    }
-    console.log(file);
+    const r = changesetCommand(dir, {
+      ...(flag('base') ? { base: flag('base')! } : {}),
+      ...(flag('summary') ? { summary: flag('summary')! } : {}),
+      check: argv.includes('--check'),
+      json: argv.includes('--json'),
+    });
+    for (const l of r.out) console.log(l);
+    for (const l of r.err) console.error(l);
+    if (r.code !== 0) process.exit(r.code);
   } catch (err) {
     if (err instanceof CannotRun) {
       console.error(`error: ${err.message}`);

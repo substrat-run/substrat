@@ -358,3 +358,46 @@ export function writeChangeset(changesetDir: string, pkg: string, result: Classi
   writeFileSync(file, renderChangeset(pkg, result, summary));
   return file;
 }
+
+/**
+ * `substrat changeset`, minus the process: what to print and the exit code. `--check` with
+ * `--json` still RUNS the check and still sets the exit code — the JSON carries the verdict — so
+ * a script that asks for machine output does not silently lose the gate.
+ */
+export function changesetCommand(
+  dir: string,
+  opts: { base?: string; summary?: string; check: boolean; json: boolean },
+): { out: string[]; err: string[]; code: 0 | 1 } {
+  const root = gitRoot(dir);
+  const changesetDir = changesetDirFor(dir, root);
+  const base = opts.base ?? defaultBase(changesetDir, root);
+  const { pkg, result } = computeFor(dir, base);
+  if (opts.check) {
+    const checked = checkPackages([{ pkg, result }], changesetDir);
+    const code = checked.failed ? 1 : 0;
+    if (opts.json) {
+      const verdict = checked.verdicts[0]!;
+      const check = { failed: checked.failed, status: verdict.status, declared: verdict.declared, lines: checked.lines };
+      return { out: [JSON.stringify({ package: pkg, base, ...result, check }, null, 2)], err: [], code };
+    }
+    return checked.failed ? { out: [], err: checked.lines, code } : { out: checked.lines, err: [], code };
+  }
+  if (opts.json) return { out: [JSON.stringify({ package: pkg, base, ...result }, null, 2)], err: [], code: 0 };
+  if (result.bump === 'none') {
+    return {
+      out: [`${pkg}: model.json, openapi.json and PERMISSIONS.md are unchanged against ${base} — no changeset to write`],
+      err: [],
+      code: 0,
+    };
+  }
+  const file = writeChangeset(changesetDir, pkg, result, opts.summary);
+  return {
+    out: [
+      `✓ ${pkg}: ${result.bump}, computed from ${result.changes.length} change(s) against ${base}`,
+      ...result.changes.filter((c) => c.flagged).map((c) => `  review: ${c.path} — ${c.detail}`),
+      file,
+    ],
+    err: [],
+    code: 0,
+  };
+}

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import type { Classification } from '../src/bump.js';
 import {
   CannotRun,
+  changesetCommand,
   changesetDirFor,
   checkPackages,
   computeFor,
@@ -246,6 +247,22 @@ describe('against a git checkout', () => {
     const checked = checkPackages([{ pkg, result: r }], dir);
     expect(checked.failed).toBe(true);
     expect(checked.lines.join('\n')).toMatch(/declares patch, but the change is major/);
+  });
+
+  it('--check with --json still runs the check and sets the exit code; the JSON carries the verdict', () => {
+    removeName();
+    const dir = changesetDirFor(pkgDir, repo);
+    writeFileSync(join(dir, 'hand.md'), `---\n'${PKG}': patch\n---\n\nTidy up.\n`);
+    const red = changesetCommand(pkgDir, { base: 'main', check: true, json: true });
+    expect(red.code).toBe(1);
+    expect(JSON.parse(red.out[0]!)).toMatchObject({ package: PKG, bump: 'major', check: { failed: true, status: 'under-declared' } });
+    // The twin: the same flags over an adequate changeset exit 0.
+    writeFileSync(join(dir, 'hand.md'), `---\n'${PKG}': major\n---\n\nDrop the name.\n`);
+    const green = changesetCommand(pkgDir, { base: 'main', check: true, json: true });
+    expect(green.code).toBe(0);
+    expect(JSON.parse(green.out[0]!)).toMatchObject({ check: { failed: false, status: 'ok' } });
+    // --json alone is a read: no check, exit 0, no verdict.
+    expect(JSON.parse(changesetCommand(pkgDir, { base: 'main', check: false, json: true }).out[0]!).check).toBeUndefined();
   });
 
   it('a malformed override anywhere fails the check, even on a package that is fine', () => {
