@@ -1,4 +1,4 @@
-import type { TraceHead } from '@substrat-run/contracts';
+import { traceHead, type TraceHead } from '@substrat-run/contracts';
 
 /**
  * What a console data source can honestly answer (#2360).
@@ -21,30 +21,8 @@ export type Capability = (typeof CAPABILITIES)[number];
  * always `null` (or `[]` for a list) from it, and a view names them as missing instead of
  * showing a blank column.
  */
-export const REQUEST_FIELDS = [
-  'invocationId',
-  'startedAt',
-  'tenantId',
-  'scopeId',
-  'vertical',
-  'surface',
-  'method',
-  'path',
-  'status',
-  'threw',
-  'durationMs',
-  'level',
-  'operation',
-  'problemCode',
-  'principalKind',
-  'principal',
-  'eventCount',
-  'eventTypes',
-  'entities',
-  'versionId',
-  'specVersion',
-] as const satisfies readonly (keyof TraceHead)[];
-export type RequestField = (typeof REQUEST_FIELDS)[number];
+export const REQUEST_FIELDS: readonly (keyof TraceHead)[] = traceHead.keyof().options;
+export type RequestField = keyof TraceHead;
 
 /**
  * The fields every source fills: the head's non-nullable scalars, which have no "not
@@ -66,19 +44,16 @@ export const REQUIRED_REQUEST_FIELDS = [
  * a list. What a source that fills only `fields` must return.
  */
 export function blankUnfilled(head: TraceHead, fields: readonly RequestField[]): TraceHead {
-  const keep = new Set<string>([...fields, ...REQUIRED_REQUEST_FIELDS]);
   const out: Record<string, unknown> = { ...head };
-  for (const key of REQUEST_FIELDS) {
-    if (keep.has(key)) continue;
-    out[key] = Array.isArray(head[key]) ? [] : null;
-  }
+  for (const key of unfilledFields(fields)) out[key] = Array.isArray(head[key]) ? [] : null;
   return out as unknown as TraceHead;
 }
 
-/** Compile-time proof that `REQUEST_FIELDS` names every head key, so a field added to the head is added here. */
-type MissingHeadKey = Exclude<keyof TraceHead, RequestField>;
-const _everyHeadKey: [MissingHeadKey] extends [never] ? true : MissingHeadKey = true;
-void _everyHeadKey;
+/** The head fields a source that fills `fields` leaves "not recorded": the rest, less the required ones. */
+export function unfilledFields(fields: readonly RequestField[]): RequestField[] {
+  const keep = new Set<RequestField>([...fields, ...REQUIRED_REQUEST_FIELDS]);
+  return REQUEST_FIELDS.filter((f) => !keep.has(f));
+}
 
 export interface SourceCapabilities {
   /**

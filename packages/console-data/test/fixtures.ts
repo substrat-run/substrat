@@ -99,17 +99,11 @@ export const headOnlyHarness = (wrap: (s: ConsoleDataSource, world: ContractWorl
   create: async (world) => ({ source: wrap(headOnlySource(world), world) }),
 });
 
-/** A source with some of its answers replaced; `describe` keeps the original unless replaced. */
+/** A source with some of its answers replaced: every other member forwards to the original. */
 function lie(source: ConsoleDataSource, over: Partial<ConsoleDataSource>): ConsoleDataSource {
-  const out: ConsoleDataSource = {
-    describe: () => source.describe(),
-    artifacts: () => source.artifacts(),
-    queryRequests: (q) => source.queryRequests(q),
-    facets: (q) => source.facets(q),
-    getTrace: (id) => source.getTrace(id),
-  };
-  if (source.tail) out.tail = source.tail.bind(source);
-  return Object.assign(out, over);
+  const forwarded: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(source)) forwarded[key] = typeof value === 'function' ? value.bind(source) : value;
+  return { ...(forwarded as unknown as ConsoleDataSource), ...over };
 }
 
 const declaring = (source: ConsoleDataSource, capabilities: Partial<SourceCapabilities>) => () => {

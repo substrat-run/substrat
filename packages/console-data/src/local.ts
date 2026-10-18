@@ -63,7 +63,7 @@ export function headOf(trace: RequestTrace): TraceHead {
 }
 
 /** A trace with its bound values removed, saying so in `capture`. */
-export function withoutRawPayloads(trace: RequestTrace): RequestTrace {
+function withoutRawPayloads(trace: RequestTrace): RequestTrace {
   return {
     ...trace,
     steps: trace.steps.map((s) => {
@@ -89,10 +89,17 @@ export function createLocalSource(options: LocalSourceOptions): ConsoleDataSourc
   };
   const description: SourceDescription = { id: `local:${options.label}`, kind: 'local', label: options.label, capabilities };
 
+  // Parsed once per record: a buffer appends, and a changed record is a new object.
+  const parsed = new WeakMap<object, RequestTrace | null>();
   const parse = (raw: unknown): RequestTrace | null => {
-    const r = requestTrace.safeParse(raw);
-    if (!r.success) return null;
-    return rawPayloads ? r.data : withoutRawPayloads(r.data);
+    if (typeof raw !== 'object' || raw === null) return null;
+    let trace = parsed.get(raw);
+    if (trace === undefined) {
+      const r = requestTrace.safeParse(raw);
+      trace = r.success ? r.data : null;
+      parsed.set(raw, trace);
+    }
+    return trace;
   };
   const traces = async (): Promise<RequestTrace[]> =>
     (await reader.traces()).map(parse).filter((t): t is RequestTrace => t !== null);
@@ -114,7 +121,10 @@ export function createLocalSource(options: LocalSourceOptions): ConsoleDataSourc
     facets: async (query: RequestQuery) => facetsOf(await heads(), query),
     async getTrace(invocationId: string) {
       // The buffer may hold an id twice (a re-recorded request); the last record is the complete one.
-      return (await traces()).findLast((t) => t.invocationId === invocationId) ?? null;
+      const trace = (await traces()).findLast((t) => t.invocationId === invocationId);
+      if (!trace) return null;
+      // Steps leave the source only here, so this is where bound values are withheld.
+      return rawPayloads ? trace : withoutRawPayloads(trace);
     },
   };
   const subscribe = reader.subscribe?.bind(reader);

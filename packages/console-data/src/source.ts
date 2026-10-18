@@ -34,7 +34,8 @@ export interface ConsoleDataSource {
   tail?(query: Omit<RequestQuery, 'from' | 'to' | 'cursor' | 'limit'>, listener: (request: TraceHead) => void): () => void;
 }
 
-export type SourceKind = 'local' | 'hosted' | 'external';
+export const SOURCE_KINDS = ['local', 'hosted', 'external'] as const;
+export type SourceKind = (typeof SOURCE_KINDS)[number];
 
 export interface SourceDescription {
   /** Stable for the life of the source; a view keys its cache by it. */

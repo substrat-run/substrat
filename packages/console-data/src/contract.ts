@@ -7,9 +7,9 @@ import {
   type TraceStep,
 } from '@substrat-run/contracts';
 import { parsePermissions } from '@substrat-run/model-view';
-import { blankUnfilled, CAPABILITIES, REQUEST_FIELDS, REQUIRED_REQUEST_FIELDS, type RequestField } from './capabilities.js';
-import { facetValueOf, matching } from './query.js';
-import { FACET_KEYS, FACET_TOP, type ConsoleDataSource, type RequestQuery } from './source.js';
+import { blankUnfilled, CAPABILITIES, REQUEST_FIELDS, REQUIRED_REQUEST_FIELDS, unfilledFields, type RequestField, type SourceCapabilities } from './capabilities.js';
+import { countFacet, facetValueOf, matching } from './query.js';
+import { FACET_KEYS, FACET_TOP, SOURCE_KINDS, type ConsoleDataSource, type RequestQuery } from './source.js';
 
 /**
  * The suite every console data source passes (#2360): local, hosted and external alike.
@@ -132,9 +132,9 @@ export function contractWorld(): ContractWorld {
   };
 }
 
-const fail = (message: string): never => {
+function fail(message: string): never {
   throw new ContractViolation(message);
-};
+}
 
 const strictHead = traceHead.strict();
 
@@ -160,6 +160,8 @@ interface Ctx {
   readonly world: ContractWorld;
   /** The world's heads as this source must return them: its unfilled fields blanked. */
   readonly expected: readonly TraceHead[];
+  readonly capabilities: SourceCapabilities;
+  /** `capabilities.requestFields`. */
   readonly fields: readonly RequestField[];
 }
 
@@ -175,9 +177,9 @@ export const CONTRACT_CHECKS: readonly ContractCheck[] = [
     async run({ source }) {
       const { capabilities: c, id, kind } = source.describe();
       if (!id) fail('the source has no id');
-      if (!['local', 'hosted', 'external'].includes(kind)) fail(`unknown kind ${kind}`);
+      if (!SOURCE_KINDS.includes(kind)) fail(`unknown kind ${kind}`);
       for (const cap of CAPABILITIES) if (typeof c[cap] !== 'boolean') fail(`capability ${cap} is not declared`);
-      for (const f of c.requestFields) if (!(REQUEST_FIELDS as readonly string[]).includes(f)) fail(`unknown request field ${f}`);
+      for (const f of c.requestFields) if (!REQUEST_FIELDS.includes(f)) fail(`unknown request field ${f}`);
       for (const f of REQUIRED_REQUEST_FIELDS) if (!c.requestFields.includes(f)) fail(`required request field ${f} is not filled`);
     },
   },
@@ -193,7 +195,7 @@ export const CONTRACT_CHECKS: readonly ContractCheck[] = [
   {
     name: 'requests.unfilled-fields-are-blank',
     async run({ source, fields }) {
-      const unfilled = REQUEST_FIELDS.filter((f) => !fields.includes(f) && !(REQUIRED_REQUEST_FIELDS as readonly string[]).includes(f));
+      const unfilled = unfilledFields(fields);
       for (const h of await everyPage(source, WORLD_ALL)) {
         for (const f of unfilled) {
           const v = h[f];
@@ -254,8 +256,8 @@ export const CONTRACT_CHECKS: readonly ContractCheck[] = [
   },
   {
     name: 'facets.exact-source-never-estimates',
-    async run({ source }) {
-      if (!source.describe().capabilities.exactFacetCounts) return;
+    async run({ source, capabilities }) {
+      if (!capabilities.exactFacetCounts) return;
       for (const q of [WORLD_ALL, { ...WORLD_ALL, where: { level: ['warn'] } }]) {
         if ((await source.facets(q)).estimated) fail('a source declaring exactFacetCounts answered estimated: true');
       }
@@ -271,11 +273,7 @@ export const CONTRACT_CHECKS: readonly ContractCheck[] = [
         if (got.total !== total) fail(`facet total ${got.total}; want ${total}`);
         for (const key of FACET_KEYS) {
           if (!fields.includes(key)) continue;
-          const counts = new Map<string, number>();
-          for (const h of matching(expected, q, key)) {
-            const v = facetValueOf(h, key);
-            if (v !== null) counts.set(v, (counts.get(v) ?? 0) + 1);
-          }
+          const counts = countFacet(expected, q, key);
           for (const { value, count } of got.facets[key] ?? []) {
             if (counts.get(value) !== count) fail(`facet ${key}=${value} counted ${count}; want ${counts.get(value) ?? 0}`);
           }
@@ -293,15 +291,14 @@ export const CONTRACT_CHECKS: readonly ContractCheck[] = [
         if (got === null) fail(`no trace for ${t.invocationId}`);
         const r = requestTrace.safeParse(got);
         if (!r.success) fail(`trace ${t.invocationId} is not a request trace: ${r.error.message}`);
-        if (got?.invocationId !== t.invocationId) fail(`getTrace(${t.invocationId}) returned ${got?.invocationId}`);
+        if (got.invocationId !== t.invocationId) fail(`getTrace(${t.invocationId}) returned ${got.invocationId}`);
       }
       if ((await source.getTrace('inv-none')) !== null) fail('getTrace answered an id the world does not hold');
     },
   },
   {
     name: 'traces.steps-match-capability',
-    async run({ source, world }) {
-      const { traceSteps } = source.describe().capabilities;
+    async run({ source, world, capabilities: { traceSteps } }) {
       for (const t of world.traces) {
         const got = await source.getTrace(t.invocationId);
         const steps = got?.steps ?? [];
@@ -314,8 +311,7 @@ export const CONTRACT_CHECKS: readonly ContractCheck[] = [
   },
   {
     name: 'traces.raw-payloads',
-    async run({ source, world }) {
-      const { rawPayloads, traceSteps } = source.describe().capabilities;
+    async run({ source, world, capabilities: { rawPayloads, traceSteps } }) {
       for (const t of world.traces) {
         const got = await source.getTrace(t.invocationId);
         if (!got) continue;
@@ -328,42 +324,43 @@ export const CONTRACT_CHECKS: readonly ContractCheck[] = [
   },
   {
     name: 'artifacts.match-capability',
-    async run({ source, world }) {
-      const { model: hasModel, permissions: hasPermissions } = source.describe().capabilities;
+    async run({ source, world, capabilities: { model: hasModel, permissions: hasPermissions } }) {
       const { model, permissions } = await source.artifacts();
       if (!hasModel && model !== null) fail('a model from a source that does not declare model');
       if (hasModel) {
-        const want = Object.keys((world.modelJson as { entities: object }).entities).sort().join(',');
-        if (Object.keys(model?.entities ?? {}).sort().join(',') !== want) fail('the model does not hold the world entities');
-        if (!model?.lifecycles?.['task']) fail('the model lost the declared lifecycle');
+        if (model === null) fail('no model from a source that declares model');
+        const declared = world.modelJson as { entities: object; lifecycles?: object };
+        const keys = (o: object | undefined) => Object.keys(o ?? {}).sort().join(',');
+        if (keys(model.entities) !== keys(declared.entities)) fail('the model does not hold the world entities');
+        if (keys(model.lifecycles) !== keys(declared.lifecycles)) fail('the model does not hold the declared lifecycles');
       }
       if (!hasPermissions && permissions !== null) fail('permissions from a source that does not declare permissions');
       if (hasPermissions) {
         const want = parsePermissions(world.permissionsMd).roles.map((r) => `${r.role}:${r.keys.join('+')}`).join(',');
-        if ((permissions?.roles ?? []).map((r) => `${r.role}:${r.keys.join('+')}`).join(',') !== want) fail('the roles are not the world roles');
+        if (permissions === null) fail('no permissions from a source that declares permissions');
+        if (permissions.roles.map((r) => `${r.role}:${r.keys.join('+')}`).join(',') !== want) fail('the roles are not the world roles');
       }
     },
   },
   {
     name: 'tail.declared-iff-present',
-    async run({ source }) {
-      const declared = source.describe().capabilities.tail;
+    async run({ source, capabilities: { tail: declared } }) {
       if (declared !== (typeof source.tail === 'function')) fail(declared ? 'tail is declared and there is no tail()' : 'tail() exists and tail is not declared');
     },
   },
   {
     name: 'tail.delivers',
-    async run({ subject, source, world }) {
-      if (!source.describe().capabilities.tail || typeof source.tail !== 'function') return;
-      if (!subject.record) fail('a source declaring tail has a harness that cannot record');
+    async run({ subject, source, world, capabilities }) {
+      if (!capabilities.tail || typeof source.tail !== 'function') return;
+      const record = subject.record?.bind(subject) ?? fail('a source declaring tail has a harness that cannot record');
       const base = world.traces[0] as RequestTrace;
       const at = new Date(WORLD_T0 + 60 * MIN).toISOString();
       const got: string[] = [];
       const stop = source.tail({ where: { level: ['error'] } }, (h) => got.push(h.invocationId));
-      await subject.record?.({ ...base, invocationId: 'inv-tail-1', startedAt: at, status: 500, level: 'error' });
-      await subject.record?.({ ...base, invocationId: 'inv-tail-2', startedAt: at, status: 200, level: 'info' });
+      await record({ ...base, invocationId: 'inv-tail-1', startedAt: at, status: 500, level: 'error' });
+      await record({ ...base, invocationId: 'inv-tail-2', startedAt: at, status: 200, level: 'info' });
       stop();
-      await subject.record?.({ ...base, invocationId: 'inv-tail-3', startedAt: at, status: 500, level: 'error' });
+      await record({ ...base, invocationId: 'inv-tail-3', startedAt: at, status: 500, level: 'error' });
       if (!same(got, ['inv-tail-1'])) fail(`tail delivered ${got.join(',') || 'nothing'}; want inv-tail-1`);
     },
   },
@@ -379,11 +376,12 @@ async function withSubject<T>(harness: ContractHarness, fn: (ctx: Ctx) => Promis
   const world = contractWorld();
   const subject = await harness.create(world);
   try {
-    const fields = subject.source.describe().capabilities.requestFields;
+    const capabilities = subject.source.describe().capabilities;
+    const fields = capabilities.requestFields;
     // The oracle is the world as this source may show it; a lie in requestFields is the
     // unfilled-fields check's to catch, so the others are not also failed by it.
     const expected = world.traces.map((t) => blankUnfilled(t, fields));
-    return await fn({ subject, source: subject.source, world, expected, fields });
+    return await fn({ subject, source: subject.source, world, expected, capabilities, fields });
   } finally {
     await subject.close?.();
   }
