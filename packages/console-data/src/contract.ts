@@ -350,18 +350,32 @@ export const CONTRACT_CHECKS: readonly ContractCheck[] = [
   },
   {
     name: 'tail.delivers',
-    async run({ subject, source, world, capabilities }) {
+    async run({ subject, source, world, capabilities, fields }) {
       if (!capabilities.tail || typeof source.tail !== 'function') return;
       const record = subject.record?.bind(subject) ?? fail('a source declaring tail has a harness that cannot record');
       const base = world.traces[0] as RequestTrace;
       const at = new Date(WORLD_T0 + 60 * MIN).toISOString();
       const got: string[] = [];
-      const stop = source.tail({ where: { level: ['error'] } }, (h) => got.push(h.invocationId));
+      const delivered: unknown[] = [];
+      const stop = source.tail({ where: { level: ['error'] } }, (h) => {
+        got.push(h.invocationId);
+        delivered.push(h);
+      });
       await record({ ...base, invocationId: 'inv-tail-1', startedAt: at, status: 500, level: 'error' });
       await record({ ...base, invocationId: 'inv-tail-2', startedAt: at, status: 200, level: 'info' });
       stop();
       await record({ ...base, invocationId: 'inv-tail-3', startedAt: at, status: 500, level: 'error' });
       if (!same(got, ['inv-tail-1'])) fail(`tail delivered ${got.join(',') || 'nothing'}; want inv-tail-1`);
+      // A tail is a read path like a page: it hands out heads, nothing more, blank where undeclared.
+      // A `RequestTrace` is assignable to the listener's `TraceHead`, so only this catches steps leaking.
+      for (const h of delivered) {
+        const r = strictHead.safeParse(h);
+        if (!r.success) fail(`tail delivered something other than a trace head: ${r.error.message}`);
+        for (const f of unfilledFields(fields)) {
+          const v = r.data[f];
+          if (!(v === null || (Array.isArray(v) && v.length === 0))) fail(`tail delivered ${f}, which the source does not declare`);
+        }
+      }
     },
   },
 ];

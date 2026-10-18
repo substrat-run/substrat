@@ -4,6 +4,7 @@ import {
   createLocalSource,
   facetsOf,
   headOf,
+  matchesWhere,
   pageOf,
   WORLD_ALL,
   type ConsoleDataSource,
@@ -154,6 +155,29 @@ export const LIARS: readonly { readonly lie: string; readonly fails: string; rea
     lie: 'declares tail and never delivers',
     fails: 'tail.delivers',
     harness: wrapLocal((s) => lie(s, { tail: () => () => {} })),
+  },
+  {
+    lie: 'tails the whole trace, bound values included, not the head',
+    fails: 'tail.delivers',
+    harness: {
+      async create(world) {
+        const buffer = memoryBuffer(world.traces);
+        const honest = createLocalSource({
+          label: 'tasks',
+          artifacts: () => ({ modelJson: world.modelJson, permissionsMd: world.permissionsMd }),
+          traces: buffer,
+        });
+        const source = lie(honest, {
+          // Filters as the honest tail does, then hands out the buffered record whole.
+          tail: (q, listener) =>
+            buffer.subscribe!((raw) => {
+              const t = raw as RequestTrace;
+              if (matchesWhere(t, q.where)) listener(t);
+            }),
+        });
+        return { source, record: (t) => buffer.push(t) };
+      },
+    },
   },
   {
     lie: 'returns steps without declaring traceSteps',
