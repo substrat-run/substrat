@@ -87,7 +87,7 @@ import { PermissionDenied, type ScopeStub } from '@substrat-run/kernel';
 import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, requestIdOf, type InvocationRecord } from './invocation-log.js';
 import { classifyError, messageOf, problemResponse } from './errors.js';
 import { observeOutputFields, outputWalkOf, type OutputWalk } from './field-coverage.js';
-import { bearerClaims, carriesAct, routeAnsweringAt } from './mcp-guard.js';
+import { assertMcpPathFree, bearerClaims, carriesAct } from './mcp-guard.js';
 
 /** What `invocationLog` handed this request (#1746, #1237). Both absent without the middleware. */
 interface McpInvocation {
@@ -643,8 +643,9 @@ function statusOf(err: unknown): number | undefined {
  * request to the MCP endpoint, because this mount is what holds it to its scope. So a route
  * registered BEFORE it that would answer here instead — an operation at `/mcp`, a
  * hand-written `app.post('/api/mcp', …)`, a `/:slug` parameter route — refuses the mount,
- * loudly, at boot, judged by Hono's `TrieRouter` (`routeAnsweringAt`) against the path the
- * endpoint really answers at, a Hono `basePath()` included. A route registered AFTER it never
+ * loudly, at boot and before this mount registers anything (`assertMcpPathFree`), judged by
+ * Hono's `TrieRouter` against the path the endpoint really answers at, a Hono `basePath()`
+ * included. A route registered AFTER it never
  * runs here: every method but `OPTIONS` is answered by this mount. Not judged:
  *  - `app.use`, `app.all` and `app.mount` (Hono records all three alike), and `OPTIONS` routes;
  *  - a pattern with a segment that is exactly `*`, a catch-all;
@@ -664,9 +665,7 @@ export function mountMcp(
 ): { path: string; tools: number } {
   const tools = mcpToolsOf(operations);
   const path = options.path ?? mcpEndpointPath(options.basePath);
-  // The routes registered before this mount, which the endpoint is judged against once it is
-  // registered itself (below).
-  const earlier = app.routes.length;
+  assertMcpPathFree(app, path);
   const wellKnown = `/.well-known/oauth-protected-resource${path}`;
   const byName = new Map(tools.map((t) => [t.name, t]));
   const serverInfo = {
@@ -1040,19 +1039,6 @@ export function mountMcp(
     if (replies.length === 0) return c.body(null, 202);
     return c.json(Array.isArray(body) ? replies : (replies[0] as object));
   });
-
-  // Judged only now: the endpoint's own route record is what says where it answers. An app
-  // made by Hono's `basePath()` prefixes every path it registers, and `path` does not know
-  // the prefix, so earlier routes are judged against the prefixed path, and a root route at
-  // the unprefixed one is not in the way. A prefix added later, by `app.route()`, is not seen.
-  const answersAt = app.routes[app.routes.length - 1]!.path;
-  const shadow = routeAnsweringAt(app.routes.slice(0, earlier), answersAt);
-  if (shadow) {
-    throw new Error(
-      `mountMcp: ${shadow.method} ${shadow.path} is registered before the MCP endpoint and would answer at ${answersAt} ` +
-        'in its place — move that route off the path',
-    );
-  }
 
   // A 405 names the methods that are served (RFC 9110 §15.5.6): `POST` is the only one.
   const allow = { Allow: 'POST' };

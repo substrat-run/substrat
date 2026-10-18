@@ -1,5 +1,5 @@
 import { TrieRouter } from 'hono/router/trie-router';
-import { splitRoutingPath } from 'hono/utils/url';
+import { mergePath, splitRoutingPath } from 'hono/utils/url';
 
 /**
  * What the MCP mount and the operation routes share to keep a delegated token (#1824) at the
@@ -68,4 +68,33 @@ export function routeAnsweringAt(routes: readonly RegisteredRoute[], path: strin
     if (probe.match(route.method, path)[0].length > 0) return route;
   }
   return undefined;
+}
+
+/**
+ * The path a route registered on `app` at `path` is served at. An app made by Hono's
+ * `basePath()` prefixes every path it registers, and keeps the prefix in `_basePath`, a field
+ * Hono's types mark private. It is read here so the MCP mount can be judged before it
+ * registers anything, and composed with `mergePath` exactly as Hono's own route registration
+ * does. The suite pins the two together, so a Hono that moved the prefix reddens a test
+ * instead of judging the wrong path.
+ */
+export function servedPathOf(app: object, path: string): string {
+  const prefix = (app as { _basePath?: unknown })._basePath;
+  return mergePath(typeof prefix === 'string' ? prefix : '/', path);
+}
+
+/**
+ * Refuse an MCP endpoint at `path` when a route already registered on `app` would answer there
+ * in its place (`routeAnsweringAt`, at the path the endpoint is served at). Throws before
+ * anything is registered, so a refused mount leaves the app as it found it.
+ */
+export function assertMcpPathFree(app: { readonly routes: readonly RegisteredRoute[] }, path: string): void {
+  const answersAt = servedPathOf(app, path);
+  const shadow = routeAnsweringAt(app.routes, answersAt);
+  if (shadow) {
+    throw new Error(
+      `mountMcp: ${shadow.method} ${shadow.path} is registered before the MCP endpoint and would answer at ${answersAt} ` +
+        'in its place — move that route off the path',
+    );
+  }
 }

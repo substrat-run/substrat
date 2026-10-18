@@ -48,7 +48,7 @@ import { classifyError } from './errors.js';
 import { observeOutputFields, outputWalkOf } from './field-coverage.js';
 import { defOf, transparentInner } from './zod-structural.js';
 import { mountMcp, type MountMcpOptions } from './mcp.js';
-import { carriesAct, routeAnsweringAt } from './mcp-guard.js';
+import { assertMcpPathFree, carriesAct, routeAnsweringAt } from './mcp-guard.js';
 
 export type ResolveStub = (c: Context) => Promise<ScopeStub>;
 
@@ -376,6 +376,9 @@ export function mountOperations(
   // #1824: the MCP endpoint mounted below must be the only route at its path. `mountMcp`
   // refuses any earlier route there too; this says which OPERATION it was.
   const mcpPath = options.mcp === false ? undefined : (options.mcp?.path ?? mcpEndpointPath(base));
+  // Judged here as well as in `mountMcp`, before any operation route is registered, so a
+  // refused mount registers nothing.
+  if (mcpPath !== undefined) assertMcpPathFree(app, mcpPath);
 
   for (const [name, op] of declared) {
     if (mcpPath !== undefined && routeAnsweringAt([{ method: op.http.method, path: `${base}${toHonoPath(op.http.path)}` }], mcpPath)) {

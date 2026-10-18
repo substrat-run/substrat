@@ -19,8 +19,8 @@ import { oidcAuthProvider } from '@substrat-run/vertical-auth/oidc';
 import type { AuthProvider } from '@substrat-run/vertical-auth/provider';
 import { INVOCATION_RECORD_KEY, type InvocationRecord } from '../src/invocation-log.js';
 import { mountOperations } from '../src/operations-routes.js';
-import { MCP_DELEGATION_KEY, mcpChannelOf, mcpToolsOf, setMcpDelegation, type McpDelegation } from '../src/mcp.js';
-import { routeAnsweringAt } from '../src/mcp-guard.js';
+import { MCP_DELEGATION_KEY, mcpChannelOf, mcpToolsOf, mountMcp, setMcpDelegation, type McpDelegation } from '../src/mcp.js';
+import { routeAnsweringAt, servedPathOf } from '../src/mcp-guard.js';
 
 const ISSUER = 'https://team-auth.test';
 const A = 'https://desk-a.example';
@@ -397,6 +397,24 @@ describe('nothing but the MCP endpoint answers at its path', () => {
     expect(() => mountOperations(v1, operations, stub)).toThrow(
       'mountMcp: POST /v1/api/:x is registered before the MCP endpoint and would answer at /v1/api/mcp',
     );
+  });
+
+  it('registers nothing when it refuses the mount, on a plain app and under a basePath()', () => {
+    for (const app of [new Hono(), new Hono().basePath('/v1')]) {
+      app.post('/api/:x', (c) => c.text('mine'));
+      const before = app.routes.length;
+      expect(() => mountOperations(app, operations, stub)).toThrow(/is registered before the MCP endpoint/);
+      expect(() => mountMcp(app, operations, stub)).toThrow(/is registered before the MCP endpoint/);
+      expect(app.routes.length).toBe(before);
+    }
+  });
+
+  it('reads a basePath() prefix exactly as Hono applies it when it registers a route', () => {
+    for (const app of [new Hono(), new Hono().basePath('/v1'), new Hono().basePath('/v1').basePath('/v2/'), new Hono().basePath('/')]) {
+      const served = servedPathOf(app, '/api/mcp');
+      app.post('/api/mcp', (c) => c.text('mine'));
+      expect(served).toBe(app.routes.at(-1)!.path);
+    }
   });
 
   it('does not refuse a mid-segment * that only the default router dispatches there, nor see routes app.route() mounts it under', async () => {
