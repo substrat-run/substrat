@@ -306,3 +306,41 @@ export function withRequestIdMember(body: Problem, c: Context): Problem {
   const requestId = requestIdOf(c);
   return requestId === undefined ? body : { ...body, requestId };
 }
+
+/**
+ * A refusal a route decides itself, answered as the problem document it is (#113 item 6).
+ *
+ * `problemResponse` renders what was THROWN; a route that says "this deployment cannot …"
+ * never threw. The code is the taxonomy's own where the status has one (`validation_failed`,
+ * `unauthenticated`, `forbidden`), and the status follows from the catalog. `headers` ride
+ * beside the content type for a refusal whose caller keys on one (`LIVE_MODE_HEADER`).
+ */
+export function refuse(
+  c: Context,
+  code: ErrorCode,
+  detail: string,
+  headers: Readonly<Record<string, string>> = {},
+): Response {
+  const body = toProblem(substratError(code, detail), c.req.path);
+  return c.body(JSON.stringify(withRequestIdMember(body, c)), PROBLEM_CATALOG[code].status as ContentfulStatusCode, {
+    ...headers,
+    'content-type': PROBLEM_CONTENT_TYPE,
+  });
+}
+
+/**
+ * `refuse` for a status the taxonomy has no code for (501, 426): the `about:blank` form
+ * `problemForStatus` renders. The status and the sentence are the route's, unchanged.
+ */
+export function refuseStatus(
+  c: Context,
+  status: ContentfulStatusCode,
+  detail: string,
+  headers: Readonly<Record<string, string>> = {},
+): Response {
+  const body = problemForStatus(status, detail, c.req.path);
+  return c.body(JSON.stringify(withRequestIdMember(body, c)), status, {
+    ...headers,
+    'content-type': PROBLEM_CONTENT_TYPE,
+  });
+}

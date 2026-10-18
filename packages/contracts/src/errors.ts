@@ -404,7 +404,6 @@ const CODE_FOR_STORE_STATUS: Partial<Record<number, ErrorCode>> = {
   409: 'conflict',
   412: 'precondition_failed',
   422: 'validation_failed',
-  426: 'Upgrade required',
   429: 'rate_limited',
 };
 

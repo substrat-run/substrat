@@ -25,7 +25,7 @@
 import type { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { classifyError, messageOf, problemOf, withRequestIdMember, type ErrorClassification } from './errors.js';
+import { classifyError, messageOf, problemOf, refuse, refuseStatus, withRequestIdMember, type ErrorClassification } from './errors.js';
 import { externalInput, externalJson } from './wire.js';
 import { requestIdOf, writePlatformCallLine } from './invocation-log.js';
 import {
@@ -1216,7 +1216,7 @@ export function mountPlatformSurface<Env extends object>(
   app.get('/internal/load-marker', async (c) => {
     const host = deps.hostFor(c.env);
     if (!host.loadMarkerLocal) {
-      return c.json({ error: 'this deployment cannot fence a carry\'s restore (#1722) — redeploy it' }, 501);
+      return refuseStatus(c, 501, 'this deployment cannot fence a carry\'s restore (#1722) — redeploy it');
     }
     return c.json(await host.loadMarkerLocal(scopeIdOf.parse(c.req.query('scopeId'))));
   });
@@ -1227,7 +1227,7 @@ export function mountPlatformSurface<Env extends object>(
   // same platform gate; the control plane's staff-only route is the only caller.
   app.get('/internal/kept-copy', async (c) => {
     const host = deps.hostFor(c.env);
-    if (!host.keptCopyLocal) return c.json({ error: 'this deployment keeps no copies (#1722) — redeploy it' }, 501);
+    if (!host.keptCopyLocal) return refuseStatus(c, 501, 'this deployment keeps no copies (#1722) — redeploy it');
     return c.json({ kept: await host.keptCopyLocal(scopeIdOf.parse(c.req.query('scopeId'))) });
   });
 
@@ -1242,7 +1242,7 @@ export function mountPlatformSurface<Env extends object>(
       })
       .parse(await c.req.json());
     const host = deps.hostFor(c.env);
-    if (!host.releaseKeptCopyLocal) return c.json({ error: 'this deployment keeps no copies (#1722) — redeploy it' }, 501);
+    if (!host.releaseKeptCopyLocal) return refuseStatus(c, 501, 'this deployment keeps no copies (#1722) — redeploy it');
     return c.json(
       await host.releaseKeptCopyLocal(
         body.scopeId,
@@ -1256,7 +1256,7 @@ export function mountPlatformSurface<Env extends object>(
   app.post('/internal/kept-copy/discard', async (c) => {
     const body = discardKeptBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
-    if (!host.discardKeptCopyLocal) return c.json({ error: 'this deployment keeps no copies (#1722) — redeploy it' }, 501);
+    if (!host.discardKeptCopyLocal) return refuseStatus(c, 501, 'this deployment keeps no copies (#1722) — redeploy it');
     return c.json(
       await host.discardKeptCopyLocal(
         body.scopeId,
@@ -1277,7 +1277,7 @@ export function mountPlatformSurface<Env extends object>(
     const body = wipeCarriedBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
     if (!host.wipeCarriedLocal) {
-      return c.json({ error: 'this deployment cannot fence a carried copy\'s wipe (#1722) — redeploy it' }, 501);
+      return refuseStatus(c, 501, 'this deployment cannot fence a carried copy\'s wipe (#1722) — redeploy it');
     }
     return c.json({
       wiped: await host.wipeCarriedLocal(
@@ -1457,7 +1457,7 @@ export function mountPlatformSurface<Env extends object>(
     // would also refuse every future additive field, which is how this surface is meant to
     // grow.
     if (typeof raw === 'object' && raw !== null && 'countOnly' in raw) {
-      return c.json({ error: 'countOnly is not honoured here — POST to /internal/redrain-count instead' }, 400);
+      return refuse(c, 'validation_failed', 'countOnly is not honoured here — POST to /internal/redrain-count instead');
     }
     const body = redrainEventsBody.parse(raw);
     const redrained = await deps.hostFor(c.env).redrainEventsLocal(body.scopeId, body.drainedBefore);
@@ -1476,7 +1476,7 @@ export function mountPlatformSurface<Env extends object>(
     // Same reasoning one layer in: a vertical whose adapter predates #1545 satisfies this
     // interface without the method, and 501 is the answer that cannot be mistaken for 0.
     if (!host.redrainCountLocal) {
-      return c.json({ error: 'this deployment cannot count a redrain window (#1545) — redeploy it' }, 501);
+      return refuseStatus(c, 501, 'this deployment cannot count a redrain window (#1545) — redeploy it');
     }
     return c.json({ redrainable: await host.redrainCountLocal(body.scopeId, body.drainedBefore) });
   });
@@ -1494,7 +1494,7 @@ export function mountPlatformSurface<Env extends object>(
     const scope = scopeIdOf.parse(c.req.query('scopeId'));
     const host = deps.hostFor(c.env);
     if (!host.databaseSizeLocal) {
-      return c.json({ error: 'this deployment cannot read a database size (#1524). Redeploy it' }, 501);
+      return refuseStatus(c, 501, 'this deployment cannot read a database size (#1524). Redeploy it');
     }
     return c.json({ bytes: await host.databaseSizeLocal(scope) });
   });
@@ -1521,7 +1521,7 @@ export function mountPlatformSurface<Env extends object>(
       .parse(await c.req.json());
     const host = deps.hostFor(c.env);
     if (!host.sweepOrphanAttachments) {
-      return c.json({ error: 'this deployment cannot sweep orphan attachments (#2314). Redeploy it' }, 501);
+      return refuseStatus(c, 501, 'this deployment cannot sweep orphan attachments (#2314). Redeploy it');
     }
     const report = await host.sweepOrphanAttachments(body.tenantId, body.scopeId, {
       dryRun: body.dryRun,
@@ -1599,7 +1599,7 @@ export function mountPlatformSurface<Env extends object>(
   app.post('/internal/redact-subject', async (c) => {
     const body = z.object({ scopeId: scopeIdOf, subjectId: z.string().min(1) }).strict().parse(await c.req.json());
     const host = deps.hostFor(c.env);
-    if (!host.redactSubjectLocal) return c.json({ error: 'subject redaction is unavailable in this deployment' }, 501);
+    if (!host.redactSubjectLocal) return refuseStatus(c, 501, 'subject redaction is unavailable in this deployment');
     return c.json(await host.redactSubjectLocal(body.scopeId, body.subjectId));
   });
 
@@ -1800,7 +1800,7 @@ export function mountPlatformSurface<Env extends object>(
   app.post('/internal/connector-grants', async (c) => {
     const body = z.object({ tenantId: tenantIdOf, scopeId: scopeIdOf }).strict().parse(await c.req.json());
     const host = deps.hostFor(c.env);
-    if (!host.connectionGrantsInScope) return c.json({ error: 'this deployment cannot read connector grants — redeploy it' }, 501);
+    if (!host.connectionGrantsInScope) return refuseStatus(c, 501, 'this deployment cannot read connector grants — redeploy it');
     return c.json(z.array(projectedConnectionGrant).parse(await host.connectionGrantsInScope(body.tenantId, body.scopeId)));
   });
 
@@ -1822,7 +1822,7 @@ export function mountPlatformSurface<Env extends object>(
     const body = systemSwitchBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
     if (!host.systemSwitchLocal) {
-      return c.json({ error: 'this deployment cannot switch schedules (#1666) — redeploy it' }, 501);
+      return refuseStatus(c, 501, 'this deployment cannot switch schedules (#1666) — redeploy it');
     }
     return c.json(
       await host.systemSwitchLocal(body.scopeId, body.moduleId, body.to, { tenantHeld: body.tenantHeld, fence: body.fence }),
@@ -1836,7 +1836,7 @@ export function mountPlatformSurface<Env extends object>(
   // platform-secret gate above, like every `/internal` verb.
   app.get('/internal/switch-fence', (c) => {
     if (deps.hostFor(c.env).switchFenced !== true) {
-      return c.json({ error: 'this deployment cannot fence a kill switch (#2045) — redeploy it' }, 501);
+      return refuseStatus(c, 501, 'this deployment cannot fence a kill switch (#2045) — redeploy it');
     }
     return c.json({ fenced: true });
   });
@@ -1849,7 +1849,7 @@ export function mountPlatformSurface<Env extends object>(
     const body = lifecycleBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
     if (!host.setLifecycleLocal) {
-      return c.json({ error: 'this deployment cannot hold a scope by its lifecycle (#1713) — redeploy it' }, 501);
+      return refuseStatus(c, 501, 'this deployment cannot hold a scope by its lifecycle (#1713) — redeploy it');
     }
     return c.json(await host.setLifecycleLocal(body.scopeId, body.lifecycle, body.tenantId));
   });
@@ -1863,7 +1863,7 @@ export function mountPlatformSurface<Env extends object>(
     const scopeId = scopeIdOf.parse(c.req.query('scopeId'));
     const host = deps.hostFor(c.env);
     if (!host.systemGrantsStatusLocal) {
-      return c.json({ error: 'this deployment cannot read schedule switches (#1674) — redeploy it' }, 501);
+      return refuseStatus(c, 501, 'this deployment cannot read schedule switches (#1674) — redeploy it');
     }
     return c.json(await host.systemGrantsStatusLocal(scopeId));
   });
@@ -1875,7 +1875,7 @@ export function mountPlatformSurface<Env extends object>(
     const scopeId = scopeIdOf.parse(c.req.query('scopeId'));
     const host = deps.hostFor(c.env);
     if (!host.peerGrantsStatusLocal) {
-      return c.json({ error: 'this deployment cannot read peer switches (#1706) — redeploy it' }, 501);
+      return refuseStatus(c, 501, 'this deployment cannot read peer switches (#1706) — redeploy it');
     }
     return c.json(await host.peerGrantsStatusLocal(scopeId));
   });
@@ -1891,7 +1891,7 @@ export function mountPlatformSurface<Env extends object>(
     const body = verticalInvokeBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
     if (!host.verticalInvokeLocal) {
-      return c.json({ error: 'this deployment cannot take peer calls (#1706) — redeploy it' }, 501);
+      return refuseStatus(c, 501, 'this deployment cannot take peer calls (#1706) — redeploy it');
     }
     // #2192: the call runs under this request's own id, so its events are stamped, and is
     // written as one line naming the calling request. The tenant is the body's, which the gate
@@ -1955,7 +1955,7 @@ export function mountPlatformSurface<Env extends object>(
     const body = peerSwitchBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
     if (!host.peerSwitchLocal) {
-      return c.json({ error: 'this deployment cannot switch peers (#1706) — redeploy it' }, 501);
+      return refuseStatus(c, 501, 'this deployment cannot switch peers (#1706) — redeploy it');
     }
     return c.json(
       await host.peerSwitchLocal(body.scopeId, body.vertical, body.to, { tenantHeld: body.tenantHeld, fence: body.fence }),
@@ -1974,7 +1974,7 @@ export function mountPlatformSurface<Env extends object>(
     const body = exportedEventsBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
     if (!host.exportedEventsLocal) {
-      return c.json({ error: 'this deployment cannot export events to other verticals (#1705) — redeploy it' }, 501);
+      return refuseStatus(c, 501, 'this deployment cannot export events to other verticals (#1705) — redeploy it');
     }
     return externalJson(c, await host.exportedEventsLocal(body.tenantId, body.scopeId, body.input));
   });
@@ -1983,7 +1983,7 @@ export function mountPlatformSurface<Env extends object>(
     const scopeId = scopeIdOf.parse(c.req.query('scopeId'));
     const host = deps.hostFor(c.env);
     if (!host.importStateLocal) {
-      return c.json({ error: 'this deployment cannot import events from other verticals (#1705) — redeploy it' }, 501);
+      return refuseStatus(c, 501, 'this deployment cannot import events from other verticals (#1705) — redeploy it');
     }
     return c.json(await host.importStateLocal(tenantId, scopeId));
   });
@@ -1991,7 +1991,7 @@ export function mountPlatformSurface<Env extends object>(
     const body = importEventsBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
     if (!host.importEventsLocal) {
-      return c.json({ error: 'this deployment cannot import events from other verticals (#1705) — redeploy it' }, 501);
+      return refuseStatus(c, 501, 'this deployment cannot import events from other verticals (#1705) — redeploy it');
     }
     return c.json(await host.importEventsLocal(body.tenantId, body.scopeId, body.batch));
   });
@@ -2275,7 +2275,7 @@ export function mountPlatformSurface<Env extends object>(
     }
     const host = deps.hostFor(c.env);
     if (!host.assignScopeRole || !host.revokeScopeRole || !host.hasScopeRoleLocal) {
-      return c.json({ error: 'this deployment cannot seat a new owner (#1665) — redeploy it. Nothing was moved.' }, 501);
+      return refuseStatus(c, 501, 'this deployment cannot seat a new owner (#1665) — redeploy it. Nothing was moved.');
     }
     // A bound login is not enough: `to` must still hold a role here. A member removed by
     // revoking their role keeps the binding, and handing them the scope would seat someone
