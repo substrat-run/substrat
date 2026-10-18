@@ -164,6 +164,20 @@ previous good release.
 
 ## 6. Rollback of a first release
 
+Run `status` first. Only run `rollback` if its first line reads `rolls back to nothing`:
+
+```text
+substrat store-driver status --driver graph
+```
+
+If it names a sha256 after `rolls back to`, there is a release to return to, or a
+rollback or paused rollout still under way (the server's `rollbackTarget`, in
+`storeDriverStateIn`). A `rollback` would then move a live driver. Skip this step, and
+record what `status` printed and that the step was skipped. Do not run `rollback` against
+a control plane that already holds a `good` rollout from an earlier run.
+
+With `rolls back to nothing`:
+
 ```text
 substrat store-driver rollback --driver graph
 ```
