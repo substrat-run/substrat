@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { permissionKey } from '../src/ids.js';
-import { coverage } from '../src/permission.js';
+import { coverage, roleDefinition } from '../src/permission.js';
 
 const PERM = permissionKey.parse('billing:manage');
 
@@ -35,5 +35,18 @@ describe('coverage', () => {
   /** And its mirror: a refusal a person cannot act on, because it names nothing. */
   it('refuses a refusal with nothing missing', () => {
     expect(() => coverage.parse({ covered: false, missing: [] })).toThrow();
+  });
+});
+
+describe('roleDefinition.holder', () => {
+  const base = { key: 'assistant-host', permissions: [PERM], source: 'vertical' as const };
+
+  it('keeps holder through parsing', () => {
+    expect(roleDefinition.parse({ ...base, holder: 'system' }).holder).toBe('system');
+  });
+
+  it('is optional, and refuses an unknown holder', () => {
+    expect(roleDefinition.parse(base).holder).toBeUndefined();
+    expect(() => roleDefinition.parse({ ...base, holder: 'robot' })).toThrow();
   });
 });

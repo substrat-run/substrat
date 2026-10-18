@@ -83,6 +83,7 @@ interface RoleLike {
   key: string;
   permissions: string[];
   source?: string; // moduleId | 'vertical' — required by roleDefinition; guarded below
+  holder?: 'person' | 'system'; // K-55: absent = a person
 }
 interface EntityGrantLike {
   entityType: string;
@@ -359,8 +360,24 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
     ``,
     `| Role | Permissions |`,
     `| --- | --- |`,
-    ...roles.map((r) => `| ${code(r.key)} | ${sorted(r.permissions).map(code).join(', ')} |`),
+    ...roles.filter((r) => r.holder !== 'system').map((r) => `| ${code(r.key)} | ${sorted(r.permissions).map(code).join(', ')} |`),
     ``,
+    ...(roles.some((r) => r.holder === 'system')
+      ? [
+          `### 2a. System-held roles — a platform host's standing principal`,
+          ``,
+          `Never given to a person: no invitation, member operation or role picker offers these. Each`,
+          `holds only keys reserved to a system principal (K-55), so what a host can do is exactly the`,
+          `keys shown. Widening one lands here, in the reviewed diff.`,
+          ``,
+          `| Role | Permissions |`,
+          `| --- | --- |`,
+          ...roles
+            .filter((r) => r.holder === 'system')
+            .map((r) => `| ${code(r.key)} | ${sorted(r.permissions).map(code).join(', ')} |`),
+          ``,
+        ]
+      : []),
     `## 3. Coverage — which roles hold each key`,
     ``,
     `| Key | Held by |`,

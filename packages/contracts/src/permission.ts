@@ -38,6 +38,13 @@ export const roleDefinition = z.object({
   // an enum member no code path can produce is the same promise-with-no-mechanism
   // this codebase keeps finding. It lands with whatever writes it.
   source: z.union([moduleId, z.literal('vertical')]),
+  // Who may be given this role. Absent means a person, as every role before this field.
+  // `system` is a role for a platform host's own principal (the assistant host's), and is the
+  // ONLY place a key reserved to a system principal may appear in a role: `lint:permissions`
+  // refuses such a key in a `person` role, and refuses a system role holding anything else.
+  // The field is the declaration the permission checkpoint renders, so a standing host
+  // principal is a line a reviewer reads, not a grant made outside every artifact (K-55).
+  holder: z.enum(['person', 'system']).optional(),
 });
 export type RoleDefinition = z.infer<typeof roleDefinition>;
 
