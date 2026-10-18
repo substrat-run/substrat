@@ -219,7 +219,8 @@ verifier and forgot the second line.
 
 The scope is checked against the tool's declared leading key, not each check the
 operation makes. An operation whose handler checks another key as well checks it against
-everything the user holds.
+everything the user holds. So delegate only keys whose tools check nothing wider than the
+key itself.
 
 ### What is deliberately not here
 
