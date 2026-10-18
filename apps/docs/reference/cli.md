@@ -124,9 +124,9 @@ looks exactly like a green release, so the bump is not left to judgement:
 
 | Change | Bump |
 |---|---|
-| Something removed or narrowed — an operation, field, entity, state, transition, response or enum value; an input now required; an output that may now be omitted; a type changed | **major** |
-| Something added — an operation, field, entity, state or key; an input now optional | **minor** |
-| Only descriptions, summaries and titles | **patch** |
+| Something removed or narrowed — an operation, field, entity, state, transition, response or enum value; an input now required, tighter or `readOnly`; an output that may now be omitted, looser or `writeOnly`; a type, key or `operationId` changed | **major** |
+| Something added — an operation, field, entity, state or key; an input now optional or looser; a `default` added, changed or dropped | **minor** |
+| Only `description`, `title`, `examples`, `$comment`, `deprecated`, `x-*`, an operation's `summary` or `tags`, or `info` | **patch** |
 | Any permission change | at least **minor**, and listed for review |
 
 A change the classifier cannot rank — a schema keyword whose direction it cannot tell, or a

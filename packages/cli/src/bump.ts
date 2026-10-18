@@ -7,17 +7,25 @@
  * `PERMISSIONS.md` (`lint:permissions`), each held to the source by a `--check` re-emit — so the
  * bump is read off the diff of those three files instead of asked for.
  *
- * The rules, one level per change, the bump being the highest:
+ * The rules, one level per change, the bump being the highest. An INPUT is what a caller sends
+ * (parameters, request bodies); an OUTPUT is what a caller reads (responses, stored rows in
+ * `model.json`, event payloads).
  *
- *   - **major**: something removed or narrowed. An operation, a field, an entity, a state, a
- *     transition, a response, an enum value; an input that became required, an output that became
- *     optional, a type that changed.
- *   - **minor**: something added. A new operation, field, entity, state or key; an input that
- *     became optional. Every permission change is at least minor, and a narrowing is FLAGGED for
- *     the human checkpoint (CLAUDE.md, "Two human checkpoints"). A widening is flagged as well,
- *     since a key gaining a role is the risk surface that checkpoint exists for.
- *   - **patch**: the artifacts differ only in what describes them (`description`, `summary`,
- *     `title`, `examples`, …).
+ *   - **major**: something removed or narrowed. An operation, field, entity, state, transition,
+ *     response, media type, enum value, parent edge, derived handler or export; an input that
+ *     became required, tighter (`minLength` up, `maxLength` down, …), closed to unnamed
+ *     properties or `readOnly`; an output that may now be omitted, looser, or `writeOnly`; a
+ *     type, key, table, initial state or `operationId` changed; trash terms changed.
+ *   - **minor**: something added. An operation, field, entity, state, transition, enum value,
+ *     response or stamp; an input that became optional or looser; an output that became required
+ *     or tighter; a `default` added, changed or dropped (a caller who omits the value gets other
+ *     behaviour); `readOnly`/`writeOnly` dropped, or set in the direction that does not use the
+ *     field; `erasable` gained or lost (lost is flagged). Every permission change is at least
+ *     minor and FLAGGED for the human checkpoint (CLAUDE.md, "Two human checkpoints") — a
+ *     narrowing and a widening alike, since a key gaining a role is the risk surface it exists for.
+ *   - **patch**: only what describes: the schema keywords `description`, `title`, `examples`,
+ *     `example`, `$comment`, `deprecated` and any `x-*`; an operation's `summary`, `description`,
+ *     `tags`, `externalDocs` and `deprecated`; `info`; a permission key's description.
  *
  * **What it cannot read is major.** A keyword, section or key this module does not know is
  * judged as a breaking change, never skipped. The CI check refuses a changeset that declares
@@ -66,9 +74,7 @@ const classification = (changes: Change[]): Classification => ({ bump: bumpOf(ch
 // ─── JSON Schema ──────────────────────────────────────────────────────────────────────────────
 
 /** Keywords that describe a schema without constraining it. A change to one is documentation. */
-const ANNOTATIONS = new Set([
-  'description', 'title', 'examples', 'example', '$comment', 'default', 'deprecated', 'readOnly', 'writeOnly',
-]);
+const ANNOTATIONS = new Set(['description', 'title', 'examples', 'example', '$comment', 'deprecated']);
 
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 
@@ -137,7 +143,7 @@ const COMPOSITIONS = ['anyOf', 'oneOf', 'allOf'] as const;
 
 /** The keywords `compareSchema` judges on their meaning. Any other constraint change is major. */
 const UNDERSTOOD = new Set([
-  'type', 'enum', 'properties', 'required', 'additionalProperties', 'items',
+  'type', 'enum', 'properties', 'required', 'additionalProperties', 'items', 'default', 'readOnly', 'writeOnly',
   ...LOWER_BOUNDS, ...UPPER_BOUNDS, ...COMPOSITIONS,
 ]);
 
@@ -235,6 +241,19 @@ function compareSchema(
   if (base.items !== undefined || head.items !== undefined) {
     if (base.items === undefined || head.items === undefined) push('major', `${path}[]`, 'items changed');
     else compareSchema(push, dir, `${path}[]`, base.items, head.items);
+  }
+
+  // `default` is what a caller who omits the value gets: changed, added or dropped, every such
+  // caller now sees different behaviour without having broken any contract — minor.
+  if (canon(base.default, false) !== canon(head.default, false)) {
+    push('minor', path, `default changed from ${canon(base.default, false)} to ${canon(head.default, false)}`);
+  }
+  // `readOnly` is never sent, `writeOnly` is never returned. Each narrows one direction: a
+  // field becoming readOnly can no longer be sent (input), becoming writeOnly is no longer read
+  // (output). The reverse flip, or a flip in the direction that does not use the field, is minor.
+  for (const [k, narrows] of [['readOnly', 'input'], ['writeOnly', 'output']] as const) {
+    if (!!base[k] === !!head[k]) continue;
+    push(dir === narrows && head[k] ? 'major' : 'minor', path, head[k] ? `became ${k}` : `is no longer ${k}`);
   }
 
   for (const k of [...LOWER_BOUNDS, ...UPPER_BOUNDS]) {

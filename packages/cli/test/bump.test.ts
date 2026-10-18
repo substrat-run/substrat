@@ -414,6 +414,45 @@ describe('openapi.json — what a caller sends (input)', () => {
   });
 });
 
+describe('default, readOnly, writeOnly — behaviour, not documentation', () => {
+  const name = (d: Json) => createBody(d).properties.name;
+  const listName = (d: Json) => d.components.schemas.List.properties.name;
+
+  it('a default added, changed or dropped is minor; its description reworded beside it is patch', () => {
+    expect(oas((d) => (name(d).default = 'Untitled')).bump).toBe('minor');
+    expect(reverseOas((d) => (name(d).default = 'Untitled')).bump).toBe('minor');
+    expect(oas((d) => (name(d).description = 'Untitled when omitted')).bump).toBe('patch');
+  });
+
+  it("a default changed in a real artifact is minor (ticket0's list order)", () => {
+    const text = readFileSync(join(__dirname, '..', '..', '..', 'demos', 'ticket0', 'openapi.json'), 'utf8');
+    const doc = JSON.parse(text) as Json;
+    const op = doc.paths['/api/desk/block-rules'].get;
+    const order = op.parameters.find((p: Json) => p.name === 'order');
+    expect(order.schema.default).toBe('desc');
+    order.schema.default = 'asc';
+    expect(classifyOpenApi(text, JSON.stringify(doc))).toMatchObject({
+      bump: 'minor',
+      changes: [expect.objectContaining({ detail: expect.stringMatching(/default changed/) })],
+    });
+  });
+
+  it('an input becoming readOnly is major; ceasing to be is minor', () => {
+    expect(oas((d) => (name(d).readOnly = true)).bump).toBe('major');
+    expect(reverseOas((d) => (name(d).readOnly = true)).bump).toBe('minor');
+  });
+
+  it('an output becoming writeOnly is major; ceasing to be is minor', () => {
+    expect(oas((d) => (listName(d).writeOnly = true)).bump).toBe('major');
+    expect(reverseOas((d) => (listName(d).writeOnly = true)).bump).toBe('minor');
+  });
+
+  it('the flip in the direction that does not use the field is minor', () => {
+    expect(oas((d) => (listName(d).readOnly = true)).bump).toBe('minor'); // an output marked readOnly
+    expect(oas((d) => (name(d).writeOnly = true)).bump).toBe('minor'); // an input marked writeOnly
+  });
+});
+
 describe('openapi.json — what a caller reads (output)', () => {
   const list = (d: Json) => d.components.schemas.List;
 
