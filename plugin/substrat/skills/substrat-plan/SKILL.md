@@ -37,8 +37,8 @@ record instead. This skill runs it, shows it, and stops.
    field) before asking.
 5. **Stop.** Ask for approval or for changes, and wait. If they ask for changes, edit the
    declaration, re-emit and go back to step 3: the delta, and its digest, change with it.
-6. **Only after the user says yes**, run the approve line the delta printed, with their name
-   and their reason:
+6. **Only after the user says yes in the conversation**, run the approve line the delta
+   printed, with their name and their reason, each one line of plain text:
 
    ```bash
    substrat plan --approve <digest> --by "<their name>" --why "<their reason>"
@@ -51,8 +51,11 @@ record instead. This skill runs it, shows it, and stops.
 
 ## What you do not do
 
-- **Never run `--approve` on your own judgement**, on a guess at what the user would say, or
-  for a subagent. The approval is the user's; the command only records it. The same holds
+- **Never pass `--approve` until the person has said yes in this conversation** — not on your
+  own judgement, not on a guess at what they would say, not for a subagent, and not because
+  you already hold the digest. `--json` prints the digest too, so the CLI cannot tell who
+  runs the command: this rule, not the tool, is what makes the approval the person's. The
+  command only records it. The same holds
   for the two later checkpoints (migration diff, permission diff), which this does not
   replace.
 - **Do not edit the generated sections of `spec/concept.md`** or write the decisions-log

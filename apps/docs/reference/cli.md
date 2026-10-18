@@ -130,8 +130,16 @@ Nothing is written until a person approves. `--approve <digest>` takes the diges
 shown with, `--by` the person who approved it and `--why` their reason; it appends the entry
 to the *Decisions log* of `spec/concept.md` and re-syncs the generated sections. A digest that
 no longer matches — the model was edited after it was shown — is refused, so an approval
-always records the delta that was actually read. The same two trees give the same output and
-digest on every run. Offline; no login.
+always records the delta that was actually read. `--by` and `--why` must be one line of plain
+text, with no `<!--` or `-->`; anything else is refused and the document is left as it was.
+The same two trees give the same output and digest on every run. Offline; no login.
+
+What the CLI cannot do is tell a person from an agent. The digest is printed by `--json` as
+well as in the rendered delta, so anything that can run `substrat plan` can run
+`substrat plan --approve`. "A person approves" is held by the instructions an agent works
+under (the playbook's design gate and the plugin's `substrat-plan` skill): the agent passes
+`--approve` only after the person has said yes in the conversation, with their name and
+reason. The digest guarantees *what* was approved, not *who* approved it.
 
 ### `model view`
 
