@@ -194,34 +194,42 @@ export function operationsFor<const Ops extends Record<string, object>>(declarat
       concurrency: operationConcurrencyOf(declaration),
       idempotencyOptOuts: operationIdempotencyOptOutsOf(declaration),
     });
-    CHECK_EXEMPT.set(operations, checkExemptOf(declaration));
+    CHECK_HELD.set(operations, checkHeldOf(declaration));
     return { operations };
   };
 }
 
 /**
- * #2387: the operations the host does not expect to call `ctx.check` — the derived ones, whose
- * handler the kernel wrote check included, and the ones that declare `narrows.unchecked` with a
- * reason. Module-private and keyed by the value's identity, like the declared surface contracts
- * records for an inputs map: nothing on the value carries it, so a copy has none.
+ * #2387: the operations the host holds to a `ctx.check` — those that DECLARE a `permission`
+ * and whose handler is authored. A declared key is a promise that the handler asks for it.
+ *
+ * Everything else is left out, and each for a reason the declaration states:
+ *
+ * - `derive` — the kernel wrote the handler, its check included.
+ * - `narrows` — a walk that checks row by row, so an empty result asks nothing and is right to.
+ *   `narrows.unchecked` is the one way to declare an operation that checks nothing at all, and it
+ *   is a `narrows`, so it is left out here too.
+ *
+ * Module-private and keyed by the value's identity, like the declared surface contracts records
+ * for an inputs map: nothing on the value carries it, so a copy has none.
  */
-const CHECK_EXEMPT = new WeakMap<object, ReadonlySet<string>>();
+const CHECK_HELD = new WeakMap<object, ReadonlySet<string>>();
 
-function checkExemptOf(declaration: Readonly<Record<string, object>>): ReadonlySet<string> {
-  const exempt = new Set<string>();
+function checkHeldOf(declaration: Readonly<Record<string, object>>): ReadonlySet<string> {
+  const held = new Set<string>();
   for (const [name, op] of Object.entries(declaration)) {
-    const decl = op as { derive?: unknown; narrows?: { unchecked?: unknown } };
-    if (decl.derive !== undefined || decl.narrows?.unchecked === true) exempt.add(name);
+    const decl = op as { derive?: unknown; permission?: unknown };
+    if (decl.permission !== undefined && decl.derive === undefined) held.add(name);
   }
-  return exempt;
+  return held;
 }
 
 /**
- * The operations of a bound value the host does not expect to check (#2387). Empty for
- * `undeclaredOperations` and the test seam, which carry no declaration to read an exception from.
+ * The operations of a bound value the host holds to a check (#2387). Empty for
+ * `undeclaredOperations` and the test seam: with no declaration, there is no key it promised.
  */
-export function checkExemptOperationsOf(operations: BoundOperations | undefined): ReadonlySet<string> {
-  return (operations && CHECK_EXEMPT.get(operations)) ?? EMPTY;
+export function checkHeldOperationsOf(operations: BoundOperations | undefined): ReadonlySet<string> {
+  return (operations && CHECK_HELD.get(operations)) ?? EMPTY;
 }
 
 const EMPTY: ReadonlySet<string> = new Set();

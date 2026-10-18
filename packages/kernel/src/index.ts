@@ -182,7 +182,7 @@ export {
 } from './scope-host.js';
 export {
   assertBoundOperations,
-  checkExemptOperationsOf,
+  checkHeldOperationsOf,
   operationsFor,
   undeclaredOperations,
   type BoundOperations,
@@ -191,6 +191,8 @@ export {
 export {
   countChecks,
   noteUncheckedCompletion,
+  REFUSE_UNCHECKED_OPERATIONS_KEY,
+  UncheckedOperation,
   UNCHECKED_OPERATION_FINDING,
   UNCHECKED_OPERATION_TEMPLATE,
   type CheckTally,

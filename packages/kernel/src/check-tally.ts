@@ -26,21 +26,30 @@
  * The tally is the context's, and a context belongs to one invocation, so two invocations in one
  * request are counted apart.
  *
- * ## Who is not asked
+ * ## Which operations are held to it
  *
- * - A **derived** handler (#1773): the kernel wrote it from the declaration, check included. The
- *   bin read (`derive: 'trashed'`) checks row by row and so checks nothing on an empty bin, which
- *   is correct and is why derived handlers are excepted as a class rather than counted.
- * - An operation that **declares it checks nothing** — `narrows: { reason, checks: [],
- *   unchecked: true }`. The reason is required, and the conformance receipt lists the operation,
- *   so the exception is in the model where a reviewer reads it, not in the handler.
+ * Those that declare a `permission` and whose handler is authored (`checkHeldOperationsOf`): a
+ * declared key is a promise that the handler asks for it. Left out, each for a reason the
+ * declaration states:
  *
- * ## Recorded, not refused
+ * - a **derived** handler (#1773) — the kernel wrote it from the declaration, check included;
+ * - a **`narrows`** walk — it checks row by row, so a walk over nothing asks nothing and is right
+ *   to. `narrows: { reason, checks: [], unchecked: true }` is the one way to declare an operation
+ *   that checks nothing at all; the reason is required and the conformance receipt lists it;
+ * - a module bound with **`undeclaredOperations`** — it declares no key, so it promised none.
+ *
+ * ## Recorded, and refused only where a test asks
  *
  * The line is a `warn` through the context's own `ctx.log`, so it carries the tenant, scope,
- * operation and invocation every other line does and lands wherever the host sends them. It
- * changes nothing about the invocation: no error, no rollback. Its template is a constant, so
- * every such line groups into one pattern.
+ * operation and invocation every other line does and lands wherever the host sends them. Its
+ * template is a constant, so every such line groups into one pattern. In production that is all
+ * it does: no error, no rollback.
+ *
+ * A node test run can turn it into a refusal: `tools/vitest/unchecked-operations.cjs`, preloaded
+ * by the root `pnpm test` and CI's test step beside the LIKE and SQL-limit preloads, sets
+ * {@link REFUSE_UNCHECKED_OPERATIONS_KEY}, and the operation then throws {@link UncheckedOperation}
+ * after the line is written, so it rolls back like any other failure. That makes every scenario
+ * suite the gate, without a production scope failing over a diagnostic.
  */
 import type { OperationContext } from './scope-host.js';
 
@@ -67,12 +76,41 @@ export const UNCHECKED_OPERATION_TEMPLATE = 'operation completed without a permi
 export const UNCHECKED_OPERATION_FINDING = 'unchecked-operation';
 
 /**
- * Write the line if the handler returned without asking. Called once, right after the handler
- * returns; `exempt` is whether the operation is one of the two exceptions above. Returns whether
- * a line was written.
+ * The registered key a test run sets on `globalThis` to have an unchecked completion refused
+ * instead of only recorded. Registered, so the copy of the kernel an adapter bundled reads the
+ * flag the preload set.
  */
-export function noteUncheckedCompletion(ctx: OperationContext, tally: CheckTally, exempt: boolean): boolean {
-  if (exempt || tally.calls > 0) return false;
+export const REFUSE_UNCHECKED_OPERATIONS_KEY = 'substrat.refuseUncheckedOperations';
+
+function refusing(): boolean {
+  return (globalThis as Record<symbol, unknown>)[Symbol.for(REFUSE_UNCHECKED_OPERATIONS_KEY)] === true;
+}
+
+/** An operation held to a check completed without one, under a run that refuses it. */
+export class UncheckedOperation extends Error {
+  constructor(readonly operation: string) {
+    super(
+      `${operation} declares a permission but its handler returned without calling ctx.check — ` +
+        'check the declared key, or declare `narrows: { reason, checks: [], unchecked: true }` if it ' +
+        'deliberately checks nothing',
+    );
+    this.name = 'UncheckedOperation';
+  }
+}
+
+/**
+ * Called once, right after the handler returns. Writes the line when an operation `held` to a
+ * check made none, and throws {@link UncheckedOperation} after it when the run refuses them.
+ * Returns whether a line was written.
+ */
+export function noteUncheckedCompletion(
+  ctx: OperationContext,
+  operation: string,
+  tally: CheckTally,
+  held: boolean,
+): boolean {
+  if (!held || tally.calls > 0) return false;
   ctx.log.warn(UNCHECKED_OPERATION_TEMPLATE, { finding: UNCHECKED_OPERATION_FINDING });
+  if (refusing()) throw new UncheckedOperation(operation);
   return true;
 }
