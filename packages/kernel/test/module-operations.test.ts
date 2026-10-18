@@ -337,3 +337,20 @@ describe('the declared checks travel with the handlers (#2384)', () => {
     expect(operations.checks).toEqual({});
   });
 });
+
+describe('a forged value declares only what it is handed (#2384 review)', () => {
+  it('carries an empty checks map by default — "not declared", never "bound by an older kernel"', async () => {
+    const { forgeBoundOperationsForTest } = await import('../src/testing.js');
+    const forged = forgeBoundOperationsForTest({ 'notes/add': addOp as OperationHandler<never, unknown> }, {});
+    expect(forged.checks).toEqual({});
+  });
+
+  it('its twin: checks it is handed are carried as given', async () => {
+    const { forgeBoundOperationsForTest } = await import('../src/testing.js');
+    const forged = forgeBoundOperationsForTest(
+      { 'notes/add': addOp as OperationHandler<never, unknown> },
+      { checks: { 'notes/add': { permission: 'note:write' } } },
+    );
+    expect(forged.checks).toEqual({ 'notes/add': { permission: 'note:write' } });
+  });
+});

@@ -769,6 +769,35 @@ describe('PERMISSIONS.md — which key each operation checks (#2384)', () => {
     ]);
   });
 
+  it('an Operations table that cannot be read is MAJOR — never every operation "removed" at minor', () => {
+    const header = '| Operation | Key | Checked on | Declared by |';
+    for (const [why, edit] of [
+      ['truncated: the table gone', (t: string) => t.replace(/\| Operation \| Key \|[\s\S]*$/, '\n')],
+      ['the header row lost', (t: string) => t.replace(`${header}\n`, '')],
+      ['a column dropped from the header', (t: string) => t.replace(header, '| Operation | Key | Declared by |')],
+      ['a row with the wrong number of cells', (t: string) => t.replace('| the scope | `@acme/vertical` |', '| `@acme/vertical` |')],
+    ] as const) {
+      const r = ops(edit);
+      expect(r.bump, why).toBe('major');
+      expect(r.changes, why).toEqual([expect.objectContaining({ path: 'operations', level: 'major', flagged: true })]);
+      // Unreadable at the base reads the same way.
+      expect(classifyPermissions(edit(WITH), WITH).bump, why).toBe('major');
+    }
+  });
+
+  it('its twin: a section saying there are no operations is readable, and empty', () => {
+    const none = WITH.replace(/\| Operation \| Key \|[\s\S]*$/, '_No module here registers an operation._\n');
+    expect(parsePermissions(none).operations).toEqual({});
+    expect(parsePermissions(none).operationsUnreadable).toBeUndefined();
+    expect(classifyPermissions(none, none).bump).toBe('none');
+  });
+
+  it('a reason with an escaped pipe is one cell, as model-view reads it', () => {
+    const t = `${WITH}| \`todo/accept\` | — none — | nothing: a \\| b | \`@acme/vertical\` |\n`;
+    expect(parsePermissions(t).operations?.['todo/accept']?.terms).toEqual(['— none —', 'nothing: a | b', '`@acme/vertical`']);
+    expect(parsePermissions(t).operationsUnreadable).toBeUndefined();
+  });
+
   it('the section first appearing is patch, unflagged: the base had nothing to compare; its removal is major', () => {
     const introduced = classifyPermissions(PERMS, WITH);
     expect(introduced.bump).toBe('patch');
