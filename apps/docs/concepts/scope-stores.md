@@ -83,7 +83,7 @@ The line names the first 16 calls in `storeCalls` and counts the rest in `storeC
 
 Subject erasure calls `substrat.erase` on every store any version of the scope's vertical has declared, before the subject's key is destroyed. A binding a later version dropped still names an object that may hold the subject, so it is erased too. The erasure's answer lists each binding and how many rows that store said it erased. When the control plane erases a scope its own host holds, the host's audited receipt does not list those store erasures yet; only the answer does. A store that answers with an error stops the erasure before the key is touched, and the next run finishes it.
 
-Erasure fails closed. When the platform cannot tell which stores a scope's version declares, or cannot reach them, the erasure is refused with 503 and the key stays until a retry reaches the store.
+Erasure fails closed. When the platform cannot tell which stores a scope's version declares, or cannot reach them, the erasure is refused with 503 and the key stays until a retry reaches the store. A scope whose vertical has never declared a store, in any version, holds none, so its erasure proceeds even when its version cannot be told.
 
 A deploy that lands while an erasure runs does not slip past it. Before the key goes, the erasure checks that the scope still runs the version it read, on the same pin, with the vertical's serving pointer where it was. A bind, a promote, a rollback or a serving re-upload in between makes the erasure answer 412, and the key stays for the retry, which reads the new version's stores. A bind that comes after that check is refused instead.
 

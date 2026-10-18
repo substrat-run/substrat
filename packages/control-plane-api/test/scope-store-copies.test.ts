@@ -30,7 +30,9 @@ import {
  * (#2243). What decides is the version the scope runs. With no store driver registered no
  * store is asked, and the copies run as they did before stores. With one registered, a
  * version that declares none is not asked either, and a version that cannot be named
- * refuses the copy rather than dropping a store it may hold.
+ * refuses the copy rather than dropping a store it may hold — where a version of the
+ * scope's vertical declared one, since no store can exist under a binding none declared
+ * (#2394).
  */
 describe('scope-store copies through the platform (#2243, #2207)', () => {
   let dir: string;
@@ -137,8 +139,8 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
       scopeBackups: backups,
-      // `notes` never declares a store in this file.
-      verticals: { docs: deployment, notes: deployment },
+      // `notes` never declares a store in this file, and `files` always has one version that does.
+      verticals: { docs: deployment, notes: deployment, files: deployment },
       platformScopeStores,
       ...(storeDrivers ? { storeDrivers } : {}),
     });
@@ -172,14 +174,37 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
     expect(asked).toEqual([]);
   });
 
-  it('a version that cannot be named refuses the copy rather than dropping a store it may hold', async () => {
+  /** A `files` scope whose version cannot be named, beside a version of `files` that declares GRAPH. */
+  const unnamedBesideAStore = async () => {
+    await docsScope({ scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] }, 'files');
+    return docsScope(undefined, 'files');
+  };
+
+  // A version that cannot be named, judged against an injected registry and against the default one.
+  for (const [registry, drivers] of [['an injected', [graph]], ['the default', undefined]] as const) {
+    it(`with ${registry} registry, a version that cannot be named refuses the copy where a version of its vertical declared a store`, async () => {
+      const { caller, asked } = platform();
+      const api = appWith(caller, drivers);
+      const s = await unnamedBesideAStore();
+      const backup = await api.request(`/tenants/${t}/scopes/${s}/backups`, { method: 'POST', headers: auth });
+      expect(backup.status).toBe(503);
+      const pull = await api.request(`/tenants/${t}/scopes/${s}/export?full=true`, { headers: auth });
+      expect(pull.status).toBe(503);
+      expect(asked).toEqual([]);
+    });
+
+    // #2394: no version of `notes` declared a store, so no object of it can exist to be dropped.
+    it(`with ${registry} registry, a version that cannot be named in a vertical that never declared a store is not asked: every copy proceeds`, async () => {
+      const { caller, asked } = platform();
+      await everyCopy(appWith(caller, drivers), undefined, 'notes');
+      expect(asked).toEqual([]);
+    });
+  }
+
+  it('with no store driver registered, a version that cannot be named beside a declared store is not asked: every copy proceeds', async () => {
     const { caller, asked } = platform();
-    const api = appWith(caller, [graph]);
-    const s = await docsScope();
-    const backup = await api.request(`/tenants/${t}/scopes/${s}/backups`, { method: 'POST', headers: auth });
-    expect(backup.status).toBe(503);
-    const pull = await api.request(`/tenants/${t}/scopes/${s}/export?full=true`, { headers: auth });
-    expect(pull.status).toBe(503);
+    await unnamedBesideAStore();
+    await everyCopy(appWith(caller, []), undefined, 'files');
     expect(asked).toEqual([]);
   });
 

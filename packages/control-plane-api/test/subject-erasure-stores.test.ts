@@ -86,8 +86,8 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
   };
 
   /** A scope nothing routes and no slug resolves, reached only through a retained copy: no deployment to ask. */
-  const unservedScope = async () => {
-    const scope = await sealedScope();
+  const unservedScope = async (vertical?: string) => {
+    const scope = await sealedScope(vertical);
     const ref = `docs-copy-${scope.s.toLowerCase()}`;
     const move = ulid();
     await host.admin.recordScopeScriptCopy(staff, t, scope.s, ref, move, { role: 'destination' });
@@ -121,6 +121,43 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       platformScopeStores,
       ...(storeDrivers ? { storeDrivers } : {}),
     });
+
+  const publish = async (scopeStores?: unknown[], slug = 'docs', deployed = true) => {
+    const id = ulid();
+    const ref = deployed ? `${slug}-${id.toLowerCase()}` : null;
+    await host.admin.publishVersion(staff, {
+      id,
+      verticalSlug: slug,
+      version: `1.0.${id.slice(-4).toLowerCase()}`,
+      manifestDigest: `m-${id}`,
+      permissionDigest: 'p',
+      migrationDigest: 'g',
+      deploymentRef: ref,
+      manifestJson: JSON.stringify({
+        version: '1.0.0',
+        entry: 'index.js',
+        compatibilityDate: '2026-07-01',
+        registry: { permissions: [], roles: [], entityGrants: [] },
+        digests: { manifest: 'm', permission: 'p', migration: 'g' },
+        ...(scopeStores ? { scopeStores } : {}),
+      }),
+    });
+    await host.admin.admitVersion(staff, id);
+    return { id, ref };
+  };
+  /** Its own vertical (#2286): erasure reaches every binding any version of it declared. */
+  const ownVertical = async () => {
+    const slug = `own-${ulid().toLowerCase().slice(-10)}`;
+    await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
+    return slug;
+  };
+  const stores = [{ binding: 'GRAPH', driver: 'graph' }];
+  /** A vertical one version of which declares GRAPH, a version no scope below runs (#2394). */
+  const declaringVertical = async () => {
+    const slug = await ownVertical();
+    await publish(stores, slug);
+    return slug;
+  };
 
   describe('no store driver registered: nothing can hold a store, erasure proceeds', () => {
     it('no store is asked, and the key is destroyed', async () => {
@@ -196,18 +233,32 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
 
   describe('a store driver registered: a deployment that may hold a store is asked, or the key is kept', () => {
     // Stricter than asking the vertical (#2207): with no version to read, the control plane
-    // cannot say which bindings to erase, so it refuses rather than guess an empty list.
-    it('a scope with no bound version and no pin is a version unknown: 503, and the key is kept', async () => {
-      const { s, subject, keyKept } = await sealedScope();
-      const { caller, asked } = platformStores();
-      const res = await shred(bySlug(caller, [graph]), s, subject);
-      expect(res.status).toBe(503);
-      expect(asked).toEqual([]);
-      expect(await keyKept()).toBe(true);
-    });
+    // cannot say which bindings to erase, so it refuses rather than guess an empty list, where a
+    // version of the scope's vertical declared a store. Where none ever did, no store can hold the
+    // subject, and the erasure proceeds (#2394). Against an injected registry and the default one.
+    for (const [registry, drivers] of [['an injected', [graph]], ['the default', undefined]] as const) {
+      it(`with ${registry} registry, a scope with no bound version and no pin, beside a declared store, is a version unknown: 503, and the key is kept`, async () => {
+        const { s, subject, keyKept } = await sealedScope(await declaringVertical());
+        const { caller, asked } = platformStores();
+        const res = await shred(bySlug(caller, drivers), s, subject);
+        expect(res.status).toBe(503);
+        expect(asked).toEqual([]);
+        expect(await keyKept()).toBe(true);
+      });
 
-    it('a scope with no deployment to ask stops the erasure with 503, and the key is kept', async () => {
-      const { s, subject, keyKept, ref } = await unservedScope();
+      it(`with ${registry} registry, a scope with no bound version and no pin, in a vertical that never declared a store, is erased, and the key is destroyed`, async () => {
+        const { s, subject, keyKept } = await sealedScope();
+        const { caller, asked } = platformStores();
+        const res = await shred(bySlug(caller, drivers), s, subject);
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as SubjectShredReceipt).storeErasures).toEqual([]);
+        expect(asked).toEqual([]);
+        expect(await keyKept()).toBe(false);
+      });
+    }
+
+    const unservedErasure = async (vertical?: string) => {
+      const { s, subject, keyKept, ref } = await unservedScope(vertical);
       const api = createControlPlaneApi({
         host,
         authenticate: UNSAFE_devPlatformActorAuth(),
@@ -215,41 +266,18 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         resolveVerticalRef: async (r) => (r === ref ? (redactOnly as unknown as VerticalClient) : undefined),
         platformScopeStores: unreachablePlatformScopeStores(),
       });
-      const res = await shred(api, s, subject);
-      expect(res.status).toBe(503);
-      expect(await keyKept()).toBe(true);
+      return { status: (await shred(api, s, subject)).status, keyKept: await keyKept() };
+    };
+
+    it('a scope with no deployment to ask, beside a declared store, stops the erasure with 503, and the key is kept', async () => {
+      expect(await unservedErasure(await declaringVertical())).toEqual({ status: 503, keyKept: true });
+    });
+
+    it('a scope with no deployment to ask, in a vertical that never declared a store, still erases, and the key is destroyed', async () => {
+      expect(await unservedErasure()).toEqual({ status: 200, keyKept: false });
     });
 
     describe('a bound version decides by its manifest', () => {
-      const publish = async (scopeStores?: unknown[], slug = 'docs', deployed = true) => {
-        const id = ulid();
-        const ref = deployed ? `${slug}-${id.toLowerCase()}` : null;
-        await host.admin.publishVersion(staff, {
-          id,
-          verticalSlug: slug,
-          version: `1.0.${id.slice(-4).toLowerCase()}`,
-          manifestDigest: `m-${id}`,
-          permissionDigest: 'p',
-          migrationDigest: 'g',
-          deploymentRef: ref,
-          manifestJson: JSON.stringify({
-            version: '1.0.0',
-            entry: 'index.js',
-            compatibilityDate: '2026-07-01',
-            registry: { permissions: [], roles: [], entityGrants: [] },
-            digests: { manifest: 'm', permission: 'p', migration: 'g' },
-            ...(scopeStores ? { scopeStores } : {}),
-          }),
-        });
-        await host.admin.admitVersion(staff, id);
-        return { id, ref };
-      };
-      /** Its own vertical (#2286): erasure reaches every binding any version of it declared. */
-      const ownVertical = async () => {
-        const slug = `own-${ulid().toLowerCase().slice(-10)}`;
-        await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli' });
-        return slug;
-      };
       /** `'default'` passes no `storeDrivers`, so the control plane runs `STORE_DRIVERS` (#2394). */
       const bound = async (
         scopeStores?: unknown[],
@@ -308,8 +336,6 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         const status = (await shred(api, scope.s, scope.subject)).status;
         return { status, asked: platform.asked, expected: [`${scope.s}/${scope.subject}`], keyKept: await scope.keyKept() };
       };
-      const stores = [{ binding: 'GRAPH', driver: 'graph' }];
-
       it('on the serving script, every binding any version of the vertical declared is erased (#2286)', async () => {
         const served = await onServingScript({ servedStores: stores });
         expect(served).toEqual({ status: 200, asked: served.expected, expected: served.expected, keyKept: false });
@@ -322,10 +348,14 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         expect(none).toEqual({ status: 200, asked: [], expected: none.expected, keyKept: false });
       });
 
-      // Stricter than asking (#2207): a version unknown names no binding to erase, so it refuses.
+      // Stricter than asking (#2207): a version unknown names no binding to erase, so it refuses
+      // where a version of the vertical declared one (the bound version here, which the pin does
+      // not run). Where none did, there is no store to erase, and the erasure proceeds (#2394).
       it('on the serving script, a pointer naming another script is a version unknown: 503, and the key is kept', async () => {
-        const other = await onServingScript({ pointerRef: 'docs-elsewhere' });
+        const other = await onServingScript({ pointerRef: 'docs-elsewhere', boundStores: stores });
         expect(other).toEqual({ status: 503, asked: [], expected: other.expected, keyKept: true });
+        const none = await onServingScript({ pointerRef: 'docs-elsewhere' });
+        expect(none).toEqual({ status: 200, asked: [], expected: none.expected, keyKept: false });
       });
 
       it('a store erase that fails stops the erasure before the key, and a retry then destroys it', async () => {
