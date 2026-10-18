@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import {
   type Artifacts,
@@ -70,13 +70,18 @@ export function atCommit(commit: string, path: string, cwd: string): string | nu
   return shown.stdout;
 }
 
-/** The repo-relative path git wants, with forward slashes. */
-const repoPath = (root: string, abs: string): string => relative(root, abs).split(sep).join('/');
+/**
+ * The repo-relative path git wants, with forward slashes. Both sides are REAL paths: git reports
+ * its top level through symlinks resolved (macOS's /var is /private/var), and a path relative to
+ * the unresolved one climbs out of the repository.
+ */
+const repoPath = (root: string, abs: string): string =>
+  relative(realpathSync(root), realpathSync(abs)).split(sep).join('/');
 
 /** One vertical's artifacts at the base commit and in the working tree. */
 export function readArtifacts(pkgDir: string, commit: string, root: string): { base: Artifacts; head: Artifacts } {
   const read = (file: string) => (existsSync(join(pkgDir, file)) ? readFileSync(join(pkgDir, file), 'utf8') : null);
-  const at = (file: string) => atCommit(commit, repoPath(root, join(pkgDir, file)), root);
+  const at = (file: string) => atCommit(commit, `${repoPath(root, pkgDir)}/${file}`.replace(/^\//, ''), root);
   return {
     base: { model: at(ARTIFACT_FILES.model), openapi: at(ARTIFACT_FILES.openapi), permissions: at(ARTIFACT_FILES.permissions) },
     head: { model: read(ARTIFACT_FILES.model), openapi: read(ARTIFACT_FILES.openapi), permissions: read(ARTIFACT_FILES.permissions) },
@@ -93,9 +98,10 @@ export function packageNameOf(pkgDir: string): string {
 
 /** The `.changeset` directory serving `pkgDir`: the nearest one at or above it, up to the repo root. */
 export function changesetDirFor(pkgDir: string, root: string): string {
-  for (let dir = resolve(pkgDir); ; dir = dirname(dir)) {
+  const top = realpathSync(root);
+  for (let dir = realpathSync(pkgDir); ; dir = dirname(dir)) {
     if (existsSync(join(dir, '.changeset', 'config.json'))) return join(dir, '.changeset');
-    if (dir === resolve(root) || dirname(dir) === dir) break;
+    if (dir === top || dirname(dir) === dir) break;
   }
   throw new CannotRun(`no .changeset/config.json at or above ${pkgDir} — this project does not release with changesets (run \`changeset init\`)`);
 }
