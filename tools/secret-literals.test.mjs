@@ -106,14 +106,16 @@ test('every accepted entry carries a reason', () => {
   }
 });
 
-test('in CI a refused value prints only a 12-hex prefix of its digest; locally the whole digest, to pin', () => {
+test('in CI no digest is printed at all, not even a prefix; locally the whole digest, to pin', () => {
   const swapped = jwk.replace('a1B2', 'z9Y8');
   const full = scan(swapped)[0].digest;
+  const accepted0 = accepted['a/dev-key.ts'].digests[0];
+  for (const line of findLiterals([file('a/dev-key.ts', swapped)], accepted, { ci: true })) {
+    assert.ok(!line.includes(full.slice(0, 8)) && !line.includes(accepted0.slice(0, 8)), line);
+    assert.doesNotMatch(line, /[0-9a-f]{8}/, 'no hex run that could be a digest prefix');
+  }
   const [inCi] = findLiterals([file('a/dev-key.ts', swapped)], accepted, { ci: true });
-  assert.ok(inCi.includes(`sha256 ${full.slice(0, 12)}…`), inCi);
-  assert.ok(!inCi.includes(full), 'the full digest must not reach a CI log');
+  assert.match(inCi, /not an accepted value; run pnpm lint:secret-literals locally to see the digest to pin/);
   const [local] = findLiterals([file('a/dev-key.ts', swapped)], accepted, { ci: false });
   assert.ok(local.includes(`sha256 ${full})`), local);
-  const [stale] = findLiterals([file('a/dev-key.ts', 'nothing')], accepted, { ci: true });
-  assert.ok(!stale.includes(accepted['a/dev-key.ts'].digests[0]) && stale.includes(accepted['a/dev-key.ts'].digests[0].slice(0, 12)));
 });
