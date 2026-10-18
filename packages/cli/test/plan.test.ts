@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { appendDecision, conceptDelta, digestOf, entryFor, isEmpty, planCommand, renderDelta } from '../src/plan.js';
+import { appendDecision, conceptDelta, digestOf, entryFor, entryTextProblem, isEmpty, planCommand, renderDelta } from '../src/plan.js';
 
 /**
  * `substrat plan` (#2363): the concept delta a design gate shows, and the approval that records it.
@@ -192,6 +192,17 @@ describe('determinism', () => {
   });
 });
 
+describe('entryTextProblem', () => {
+  it('refuses comments, line breaks and control characters; passes plain text', () => {
+    for (const bad of ['a <!-- b', 'b --> c', 'a\nb', 'a\rb', 'a\tb', 'a\u0000b', 'a\u007fb']) {
+      expect(entryTextProblem(bad), JSON.stringify(bad)).toBeDefined();
+    }
+    for (const good of [undefined, 'Owners asked to tag items', 'Ada Lovelace — owner', 'a -> b, a < b']) {
+      expect(entryTextProblem(good), JSON.stringify(good)).toBeUndefined();
+    }
+  });
+});
+
 describe('appendDecision', () => {
   it('adds the entry as the last item of the log, keeping the section after it', () => {
     const md = '# C\n\n## Decisions log\n\n- 2026-01-01: first.\n\n## Later\n\ntext\n';
@@ -296,6 +307,34 @@ describe('planCommand against a git checkout', () => {
     const empty = await planCommand(pkgDir, { base: 'main', json: false, date: DATE, approve: digest, by: 'x', why: 'y' });
     expect(empty.code).toBe(1);
     expect(empty.err[0]).toMatch(/nothing to approve/);
+    expect(concept()).toBe(CONCEPT);
+  });
+
+  it('a concept marker in --why or --by is refused, and concept.md stays byte-identical', async () => {
+    addTag();
+    const { digest } = JSON.parse((await planCommand(pkgDir, { base: 'main', json: true, date: DATE })).out[0]!);
+    for (const [why, by] of [
+      ['x <!-- substrat:entities --> y', 'Ada'],
+      ['Tags', 'Ada -->'],
+      ['Tags', '<!-- /substrat:roles -->'],
+    ]) {
+      const r = await planCommand(pkgDir, { base: 'main', json: false, date: DATE, approve: digest, by, why });
+      expect(r.code, `${why} / ${by}`).toBe(1);
+      expect(r.err[0]).toMatch(/may not contain an HTML comment/);
+      expect(concept()).toBe(CONCEPT);
+    }
+    // The twin: the same approval with plain text goes through, and the file still syncs.
+    const ok = await planCommand(pkgDir, { base: 'main', json: false, date: DATE, approve: digest, by: 'Ada', why: 'Tags' });
+    expect(ok.code).toBe(0);
+    expect(concept()).toContain('Tags. Entities: added `tag`.');
+  });
+
+  it('a multi-line --why is refused, and concept.md stays byte-identical', async () => {
+    addTag();
+    const { digest } = JSON.parse((await planCommand(pkgDir, { base: 'main', json: true, date: DATE })).out[0]!);
+    const r = await planCommand(pkgDir, { base: 'main', json: false, date: DATE, approve: digest, by: 'Ada', why: 'one\n## Injected' });
+    expect(r.code).toBe(1);
+    expect(r.err[0]).toMatch(/must be one line of plain text/);
     expect(concept()).toBe(CONCEPT);
   });
 

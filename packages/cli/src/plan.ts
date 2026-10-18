@@ -5,7 +5,7 @@ import type { EmittedLifecycle, EmittedModel } from '@substrat-run/contracts';
 import { decisionsLog, entityDiagram, lifecycleDiagram, parseModel, parsePermissions } from '@substrat-run/model-view';
 import { type Artifacts, type Bump, type Change, classify } from './bump.js';
 import { baseCommit, CannotRun, changesetDirFor, defaultBase, gitRoot, packageNameOf, readArtifacts } from './changeset.js';
-import { syncConceptFile } from './concept.js';
+import { renderConceptFor } from './concept.js';
 
 /**
  * `substrat plan` — the concept delta a design gate shows (#2363).
@@ -412,6 +412,18 @@ export interface PlanOptions {
   readonly by?: string;
 }
 
+/**
+ * Why `--by` or `--why` cannot go into the entry, or `undefined`. A concept marker in it would be
+ * a second `<!-- substrat:… -->` in the document — every later sync and `lint:concept` refuses
+ * that — and any comment or line break would let one value write structure into concept.md.
+ */
+export function entryTextProblem(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (/<!--|-->/.test(value)) return 'may not contain an HTML comment (`<!--` or `-->`): it would be read as a concept.md marker';
+  if (/[\u0000-\u001f\u007f]/.test(value)) return 'must be one line of plain text (no line breaks or control characters)';
+  return undefined;
+}
+
 /** `substrat plan`, minus the process: what to print and the exit code. */
 export async function planCommand(dir: string, opts: PlanOptions): Promise<{ out: string[]; err: string[]; code: 0 | 1 }> {
   const { delta, base } = planFor(dir, opts.base);
@@ -438,19 +450,20 @@ export async function planCommand(dir: string, opts: PlanOptions): Promise<{ out
       code: 1,
     };
   }
+  for (const [name, value] of [['--by', opts.by], ['--why', opts.why]] as const) {
+    const problem = entryTextProblem(value);
+    if (problem) return { out: [], err: [`${name} ${problem}`], code: 1 };
+  }
   const file = join(resolve(dir), 'spec', 'concept.md');
   if (!existsSync(file)) throw new CannotRun(`no spec/concept.md at ${file} — the approval is recorded in its Decisions log`);
   const entry = entryFor(delta, { date: opts.date, why: opts.why, by: opts.by, digest });
-  const updated = appendDecision(readFileSync(file, 'utf8'), entry);
-  // Refuses unreadable markers BEFORE anything is written, so a refusal leaves no half-recorded approval.
-  syncConceptFile(dir, { check: true });
-  writeFileSync(file, updated);
-  const synced = syncConceptFile(dir);
+  const current = readFileSync(file, 'utf8');
+  // The whole result is rendered in memory first, the entry included, and written only once it
+  // renders: a refusal (an unreadable marker, wherever it came from) leaves the file byte-identical.
+  const { after } = renderConceptFor(dir, appendDecision(current, entry));
+  writeFileSync(file, after);
   return {
-    out: [
-      `✓ approved ${digest} (${delta.impact.bump}) — recorded in the Decisions log of ${file}`,
-      ...(synced.changed ? ['  and its generated sections re-synced from model.json and PERMISSIONS.md'] : []),
-    ],
+    out: [`✓ approved ${digest} (${delta.impact.bump}) — recorded in the Decisions log of ${file}, generated sections re-synced`],
     err: [],
     code: 0,
   };
