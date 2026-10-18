@@ -5,14 +5,18 @@
  * stays readable in the history after it is removed. Review is the only thing that has looked
  * for one so far. This reads every file git tracks (plus, locally, every untracked file git
  * does not ignore, so a key is caught before it is committed) for the SHAPES a credential
- * has when its issuer gives it a recognisable form: a PEM private key, a JWK's private
- * exponent, a provider token with its documented prefix, a connection URL carrying a password.
+ * has when its issuer gives it a recognisable form: a PEM private key or a PGP private key block,
+ * a JWK's private exponent, a provider token with its documented prefix, a chat webhook URL
+ * (Slack, Discord, Teams), a URL of any scheme carrying `user:password@`.
  *
- * **What this is, and is not.** A tripwire for the credentials that announce themselves. A
- * secret with no fixed shape (a random HMAC key, a Cloudflare API token, a password) gets past
- * it, and so does one assembled from parts; a secret reaching a log line, an error or a
- * response is a different question and stays the reviewer's. The checklist marks that half
- * `judgement`.
+ * **What this is, and is not.** A tripwire for the credentials that announce themselves, and
+ * nothing more. These get past it:
+ * - a secret with no fixed shape: a random HMAC key, a Cloudflare API token, a password;
+ * - a shaped secret that is encoded (base64 of a PEM, a hex dump) or split (concatenated from
+ *   parts, built from an array, spread across lines of a template);
+ * - a secret reaching a log line, an error, an event payload or a response, which is a question
+ *   about data flow, not about a literal.
+ * Those stay the reviewer's, and the checklist marks them `judgement`.
  *
  * **It never prints a match.** Output is `file:line` and the shape's name, nothing of the value,
  * because the output is a CI log and a log is public text too.
@@ -49,7 +53,14 @@ export const SHAPES = [
   { name: 'Stripe live key', re: /\b[rs]k_live_[A-Za-z0-9]{20,}/g },
   { name: 'Google API key', re: /\bAIza[0-9A-Za-z_-]{35}\b/g },
   { name: 'npm token', re: /\bnpm_[A-Za-z0-9]{36}\b/g },
-  { name: 'connection URL with a password', re: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?):\/\/[^\s:/@'"`]+:[^\s@/'"`$<{]{3,}@/g },
+  { name: 'PGP private key block', re: /-----BEGIN PGP PRIVATE KEY BLOCK-----(?:\s|\\n|[A-Za-z-]+: [^\n]*)*[A-Za-z0-9+/=]{60,}/g },
+  {
+    name: 'chat webhook URL',
+    re: /https:\/\/(?:hooks\.slack\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9_/-]{20,}|(?:(?:canary|ptb)\.)?discord(?:app)?\.com\/api\/webhooks\/\d{5,}\/[A-Za-z0-9_-]{40,}|[a-z0-9-]+\.webhook\.office\.com\/webhookb2\/[A-Za-z0-9@-]{30,})/g,
+  },
+  // Any scheme: a database URL, a git remote, an HTTP endpoint with `user:password@`. A placeholder
+  // (`<password>`) or an interpolation (`${password}`) is no value.
+  { name: 'URL with embedded credentials', re: /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@'"`$<{]+:[^\s@/'"`$<{]{3,}@/g },
 ];
 
 /**
@@ -58,13 +69,18 @@ export const SHAPES = [
  * a secret.
  */
 export const ACCEPTED = {
+  'demos/auth-server/test/providers.test.ts': {
+    shape: 'URL with embedded credentials',
+    digests: ['a5ddf2ace08192c749698c660b6595116a719a02d1de97f1c8b72f849385c0f8'],
+    reason: 'a made-up issuer URL the tests use to prove the issuer refuses one carrying credentials',
+  },
   'packages/dev-issuer/src/keys.ts': {
     shape: 'JWK private exponent',
     digests: ['94842336b540949844f01325272c8b214955e975931d0a836846cc787af650f8'],
     reason: "the dev issuer's signing key, checked in on purpose so a local login needs no setup; it signs for no deployed issuer (CLAUDE.md, packages/dev-issuer)",
   },
   'packages/contracts/test/errors.test.ts': {
-    shape: 'connection URL with a password',
+    shape: 'URL with embedded credentials',
     digests: ['f69a32207c70044fac192847546f3085cbf43a94451a002f710703e1939e064b'],
     reason: 'a made-up connection string the test throws to prove an internal error message is never returned',
   },

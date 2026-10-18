@@ -17,14 +17,19 @@ const fakes = {
   'Stripe live key': `${'sk_'}live_${'9'.repeat(24)}`,
   'Google API key': `${'AI'}za${'b'.repeat(35)}`,
   'npm token': `${'npm'}_${'c'.repeat(36)}`,
-  'connection URL with a password': `${'postgres'}://app:${'s3cret-pw'}@db.internal:5432/x`,
+  'URL with embedded credentials (postgres)': `${'postgres'}://app:${'s3cret-pw'}@db.internal:5432/x`,
+  'PGP private key block': `-----BEGIN PGP ${'PRIVATE'} KEY BLOCK-----\n\nlQOYBF${'x'.repeat(60)}\n`,
+  'chat webhook URL': `https://${'hooks.slack'}.com/services/T0123ABCD/B0123ABCD/${'aB3'.repeat(8)}`,
+  'chat webhook URL (discord)': `https://${'discord'}.com/api/webhooks/123456789012345678/${'Zx_9'.repeat(16)}`,
+  'chat webhook URL (teams)': `https://acme.${'webhook'}.office.com/webhookb2/${'1a2b'.repeat(9)}@${'3c4d'.repeat(9)}/IncomingWebhook/${'e5f6'.repeat(8)}/${'7a8b'.repeat(9)}`,
+  'URL with embedded credentials': `https://deploy:${'gh-pass-123'}@git.example.com/repo.git`,
 };
 const file = (path, text) => ({ path, text });
 
 test('every shape finds its fake, and reports the shape name, never the value', () => {
   for (const [label, value] of Object.entries(fakes)) {
     const hits = scan(`\nconst x = ${value};\n`);
-    const shape = label.replace(' (escaped)', '');
+    const shape = label.replace(/ \([a-z]+\)$/, '');
     assert.deepEqual(hits.map((h) => h.shape), [shape], label);
     assert.deepEqual(Object.keys(hits[0]).sort(), ['digest', 'line', 'shape'], label);
     const offence = findLiterals([file('a/x.ts', value)], {})[0];
@@ -45,6 +50,9 @@ test('the shapes that are not keys pass: armour without a body, a placeholder, a
     "const PEM_KEY = '-----BEGIN PRIVATE KEY-----\\nMIIE-test\\n-----END PRIVATE KEY-----';",
     'DATABASE_URL=postgres://app@localhost:5432/x',
     'url = `postgres://${user}:${password}@${host}`',
+    'see https://user:<password>@host and https://hooks.slack.com/services/T000/B000/XXXX',
+    '-----BEGIN PGP PUBLIC KEY BLOCK-----\nmQENBF' + 'y'.repeat(60),
+    'git@github.com:substrat-run/substrat.git and mailto:a@b.c',
     "const id = 'sk-short';",
     "{ d: 'short' }",
   ];

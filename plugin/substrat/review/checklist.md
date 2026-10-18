@@ -124,10 +124,11 @@ gates: `pnpm typecheck` · `npm run typecheck` · `pnpm lint:lifecycle-writes` �
 ### S7 · Secrets stay out of source and logs: blocking
 
 - *Gate:* `pnpm lint:secret-literals` refuses a credential whose issuer gives it a shape (a
-  PEM or JWK private key, a provider token prefix, a connection URL with a password). A
-  secret with no shape gets past it.
+  PEM, PGP or JWK private key, a provider token prefix, a chat webhook URL, a URL with
+  `user:password@`). It does not see a secret with no shape, nor a shaped one that is encoded
+  (base64, hex) or assembled from parts.
 - *Reader:* a literal secret with no recognisable shape (an HMAC key, a password, an API
-  token without a prefix); a secret reaching a log line, an
+  token without a prefix), or one encoded or split so no shape shows; a secret reaching a log line, an
   error, an event payload or a response; a secret name in public text (a PR description, a
   comment).
 
