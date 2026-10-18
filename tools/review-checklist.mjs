@@ -78,25 +78,62 @@ function canonicalPnpm(tokens) {
   return tokens[0] === 'pnpm' && tokens[1] === 'run' ? ['pnpm', ...tokens.slice(2)] : tokens;
 }
 
-/** The commands CI runs, one token list per command (a multi-line `run: |` is several). */
+/** A condition that holds on some events or refs only: such a step is not run on every PR. */
+const NARROWS = /\bgithub\.(?:event_name|ref|ref_name|head_ref|base_ref)\b/;
+
+/**
+ * The commands CI runs on a pull request, one token list per command (a multi-line `run: |` is
+ * several). Read line by line, not as full YAML: a step's `run:` (inline, or a `|`, `|-`, `>` or
+ * `>-` block), its `if:` and its `working-directory:`, and a job's `if:`. A step or job whose
+ * condition names the event or the ref runs only sometimes, and a step run in another directory
+ * runs another script, so neither counts; any other condition (a scope count, `always()`) does.
+ */
 export function ciCommands(yaml) {
   const out = [];
+  let jobIf = null;
+  let step = null;
   let block = null;
+  const flush = () => {
+    if (step && !step.wd && !NARROWS.test(step.if ?? '') && !NARROWS.test(jobIf ?? '')) out.push(...step.runs);
+    step = null;
+  };
+  const key = (k, value, keyIndent) => {
+    if (k === 'run') {
+      if (/^[|>][-+]?$/.test(value)) block = keyIndent;
+      else step.runs.push(value.trim());
+    } else if (k === 'if') step.if = value;
+    else if (k === 'working-directory') step.wd = value;
+  };
   for (const line of yaml.split('\n')) {
     const indent = line.length - line.trimStart().length;
     if (block !== null) {
       if (line.trim() === '' || indent > block) {
-        if (line.trim()) out.push(line.trim());
+        if (line.trim()) step.runs.push(line.trim());
         continue;
       }
       block = null;
     }
-    const run = /^(\s*)(?:-\s+)?run:\s*(.*)$/.exec(line);
-    if (!run) continue;
-    // A block scalar's lines are indented past the key's own line.
-    if (run[2] === '|' || run[2] === '>') block = run[1].length;
-    else out.push(run[2].trim());
+    if (/^ {2}[\w-]+:\s*$/.test(line)) {
+      flush();
+      jobIf = null;
+      continue;
+    }
+    const jobKey = /^ {4}if:\s*(.*)$/.exec(line);
+    if (jobKey && !step) {
+      jobIf = jobKey[1];
+      continue;
+    }
+    const dash = /^(\s*)-\s+([\w-]+):\s*(.*)$/.exec(line);
+    if (dash) {
+      flush();
+      step = { indent: dash[1].length, if: null, wd: null, runs: [] };
+      key(dash[2], dash[3], dash[1].length + 2);
+      continue;
+    }
+    const kv = /^(\s*)([\w-]+):\s*(.*)$/.exec(line);
+    if (kv && step && kv[1].length === step.indent + 2) key(kv[2], kv[3], kv[1].length);
   }
+  flush();
   return out.filter((c) => !c.startsWith('#')).map((c) => canonicalPnpm(words(c)));
 }
 

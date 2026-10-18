@@ -92,3 +92,43 @@ test('a checklist with no items is refused rather than passing over nothing', ()
 test('an unknown command kind is refused', () => {
   assert.match(offences('gates: `make lint`')[0], /neither a pnpm, node nor npm command/);
 });
+
+test('a |- or >- block scalar is read like |', () => {
+  const runs = ciCommands(`
+jobs:
+  checks:
+    steps:
+      - run: |-
+          pnpm lint:model --check
+      - run: >-
+          pnpm lint:tests
+`);
+  assert.deepEqual(runs.map((c) => c.join(' ')), ['pnpm lint:model --check', 'pnpm lint:tests']);
+});
+
+test('a step that runs only on some events or refs, or in another directory, does not count as run on a PR', () => {
+  const runs = ciCommands(`
+jobs:
+  checks:
+    steps:
+      - name: push only
+        if: github.event_name == 'push'
+        run: pnpm lint:pushonly
+      - if: github.ref == 'refs/heads/main'
+        run: pnpm lint:mainonly
+      - name: elsewhere
+        working-directory: demos/todo
+        run: pnpm lint:elsewhere
+      - name: scoped, still every PR
+        if: steps.scope.outputs.count != '0'
+        run: pnpm lint:scoped
+  release:
+    if: github.event_name == 'push'
+    steps:
+      - run: pnpm lint:releaseonly
+  every:
+    steps:
+      - run: pnpm lint:every
+`);
+  assert.deepEqual(runs.map((c) => c.join(' ')), ['pnpm lint:scoped', 'pnpm lint:every']);
+});
