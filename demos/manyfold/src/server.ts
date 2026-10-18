@@ -9,7 +9,7 @@ import Database from 'better-sqlite3';
 import type { ScopeStub } from '@substrat-run/kernel';
 import { ulid } from '@substrat-run/kernel';
 import { platformActorId, principalId, z, type PlatformActorId, type PrincipalId, type ScopeId } from '@substrat-run/contracts';
-import { kickFlags, problemResponse } from '@substrat-run/vertical-host';
+import { kickFlags, problemResponse, invocationLog } from '@substrat-run/vertical-host';
 import { devLogin, type DevCaller } from '@substrat-run/dev-issuer';
 import { buildDemoHost, seedDemo, type ManyfoldWorld } from './index.js';
 import { DEV_PROVIDER } from './personas.js';
@@ -87,6 +87,10 @@ async function sha256Hex(s: string): Promise<string> {
 }
 
 const app = new Hono();
+// The request's stamp: an id on every response (`x-substrat-request-id`) and, under
+// `substrat dev`, the HTTP half of its trace. FIRST, so it wraps every route below. Bare on
+// purpose: no router fronts this server, so there is nothing to verify and no line to write.
+app.use('*', invocationLog());
 
 app.onError((err, c) => problemResponse(c, err));
 

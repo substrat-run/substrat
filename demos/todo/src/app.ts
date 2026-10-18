@@ -3,6 +3,7 @@
  * the same wiring a browser does (the scenario suite never reaches it).
  */
 import { Hono } from 'hono';
+import { invocationLog } from '@substrat-run/vertical-host';
 import { HTTPException } from 'hono/http-exception';
 import { substratError } from '@substrat-run/contracts';
 import type { AuthSubject, DevLogin } from '@substrat-run/dev-issuer';
@@ -20,6 +21,10 @@ export interface AppOptions {
 
 export function createApp({ host, login, env }: AppOptions): Hono {
   const app = new Hono();
+  // The request's stamp: an id on every response (`x-substrat-request-id`) and, under
+  // `substrat dev`, the HTTP half of its trace. FIRST, so it wraps every route below. Bare on
+  // purpose: no router fronts this server, so there is nothing to verify and no line to write.
+  app.use('*', invocationLog());
 
   // The relying-party endpoints. Accounts and passwords live at the issuer; this vertical
   // has no credential store and hosts no sign-up.

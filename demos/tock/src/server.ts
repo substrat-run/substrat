@@ -20,6 +20,7 @@ import { serve } from '@hono/node-server';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { Hono } from 'hono';
+import { invocationLog } from '@substrat-run/vertical-host';
 import { HTTPException } from 'hono/http-exception';
 import { platformActorId } from '@substrat-run/contracts';
 import { devLogin } from '@substrat-run/dev-issuer';
@@ -69,6 +70,10 @@ async function boot() {
   await linkDevPersonas(host, { ...world, staff });
 
   const app = new Hono();
+  // The request's stamp: an id on every response (`x-substrat-request-id`) and, under
+  // `substrat dev`, the HTTP half of its trace. FIRST, so it wraps every route below. Bare on
+  // purpose: no router fronts this server, so there is nothing to verify and no line to write.
+  app.use('*', invocationLog());
   const login = devLogin({ directory: host.admin, actor: staff, provider: DEV_PROVIDER });
 
   /** The scope stub for whoever is signed in, or a 401. */
