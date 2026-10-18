@@ -189,9 +189,9 @@ returns nothing usable, admits no delegated token.
 
 A delivered `audience` (on `substrat:auth`) applies to a delegated token too, and that token's
 one `aud` is the endpoint's resource. So unless the audience is exactly that resource, no
-delegated token is admitted: the opt-in is off, and it fails closed. `selectAuthProvider` logs
-a warning, once per isolate, when the audience it is handed is not this app's `/api/mcp`
-resource.
+delegated token is admitted: the opt-in is off, and it fails closed. The verifier logs a
+warning when the endpoint's channel names a resource other than the delivered audience,
+once per isolate for each issuer and audience. It names the field, not its value.
 
 What each half does:
 

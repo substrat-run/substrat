@@ -37,8 +37,8 @@ list, or a function of the install's delivered wiring (`{ identity, config }`) t
 since a client id is per team auth server. A resolver that throws or returns nothing usable
 admits no delegated token. `maxLifetimeSeconds` can lower the lifetime bound (five minutes).
 Without the option, any bearer carrying `act` is refused. A delivered `audience` that is not the
-MCP endpoint's resource refuses every delegated token too, and `selectAuthProvider` warns once
-when it sees one. See [calls made for a user by another
+MCP endpoint's resource refuses every delegated token too. The verifier warns, once per isolate
+for each issuer and audience, when the endpoint's channel names a resource other than it. See [calls made for a user by another
 app](/concepts/mcp#a-call-made-for-a-user-by-another-app).
 
 The provider proves *who* a caller is and nothing more. [Authorization stays in the
