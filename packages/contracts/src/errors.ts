@@ -404,6 +404,7 @@ const CODE_FOR_STORE_STATUS: Partial<Record<number, ErrorCode>> = {
   409: 'conflict',
   412: 'precondition_failed',
   422: 'validation_failed',
+  426: 'Upgrade required',
   429: 'rate_limited',
 };
 
@@ -587,6 +588,7 @@ const STATUS_TITLES: Readonly<Record<number, string>> = {
   412: 'Precondition failed',
   415: 'Unsupported media type',
   422: 'Unprocessable content',
+  426: 'Upgrade required',
   429: 'Too many requests',
   500: 'Internal error',
   501: 'Not implemented',
