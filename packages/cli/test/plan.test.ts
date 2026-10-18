@@ -119,6 +119,16 @@ describe('conceptDelta — each section, and its twin when nothing changed', () 
     ]);
   });
 
+  it('a base with no model draws each lifecycle as added, with its state diagram', () => {
+    const d = conceptDelta(PKG, art(null, null), art(MODEL));
+    expect(d.lifecycles.added).toEqual(['item']);
+    expect(d.lifecycles.after).toHaveLength(1);
+    expect(d.lifecycles.after[0]).toContain('stateDiagram-v2');
+    const text = renderDelta(d, OPTS);
+    expect(text).toContain('- **Lifecycle added:** `item`');
+    expect(text).toContain('stateDiagram-v2');
+  });
+
   it('lifecycles twin: unchanged lifecycles say so', () => {
     expect(same.lifecycles).toMatchObject({ added: [], removed: [], transitions: [], changes: [], after: [] });
     expect(sameText).toContain('_No lifecycle, state or transition changes._');

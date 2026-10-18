@@ -161,7 +161,8 @@ export function conceptDelta(pkg: string, base: Artifacts, head: Artifacts): Con
   const hl = headModel.lifecycles ?? {};
   const lifecycleNames = sorted(new Set([...Object.keys(bl), ...Object.keys(hl)]));
   const lifecycleChanges = modelChanges.filter((c) => c.path.startsWith('lifecycles.'));
-  const touched = lifecycleNames.filter((n) => n in hl && lifecycleChanges.some((c) => under(`lifecycles.${n}`, c)));
+  // Drawn: each lifecycle that is new (a new vertical has no `lifecycles.*` findings, only "model.json added") or changed.
+  const touched = lifecycleNames.filter((n) => n in hl && (!(n in bl) || lifecycleChanges.some((c) => under(`lifecycles.${n}`, c))));
 
   return {
     package: pkg,
@@ -298,7 +299,7 @@ export function renderDelta(d: ConceptDelta, opts: { base: string; digest: strin
 
   out.push('## Lifecycles', '');
   const l = d.lifecycles;
-  if (l.changes.length === 0 && l.transitions.length === 0) out.push('_No lifecycle, state or transition changes._', '');
+  if (l.changes.length === 0 && l.transitions.length === 0 && l.added.length + l.removed.length === 0) out.push('_No lifecycle, state or transition changes._', '');
   else {
     if (l.added.length) out.push(`- **Lifecycle added:** ${code(l.added)}`);
     if (l.removed.length) out.push(`- **Lifecycle removed:** ${code(l.removed)} — its states are no longer enforced`);
