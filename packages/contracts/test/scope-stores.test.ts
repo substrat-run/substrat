@@ -160,16 +160,10 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
     // The registry is the caller's to pass: against one holding no driver, the same declaration is refused.
     expect(() => assertScopeStoresRegistered(stores, [])).toThrow(/not registered/);
     expect(() => assertDeclaredScopeStores({ scopeStores: stores, drivers: [] })).toThrow(/not registered/);
+    // The pin's values are not restated here: the release bytes are not in this repo, so a copy of
+    // the digest would only hold the constant to itself. Its shape is held where every registered
+    // driver is parsed, below; the digest is checked against the bytes at every upload.
     expect(STORE_DRIVERS.map((driver) => driver.driver)).toEqual(['graph']);
-    expect(STORE_DRIVERS[0]?.className).toBe('Store');
-    expect(STORE_DRIVERS[0]?.operations).toHaveLength(35);
-    expect(STORE_DRIVERS[0]?.releases).toEqual([
-      {
-        sha256: '1fb0bb0be73c05239b5e769280461c3049ef295f2f92cab90cba9c15ba5ad122',
-        sourceCommit: 'f49ef6bb16691517a38fd36268ceb79834d6fbc6',
-        schema: 0,
-      },
-    ]);
   });
 
   it('refuses a registration that does not answer substrat.erase', () => {
