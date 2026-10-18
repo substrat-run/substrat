@@ -13,7 +13,15 @@
  *
  * A vertical that has a `model.json` must carry a concept document with the markers; one that
  * has the file without them is red, not skipped, so "migrated" cannot silently mean "ignored".
- * A concept document with markers but no `model.json` beside it cannot be rendered: exit 2.
+ * A concept document with no `model.json` beside it (the scaffold template, a prose-only design) is
+ * skipped: with nothing to render from there is nothing to be stale. If NO document has one, the
+ * tool exits 2 rather than print green over nothing.
+ *
+ * Two limits of the base rule, deliberate. It asks that the Decisions log text DIFFER from the
+ * base's, not that a line was added: rewording an old entry satisfies it, and a human reviewer
+ * reads that diff. And it compares `model.json` and `PERMISSIONS.md` as bytes, so a platform PR
+ * that only changes how they are emitted needs one entry per vertical ("re-emitted by <change>,
+ * no change to the model"); parsing them would hide a real change behind a format one.
  *
  * The rendering is `@substrat-run/model-view`'s `syncConcept`, imported by path like the other
  * tools import the pure core of what they inspect — the gate and `substrat concept sync` are

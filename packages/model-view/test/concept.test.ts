@@ -100,9 +100,31 @@ describe('syncConcept', () => {
     expect(once.endsWith('## 5. Decisions log\n- 2026-01-01 first entry\n')).toBe(true);
   });
 
-  it('does not depend on declaration order', () => {
-    const reordered: EmittedModel = { ...MODEL, entities: { item: MODEL.entities.item!, list: MODEL.entities.list! } };
-    expect(syncConcept(DOC, { ...inputs, model: reordered })).toBe(syncConcept(DOC, inputs));
+  it('does not depend on declaration order of entities, fields, roles, keys or grants', () => {
+    const wide = `${PERMISSIONS}`
+      .replace('| `member` | `list:create` |', '| `member` | `list:manage`, `list:create` |\n| `admin` | `list:manage`, `list:create` |')
+      .replace('| `list` | `list:manage` |', '| `owner` | `list:create`, `list:manage` |\n| `list` | `list:manage` |');
+    const reversedRoles = wide
+      .replace('| `member` | `list:manage`, `list:create` |\n| `admin` | `list:manage`, `list:create` |', '| `admin` | `list:create`, `list:manage` |\n| `member` | `list:create`, `list:manage` |')
+      .replace('| `owner` | `list:create`, `list:manage` |\n| `list` | `list:manage` |', '| `list` | `list:manage` |\n| `owner` | `list:manage`, `list:create` |');
+    expect(reversedRoles).not.toBe(wide);
+    const reversedModel: EmittedModel = {
+      ...MODEL,
+      entities: {
+        item: {
+          ...MODEL.entities.item!,
+          fields: { type: 'object', properties: Object.fromEntries(Object.entries((MODEL.entities.item!.fields as { properties: object }).properties).reverse()) },
+        },
+        list: {
+          ...MODEL.entities.list!,
+          fields: { type: 'object', properties: Object.fromEntries(Object.entries((MODEL.entities.list!.fields as { properties: object }).properties).reverse()) },
+        },
+      },
+    };
+    expect(syncConcept(DOC, { model: reversedModel, permissionsMd: reversedRoles })).toBe(
+      syncConcept(DOC, { model: MODEL, permissionsMd: wide }),
+    );
+    expect(syncConcept(DOC, { model: MODEL, permissionsMd: wide })).toContain('| `admin` | `list:create` — Create lists of your own<br>`list:manage`');
   });
 
   it('draws names Mermaid cannot take as ids through aliases', () => {
@@ -156,7 +178,7 @@ describe('syncConcept', () => {
 
   it('says so when there is nothing to draw', () => {
     const out = syncConcept(DOC, { model: { entities: {} } });
-    expect(out).toContain('No `PERMISSIONS.md` yet');
+    expect(out).toContain('No `PERMISSIONS.md` beside');
     expect(out).toContain('No entities are declared');
     expect(out).toContain('No lifecycle is declared');
   });
