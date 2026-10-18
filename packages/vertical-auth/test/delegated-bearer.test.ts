@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair } from 'jose';
 import { DELEGATION_ASSERTION_AUDIENCE, SHARED_ISSUER_CONFIG_KEY, mcpResourceOf } from '@substrat-run/contracts';
 import { oidcRpAuthProvider, type OidcRpConfig } from '../src/oidc-rp-provider.js';
@@ -454,6 +454,71 @@ describe('delegation.actors read from the delivered wiring', () => {
   it('takes a static list the same way', async () => {
     expect((await (await providerWith({}, { actors: [ACTOR] })).resolve(bearer(await delegated()), MCP_A, AT_MCP))?.sub).toBe('user-1');
     expect(await (await providerWith({}, { actors: ['', ACTOR] })).resolve(bearer(await delegated()), MCP_A, AT_MCP)).toBeNull();
+  });
+});
+
+/**
+ * A delivered `audience` holds every bearer to it, a delegated one included, and a delegated
+ * token's one `aud` is the MCP endpoint's resource. So an audience other than that resource
+ * turns the opt-in off (closed), and `selectAuthProvider` says so instead of leaving it silent.
+ */
+describe('a delivered audience is checked on a delegated token too', () => {
+  /** Desk A on the team issuer, opted in for the helpdesk, with `audience` delivered (unless told otherwise). */
+  const withAudience = async (audience: string | undefined, { shared = true, optedIn = true } = {}) =>
+    (
+      await instanceAuthFor({
+        directory: {
+          authWiring: async () => ({
+            config: {
+              [AUTH_CONFIG_KEY]: JSON.stringify({ mode: 'oidc', issuer: ISSUER, clientId: 'desk-a', clientSecret: 'cs', ...(audience ? { audience } : {}) }),
+              ...(shared ? { [SHARED_ISSUER_CONFIG_KEY]: 'true' } : {}),
+            },
+            sessionSecret: 'session-secret-000000000000000000000001',
+          }),
+        },
+        scopeId: 'scope-1',
+        envSpec: [],
+        env: {},
+        ...(optedIn ? { delegation: { actors: [ACTOR] } } : {}),
+      })
+    ).provider();
+  const quietly = async <T>(run: (warn: MockInstance<typeof console.warn>) => Promise<T>): Promise<T> => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      return await run(warn);
+    } finally {
+      warn.mockRestore();
+    }
+  };
+
+  it('admits a delegated token only when the delivered audience is the MCP resource', async () => {
+    await quietly(async () => {
+      const t = await delegated();
+      expect((await (await withAudience(RESOURCE_A)).resolve(bearer(t), MCP_A, AT_MCP))?.delegation?.actor).toBe(ACTOR);
+      // The audience the REST routes are held to: the same token resolves to nobody.
+      expect(await (await withAudience(`${APP_A}/api`)).resolve(bearer(t), MCP_A, AT_MCP)).toBeNull();
+      // Nor is one minted for that audience a delegation through the endpoint's channel.
+      expect(await (await withAudience(`${APP_A}/api`)).resolve(bearer(await delegated({ aud: `${APP_A}/api` })), MCP_A, AT_MCP)).toBeNull();
+    });
+  });
+
+  it('warns once when the delivered audience turns the opt-in off, and not for any twin', async () => {
+    await quietly(async (warn) => {
+      const audience = `${APP_A}/api/v1`;
+      await withAudience(audience);
+      await withAudience(audience);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/no delegated bearer is admitted/), { audience });
+      warn.mockClear();
+      // Twins: the audience IS an MCP resource (on an origin nothing above has warned for, since
+      // a warning is once per audience); no opt-in; not a shared issuer (no delegation is
+      // admitted there whatever the audience); no audience at all.
+      await withAudience(mcpResourceOf('https://desk-twin.example'));
+      await withAudience(`${APP_A}/api/v2`, { optedIn: false });
+      await withAudience(`${APP_A}/api/v3`, { shared: false });
+      await withAudience(undefined);
+      expect(warn).not.toHaveBeenCalled();
+    });
   });
 });
 

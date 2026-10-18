@@ -1,4 +1,12 @@
-import { SHARED_ISSUER_CONFIG_KEY, parsePlatformBaseDomains, resolveScopedEnvSpec, z, type EnvVarSpec } from '@substrat-run/contracts';
+import {
+  MCP_ENDPOINT_PATH,
+  SHARED_ISSUER_CONFIG_KEY,
+  mcpResourceOf,
+  parsePlatformBaseDomains,
+  resolveScopedEnvSpec,
+  z,
+  type EnvVarSpec,
+} from '@substrat-run/contracts';
 import { issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import { oidcAuthProvider, type DelegationOption } from './oidc.js';
 import { oidcRpAuthProvider } from './oidc-rp-provider.js';
@@ -160,6 +168,32 @@ function resolveDelegation(delegation: InstanceDelegation, wiring: DelegationWir
   };
 }
 
+/**
+ * A delivered `audience` holds every bearer to it, a delegated one included (#1824): the
+ * verifier refuses a token whose `aud` does not name the audience before it judges the
+ * delegation, and a delegated token's one `aud` must be the MCP endpoint's resource. So an
+ * audience that is not that resource turns the opt-in off. That fails closed, and would be
+ * silent without this line. Once per isolate for each issuer and audience, because
+ * `provider()` runs on every request.
+ */
+const audienceWarned = new Set<string>();
+function warnIfAudienceRefusesDelegation(issuer: string, audience: string): void {
+  let isResource = false;
+  try {
+    isResource = audience === mcpResourceOf(new URL(audience).origin);
+  } catch {
+    // not a URL, so not a resource either
+  }
+  const key = JSON.stringify([issuer, audience]);
+  if (isResource || audienceWarned.has(key)) return;
+  audienceWarned.add(key);
+  console.warn(
+    `vertical-auth: the delivered audience is not this app's ${MCP_ENDPOINT_PATH} resource, so no delegated bearer is admitted ` +
+      "unless the MCP endpoint answers as that audience: a delegated token's one aud must be both",
+    { audience },
+  );
+}
+
 /** The delivered `substrat:auth` entry, parsed leniently: anything unusable is null. */
 export function parseAuthChoice(raw: string | undefined): AuthChoice | null {
   if (!raw) return null;
@@ -248,6 +282,7 @@ export function selectAuthProvider(opts: {
     // loopback dev issuer) or the instance answers 503.
     const refused = issuerRefusal(identity.issuer);
     if (refused) throw new AuthConfigError(503, `this instance's OIDC issuer is refused: ${refused}`);
+    if (opts.delegation && opts.sharedIssuer && identity.audience) warnIfAudienceRefusesDelegation(identity.issuer, identity.audience);
     return oidcRpAuthProvider({
       issuer: identity.issuer,
       clientId: identity.clientId,

@@ -170,7 +170,7 @@ const instance = await instanceAuthFor({ directory, scopeId, envSpec, env, deleg
 
 async function stub(c: Context) {
   // mcpChannelOf and setMcpDelegation are from @substrat-run/vertical-host
-  const subject = await providerOf(instance).resolve(c.req.raw.headers, c.req.url, { delegated: mcpChannelOf(c) });
+  const subject = await instance.provider().resolve(c.req.raw.headers, c.req.url, { delegated: mcpChannelOf(c) });
   if (!subject) throw new HTTPException(401, { message: 'unauthorized' });
   setMcpDelegation(c, subject.delegation);
   // … map subject.sub to a principal and return the scope stub, as before
@@ -186,6 +186,12 @@ sends can set it. The same `stub` therefore serves both doors: on a REST route i
 An actor's client id differs from one team auth server to the next, so `actors` may also be a
 function of the install's delivered wiring, `(wiring) => readonly string[]`. One that throws, or
 returns nothing usable, admits no delegated token.
+
+A delivered `audience` (on `substrat:auth`) applies to a delegated token too, and that token's
+one `aud` is the endpoint's resource. So unless the audience is exactly that resource, no
+delegated token is admitted: the opt-in is off, and it fails closed. `selectAuthProvider` logs
+a warning, once per isolate, when the audience it is handed is not this app's `/api/mcp`
+resource.
 
 What each half does:
 
