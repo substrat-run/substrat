@@ -789,3 +789,127 @@ describe('arming the field walk (#1923)', () => {
     }
   });
 });
+
+describe('the request trace the middleware hands a sink (#2358)', () => {
+  const slots = globalThis as Record<symbol, unknown>;
+  const KEY = Symbol.for('substrat.trace-sink');
+
+  function collect() {
+    const heads: Record<string, Record<string, unknown>> = {};
+    const steps: Record<string, unknown[]> = {};
+    const ended: string[] = [];
+    slots[KEY] = {
+      head: (id: string, patch: Record<string, unknown>) => void (heads[id] = { ...heads[id], ...patch }),
+      step: (id: string, step: unknown) => void (steps[id] = [...(steps[id] ?? []), step]),
+      end: (id: string) => void ended.push(id),
+    };
+    return { heads, steps, ended };
+  }
+
+  it('sends the HTTP half and ends the trace, on a request no router asserted', async () => {
+    const got = collect();
+    try {
+      const app = new Hono<{ Bindings: Record<string, string> }>();
+      app.use('*', invocationLog({ allowUnsigned: () => true }));
+      app.post('/api/things', (c) => {
+        const record = c.get(INVOCATION_RECORD_KEY as never) as InvocationRecord;
+        record.operation = 'things/make';
+        record.principalKind = 'principal';
+        record.problemCode = 'permission_denied';
+        return c.json({ no: true }, 403);
+      });
+      const res = await app.request('/api/things?token=zzz', { method: 'POST' });
+      const id = res.headers.get('x-substrat-request-id')!;
+      expect(got.ended).toEqual([id]);
+      expect(got.heads[id]).toMatchObject({
+        method: 'POST',
+        path: '/api/things',
+        status: 403,
+        threw: false,
+        level: 'warn',
+        operation: 'things/make',
+        problemCode: 'permission_denied',
+        principalKind: 'principal',
+        eventCount: null,
+      });
+      // The query string stays out, as it does of the hosted line.
+      expect(JSON.stringify(got.heads[id])).not.toContain('zzz');
+    } finally {
+      delete slots[KEY];
+    }
+  });
+
+  it('forwards each outbound call with its failure class, and says how many the record had no room for', async () => {
+    const got = collect();
+    try {
+      const app = new Hono();
+      app.use('*', invocationLog({ allowUnsigned: () => true }));
+      app.get('/x', (c) => {
+        const record = c.get(INVOCATION_RECORD_KEY as never) as InvocationRecord;
+        record.outboundCalls = [
+          { host: 'hooks.example', path: '/notify', method: 'POST', status: null, outcome: 'failed', durationMs: 3, atMs: 5, reason: 'TypeError' },
+        ];
+        record.outboundCallsDropped = 2;
+        return c.text('ok');
+      });
+      const id = (await app.request('/x')).headers.get('x-substrat-request-id')!;
+      expect(got.heads[id]).toMatchObject({ stepsDropped: 2 });
+      expect(got.steps[id]).toEqual([
+        expect.objectContaining({ type: 'outbound', host: 'hooks.example', outcome: 'failed', reason: 'TypeError', atMs: 5 }),
+      ]);
+    } finally {
+      delete slots[KEY];
+    }
+  });
+
+  it('marks the request start on the shared axis and releases it when the trace ends', async () => {
+    collect();
+    const starts = (globalThis as Record<symbol, Map<string, number> | undefined>)[Symbol.for('substrat.trace-starts')];
+    let seenDuring: boolean | undefined;
+    try {
+      const app = new Hono();
+      app.use('*', invocationLog({ allowUnsigned: () => true }));
+      app.get('/x', (c) => {
+        const id = c.get('substratInvocationId' as never) as string;
+        seenDuring = (globalThis as Record<symbol, Map<string, number> | undefined>)[Symbol.for('substrat.trace-starts')]?.has(id);
+        return c.text('ok');
+      });
+      const id = (await app.request('/x')).headers.get('x-substrat-request-id')!;
+      expect(seenDuring).toBe(true);
+      expect((globalThis as Record<symbol, Map<string, number> | undefined>)[Symbol.for('substrat.trace-starts')]?.has(id)).toBe(false);
+      void starts;
+    } finally {
+      delete slots[KEY];
+    }
+  });
+
+  it('answers as before when no sink is installed', async () => {
+    const lines = capture();
+    try {
+      const app = new Hono();
+      app.use('*', invocationLog({ allowUnsigned: () => true }));
+      app.get('/x', (c) => c.text('ok'));
+      expect((await app.request('/x')).status).toBe(200);
+    } finally {
+      lines.restore();
+    }
+  });
+
+  it('never fails the request when the sink throws', async () => {
+    slots[KEY] = {
+      head() {
+        throw new Error('boom');
+      },
+      step() {},
+      end() {},
+    };
+    try {
+      const app = new Hono();
+      app.use('*', invocationLog({ allowUnsigned: () => true }));
+      app.get('/x', (c) => c.text('ok'));
+      expect((await app.request('/x')).status).toBe(200);
+    } finally {
+      delete slots[KEY];
+    }
+  });
+});
