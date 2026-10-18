@@ -180,7 +180,7 @@ describe('the dashboard answers a refusal by its code, not its sentence (#113)',
   });
 
   it('a slug that is not the team\'s own deployment is a 404', async () => {
-    expect(await send('GET', '/deployments/billing/promote-review?versionId=v')).toEqual({
+    expect(await send('GET', `/teams/${tenant}/deployments/billing/promote-review?versionId=v`)).toEqual({
       status: 404,
       detail: "vertical 'billing' is not one of your deployments",
     });

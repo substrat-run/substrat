@@ -1,4 +1,5 @@
 import { promoteReviewReasonIn, type MigrationDiff, type PromotionReviewBinding } from '@substrat-run/contracts';
+import type { PromotionReviewRow } from './api.generated.js';
 import { diffRegistries, hasRegistryChange, type RegistryDiff, type RegistryLike } from './registry-diff.js';
 
 /**
@@ -30,6 +31,17 @@ export interface PromoteReviewWire {
    * refuses once prod has moved. Absent or null: nothing serves, or an older worker.
    */
   review?: PromotionReviewBinding | null;
+}
+
+/**
+ * The generated client's review, as the dialog reads it. The client types a registry from the
+ * schema's INPUT side, where `entityGrants` is optional because the schema defaults it; the
+ * route's output parse has already filled that default in, so the field is always on the wire
+ * and this only says so to the type.
+ */
+export function promoteReviewOf(row: PromotionReviewRow): PromoteReviewWire {
+  const registry = (r: PromotionReviewRow['servingRegistry']): RegistryLike | null => (r === null ? null : { ...r, entityGrants: r.entityGrants ?? [] });
+  return { ...row, servingRegistry: registry(row.servingRegistry), incomingRegistry: registry(row.incomingRegistry) };
 }
 
 /** The installed apps a promotion breaks, as the plane lists them to this tenant. */
@@ -232,10 +244,14 @@ export interface PromoteDeps {
 export type PromoteOutcome = 'promoted' | 'cancelled';
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
-/** The problem `reason` a failed call carried: `ApiError.reason`, or a platform error's own extension. */
+/**
+ * The problem `reason` a failed call carried: `ApiError.reason`, a platform error's own
+ * extension, or — for the generated team client's `ApiError`, which keeps only the parsed
+ * problem body — that body's `reason`.
+ */
 const reasonOf = (e: unknown): unknown => {
-  const err = e as { reason?: unknown; extensions?: { reason?: unknown } } | null;
-  return err?.reason ?? err?.extensions?.reason;
+  const err = e as { reason?: unknown; extensions?: { reason?: unknown }; body?: { reason?: unknown } | null } | null;
+  return err?.reason ?? err?.extensions?.reason ?? err?.body?.reason;
 };
 
 /**

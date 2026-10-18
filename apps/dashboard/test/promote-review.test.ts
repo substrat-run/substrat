@@ -1,3 +1,4 @@
+import { ApiError as TeamApiError } from '../web/src/lib/api.generated.js';
 import { describe, expect, it } from 'vitest';
 import type { MigrationDiff } from '@substrat-run/contracts';
 import { diffRegistries, grantShapeHolderNotes, hasRegistryChange, registryDirection, type RegistryLike } from '../web/src/lib/registry-diff.js';
@@ -683,6 +684,25 @@ describe('the review binding (#2333)', () => {
     expect(outcome).toBe('promoted');
     expect(shown.map((c) => c.reviewMoved ?? false)).toEqual([false, true]);
     expect(shown[1]!.acknowledged).toEqual({});
+    expect(sent).toEqual([{ permissionChange: true, review: B1 }, { permissionChange: true, review: B2 }]);
+  });
+
+  it('a stale refusal from the team client carries its reason in the problem body, and is read from there', async () => {
+    // The generated client's `ApiError` keeps the parsed problem body, not a `reason` field.
+    const fromClient = () => new TeamApiError(412, 'the promote review is stale: …', { reason: 'promote_review_stale' });
+    const reads = [review({ review: B1, incomingRegistry: reg({ permissions: [] }) }), review({ serving: { versionId: 'v9' }, review: B2, incomingRegistry: reg({ permissions: [] }) })];
+    const sent: unknown[] = [];
+    const shown: Checkpoint[] = [];
+    const outcome = await promoteWithCheckpoint({
+      review: async () => reads.shift()!,
+      promote: async (a) => {
+        sent.push(a);
+        if (sent.length === 1) throw fromClient();
+      },
+      ask: async (c) => (shown.push(c), { permissionChange: true }),
+    });
+    expect(outcome).toBe('promoted');
+    expect(shown.map((c) => c.reviewMoved ?? false)).toEqual([false, true]);
     expect(sent).toEqual([{ permissionChange: true, review: B1 }, { permissionChange: true, review: B2 }]);
   });
 

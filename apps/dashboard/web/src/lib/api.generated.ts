@@ -85,6 +85,65 @@ export interface AppRow {
   created_at: string;
 }
 
+/** `boundScopeRow` — a published schema, not a stored row. */
+export interface BoundScopeRow {
+  id: string;
+  slug: string;
+  name: string;
+  status: string;
+  fork: boolean;
+  movable: boolean;
+  verticalVersionId: string | null;
+  createdAt: string;
+  hostnames: string[];
+}
+
+/** `channelHistoryRow` — a published schema, not a stored row. */
+export interface ChannelHistoryRow {
+  id: string;
+  versionId: string;
+  fromVersionId: string | null;
+  actor: string;
+  at: string;
+}
+
+/** `deployFailureRow` — a published schema, not a stored row. */
+export interface DeployFailureRow {
+  id: string;
+  operation: string;
+  stage: string | null;
+  scopeId: string | null;
+  status: number | null;
+  message: string;
+  reference: string | null;
+  at: string;
+}
+
+/** `deploymentRow` — a published schema, not a stored row. */
+export interface DeploymentRow {
+  slug: string;
+  displaySlug: string;
+  name: string;
+  source: string;
+  listed: boolean;
+  versions: ({ id: string; version: string; admission: string; admissionNote: string | null; deploymentRef: string | null; schemaChange: boolean; origin: { source: "git" | "cli"; gitRepo?: string; gitCommit?: string; gitRef?: string; gate?: "passed" | "skipped" | "none" } | null; createdAt: string })[];
+  channels: ({ channel: string; versionId: string; servingVersionId?: string | null })[];
+}
+
+/** `failureGroupRow` — a published schema, not a stored row. */
+export interface FailureGroupRow {
+  fingerprint: string;
+  operation: string;
+  stage: string | null;
+  code: string | null;
+  origin: string | null;
+  count: number;
+  firstSeen: string;
+  lastSeen: string;
+  lastMessage: string;
+  lastStatus: number | null;
+}
+
 /** `findingEntry` — a published schema, not a stored row. */
 export interface FindingEntry {
   id: string;
@@ -151,6 +210,97 @@ export interface Member {
   joined_at: string | null;
 }
 
+/** `moveReviewRow` — a published schema, not a stored row. */
+export interface MoveReviewRow {
+  scopeId: string;
+  slug: string;
+  base: { vertical: string; versionId: string } | null;
+  target: { vertical: string; versionId: string };
+  digestsMatch: boolean;
+  migrations: { baseline: "version" | "none" | "unavailable"; added: ({ moduleId: string; version: string; sql: string | null; moves?: Record<string, string>; discards?: Record<string, string>; declarationsLeftOut?: true; edited?: "sql" | "declarations" })[]; changed: ({ moduleId: string; version: string; sql: string | null; moves?: Record<string, string>; discards?: Record<string, string>; declarationsLeftOut?: true; edited?: "sql" | "declarations" })[]; total: number; truncated: boolean } | null;
+  migrationsWithheld: boolean;
+  review: { base: string | null; digest: string };
+}
+
+/** `previewCreated` — a published schema, not a stored row. */
+export interface PreviewCreated {
+  scopeId: string;
+  hostname: string;
+  url: string;
+  versionId: string;
+  reused: boolean;
+  auth?: { status: string; callbackUrl: string | null; issuer?: string; issuerScopeId?: string; clientId?: string; issuers?: { issuerScopeId: string; problem?: string }[]; note: string };
+  notes?: string[];
+}
+
+/** `previewDomainRow` — a published schema, not a stored row. */
+export interface PreviewDomainRow {
+  hostname: string;
+  scopeId: string;
+  surface: string;
+  status: string;
+  statusNote?: string | null;
+  canonical: boolean;
+  createdAt: string;
+  customHostnameId?: string | null;
+  validationRecords?: ({ type: string; name: string; value: string; status?: string | null })[];
+}
+
+/** `previewRow` — a published schema, not a stored row. */
+export interface PreviewRow {
+  scopeId: string;
+  tag: string | null;
+  versionId: string | null;
+  forkedFrom: string | null;
+  expiresAt: string | null;
+  hostname: string | null;
+  url: string | null;
+  callbackUrl?: string | null;
+}
+
+/** `promotionReviewRow` — a published schema, not a stored row. */
+export interface PromotionReviewRow {
+  serving: { versionId: string } | null;
+  incoming: { versionId: string };
+  servingRegistry: { permissions: { key: string; description: string; declaredBy: string[] }[]; roles: ({ key: string; permissions: string[]; source: string | "vertical"; holder?: "person" | "system" })[]; entityGrants?: ({ entityType: string; permissions: string[]; bootstrap?: true; holder?: "self" | "grantee" | { table: string; idColumn: string; principalColumn: string }; retired?: string[]; bind?: { permission: string } })[]; exports?: { type: string; schemaVersion: number; readPermission: string; declaredBy: string[] }[]; imports?: { from: string; type: string; schemaVersion: number; declaredBy: string[] }[] } | null;
+  incomingRegistry: { permissions: { key: string; description: string; declaredBy: string[] }[]; roles: ({ key: string; permissions: string[]; source: string | "vertical"; holder?: "person" | "system" })[]; entityGrants?: ({ entityType: string; permissions: string[]; bootstrap?: true; holder?: "self" | "grantee" | { table: string; idColumn: string; principalColumn: string }; retired?: string[]; bind?: { permission: string } })[]; exports?: { type: string; schemaVersion: number; readPermission: string; declaredBy: string[] }[]; imports?: { from: string; type: string; schemaVersion: number; declaredBy: string[] }[] } | null;
+  migrations: { baseline: "version" | "none" | "unavailable"; added: ({ moduleId: string; version: string; sql: string | null; moves?: Record<string, string>; discards?: Record<string, string>; declarationsLeftOut?: true; edited?: "sql" | "declarations" })[]; changed: ({ moduleId: string; version: string; sql: string | null; moves?: Record<string, string>; discards?: Record<string, string>; declarationsLeftOut?: true; edited?: "sql" | "declarations" })[]; total: number; truncated: boolean } | null;
+  exportBreaks: { affected: ({ tenantId: string; scopeId: string; vertical: string; version: string | null; type: string; schemaVersion: number; incoming: number | null })[]; otherTenants?: number } | null;
+  review: { base: string | null; digest: string } | null;
+}
+
+/** `releaseRow` — a published schema, not a stored row. */
+export interface ReleaseRow {
+  versionId: string;
+  version: string;
+  pushedAt: string;
+  origin: string | null;
+  schemaChange: boolean;
+  wentLiveAt: string | null;
+  isProd: boolean;
+  isServing: boolean;
+  scopesPinned: number;
+  failures: number;
+  requests: number | null;
+  errors: number | null;
+}
+
+/** `releasesView` — a published schema, not a stored row. */
+export interface ReleasesView {
+  releases: ReleaseRow[];
+  scopesTrackingProd: number;
+  metricsAvailable: boolean;
+}
+
+/** `trafficSeries` — a published schema, not a stored row. */
+export interface TrafficSeries {
+  window?: { since: string; until: string };
+  buckets: ({ start: string; requests: number; errors: number; durationP95: number | null; green?: number; yellow?: number })[];
+  markers: ({ at: string; kind: "pushed" | "went-live"; version: string; versionId: string })[];
+  bucketMinutes: number;
+  available: boolean;
+}
+
 /** Every operation this vertical binds to HTTP, one method each. */
 export interface DashboardClient {
   /**
@@ -168,6 +318,13 @@ export interface DashboardClient {
   addDomain(input: { hostname: string; appScopeId: string; surface?: string }): Promise<{ hostname: string; status: "pending" | "verifying" | "active" | "failed"; statusNote?: string | null; validationRecords?: ({ type: "hostname" | "txt"; name: string; value: string; status?: string | null })[] }>;
 
   /**
+   * Attach a custom domain to a preview's scope: what makes a pinned preview a long-lived test environment
+   *
+   * `POST /deployments/{slug}/previews/{tag}/domain` — `dashboard/bind-preview-domain`
+   */
+  bindPreviewDomain(input: { slug: string; tag: string; domain: string; surface?: string; canonical?: boolean }): Promise<PreviewDomainRow>;
+
+  /**
    * Suppress with a rule: a scope plus an expiry, audited by the plane
    *
    * `POST /findings/rules` — `dashboard/create-finding-rule`
@@ -175,11 +332,53 @@ export interface DashboardClient {
   createFindingRule(input: { kind?: "invariant" | "drift" | "recurring"; operation?: string; code?: "unauthenticated" | "permission_denied" | "forbidden" | "not_found" | "conflict" | "validation_failed" | "precondition_failed" | "rate_limited" | "unavailable" | "internal"; subject?: string; expiresAt: string; reason: string }): Promise<{ rule: FindingRuleEntry; suppressed: number }>;
 
   /**
+   * Create a preview of an admitted version, or re-use the one with this tag (`reused`); `ttlHours: null` pins it
+   *
+   * `POST /deployments/{slug}/previews` — `dashboard/create-preview`
+   */
+  createPreview(input: { slug: string; tag: string; versionId: string; ttlHours?: number | null; empty?: boolean; sourceScopeId?: string; surface?: string; refresh?: boolean }): Promise<PreviewCreated>;
+
+  /**
+   * Remove a vertical from the registry (refused for a published vertical, and while any scope still runs it)
+   *
+   * `DELETE /deployments/{slug}` — `dashboard/delete-deployment`
+   */
+  deleteDeployment(input: { slug: string }): Promise<{ removed: true }>;
+
+  /**
+   * Reap one preview by tag; idempotent (`deleted: null` when it was already gone)
+   *
+   * `DELETE /deployments/{slug}/previews/{tag}` — `dashboard/delete-preview`
+   */
+  deletePreview(input: { slug: string; tag: string }): Promise<{ deleted: string | null }>;
+
+  /**
    * An app's durable install record: directory, provision, activate, hostname, identity
    *
    * `GET /apps/{scopeId}/steps` — `dashboard/get-app-install-steps`
    */
   getAppInstallSteps(input: { scopeId: string }): Promise<InstallStep[]>;
+
+  /**
+   * A vertical's release ledger: each version against its go-live, adoption and health
+   *
+   * `GET /deployments/{slug}/releases` — `dashboard/get-deployment-releases`
+   */
+  getDeploymentReleases(input: { slug: string }): Promise<ReleasesView>;
+
+  /**
+   * A vertical's traffic over the last `hours` (1–72, default 24) with every push and go-live marked
+   *
+   * `GET /deployments/{slug}/traffic` — `dashboard/get-deployment-traffic`
+   */
+  getDeploymentTraffic(input: { slug: string; hours?: number }): Promise<TrafficSeries>;
+
+  /**
+   * What promoting a version to prod would change in the permission surface and the SQL, read before the acknowledgement is given
+   *
+   * `GET /deployments/{slug}/promote-review` — `dashboard/get-promotion-review`
+   */
+  getPromotionReview(input: { slug: string; versionId: string }): Promise<PromotionReviewRow>;
 
   /**
    * Install a vertical into this team as a new app
@@ -238,6 +437,41 @@ export interface DashboardClient {
   listApps(input: { limit?: number; cursor?: string }): Promise<{ entries: AppRow[]; nextCursor: string | null }>;
 
   /**
+   * The installs a vertical still backs: the list a refused delete is counting
+   *
+   * `GET /deployments/{slug}/scopes` — `dashboard/list-bound-scopes`
+   */
+  listBoundScopes(input: { slug: string }): Promise<{ live: number; archived: number; scopes: BoundScopeRow[] }>;
+
+  /**
+   * One channel's promotion timeline, newest first: the rollback picker
+   *
+   * `GET /deployments/{slug}/channels/{channel}/history` — `dashboard/list-channel-history`
+   */
+  listChannelHistory(input: { slug: string; channel: "prod" }): Promise<ChannelHistoryRow[]>;
+
+  /**
+   * A vertical's recorded deploy, preview and provision failures, newest first (one page of 50)
+   *
+   * `GET /deployments/{slug}/failures` — `dashboard/list-deployment-failures`
+   */
+  listDeploymentFailures(input: { slug: string }): Promise<DeployFailureRow[]>;
+
+  /**
+   * A vertical's failures grouped by shape, over the evidence window
+   *
+   * `GET /deployments/{slug}/issues` — `dashboard/list-deployment-issues`
+   */
+  listDeploymentIssues(input: { slug: string }): Promise<FailureGroupRow[]>;
+
+  /**
+   * The verticals this team pushed, with their versions and where the prod channel points
+   *
+   * `GET /deployments` — `dashboard/list-deployments`
+   */
+  listDeployments(): Promise<DeploymentRow[]>;
+
+  /**
    * One page of this team's custom domains (the platform default each app rides is not listed)
    *
    * `GET /domains` — `dashboard/list-domains`
@@ -266,11 +500,32 @@ export interface DashboardClient {
   listMembers(input: { limit?: number; cursor?: string }): Promise<{ entries: Member[]; nextCursor: string | null }>;
 
   /**
+   * A vertical's live previews: each a scope with data bound to a version, at its own `--<tag>` URL
+   *
+   * `GET /deployments/{slug}/previews` — `dashboard/list-previews`
+   */
+  listPreviews(input: { slug: string }): Promise<PreviewRow[]>;
+
+  /**
    * One page of this team's whole admin log, or one app's with `scopeId`, newest first
    *
    * `GET /audit` — `dashboard/list-team-audit`
    */
   listTeamAudit(input: { scopeId?: string; limit?: number; cursor?: string }): Promise<{ entries: AdminLogEntry[]; nextCursor: string | null }>;
+
+  /**
+   * Rebind the chosen installs onto another of this team's verticals, stopping at the first refusal
+   *
+   * `POST /deployments/{slug}/scopes/move` — `dashboard/move-scopes`
+   */
+  moveScopes(input: { slug: string; scopeIds: string[]; target: string; ackMigrations?: boolean; reviews?: Record<string, { base: string | null; digest: string }> }): Promise<{ moved: string[]; refusal: { scopeId: string; message: string; reason?: "rebind_review_stale" | "rebind_review_unbound" } | null }>;
+
+  /**
+   * Promote a version to prod (self-serve while the vertical is private; the registry gates migration and permission changes on a bound acknowledgement)
+   *
+   * `POST /deployments/{slug}/promote` — `dashboard/promote-deployment`
+   */
+  promoteDeployment(input: { slug: string; channel: "prod"; versionId: string; acknowledge?: { permissionChange?: boolean; migrationChange?: boolean; exportBreak?: boolean; review?: { base: string | null; digest: string } } }): Promise<{ promoted: true }>;
 
   /**
    * Delete one of this team's apps: deprovision its scope and take its hostname offline
@@ -315,11 +570,25 @@ export interface DashboardClient {
   resumeApp(input: { scopeId: string }): Promise<AppRow>;
 
   /**
+   * Retire the chosen installs: release their names, archive and reap them. Wipes storage; `confirm` must be the count typed
+   *
+   * `POST /deployments/{slug}/scopes/retire` — `dashboard/retire-scopes`
+   */
+  retireScopes(input: { slug: string; scopeIds: string[]; confirm: string }): Promise<{ retired: string[]; failure: { scopeId: string; message: string } | null }>;
+
+  /**
    * Re-provision a failed app under a fresh scope (409 unless it failed)
    *
    * `POST /apps/{scopeId}/retry` — `dashboard/retry-app`
    */
   retryApp(input: { scopeId: string }): Promise<AppRow>;
+
+  /**
+   * What moving the chosen installs onto another of this team's verticals would apply, and the binding to acknowledge it with
+   *
+   * `POST /deployments/{slug}/scopes/move-review` — `dashboard/review-scope-move`
+   */
+  reviewScopeMove(input: { slug: string; scopeIds: string[]; target: string }): Promise<{ scopes: MoveReviewRow[] }>;
 
   /**
    * End a suppress rule now
@@ -413,10 +682,24 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/hostnames`, "POST", omit(input, ["scopeId"]), undefined),
     addDomain: (input: Args) =>
       send("/domains", "POST", input, undefined),
+    bindPreviewDomain: (input: Args) =>
+      send(`/deployments/${encodeURIComponent(String(input.slug))}/previews/${encodeURIComponent(String(input.tag))}/domain`, "POST", omit(input, ["slug","tag"]), undefined),
     createFindingRule: (input: Args) =>
       send("/findings/rules", "POST", input, undefined),
+    createPreview: (input: Args) =>
+      send(`/deployments/${encodeURIComponent(String(input.slug))}/previews`, "POST", omit(input, ["slug"]), undefined),
+    deleteDeployment: (input: Args) =>
+      send(`/deployments/${encodeURIComponent(String(input.slug))}`, "DELETE", undefined, omit(input, ["slug"])),
+    deletePreview: (input: Args) =>
+      send(`/deployments/${encodeURIComponent(String(input.slug))}/previews/${encodeURIComponent(String(input.tag))}`, "DELETE", undefined, omit(input, ["slug","tag"])),
     getAppInstallSteps: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/steps`, "GET", undefined, omit(input, ["scopeId"])),
+    getDeploymentReleases: (input: Args) =>
+      send(`/deployments/${encodeURIComponent(String(input.slug))}/releases`, "GET", undefined, omit(input, ["slug"])),
+    getDeploymentTraffic: (input: Args) =>
+      send(`/deployments/${encodeURIComponent(String(input.slug))}/traffic`, "GET", undefined, omit(input, ["slug"])),
+    getPromotionReview: (input: Args) =>
+      send(`/deployments/${encodeURIComponent(String(input.slug))}/promote-review`, "GET", undefined, omit(input, ["slug"])),
     installApp: (input: Args) =>
       send("/apps", "POST", input, undefined),
     inviteLink: (input: Args) =>
@@ -433,6 +716,16 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/hostnames`, "GET", undefined, omit(input, ["scopeId"])),
     listApps: (input: Args) =>
       send("/apps", "GET", undefined, input),
+    listBoundScopes: (input: Args) =>
+      send(`/deployments/${encodeURIComponent(String(input.slug))}/scopes`, "GET", undefined, omit(input, ["slug"])),
+    listChannelHistory: (input: Args) =>
+      send(`/deployments/${encodeURIComponent(String(input.slug))}/channels/${encodeURIComponent(String(input.channel))}/history`, "GET", undefined, omit(input, ["slug","channel"])),
+    listDeploymentFailures: (input: Args) =>
+      send(`/deployments/${encodeURIComponent(String(input.slug))}/failures`, "GET", undefined, omit(input, ["slug"])),
+    listDeploymentIssues: (input: Args) =>
+      send(`/deployments/${encodeURIComponent(String(input.slug))}/issues`, "GET", undefined, omit(input, ["slug"])),
+    listDeployments: () =>
+      send("/deployments", "GET", undefined, undefined),
     listDomains: (input: Args) =>
       send("/domains", "GET", undefined, input),
     listFindingRules: (input: Args) =>
@@ -441,8 +734,14 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/findings", "GET", undefined, input),
     listMembers: (input: Args) =>
       send("/members", "GET", undefined, input),
+    listPreviews: (input: Args) =>
+      send(`/deployments/${encodeURIComponent(String(input.slug))}/previews`, "GET", undefined, omit(input, ["slug"])),
     listTeamAudit: (input: Args) =>
       send("/audit", "GET", undefined, input),
+    moveScopes: (input: Args) =>
+      send(`/deployments/${encodeURIComponent(String(input.slug))}/scopes/move`, "POST", omit(input, ["slug"]), undefined),
+    promoteDeployment: (input: Args) =>
+      send(`/deployments/${encodeURIComponent(String(input.slug))}/promote`, "POST", omit(input, ["slug"]), undefined),
     removeApp: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.id))}`, "DELETE", undefined, omit(input, ["id"])),
     removeAppHostname: (input: Args) =>
@@ -455,8 +754,12 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/members/invites/${encodeURIComponent(String(input.invitationId))}/resend`, "POST", omit(input, ["invitationId"]), undefined),
     resumeApp: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/resume`, "POST", omit(input, ["scopeId"]), undefined),
+    retireScopes: (input: Args) =>
+      send(`/deployments/${encodeURIComponent(String(input.slug))}/scopes/retire`, "POST", omit(input, ["slug"]), undefined),
     retryApp: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/retry`, "POST", omit(input, ["scopeId"]), undefined),
+    reviewScopeMove: (input: Args) =>
+      send(`/deployments/${encodeURIComponent(String(input.slug))}/scopes/move-review`, "POST", omit(input, ["slug"]), undefined),
     revokeFindingRule: (input: Args) =>
       send(`/findings/rules/${encodeURIComponent(String(input.ruleId))}`, "DELETE", undefined, omit(input, ["ruleId"])),
     revokeInvite: (input: Args) =>

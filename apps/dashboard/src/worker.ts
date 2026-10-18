@@ -23,7 +23,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
-import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, promotionAcknowledgement, promoteReviewReasonIn, substratError, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, hostnameStatus, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, promoteReviewReasonIn, substratError, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, hostnameStatus, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery, type PromotionReviewBinding } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
@@ -799,18 +799,6 @@ async function oidcProviderSlugsFor(
   const remote = await cp.listCatalog().catch(() => []);
   return oidcIssuerProviderSlugs(local, remote);
 }
-
-// A builder self-serves `prod` (the one serving channel — dev/staging retired, #509) of a
-// PRIVATE vertical, which is what makes rollback (promote an older version) a dashboard
-// action. Prod on a LISTED vertical is refused in the handler: publishing widened the
-// audience, so that gate is staff again (marketplace-publish.md §2). `acknowledge` carries
-// the digest-change confirmations the registry demands when permissions/migrations differ.
-const promoteBody = z.object({
-  channel: z.enum(['prod']),
-  versionId: z.string().min(1),
-  // #2333: `review` binds the acknowledgements to the review they answer (`promotionAcknowledgement`).
-  acknowledge: promotionAcknowledgement.optional(),
-});
 
 // #1756: what an Update or a Bind may acknowledge — the plane refuses a version that drops an
 // export another app in this tenant imports, unless this says it was read. Strict, as the plane's
@@ -4459,20 +4447,6 @@ async function resumeAppIn({ c, host, node }: TeamContext, appScopeId: string): 
 }
 
 /**
- * My deployments (builder-plane.md Phase 4) — the verticals THIS tenant pushed, with
- * their versions + channels — read from the shared plane, tenant-filtered. The tenant is
- * the caller's own, from session.
- */
-app.get('/api/deployments', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const deployments = await listDeploymentsFromCp(cp);
-  return c.json(deployments);
-});
-
-/**
  * Observability for MY pushed verticals (design/observability.md §5, view 2). Both
  * routes are thin: the owner-narrowing lives in `TenantNarrowedControlPlane`
  * (rows filtered to owned deployment refs; an unowned ref in the logs query answers
@@ -4896,7 +4870,7 @@ function chartHours(raw: string | undefined, fallback = 24): number {
 /**
  * The app's own chart series (#1447 step 2) — the same traffic with a time axis, at
  * TENANT grain. It sits beside the deployment route rather than reusing it because the
- * two answer different questions: `/api/deployments/:slug/traffic` plots the script,
+ * two answer different questions: `/api/teams/:teamId/deployments/{slug}/traffic` plots the script,
  * which serves every team that installed the vertical, while an app page answers about
  * this one installation — for the owner too.
  *
@@ -5077,7 +5051,7 @@ app.get('/api/apps/:scopeId/overlays', async (c) => {
  * (#1595). `resolveAccount` says who the caller is and an owned-slug check says the vertical
  * is theirs; neither says what they may DO, and nothing below the seam can — the plane sees
  * the dashboard's credential, not the person. The role is only known here, so every write
- * under `/api/deployments/:slug` calls this before it acts. It is the
+ * under a team's `/deployments/{slug}` (promote, delete, the installs, previews) calls this before it acts. It is the
  * `dashboard:provision-app` check the app-install operations already begin with, invoked as
  * an operation that writes nothing (`dashboard/authorize-scope-change`): no new permission
  * key, so no role changed. Reads stay open — a `viewer` still sees what they may not touch.
@@ -5261,6 +5235,299 @@ async function leaveTeamIn(ctx: TeamContext): Promise<{ left: true }> {
   return { left: true };
 }
 
+// -- deployments & previews (#2170) -------------------------------------------
+// The verticals this team pushed. Every handler resolves its slug against the team's OWN
+// verticals (`assertOwnedFromCp`), so a slug another team pushed answers as an unknown one.
+// The writes ask the caller's role first (`assertMayManageApps`, #1595); reads stay open, so a
+// `viewer` still sees what they may not touch.
+
+/** The team's control plane, narrowed to it and acting for the caller. */
+const teamPlane = ({ c, node }: TeamContext): TenantNarrowedControlPlane => controlPlaneFor(c.env, node.tenantId, node.principal);
+
+/**
+ * Promote one of the team's verticals to `prod` — the one channel (#524; dev/staging retired). Self-
+ * serve while the vertical is PRIVATE (its blast radius is this tenant alone — merge-to-main
+ * deploys and dashboard rollback both land here). Prod on a LISTED vertical is refused:
+ * publishing widened the audience, so that promotion is a staff decision again. For a non-prod
+ * environment a builder creates a preview, not a second channel. The slug is verified to be one
+ * of the caller's own deployments before anything is promoted; the registry additionally refuses
+ * non-admitted versions and unacknowledged digest changes below the seam.
+ */
+async function promoteDeploymentIn(
+  ctx: TeamContext,
+  { slug, channel, versionId, acknowledge }: z.infer<(typeof dashboardRoutes)['dashboard/promote-deployment']['input']>,
+): Promise<{ promoted: true }> {
+  await assertMayManageApps(ctx.host, ctx.node);
+  const cp = teamPlane(ctx);
+  const target = await ownedDeploymentOrThrow(cp, slug); // your vertical, or 4xx
+  if (channel === 'prod' && target.listed) {
+    throw new HTTPException(403, { message: 'production for a published vertical is promoted by the Substrat team' });
+  }
+  try {
+    await cp.promote(slug, channel, versionId, acknowledge);
+  } catch (e) {
+    // #2333: a review that moved under the acknowledgement (or a migration acknowledgement with
+    // none) is answered with its reason, which the dialog reads to re-read the review and ask again.
+    const reason = e instanceof ControlPlaneError ? promoteReviewReasonIn(e.body) : undefined;
+    if (reason) throw substratError('precondition_failed', e instanceof Error ? e.message : String(e), { reason });
+    throw e;
+  }
+  return { promoted: true };
+}
+
+/**
+ * What promoting `versionId` to `prod` would change in the permission surface (#1677): the
+ * registry of the version `prod` serves now against the registry of the one being
+ * promoted, so the dashboard can show the diff BEFORE it promotes rather than a digest pair
+ * after a refusal. It only reads — the acknowledgement stays the registry's gate on the
+ * promote, and this route is how a human reads what they are acknowledging.
+ *
+ * A read that fails FAILS the route (the plane's own status, 502 when unreachable). It
+ * never degrades to "no registry": the dashboard reads `null` as "cannot diff, ask for an
+ * acknowledgement", and a transport error must not be able to spell that.
+ *
+ * Owner-checked like the rest of the deployments routes; open to any role, like the other
+ * reads — a `viewer` may see what they may not touch.
+ */
+async function promotionReviewIn(ctx: TeamContext, slug: string, versionId: string) {
+  const cp = teamPlane(ctx);
+  await assertOwnedFromCp(cp, slug);
+  return cp.promotionReview(slug, versionId);
+}
+
+/**
+ * One channel's promotion timeline (newest first) — the rollback picker. Each entry is a
+ * recorded go-live moment: version, what it replaced, who, and exactly when (the instant
+ * a PITR restore would rewind the data to).
+ */
+async function channelHistoryIn(ctx: TeamContext, slug: string, channel: 'prod') {
+  const cp = teamPlane(ctx);
+  await assertOwnedFromCp(cp, slug);
+  return cp.channelHistory(slug, channel);
+}
+
+/**
+ * One vertical's operational-failure history (#559 step 5) — why the team's deploy / preview /
+ * provision failed, from the durable record, so a red CI run is explainable from the
+ * dashboard without staff involvement. Read from the shared plane's record (tenant-pinned in
+ * the authority seam). Newest first — one page is the story, not an archive walk.
+ */
+async function deploymentFailuresIn(ctx: TeamContext, slug: string) {
+  const cp = teamPlane(ctx);
+  await assertOwnedFromCp(cp, slug);
+  return cp.listOpsFailures({ vertical: slug, limit: 50 });
+}
+
+/**
+ * The release ledger (#1236): the version as the axis every other fact is read
+ * against. Nothing here is newly recorded — push instants, go-live moments,
+ * version pins, and the version-stamped health facts all exist; this route is
+ * the join that did not. Metrics are tolerated to "unavailable" (an
+ * unconfigured plane, a truncated service map) and rendered as unknown — never
+ * as zero traffic, which would read as "the broken version went quiet". The
+ * scope read is NOT tolerated: a failed one would render as "0 pinned / 0
+ * following prod" — the same misreading, on the adoption column — so the route
+ * fails and the panel hides instead.
+ */
+async function deploymentReleasesIn(ctx: TeamContext, slug: string) {
+  const cp = teamPlane(ctx);
+  const deployment = await ownedDeploymentOrThrow(cp, slug); // your vertical, or 4xx
+  const [prodHistory, scopes, failures, metrics] = await Promise.all([
+    cp.channelHistory(slug, 'prod'),
+    cp.listScopes(slug),
+    cp.listOpsFailures({ vertical: slug, limit: 400 }),
+    cp.observabilityMetrics(24, slug).catch(() => null),
+  ]);
+  return deriveReleases({ deployment, prodHistory, scopes, failures, metrics });
+}
+
+/**
+ * The release chart's series (#1236): traffic over the window with every push and
+ * go-live drawn on it — the marker view the issue asks for. The buckets come from
+ * the plane's bucketed read (501 there ⇒ `available: false`, and the chart says
+ * "not available" rather than drawing a flat line that reads as silence); the
+ * markers come from the registry, so a push that produced no traffic still gets
+ * its line — exactly the case worth seeing.
+ */
+async function deploymentTrafficIn(ctx: TeamContext, slug: string, hours = 24) {
+  // The window is also the marker grid, so it is a whole number of hours (1–72): the route's
+  // input says so, and a value outside it is a 400 rather than a clamp.
+  const cp = teamPlane(ctx);
+  const deployment = await ownedDeploymentOrThrow(cp, slug); // your vertical, or 4xx
+  const [prodHistory, buckets] = await Promise.all([
+    cp.channelHistory(slug, 'prod'),
+    cp.observabilityMetricsSeries(hours, slug).catch(() => null),
+  ]);
+  // The markers need the ledger's version rows (push + go-live instants), not its
+  // health joins — so the adoption/failure reads are skipped deliberately here.
+  const { releases } = deriveReleases({ deployment, prodHistory, scopes: [], failures: [], metrics: null });
+  return deriveTrafficSeries({ buckets, releases, prodHistory, hours, now: new Date() });
+}
+
+/**
+ * The same record, grouped by failure shape (#1233, the builder slice): counted
+ * groups over the vertical's rows, derived worker-side from the tenant-forced
+ * read — the staff issues store is fleet-scoped and cannot be narrowed to a
+ * tenant, but every row carries its fingerprint and a builder's own rows group
+ * the same way. Counts cover the evidence window (90-day retention), and there
+ * is no lifecycle here — verdicts are staff concerns on the fleet store.
+ */
+async function deploymentIssuesIn(ctx: TeamContext, slug: string) {
+  const cp = teamPlane(ctx);
+  await assertOwnedFromCp(cp, slug);
+  // Two capped pages of evidence — enough for a story, bounded for a request.
+  return deriveFailureGroups(await cp.listOpsFailures({ vertical: slug, limit: 400 }));
+}
+
+/**
+ * Remove one of the team's verticals from the registry (versions + channels included). A LISTED
+ * vertical is refused — publishing widened the audience, so retiring it is a staff decision.
+ * Below the seam the plane refuses while any scope still runs the vertical (the refusal names
+ * the count) — delete the apps first, so this can never strand an install. Deployed dispatch
+ * scripts become orphans for cleanup (#248).
+ */
+async function deleteDeploymentIn(ctx: TeamContext, slug: string): Promise<{ removed: true }> {
+  await assertMayManageApps(ctx.host, ctx.node);
+  const cp = teamPlane(ctx);
+  // `listed` is on the vertical row, so the ownership read is the only one needed.
+  if ((await assertOwnedFromCp(cp, slug)).listed) {
+    throw new HTTPException(403, { message: 'a published vertical is removed by the Substrat team' });
+  }
+  await cp.deleteVertical(slug);
+  return { removed: true };
+}
+
+// -- the installs a vertical still backs (#1592) ------------------------------
+// The delete above refuses while a scope is bound to the vertical, and names a count.
+// These are the list that count is counting and the two acts that clear it: Move (the
+// primary one — a rename that forks the lineage strands LIVE installs) and Retire (the
+// guarded one — it wipes storage, so it demands the count typed). Owned-slug-checked like
+// the routes around them; the tenant narrowing and the typed-confirmation guard live in
+// `bound-scopes.ts`, where they are tested without a worker.
+
+/** A refusal `bound-scopes.ts` made itself, surfaced under its own status. */
+async function asHttp<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (e) {
+    if (e instanceof BoundScopeError) throw new HTTPException(e.status as ContentfulStatusCode, { message: e.message });
+    throw e;
+  }
+}
+
+/**
+ * The team's tenant-narrowed plane and its dashboard scope, once the vertical is verified to be
+ * theirs. `act` additionally asks the dashboard scope whether their role may change installs; a
+ * read does not, so a `viewer` still sees what a refused delete was counting.
+ */
+async function boundScopesIn(ctx: TeamContext, slug: string, act: boolean) {
+  const cp = teamPlane(ctx);
+  await assertOwnedFromCp(cp, slug); // your vertical, or 4xx
+  if (act) await assertMayManageApps(ctx.host, ctx.node);
+  return { cp, dash: await teamScope(ctx) };
+}
+
+// #2347: what each chosen install's move would apply, and the binding to acknowledge it with.
+// Read by the Move dialog before it asks, and gated like the move itself.
+async function reviewScopeMoveIn(ctx: TeamContext, slug: string, body: { scopeIds: string[]; target: string }) {
+  const { cp } = await boundScopesIn(ctx, slug, true);
+  return asHttp(() => readMoveReview(cp, { vertical: slug, ...body }));
+}
+
+async function moveScopesIn(
+  ctx: TeamContext,
+  slug: string,
+  body: { scopeIds: string[]; target: string; ackMigrations?: boolean; reviews?: Record<string, PromotionReviewBinding> },
+) {
+  const { cp } = await boundScopesIn(ctx, slug, true);
+  return asHttp(() => moveBoundScopes(cp, { vertical: slug, ...body }));
+}
+
+async function retireScopesIn(ctx: TeamContext, slug: string, body: { scopeIds: string[]; confirm: string }) {
+  const { cp, dash } = await boundScopesIn(ctx, slug, true);
+  return asHttp(() =>
+    retireBoundScopes(cp, { vertical: slug, ...body }, async (id) => {
+      // An app this dashboard installed has a row of its own; close it, or the Apps list
+      // keeps showing an app whose storage is gone. A scope with no row (a fork, or an
+      // install from before the dashboard tracked them) answers "no app" — nothing to close.
+      await dash.invoke('dashboard/delete-app', { appScopeId: id }).catch(() => undefined);
+    }),
+  );
+}
+
+// -- builder previews / environments (#509) ---------------------------------
+// The per-vertical, builder-facing half of `substrat preview`: create / list / reap a
+// preview (a scope with data bound to a version, at its own URL), and attach a custom
+// domain to one — turning a pinned preview into a long-lived test environment. Owned-slug
+// checked like promote; a preview forks the caller's OWN tenant scope and serves no
+// install, so it is self-serve for a vertical they own whether private or LISTED (#513).
+// A control-plane orchestration — the plane is the only thing that hosts a preview.
+
+async function listPreviewsIn(ctx: TeamContext, slug: string) {
+  const cp = teamPlane(ctx);
+  await assertOwnedFromCp(cp, slug); // your vertical, or 4xx
+  return cp.listPreviews(slug);
+}
+
+async function createPreviewIn(
+  ctx: TeamContext,
+  { slug, ...body }: z.infer<(typeof dashboardRoutes)['dashboard/create-preview']['input']>,
+) {
+  await assertMayManageApps(ctx.host, ctx.node);
+  const cp = teamPlane(ctx);
+  await assertOwnedFromCp(cp, slug);
+  try {
+    return await cp.createPreview(slug, {
+      tag: body.tag,
+      versionId: body.versionId,
+      ...(body.ttlHours !== undefined ? { ttlHours: body.ttlHours } : {}),
+      ...(body.empty ? { empty: true } : {}),
+      ...(body.sourceScopeId ? { sourceScopeId: scopeId.parse(body.sourceScopeId) } : {}),
+      ...(body.surface ? { surface: body.surface } : {}),
+      ...(body.refresh ? { refresh: true } : {}),
+    });
+  } catch (e) {
+    if (e instanceof ControlPlaneError) throw new HTTPException(e.status as ContentfulStatusCode, { message: e.message });
+    throw e;
+  }
+}
+
+async function deletePreviewIn(ctx: TeamContext, slug: string, tag: string) {
+  await assertMayManageApps(ctx.host, ctx.node);
+  const cp = teamPlane(ctx);
+  await assertOwnedFromCp(cp, slug);
+  return cp.deletePreview(slug, tag);
+}
+
+/**
+ * Attach a custom domain to a preview scope — what makes a pinned preview a long-lived test
+ * environment at a stable address. The preview is resolved by tag under an owned vertical (so
+ * a builder can only domain their own preview); the bind path is scope-generic below the
+ * seam. `canonical` defaults false — an additive alias next to the `--<tag>` URL, never
+ * silently demoting it.
+ */
+async function bindPreviewDomainIn(
+  ctx: TeamContext,
+  { slug, tag, ...body }: z.infer<(typeof dashboardRoutes)['dashboard/bind-preview-domain']['input']>,
+) {
+  await assertMayManageApps(ctx.host, ctx.node);
+  const cp = teamPlane(ctx);
+  await assertOwnedFromCp(cp, slug);
+  const preview = (await cp.listPreviews(slug)).find((p) => p.tag === tag);
+  if (!preview) throw new HTTPException(404, { message: `no preview '${tag}' for '${slug}'` });
+  try {
+    return await cp.bindHostname({
+      hostname: body.domain.toLowerCase(),
+      scopeId: scopeId.parse(preview.scopeId),
+      surface: body.surface ?? 'app',
+      canonical: !!body.canonical,
+    });
+  } catch (e) {
+    if (e instanceof ControlPlaneError) throw new HTTPException(e.status as ContentfulStatusCode, { message: e.message });
+    throw new HTTPException(409, { message: e instanceof Error ? e.message : 'could not bind domain' });
+  }
+}
+
 /** One handler per declared route — `satisfies` is what makes a missing or mistyped one a compile error. */
 const routeHandlers = {
   'dashboard/list-apps': async ({ c, host, node }, page) => listAppsPage(c, host, node, listPageQuery.parse(page)),
@@ -5308,392 +5575,26 @@ const routeHandlers = {
   },
   'dashboard/remove-member': async (ctx, { memberId }) => removeMemberIn(ctx, memberId),
   'dashboard/leave-team': async (ctx) => leaveTeamIn(ctx),
+  'dashboard/list-deployments': async (ctx) => listDeploymentsFromCp(teamPlane(ctx)),
+  'dashboard/promote-deployment': async (ctx, body) => promoteDeploymentIn(ctx, body),
+  'dashboard/get-promotion-review': async (ctx, { slug, versionId }) => promotionReviewIn(ctx, slug, versionId),
+  'dashboard/list-channel-history': async (ctx, { slug, channel }) => channelHistoryIn(ctx, slug, channel),
+  'dashboard/list-deployment-failures': async (ctx, { slug }) => deploymentFailuresIn(ctx, slug),
+  'dashboard/get-deployment-releases': async (ctx, { slug }) => deploymentReleasesIn(ctx, slug),
+  'dashboard/get-deployment-traffic': async (ctx, { slug, hours }) => deploymentTrafficIn(ctx, slug, hours),
+  'dashboard/list-deployment-issues': async (ctx, { slug }) => deploymentIssuesIn(ctx, slug),
+  'dashboard/delete-deployment': async (ctx, { slug }) => deleteDeploymentIn(ctx, slug),
+  'dashboard/list-bound-scopes': async (ctx, { slug }) => readBoundScopes((await boundScopesIn(ctx, slug, false)).cp, slug),
+  'dashboard/review-scope-move': async (ctx, { slug, ...body }) => reviewScopeMoveIn(ctx, slug, body),
+  'dashboard/move-scopes': async (ctx, { slug, ...body }) => moveScopesIn(ctx, slug, body),
+  'dashboard/retire-scopes': async (ctx, { slug, ...body }) => retireScopesIn(ctx, slug, body),
+  'dashboard/list-previews': async (ctx, { slug }) => listPreviewsIn(ctx, slug),
+  'dashboard/create-preview': async (ctx, body) => createPreviewIn(ctx, body),
+  'dashboard/delete-preview': async (ctx, { slug, tag }) => deletePreviewIn(ctx, slug, tag),
+  'dashboard/bind-preview-domain': async (ctx, body) => bindPreviewDomainIn(ctx, body),
 } satisfies RouteImpl<typeof dashboardRoutes, TeamContext>;
 
 mountRoutes(app, dashboardRoutes, { basePath: '/api/teams/:teamId', context: teamContext })(routeHandlers);
-
-/**
- * Promote one of MY verticals to `prod` — the one channel (#524; dev/staging retired). Self-
- * serve while the vertical is PRIVATE (its blast radius is this tenant alone — merge-to-main
- * deploys and dashboard rollback both land here). Prod on a LISTED vertical is refused:
- * publishing widened the audience, so that promotion is a staff decision again. For a non-prod
- * environment a builder creates a preview, not a second channel. The slug is verified to be one
- * of the caller's own deployments before anything is promoted; the registry additionally refuses
- * non-admitted versions and unacknowledged digest changes below the seam.
- */
-app.post('/api/deployments/:slug/promote', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  await assertMayManageApps(host, node);
-  const body = promoteBody.parse(await c.req.json());
-  const slug = c.req.param('slug');
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const target = await ownedDeploymentOrThrow(cp, slug); // your vertical, or 4xx
-  if (body.channel === 'prod' && target.listed) {
-    throw new HTTPException(403, { message: 'production for a published vertical is promoted by the Substrat team' });
-  }
-  try {
-    await cp.promote(slug, body.channel, body.versionId, body.acknowledge);
-  } catch (e) {
-    // #2333: a review that moved under the acknowledgement (or a migration acknowledgement with
-    // none) is answered with its reason, which the dialog reads to re-read the review and ask again.
-    const reason = e instanceof ControlPlaneError ? promoteReviewReasonIn(e.body) : undefined;
-    if (reason) throw substratError('precondition_failed', e instanceof Error ? e.message : String(e), { reason });
-    throw e;
-  }
-  return c.body(null, 204);
-});
-
-/**
- * What promoting `versionId` to `prod` would change in the permission surface (#1677): the
- * registry of the version `prod` serves now against the registry of the one being
- * promoted, so the dashboard can show the diff BEFORE it promotes rather than a digest pair
- * after a refusal. It only reads — the acknowledgement stays the registry's gate on the
- * promote below, and this route is how a human reads what they are acknowledging.
- *
- * A read that fails FAILS the route (the plane's own status, 502 when unreachable). It
- * never degrades to "no registry": the dashboard reads `null` as "cannot diff, ask for an
- * acknowledgement", and a transport error must not be able to spell that.
- *
- * Owner-checked like the rest of `/api/deployments/:slug`; open to any role, like the other
- * reads — a `viewer` may see what they may not touch.
- */
-app.get('/api/deployments/:slug/promote-review', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const slug = c.req.param('slug');
-  const versionId = c.req.query('versionId');
-  if (!versionId) throw new HTTPException(400, { message: 'versionId is required' });
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  await assertOwnedFromCp(cp, slug);
-  return c.json(await cp.promotionReview(slug, versionId));
-});
-
-/**
- * One channel's promotion timeline (newest first) — the rollback picker. Each entry is a
- * recorded go-live moment: version, what it replaced, who, and exactly when (the instant
- * a PITR restore would rewind the data to). Owned-slug-checked like promote above.
- */
-app.get('/api/deployments/:slug/channels/:channel/history', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const slug = c.req.param('slug');
-  const channel = z.enum(['prod']).parse(c.req.param('channel'));
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  await assertOwnedFromCp(cp, slug);
-  return c.json(await cp.channelHistory(slug, channel));
-});
-
-/**
- * One vertical's operational-failure history (#559 step 5) — why MY deploy / preview /
- * provision failed, from the durable record, so a red CI run is explainable from the
- * dashboard without staff involvement. Owned-slug-checked like history above; read from
- * the shared plane's record (tenant-pinned in the authority seam). Newest first — one
- * page is the story, not an archive walk.
- */
-app.get('/api/deployments/:slug/failures', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const slug = c.req.param('slug');
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  await assertOwnedFromCp(cp, slug);
-  return c.json(await cp.listOpsFailures({ vertical: slug, limit: 50 }));
-});
-
-/**
- * The release ledger (#1236): the version as the axis every other fact is read
- * against. Nothing here is newly recorded — push instants, go-live moments,
- * version pins, and the version-stamped health facts all exist; this route is
- * the join that did not. Metrics are tolerated to "unavailable" (an
- * unconfigured plane, a truncated service map) and rendered as unknown — never
- * as zero traffic, which would read as "the broken version went quiet". The
- * scope read is NOT tolerated: a failed one would render as "0 pinned / 0
- * following prod" — the same misreading, on the adoption column — so the route
- * fails and the panel hides instead.
- */
-app.get('/api/deployments/:slug/releases', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const slug = c.req.param('slug');
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const deployment = await ownedDeploymentOrThrow(cp, slug); // your vertical, or 4xx
-  const [prodHistory, scopes, failures, metrics] = await Promise.all([
-    cp.channelHistory(slug, 'prod'),
-    cp.listScopes(slug),
-    cp.listOpsFailures({ vertical: slug, limit: 400 }),
-    cp.observabilityMetrics(24, slug).catch(() => null),
-  ]);
-  return c.json(deriveReleases({ deployment, prodHistory, scopes, failures, metrics }));
-});
-
-/**
- * The release chart's series (#1236): traffic over the window with every push and
- * go-live drawn on it — the marker view the issue asks for. The buckets come from
- * the plane's bucketed read (501 there ⇒ `available: false`, and the chart says
- * "not available" rather than drawing a flat line that reads as silence); the
- * markers come from the registry, so a push that produced no traffic still gets
- * its line — exactly the case worth seeing.
- */
-app.get('/api/deployments/:slug/traffic', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const slug = c.req.param('slug');
-  // The window is also the marker grid, so a fractional one is meaningless — see chartHours.
-  const hours = chartHours(c.req.query('hours'));
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const deployment = await ownedDeploymentOrThrow(cp, slug); // your vertical, or 4xx
-  const [prodHistory, buckets] = await Promise.all([
-    cp.channelHistory(slug, 'prod'),
-    cp.observabilityMetricsSeries(hours, slug).catch(() => null),
-  ]);
-  // The markers need the ledger's version rows (push + go-live instants), not its
-  // health joins — so the adoption/failure reads are skipped deliberately here.
-  const { releases } = deriveReleases({ deployment, prodHistory, scopes: [], failures: [], metrics: null });
-  return c.json(deriveTrafficSeries({ buckets, releases, prodHistory, hours, now: new Date() }));
-});
-
-/**
- * The same record, grouped by failure shape (#1233, the builder slice): counted
- * groups over MY vertical's rows, derived worker-side from the tenant-forced
- * read — the staff issues store is fleet-scoped and cannot be narrowed to a
- * tenant, but every row carries its fingerprint and a builder's own rows group
- * the same way. Counts cover the evidence window (90-day retention), and there
- * is no lifecycle here — verdicts are staff concerns on the fleet store.
- */
-app.get('/api/deployments/:slug/issues', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const slug = c.req.param('slug');
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  await assertOwnedFromCp(cp, slug);
-  // Two capped pages of evidence — enough for a story, bounded for a request.
-  return c.json(deriveFailureGroups(await cp.listOpsFailures({ vertical: slug, limit: 400 })));
-});
-
-/**
- * Remove one of MY verticals from the registry (versions + channels included). Owned-slug
- * -checked like promote; a LISTED vertical is refused — publishing widened the audience,
- * so retiring it is a staff decision. Below the seam the plane refuses while any scope
- * still runs the vertical (the refusal names the count) — delete the apps first, so this
- * can never strand an install. Deployed dispatch scripts become orphans for cleanup (#248).
- */
-app.delete('/api/deployments/:slug', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  await assertMayManageApps(host, node);
-  const slug = c.req.param('slug');
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  // `listed` is on the vertical row, so the ownership read is the only one needed.
-  if ((await assertOwnedFromCp(cp, slug)).listed) {
-    throw new HTTPException(403, { message: 'a published vertical is removed by the Substrat team' });
-  }
-  await cp.deleteVertical(slug);
-  return c.body(null, 204);
-});
-
-// -- the installs a vertical still backs (#1592) ------------------------------
-// The delete above refuses while a scope is bound to the vertical, and names a count.
-// These are the list that count is counting and the two acts that clear it: Move (the
-// primary one — a rename that forks the lineage strands LIVE installs) and Retire (the
-// guarded one — it wipes storage, so it demands the count typed). Owned-slug-checked like
-// the routes around them; the tenant narrowing and the typed-confirmation guard live in
-// `bound-scopes.ts`, where they are tested without a worker.
-
-/** A refusal `bound-scopes.ts` made itself, surfaced under its own status. */
-async function asHttp<T>(run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (e) {
-    if (e instanceof BoundScopeError) throw new HTTPException(e.status as ContentfulStatusCode, { message: e.message });
-    throw e;
-  }
-}
-
-/**
- * The caller, their tenant-narrowed plane, and the vertical — verified to be theirs. `act`
- * additionally asks the dashboard scope whether their role may change installs; a read
- * does not, so a `viewer` still sees what a refused delete was counting.
- */
-async function boundScopesContext(c: Context<{ Bindings: Env }>, act: boolean) {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const slug = c.req.param('slug') as string;
-  const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  await assertOwnedFromCp(cp, slug); // your vertical, or 4xx
-  if (act) await assertMayManageApps(host, node);
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  return { cp, slug, dash };
-}
-
-app.get('/api/deployments/:slug/scopes', async (c) => {
-  const { cp, slug } = await boundScopesContext(c, false);
-  return c.json(await readBoundScopes(cp, slug));
-});
-
-const moveScopesBody = z.object({
-  scopeIds: z.array(z.string().min(1)).min(1).max(100),
-  target: z.string().min(1),
-  ackMigrations: z.boolean().optional(),
-  // #2347: per scope, the rebind review the acknowledgement answers.
-  reviews: z.record(z.string(), promotionAcknowledgement.shape.review.unwrap()).optional(),
-});
-
-// #2347: what each chosen install's move would apply, and the binding to acknowledge it with.
-// Read by the Move dialog before it asks, and gated like the move itself.
-app.post('/api/deployments/:slug/scopes/move-review', async (c) => {
-  const { cp, slug } = await boundScopesContext(c, true);
-  const body = moveScopesBody.pick({ scopeIds: true, target: true }).parse(await c.req.json());
-  return c.json(await asHttp(() => readMoveReview(cp, { vertical: slug, ...body })));
-});
-
-app.post('/api/deployments/:slug/scopes/move', async (c) => {
-  const { cp, slug } = await boundScopesContext(c, true);
-  const body = moveScopesBody.parse(await c.req.json());
-  return c.json(await asHttp(() => moveBoundScopes(cp, { vertical: slug, ...body })));
-});
-
-const retireScopesBody = z.object({
-  scopeIds: z.array(z.string().min(1)).min(1).max(100),
-  // What the caller TYPED, verbatim — the count, checked server-side against how many
-  // scopes are being retired. Never a boolean the browser asserts on the user's behalf.
-  confirm: z.string(),
-});
-
-app.post('/api/deployments/:slug/scopes/retire', async (c) => {
-  const { cp, slug, dash } = await boundScopesContext(c, true);
-  const body = retireScopesBody.parse(await c.req.json());
-  return c.json(
-    await asHttp(() =>
-      retireBoundScopes(cp, { vertical: slug, ...body }, async (id) => {
-        // An app this dashboard installed has a row of its own; close it, or the Apps list
-        // keeps showing an app whose storage is gone. A scope with no row (a fork, or an
-        // install from before the dashboard tracked them) answers "no app" — nothing to close.
-        await dash.invoke('dashboard/delete-app', { appScopeId: id }).catch(() => undefined);
-      }),
-    ),
-  );
-});
-
-// -- builder previews / environments (#509) ---------------------------------
-// The per-vertical, builder-facing half of `substrat preview`: create / list / reap a
-// preview (a scope with data bound to a version, at its own URL), and attach a custom
-// domain to one — turning a pinned preview into a long-lived test environment. Owned-slug
-// checked like promote; a preview forks the caller's OWN tenant scope and serves no
-// install, so it is self-serve for a vertical they own whether private or LISTED (#513).
-// A control-plane orchestration — the plane is the only thing that hosts a preview.
-
-const cpOrThrow = (
-  env: Env,
-  tenantId: DashboardNode['tenantId'],
-  principal?: DashboardNode['principal'],
-): TenantNarrowedControlPlane => {
-  const cp = controlPlaneFor(env, tenantId, principal);
-  return cp;
-};
-
-app.get('/api/deployments/:slug/previews', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const slug = c.req.param('slug');
-  const cp = cpOrThrow(c.env, node.tenantId, node.principal);
-  await assertOwnedFromCp(cp, slug); // your vertical, or 4xx
-  return c.json(await cp.listPreviews(slug));
-});
-
-const createPreviewBody = z.object({
-  tag: z
-    .string()
-    .regex(/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/, 'tag must be a short DNS-safe label, e.g. pr-123'),
-  versionId: z.string().min(1),
-  // `null` PINS the preview (a long-lived test env); absent = the CP's 72h default.
-  ttlHours: z.number().int().positive().max(720).nullable().optional(),
-  empty: z.boolean().optional(),
-  sourceScopeId: z.string().optional(),
-  surface: z.string().optional(),
-  refresh: z.boolean().optional(),
-});
-
-app.post('/api/deployments/:slug/previews', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  await assertMayManageApps(host, node);
-  const slug = c.req.param('slug');
-  const body = createPreviewBody.parse(await c.req.json());
-  const cp = cpOrThrow(c.env, node.tenantId, node.principal);
-  await assertOwnedFromCp(cp, slug);
-  try {
-    const out = await cp.createPreview(slug, {
-      tag: body.tag,
-      versionId: body.versionId,
-      ...(body.ttlHours !== undefined ? { ttlHours: body.ttlHours } : {}),
-      ...(body.empty ? { empty: true } : {}),
-      ...(body.sourceScopeId ? { sourceScopeId: scopeId.parse(body.sourceScopeId) } : {}),
-      ...(body.surface ? { surface: body.surface } : {}),
-      ...(body.refresh ? { refresh: true } : {}),
-    });
-    return c.json(out, out.reused ? 200 : 201);
-  } catch (e) {
-    if (e instanceof ControlPlaneError) throw new HTTPException(e.status as ContentfulStatusCode, { message: e.message });
-    throw e;
-  }
-});
-
-app.delete('/api/deployments/:slug/previews/:tag', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  await assertMayManageApps(host, node);
-  const slug = c.req.param('slug');
-  const cp = cpOrThrow(c.env, node.tenantId, node.principal);
-  await assertOwnedFromCp(cp, slug);
-  return c.json(await cp.deletePreview(slug, c.req.param('tag')));
-});
-
-/**
- * Attach a custom domain to a preview scope — what makes a pinned preview a long-lived test
- * environment at a stable address (crm-test.ahero.se). The preview is resolved by tag under
- * an owned vertical (so a builder can only domain their own preview); the bind path is
- * scope-generic below the seam. `canonical` defaults false — an additive alias next to the
- * `--<tag>` URL, never silently demoting it.
- */
-app.post('/api/deployments/:slug/previews/:tag/domain', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  await assertMayManageApps(host, node);
-  const slug = c.req.param('slug');
-  const tag = c.req.param('tag');
-  const body = z
-    .object({ domain: z.string().min(1).max(253), surface: z.string().min(1).max(32).optional(), canonical: z.boolean().optional() })
-    .parse(await c.req.json());
-  const cp = cpOrThrow(c.env, node.tenantId, node.principal);
-  await assertOwnedFromCp(cp, slug);
-  const preview = (await cp.listPreviews(slug)).find((p) => p.tag === tag);
-  if (!preview) throw new HTTPException(404, { message: `no preview '${tag}' for '${slug}'` });
-  try {
-    const bound = await cp.bindHostname({
-      hostname: body.domain.toLowerCase(),
-      scopeId: scopeId.parse(preview.scopeId),
-      surface: body.surface ?? 'app',
-      canonical: !!body.canonical,
-    });
-    return c.json(bound, 201);
-  } catch (e) {
-    if (e instanceof ControlPlaneError) throw new HTTPException(e.status as ContentfulStatusCode, { message: e.message });
-    throw new HTTPException(409, { message: e instanceof Error ? e.message : 'could not bind domain' });
-  }
-});
 
 // -- Git import (GitHub App) — connections.md §3.5.1 -------------------------
 // The dashboard vertical holds the connections; keyed (tenant, 'dashboard',

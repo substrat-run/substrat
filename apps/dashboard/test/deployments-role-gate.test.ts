@@ -9,7 +9,7 @@ import { MODULES, provisionDashboard } from '../src/index.js';
 import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 
 /**
- * The `/api/deployments` write routes ask the caller's ROLE (#1595).
+ * The `/api/teams/:teamId/deployments` write routes ask the caller's ROLE (#1595).
  *
  * Every one of them used to authenticate the caller and check the vertical was theirs and
  * stop there, so a `viewer` — who holds `dashboard:read` and nothing else — could promote
@@ -72,7 +72,7 @@ const { default: app } = (await import(/* @vite-ignore */ workerModule)) as {
 const PROVIDER = 'authhero';
 const staff = platformActorId.parse(ulid());
 
-describe('the /api/deployments write routes ask the caller’s role (#1595)', () => {
+describe('the team-scoped deployments write routes ask the caller’s role (#1595)', () => {
   let dir: string;
   let host: SqliteScopeHost;
   const tenant = tenantId.parse(ulid());
@@ -147,7 +147,10 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
             if (u.pathname.endsWith('/previews')) {
               return Response.json({ scopeId: 'S', hostname: 'h', url: 'https://h', versionId: 'v1', reused: false });
             }
-            return Response.json({ hostname: 'crm-test.example.com', status: 'verifying' }, { status: 200 });
+            return Response.json(
+              { hostname: 'crm-test.example.com', scopeId: 'S', surface: 'app', status: 'verifying', canonical: false, createdAt: '2026-10-18T00:00:00.000Z' },
+              { status: 200 },
+            );
           }
           // A preview must exist for the domain route to find it; that read is the plane's own list.
           if (method === 'GET' && /^\/verticals\/[^/]+\/previews$/.test(u.pathname.replace(/^\/api/, ''))) {
@@ -179,11 +182,13 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
       env,
     );
 
-  const PROMOTE = ['POST', '/api/deployments/acme%2Fhr/promote', { channel: 'prod', versionId: 'v1' }] as const;
-  const DELETE = ['DELETE', '/api/deployments/acme%2Fhr', undefined] as const;
-  const PREVIEW_CREATE = ['POST', '/api/deployments/acme%2Fhr/previews', { tag: 'pr-1', versionId: 'v1' }] as const;
-  const PREVIEW_DELETE = ['DELETE', '/api/deployments/acme%2Fhr/previews/pr-1', undefined] as const;
-  const PREVIEW_DOMAIN = ['POST', '/api/deployments/acme%2Fhr/previews/pr-1/domain', { domain: 'crm-test.example.com' }] as const;
+  /** The declared routes name their team in the path (#2170). */
+  const inTeam = `/api/teams/${tenant}`;
+  const PROMOTE = ['POST', `${inTeam}/deployments/acme%2Fhr/promote`, { channel: 'prod', versionId: 'v1' }] as const;
+  const DELETE = ['DELETE', `${inTeam}/deployments/acme%2Fhr`, undefined] as const;
+  const PREVIEW_CREATE = ['POST', `${inTeam}/deployments/acme%2Fhr/previews`, { tag: 'pr-1', versionId: 'v1' }] as const;
+  const PREVIEW_DELETE = ['DELETE', `${inTeam}/deployments/acme%2Fhr/previews/pr-1`, undefined] as const;
+  const PREVIEW_DOMAIN = ['POST', `${inTeam}/deployments/acme%2Fhr/previews/pr-1/domain`, { domain: 'crm-test.example.com' }] as const;
 
   async function refused(call: readonly [string, string, unknown]) {
     const res = await asRole('viewer', call[0], call[1], call[2]);
@@ -260,7 +265,7 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
     await refused(PROMOTE);
   });
   it('promote: an owner and a member still promote', async () => {
-    await allowed(PROMOTE, [204]);
+    await allowed(PROMOTE, [200]);
   });
 
   // -- delete the vertical ---------------------------------------------------
@@ -272,12 +277,12 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
   it('delete vertical: an owner still deletes it', async () => {
     // Owner alone: a second delete would find nothing to delete, which is not what is asked.
     const res = await asRole('owner', ...DELETE);
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(200);
     expect((await host.admin.listVerticals(staff)).map((v) => v.slug)).not.toContain('acme/hr');
   });
   it('delete vertical: a member still deletes it', async () => {
     const res = await asRole('member', ...DELETE);
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(200);
     expect((await host.admin.listVerticals(staff)).map((v) => v.slug)).not.toContain('acme/hr');
   });
 
@@ -287,7 +292,7 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
     await refused(PREVIEW_CREATE);
   });
   it('create preview: an owner and a member still create one', async () => {
-    await allowed(PREVIEW_CREATE, [200, 201]);
+    await allowed(PREVIEW_CREATE, [201]);
   });
 
   // -- reap a preview --------------------------------------------------------
@@ -305,6 +310,6 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
     await refused(PREVIEW_DOMAIN);
   });
   it('preview domain: an owner and a member still bind one', async () => {
-    await allowed(PREVIEW_DOMAIN, [200, 201]);
+    await allowed(PREVIEW_DOMAIN, [201]);
   });
 });
