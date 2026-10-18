@@ -154,9 +154,16 @@ export function parseChangeset(file: string, text: string): Changeset {
   const problems: string[] = [];
   const releases = new Map<string, Bump>();
   const overrides: Override[] = [];
-  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(text);
-  if (!m) return { file, releases, overrides, problems: [`${file}: no frontmatter — not a changeset`] };
-  for (const line of m[1]!.split(/\r?\n/)) {
+  // Fence by fence, line by line: an EMPTY frontmatter (`---\n---`, what `changeset --empty`
+  // writes) is a valid changeset that releases nothing, and must not read as a broken one.
+  const lines = text.split(/\r?\n/);
+  const close = lines.findIndex((l, i) => i > 0 && l.trim() === '---');
+  if (lines[0]?.trim() !== '---' || close === -1) {
+    return { file, releases, overrides, problems: [`${file}: no frontmatter — not a changeset`] };
+  }
+  const front = lines.slice(1, close);
+  const body = lines.slice(close + 1);
+  for (const line of front) {
     if (line.trim() === '') continue;
     const r = /^\s*(["']?)(.+?)\1\s*:\s*(\S+)\s*$/.exec(line);
     if (!r || !isBump(r[3]!)) {
@@ -165,7 +172,7 @@ export function parseChangeset(file: string, text: string): Changeset {
     }
     releases.set(r[2]!, r[3]! as Bump);
   }
-  for (const line of m[2]!.split(/\r?\n/)) {
+  for (const line of body) {
     if (!line.includes('bump-override')) continue;
     const o = OVERRIDE.exec(line.trim());
     if (!o) {

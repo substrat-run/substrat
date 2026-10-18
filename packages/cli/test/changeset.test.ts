@@ -75,6 +75,18 @@ describe('parseChangeset', () => {
 
   it('a file without frontmatter is a problem, not an empty changeset', () => {
     expect(parseChangeset('a.md', 'just text').problems).toEqual([expect.stringMatching(/no frontmatter/)]);
+    expect(parseChangeset('a.md', '---\nfoo: minor\n').problems).toEqual([expect.stringMatching(/no frontmatter/)]);
+  });
+
+  it('an EMPTY changeset (what `changeset --empty` writes) releases nothing and is not a problem', () => {
+    // Verbatim copy of an empty changeset this repo has merged.
+    const empty =
+      "---\n---\n\nKeep the private root's TypeScript and Wrangler ranges aligned with the catalog so Dependabot " +
+      'updates produce a frozen-installable lockfile (#1621).\n';
+    const c = parseChangeset('dependabot-root-catalog.md', empty);
+    expect(c.problems).toEqual([]);
+    expect(c.releases.size).toBe(0);
+    expect(parseChangeset('e.md', '---\r\n---\r\n').problems).toEqual([]);
   });
 });
 
