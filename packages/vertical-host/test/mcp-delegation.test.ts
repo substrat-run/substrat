@@ -395,7 +395,7 @@ describe('nothing but the MCP endpoint answers at its path', () => {
     const v1 = new Hono().basePath('/v1');
     v1.post('/api/:x', (c) => c.text('mine'));
     expect(() => mountOperations(v1, operations, stub)).toThrow(
-      'mountMcp: POST /v1/api/:x is registered before the MCP endpoint and would answer at /v1/api/mcp',
+      'mountOperations: POST /v1/api/:x is registered before the MCP endpoint and would answer at /v1/api/mcp',
     );
   });
 
@@ -403,10 +403,25 @@ describe('nothing but the MCP endpoint answers at its path', () => {
     for (const app of [new Hono(), new Hono().basePath('/v1')]) {
       app.post('/api/:x', (c) => c.text('mine'));
       const before = app.routes.length;
-      expect(() => mountOperations(app, operations, stub)).toThrow(/is registered before the MCP endpoint/);
-      expect(() => mountMcp(app, operations, stub)).toThrow(/is registered before the MCP endpoint/);
+      expect(() => mountOperations(app, operations, stub)).toThrow(/^mountOperations: POST .*\/api\/:x is registered before the MCP endpoint/);
+      expect(() => mountMcp(app, operations, stub)).toThrow(/^mountMcp: POST .*\/api\/:x is registered before the MCP endpoint/);
       expect(app.routes.length).toBe(before);
     }
+  });
+
+  it('registers nothing when one of its own operations is at the MCP path, though another sorts before it', () => {
+    const ops = {
+      'desk/first': { summary: 'First', permission: 'tickets:read', http: { method: 'GET', path: '/aaa' } },
+      'desk/odd': { summary: 'Odd', permission: 'tickets:read', http: { method: 'POST', path: '/mcp' } },
+    };
+    for (const app of [new Hono(), new Hono().basePath('/v1')]) {
+      expect(() => mountOperations(app, ops, stub)).toThrow(/^mountOperations: 'desk\/odd' is bound to POST \/mcp/);
+      expect(app.routes).toEqual([]);
+    }
+    // The same holds for an operation no registered module provides.
+    const app = new Hono();
+    expect(() => mountOperations(app, ops, stub, { mcp: false, knownOperations: ['desk/odd'] })).toThrow(/'desk\/first' .* no registered module provides it/);
+    expect(app.routes).toEqual([]);
   });
 
   it('reads a basePath() prefix exactly as Hono applies it when it registers a route', () => {

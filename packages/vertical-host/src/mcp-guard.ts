@@ -85,15 +85,20 @@ export function servedPathOf(app: object, path: string): string {
 
 /**
  * Refuse an MCP endpoint at `path` when a route already registered on `app` would answer there
- * in its place (`routeAnsweringAt`, at the path the endpoint is served at). Throws before
- * anything is registered, so a refused mount leaves the app as it found it.
+ * in its place (`routeAnsweringAt`, at the path the endpoint is served at). Called before
+ * anything is registered, so a refused mount leaves the app as it found it. `caller` is the
+ * mount the error names.
  */
-export function assertMcpPathFree(app: { readonly routes: readonly RegisteredRoute[] }, path: string): void {
+export function assertMcpPathFree(
+  app: { readonly routes: readonly RegisteredRoute[] },
+  path: string,
+  caller: 'mountMcp' | 'mountOperations',
+): void {
   const answersAt = servedPathOf(app, path);
   const shadow = routeAnsweringAt(app.routes, answersAt);
   if (shadow) {
     throw new Error(
-      `mountMcp: ${shadow.method} ${shadow.path} is registered before the MCP endpoint and would answer at ${answersAt} ` +
+      `${caller}: ${shadow.method} ${shadow.path} is registered before the MCP endpoint and would answer at ${answersAt} ` +
         'in its place — move that route off the path',
     );
   }

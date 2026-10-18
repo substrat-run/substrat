@@ -373,13 +373,12 @@ export function mountOperations(
 
   assertNoUnreachable(declared);
 
-  // #1824: the MCP endpoint mounted below must be the only route at its path. `mountMcp`
-  // refuses any earlier route there too; this says which OPERATION it was.
+  // #1824: the MCP endpoint mounted below must be the only route at its path. Everything that
+  // can refuse the mount is judged in this pass, before any route is registered, so a refused
+  // mount registers nothing: a route already on the app there (as `mountMcp` judges it too),
+  // then an operation of this mount there, named.
   const mcpPath = options.mcp === false ? undefined : (options.mcp?.path ?? mcpEndpointPath(base));
-  // Judged here as well as in `mountMcp`, before any operation route is registered, so a
-  // refused mount registers nothing.
-  if (mcpPath !== undefined) assertMcpPathFree(app, mcpPath);
-
+  if (mcpPath !== undefined) assertMcpPathFree(app, mcpPath, 'mountOperations');
   for (const [name, op] of declared) {
     if (mcpPath !== undefined && routeAnsweringAt([{ method: op.http.method, path: `${base}${toHonoPath(op.http.path)}` }], mcpPath)) {
       throw new Error(
@@ -393,6 +392,9 @@ export function mountOperations(
           'registered module provides it — check the name against the engine that owns it',
       );
     }
+  }
+
+  for (const [name, op] of declared) {
     const { method, path } = op.http;
     const params = pathParams(path);
     const full = `${base}${toHonoPath(path)}`;

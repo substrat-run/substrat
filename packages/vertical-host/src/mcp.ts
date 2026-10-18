@@ -665,7 +665,7 @@ export function mountMcp(
 ): { path: string; tools: number } {
   const tools = mcpToolsOf(operations);
   const path = options.path ?? mcpEndpointPath(options.basePath);
-  assertMcpPathFree(app, path);
+  assertMcpPathFree(app, path, 'mountMcp');
   const wellKnown = `/.well-known/oauth-protected-resource${path}`;
   const byName = new Map(tools.map((t) => [t.name, t]));
   const serverInfo = {
