@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
-import { untested } from './operation-tests.mts';
+import { basePattern, untested } from './operation-tests.mts';
 import { testFiles } from './package-registrations.mts';
 
 test('an operation named in a test, in any quote, is tested', () => {
@@ -35,4 +35,13 @@ test('test files are *.test / *.spec anywhere and any source under test/, never 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('on the base an operation counts as named only as a whole quoted name, not inside a longer one', () => {
+  const re = new RegExp(basePattern(['todo/create', 'a.b']), 'g');
+  const found = (text: string): string[] => [...text.matchAll(re)].map((m) => m[0].slice(1, -1));
+  assert.deepEqual(found(`invoke('todo/create-list')`), []);
+  assert.deepEqual(found(`invoke('todo/create')`), ['todo/create']);
+  assert.deepEqual(found('"todo/create"; `todo/create`'), ['todo/create', 'todo/create']);
+  assert.deepEqual(found(`'aXb'`), [], 'a regex metacharacter in a name is literal');
 });

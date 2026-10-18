@@ -35,12 +35,22 @@ export function untested(operations: readonly string[], tests: readonly string[]
   return operations.filter((op) => !named.has(op));
 }
 
-/** Which of `ops` the base names anywhere in the package: one `git grep` for all of them. */
+/**
+ * The extended regex `git grep -E` reads to find `ops` on the base: each as a whole quoted name,
+ * so `todo/create` is not found inside `'todo/create-list'`. Valid as a JavaScript regex too.
+ */
+export function basePattern(ops: readonly string[]): string {
+  const escaped = ops.map((op) => op.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return `['"\`](${escaped.join('|')})['"\`]`;
+}
+
+/** Which of `ops` the base names, quoted, anywhere in the package: one `git grep` for all of them. */
 function namedOnBase(base: string, label: string, ops: readonly string[]): Set<string> {
   if (ops.length === 0) return new Set();
   try {
-    const args = ['grep', '-h', '-o', '-F', ...ops.flatMap((op) => ['-e', op]), base, '--', label];
-    return new Set(execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 26 }).split('\n'));
+    const args = ['grep', '-h', '-o', '-E', basePattern(ops), base, '--', label];
+    const out = execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 26 });
+    return new Set(out.split('\n').map((m) => m.slice(1, -1)));
   } catch (err) {
     // Exit 1 is "no match"; anything else is a git that could not answer.
     if ((err as { status?: number }).status === 1) return new Set();
