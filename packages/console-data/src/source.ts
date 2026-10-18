@@ -20,7 +20,13 @@ export interface ConsoleDataSource {
   describe(): SourceDescription;
   /** The vertical's declared artifacts. `null` parts are not held by this source. */
   artifacts(): Promise<SourceArtifacts>;
-  /** One page of the requests a query matches, newest first. */
+  /**
+   * One page of the requests a query matches, in one total order: `startedAt` descending, then
+   * `invocationId` descending for requests that started at the same instant. The tie-break is
+   * part of the contract (the suite's world has a tie), because without it two pages can
+   * overlap or skip. A source whose backend sorts by time alone, as the hosted log reader does,
+   * adds it. A source holds one record per `invocationId`, the last one it was given.
+   */
   queryRequests(query: RequestQuery): Promise<RequestPage>;
   /** Facet counts over the requests a query matches. */
   facets(query: RequestQuery): Promise<RequestFacets>;
@@ -84,6 +90,7 @@ export const DEFAULT_PAGE = 50;
 export const MAX_PAGE = 200;
 
 export interface RequestPage {
+  /** In the order `queryRequests` defines: `(startedAt desc, invocationId desc)`. */
   readonly requests: readonly TraceHead[];
   /** Pass back as `cursor` for the next, older page; `null` when this is the last. */
   readonly nextCursor: string | null;

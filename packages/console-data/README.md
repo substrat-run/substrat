@@ -22,6 +22,9 @@ interface ConsoleDataSource {
 }
 ```
 
+- **One total order.** Pages run `startedAt` descending, ties broken by `invocationId`
+  descending, one record per id. The tie-break is contract, not detail: a backend that sorts
+  by time alone adds it, or two pages can overlap.
 - **Query-first, never tail-first.** Every read is a window (`from`/`to`, epoch ms, on
   `startedAt`) plus facet filters. A hosted record can answer a window; it cannot stream. So
   tailing is an optional extra, and a view that tails must still draw from a query alone.
