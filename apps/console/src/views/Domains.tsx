@@ -234,12 +234,14 @@ export function Domains({ api, scopes, tenants, hostnames, onChanged, onToast }:
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <Input
+          ariaLabel="Search hostnames"
           placeholder="Search hostname, scope, or surface…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           style={{ width: 320 }}
         />
         <Select
+          ariaLabel="Filter hostnames by status"
           options={[
             { value: 'all', label: 'All statuses' },
             ...(Object.keys(STATUS_TONE) as HostnameStatus[]).map((v) => ({ value: v, label: v[0]!.toUpperCase() + v.slice(1) })),

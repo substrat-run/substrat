@@ -152,12 +152,14 @@ export function Tenants({ api, tenants, scopes, entitlements, onOpen, onChanged,
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <Input
+          ariaLabel="Search tenants"
           placeholder="Search name, slug, or id…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           style={{ width: 320 }}
         />
         <Select
+          ariaLabel="Filter tenants by status"
           options={[
             { value: 'not-reaped', label: `Hide reaped (${tenants.length - reapedCount})` },
             { value: 'all', label: `All statuses (${tenants.length})` },

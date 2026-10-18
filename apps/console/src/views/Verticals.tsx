@@ -154,6 +154,7 @@ export function Verticals({ api, openSlug, onOpen, onBack, onOpenFailures, onToa
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <Input
+          ariaLabel="Search verticals"
           placeholder="Search slug, name, or source…"
           value={q}
           onChange={(e) => setQ(e.target.value)}

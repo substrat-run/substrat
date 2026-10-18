@@ -64,6 +64,7 @@ export function Pager({ p }: { p: Paged<unknown> }) {
       </span>
       <Select
         size="sm"
+        ariaLabel="Rows per page"
         options={PAGE_SIZES.map((n) => ({ value: String(n), label: `${n} / page` }))}
         value={String(p.pageSize)}
         onChange={(e) => p.setPageSize(Number(e.target.value))}
