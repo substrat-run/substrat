@@ -16,8 +16,19 @@ name that sign-in. If it names the service token, stop.
 
 Use the test dispatch namespace `substrat-verticals-test` and the test bucket
 `substrat-store-releases-test` first. Both names are in
-`apps/control-plane/wrangler.jsonc`. Production (`substrat-verticals`,
-`substrat-store-releases`) is a later decision, not part of this pass.
+`apps/control-plane/wrangler.jsonc`, and only in its `env.test` block: the top level
+names the production pair (`substrat-verticals`, `substrat-store-releases`), which is a
+later decision, not part of this pass.
+
+The two `wrangler` commands below (steps 1 and 2, and the `get` in step 4) read no
+environment block. `dispatch-namespace` and `r2 bucket` take no `--env`, and the file sets
+no `account_id`, so they act on whatever account wrangler is signed in to, or on
+`CLOUDFLARE_ACCOUNT_ID` when that is set. An `absent` or a `10121` from the wrong account
+says nothing about the test control plane, and must not block the rollout. Before step 1,
+run `npx wrangler whoami` and confirm that the account it names is the one the test control
+plane deploys to (the `CLOUDFLARE_ACCOUNT_ID` that `ci.yml` deploys the test environment
+with, a repository variable). Compare by account name, and do not write the id down. If they
+differ, set `CLOUDFLARE_ACCOUNT_ID` to the right one in your shell for these commands.
 
 Record the command, the exit code and the response body. Do not record a token, an
 account id, or a key.
