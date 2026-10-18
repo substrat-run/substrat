@@ -173,7 +173,10 @@ export function parseChangeset(file: string, text: string): Changeset {
     releases.set(r[2]!, r[3]! as Bump);
   }
   for (const line of body) {
-    if (!line.includes('bump-override')) continue;
+    // Only a line that STARTS a directive is one. Prose that mentions the feature — a changeset
+    // about this very command — is prose; an override buried after text is not read, so the
+    // check it would have silenced still fails, which is the safe side.
+    if (!/^<!--\s*bump-override\b/.test(line.trim())) continue;
     const o = OVERRIDE.exec(line.trim());
     if (!o) {
       problems.push(

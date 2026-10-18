@@ -54,12 +54,21 @@ describe('parseChangeset', () => {
       `<!-- bump-override: ${PKG} — reason -->`,
       `<!-- bump-override: ${PKG} minor reason -->`,
       `<!-- bump-override: minor — reason -->`,
-      `bump-override: ${PKG} minor — reason`,
     ]) {
       const c = cs('a.md', `'${PKG}': minor`, line);
       expect(c.overrides, line).toEqual([]);
       expect(c.problems, line).toEqual([expect.stringMatching(/malformed override/)]);
     }
+  });
+
+  it('prose that mentions bump-override is not a directive; a line that starts one, malformed, still is', () => {
+    const prose = cs('a.md', `'${PKG}': minor`, 'Adds the `bump-override` line to `substrat changeset`.\nSee bump-override: docs.');
+    expect(prose.problems).toEqual([]);
+    expect(prose.overrides).toEqual([]);
+    const inline = cs('a.md', `'${PKG}': minor`, `Text <!-- bump-override: ${PKG} minor — reason -->`);
+    expect(inline.overrides).toEqual([]); // not read, so it silences nothing
+    const directive = cs('a.md', `'${PKG}': minor`, `<!-- bump-override ${PKG} minor reason -->`);
+    expect(directive.problems).toEqual([expect.stringMatching(/malformed override/)]);
   });
 
   it('an override for a package its changeset does not release is refused', () => {
