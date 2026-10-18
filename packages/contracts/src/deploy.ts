@@ -947,11 +947,15 @@ export function storeNamesOfBindings(
 /**
  * A scope store whose driver has no registration is refused (#2207). The declaration
  * parses — `graph` is the driver — and still cannot be stored as if the platform
- * could run it. {@link STORE_DRIVERS} is what "registered" means.
+ * could run it. `drivers` is what "registered" means: {@link STORE_DRIVERS} unless a
+ * caller judges against another registry, as `mayHoldScopeStores` does.
  */
-export function assertScopeStoresRegistered(stores: readonly ScopeStoreNeed[]): void {
+export function assertScopeStoresRegistered(
+  stores: readonly ScopeStoreNeed[],
+  drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS,
+): void {
   for (const store of stores) {
-    if (!STORE_DRIVERS.some((driver) => driver.driver === store.driver)) {
+    if (!drivers.some((driver) => driver.driver === store.driver)) {
       throw substratError(
         'forbidden',
         `deploy refused: scope store '${store.binding}' declares driver '${store.driver}', which is not registered. ` +
@@ -968,9 +972,11 @@ export function assertDeclaredScopeStores(input: {
   readonly blobStores?: readonly { binding: string }[];
   readonly scopeStores?: readonly ScopeStoreNeed[];
   readonly bindingNames?: readonly string[];
+  /** The registry the scope stores are judged against; {@link STORE_DRIVERS} when absent. */
+  readonly drivers?: readonly StoreDriverRegistration[];
 }): void {
   assertStoreBindingsDistinct(input);
-  assertScopeStoresRegistered(input.scopeStores ?? []);
+  assertScopeStoresRegistered(input.scopeStores ?? [], input.drivers);
 }
 
 /**

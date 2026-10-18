@@ -300,13 +300,14 @@ export async function migrationsDigestBindings(
  * stops applying. (The kernel seam is `provisionTenantStore`/`openTenantStore`; on Cloudflare
  * the platform mints a live D1 per tenant and attaches it to the serving script — #301 PR-2.)
  */
-export function assertSandboxContract(m: DeployManifest): void {
+export function assertSandboxContract(m: DeployManifest, drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS): void {
   // The same derivation push applies (#2224): an own DO binding is an own store.
   assertDeclaredScopeStores({
     ...storeNamesOfBindings(m.bindings),
     tenantStores: m.tenantStores,
     blobStores: m.blobStores,
     scopeStores: m.scopeStores,
+    drivers,
   });
   const own = new Set(m.doClasses);
   const admissible = new Set<string>(ADMISSIBLE_BINDING_TYPES);

@@ -157,6 +157,9 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
     const stores = [{ binding: 'GRAPH', driver: 'graph' as const }];
     expect(() => assertScopeStoresRegistered(stores)).not.toThrow();
     expect(() => assertDeclaredScopeStores({ scopeStores: stores })).not.toThrow();
+    // The registry is the caller's to pass: against one holding no driver, the same declaration is refused.
+    expect(() => assertScopeStoresRegistered(stores, [])).toThrow(/not registered/);
+    expect(() => assertDeclaredScopeStores({ scopeStores: stores, drivers: [] })).toThrow(/not registered/);
     expect(STORE_DRIVERS.map((driver) => driver.driver)).toEqual(['graph']);
     expect(STORE_DRIVERS[0]?.className).toBe('Store');
     expect(STORE_DRIVERS[0]?.operations).toHaveLength(35);

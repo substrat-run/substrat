@@ -9,7 +9,6 @@ import {
   platformActorId,
   RESERVED_STORE_OPERATIONS,
   scopeStoreScriptName,
-  STORE_DRIVERS,
   storeDriverReleaseDigest,
   tenantId,
   type StoreDriverRegistration,
@@ -38,6 +37,7 @@ describe('a vertical upload carries no scope-store binding, and its store script
   let host: SqliteScopeHost;
   let app: ReturnType<typeof createControlPlaneApi>;
   let bare: ReturnType<typeof createControlPlaneApi>;
+  let unregistered: ReturnType<typeof createControlPlaneApi>;
   const staff = platformActorId.parse(ulid());
   const auth = { [DEV_ACTOR_HEADER]: staff };
 
@@ -54,13 +54,11 @@ describe('a vertical upload carries no scope-store binding, and its store script
   let rolledOut: typeof release | undefined = release;
 
   /**
-   * The push check reads `STORE_DRIVERS`. This file swaps that array for one test driver whose pin
-   * is the digest of the release above, and puts the reviewed registration back afterwards, rather
-   * than giving the control plane an option that could register a driver outside review.
+   * One test driver whose pin is the digest of the release above, handed to the control plane and
+   * the store uploader as their registry (`storeDrivers`, `drivers`). The reviewed `STORE_DRIVERS`
+   * is never written to.
    */
   let testDriver: StoreDriverRegistration;
-  const registry = STORE_DRIVERS as StoreDriverRegistration[];
-  const registered = [...registry];
 
   beforeAll(async () => {
     testDriver = {
@@ -77,6 +75,7 @@ describe('a vertical upload carries no scope-store binding, and its store script
     const common = {
       host,
       authenticate: UNSAFE_devPlatformActorAuth(),
+      storeDrivers: [testDriver],
       deployVertical: createWfpUploader({ accountId: 'acct', namespace: 'ns', apiToken: 'tok' }),
       fetchVerticalModules: async () => [
         { name: 'worker.js', content: new TextEncoder().encode('export default {}'), contentType: 'application/javascript+module' },
@@ -90,19 +89,20 @@ describe('a vertical upload carries no scope-store binding, and its store script
         apiToken: 'tok',
         callerPublicKeys: [caller.publicKey],
         platformPublicKeys: [platform.publicKey],
+        drivers: [testDriver],
         loadRelease: async ({ sha256 }) => (sha256 === undefined || sha256 === testDriver.releases[0]!.sha256 ? rolledOut : undefined),
       }),
     });
     // A control plane with no store uploader configured.
     bare = createControlPlaneApi(common);
+    // A control plane whose registry holds no driver.
+    unregistered = createControlPlaneApi({ ...common, storeDrivers: [] });
   });
   afterAll(async () => {
-    registry.splice(0, registry.length, ...registered);
     await host.close();
     rmSync(dir, { recursive: true, force: true });
   });
   afterEach(() => {
-    registry.splice(0, registry.length, ...registered);
     scripts.clear();
     failStorePut = false;
     rolledOut = release;
@@ -171,7 +171,6 @@ describe('a vertical upload carries no scope-store binding, and its store script
 
   it('the per-version push and the serving upload send the vertical’s bindings and no store binding', async () => {
     stubCloudflare();
-    registry.splice(0, registry.length, testDriver);
     const res = await push(await tenant('store-upload'));
     expect(res.status, await res.clone().text()).toBe(201);
     const { id, verticalSlug } = (await res.json()) as { id: string; verticalSlug: string };
@@ -193,7 +192,6 @@ describe('a vertical upload carries no scope-store binding, and its store script
 
   it('uploads the store script before the vertical, once, at the release rolled out', async () => {
     stubCloudflare();
-    registry.splice(0, registry.length, testDriver);
     const before = puts.length;
     const res = await push(await tenant('store-order'));
     expect(res.status, await res.clone().text()).toBe(201);
@@ -220,7 +218,6 @@ describe('a vertical upload carries no scope-store binding, and its store script
 
   it('a failed store upload stops the push before the vertical is uploaded, and is recorded', async () => {
     stubCloudflare();
-    registry.splice(0, registry.length, testDriver);
     failStorePut = true;
     const before = puts.length;
     const res = await push(await tenant('store-fails'));
@@ -242,7 +239,6 @@ describe('a vertical upload carries no scope-store binding, and its store script
 
   it('a failed store upload stops a promote before the serving upload, and is recorded for the owner', async () => {
     stubCloudflare();
-    registry.splice(0, registry.length, testDriver);
     const res = await push(await tenant('store-serve-fails'));
     expect(res.status, await res.clone().text()).toBe(201);
     const { id, verticalSlug } = (await res.json()) as { id: string; verticalSlug: string };
@@ -273,7 +269,6 @@ describe('a vertical upload carries no scope-store binding, and its store script
 
   it('a driver with no release rolled out is refused (409) before any upload, and is recorded', async () => {
     stubCloudflare();
-    registry.splice(0, registry.length, testDriver);
     rolledOut = undefined;
     const before = puts.length;
     const res = await push(await tenant('store-unreleased'));
@@ -287,7 +282,6 @@ describe('a vertical upload carries no scope-store binding, and its store script
 
   it('a push waits out a rollout of its driver (409), naming no other vertical, and holds nothing after (#2300)', async () => {
     stubCloudflare();
-    registry.splice(0, registry.length, testDriver);
     const rollout = ulid();
     expect(await host.admin.holdStoreDriver(staff, { driver: 'graph', holder: rollout, mode: 'exclusive', ttlMs: 60_000 })).toBe(true);
     const before = puts.length;
@@ -311,7 +305,6 @@ describe('a vertical upload carries no scope-store binding, and its store script
 
   it('a control plane with no store uploader refuses the push (501) and uploads nothing', async () => {
     stubCloudflare();
-    registry.splice(0, registry.length, testDriver);
     const before = puts.length;
     const res = await push(await tenant('store-bare'), bare);
     expect(res.status).toBe(501);
@@ -324,9 +317,8 @@ describe('a vertical upload carries no scope-store binding, and its store script
 
   it('with no driver registered, the same push is refused before anything is uploaded', async () => {
     stubCloudflare();
-    registry.length = 0;
     const before = puts.length;
-    const res = await push(await tenant('store-refused'));
+    const res = await push(await tenant('store-refused'), unregistered);
     expect(res.status).toBe(403);
     expect(await res.text()).toMatch(/not registered/);
     expect(puts.length).toBe(before);
