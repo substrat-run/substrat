@@ -198,3 +198,30 @@ function both(ctx, row) {
 }`;
   assert.deepEqual(at(text), []);
 });
+
+test('a quoted state column is a write; a quoted column that only starts with its name is not', () => {
+  const text = `
+function a(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET "status" = ? WHERE id = ?', ['x', id]); }
+function b(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET [status] = ? WHERE id = ?', ['x', id]); }
+function c(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET "status_note" = ? WHERE id = ?', ['x', id]); }`;
+  assert.deepEqual(at(text), [2, 3]);
+});
+
+test('a row-value SET that names the state is a write; one that does not, or reads it in a subquery, is not', () => {
+  const text = `
+function a(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET (status, note) = (?, ?) WHERE id = ?', ['x', 'n', id]); }
+function b(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET (note, "status") = (?, ?) WHERE id = ?', ['n', 'x', id]); }
+function c(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET (note, title) = (?, ?) WHERE id = ?', ['n', 't', id]); }
+function d(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET total = (SELECT status FROM shop_lines WHERE id = ?)', [id]); }`;
+  assert.deepEqual(at(text), [2, 3]);
+});
+
+test('REPLACE INTO and INSERT OR REPLACE INTO naming the state replace a row\'s state; plain INSERT, and REPLACE without it, do not', () => {
+  const text = `
+function a(ctx, id) { ctx.sql.exec('REPLACE INTO shop_orders (id, status) VALUES (?, ?)', [id, 'x']); }
+function b(ctx, id) { ctx.sql.exec('INSERT OR REPLACE INTO main.shop_orders (id, "status") VALUES (?, ?)', [id, 'x']); }
+function c(ctx, id) { ctx.sql.exec('INSERT INTO shop_orders (id, status) VALUES (?, ?)', [id, 'new']); }
+function d(ctx, id) { ctx.sql.exec('REPLACE INTO shop_orders (id, note) VALUES (?, ?)', [id, 'n']); }
+function e(ctx, id) { ctx.sql.exec('REPLACE INTO shop_lines (id, status) VALUES (?, ?)', [id, 'x']); }`;
+  assert.deepEqual(at(text), [2, 3]);
+});

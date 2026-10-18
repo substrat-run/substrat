@@ -14,8 +14,9 @@
  * So this reads every package that declares lifecycles in its checked-in `model.json` (held to
  * the code by `lint:model --check`): for each lifecycle, the entity's table and state field.
  * In the package's shipped source (`src/`, not tests, not `seed.ts`, not a migrations module,
- * whose backfill is no operation), every write of the field — `UPDATE [OR …] [schema.]<table> …
- * SET … <field> =`, or an upsert's `ON CONFLICT … DO UPDATE SET … <field> =` — must be covered by a
+ * whose backfill is no operation), every write of the field — an `UPDATE` or an upsert's
+ * `DO UPDATE` whose SET list names it, or a `REPLACE INTO` whose column list does (`stateWrite`
+ * below has the forms) — must be covered by a
  * lifecycle question: a call of `assertTransition` or `transitionFor` (the one an engine uses when
  * it keeps its own refusal reason), or of a function in the same file whose body calls one
  * directly (`requireTransition`). Covered means before the write, in its function or one
@@ -118,18 +119,25 @@ export function lifecyclesOf(model) {
 const IDENT = String.raw`(?:"[^"\n]+"|\[[^\]\n]+\]|\x60[^\x60\n]+\x60|\w+)`;
 
 /**
- * A statement that writes `field` of `table`: `UPDATE [OR …] [schema.]<table> … SET …`, or an
- * upsert, `INSERT [OR …] INTO [schema.]<table> … ON CONFLICT … DO UPDATE SET …`. The SET list
- * ends at WHERE or RETURNING, so a state named in the condition is a read; a quote does not end
- * it, so a literal before the column (`SET note = 'x', status = ?`) does not hide the write.
+ * A statement that writes `field` of `table`:
+ * - `UPDATE [OR …] [schema.]<table> … SET …` naming the field, as `<field> =` or inside a row-value
+ *   list, `(a, <field>) =`;
+ * - an upsert, `INSERT [OR …] INTO [schema.]<table> … ON CONFLICT … DO UPDATE SET …`, the same way;
+ * - `REPLACE INTO` / `INSERT OR REPLACE INTO <table> (…, <field>, …)`, which replaces a row's state.
+ * Table and field may each be quoted. The SET list ends at WHERE or RETURNING, so a state named in
+ * the condition is a read; a quote does not end it, so a literal before the column
+ * (`SET note = 'x', status = ?`) does not hide the write.
  */
 export function stateWrite(table, field) {
   const t = escape(table);
+  const fl = escape(field);
   const target = String.raw`(?:${IDENT}\s*\.\s*)?(?:"${t}"|\[${t}\]|\x60${t}\x60|${t}\b)`;
-  const set = String.raw`SET\b(?:(?!\b(?:WHERE|RETURNING)\b)[^;\x60])*?\b${escape(field)}\s*=`;
+  const col = String.raw`(?:"${fl}"|\[${fl}\]|\x60${fl}\x60|\b${fl}\b)`;
+  const set = String.raw`SET\b(?:(?!\b(?:WHERE|RETURNING)\b)[^;\x60])*?(?:${col}\s*=|${col}(?:\s*,[^()=;]*)?\)\s*=)`;
   const update = String.raw`\bUPDATE\s+(?:OR\s+\w+\s+)?${target}(?:\s+AS\s+\w+)?\s+${set}`;
   const upsert = String.raw`\bINSERT\s+(?:OR\s+\w+\s+)?INTO\s+${target}[^;\x60]*?\bDO\s+UPDATE\s+${set}`;
-  return new RegExp(`${update}|${upsert}`, 'gi');
+  const replace = String.raw`\bREPLACE\s+INTO\s+${target}\s*\([^)]*?${col}`;
+  return new RegExp(`${update}|${upsert}|${replace}`, 'gi');
 }
 
 /**
