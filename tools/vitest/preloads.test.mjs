@@ -145,6 +145,11 @@ test('node-options.mjs prints every preload when started through a symlink', () 
     const printed = execFileSync(process.execPath, [link], { encoding: 'utf8' });
     assert.equal(printed, nodeOptions());
     assert.deepEqual(missingFrom(printed, preloads), []);
+    // And where node keeps the symlink as the script's own URL: still the script, and every
+    // preload is still found in the directory the file really lives in, not the link's.
+    const preserved = execFileSync(process.execPath, ['--preserve-symlinks-main', link], { encoding: 'utf8' });
+    assert.equal(preserved, nodeOptions());
+    assert.deepEqual(missingFrom(preserved, preloads), []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -12,7 +12,11 @@ import { readdirSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const here = dirname(fileURLToPath(import.meta.url));
+// The real path, resolved once. `import.meta.url` is already real by default, but under
+// `--preserve-symlinks-main` it keeps the symlink, so both the preload directory and the
+// is-this-the-script test below read this instead (#2399 review).
+const self = realpathSync(fileURLToPath(import.meta.url));
+const here = dirname(self);
 
 /** Every preload, sorted: each CommonJS file in this directory. */
 export function preloadFiles() {
@@ -27,18 +31,22 @@ export function nodeOptions() {
 }
 
 /**
- * Run as a script, not imported. `import.meta.url` is already the real path, while `argv[1]` is
- * the path the caller typed, so it is resolved too: compared as typed, a run through a symlink
- * printed nothing and exited 0, and `NODE_OPTIONS=""` is every preload switched off (#2399).
+ * Run as a script, not imported. `argv[1]` is the path the caller typed, so it is resolved before
+ * it is compared with {@link self}: compared as typed, a run through a symlink printed nothing and
+ * exited 0, and `NODE_OPTIONS=""` is every preload switched off (#2399). A path that names a file
+ * and cannot be resolved is refused rather than read as "imported".
  */
 function runAsScript() {
   const typed = process.argv[1];
   if (!typed) return false;
+  let real;
   try {
-    return realpathSync(typed) === fileURLToPath(import.meta.url);
-  } catch {
-    return false;
+    real = realpathSync(typed);
+  } catch (error) {
+    process.stderr.write(`node-options: cannot resolve the path it was started by (${typed}): ${error.message}\n`);
+    process.exit(1);
   }
+  return real === self;
 }
 
 if (runAsScript()) {
