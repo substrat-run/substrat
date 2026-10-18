@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair } from 'jose';
-import { SHARED_ISSUER_CONFIG_KEY, mcpResourceOf } from '@substrat-run/contracts';
+import { DELEGATION_ASSERTION_AUDIENCE, SHARED_ISSUER_CONFIG_KEY, mcpResourceOf } from '@substrat-run/contracts';
 import { oidcRpAuthProvider, type OidcRpConfig } from '../src/oidc-rp-provider.js';
 import { oidcAuthProvider } from '../src/oidc.js';
 import { AUTH_CONFIG_KEY, instanceAuthFor, type InstanceDelegation } from '../src/instance-auth.js';
@@ -113,7 +113,7 @@ describe('a delegated token is admitted only where the host opted in', () => {
     expect(await resolveAt({ ...plain, audience: RESOURCE_A }, t)).toBeNull();
     expect(await oidcAuthProvider({ issuer: ISSUER }).resolve(bearer(t), MCP_A)).toBeNull();
     // Twin: the same token without `act` is a user's MCP token, which rule 1 admits as before.
-    const { act: _act, ...withoutAct } = delegatedClaims();
+    const { act: _act, substrat_delegation: _marker, ...withoutAct } = delegatedClaims();
     expect(await subAt(plain, await token(withoutAct))).toBe('user-1');
     expect((await oidcAuthProvider({ issuer: ISSUER }).resolve(bearer(await token(withoutAct)), MCP_A))?.sub).toBe('user-1');
   });
@@ -247,7 +247,7 @@ describe("a token for another app's MCP endpoint is not ours, even when issued t
     expect(await resolveAt(actorApp, t, 'https://helpdesk.example/api/tickets')).toBeNull();
     expect(await resolveAt({ ...actorApp, delegation: { actors: [ACTOR] } }, t, 'https://helpdesk.example/api/tickets')).toBeNull();
     // And without `act` too: that is the rule above, not the delegation one.
-    const { act: _act, ...withoutAct } = delegatedClaims();
+    const { act: _act, substrat_delegation: _marker, ...withoutAct } = delegatedClaims();
     expect(await resolveAt(actorApp, await token(withoutAct), 'https://helpdesk.example/api/tickets')).toBeNull();
   });
 
@@ -255,6 +255,36 @@ describe("a token for another app's MCP endpoint is not ours, even when issued t
     expect(await subAt(plain, await token({ aud: USERINFO, azp: 'desk-a', client_id: 'desk-a' }), REST_A)).toBe('user-1');
     expect(await subAt(plain, await token({ aud: `${ISSUER}/api/auth`, azp: 'desk-a' }), REST_A)).toBe('user-1');
     expect(await subAt(plain, await token({ aud: [RESOURCE_A, RESOURCE_B], azp: 'mcp-client' }), REST_A)).toBe('user-1');
+  });
+});
+
+describe("the exchange's first step is a bearer nowhere", () => {
+  /** The stage-A assertion: addressed to the actor and a marker, no authorized party. */
+  const assertionClaims = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    aud: [ACTOR, DELEGATION_ASSERTION_AUDIENCE],
+    scope: 'tickets:read',
+    may_act: { iss: ISSUER, sub: ACTOR },
+    substrat_delegation: { stage: 'assertion', host: 'scope-host', actor: 'scope-actor', host_client: 'desk-a' },
+    ...over,
+  });
+  const actorWithAudience: OidcRpConfig = { ...base, clientId: ACTOR, sharedIssuer: true, audience: ACTOR };
+  const actorExternal: OidcRpConfig = { ...base, clientId: ACTOR };
+
+  it('refuses it where a delivered audience or an external issuer would otherwise take it as the user', async () => {
+    for (const cfg of [actorWithAudience, actorExternal, { ...base, clientId: ACTOR, sharedIssuer: true }]) {
+      expect(await resolveAt(cfg, await token(assertionClaims()), 'https://helpdesk.example/api/tickets')).toBeNull();
+    }
+  });
+
+  it('refuses it on either marker alone', async () => {
+    expect(await resolveAt(actorWithAudience, await token(assertionClaims({ substrat_delegation: undefined })), REST_A)).toBeNull();
+    expect(await resolveAt(actorWithAudience, await token(assertionClaims({ may_act: undefined })), REST_A)).toBeNull();
+  });
+
+  it('twin: the same audience rule still admits a token with neither marker', async () => {
+    const plainToken = await token(assertionClaims({ may_act: undefined, substrat_delegation: undefined }));
+    expect(await subAt(actorWithAudience, plainToken, REST_A)).toBe('user-1');
+    expect(await subAt(actorExternal, plainToken, REST_A)).toBe('user-1');
   });
 });
 
