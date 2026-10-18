@@ -52,6 +52,11 @@ export interface TransitionChange {
   readonly check?: TransitionCheck;
   /** Set instead of `check` when that `PERMISSIONS.md`'s Operations table cannot be read, with why. */
   readonly checkUnreadable?: string;
+  /**
+   * Set when `check` is absent and that `PERMISSIONS.md` says some modules' operations are not
+   * known (each a bare manifest): the operation may be one of theirs, so no other cause is named.
+   */
+  readonly operationsUnknownFor?: readonly string[];
 }
 
 /** One operation's declared check, joined to the roles and per-entity grant shapes holding it. */
@@ -156,7 +161,7 @@ function permissionRows(baseMd: string | null, headMd: string | null): Permissio
 }
 
 /** operation → its declared check and holders, from one side's `PERMISSIONS.md`. */
-function checksIn(md: string | null): { checks: Map<string, TransitionCheck>; unreadable?: string } {
+function checksIn(md: string | null): { checks: Map<string, TransitionCheck>; unreadable?: string; unknownFor?: readonly string[] } {
   const out = new Map<string, TransitionCheck>();
   if (md === null) return { checks: out };
   const v = parsePermissions(md);
@@ -171,7 +176,7 @@ function checksIn(md: string | null): { checks: Map<string, TransitionCheck>; un
       grantShapes: sorted(v.entityGrants.filter((g) => holds(g.keys)).map((g) => g.entityType)),
     });
   }
-  return { checks: out };
+  return { checks: out, unknownFor: v.operationsUnknownFor ?? [] };
 }
 
 const readModelText = (text: string | null, what: string): EmittedModel | null =>
@@ -184,7 +189,8 @@ function withChecks(ts: TransitionChange[], baseMd: string | null, headMd: strin
     const side = t.change === 'removed' ? before : now;
     if (side.unreadable !== undefined) return { ...t, checkUnreadable: side.unreadable };
     const check = side.checks.get(t.operation);
-    return check ? { ...t, check } : t;
+    if (check) return { ...t, check };
+    return side.unknownFor?.length ? { ...t, operationsUnknownFor: side.unknownFor } : t;
   });
 }
 
@@ -368,7 +374,12 @@ export function renderDelta(d: ConceptDelta, opts: { base: string; digest: strin
       out.push('', '| Entity | From | Triggered by | To | Change | Checks — held by |', '| --- | --- | --- | --- | --- | --- |');
       for (const t of l.transitions) {
         const change = t.change === 'retargeted' ? `retargeted (was \`${t.was}\`)` : t.change;
-        const checks = t.checkUnreadable !== undefined ? '— unreadable: the Operations table is not the emitter’s —' : checkCell(t.check);
+        const checks =
+          t.checkUnreadable !== undefined
+            ? '— unreadable: the Operations table is not the emitter’s —'
+            : t.operationsUnknownFor !== undefined
+              ? `— not listed: operations unknown for ${code(t.operationsUnknownFor)} —`
+              : checkCell(t.check);
         out.push(`| \`${t.entity}\` | \`${t.from}\` | \`${t.operation}\` | \`${t.to}\` | ${change} | ${checks} |`);
       }
       out.push(
@@ -379,7 +390,11 @@ export function renderDelta(d: ConceptDelta, opts: { base: string; digest: strin
       if (unreadable.length) {
         out.push('', `The Operations section of PERMISSIONS.md cannot be read (${unreadable.join('; ')}), so no key is named. The classifier ranks this major; re-emit PERMISSIONS.md.`);
       }
-      if (l.transitions.some((t) => t.check === undefined && t.checkUnreadable === undefined)) {
+      const unknownFor = sorted(new Set(l.transitions.flatMap((t) => t.operationsUnknownFor ?? [])));
+      if (unknownFor.length) {
+        out.push('', `Operations unknown for ${code(unknownFor)}: registered as a bare manifest, so PERMISSIONS.md cannot list them, and an operation it does not list may be one of theirs.`);
+      }
+      if (l.transitions.some((t) => t.check === undefined && t.checkUnreadable === undefined && t.operationsUnknownFor === undefined)) {
         out.push('', 'An operation PERMISSIONS.md does not list is named without a key: that file predates its Operations section, the operation is not registered, or its module was bound by a kernel too old to carry declarations. Re-emit PERMISSIONS.md to fill it in.');
       }
       if (l.transitions.some((t) => t.check?.declared === false)) {

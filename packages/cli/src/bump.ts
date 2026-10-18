@@ -48,7 +48,7 @@
  * authoring notation (`tools/model-diff.mts`). The same classifier is what `substrat changeset`
  * writes, what `--check` holds a hand-written changeset to, and what a status line can show.
  */
-import { operationsTableProblem } from '@substrat-run/model-view';
+import { operationsTableProblem, operationsUnknownFor } from '@substrat-run/model-view';
 
 export type Level = 'patch' | 'minor' | 'major';
 export type Bump = 'none' | Level;
@@ -716,6 +716,8 @@ export interface PermissionSnapshot {
    * cannot be read is judged major, never read as every operation removed.
    */
   operationsUnreadable?: string;
+  /** Modules the section says are registered as a bare manifest, so their operations are not known. */
+  operationsUnknownFor?: string[];
   /** Sections this parser does not read, by heading, with their text: judged whole. */
   readonly unread: Record<string, string>;
 }
@@ -787,6 +789,7 @@ export function parsePermissions(text: string): PermissionSnapshot {
       const ops: Record<string, { keys: string[]; terms: string[] }> = {};
       for (const cells of rowsOf(section)) ops[firstKey(cells)] = { keys: codesIn(cells[1] ?? ''), terms: cells.slice(1) };
       snap.operations = ops;
+      snap.operationsUnknownFor = operationsUnknownFor(section);
     } else if (!DERIVED_SECTIONS.some((re) => re.test(heading))) {
       snap.unread[heading] = section.slice(nl === -1 ? section.length : nl).trim();
     }
@@ -842,6 +845,11 @@ export function classifyPermissions(baseText: string | null, headText: string | 
     const side = h.operationsUnreadable !== undefined ? 'now' : 'at the base';
     push('major', 'operations', `section cannot be read ${side} (${h.operationsUnreadable ?? b.operationsUnreadable}) — judged as breaking`, true);
   } else if (b.operations && h.operations) {
+    // A module whose operations stop or start being knowable: what it lets anyone do is no longer,
+    // or now for the first time, in the artifact — either way the checkpoint reads it.
+    const unknown = setDiff(b.operationsUnknownFor ?? [], h.operationsUnknownFor ?? []);
+    for (const m of unknown.removed) flag(`operations of ${m}`, 'now known (it registers its operation map)');
+    for (const m of unknown.added) flag(`operations of ${m}`, 'no longer known (registered as a bare manifest)');
     keyed(b.operations, h.operations, {
       removed: (op, o) => flag(`operation ${op}`, `removed (checked: ${o.keys.join(', ') || 'no declared key'})`),
       added: (op, o) => flag(`operation ${op}`, `added (checks: ${o.keys.join(', ') || 'no declared key'})`),

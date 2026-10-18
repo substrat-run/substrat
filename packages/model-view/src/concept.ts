@@ -58,6 +58,12 @@ export interface PermissionsView {
    * the bump classifier ranks major ({@link operationsTableProblem}). `operations` is then absent.
    */
   readonly operationsUnreadable?: string;
+  /**
+   * Modules registered as a bare manifest, whose operations are therefore not known: their
+   * operations are missing from `operations` because nothing could list them, not because there
+   * are none. Present (possibly empty) whenever `operations` is.
+   */
+  readonly operationsUnknownFor?: readonly string[];
 }
 
 /** One row of `PERMISSIONS.md`'s Operations section. */
@@ -100,6 +106,18 @@ function tableUnder(md: string, title: string): string[][] | undefined {
 const OPERATIONS_HEADER = ['Operation', 'Key', 'Checked on', 'Declared by'];
 const NO_OPERATIONS = '_No module here registers an operation._';
 
+const UNKNOWN_LINE = /^Operations not readable for (.+): registered as a bare manifest, so its operations are not known here\.$/m;
+
+/**
+ * The modules whose operations the section says are NOT known (#2384): each registered as a bare
+ * manifest, with no operation map to read. Sorted; empty when the line is absent. Shared by both
+ * readers, like {@link operationsTableProblem}.
+ */
+export function operationsUnknownFor(section: string): string[] {
+  const m = UNKNOWN_LINE.exec(section);
+  return m ? [...m[1]!.matchAll(/`([^`]+)`/g)].map((x) => x[1]!).sort() : [];
+}
+
 /**
  * Why an Operations section's table is not the one `lint:permissions` writes, or `undefined` when
  * it is (#2384). `section` is the text under the heading. The ONE judgement both readers make —
@@ -108,7 +126,10 @@ const NO_OPERATIONS = '_No module here registers an operation._';
  */
 export function operationsTableProblem(section: string): string | undefined {
   const lines = section.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('|'));
-  if (lines.length === 0) return section.includes(NO_OPERATIONS) ? undefined : 'no table, and no line saying there are no operations';
+  if (lines.length === 0) {
+    if (section.includes(NO_OPERATIONS) || operationsUnknownFor(section).length > 0) return undefined;
+    return 'no table, and no line saying there are no operations or whose are not known';
+  }
   const split = (l: string) => l.replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim());
   const header = split(lines[0]!);
   if (header.join('|') !== OPERATIONS_HEADER.join('|')) return `its header is not | ${OPERATIONS_HEADER.join(' | ')} |`;
@@ -177,7 +198,12 @@ export function parsePermissions(md: string): PermissionsView {
               return [unquote(op ?? ''), { keys: prose ? [] : keysOf(keys), checkedOn, declared: !/not declared/.test(keys) }];
             }),
         );
-  return { roles, entityGrants, descriptions, ...(operations === undefined ? {} : { operations }) };
+  return {
+    roles,
+    entityGrants,
+    descriptions,
+    ...(operations === undefined ? {} : { operations, operationsUnknownFor: operationsUnknownFor(opSection ?? '') }),
+  };
 }
 
 const bySort = <T>(xs: Iterable<T>, by: (x: T) => string): T[] =>

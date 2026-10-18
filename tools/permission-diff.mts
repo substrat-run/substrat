@@ -600,6 +600,9 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
       })),
     )
     .sort((a, b) => a.name.localeCompare(b.name) || a.module.localeCompare(b.module));
+  // A bare manifest carries no operation map: its operations are UNKNOWN here, not absent — the
+  // same reading the peer check takes (`opsKnown`). Named under the table, never folded into "none".
+  const unknown = modules.filter((m) => m.operations === undefined).map((m) => m.manifest.id).sort();
   out.push(
     `## ${section}. Operations — which key each checks`,
     ``,
@@ -615,7 +618,13 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
           `| --- | --- | --- | --- |`,
           ...operations.map((o) => `| ${code(o.name)} | ${o.row.key} | ${o.row.on} | ${code(o.module)} |`),
         ]
-      : [`_No module here registers an operation._`]),
+      : unknown.length
+        ? []
+        : [`_No module here registers an operation._`]),
+    ...(operations.length && unknown.length ? [``] : []),
+    ...(unknown.length
+      ? [`Operations not readable for ${unknown.map(code).join(', ')}: registered as a bare manifest, so its operations are not known here.`]
+      : []),
     ``,
   );
   section += 1;

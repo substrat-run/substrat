@@ -167,6 +167,19 @@ describe('conceptDelta — each section, and its twin when nothing changed', () 
     expect(text).not.toContain('predates its Operations section');
   });
 
+  it('a bare module\'s operations are named as unknown — the cause, not the file\'s age', () => {
+    const md = withOps(PERMS, [`| \`acme/other\` | \`list:create\` | the scope | \`${PKG}\` |`]).replace(
+      /\n$/,
+      '\nOperations not readable for `@acme/bare`: registered as a bare manifest, so its operations are not known here.\n',
+    );
+    const d = conceptDelta(PKG, art(MODEL, md), art(cancelled(), md));
+    expect(d.lifecycles.transitions[0]).toMatchObject({ operationsUnknownFor: ['@acme/bare'] });
+    const text = renderDelta(d, OPTS);
+    expect(text).toContain('| added | — not listed: operations unknown for `@acme/bare` — |');
+    expect(text).toContain('Operations unknown for `@acme/bare`: registered as a bare manifest');
+    expect(text).not.toContain('predates its Operations section');
+  });
+
   it('a removed transition reads its check at the base, where the operation still existed', () => {
     const base = withOps(PERMS, [`| \`acme/finish\` | \`list:create\` | the scope | \`${PKG}\` |`]);
     const head = withOps(PERMS, []);

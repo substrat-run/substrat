@@ -92,7 +92,7 @@ const inputs = { model: MODEL, permissionsMd: PERMISSIONS };
 const FIXTURE_PATH = join(__dirname, 'fixtures', 'operations-tables.json');
 /** The shared Operations-table fixture (#2384), read from disk so both packages' tests load one file. */
 const OPERATIONS_FIXTURE = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8')) as {
-  readable: Record<string, { body: string; operations: number }>;
+  readable: Record<string, { body: string; operations: number; unknownFor: string[] }>;
   malformed: Record<string, string>;
 };
 const READABLE_OPERATIONS = OPERATIONS_FIXTURE.readable;
@@ -300,11 +300,12 @@ describe('parsePermissions — the Operations section (#2384)', () => {
 });
 
 describe('parsePermissions — the Operations table, judged as the classifier judges it (#2384)', () => {
-  for (const [shape, { body, operations }] of Object.entries(READABLE_OPERATIONS)) {
+  for (const [shape, { body, operations, unknownFor }] of Object.entries(READABLE_OPERATIONS)) {
     it(`readable: ${shape}`, () => {
       const v = parsePermissions(withOperations(PERMISSIONS, body));
       expect(v.operationsUnreadable).toBeUndefined();
       expect(v.operations?.size).toBe(operations);
+      expect(v.operationsUnknownFor).toEqual(unknownFor);
     });
   }
   for (const [shape, body] of Object.entries(MALFORMED_OPERATIONS)) {

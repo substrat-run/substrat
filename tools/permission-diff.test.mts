@@ -171,9 +171,46 @@ test('its twins: an older binder is "not readable", and no operations is said in
   assert.match(rendered(old), /\| `docs\/create` \| — not readable: bound by a kernel that does not carry declarations — \| — \|/);
   assert.doesNotMatch(rendered(old), /not declared —/);
 
-  const none = writeOpsFixture(fresh(), undefined);
+  // Known-empty: an operation map with nothing in it is the one surface that may say "none".
+  const none = writeOpsFixture(fresh(), { handlers: {}, checks: {} });
   assert.equal(run(none).status, 0);
   assert.match(rendered(none), /## \d+\. Operations — which key each checks\n[\s\S]*_No module here registers an operation\._/);
+  assert.doesNotMatch(rendered(none), /Operations not readable for/);
+});
+
+test('a bare manifest\'s operations are UNKNOWN, named under the table — never folded into "none"', () => {
+  // All bare: no table, no "none" claim, the module named.
+  const bare = writeOpsFixture(fresh(), undefined);
+  assert.equal(run(bare).status, 0);
+  const md = rendered(bare);
+  assert.doesNotMatch(md, /_No module here registers an operation\._/);
+  assert.match(md, /^Operations not readable for `@fixture\/docs`: registered as a bare manifest, so its operations are not known here\.$/m);
+  // And both readers take it that way: readable, nothing listed, the module named as unknown.
+  assert.deepEqual(parsePermissions(md).operationsUnknownFor, ['@fixture/docs']);
+  assert.equal(parsePermissions(md).operationsUnreadable, undefined);
+});
+
+test('mixed: a registered module\'s rows, and the bare one named under them', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'permission-diff-mixed-'));
+  mkdirSync(join(dir, 'src'), { recursive: true });
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'fixture', type: 'module', substrat: { permissions: 'src/p.mjs' } }));
+  writeFileSync(
+    join(dir, 'src/p.mjs'),
+    `export const permissions = {
+  entityGrants: [],
+  roles: [{ key: 'owner', permissions: ['doc:read'], source: 'vertical' }],
+  modules: [
+    { manifest: { id: '@fixture/docs', permissions: [{ key: 'doc:read', description: 'read a document' }] },
+      operations: { handlers: { 'docs/read': {} }, checks: { 'docs/read': { permission: 'doc:read' } } } },
+    { manifest: { id: '@fixture/bare', permissions: [] } },
+  ],
+};`,
+  );
+  assert.equal(run(dir).status, 0);
+  const md = rendered(dir);
+  assert.match(md, /\| `docs\/read` \| `doc:read` \| the scope \| `@fixture\/docs` \|\n\nOperations not readable for `@fixture\/bare`:/);
+  assert.deepEqual(Object.keys(parsePermissions(md).operations ?? {}), ['docs/read']);
+  assert.deepEqual(parsePermissions(md).operationsUnknownFor, ['@fixture/bare']);
 });
 
 test('moving an operation to another key is drift: --check refuses until the artifact shows it', () => {

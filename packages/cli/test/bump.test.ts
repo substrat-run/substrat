@@ -195,7 +195,7 @@ const createBody = (d: Json) => createList(d).requestBody.content['application/j
 const FIXTURE_PATH = join(__dirname, '..', '..', 'model-view', 'test', 'fixtures', 'operations-tables.json');
 /** The shared Operations-table fixture (#2384), read from disk so both packages' tests load one file. */
 const OPERATIONS_FIXTURE = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8')) as {
-  readable: Record<string, { body: string; operations: number }>;
+  readable: Record<string, { body: string; operations: number; unknownFor: string[] }>;
   malformed: Record<string, string>;
 };
 const READABLE_OPERATIONS = OPERATIONS_FIXTURE.readable;
@@ -805,13 +805,27 @@ describe('PERMISSIONS.md — which key each operation checks (#2384)', () => {
       expect(classifyPermissions(bad, good).bump).toBe('major');
     });
   }
-  for (const [shape, { body, operations }] of Object.entries(READABLE_OPERATIONS)) {
+  for (const [shape, { body, operations, unknownFor }] of Object.entries(READABLE_OPERATIONS)) {
     it(`shared fixture, readable: ${shape}`, () => {
       const snap = parsePermissions(withOperations(PERMS, body));
       expect(snap.operationsUnreadable).toBeUndefined();
       expect(Object.keys(snap.operations ?? {})).toHaveLength(operations);
+      expect(snap.operationsUnknownFor).toEqual(unknownFor);
     });
   }
+
+  it('a module moving between "operations unknown" and known is a flagged minor change, both ways', () => {
+    const bare = withOperations(PERMS, READABLE_OPERATIONS["all bare: no table, no module's operations known"]!.body);
+    const known = withOperations(PERMS, READABLE_OPERATIONS['known-empty: the "no operations" line']!.body);
+    expect(classifyPermissions(bare, known).changes).toEqual([
+      expect.objectContaining({ path: 'operations of @acme/bare', level: 'minor', flagged: true, detail: expect.stringMatching(/now known/) }),
+    ]);
+    expect(classifyPermissions(known, bare).changes).toEqual([
+      expect.objectContaining({ path: 'operations of @acme/bare', level: 'minor', flagged: true, detail: expect.stringMatching(/no longer known/) }),
+    ]);
+    // Twin: still unknown on both sides is no change.
+    expect(classifyPermissions(bare, bare).bump).toBe('none');
+  });
 
   it('its twin: a section saying there are no operations is readable, and empty', () => {
     const none = WITH.replace(/\| Operation \| Key \|[\s\S]*$/, '_No module here registers an operation._\n');
