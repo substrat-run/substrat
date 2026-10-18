@@ -23,7 +23,6 @@ import {
   channelName,
   defineRoutes,
   dnsRecord,
-  exportBreak,
   hostnameStatus,
   LIST_PAGE_MAX,
   FINDINGS_LIMIT_MAX,
@@ -168,6 +167,26 @@ const sentInvite = z.object({ invitationId: z.string(), acceptUrl: z.string(), e
 /** A surface the app's vertical declares it serves — the Domains tab's picker. */
 const declaredSurface = z.object({ name: z.string(), label: z.string() });
 
+/*
+ * VERSION SKEW (#2170). The control plane ships separately from the dashboard, so a plane newer
+ * than this dashboard can answer a value this dashboard's contracts do not know. A route parses
+ * its output on the way out, and a parse that fails is an error the caller sees — for a WRITE,
+ * after the write happened (a preview created, reported as a failure). So the schemas below for
+ * values the PLANE decides are forward-compatible:
+ *
+ * - an enum the plane owns is a `string` here, its known values documented (`previewAuthOut`);
+ * - a block the dashboard only forwards to a human who must read it, and whose absence already
+ *   means "cannot show you this" (a registry, a migration diff, a version's origin), falls back
+ *   to `null` on a value it cannot parse. For the promote review that is the safe direction: the
+ *   dialog treats `null` as "cannot diff, ask for an acknowledgement", never as "no change";
+ * - a block whose absence would mean "nothing to worry about" (`exportBreaks`: whom the promotion
+ *   breaks) is never nulled; it is declared loosely (plain strings, no enums or id formats) so it
+ *   always reaches the dialog as the plane named it.
+ */
+
+/** A preview's login status. The plane owns the set (known: wired, unregistered, ambiguous, unknown, superseded, not-applicable); a newer one reaches the panel as the plane said it. */
+const previewAuthOut = previewAuth.extend({ status: z.string() });
+
 /** One version of a pushed vertical, as the Deployments view lists it (newest first within a deployment). */
 export const deploymentVersion = z.object({
   id: z.string(),
@@ -179,7 +198,8 @@ export const deploymentVersion = z.object({
   /** Updating TO this version crosses a migration boundary (#286). */
   schemaChange: z.boolean(),
   /** Where the push came from; null for a push from before origin tracking. */
-  origin: versionOrigin.nullable(),
+  // A push origin this dashboard cannot read is shown as an unknown one, not a failed list.
+  origin: versionOrigin.nullable().catch(null),
   createdAt: z.string(),
 });
 
@@ -220,6 +240,17 @@ const migrationDiff = z.object({
   truncated: z.boolean(),
 });
 
+/** One app a promotion breaks (contracts `exportBreak`), without the enums and id formats: it is shown to a person, never keyed on. */
+const exportBreakOut = z.object({
+  tenantId: z.string(),
+  scopeId: z.string(),
+  vertical: z.string(),
+  version: z.string().nullable(),
+  type: z.string(),
+  schemaVersion: z.number().int(),
+  incoming: z.number().int().nullable(),
+});
+
 /**
  * What promoting a version to `prod` would change (#1677): the permission surface and the
  * SQL, each against what `prod` serves now, whom the promotion breaks, and the binding an
@@ -228,11 +259,13 @@ const migrationDiff = z.object({
 export const promotionReviewRow = z.object({
   serving: z.object({ versionId: z.string() }).nullable(),
   incoming: z.object({ versionId: z.string() }),
-  servingRegistry: permissionRegistry.nullable(),
-  incomingRegistry: permissionRegistry.nullable(),
-  migrations: migrationDiff.nullable(),
-  /** This tenant's own apps the promotion breaks by name, other tenants' as a count (#1705). */
-  exportBreaks: z.object({ affected: z.array(exportBreak), otherTenants: z.number().int().optional() }).nullable(),
+  // A registry or SQL diff this dashboard cannot parse reads as "cannot show": the dialog then
+  // asks for the acknowledgement it would ask for anyway, instead of the review failing to open.
+  servingRegistry: permissionRegistry.nullable().catch(null),
+  incomingRegistry: permissionRegistry.nullable().catch(null),
+  migrations: migrationDiff.nullable().catch(null),
+  /** This tenant's own apps the promotion breaks by name, other tenants' as a count (#1705). Declared loosely: see the note on version skew above. */
+  exportBreaks: z.object({ affected: z.array(exportBreakOut), otherTenants: z.number().int().optional() }).nullable(),
   review: reviewBinding.nullable(),
 });
 
@@ -370,7 +403,7 @@ export const previewCreated = z.object({
   url: z.string(),
   versionId: z.string(),
   reused: z.boolean(),
-  auth: previewAuth.optional(),
+  auth: previewAuthOut.optional(),
   notes: z.array(z.string()).optional(),
 });
 

@@ -76,6 +76,8 @@ let env: Record<string, unknown>;
 let effects: string[];
 /** EVERY request that reached the plane's service binding. */
 let planeCalls: string[];
+/** Answers a plane request itself (a plane newer than this dashboard), or declines with undefined. */
+let planeAnswers: ((method: string, path: string) => Response | undefined) | null;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'substrat-deployments-team-'));
@@ -85,6 +87,7 @@ beforeEach(async () => {
   shared.scopesOpened.length = 0;
   effects = [];
   planeCalls = [];
+  planeAnswers = null;
   for (const m of MODULES) host.registerModule(m);
   await host.admin.registerIdentityPool(staff, { provider: PROVIDER, topology: 'central', tenantId: null });
 
@@ -103,6 +106,11 @@ beforeEach(async () => {
         const path = stripApi(u);
         planeCalls.push(`${method} ${path}${u.search}`);
         const record = () => effects.push(`${method} ${path}`);
+        const newer = planeAnswers?.(method, path);
+        if (newer) {
+          if (method !== 'GET') record();
+          return newer;
+        }
         // The acts that need a dispatch namespace this host has none of: recorded, not run.
         if (method === 'POST' && /^\/verticals\/[^/]+\/channels\/[^/]+\/promote$/.test(path)) {
           record();
@@ -531,5 +539,61 @@ describe('previews', () => {
     const res = await req('POST', inTeam(a, `${slugPath(b.vertical)}/previews/pr-1/domain`), { body: { domain: 'x.example.com' } });
     expect(res.status).toBe(404);
     expect(effects).toEqual([]);
+  });
+});
+
+describe('a plane newer than this dashboard (version skew)', () => {
+  it('a preview that was created answers 201 even when its login status is one this dashboard does not know', async () => {
+    const { a } = await teams();
+    planeAnswers = (method, path) =>
+      method === 'POST' && /^\/verticals\/[^/]+\/previews$/.test(path)
+        ? Response.json({
+            scopeId: 'S',
+            hostname: 'h',
+            url: 'https://h',
+            versionId: 'v1',
+            reused: false,
+            auth: { status: 'quarantined', callbackUrl: null, note: 'a state from a newer plane' },
+          })
+        : undefined;
+    const res = await req('POST', inTeam(a, `${slugPath(a.vertical)}/previews`), { body: { tag: 'pr-1', versionId: 'v1' } });
+    expect(res.status, await res.clone().text()).toBe(201);
+    // The write happened, and the answer says what the plane said instead of reporting a failure.
+    expect(await res.json()).toMatchObject({ reused: false, auth: { status: 'quarantined', note: 'a state from a newer plane' } });
+    expect(effects).toEqual([`POST /verticals/${encodeURIComponent(a.vertical)}/previews`]);
+  });
+
+  it('the promote review still opens: a registry or SQL read the dashboard cannot parse reads as "cannot show", and whom it breaks is listed as the plane named them', async () => {
+    const { a } = await teams();
+    const unknownRegistry = { permissions: [], roles: [{ key: 'owner', permissions: [], source: 'vertical', holder: 'a-holder-from-the-future' }], entityGrants: [] };
+    planeAnswers = (method, path) => {
+      if (method !== 'GET') return undefined;
+      if (/^\/verticals\/[^/]+\/channels$/.test(path)) return Response.json({ entries: [{ channel: 'prod', versionId: 'v1' }], nextCursor: null });
+      if (/\/versions\/[^/]+\/registry$/.test(path)) return Response.json({ registry: unknownRegistry });
+      if (/\/versions\/[^/]+\/migrations$/.test(path))
+        return Response.json({
+          migrations: { baseline: 'from-the-future', added: [], changed: [], total: 0, truncated: false },
+          review: { base: 'v1', digest: 'a'.repeat(64) },
+        });
+      if (/\/channels\/prod\/promote-impact$/.test(path))
+        return Response.json({
+          affected: [{ tenantId: 'not-a-ulid', scopeId: 'also-not', vertical: 'other/app', version: null, type: 'a.thing-from-the-future', schemaVersion: 2, incoming: null }],
+          otherTenants: 1,
+        });
+      return undefined;
+    };
+    const res = await req('GET', inTeam(a, `${slugPath(a.vertical)}/promote-review?versionId=v2`));
+    expect(res.status, await res.clone().text()).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    // "Cannot diff" is the answer that makes the dialog ask for an acknowledgement; never "no change".
+    expect(body).toMatchObject({
+      serving: { versionId: 'v1' },
+      incoming: { versionId: 'v2' },
+      servingRegistry: null,
+      incomingRegistry: null,
+      migrations: null,
+      review: { base: 'v1', digest: 'a'.repeat(64) },
+      exportBreaks: { affected: [expect.objectContaining({ vertical: 'other/app', type: 'a.thing-from-the-future' })], otherTenants: 1 },
+    });
   });
 });

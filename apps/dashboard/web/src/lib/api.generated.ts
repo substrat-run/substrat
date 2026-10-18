@@ -229,7 +229,7 @@ export interface PreviewCreated {
   url: string;
   versionId: string;
   reused: boolean;
-  auth?: { status: "wired" | "unregistered" | "ambiguous" | "unknown" | "superseded" | "not-applicable"; callbackUrl: string | null; issuer?: string; issuerScopeId?: string; clientId?: string; issuers?: { issuerScopeId: string; problem?: string }[]; note: string };
+  auth?: { status: string; callbackUrl: string | null; issuer?: string; issuerScopeId?: string; clientId?: string; issuers?: { issuerScopeId: string; problem?: string }[]; note: string };
   notes?: string[];
 }
 
