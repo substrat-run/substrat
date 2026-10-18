@@ -36,7 +36,42 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `run:manage` | `admin`, `analyst`, `modeller` |
 | `schema:manage` | `admin`, `modeller` |
 
-## 4. Not covered by this artifact
+## 4. Operations — which key each checks
+
+The check each registered operation DECLARES it opens with, and what it narrows to. A
+proof walk lists this module's keys only; a composed engine's key it reaches is declared by
+the engine. "Checked in code, not declared" is an operation whose handler makes its own check
+with nothing declared, so no artifact can name its key. Who holds a key is §3 and the grant
+shapes.
+
+| Operation | Key | Checked on | Declared by |
+| --- | --- | --- | --- |
+| `tock/count-run` | `run:manage` | one `run`, id from `runId` | `@substrat-run/demo-tock` |
+| `tock/declare-source` | `schema:manage` | the scope | `@substrat-run/demo-tock` |
+| `tock/declare-variants` | `schema:manage` | the scope | `@substrat-run/demo-tock` |
+| `tock/deviations` | `report:read` | the scope | `@substrat-run/demo-tock` |
+| `tock/field-coverage` | `report:read` | the scope | `@substrat-run/demo-tock` |
+| `tock/field-history` | `report:read` | the scope | `@substrat-run/demo-tock` |
+| `tock/get-run` | `report:read` | one `run`, id from `runId` | `@substrat-run/demo-tock` |
+| `tock/list-mappings` | `report:read` | the scope | `@substrat-run/demo-tock` |
+| `tock/list-observations` | `report:read` | one `run`, id from `runId` | `@substrat-run/demo-tock` |
+| `tock/list-output-schemas` | `report:read` | the scope | `@substrat-run/demo-tock` |
+| `tock/list-rows` | `row:read` | one `run`, id from `runId` | `@substrat-run/demo-tock` |
+| `tock/list-runs` | `report:read` | the scope | `@substrat-run/demo-tock` |
+| `tock/list-schemas` | `report:read` | the scope | `@substrat-run/demo-tock` |
+| `tock/list-sources` | `report:read` | the scope | `@substrat-run/demo-tock` |
+| `tock/list-variants` | `report:read` | the scope | `@substrat-run/demo-tock` |
+| `tock/map-run` | `run:manage` | one `run`, id from `runId` | `@substrat-run/demo-tock` |
+| `tock/profile-run` | `run:manage` | one `run`, id from `runId` | `@substrat-run/demo-tock` |
+| `tock/read-source-file` | `row:read` | one `run`, id from `runId` | `@substrat-run/demo-tock` |
+| `tock/receive-run` | `run:manage` | the scope | `@substrat-run/demo-tock` |
+| `tock/report` | `report:read` | the scope | `@substrat-run/demo-tock` |
+| `tock/run-rules` | `report:read` | one `run`, id from `runId` | `@substrat-run/demo-tock` |
+| `tock/save-mapping` | `schema:manage` | the scope | `@substrat-run/demo-tock` |
+| `tock/save-output-schema` | `schema:manage` | the scope | `@substrat-run/demo-tock` |
+| `tock/save-schema` | `schema:manage` | the scope | `@substrat-run/demo-tock` |
+
+## 5. Not covered by this artifact
 
 - **The grants themselves** — per-principal, per-entity, minted at runtime with
   random ULIDs. Only their shapes above are representable deterministically.

@@ -46,7 +46,64 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `invites:revoke` | `admin`, `owner` |
 | `invites:send` | `admin`, `owner` |
 
-## 4. Not covered by this artifact
+## 4. Operations — which key each checks
+
+The check each registered operation DECLARES it opens with, and what it narrows to. A
+proof walk lists this module's keys only; a composed engine's key it reaches is declared by
+the engine. "Checked in code, not declared" is an operation whose handler makes its own check
+with nothing declared, so no artifact can name its key. Who holds a key is §3 and the grant
+shapes.
+
+| Operation | Key | Checked on | Declared by |
+| --- | --- | --- | --- |
+| `dashboard/accept-invite` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/app-events` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/authorize-findings-change` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/authorize-findings-read` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/authorize-scope-change` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/begin-connection` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/bind-app-hostname` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/consume-connect-link` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/delete-app` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/delete-app-env` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/delete-app-snapshot` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/delete-team` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/export-app-data` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/get-app-auth` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/init-team` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/install-steps` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/invite-link` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/invite-member` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/leave-self` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/list-app-env` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/list-apps` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/list-connect-links` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/list-members` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/mark-app-active` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/mark-app-failed` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/mint-connect-link` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/preview-invite` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/provision-app` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/reconcile-app-vertical` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/record-install-step` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/remove-member` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/resend-invite` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/restore-app-data` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/restore-connect-link` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/resume-app` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/revoke-connect-link` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/revoke-invite` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/set-app-auth` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/set-app-env` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/snapshot-app` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/unbind-app-hostname` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/update-app` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `invites/accept` | — none — | nothing: The recipient holds nothing yet — they are not a member of anything, so there is no grant a check could resolve. The invitation IS the authority, proven by re-hashing the identifier presented. Stated here so an ungated operation cannot pass for an oversight. | `@substrat-run/engine-invites` |
+| `invites/list` | `invites:read` | the scope | `@substrat-run/engine-invites` |
+| `invites/revoke` | `invites:revoke` | the scope | `@substrat-run/engine-invites` |
+| `invites/send` | `invites:send` | the scope | `@substrat-run/engine-invites` |
+
+## 5. Not covered by this artifact
 
 - **The grants themselves** — per-principal, per-entity, minted at runtime with
   random ULIDs. Only their shapes above are representable deterministically.

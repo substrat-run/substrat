@@ -28,9 +28,11 @@
 import {
   derivationPlanOf,
   operationConcurrencyOf,
+  operationChecksOf,
   operationIdempotencyOptOutsOf,
   operationInputsOf,
   type DerivedKeys,
+  type OperationCheck,
   type OperationImpl,
 } from '@substrat-run/contracts';
 import { derivedHandler } from './derived-handlers.js';
@@ -44,6 +46,7 @@ interface DerivedMaps {
   readonly inputs?: Readonly<Record<string, { parse(value: unknown): unknown }>>;
   readonly concurrency?: Readonly<Record<string, { entity: string; idFrom: string }>>;
   readonly idempotencyOptOuts?: readonly string[];
+  readonly checks?: Readonly<Record<string, OperationCheck>>;
 }
 
 /**
@@ -92,6 +95,14 @@ export class BoundOperations<H = HandlerMap> {
   readonly concurrency?: Readonly<Record<string, { entity: string; idFrom: string }>>;
   /** The operations that declared `idempotency: false`, and so refuse an `Idempotency-Key` (#116). */
   readonly idempotencyOptOuts?: readonly string[];
+  /**
+   * name → the check each operation declares (#2384), read by the permission checkpoint so
+   * `PERMISSIONS.md` names the key each operation checks. Empty for `undeclaredOperations`, whose
+   * handlers check in code with nothing declared; absent only on a value an older kernel bound.
+   * The host does not read it: each handler still makes its own check. Tools read it as a
+   * contract — its shape is `OperationCheck`, and like an engine's event payload it only grows.
+   */
+  readonly checks?: Readonly<Record<string, OperationCheck>>;
 
   constructor(mint: typeof MINT, handlers: H & HandlerMap, derived: DerivedMaps = {}) {
     if (mint !== MINT) {
@@ -112,6 +123,7 @@ export class BoundOperations<H = HandlerMap> {
       );
     }
     if (derived.idempotencyOptOuts !== undefined) this.idempotencyOptOuts = Object.freeze([...derived.idempotencyOptOuts]);
+    if (derived.checks !== undefined) this.checks = deepFreeze(derived.checks);
     Object.freeze(this);
   }
 
@@ -119,6 +131,14 @@ export class BoundOperations<H = HandlerMap> {
   static is(value: unknown): value is BoundOperations {
     return typeof value === 'object' && value !== null && Object.prototype.hasOwnProperty.call(value, BRAND);
   }
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value === 'object' && value !== null) {
+    for (const v of Object.values(value)) deepFreeze(v);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 /**
@@ -193,6 +213,7 @@ export function operationsFor<const Ops extends Record<string, object>>(declarat
       inputs: operationInputsOf(declaration),
       concurrency: operationConcurrencyOf(declaration),
       idempotencyOptOuts: operationIdempotencyOptOutsOf(declaration),
+      checks: operationChecksOf(declaration),
     }),
   });
 }
@@ -234,5 +255,5 @@ function withDerivedHandlers<H>(declaration: Readonly<Record<string, object>>, h
  */
 export function undeclaredOperations(reason: string, handlers: HandlerMap): { operations: BoundOperations } {
   if (reason.trim() === '') throw new Error('undeclaredOperations: give the reason this module declares no operations');
-  return { operations: new BoundOperations(MINT, handlers) };
+  return { operations: new BoundOperations(MINT, handlers, { checks: {} }) };
 }

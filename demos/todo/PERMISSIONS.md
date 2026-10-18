@@ -59,7 +59,37 @@ A purge horizon's grant is scope-wide, and narrower than it reads: a key the sys
 principal holds only for a purge is refused to it everywhere except the purge sweep's own
 call of that operation, one entity at a time, on an entity still in the bin past its horizon.
 
-## 6. Not covered by this artifact
+## 6. Operations — which key each checks
+
+The check each registered operation DECLARES it opens with, and what it narrows to. A
+proof walk lists this module's keys only; a composed engine's key it reaches is declared by
+the engine. "Checked in code, not declared" is an operation whose handler makes its own check
+with nothing declared, so no artifact can name its key. Who holds a key is §3 and the grant
+shapes.
+
+| Operation | Key | Checked on | Declared by |
+| --- | --- | --- | --- |
+| `todo/add-item` | `list:contribute` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/archive-list` | `list:archive` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/create-list` | `list:create` | the scope | `@substrat-run/demo-todo` |
+| `todo/delete-item` | `list:manage` | one `list`, resolved in the handler: the list the item is on | `@substrat-run/demo-todo` |
+| `todo/delete-list` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/join` | `list:create` | the scope | `@substrat-run/demo-todo` |
+| `todo/list-items` | `list:contribute` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/list-shares` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/my-lists` | `list:contribute` | each row, by a proof walk: Returns only lists the caller owns or has been shared | `@substrat-run/demo-todo` |
+| `todo/rename-list` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/restore-list` | `list:trash` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/revoke-share` | `list:manage` | one `list`, resolved in the handler: the list the share is on | `@substrat-run/demo-todo` |
+| `todo/search-items` | `list:contribute` | each row, by a proof walk: Returns only items on lists the caller owns or has been shared | `@substrat-run/demo-todo` |
+| `todo/search-list-items` | `list:contribute` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/set-item-done` | `list:contribute` | one `list`, resolved in the handler: the list the item is on | `@substrat-run/demo-todo` |
+| `todo/share-list` | `list:manage` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/trash-list` | `list:trash` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+| `todo/trashed-lists` | `list:trash` | each row, by a proof walk: Returns only binned lists the caller may restore | `@substrat-run/demo-todo` |
+| `todo/unarchive-list` | `list:archive` | one `list`, id from `listId` | `@substrat-run/demo-todo` |
+
+## 7. Not covered by this artifact
 
 - **The grants themselves** — per-principal, per-entity, minted at runtime with
   random ULIDs. Only their shapes above are representable deterministically.

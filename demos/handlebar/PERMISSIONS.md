@@ -79,7 +79,59 @@ no role in §3 but listed here is deliberate, not a gap.
 | --- | --- | --- |
 | `customer` | `protocol:countersign`, `protocol:read`, `workorder:read` | yes — live holders of current or retired keys here; direct grants cannot give these keys |
 
-## 5. Not covered by this artifact
+## 5. Operations — which key each checks
+
+The check each registered operation DECLARES it opens with, and what it narrows to. A
+proof walk lists this module's keys only; a composed engine's key it reaches is declared by
+the engine. "Checked in code, not declared" is an operation whose handler makes its own check
+with nothing declared, so no artifact can name its key. Who holds a key is §3 and the grant
+shapes.
+
+| Operation | Key | Checked on | Declared by |
+| --- | --- | --- | --- |
+| `bike-shop/close-repair` | `workorder:close` | the scope | `@substrat-run/demo-handlebar` |
+| `bike-shop/complete-repair` | `workorder:complete` | the scope | `@substrat-run/demo-handlebar` |
+| `bike-shop/create-customer` | `customer:manage` | the scope | `@substrat-run/demo-handlebar` |
+| `bike-shop/create-repair` | `workorder:create` | the scope | `@substrat-run/demo-handlebar` |
+| `bike-shop/list-customers` | `customer:manage` | the scope | `@substrat-run/demo-handlebar` |
+| `bike-shop/portal-repairs` | — | each row, by a proof walk: a customer sees their own repairs, not a denial | `@substrat-run/demo-handlebar` |
+| `bike-shop/price-list` | `customer:manage` | the scope | `@substrat-run/demo-handlebar` |
+| `bike-shop/register-bike` | `bike:manage` | the scope | `@substrat-run/demo-handlebar` |
+| `bike-shop/start-condition-report` | `protocol:create` | the scope | `@substrat-run/demo-handlebar` |
+| `bike-shop/timeline` | `workorder:read` | one entity, type from `entityType`, id from `entityId` | `@substrat-run/demo-handlebar` |
+| `bike-shop/upsert-price` | `customer:manage` | the scope | `@substrat-run/demo-handlebar` |
+| `bike-shop/whoami` | `customer:manage` | each row, by a proof walk: every principal may ask what they themselves may do | `@substrat-run/demo-handlebar` |
+| `invoicing/export` | `invoicing:export` | the scope | `@substrat-run/engine-invoicing` |
+| `invoicing/get` | `invoicing:read` | the scope | `@substrat-run/engine-invoicing` |
+| `invoicing/list` | `invoicing:read` | the scope | `@substrat-run/engine-invoicing` |
+| `notifications/list-deliveries` | `notifications:read` | the scope | `@substrat-run/engine-notifications` |
+| `notifications/my-preferences` | `notifications:self` | the scope | `@substrat-run/engine-notifications` |
+| `notifications/set-my-address` | `notifications:self` | the scope | `@substrat-run/engine-notifications` |
+| `notifications/set-my-preference` | `notifications:self` | the scope | `@substrat-run/engine-notifications` |
+| `protocol/bind-document` | `protocol:bind` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
+| `protocol/cancel-signatures` | `protocol:request-signature` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
+| `protocol/countersign` | `protocol:countersign` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
+| `protocol/decline-signature` | `protocol:record-signature` | the scope | `@substrat-run/engine-protocol` |
+| `protocol/define-template` | `protocol:create` | the scope | `@substrat-run/engine-protocol` |
+| `protocol/fill` | `protocol:fill` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
+| `protocol/get` | `protocol:read` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
+| `protocol/instantiate` | `protocol:create` | the scope | `@substrat-run/engine-protocol` |
+| `protocol/list-for-entity` | `protocol:read` | one entity, type from `entityType`, id from `entityId` | `@substrat-run/engine-protocol` |
+| `protocol/list-templates` | `protocol:read` | the scope | `@substrat-run/engine-protocol` |
+| `protocol/record-signature` | `protocol:record-signature` | the scope | `@substrat-run/engine-protocol` |
+| `protocol/request-signatures` | `protocol:request-signature` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
+| `protocol/sign` | `protocol:sign` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
+| `protocol/void` | `protocol:void` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
+| `workorder/assign` | `workorder:assign` | the scope | `@substrat-run/engine-workorder` |
+| `workorder/close` | `workorder:close` | the scope | `@substrat-run/engine-workorder` |
+| `workorder/complete` | `workorder:complete` | the scope | `@substrat-run/engine-workorder` |
+| `workorder/get` | `workorder:read` | one `workorder`, id from `orderId` | `@substrat-run/engine-workorder` |
+| `workorder/list` | `workorder:read` | the scope | `@substrat-run/engine-workorder` |
+| `workorder/report-material` | `workorder:report` | the scope | `@substrat-run/engine-workorder` |
+| `workorder/report-time` | `workorder:report` | the scope | `@substrat-run/engine-workorder` |
+| `workorder/start` | `workorder:report` | the scope | `@substrat-run/engine-workorder` |
+
+## 6. Not covered by this artifact
 
 - **The grants themselves** — per-principal, per-entity, minted at runtime with
   random ULIDs. Only their shapes above are representable deterministically.

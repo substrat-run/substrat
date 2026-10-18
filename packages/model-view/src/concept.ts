@@ -47,6 +47,30 @@ export interface PermissionsView {
   readonly roles: readonly { readonly role: string; readonly keys: readonly string[] }[];
   readonly entityGrants: readonly { readonly entityType: string; readonly keys: readonly string[] }[];
   readonly descriptions: ReadonlyMap<string, string>;
+  /**
+   * Operation → the keys it declares it checks and what the check narrows to (#2384). An
+   * operation with no declared key has `keys: []` and `declared: false`. `undefined` when the
+   * file has no Operations section — one emitted before it existed — never "no operations".
+   */
+  readonly operations?: ReadonlyMap<string, OperationCheckView>;
+  /**
+   * Set when the Operations heading is there but its table is not the emitter's — the same shapes
+   * the bump classifier ranks major ({@link operationsTableProblem}). `operations` is then absent.
+   */
+  readonly operationsUnreadable?: string;
+  /**
+   * Modules registered as a bare manifest, whose operations are therefore not known: their
+   * operations are missing from `operations` because nothing could list them, not because there
+   * are none. Present (possibly empty) whenever `operations` is.
+   */
+  readonly operationsUnknownFor?: readonly string[];
+}
+
+/** One row of `PERMISSIONS.md`'s Operations section. */
+export interface OperationCheckView {
+  readonly keys: readonly string[];
+  readonly checkedOn: string;
+  readonly declared: boolean;
 }
 
 /** Split one markdown table row on its unescaped pipes. */
@@ -79,6 +103,53 @@ function tableUnder(md: string, title: string): string[][] | undefined {
   return rows.slice(2);
 }
 
+const OPERATIONS_HEADER = ['Operation', 'Key', 'Checked on', 'Declared by'];
+const NO_OPERATIONS = '_No module here registers an operation._';
+
+const UNKNOWN_LINE = /^Operations not readable for (.+): registered as a bare manifest, so its operations are not known here\.$/m;
+
+/**
+ * The modules whose operations the section says are NOT known (#2384): each registered as a bare
+ * manifest, with no operation map to read. Sorted; empty when the line is absent. Shared by both
+ * readers, like {@link operationsTableProblem}.
+ */
+export function operationsUnknownFor(section: string): string[] {
+  const m = UNKNOWN_LINE.exec(section);
+  return m ? [...m[1]!.matchAll(/`([^`]+)`/g)].map((x) => x[1]!).sort() : [];
+}
+
+/**
+ * Why an Operations section's table is not the one `lint:permissions` writes, or `undefined` when
+ * it is (#2384). `section` is the text under the heading. The ONE judgement both readers make —
+ * this package's `parsePermissions` and the CLI's bump classifier — so `substrat plan` never renders
+ * a table the classifier ranks major as unreadable.
+ */
+export function operationsTableProblem(section: string): string | undefined {
+  const lines = section.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('|'));
+  if (lines.length === 0) {
+    if (section.includes(NO_OPERATIONS) || operationsUnknownFor(section).length > 0) return undefined;
+    return 'no table, and no line saying there are no operations or whose are not known';
+  }
+  const split = (l: string) => l.replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim());
+  const header = split(lines[0]!);
+  if (header.join('|') !== OPERATIONS_HEADER.join('|')) return `its header is not | ${OPERATIONS_HEADER.join(' | ')} |`;
+  if (lines.length < 2 || !split(lines[1]!).every((c) => /^:?-+:?$/.test(c))) return 'its header has no separator row';
+  const bad = lines.slice(2).find((l) => split(l).length !== OPERATIONS_HEADER.length);
+  if (bad !== undefined) return `a row has ${split(bad).length} cells, not ${OPERATIONS_HEADER.length}`;
+  if (lines.length === 2) return 'its table has no rows';
+  return undefined;
+}
+
+
+/** The text under the `## <n>. <title>` heading, up to the next `## `; `undefined` when absent. */
+function sectionUnder(md: string, title: string): string | undefined {
+  const lines = md.split('\n');
+  const at = lines.findIndex((l) => new RegExp(`^## \\d+\\.\\s+${title}\\b`).test(l));
+  if (at < 0) return undefined;
+  const end = lines.findIndex((l, i) => i > at && l.startsWith('## '));
+  return lines.slice(at + 1, end < 0 ? undefined : end).join('\n');
+}
+
 const unquote = (s: string): string => s.replace(/`/g, '');
 const keysOf = (cell: string): string[] =>
   cell
@@ -109,7 +180,30 @@ export function parsePermissions(md: string): PermissionsView {
   const entityGrants = (tableUnder(md, 'Entity-narrowed grant shapes') ?? [])
     .map(([entityType, keys]) => ({ entityType: unquote(entityType ?? ''), keys: keysOf(keys ?? '') }))
     .filter((g) => g.entityType !== '');
-  return { roles, entityGrants, descriptions };
+  const opSection = sectionUnder(md, 'Operations');
+  const operationsUnreadable = opSection === undefined ? undefined : operationsTableProblem(opSection);
+  if (operationsUnreadable !== undefined) return { roles, entityGrants, descriptions, operationsUnreadable };
+  const opRows = tableUnder(md, 'Operations');
+  const operations =
+    opRows === undefined
+      ? undefined
+      : new Map(
+          opRows
+            // A row an older kernel's binder left "not readable" says nothing about the operation:
+            // left out, as if unlisted, rather than read as "not declared".
+            .filter(([op, keys = '']) => op !== undefined && op.startsWith('`') && !/not readable/.test(keys))
+            .map(([op, keys = '', checkedOn = '']): [string, OperationCheckView] => {
+              // A cell of prose ("— checked in code, not declared —") names no key; its commas are not a list.
+              const prose = keys.trim().startsWith('—');
+              return [unquote(op ?? ''), { keys: prose ? [] : keysOf(keys), checkedOn, declared: !/not declared/.test(keys) }];
+            }),
+        );
+  return {
+    roles,
+    entityGrants,
+    descriptions,
+    ...(operations === undefined ? {} : { operations, operationsUnknownFor: operationsUnknownFor(opSection ?? '') }),
+  };
 }
 
 const bySort = <T>(xs: Iterable<T>, by: (x: T) => string): T[] =>
