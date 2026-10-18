@@ -167,3 +167,34 @@ function close(ctx, row) {
 }`;
   assert.deepEqual(at(text), [3]);
 });
+
+test('a schema-qualified table and UPDATE OR … are writes too', () => {
+  const text = `
+function a(ctx, id) { ctx.sql.exec("UPDATE main.shop_orders SET status = 'x' WHERE id = ?", [id]); }
+function b(ctx, id) { ctx.sql.exec("UPDATE OR IGNORE shop_orders SET status = 'x' WHERE id = ?", [id]); }
+function c(ctx, id) { ctx.sql.exec('UPDATE OR REPLACE "main"."shop_orders" SET status = ? WHERE id = ?', ['x', id]); }`;
+  assert.deepEqual(at(text), [2, 3, 4]);
+});
+
+test('an upsert that sets the state on conflict is a write', () => {
+  const text = `
+function upsert(ctx, id) {
+  ctx.sql.exec(\`INSERT INTO shop_orders (id, status) VALUES (?, 'new')
+    ON CONFLICT (id) DO UPDATE SET status = excluded.status\`, [id]);
+}
+function seedRow(ctx, id) {
+  ctx.sql.exec(\`INSERT INTO shop_orders (id, status) VALUES (?, 'new') ON CONFLICT (id) DO UPDATE SET title = excluded.title\`, [id]);
+}`;
+  assert.deepEqual(at(text), [3]);
+});
+
+test('KNOWN GAP: a guard counts whichever lifecycle it asks about', () => {
+  // The tripwire reads text, not which lifecycle a call names: asking about an invoice covers a
+  // later order write in the same function. Documented here so a fix shows up as this test changing.
+  const text = `
+function both(ctx, row) {
+  assertTransition(invoiceLifecycle, 'invoice', row.invoiceStatus, 'x/send');
+  ctx.sql.exec("UPDATE shop_orders SET status = 'sent' WHERE id = ?", [row.id]);
+}`;
+  assert.deepEqual(at(text), []);
+});

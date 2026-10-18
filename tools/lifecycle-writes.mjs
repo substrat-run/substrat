@@ -14,7 +14,8 @@
  * So this reads every package that declares lifecycles in its checked-in `model.json` (held to
  * the code by `lint:model --check`): for each lifecycle, the entity's table and state field.
  * In the package's shipped source (`src/`, not tests, not `seed.ts`, not a migrations module,
- * whose backfill is no operation), every `UPDATE <table> … SET … <field> =` must be covered by a
+ * whose backfill is no operation), every write of the field — `UPDATE [OR …] [schema.]<table> …
+ * SET … <field> =`, or an upsert's `ON CONFLICT … DO UPDATE SET … <field> =` — must be covered by a
  * lifecycle question: a call of `assertTransition` or `transitionFor` (the one an engine uses when
  * it keeps its own refusal reason), or of a function in the same file whose body calls one
  * directly (`requireTransition`). Covered means before the write, in its function or one
@@ -26,7 +27,9 @@
  *
  * **What this is, and is not.** A tripwire that reads text: SQL assembled across modules, a
  * table name interpolated, or a guard asked in another file gets past it, or is reported when it
- * should not be. Which edge an operation takes is the compiler's and the reader's. On main and
+ * should not be. A guard also counts whichever lifecycle it names, so asking about one entity
+ * covers a write of another's state in the same function (a fixture pins that gap). Which edge an
+ * operation takes is the compiler's and the reader's. On main and
  * across the 208 commits before it that touched a package with a lifecycle, it reports nothing.
  *
  * Exit 0: every declared state write asks first. 1: at least one does not (each printed).
@@ -111,6 +114,24 @@ export function lifecyclesOf(model) {
   });
 }
 
+/** One identifier as SQLite reads it: bare, or quoted with `"`, `[]` or a backtick. */
+const IDENT = String.raw`(?:"[^"\n]+"|\[[^\]\n]+\]|\x60[^\x60\n]+\x60|\w+)`;
+
+/**
+ * A statement that writes `field` of `table`: `UPDATE [OR …] [schema.]<table> … SET …`, or an
+ * upsert, `INSERT [OR …] INTO [schema.]<table> … ON CONFLICT … DO UPDATE SET …`. The SET list
+ * ends at WHERE or RETURNING, so a state named in the condition is a read; a quote does not end
+ * it, so a literal before the column (`SET note = 'x', status = ?`) does not hide the write.
+ */
+export function stateWrite(table, field) {
+  const t = escape(table);
+  const target = String.raw`(?:${IDENT}\s*\.\s*)?(?:"${t}"|\[${t}\]|\x60${t}\x60|${t}\b)`;
+  const set = String.raw`SET\b(?:(?!\b(?:WHERE|RETURNING)\b)[^;\x60])*?\b${escape(field)}\s*=`;
+  const update = String.raw`\bUPDATE\s+(?:OR\s+\w+\s+)?${target}(?:\s+AS\s+\w+)?\s+${set}`;
+  const upsert = String.raw`\bINSERT\s+(?:OR\s+\w+\s+)?INTO\s+${target}[^;\x60]*?\bDO\s+UPDATE\s+${set}`;
+  return new RegExp(`${update}|${upsert}`, 'gi');
+}
+
 /**
  * Writes of a declared state with no lifecycle question before them. Covered means a guard call
  * before the write, in its function or one enclosing it — or, for a write inside a named helper
@@ -119,13 +140,7 @@ export function lifecyclesOf(model) {
  * A helper nothing calls is not covered.
  */
 export function unguardedWrites(files, lifecycles) {
-  // `UPDATE <table>` (quoted or not), then the SET list up to its end, naming the field. The list
-  // ends at WHERE or RETURNING, so a state named in the condition is a read; quotes do not end it,
-  // so a literal before the column (`SET note = 'x', status = ?`) does not hide the write.
-  const writes = lifecycles.map((l) => ({
-    ...l,
-    re: new RegExp(String.raw`\bUPDATE\s+["\x60\[]?${escape(l.table)}["\x60\]]?(?:\s+AS\s+\w+)?\s+SET\b(?:(?!\b(?:WHERE|RETURNING)\b)[^;\x60])*?\b${escape(l.field)}\s*=`, 'gi'),
-  }));
+  const writes = lifecycles.map((l) => ({ ...l, re: stateWrite(l.table, l.field) }));
   const out = [];
   for (const { path, text: source } of files) {
     if (!inScope(path)) continue;
