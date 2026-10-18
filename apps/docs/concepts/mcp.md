@@ -217,8 +217,10 @@ What each half does:
   - `app.use`, `app.all` and `app.mount`, which Hono records alike as middleware, and
     `OPTIONS` routes;
   - the routes of an app this one is mounted into later with `app.route()`;
-  - the mid-segment `*` forms that the default router dispatches there and `TrieRouter` does
-    not match, such as `/api/*cp`: these are not refused.
+  - the `*` forms that the default router dispatches there and `TrieRouter` does not match:
+    a `*` inside a segment, such as `/api/*cp`, and a pattern ending in two or more `*`
+    segments that reaches the path only if its last `*` matches nothing, such as `/api/*/*`
+    or `/*/*/*`. These are not refused.
 
   None of these routes is handed the channel, so none admits a delegated token.
 - **A hand-written MCP surface owns its ceiling.** A vertical that serves its own MCP

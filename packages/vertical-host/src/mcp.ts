@@ -642,8 +642,10 @@ function statusOf(err: unknown): number | undefined {
  *  - `app.use`, `app.all` and `app.mount` (Hono records all three alike), and `OPTIONS` routes;
  *  - a prefix added after the mount by `app.route()`: the routes of the app it is mounted
  *    into are not seen here;
- *  - the mid-segment `*` forms that the default router dispatches here and `TrieRouter` does
- *    not match, such as `/api/*cp`: these are not refused.
+ *  - the `*` forms that the default router dispatches here and `TrieRouter` does not match:
+ *    a `*` inside a segment, such as `/api/*cp`, and a pattern ending in two or more `*`
+ *    segments that reaches the path only if its last `*` matches nothing, such as `/api`
+ *    followed by two of them. These are not refused.
  * The channel (`mcpChannelOf`) is what keeps a delegated token away from every one of these
  * all the same.
  */

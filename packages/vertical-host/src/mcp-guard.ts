@@ -41,22 +41,23 @@ export interface RegisteredRoute {
 
 /**
  * The first of `routes` that would answer a request for the concrete `path`, by any method but
- * `OPTIONS`. It is judged by Hono's own `TrieRouter`, so parameters, regex parameters, optional
- * parameters and wildcards are read the way Hono reads them.
+ * `OPTIONS`, as Hono's own `TrieRouter` dispatches it: parameters, regex parameters, optional
+ * parameters and wildcards are read by Hono's own code.
  *
  * Not judged, and never returned:
  *  - a route registered for every method (`app.use`, `app.all`, `app.mount`, which Hono records
  *    alike as `ALL`);
  *  - an `OPTIONS` route (a CORS preflight).
  *
- * A `*` is judged as `TrieRouter` reads it, wherever it is:
- *  - A segment that is exactly `*` matches one segment, or, at the end, any rest including
- *    none. Every Hono router that accepts such a pattern dispatches it alike. So `*`,
- *    `/api/*`, `/api/mcp/*` and `/*` + `/mcp` are returned for `/api/mcp`, and `/other/*` and
- *    `/api/*` + `/mcp` are not.
- *  - A `*` inside a segment (`/api/mc*`, `/ap*`) or inside a parameter's regex is judged too.
- *    The default router also dispatches some mid-segment forms that `TrieRouter` does not
- *    match, such as `/api/*cp` and `/ap*` + `/mcp`. Those are not returned.
+ * A `*` is judged as `TrieRouter` reads it, wherever it is: a `*` segment, a `*` inside a
+ * segment, a `*` inside a parameter's regex. So `*`, `/api/*`, `/api/mcp/*`, `/*` + `/mcp`,
+ * `/api/mc*` and `/ap*` are returned for `/api/mcp`, and `/other/*` and `/api/*` + `/mcp` are
+ * not. Hono's routers do not all agree on `*`. The default router also dispatches to
+ * `/api/mcp` some forms that `TrieRouter` does not match, and those are not returned:
+ *  - a `*` inside a segment, such as `/api/*cp` and `/ap*` + `/mcp`;
+ *  - a pattern ending in two or more `*` segments that reaches the path only if its last `*`
+ *    matches nothing, such as `/api` followed by two of them, or three of them alone. (Two
+ *    alone match `/api/mcp` segment for segment, and are returned.)
  */
 export function routeAnsweringAt(routes: readonly RegisteredRoute[], path: string): RegisteredRoute | undefined {
   for (const route of routes) {
