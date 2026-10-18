@@ -4,9 +4,19 @@
  * are held on both adapters by `orphanSweepContractSuite`; this holds the order of the pass: the
  * fence, the age floor, the prefix, the condemnation, the fence again, the deletes.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   ATTACHMENT_CONDEMNED_DDL,
+  ATTACHMENT_SWEEP_LICENCE_DDL,
+  ORPHAN_SWEEP_DRY_RUN_WINDOW_MS,
+  ORPHAN_SWEEP_LICENCE_CAP,
+  ORPHAN_SWEEP_UNLICENSED,
+  clearOrphanSweepLicence,
+  condemnLicensedOrphanAttachments,
+  consumeOrphanSweepLicence,
+  orphanSweepLicensedAt,
+  recordOrphanSweepLicence,
+  refuseUnlicensedOrphanSweep,
   ORPHAN_SWEEP_FENCE_MS,
   ORPHAN_SWEEP_GRACE_MS,
   ORPHAN_TOMBSTONE_RETENTION_MS,
@@ -63,11 +73,24 @@ const old = (): string => idAt(NOW - ORPHAN_SWEEP_GRACE_MS - DAY);
 const young = (): string => idAt(NOW - ORPHAN_SWEEP_GRACE_MS + DAY);
 
 /** A scope side whose rows are `rows`; it records what it was asked. */
-function scopeOf(rows: Set<string>): OrphanSweepScope & { asked: string[][]; condemned: string[]; reads: number } {
+function scopeOf(
+  rows: Set<string>,
+  held: string[] = [],
+): OrphanSweepScope & { asked: string[][]; condemned: string[]; reads: number; recorded: string[][]; consumed: string[][] } {
   const side = {
     asked: [] as string[][],
     condemned: [] as string[],
     reads: 0,
+    // What `license` was handed, call by call; `held` is what the scope's licence lists now.
+    recorded: [] as string[][],
+    consumed: [] as string[][],
+    license: async (ids: readonly string[]) => {
+      side.recorded.push([...ids]);
+    },
+    licensed: async () => [...held],
+    consume: async (ids: readonly string[]) => {
+      side.consumed.push([...ids]);
+    },
     rowless: async (ids: readonly string[]) => {
       side.reads++;
       side.asked.push([...ids]);
@@ -151,7 +174,7 @@ describe('sweepOrphanAttachments (#2314)', () => {
     await store.put(attachmentBlobKey(S, orphan), bytes);
     const scope = scopeOf(new Set());
     const racing: OrphanSweepScope = {
-      rowless: scope.rowless,
+      ...scope,
       condemn: async (ids, now) => {
         const out = await scope.condemn(ids, now);
         // A rewind arms between the condemnation and the first delete: it writes its fence first.
@@ -164,6 +187,8 @@ describe('sweepOrphanAttachments (#2314)', () => {
     expect(report.deleted).toBe(0);
     expect(report.fencedUntil).toBe(at(NOW + ORPHAN_SWEEP_FENCE_MS));
     expect(store.deletes).toEqual([]);
+    // Nothing was deleted, so nothing leaves the licence (#2350).
+    expect(scope.consumed).toEqual([]);
   });
 
   it('holds a fence it cannot read as one that never lapses', async () => {
@@ -186,6 +211,122 @@ describe('sweepOrphanAttachments (#2314)', () => {
     expect(scope.condemned).toEqual([]);
     expect(scope.reads).toBe(1);
     expect(store.deletes).toEqual([]);
+    // What it listed is the licence a destructive pass needs (#2350), and nothing is consumed.
+    expect(scope.recorded).toEqual([[orphan]]);
+    expect(scope.consumed).toEqual([]);
+  });
+
+  it('a dry run the fence holds records no licence, and leaves the one held as it was (#2350)', async () => {
+    const store = memoryStore();
+    await store.put(attachmentBlobKey(S, old()), bytes);
+    await fenceAttachmentSweep(store, S, at(NOW - DAY));
+    const scope = scopeOf(new Set());
+    const report = await sweepOrphanAttachments(store, S, scope, { now: at(NOW), dryRun: true });
+    expect(report.fencedUntil).toEqual(expect.any(String));
+    expect(scope.recorded).toEqual([]);
+  });
+
+  it('a dry run licenses what it reports, at most `limit`, and a dry run that finds nothing licenses nothing (#2350)', async () => {
+    const store = memoryStore();
+    const ids = [old(), old(), old()].sort();
+    for (const id of ids) await store.put(attachmentBlobKey(S, id), bytes);
+    const scope = scopeOf(new Set([ids[2]!]));
+    const report = await sweepOrphanAttachments(store, S, scope, { now: at(NOW), dryRun: true, limit: 1 });
+    expect(report.keys).toEqual([attachmentBlobKey(S, ids[0]!)]);
+    expect(scope.recorded).toEqual([[ids[0]]]);
+    // An empty finding is handed on too: the scope clears a licence it holds.
+    const none = scopeOf(new Set(ids));
+    await sweepOrphanAttachments(store, S, none, { now: at(NOW), dryRun: true });
+    expect(none.recorded).toEqual([[]]);
+  });
+
+  it('a consume that fails after the deletes still returns the report naming them, marked (#2350)', async () => {
+    const store = memoryStore();
+    const ids = [old(), old()].sort();
+    for (const id of ids) await store.put(attachmentBlobKey(S, id), bytes);
+    const scope = scopeOf(new Set());
+    const failing: OrphanSweepScope = {
+      ...scope,
+      // The scope suspended or carried away between the deletes and the consume.
+      consume: async () => {
+        throw new Error('refused: this scope copy may not judge orphan attachments');
+      },
+    };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let report;
+    try {
+      report = await sweepOrphanAttachments(store, S, failing, { now: at(NOW) });
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(String(logged.mock.calls[0]![0])).toMatch(new RegExp(`scope ${S} deleted 2 object`));
+    } finally {
+      logged.mockRestore();
+    }
+    expect(report).toMatchObject({ deleted: 2, consumeFailed: true });
+    expect(report.keys).toEqual(ids.map((id) => attachmentBlobKey(S, id)));
+    expect(store.keys()).toEqual([]);
+    // The twin: a consume that succeeds leaves no mark.
+    await store.put(attachmentBlobKey(S, ids[0]!), bytes);
+    expect(await sweepOrphanAttachments(store, S, scope, { now: at(NOW) })).not.toHaveProperty('consumeFailed');
+  });
+
+  it('a destructive pass also takes out licensed ids whose objects are gone, even with nothing to delete (#2350)', async () => {
+    const store = memoryStore();
+    const kept = old();
+    const gone = old();
+    // `kept` is licensed and still listed (it has a row now, so it is not deleted); `gone` is licensed
+    // and no longer listed: it vanished some other way, and nothing a pass could delete is left of it.
+    await store.put(attachmentBlobKey(S, kept), bytes);
+    const scope = scopeOf(new Set([kept]), [kept, gone]);
+    const report = await sweepOrphanAttachments(store, S, scope, { now: at(NOW) });
+    expect(report).toMatchObject({ deleted: 0 });
+    expect(report).not.toHaveProperty('consumeFailed');
+    expect(scope.consumed).toEqual([[gone]]);
+    // The twin: a licence that lists only what is still there is left alone, and nothing is written.
+    const untouched = scopeOf(new Set([kept]), [kept]);
+    await sweepOrphanAttachments(store, S, untouched, { now: at(NOW) });
+    expect(untouched.consumed).toEqual([]);
+  });
+
+  it('a pass takes out what it deleted and what is gone in one call', async () => {
+    const store = memoryStore();
+    const orphan = old();
+    const gone = old();
+    await store.put(attachmentBlobKey(S, orphan), bytes);
+    const scope = scopeOf(new Set(), [orphan, gone]);
+    await sweepOrphanAttachments(store, S, scope, { now: at(NOW) });
+    expect(scope.consumed).toEqual([[orphan, gone]]);
+  });
+
+  it('a licence that cannot be read after the deletes still returns the report, marked (#2350)', async () => {
+    const store = memoryStore();
+    const orphan = old();
+    await store.put(attachmentBlobKey(S, orphan), bytes);
+    const scope = scopeOf(new Set());
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let report;
+    try {
+      report = await sweepOrphanAttachments(store, S, {
+        ...scope,
+        licensed: async () => {
+          throw new Error('refused: this scope copy may not judge orphan attachments');
+        },
+      }, { now: at(NOW) });
+      expect(logged).toHaveBeenCalledTimes(1);
+    } finally {
+      logged.mockRestore();
+    }
+    expect(report).toMatchObject({ deleted: 1, consumeFailed: true, keys: [attachmentBlobKey(S, orphan)] });
+    expect(scope.consumed).toEqual([]);
+  });
+
+  it('a destructive pass consumes exactly the ids it deleted, and records no licence (#2350)', async () => {
+    const store = memoryStore();
+    const ids = [old(), old(), old()].sort();
+    for (const id of ids) await store.put(attachmentBlobKey(S, id), bytes);
+    const scope = scopeOf(new Set());
+    await sweepOrphanAttachments(store, S, scope, { now: at(NOW), limit: 2 });
+    expect(scope.consumed).toEqual([ids.slice(0, 2)]);
+    expect(scope.recorded).toEqual([]);
   });
 
   it('deletes only ids it asked about, whatever the scope answers', async () => {
@@ -198,6 +339,7 @@ describe('sweepOrphanAttachments (#2314)', () => {
     const unasked = young();
     await store.put(attachmentBlobKey(S, unasked), bytes);
     const report = await sweepOrphanAttachments(store, S, {
+      ...scopeOf(new Set()),
       rowless: async () => [],
       // A scope that answers with an id it was not asked about (a stale batch, a bug).
       condemn: async () => [unasked],
@@ -231,7 +373,10 @@ describe('sweepOrphanAttachments (#2314)', () => {
     await store.put(attachmentBlobKey(S, a!), bytes);
     await store.put(attachmentBlobKey(S, b!), bytes);
     store.failDelete = attachmentBlobKey(S, a!);
-    await expect(sweepOrphanAttachments(store, S, scopeOf(new Set()), { now: at(NOW) })).rejects.toThrow(/store down/);
+    const failing = scopeOf(new Set());
+    await expect(sweepOrphanAttachments(store, S, failing, { now: at(NOW) })).rejects.toThrow(/store down/);
+    // The licence keeps every id, so the next pass in the window finishes them (#2350).
+    expect(failing.consumed).toEqual([]);
     expect(store.keys()).toEqual([a, b].map((id) => attachmentBlobKey(S, id!)));
     store.failDelete = undefined;
     const retry = await sweepOrphanAttachments(store, S, scopeOf(new Set()), { now: at(NOW) });
@@ -283,6 +428,114 @@ describe('condemnOrphanAttachments on SQLite (#2314)', () => {
     condemnOrphanAttachments(sql, ['OLD'], at(NOW - ORPHAN_TOMBSTONE_RETENTION_MS - DAY));
     condemnOrphanAttachments(sql, ['NEW'], at(NOW));
     expect(tombstones(sql).map((r) => r.id)).toEqual(['NEW']);
+  });
+});
+
+/**
+ * The scope's dry-run licence (#2350) on a real SQLite, so the statements are the ones both
+ * adapters run. `writes` counts every statement that changes the store, which is what moves a
+ * Durable Object's write revision: an unchanged licence must cost none.
+ */
+describe('the orphan sweep licence on SQLite (#2350)', () => {
+  const sqlOf = async (): Promise<ScopedSql & { writes: number }> => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    db.exec('CREATE TABLE _substrat_attachments (id TEXT PRIMARY KEY)');
+    db.exec(ATTACHMENT_CONDEMNED_DDL);
+    db.exec(ATTACHMENT_SWEEP_LICENCE_DDL);
+    const sql = {
+      writes: 0,
+      query: <T>(q: string, params: readonly SqlValue[] = []) => db.prepare(q).all(...(params as never[])) as T[],
+      exec: (q: string, params: readonly SqlValue[] = []) => {
+        sql.writes++;
+        return { changes: Number(db.prepare(q).run(...(params as never[])).changes) };
+      },
+    };
+    return sql;
+  };
+  const licensed = (sql: ScopedSql) => sql.query<{ id: string }>('SELECT id FROM _substrat_attachment_sweep_licence ORDER BY id').map((r) => r.id);
+
+  it('no licence refuses a destructive pass as unlicensed, and a recorded one is in force for the window', async () => {
+    const sql = await sqlOf();
+    const refused = (() => {
+      try {
+        refuseUnlicensedOrphanSweep(sql, at(NOW));
+      } catch (e) {
+        return e;
+      }
+      return undefined;
+    })();
+    expect(refused).toMatchObject({ code: 'conflict', extensions: { reason: ORPHAN_SWEEP_UNLICENSED } });
+    expect(recordOrphanSweepLicence(sql, ['A', 'B'], at(NOW))).toBe(true);
+    expect(licensed(sql)).toEqual(['A', 'B']);
+    expect(() => refuseUnlicensedOrphanSweep(sql, at(NOW + ORPHAN_SWEEP_DRY_RUN_WINDOW_MS))).not.toThrow();
+    // Past the window, and stamped well after the clock reads (a clock that went back): not in force.
+    // A clock read a moment behind the stamp (two reads' jitter) is still in force.
+    expect(orphanSweepLicensedAt(sql, at(NOW + ORPHAN_SWEEP_DRY_RUN_WINDOW_MS + 1))).toBeNull();
+    expect(orphanSweepLicensedAt(sql, at(NOW - 60_001))).toBeNull();
+    expect(orphanSweepLicensedAt(sql, at(NOW - 5))).toBe(at(NOW));
+    expect(() => refuseUnlicensedOrphanSweep(sql, at(NOW + ORPHAN_SWEEP_DRY_RUN_WINDOW_MS + 1))).toThrow(/no orphan-sweep dry run/);
+  });
+
+  it('condemns only licensed ids, and nothing once the licence has expired', async () => {
+    const sql = await sqlOf();
+    recordOrphanSweepLicence(sql, ['A', 'B'], at(NOW));
+    expect(condemnLicensedOrphanAttachments(sql, ['A', 'C'], at(NOW + DAY))).toEqual(['A']);
+    expect(sql.query('SELECT id FROM _substrat_attachment_condemned')).toEqual([{ id: 'A' }]);
+    expect(condemnLicensedOrphanAttachments(sql, ['B'], at(NOW + ORPHAN_SWEEP_DRY_RUN_WINDOW_MS + 1))).toEqual([]);
+    // A licensed id that has a row again is still never condemned: the licence only narrows.
+    sql.exec("INSERT INTO _substrat_attachments (id) VALUES ('B')");
+    expect(condemnLicensedOrphanAttachments(sql, ['B'], at(NOW + DAY))).toEqual([]);
+  });
+
+  it('consumes only the ids it is given, and an emptied licence refuses the next destructive pass', async () => {
+    const sql = await sqlOf();
+    recordOrphanSweepLicence(sql, ['A', 'B', 'C'], at(NOW));
+    consumeOrphanSweepLicence(sql, ['A', 'B']);
+    expect(licensed(sql)).toEqual(['C']);
+    const before = sql.writes;
+    consumeOrphanSweepLicence(sql, ['A']);
+    consumeOrphanSweepLicence(sql, []);
+    expect(sql.writes).toBe(before);
+    consumeOrphanSweepLicence(sql, ['C']);
+    expect(() => refuseUnlicensedOrphanSweep(sql, at(NOW))).toThrow(/no orphan-sweep dry run/);
+  });
+
+  it('an unchanged finding writes nothing until the licence is half the window old, then refreshes it', async () => {
+    const sql = await sqlOf();
+    recordOrphanSweepLicence(sql, ['A', 'B'], at(NOW));
+    const before = sql.writes;
+    expect(recordOrphanSweepLicence(sql, ['B', 'A'], at(NOW + ORPHAN_SWEEP_DRY_RUN_WINDOW_MS / 2))).toBe(false);
+    expect(sql.writes).toBe(before);
+    // The positive twins: a changed set writes at once, and an old one is refreshed.
+    expect(recordOrphanSweepLicence(sql, ['A'], at(NOW + DAY))).toBe(true);
+    expect(licensed(sql)).toEqual(['A']);
+    const stale = NOW + DAY + ORPHAN_SWEEP_DRY_RUN_WINDOW_MS / 2 + 1;
+    expect(recordOrphanSweepLicence(sql, ['A'], at(stale))).toBe(true);
+    expect(orphanSweepLicensedAt(sql, at(stale + ORPHAN_SWEEP_DRY_RUN_WINDOW_MS))).toBe(at(stale));
+  });
+
+  it('a finding of nothing clears a held licence, and writes nothing when none is held', async () => {
+    const sql = await sqlOf();
+    expect(recordOrphanSweepLicence(sql, [], at(NOW))).toBe(false);
+    expect(sql.writes).toBe(0);
+    recordOrphanSweepLicence(sql, ['A'], at(NOW));
+    expect(recordOrphanSweepLicence(sql, [], at(NOW))).toBe(true);
+    expect(licensed(sql)).toEqual([]);
+  });
+
+  it(`holds at most ${ORPHAN_SWEEP_LICENCE_CAP} ids, the first ones listed`, async () => {
+    const sql = await sqlOf();
+    const ids = Array.from({ length: ORPHAN_SWEEP_LICENCE_CAP + 5 }, (_, i) => `ID${String(i).padStart(5, '0')}`);
+    recordOrphanSweepLicence(sql, ids, at(NOW));
+    expect(licensed(sql)).toEqual(ids.slice(0, ORPHAN_SWEEP_LICENCE_CAP));
+  });
+
+  it('a clear drops the whole licence, as every dump load does', async () => {
+    const sql = await sqlOf();
+    recordOrphanSweepLicence(sql, ['A'], at(NOW));
+    clearOrphanSweepLicence(sql);
+    expect(orphanSweepLicensedAt(sql, at(NOW))).toBeNull();
   });
 });
 

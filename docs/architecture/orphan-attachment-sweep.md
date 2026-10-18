@@ -56,6 +56,9 @@ The scope's copy checks that version against the one its script is deployed as
 A destructive pass also writes its own line to the deployment's log (`orphan-attachment-sweep`)
 with the scope, the counts and the deleted keys, whatever the control plane records.
 
+The scope's own storage holds the dry-run-first rule too (#2350), so it holds whoever asks for a
+pass. See "The scope's licence" below.
+
 The deployment answers with the pass's report. Every guard the pass has also applies on the
 deployment's side.
 
@@ -71,6 +74,9 @@ deployment's side.
   - `refused`: the directory or the deployment said no, for example an unsettled copy or a
     suspended tenant.
   - `unsupported`: the deployment predates the route (501, or a route miss) and needs a redeploy.
+  - `awaitingDryRun`: a delete-mode scope given a dry run instead, because the admin log held no
+    recent dry-run row for it, or because the scope refused the destructive pass for want of its
+    own licence (`orphan_sweep_unlicensed`). In that second case the dry run runs in the same visit.
   - `noStore`: the deployment holds no attachment store for the tenant, and the scope holds no
     attachment row (`bucket: 'none'`): a vertical that keeps no files. A scope that does hold an
     attachment row but has no store has a missing store binding. That is not `noStore`: it fails,
@@ -102,6 +108,61 @@ instead, which writes that row if it finds anything. The report counts those sco
 So the environment value alone deletes nothing. Every delete is preceded by a recorded report of
 that scope's orphans, and the report is at most a week old. A scope whose dry run found nothing
 has nothing to delete, and it is dry-run again on its next visit.
+
+### The scope's licence (#2350)
+
+The admin-log row is the control plane's rule, and it holds only for the passes the control plane
+starts. The deployment's route takes `dryRun: false` from any caller that holds the platform's
+secret. So the scope's own storage holds the same rule, and a deployment pushed with it refuses a
+destructive pass that no dry run of its own licensed.
+
+- **What is recorded.** A dry run that finds orphans writes the ids it listed (the ids behind its
+  report's keys, at most `ORPHAN_SWEEP_LICENCE_CAP`, 1,000) into the spine table
+  `_substrat_attachment_sweep_licence`, each stamped with the host's clock at that run. It writes
+  only when that set differs from the one held, or the one held is older than half the window, so
+  a scope whose orphans stay the same moves no write revision on every pass (a carry and a
+  kept-copy release are fenced on it). A dry run that lists nothing clears the record. A dry run
+  the restore fence holds is not one of those: it stops before it lists anything, and leaves the
+  record as it was.
+- **The window.** The record is in force for `ORPHAN_SWEEP_DRY_RUN_WINDOW_MS` (seven days, the
+  same window as the admin-log row), judged against the host's clock. A stamp more than a minute
+  ahead of the clock (a clock that went back) is not in force.
+- **The refusal.** A destructive pass with no record in force is refused with `conflict`, reason
+  `orphan_sweep_unlicensed`, before anything is listed, so it is refused even when there is
+  nothing to condemn.
+- **What it deletes.** Only ids the record lists. The condemnation intersects each batch with the
+  record inside its own transaction, and every guard of the pass still applies to each listed id.
+  So an object that crossed the age floor after the dry run is not deleted until a dry run lists
+  it.
+- **Consumption.** Each id a destructive pass deletes leaves the record. A backlog larger than one
+  pass's limit therefore drains over consecutive passes after one dry run, as long as the dry run
+  listed it (the dry run lists up to its own `limit`). The same pass also takes out every licensed
+  id whose object its listing no longer holds, gone some other way, even when it deletes nothing.
+  So a record that lists nothing deletable does not keep the scope licensed until it expires. Once
+  the record is empty the next destructive pass is refused, and the phase dry-runs the scope again.
+  A pass whose deletes fail, or that a fence stops after the condemnation, changes nothing in the
+  record. A pass that cannot bring the record up to date afterwards (the scope suspended or carried
+  away mid-pass) still returns its report with every deleted key, marked `consumeFailed`, and logs
+  a line with the scope and the count. The deployment's own log line for the pass carries the
+  marker too. The phase counts it in `consumeFailed`, and its admin-log row names the keys as usual.
+  The rows it could not remove name ids that are gone, so they license nothing a later pass could
+  delete, and the next pass that brings the record up to date takes them out.
+- **Restores, carries, forks.** A dump never carries the record's rows, and every load drops them,
+  a hand-made dump's included. A loaded scope's next destructive pass is refused and its next pass
+  is a dry run. A PITR rewind can bring an older record back. A rewind of a scope that holds files
+  writes the restore fence first, which holds for 35 days, longer than the record's window. A
+  rewind of a scope with no attachment rows is not fenced. Either way the record only narrows what
+  the other guards allow.
+
+**The control plane keeps its admin-log rule beside it.** A deployment pushed before #2350 takes a
+destructive pass without a record of its own, so the phase still asks for one only when the admin
+log holds a dry-run row in the window. When the scope answers `orphan_sweep_unlicensed`, the phase
+runs the dry run in the same visit and counts it in `awaitingDryRun`. Every other refusal is still
+`refused`. The admin-log rows are written as before and stay the operator's record.
+
+**Migration.** Nothing is backfilled. A scope that holds an admin-log row but no record of its own
+(every scope, once its vertical is re-pushed) answers its first destructive request with
+`orphan_sweep_unlicensed`, is dry-run in that visit, and is deleted on a later one.
 
 ## Runbook: turning it on
 
@@ -141,8 +202,14 @@ The phase is **off** by default. Turn it on in this order, one step at a time:
    on its first visit. If that run finds orphans, it writes the row, and the scope's next visit
    deletes, possibly 15 minutes later. Your step 3 review covered only the scopes step 2 reached.
    For every other scope the dry run is a mechanical delay, not a review. Part A's guards still
-   hold every committed row's bytes. The delete set can also include objects that crossed the age
-   floor after the dry run (see Known limits).
+   hold every committed row's bytes. On a deployment pushed with #2350 a delete takes only keys
+   its scope's own dry run listed, which that dry run's admin-log row names. A deployment pushed
+   before it can still delete objects that crossed the age floor after the dry run (see Known
+   limits).
+
+   The first delete-mode visit to a scope re-pushed with #2350 is a dry run, even when the admin
+   log already holds a row for it: the scope holds no record of its own yet. The tail counts those
+   in `awaitingDryRun`.
 
    **To stop deleting at any time**, set `ORPHAN_ATTACHMENT_SWEEP` back to `dry-run` (report only)
    or `off`, and deploy the control plane. The next pass deletes nothing. A pass already running
@@ -169,12 +236,29 @@ ships up to 500 rows per pass (48,000 a day) to Tier 2 before it prunes them. Th
 stays an audited read on purpose: one per pass for the whole window would carry a week of rows
 with up to 500 keys each.
 
+The scope's own licence (#2350) costs at most 1,000 small rows per scope (an id and a timestamp
+each), written only when a dry run's finding changes or half the window has passed. A destructive
+request the scope refuses for want of it adds one more call to the deployment in that visit, the
+dry run. The directory reads are not repeated.
+
 ## Known limits
 
 - A restore from a dump older than 35 days can bring back rows whose bytes were swept
   (`apps/docs/concepts/attachments.md`). A removed attachment has the same exposure.
 - The window is random, not a schedule. A given scope is visited roughly every
   `eligible ÷ batch` passes, not at a fixed time.
-- The dry-run row licenses a delete of the scope's orphans at the time of the delete. Those may
-  include objects that crossed the age floor after the dry run, not only the keys the dry run
-  listed.
+- On a deployment pushed before #2350, the dry-run row licenses a delete of the scope's orphans
+  at the time of the delete. Those may include objects that crossed the age floor after the dry
+  run, not only the keys the dry run listed. A deployment pushed with #2350 deletes only the keys
+  its own dry run listed.
+- A dry run lists at most its `limit` (default 500) keys, so a backlog larger than that drains one
+  dry run's worth at a time.
+- A licensed id whose object is still listed but that a row names again is not condemned, and it
+  stays in the scope's licence until the record ages out (at most `ORPHAN_SWEEP_DRY_RUN_WINDOW_MS`).
+  It can delete nothing, since the condemnation's rowless check still holds it. While such an id is
+  the only one left, destructive passes delete nothing and answer as passes, so the scope's next dry
+  run waits for the window. Only a dump load writes a row for an id that old, and every load clears
+  the licence, so this is not expected in practice.
+- A licence that lapses between a destructive pass's first check and its condemnation leaves
+  nothing to condemn, so that pass deletes nothing and answers as a pass. The next pass is refused
+  at its first check, and the phase dry-runs the scope.

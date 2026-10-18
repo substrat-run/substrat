@@ -47,6 +47,8 @@ import {
 } from '@substrat-run/contracts';
 import {
   ATTACHMENT_CONDEMNED,
+  ORPHAN_SWEEP_DRY_RUN_WINDOW_MS,
+  ORPHAN_SWEEP_UNLICENSED,
   ORPHAN_SWEEP_FENCE_MS,
   ORPHAN_SWEEP_GRACE_MS,
   attachmentBlobKey,
@@ -75,6 +77,11 @@ export interface OrphanSweepFixture extends ScopeHostFixture {
   clockAhead(ms: number): void;
   /** Record another script's copy of the scope in the host's copy ledger (#1722), in `state`. */
   recordCopy(tenant: TenantId, scope: ScopeId, state: string): Promise<void>;
+  /**
+   * The scope store's write revision (#1722), on a host that keeps one: what a carry and a
+   * kept-copy release are fenced on, so a dry run that finds nothing new must not move it (#2350).
+   */
+  writeRevision?(tenant: TenantId, scope: ScopeId): Promise<string | null>;
 }
 
 const DAY = 86_400_000;
@@ -120,18 +127,29 @@ export function orphanSweepContractSuite(adapterName: string, makeFixture: () =>
     const files = async (scope: ScopeId) => host.attachments(alice, t1, scope);
     const upload = async (entity: EntityRef, body: string, scope: ScopeId = s1): Promise<AttachmentRecord> =>
       (await files(scope)).upload({ entity, filename: 'a.txt', contentType: 'text/plain', visibility: 'internal', body: bytes(body) });
-    /** A pass with the host's clock at `now`, put back to the wall clock afterwards. */
-    const sweep = async (now: number, opts: { dryRun?: boolean; tenant?: TenantId; scope?: ScopeId } = {}) => {
+    /** One pass with the host's clock at `now`, put back to the wall clock afterwards. */
+    const pass = async (now: number, opts: { dryRun?: boolean; tenant?: TenantId; scope?: ScopeId; limit?: number } = {}) => {
       if (!host.sweepOrphanAttachments) throw new Error('host has no sweepOrphanAttachments');
       fixture.clockAhead(now - Date.now());
       try {
         return await host.sweepOrphanAttachments(opts.tenant ?? t1, opts.scope ?? s1, {
           copiesSettled: true,
           ...(opts.dryRun ? { dryRun: true } : {}),
+          ...(opts.limit !== undefined ? { limit: opts.limit } : {}),
         });
       } finally {
         fixture.clockAhead(0);
       }
+    };
+    /**
+     * A pass at `now`, as the platform's phase runs one: a destructive pass is preceded by the dry
+     * run at the same clock that licenses it (#2350), and a dry run that found nothing licenses
+     * nothing, so its report is the answer. `pass` is the one pass alone.
+     */
+    const sweep = async (now: number, opts: { dryRun?: boolean; tenant?: TenantId; scope?: ScopeId } = {}) => {
+      if (opts.dryRun) return pass(now, opts);
+      const dry = await pass(now, { ...opts, dryRun: true });
+      return dry.keys.length === 0 ? dry : pass(now, opts);
     };
     /** Plant an object no row names, minted at `ms`. */
     const plant = async (ms: number, scope: ScopeId = s1): Promise<string> => {
@@ -325,9 +343,12 @@ export function orphanSweepContractSuite(adapterName: string, makeFixture: () =>
         expect(await present(attachmentSweepFenceKey(s3))).toBe(true);
         const key = attachmentBlobKey(s3, record.id);
 
-        const inside = await sweep(Date.now() + ORPHAN_SWEEP_GRACE_MS + DAY, { scope: s3 });
-        expect(inside.deleted).toBe(0);
+        // Inside the fence a dry run lists nothing, so it licenses nothing (#2350), and a
+        // destructive pass is refused before it lists anything.
+        const inside = await pass(Date.now() + ORPHAN_SWEEP_GRACE_MS + DAY, { scope: s3, dryRun: true });
+        expect(inside.keys).toEqual([]);
         expect(inside.fencedUntil).toEqual(expect.any(String));
+        expect(reasonOf(await refusal(pass(Date.now() + ORPHAN_SWEEP_GRACE_MS + DAY, { scope: s3 })))).toBe(ORPHAN_SWEEP_UNLICENSED);
         expect(await present(key)).toBe(true);
 
         // Undo the restore: the row is back, and so are its bytes.
@@ -378,11 +399,13 @@ export function orphanSweepContractSuite(adapterName: string, makeFixture: () =>
         // Past the age floor by the host's clock, and a caller asking for a time past the fence.
         fixture.clockAhead(ORPHAN_SWEEP_GRACE_MS + DAY);
         try {
+          // A dry run, so the fence is what answers: it would list the key past the fence.
           const report = await host.sweepOrphanAttachments!(t1, s5, {
             copiesSettled: true,
+            dryRun: true,
             now: new Date(Date.now() + 400 * DAY).toISOString(),
           } as never);
-          expect(report.deleted).toBe(0);
+          expect(report.keys).toEqual([]);
           expect(report.fencedUntil).toEqual(expect.any(String));
         } finally {
           fixture.clockAhead(0);
@@ -470,6 +493,131 @@ export function orphanSweepContractSuite(adapterName: string, makeFixture: () =>
         await fixture.recordCopy(t1, s9, state);
         const report = await sweep(now + ORPHAN_SWEEP_GRACE_MS + DAY, { scope: s9 });
         expect(report.keys).toEqual([attachmentBlobKey(s9, orphan)]);
+      });
+    });
+
+    describe("the scope's own dry-run licence (#2350): a destructive pass deletes only what a recent dry run listed", () => {
+      const aged = (now: number) => now + ORPHAN_SWEEP_GRACE_MS + DAY;
+
+      it('a destructive pass with no dry run is refused before it lists anything, and deletes nothing', async () => {
+        const s = await freshScope();
+        const now = Date.now();
+        const orphan = await plant(now, s);
+        const err = await refusal(pass(aged(now), { scope: s }));
+        expect(errorCodeOf(err)).toBe('conflict');
+        expect(reasonOf(err)).toBe(ORPHAN_SWEEP_UNLICENSED);
+        expect(await present(attachmentBlobKey(s, orphan))).toBe(true);
+        // The positive twin: after a dry run, inside the window, the same pass deletes it.
+        expect((await pass(aged(now), { scope: s, dryRun: true })).keys).toEqual([attachmentBlobKey(s, orphan)]);
+        const report = await pass(aged(now) + DAY, { scope: s });
+        expect(report.keys).toEqual([attachmentBlobKey(s, orphan)]);
+        expect(await present(attachmentBlobKey(s, orphan))).toBe(false);
+      });
+
+      it('a scope with nothing to condemn is refused all the same, so the refusal does not depend on what is listed', async () => {
+        const s = await freshScope();
+        expect(reasonOf(await refusal(pass(aged(Date.now()), { scope: s })))).toBe(ORPHAN_SWEEP_UNLICENSED);
+      });
+
+      it('a licence past the window is refused, and one at its edge is in force', async () => {
+        const s = await freshScope();
+        const now = Date.now();
+        const orphan = await plant(now, s);
+        await pass(aged(now), { scope: s, dryRun: true });
+        expect(reasonOf(await refusal(pass(aged(now) + ORPHAN_SWEEP_DRY_RUN_WINDOW_MS + DAY, { scope: s })))).toBe(ORPHAN_SWEEP_UNLICENSED);
+        expect(await present(attachmentBlobKey(s, orphan))).toBe(true);
+        const edge = await pass(aged(now) + ORPHAN_SWEEP_DRY_RUN_WINDOW_MS - DAY, { scope: s });
+        expect(edge.keys).toEqual([attachmentBlobKey(s, orphan)]);
+      });
+
+      it('an orphan the dry run did not list is never deleted, though every other guard would let it go', async () => {
+        const s = await freshScope();
+        const now = Date.now();
+        const listed = await plant(now, s);
+        await pass(aged(now), { scope: s, dryRun: true });
+        // Planted after the dry run, already past the age floor: only the licence holds it.
+        const unlisted = await plant(now, s);
+        const report = await pass(aged(now) + DAY, { scope: s });
+        expect(report.keys).toEqual([attachmentBlobKey(s, listed)]);
+        expect(await present(attachmentBlobKey(s, unlisted))).toBe(true);
+        // The twin: the next dry run lists it, and the pass after that sweeps it.
+        await pass(aged(now) + DAY, { scope: s, dryRun: true });
+        expect((await pass(aged(now) + DAY, { scope: s })).keys).toEqual([attachmentBlobKey(s, unlisted)]);
+      });
+
+      it('one dry run drains a backlog over consecutive passes, and the emptied licence then refuses', async () => {
+        const s = await freshScope();
+        const now = Date.now();
+        const ids: string[] = [];
+        for (let i = 0; i < 6; i++) ids.push(await plant(now, s));
+        ids.sort();
+        expect((await pass(aged(now), { scope: s, dryRun: true, limit: 6 })).keys).toHaveLength(6);
+        for (let round = 0; round < 3; round++) {
+          const report = await pass(aged(now) + DAY, { scope: s, limit: 2 });
+          expect(report.keys).toEqual(ids.slice(round * 2, round * 2 + 2).map((id) => attachmentBlobKey(s, id)));
+        }
+        for (const id of ids) expect(await present(attachmentBlobKey(s, id))).toBe(false);
+        expect(reasonOf(await refusal(pass(aged(now) + DAY, { scope: s })))).toBe(ORPHAN_SWEEP_UNLICENSED);
+      });
+
+      it('a licence whose objects are gone some other way is taken out, so the scope is dry-run again rather than held until it expires', async () => {
+        const s = await freshScope();
+        const now = Date.now();
+        const orphan = await plant(now, s);
+        await pass(aged(now), { scope: s, dryRun: true });
+        // The listed object disappears without a pass: nothing a pass could delete is left of it.
+        await store.delete(attachmentBlobKey(s, orphan));
+        const fresh = await plant(now, s);
+        const report = await pass(aged(now) + DAY, { scope: s });
+        expect(report).toMatchObject({ deleted: 0 });
+        expect(report).not.toHaveProperty('consumeFailed');
+        // The licence held only that id, so it is empty now: the next destructive pass is refused and
+        // the phase dry-runs the scope, which lists the orphan that appeared since.
+        expect(reasonOf(await refusal(pass(aged(now) + DAY, { scope: s })))).toBe(ORPHAN_SWEEP_UNLICENSED);
+        expect((await pass(aged(now) + DAY, { scope: s, dryRun: true })).keys).toEqual([attachmentBlobKey(s, fresh)]);
+        expect((await pass(aged(now) + DAY, { scope: s })).keys).toEqual([attachmentBlobKey(s, fresh)]);
+      });
+
+      it('a restore takes the licence away, a forged one in the dump included, so the next destructive pass is refused', async () => {
+        const s = await freshScope();
+        const now = Date.now();
+        const orphan = await plant(now, s);
+        await pass(aged(now), { scope: s, dryRun: true });
+        const dump = await host.admin.exportScope(staff, t1, s);
+        // A dump never carries the licence's rows.
+        const table = dump.tables.find((t) => t.name === '_substrat_attachment_sweep_licence');
+        expect(table?.rows ?? []).toEqual([]);
+        // The restore fences the scope too, so the passes after it run past both the fence and the
+        // age floor.
+        const later = Date.now() + ORPHAN_SWEEP_FENCE_MS + DAY;
+        // A hand-made dump that does, stamped to be in force then, is dropped on load all the same.
+        expect(table).toBeDefined();
+        const row: unknown[] = table!.columns.map(() => null);
+        row[table!.columns.indexOf('id')] = orphan;
+        row[table!.columns.indexOf('licensed_at')] = new Date(later).toISOString();
+        table!.rows.push(row);
+        await host.restoreScope(staff, t1, s, dump);
+        expect(reasonOf(await refusal(pass(later, { scope: s })))).toBe(ORPHAN_SWEEP_UNLICENSED);
+        expect(await present(attachmentBlobKey(s, orphan))).toBe(true);
+        // The twin: the dry run it needs, then the delete.
+        await pass(later, { scope: s, dryRun: true });
+        expect((await pass(later, { scope: s })).keys).toEqual([attachmentBlobKey(s, orphan)]);
+      });
+
+      it('a dry run that finds the same orphans again moves no write revision, and one that finds a new one does', async () => {
+          // A host that keeps no write revision (the SQLite one) has nothing a carry is fenced on.
+          if (!fixture.writeRevision) return;
+          const s = await freshScope();
+          const now = Date.now();
+          await plant(now, s);
+          await pass(aged(now), { scope: s, dryRun: true });
+          const before = await fixture.writeRevision(t1, s);
+          await pass(aged(now) + DAY, { scope: s, dryRun: true });
+          await pass(aged(now) + 2 * DAY, { scope: s, dryRun: true });
+          expect(await fixture.writeRevision(t1, s)).toBe(before);
+          await plant(now, s);
+          await pass(aged(now) + 2 * DAY, { scope: s, dryRun: true });
+          expect(await fixture.writeRevision(t1, s)).not.toBe(before);
       });
     });
   });
