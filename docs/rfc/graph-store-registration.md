@@ -74,10 +74,10 @@ searchDataInstances
   claimed to be met.
 - The release is one `driver_` package plus `python_modules/<path>` for its
   dependencies. It does not ship `workers`, `js`, `pyodide` or the workers
-  runtime SDK. Three files the current rule still allows are in the pin:
+  runtime SDK. Three files in the pin are refused since #2391's deny table:
   `python_modules/asgi.py`, `python_modules/_cloudflare_compat_flags.pyi` and
-  `python_modules/_pyodide_entrypoint_helper.pyi`. Whether those should be
-  refused is open.
+  `python_modules/_pyodide_entrypoint_helper.pyi`. The release must be repacked
+  without them, and the new digest pinned, before this registration merges.
 - A dispatch upload, the reserved-operation canary, and a rollout have not
   been run. Local packing does not establish that a production upload of this
   size succeeds.
