@@ -1,7 +1,7 @@
 ---
 status: building
 layer: plan
-description: The one contract the console's views read, the capabilities a source declares so views degrade instead of lying, and the local, hosted and external sources behind it.
+description: One query-first contract the console's views read; each source declares what it can answer.
 ---
 
 # Console data sources
