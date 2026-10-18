@@ -35,9 +35,11 @@ committed file names no `account_id`. Treat them as acting on whatever account w
 signed in to, or on `CLOUDFLARE_ACCOUNT_ID` when that is set. An `absent` or a `10121` from the wrong account
 says nothing about the test control plane, and must not block the rollout. Before step 1,
 run `npx wrangler whoami` and confirm that the account it names is the one the test control
-plane deploys to (the `CLOUDFLARE_ACCOUNT_ID` repository variable that the `deploy-test` job in `ci.yml`
-deploys the test environment with). Compare by account name, and do not write the id down. If they
-differ, set `CLOUDFLARE_ACCOUNT_ID` to the right one in your shell for these commands.
+plane deploys to, which is the one the `CLOUDFLARE_ACCOUNT_ID` repository variable of the
+`deploy-test` job in `ci.yml` points at. A person with access to that variable can say
+which account it is. Compare by account name. The `whoami` table prints ids: do not paste
+its output. If the accounts differ, set `CLOUDFLARE_ACCOUNT_ID` in your shell to the right
+one for these commands.
 
 Record the command, the exit code and the response body. Do not record a token, an
 account id, or a key.
