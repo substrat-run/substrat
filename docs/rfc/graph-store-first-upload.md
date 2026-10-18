@@ -135,8 +135,9 @@ This step cannot be carried out today. Do not mark the pass complete without it.
 A caller-signed call is a vertical operation that does
 `getScopeStore(principal, tenantId, scopeId, 'GRAPH')` and `invoke`s a catalog
 operation, for example `getSession`. The router signs that call. No command does it
-from the CLI, and no operation of any vertical in this repo calls the store: outside
-the adapters and the kernel, `getScopeStore` is not called from any vertical code. The canary's
+from the CLI, and no operation of any vertical in this repo calls the store: nothing under
+`demos/`, `engines/` or `connectors/` mentions `getScopeStore`, which only the kernel, the
+adapters and their tests call. The canary's
 calls are platform-signed. They are not this step. A push that finishes proves the script
 was uploaded; it says nothing about a caller-signed call, so a finished push is not a pass.
 
