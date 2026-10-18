@@ -525,7 +525,11 @@ generated while nothing re-emits it. So a generated file has all three of:
    in the repo.
 
 The re-emit gates today: `lint:permissions`, `lint:model`, `lint:api`, `lint:client`,
-`lint:conformance`, `lint:migrations`, plus `lint:decisions`, `lint:playbook`, `lint:docs`,
+`lint:conformance`, `lint:migrations`, `lint:migration-ledger` (`tools/migration-ledger.mts`, #2365:
+each package's `MIGRATIONS.md`, the digest of every migration its own modules author as the
+kernel's `migrationSteps` computes it; its `--base <ref>` half refuses a row the base branch
+shipped that is now changed, missing or renumbered, since a scope that applied it fails closed on
+the edit at its next migration pass, #2066), plus `lint:decisions`, `lint:playbook`, `lint:docs`,
 `lint:llms`, `lint:agent-rules`, `lint:launch`, `lint:plugin`, `lint:pins`,
 `lint:platform-entry` (`tools/platform-entry-emit.mts`: the entry module the uploader puts
 in front of every vertical's bundle, #1893, bundled from vertical-host's `withInvocationLog` —
@@ -706,7 +710,22 @@ awaited RPC rejection does not — and it refuses
 `expect(() => stub.method()).rejects`), `lint:connector-grants` (`tools/connector-grants.mts`: a dashboard door and
 the `CONNECTORS` registration behind it are the two ends of one connector — this checks
 both directions and the standing grants the door must carry, see the connector rule
-below), and `lint:changelog --check` — which asserts a hand-written digest accounts
+below), the review checklist's mechanical half (#2365: `plugin/substrat/review/checklist.md`
+gives each item a machine-read `gates:` line, and a review runner trusts what it names) —
+`lint:review-checklist` (`tools/review-checklist.mjs`: every command a `gates:` line names is a
+root script or file that exists AND that this workflow runs with those arguments, or a gate the
+scaffold ships; `judgement` marks what no script decides), `lint:secret-literals`
+(`tools/secret-literals.mjs`: no credential-shaped literal — PEM or JWK private key, a provider
+token prefix, a connection URL with a password — in any tracked file; prints `file:line` and the
+shape, never the value; an intended literal is an `ACCEPTED` entry with its reason and exact
+count), `lint:entity-check-adoption` (`tools/entity-check-adoption.mts`: a package whose operations
+declare `{ key, entity, idFrom }` has a test calling `entityCheckConformanceSuite`, the only thing
+that holds a handler to that declaration), `lint:lifecycle-writes` (`tools/lifecycle-writes.mjs`:
+every `UPDATE` of a declared lifecycle's state field has `assertTransition`/`transitionFor`, or a
+local wrapper of one, before it — in its function or in every caller of the one helper that
+writes), and `lint:operation-tests --base <ref>`, which is advisory and never fails (a
+`::warning` for an operation new since the base that no test in its package names) — and
+`lint:changelog --check` — which asserts a hand-written digest accounts
 for every merge in its range and could not re-emit prose if it wanted to. `lint:scaffold`
 is the exception that runs **off** the PR — post-release and weekly, for the reason its
 bullet above gives.
