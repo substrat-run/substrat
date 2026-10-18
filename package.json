@@ -26,6 +26,8 @@
     "test:migration-ledger": "tsx --test tools/migration-ledger.test.mts",
     "lint:operation-tests": "tsx tools/operation-tests.mts",
     "test:operation-tests": "tsx --test tools/operation-tests.test.mts",
+    "lint:entity-check-adoption": "tsx tools/entity-check-adoption.mts",
+    "test:entity-check-adoption": "tsx --test tools/entity-check-adoption.test.mts",
     "test:schedule-sweeper": "tsx --test tools/schedule-sweeper.test.mts",
     "test:reserved-keys": "tsx --test tools/reserved-keys.test.mts",
     "store-keys": "tsx tools/store-keys.mts",

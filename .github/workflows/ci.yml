@@ -155,6 +155,11 @@ jobs:
       - run: pnpm test:store-keys
       - run: pnpm test:permission-diff
       - run: pnpm lint:permissions --check
+      # A package whose operations declare a check on one entity ({ key, entity, idFrom }) runs
+      # entityCheckConformanceSuite (#2365, S2): the declaration is held to the handler only by that
+      # suite, and only where it is called. Reads the registrations, so it needs the build above.
+      - run: pnpm test:entity-check-adoption
+      - run: pnpm lint:entity-check-adoption
       # A deployable vertical that declares schedules wires `defineScopeSweeperDO`, or
       # those schedules never fire on a pushed deploy (#1646): the control plane's own
       # cron iterates only its own module-less host's schedules, so a CP-less vertical

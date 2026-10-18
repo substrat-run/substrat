@@ -66,14 +66,17 @@ the permissions source.
 
 - *Gate:* `pnpm lint:permissions --check` goes red when the surface changed and
   `PERMISSIONS.md` was not re-emitted. Name every widened role in the report. This is the
-  **permission-diff checkpoint**: present it, and stop there.
+  **permission-diff checkpoint**: present it, and stop there. An operation declaring a check
+  on one entity (`{ key, entity, idFrom }`) is held to it by `entityCheckConformanceSuite`,
+  which the package's tests run (`pnpm lint:entity-check-adoption` refuses a package with such
+  operations that never calls it).
 - *Reader:* an operation with no check; a check on a key that grants less than the operation
   does; a scope-wide key where the operation addresses one entity. No gate sees a handler
   that checks a weaker key than the model declares, because the declaration did not change:
   for every operation the change touches, open `spec/model.ts` and compare the key it
   declares with the key the handler checks.
 
-gates: `pnpm lint:permissions --check` · `pnpm test` · judgement
+gates: `pnpm lint:permissions --check` · `pnpm lint:entity-check-adoption` · `pnpm test` · judgement
 
 ### S3 · Generated files and kernel packages are not edited by hand: blocking
 
