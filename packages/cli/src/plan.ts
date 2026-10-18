@@ -44,6 +44,25 @@ export interface TransitionChange {
   /** `retargeted`: the same operation from the same state now leads elsewhere (`was`). */
   readonly change: 'added' | 'removed' | 'retargeted';
   readonly was?: string;
+  /**
+   * What the operation declares it checks and who holds that key (#2384) — from `PERMISSIONS.md`
+   * now, or at the base for a removed transition. Absent when that file does not list the
+   * operation (it predates the Operations section, or there is no file): nothing is guessed.
+   */
+  readonly check?: TransitionCheck;
+}
+
+/** One operation's declared check, joined to the roles and per-entity grant shapes holding it. */
+export interface TransitionCheck {
+  /** `false`: the handler checks in code and declares nothing, so no key can be named. */
+  readonly declared: boolean;
+  readonly keys: readonly string[];
+  /** What the check narrows to, as `PERMISSIONS.md` words it ("one `list`, id from `listId`"). */
+  readonly checkedOn: string;
+  /** Roles holding any of `keys`. */
+  readonly roles: readonly string[];
+  /** Entity types whose grant shape gives any of `keys`, one record at a time. */
+  readonly grantShapes: readonly string[];
 }
 
 /** One row of the permission-diff table: a key whose description or holders moved. */
@@ -134,8 +153,35 @@ function permissionRows(baseMd: string | null, headMd: string | null): Permissio
   return rows;
 }
 
+/** operation → its declared check and holders, from one side's `PERMISSIONS.md`. */
+function checksIn(md: string | null): Map<string, TransitionCheck> {
+  const out = new Map<string, TransitionCheck>();
+  if (md === null) return out;
+  const v = parsePermissions(md);
+  for (const [op, c] of v.operations ?? []) {
+    const holds = (keys: readonly string[]) => keys.some((k) => c.keys.includes(k));
+    out.set(op, {
+      declared: c.declared,
+      keys: c.keys,
+      checkedOn: c.checkedOn,
+      roles: sorted(v.roles.filter((r) => holds(r.keys)).map((r) => r.role)),
+      grantShapes: sorted(v.entityGrants.filter((g) => holds(g.keys)).map((g) => g.entityType)),
+    });
+  }
+  return out;
+}
+
 const readModelText = (text: string | null, what: string): EmittedModel | null =>
   text === null ? null : parseModel(JSON.parse(text) as unknown, what);
+
+function withChecks(ts: TransitionChange[], baseMd: string | null, headMd: string | null): TransitionChange[] {
+  const before = checksIn(baseMd);
+  const now = checksIn(headMd);
+  return ts.map((t) => {
+    const check = (t.change === 'removed' ? before : now).get(t.operation);
+    return check ? { ...t, check } : t;
+  });
+}
 
 /** The delta between two sets of artifact texts. Pure: the git and filesystem half is {@link planFor}. */
 export function conceptDelta(pkg: string, base: Artifacts, head: Artifacts): ConceptDelta {
@@ -176,7 +222,7 @@ export function conceptDelta(pkg: string, base: Artifacts, head: Artifacts): Con
     lifecycles: {
       added: lifecycleNames.filter((n) => !(n in bl)),
       removed: lifecycleNames.filter((n) => !(n in hl)),
-      transitions: lifecycleNames.flatMap((n) => transitionChanges(n, bl[n], hl[n])),
+      transitions: withChecks(lifecycleNames.flatMap((n) => transitionChanges(n, bl[n], hl[n])), base.permissions, head.permissions),
       changes: lifecycleChanges,
       after: touched.map((n) => lifecycleDiagram(n, hl[n]!)),
     },
@@ -281,6 +327,16 @@ const listed = (cs: readonly Change[]) => {
   return lines.length > MAX_LISTED ? [...lines.slice(0, MAX_LISTED), `- … and ${lines.length - MAX_LISTED} more`] : lines;
 };
 const roles = (rs: readonly string[] | null) => (rs === null ? '— (no such key)' : rs.length ? code(rs) : '— no role —');
+function checkCell(c: TransitionCheck | undefined): string {
+  if (c === undefined) return '— not in PERMISSIONS.md —';
+  if (!c.declared) return 'checked in code, not declared';
+  if (c.keys.length === 0) return cell(c.checkedOn);
+  const holders = [
+    c.roles.length ? `roles ${code(c.roles)}` : '',
+    c.grantShapes.length ? `per record on ${code(c.grantShapes)}` : '',
+  ].filter(Boolean);
+  return `${code(c.keys)} on ${cell(c.checkedOn)} — ${holders.join('; ') || 'no role or grant shape'}`;
+}
 const cell = (s: string) => s.replace(/\|/g, '\\|').replace(/\n/g, ' ');
 
 /** The delta as Markdown — what the design gate shows. Deterministic for the same inputs. */
@@ -304,15 +360,21 @@ export function renderDelta(d: ConceptDelta, opts: { base: string; digest: strin
     if (l.added.length) out.push(`- **Lifecycle added:** ${code(l.added)}`);
     if (l.removed.length) out.push(`- **Lifecycle removed:** ${code(l.removed)} — its states are no longer enforced`);
     if (l.transitions.length) {
-      out.push('', '| Entity | From | Triggered by | To | Change |', '| --- | --- | --- | --- | --- |');
+      out.push('', '| Entity | From | Triggered by | To | Change | Checks — held by |', '| --- | --- | --- | --- | --- | --- |');
       for (const t of l.transitions) {
         const change = t.change === 'retargeted' ? `retargeted (was \`${t.was}\`)` : t.change;
-        out.push(`| \`${t.entity}\` | \`${t.from}\` | \`${t.operation}\` | \`${t.to}\` | ${change} |`);
+        out.push(`| \`${t.entity}\` | \`${t.from}\` | \`${t.operation}\` | \`${t.to}\` | ${change} | ${checkCell(t.check)} |`);
       }
       out.push(
         '',
-        'Who may trigger a transition is whoever may run its operation. Which key each operation checks is not in the artifacts yet (https://github.com/substrat-run/substrat/issues/2384), so the operation is named here; who holds each key is the roles table in spec/concept.md, and any change to it is under Permissions below.',
+        'Who may trigger a transition is whoever may run its operation: the last column is the key that operation declares it checks, from the Operations section of PERMISSIONS.md, and the roles and per-record grant shapes holding it. Any change to who holds a key is under Permissions below.',
       );
+      if (l.transitions.some((t) => t.check === undefined)) {
+        out.push('', 'An operation PERMISSIONS.md does not list is named without a key: that file predates its Operations section, or the operation is not registered. Re-emit PERMISSIONS.md to fill it in.');
+      }
+      if (l.transitions.some((t) => t.check?.declared === false)) {
+        out.push('', 'An operation "checked in code, not declared" makes its check in its handler and declares none, so no artifact names its key.');
+      }
     }
     const other = l.changes.filter((c) => !/\.on\./.test(c.path));
     if (other.length) out.push('', ...listed(other));

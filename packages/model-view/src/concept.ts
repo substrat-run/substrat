@@ -47,6 +47,19 @@ export interface PermissionsView {
   readonly roles: readonly { readonly role: string; readonly keys: readonly string[] }[];
   readonly entityGrants: readonly { readonly entityType: string; readonly keys: readonly string[] }[];
   readonly descriptions: ReadonlyMap<string, string>;
+  /**
+   * Operation → the keys it declares it checks and what the check narrows to (#2384). An
+   * operation with no declared key has `keys: []` and `declared: false`. `undefined` when the
+   * file has no Operations section — one emitted before it existed — never "no operations".
+   */
+  readonly operations?: ReadonlyMap<string, OperationCheckView>;
+}
+
+/** One row of `PERMISSIONS.md`'s Operations section. */
+export interface OperationCheckView {
+  readonly keys: readonly string[];
+  readonly checkedOn: string;
+  readonly declared: boolean;
 }
 
 /** Split one markdown table row on its unescaped pipes. */
@@ -109,7 +122,20 @@ export function parsePermissions(md: string): PermissionsView {
   const entityGrants = (tableUnder(md, 'Entity-narrowed grant shapes') ?? [])
     .map(([entityType, keys]) => ({ entityType: unquote(entityType ?? ''), keys: keysOf(keys ?? '') }))
     .filter((g) => g.entityType !== '');
-  return { roles, entityGrants, descriptions };
+  const opRows = tableUnder(md, 'Operations');
+  const operations =
+    opRows === undefined
+      ? undefined
+      : new Map(
+          opRows
+            .filter(([op]) => op !== undefined && op.startsWith('`'))
+            .map(([op, keys = '', checkedOn = '']): [string, OperationCheckView] => {
+              // A cell of prose ("— checked in code, not declared —") names no key; its commas are not a list.
+              const prose = keys.trim().startsWith('—');
+              return [unquote(op ?? ''), { keys: prose ? [] : keysOf(keys), checkedOn, declared: !/not declared|not readable/.test(keys) }];
+            }),
+        );
+  return { roles, entityGrants, descriptions, ...(operations === undefined ? {} : { operations }) };
 }
 
 const bySort = <T>(xs: Iterable<T>, by: (x: T) => string): T[] =>

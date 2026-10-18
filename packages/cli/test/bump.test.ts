@@ -705,9 +705,78 @@ describe('PERMISSIONS.md', () => {
       expect(Object.keys(snap.roles).length, file).toBe(Number(header[2]));
       expect(snap.unread, file).toEqual({});
       expect(classifyPermissions(text, text).bump, file).toBe('none');
+      // #2384: the Operations section is read, one entry per row the emitter wrote.
+      const opsSection = /^## \d+\. Operations\b[\s\S]*?(?=^## )/m.exec(text)?.[0] ?? '';
+      // An explicitly empty surface has no operations to list, and no section saying so.
+      if (header[1] === '0') expect(snap.operations, file).toBeUndefined();
+      else expect(snap.operations, file).toBeDefined();
+      expect(Object.keys(snap.operations ?? {}).length, file).toBe((opsSection.match(/^\| `/gm) ?? []).length);
       counted += 1;
     }
     expect(counted).toBeGreaterThan(3);
+  });
+});
+
+describe('PERMISSIONS.md — which key each operation checks (#2384)', () => {
+  const OPS = `
+## 6. Operations — which key each checks
+
+| Operation | Key | Checked on | Declared by |
+| --- | --- | --- | --- |
+| \`todo/create-list\` | \`list:create\` | the scope | \`@acme/vertical\` |
+| \`todo/rename-list\` | \`list:manage\` | one \`list\`, id from \`listId\` | \`@acme/vertical\` |
+| \`todo/raw\` | — checked in code, not declared — | — | \`@acme/vertical\` |
+`;
+  const WITH = PERMS + OPS;
+  const ops = (edit: (t: string) => string): Classification => {
+    const head = edit(WITH);
+    expect(head, 'the edit must change the fixture').not.toBe(WITH);
+    return classifyPermissions(WITH, head);
+  };
+
+  it('an unchanged section ranks none', () => {
+    expect(classifyPermissions(WITH, WITH).bump).toBe('none');
+    expect(parsePermissions(WITH).unread).toEqual({});
+  });
+
+  it('an operation moved to a different key is a flagged permission change at minor — not an unread section at major', () => {
+    const r = ops((t) => t.replace('| `todo/rename-list` | `list:manage` |', '| `todo/rename-list` | `list:read` |'));
+    expect(r.bump).toBe('minor');
+    expect(r.changes).toEqual([
+      expect.objectContaining({ path: 'operation todo/rename-list', flagged: true, detail: 'now checks list:read (was list:manage)' }),
+    ]);
+  });
+
+  it('the same key checked on something else is flagged too: narrowed to the scope is a widening', () => {
+    const r = ops((t) => t.replace('one `list`, id from `listId`', 'the scope'));
+    expect(r.changes).toEqual([expect.objectContaining({ path: 'operation todo/rename-list', flagged: true, level: 'minor' })]);
+  });
+
+  it('an operation removed, or added, is flagged minor', () => {
+    const removed = ops((t) => t.replace(/\| `todo\/create-list`.*\n/, ''));
+    expect(removed.changes).toEqual([
+      expect.objectContaining({ path: 'operation todo/create-list', flagged: true, level: 'minor', detail: 'removed (checked: list:create)' }),
+    ]);
+    const added = ops((t) => `${t}| \`todo/share\` | \`list:manage\` | the scope | \`@acme/vertical\` |\n`);
+    expect(added.changes).toEqual([expect.objectContaining({ path: 'operation todo/share', flagged: true, level: 'minor' })]);
+  });
+
+  it('an operation with no declared key is read as having none — and gaining a declaration is flagged', () => {
+    expect(parsePermissions(WITH).operations?.['todo/raw']?.keys).toEqual([]);
+    const declared = ops((t) => t.replace('| `todo/raw` | — checked in code, not declared — | — |', '| `todo/raw` | `list:read` | the scope |'));
+    expect(declared.changes).toEqual([
+      expect.objectContaining({ path: 'operation todo/raw', flagged: true, detail: 'now checks list:read (was no declared key)' }),
+    ]);
+  });
+
+  it('the section first appearing is patch, unflagged: the base had nothing to compare; its removal is major', () => {
+    const introduced = classifyPermissions(PERMS, WITH);
+    expect(introduced.bump).toBe('patch');
+    expect(introduced.changes).toEqual([expect.objectContaining({ path: 'operations', level: 'patch' })]);
+    expect(introduced.changes.some((c) => c.flagged)).toBe(false);
+    const dropped = classifyPermissions(WITH, PERMS);
+    expect(dropped.bump).toBe('major');
+    expect(dropped.changes[0]?.flagged).toBe(true);
   });
 });
 

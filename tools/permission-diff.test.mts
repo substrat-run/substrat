@@ -105,3 +105,84 @@ test('widening a link policy is drift: --check refuses until the artifact is reg
     assert.equal(rendered(dir), before);
   }
 });
+
+// ─── #2384: the Operations section ───────────────────────────────────────────────────────────
+
+/** A fixture whose one module registers `handlers` with the binder's `checks` (or none at all). */
+const writeOpsFixture = (dir: string, operations: unknown): string => {
+  mkdirSync(join(dir, 'src'), { recursive: true });
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify({ name: 'fixture', type: 'module', substrat: { permissions: 'src/p.mjs' } }),
+  );
+  writeFileSync(
+    join(dir, 'src/p.mjs'),
+    `export const permissions = {
+  entityGrants: [],
+  roles: [{ key: 'owner', permissions: ['doc:read', 'doc:write'], source: 'vertical' }],
+  modules: [{
+    manifest: {
+      id: '@fixture/docs',
+      permissions: [{ key: 'doc:read', description: 'read a document' }, { key: 'doc:write', description: 'write a document' }],
+    },
+    ${operations === undefined ? '' : `operations: ${JSON.stringify(operations)},`}
+  }],
+};`,
+  );
+  return dir;
+};
+const fresh = () => mkdtempSync(join(tmpdir(), 'permission-diff-ops-'));
+const handlers = (...names: string[]) => Object.fromEntries(names.map((n) => [n, {}]));
+
+test('each declared check gets its row: the key and what it narrows to, in the receipt’s grammar', () => {
+  const dir = writeOpsFixture(fresh(), {
+    handlers: handlers('docs/create', 'docs/edit', 'docs/line', 'docs/timeline', 'docs/attach', 'docs/mine', 'docs/accept', 'docs/raw'),
+    checks: {
+      'docs/create': { permission: 'doc:write' },
+      'docs/edit': { permission: { key: 'doc:write', entity: 'doc', idFrom: 'docId' } },
+      'docs/line': { permission: { key: 'doc:write', entity: 'doc', resolved: 'the doc a line sits on' } },
+      'docs/timeline': { permission: { key: 'doc:read', entityFrom: 'type', idFrom: 'id' } },
+      'docs/attach': { permission: { key: 'doc:write', refFrom: 'subject' } },
+      'docs/mine': { narrows: { reason: 'each doc the caller reads', checks: ['doc:read'] } },
+      'docs/accept': { narrows: { reason: 'the invite | is the authority', checks: [], unchecked: true } },
+    },
+  });
+  const r = run(dir);
+  assert.equal(r.status, 0, r.stderr);
+  const md = rendered(dir);
+  assert.match(md, /## \d+\. Operations — which key each checks/);
+  const row = (op: string, key: string, on: string) =>
+    assert.ok(md.includes(`| \`${op}\` | ${key} | ${on} | \`@fixture/docs\` |`), `${op} row: ${md}`);
+  row('docs/create', '`doc:write`', 'the scope');
+  row('docs/edit', '`doc:write`', 'one `doc`, id from `docId`');
+  row('docs/line', '`doc:write`', 'one `doc`, resolved in the handler');
+  row('docs/timeline', '`doc:read`', 'one entity, type from `type`, id from `id`');
+  row('docs/attach', '`doc:write`', 'one entity, whole ref from `subject`');
+  row('docs/mine', '`doc:read`', 'each row, by a proof walk');
+  row('docs/accept', '— none —', 'nothing: the invite \\| is the authority');
+  // A handler with no declaration is said to be exactly that — never given a guessed key.
+  row('docs/raw', '— checked in code, not declared —', '—');
+});
+
+test('its twins: an older binder is "not readable", and no operations is said in words', () => {
+  const old = writeOpsFixture(fresh(), { handlers: handlers('docs/create') });
+  assert.equal(run(old).status, 0);
+  assert.match(rendered(old), /\| `docs\/create` \| — not readable: bound by a kernel that does not carry declarations — \| — \|/);
+  assert.doesNotMatch(rendered(old), /not declared —/);
+
+  const none = writeOpsFixture(fresh(), undefined);
+  assert.equal(run(none).status, 0);
+  assert.match(rendered(none), /## \d+\. Operations — which key each checks\n[\s\S]*_No module here registers an operation\._/);
+});
+
+test('moving an operation to another key is drift: --check refuses until the artifact shows it', () => {
+  const dir = writeOpsFixture(fresh(), { handlers: handlers('docs/edit'), checks: { 'docs/edit': { permission: 'doc:write' } } });
+  assert.equal(run(dir).status, 0);
+  assert.equal(run(dir, '--check').status, 0, 'a fresh artifact matches');
+  writeOpsFixture(dir, { handlers: handlers('docs/edit'), checks: { 'docs/edit': { permission: 'doc:read' } } });
+  const check = run(dir, '--check');
+  assert.equal(check.status, 1);
+  assert.match(check.stderr, /out of date/);
+  assert.equal(run(dir).status, 0);
+  assert.match(rendered(dir), /\| `docs\/edit` \| `doc:read` \| the scope \|/);
+});
