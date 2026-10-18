@@ -78,15 +78,25 @@ function canonicalPnpm(tokens) {
   return tokens[0] === 'pnpm' && tokens[1] === 'run' ? ['pnpm', ...tokens.slice(2)] : tokens;
 }
 
-/** A condition that holds on some events or refs only: such a step is not run on every PR. */
-const NARROWS = /\bgithub\.(?:event_name|ref|ref_name|head_ref|base_ref)\b/;
+/**
+ * The only conditions that still run a step on every PR: `always()`, `success()`, and one that
+ * reads nothing but an earlier step's outputs (the scope count a PR's own diff decides). Anything
+ * else — the event, the ref, a label, `false` — runs it only sometimes, so it is no PR gate.
+ */
+function everyPr(condition) {
+  if (condition === null || condition === undefined) return true;
+  const expr = condition.trim().replace(/^\$\{\{\s*([\s\S]*?)\s*\}\}$/, '$1').trim();
+  if (/^(?:always|success)\(\)$/.test(expr)) return true;
+  const rest = expr.replace(/\bsteps\.[\w-]+\.outputs\.[\w-]+\b/g, '').replace(/'[^']*'|\d+/g, '');
+  return /\bsteps\./.test(expr) && /^[\s!=<>&|()]*$/.test(rest);
+}
 
 /**
  * The commands CI runs on a pull request, one token list per command (a multi-line `run: |` is
  * several). Read line by line, not as full YAML: a step's `run:` (inline, or a `|`, `|-`, `>` or
- * `>-` block), its `if:` and its `working-directory:`, and a job's `if:`. A step or job whose
- * condition names the event or the ref runs only sometimes, and a step run in another directory
- * runs another script, so neither counts; any other condition (a scope count, `always()`) does.
+ * `>-` block), its `if:`, `continue-on-error:` and `working-directory:`, and a job's `if:`. A step
+ * that may fail without failing the PR, runs under a condition other than `everyPr`'s, or runs in
+ * another directory (another script) does not count.
  */
 export function ciCommands(yaml) {
   const out = [];
@@ -94,7 +104,7 @@ export function ciCommands(yaml) {
   let step = null;
   let block = null;
   const flush = () => {
-    if (step && !step.wd && !NARROWS.test(step.if ?? '') && !NARROWS.test(jobIf ?? '')) out.push(...step.runs);
+    if (step && !step.wd && !step.mayFail && everyPr(step.if) && everyPr(jobIf)) out.push(...step.runs);
     step = null;
   };
   const key = (k, value, keyIndent) => {
@@ -102,6 +112,7 @@ export function ciCommands(yaml) {
       if (/^[|>][-+]?$/.test(value)) block = keyIndent;
       else step.runs.push(value.trim());
     } else if (k === 'if') step.if = value;
+    else if (k === 'continue-on-error') step.mayFail = value.trim() !== 'false';
     else if (k === 'working-directory') step.wd = value;
   };
   for (const line of yaml.split('\n')) {

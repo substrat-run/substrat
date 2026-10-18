@@ -132,3 +132,27 @@ jobs:
 `);
   assert.deepEqual(runs.map((c) => c.join(' ')), ['pnpm lint:scoped', 'pnpm lint:every']);
 });
+
+test('a step that cannot fail the PR, or runs only under a condition CI cannot promise, is not a gate', () => {
+  const runs = ciCommands(`
+jobs:
+  checks:
+    steps:
+      - name: may fail
+        continue-on-error: true
+        run: pnpm lint:mayfail
+      - if: contains(github.event.pull_request.labels.*.name, 'heavy')
+        run: pnpm lint:labelled
+      - if: false
+        run: pnpm lint:never
+      - if: \${{ always() }}
+        run: pnpm lint:always
+      - if: success()
+        run: pnpm lint:success
+      - if: steps.scope.outputs.count != '0'
+        run: pnpm lint:scoped
+      - continue-on-error: false
+        run: pnpm lint:strict
+`);
+  assert.deepEqual(runs.map((c) => c.join(' ')), ['pnpm lint:always', 'pnpm lint:success', 'pnpm lint:scoped', 'pnpm lint:strict']);
+});
