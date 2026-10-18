@@ -79,20 +79,42 @@ the canary has not moved a vertical.
 
 ## 4. Canary, on no tenant
 
-Rollout has no flag for one vertical. It moves every vertical that declares `graph`.
-None does today, so this rollout uploads the canary script
+Rollout has no flag for one vertical. It moves every vertical that declares `graph`:
+the pending list is every vertical the control plane has a declaration of the driver for,
+which is every vertical that has pushed a version declaring it
+(`storeDriverRolloutPendingIn` in `packages/kernel/src/store-driver-releases.ts`).
+
+**Precondition: no vertical declares `graph`.** Check both halves before running it:
+
+- In this checkout, no `package.json` carries `"driver": "graph"` under
+  `runtimeNeeds.scopeStores`. The ticket0 commit on this branch adds one, so on this
+  branch the check fails until that commit is dropped.
+- On the test control plane, no vertical has pushed a version that declares it. The
+  CLI has no command that lists declarations, so this half cannot be read from here; ask
+  whoever operates that control plane.
+
+If either half fails, stop. The rollout then moves those verticals to the pinned release,
+so it is no longer a canary on no tenant, and the output below does not apply.
+
+With the precondition true, the rollout uploads the canary script
 `substrat-store-graph--canary` and moves zero verticals:
 
 ```text
 substrat store-driver rollout --driver graph --sha256 1fb0bb0be73c05239b5e769280461c3049ef295f2f92cab90cba9c15ba5ad122
 ```
 
-The answer is `rollout to 1fb0bb0be73c05239b5e769280461c3049ef295f2f92cab90cba9c15ba5ad122: good`
-and `0 vertical(s) this run`. The canary, on a fresh object that holds no tenant data,
-calls `substrat.size`, `substrat.export` (no rows), `substrat.import` of that export,
-`substrat.export` again (the same tables), `substrat.erase` of a subject the object
-never held (`erased` 0), `substrat.wipe`, and `substrat.export` once more (still no
-rows). A failed canary ends the rollout `failed` and moves nothing.
+The expected answer is `✓ graph rollout to 1fb0bb0be73c05239b5e769280461c3049ef295f2f92cab90cba9c15ba5ad122: good (0 vertical(s) this run)`,
+with no `verticals remain` line. That text is **inferred, not observed**: it is the format
+string in `cmdStoreDriver` (`packages/cli/src/cli.ts`) applied to what
+`runStoreDriverRollout` returns for an empty pending list (`moved: []`,
+`complete: true`, state `good`), and no test drives a rollout over an empty fleet. What a
+test does pin is the canary's sequence, in
+`packages/control-plane-api/test/store-releases.test.ts` ("calls all five, in order"). The
+canary, on a fresh object that holds no tenant data, calls `substrat.size`,
+`substrat.export` (no rows), `substrat.import` of that export, `substrat.export` again (the
+same tables), `substrat.erase` of a subject the object never held (`erased` 0),
+`substrat.wipe`, and `substrat.export` once more (still no rows). A failed canary ends the
+rollout `failed` and moves nothing.
 
 That is one script for the platform, shared by no tenant yet. The code uploads one
 script per (driver, vertical), `substrat-store-graph-<vertical>`, and every tenant of
