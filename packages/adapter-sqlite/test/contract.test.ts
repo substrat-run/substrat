@@ -45,6 +45,7 @@ import {
   concurrencyContractSuite,
   emittedReportContractSuite,
   moduleLogContractSuite,
+  checkTallyContractSuite,
   asyncLogContractSuite,
   idempotencyContractSuite,
   listContractSuite,
@@ -1047,6 +1048,21 @@ asyncLogContractSuite('adapter-sqlite', async () => {
 // option a deployment leaves at its console default.
 moduleLogContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-log-'));
+  const lines: ModuleLogLine[] = [];
+  const host = new SqliteScopeHost({ dir, logSink: (line) => lines.push(line) });
+  return {
+    host,
+    logs: () => lines,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #2387: a declared-permission operation that asks nothing, recorded through the log sink.
+checkTallyContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-tally-'));
   const lines: ModuleLogLine[] = [];
   const host = new SqliteScopeHost({ dir, logSink: (line) => lines.push(line) });
   return {
