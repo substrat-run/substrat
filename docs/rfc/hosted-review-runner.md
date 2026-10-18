@@ -461,10 +461,12 @@ subprocessor (D-54).
   gate container, and the reader half's provider route.
 - *Depends on:* the regional placements that exist (§9).
 - *Recommendation:* **B.** Jurisdiction is recorded per scope, and a review has no scope, so it
-  takes the strictest jurisdiction among the scopes the vertical serves, preview scopes included.
-  It is evaluated **at upload** for the archive's store (Q3b) and again **at review start** for the
-  gate container and the provider route, and the record stores the jurisdiction it ran under. If
-  that is `eu` or `us`, each part runs only where a placement in that region exists. A reader half
+  takes every jurisdiction among the scopes the vertical serves, preview scopes included. It is
+  evaluated **at upload** for the archive's store (Q3b) and again **at review start** for the
+  gate container and the provider route, and the record stores the jurisdictions it ran under. A
+  part runs only where a placement satisfies every one of those jurisdictions at once; a vertical
+  serving both `eu` and `us` scopes needs a placement that satisfies both, and where none exists
+  that part is skipped and recorded. A reader half
   without one is `skipped: no provider in jurisdiction`, never a silent `global` route; a store or
   gate container without one means the review does not run, recorded as
   `skipped: no placement in jurisdiction`. A scope added later does not move a completed record;
@@ -792,7 +794,7 @@ Where the reviewed change comes from is decided: §2, D5.
   vertical's tree is not established.
 - **Provider routes per jurisdiction** for the model Q1a would pick: not recorded here, and the
   assistant RFC lists the same gap.
-- **Which jurisdiction a review takes** (Q3d). The strictest of the vertical's scopes is this
+- **Which jurisdiction a review takes** (Q3d). Every jurisdiction among the vertical's scopes is this
   RFC's proposal; nothing in the repository decides jurisdiction for code rather than data.
 - **Whether `ModelAttribution` can take a review without a scope** (Q1b) without breaking the
   five-key limit's reason: unexamined.
