@@ -137,9 +137,10 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   `tools/vitest/like-pattern-limit.cjs` overrides `like()`/`glob()` on each connection —
   `--require`d by the root `pnpm test` and by the CI test step through `NODE_OPTIONS`, which
   is why a bare `pnpm --filter … test` does **not** have it: run the suite as
-  `NODE_OPTIONS="--require=$PWD/tools/vitest/like-pattern-limit.cjs" pnpm --filter … test` to
-  see what CI sees. A test whose oracle is a longer pattern lifts it on ONE connection with
-  `liftLimit(db)` and says why. `pnpm lint:like-pattern` is the source half: a `LIKE`/`GLOB`
+  `NODE_OPTIONS="$(node tools/vitest/node-options.mjs)" pnpm --filter … test` to see what CI
+  sees: it prints every preload in `tools/vitest`, so the command cannot fall one behind. A
+  test whose oracle is a longer pattern lifts it on ONE connection with `liftLimit(db)` and
+  says why. `pnpm lint:like-pattern` is the source half: a `LIKE`/`GLOB`
   literal over 50 bytes, or a `const` of three or more `[0-9]`-style classes over it, is
   refused — the run-time limit is what catches a pattern built from input.
 - **The same preload chain judges ALL node adapter SQL against the DO's other limits** (#1786):

@@ -7,20 +7,20 @@
  * test:affected`. A preload missing from one of them does not fail anything: the suites run
  * without it and pass, which is the gate turned off with nothing saying so. So this reads the
  * three places, line by line (a second job's NODE_OPTIONS is judged on its own, never covered by
- * the first's), and refuses one that leaves a `*.cjs` here out.
+ * the first's), and refuses one that leaves a `*.cjs` here out. It holds `node-options.mjs` too,
+ * the command CLAUDE.md quotes for running one package as CI does.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readdirSync } from 'node:fs';
+import { nodeOptions, preloadFiles } from './node-options.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..', '..');
 
-/** Every preload: each CommonJS file in this directory. */
-const preloads = readdirSync(here).filter((f) => f.endsWith('.cjs')).sort();
+const preloads = preloadFiles();
 
 /** The lines of a file that assemble NODE_OPTIONS, each judged ON ITS OWN — one per job or call. */
 export function nodeOptionLines(text, isLine) {
@@ -48,6 +48,7 @@ const sites = {
   'tools/test-affected.mjs': nodeOptionLines(readFileSync(join(root, 'tools/test-affected.mjs'), 'utf8'), (l) =>
     l.includes('NODE_OPTIONS:'),
   ),
+  'tools/vitest/node-options.mjs (the command CLAUDE.md quotes)': [nodeOptions()],
 };
 
 test('the directory holds the preloads this gate is about', () => {
@@ -62,6 +63,16 @@ for (const [site, lines] of Object.entries(sites)) {
     assert.deepEqual(incompleteLines(lines, preloads), [], `${site} leaves preloads out`);
   });
 }
+
+test('CLAUDE.md quotes the one source, not a hand-written list', () => {
+  const doc = readFileSync(join(root, 'CLAUDE.md'), 'utf8');
+  assert.ok(doc.includes('NODE_OPTIONS="$(node tools/vitest/node-options.mjs)"'));
+  assert.deepEqual(
+    nodeOptionLines(doc, (l) => /NODE_OPTIONS="--require/.test(l)),
+    [],
+    'CLAUDE.md spells a preload list out by hand',
+  );
+});
 
 test('a line that leaves one out is named — and one that requires all is not', () => {
   const all = '--require=$PWD/tools/vitest/a.cjs --require=$PWD/tools/vitest/b.cjs';
