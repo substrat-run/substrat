@@ -45,6 +45,7 @@
 import type { Context, Env, Hono } from 'hono';
 import { LIVE_MODE_HEADER, type LiveRefusal } from '@substrat-run/contracts';
 import { isUpgradeRequest, type LiveReadSurface } from '@substrat-run/kernel';
+import { refuse, refuseStatus } from './errors.js';
 
 /**
  * Is this request asking to be upgraded to a WebSocket? Defined in the kernel beside the
@@ -81,12 +82,12 @@ export interface LiveRouteOptions<E extends Env = any> {
  * somebody else's page — answers in the same words.
  */
 export function refuseNotAnUpgrade(c: Context, error = 'live reads are a WebSocket surface'): Response {
-  return c.json({ error }, 426, { [LIVE_MODE_HEADER]: 'not-an-upgrade' satisfies LiveRefusal });
+  return refuseStatus(c, 426, error, { [LIVE_MODE_HEADER]: 'not-an-upgrade' satisfies LiveRefusal });
 }
 
 /** See `refuseNotAnUpgrade`. */
 export function refuseLivePoll(c: Context, error = 'live reads are not available on this host; poll instead'): Response {
-  return c.json({ error }, 501, { [LIVE_MODE_HEADER]: 'poll' satisfies LiveRefusal });
+  return refuseStatus(c, 501, error, { [LIVE_MODE_HEADER]: 'poll' satisfies LiveRefusal });
 }
 
 /**
@@ -114,12 +115,12 @@ export function mountLiveReads<E extends Env>(
   app.get(options.path ?? LIVE_PATH, async (c) => {
     if (!isUpgradeRequest(c.req.raw)) return refuseNotAnUpgrade(c);
     if (!sameOrigin(c.req.raw)) {
-      return c.json({ error: 'live reads are only offered to this app’s own pages' }, 403);
+      return refuse(c, 'forbidden', 'live reads are only offered to this app’s own pages');
     }
     const live = options.live(c);
     if (!live) return refuseLivePoll(c);
     const who = await options.subscriber(c);
-    if (!who) return c.json({ error: 'unauthorized' }, 401);
+    if (!who) return refuse(c, 'unauthenticated', 'unauthorized');
     return live.subscribe({ ...who, request: c.req.raw });
   });
 }

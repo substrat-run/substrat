@@ -331,8 +331,15 @@ already answer their expected refusal as a value.
      reads. It is a scanner rather than an AST walk (the workspace's `typescript` is the
      native 7.x compiler, with no JS API), and it skips strings, templates, comments and regex
      literals; an unterminated one fails the test with its line rather than hanging.
-   - **Still open, surface by surface:** `vertical-host`'s `/internal` 501s and its live
-     reads; the control-plane worker's own routes (`apps/control-plane`), CLI auth, the
+   - **`vertical-host` — built.** `/internal` and the live-read route refuse through
+     `refuse(c, code, detail)` (`validation_failed`, `unauthenticated`, `forbidden`) or
+     `refuseStatus(c, status, detail, headers?)` (`about:blank`: the 501 "this deployment
+     cannot …" family and the live 426). Statuses, the `error` sentence and the
+     `x-substrat-live` header values are unchanged; the media type is served with `c.body`.
+     `test/refusals-problem.test.ts` reaches every one of those routes and holds
+     `index.ts` and `live.ts` to writing no bare `.json({ error` again.
+   - **Still open, surface by surface:** `adapter-cloudflare`'s live-read refusals (`host.ts`
+     and `scope-do.ts`), which still answer `text/plain`; the control-plane worker's own routes (`apps/control-plane`), CLI auth, the
      builder and the dashboard's 401s, `dev-issuer`; a `requestId` on the control plane's
      problems (#2192). A repo-wide source gate waits until a second surface is converted.
    - **Then, and only then:** the `error` duplicate can go, since every client reads

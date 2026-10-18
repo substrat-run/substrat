@@ -341,7 +341,8 @@ describe('the Domains routes take their team from the path (#2170)', () => {
   it('the declared surface lists exactly the seven domain routes', () => {
     expect(
       Object.entries(dashboardRoutes)
-        .filter(([name]) => /domain|hostname/.test(name))
+        // A preview's custom domain is the Deployments area's, not this one's.
+        .filter(([name]) => /domain|hostname/.test(name) && !name.includes('preview'))
         .map(([name, r]) => `${r.http.method} ${r.http.path} ${name}`)
         .sort(),
     ).toEqual([
