@@ -39,10 +39,9 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { lex } from './bare-regexp.mjs';
 import { blankComments, callsOf, covers, functionChains, inScope as shippedSource, lineOf, stringTokenAt } from './attachment-writers.mjs';
-import { repoRoot } from './repo-path.mjs';
+import { isMainModule, repoRoot } from './repo-path.mjs';
 
 /** Shipped source of a package: under `src/`, and not the seed or a migrations module (a backfill). */
 export function inScope(path) {
@@ -221,4 +220,4 @@ function main() {
   console.log(`lifecycle-writes: ${declared} declared lifecycle(s); every state write asks the lifecycle first.`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main();
+if (isMainModule(import.meta.url)) main();

@@ -36,8 +36,8 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { migrationSteps } from '../packages/kernel/dist/index.js';
+import { isMainModule } from './repo-path.mjs';
 import { baseFromArgv, registrations, type Registration } from './package-registrations.mts';
 
 const LEDGER = 'MIGRATIONS.md';
@@ -230,6 +230,6 @@ async function main(): Promise<void> {
   console.log(`migration-ledger: ${emitted.size} ledger(s), ${rows} authored migration(s)${check ? ', in step with the code' : ' written'}.`);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   await main();
 }

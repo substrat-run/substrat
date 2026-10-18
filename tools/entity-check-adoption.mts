@@ -25,9 +25,9 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { blankComments } from './attachment-writers.mjs';
 import { declaredSurfaceOf } from '../packages/contracts/dist/index.js';
+import { isMainModule } from './repo-path.mjs';
 import { registrations, testFiles, type Registration } from './package-registrations.mts';
 
 const SUITE_CALL = /\bentityCheckConformanceSuite\s*\(/g;
@@ -90,6 +90,6 @@ async function main(): Promise<void> {
   );
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   await main();
 }

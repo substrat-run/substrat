@@ -22,7 +22,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isMainModule } from './repo-path.mjs';
 import { baseFromArgv, registrations, testFiles } from './package-registrations.mts';
 
 /**
@@ -73,6 +73,6 @@ async function main(): Promise<void> {
   );
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   await main();
 }

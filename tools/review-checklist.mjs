@@ -32,8 +32,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { repoRoot } from './repo-path.mjs';
+import { isMainModule, repoRoot } from './repo-path.mjs';
 import { GATES } from './scaffold-gates.mjs';
 
 const CHECKLIST = 'plugin/substrat/review/checklist.md';
@@ -185,4 +184,4 @@ function main() {
   console.log(`review-checklist: every item names gates that exist and run.`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main();
+if (isMainModule(import.meta.url)) main();

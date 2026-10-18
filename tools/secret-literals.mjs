@@ -35,9 +35,8 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { lineOf } from './attachment-writers.mjs';
-import { repoRoot } from './repo-path.mjs';
+import { isMainModule, repoRoot } from './repo-path.mjs';
 
 /** The shapes, each with the name that is printed instead of the value. */
 export const SHAPES = [
@@ -157,4 +156,4 @@ function main() {
   console.log(`secret-literals: ${files.length} file(s) read; no credential-shaped literal outside ACCEPTED.`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main();
+if (isMainModule(import.meta.url)) main();
