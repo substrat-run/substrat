@@ -157,7 +157,7 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
 
   it('with no store driver registered, no store is asked: the copies run as before stores', async () => {
     const { caller, asked } = platform();
-    await everyCopy(appWith(caller));
+    await everyCopy(appWith(caller, []));
     expect(asked).toEqual([]);
   });
 

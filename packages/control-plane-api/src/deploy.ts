@@ -207,7 +207,7 @@ export interface ScopeStoreUploadPlan {
  * Which store scripts a vertical's stores need (#2210). One script per (driver, vertical), shared
  * by every binding of that driver, named by {@link scopeStoreScriptName}, which carries no release:
  * a new release of the driver is uploaded into the same name. A driver that is not in `drivers` is
- * refused. The default registry is empty. The upload itself is `createScopeStoreEnsurer`.
+ * refused. The default registry is {@link STORE_DRIVERS}. The upload itself is `createScopeStoreEnsurer`.
  */
 export function scopeStoreUploadPlan(input: {
   readonly vertical: string;

@@ -128,7 +128,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
       const { caller, asked } = platformStores(() => {
         throw new Error('should not be asked');
       });
-      const res = await shred(bySlug(caller), s, subject);
+      const res = await shred(bySlug(caller, []), s, subject);
       expect(res.status).toBe(200);
       expect(((await res.json()) as SubjectShredReceipt).storeErasures).toEqual([]);
       expect(asked).toEqual([]);
@@ -142,6 +142,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         authenticate: UNSAFE_devPlatformActorAuth(),
         resolveVerticalRef: async (r) => (r === ref ? (redactOnly as unknown as VerticalClient) : undefined),
         platformScopeStores: unreachablePlatformScopeStores(),
+        storeDrivers: [],
       });
       expect((await shred(api, s, subject)).status).toBe(200);
       expect(await keyKept()).toBe(false);

@@ -1,5 +1,5 @@
 ---
-description: "A platform-run object per scope. The vertical declares a binding and a driver and calls it through getScopeStore. No driver is registered yet, so nothing is live for a vertical today."
+description: "A platform-run object per scope. The vertical declares a binding and a driver and calls it through getScopeStore. The graph driver is registered; its release is not uploaded, so nothing is live for a vertical today."
 ---
 
 # Scope stores
@@ -10,7 +10,7 @@ This sits below the [per-tenant stores](./tenancy.md). A tenant store is one dat
 
 ## What you can use today
 
-Nothing here is live for a vertical yet. No store driver is registered, and a push that declares a scope store is refused. Everything below is what the platform does once a driver is registered and its store script is deployed.
+Nothing here is live for a vertical yet. The graph driver is registered, and a push that declares it is no longer refused for an unregistered driver. The release bytes are not uploaded, and no control plane containing the pin is deployed, so no vertical is served by it. Everything below is what the platform does once that script is deployed.
 
 Today a vertical author can:
 

@@ -1,75 +1,86 @@
 ---
 status: proposed
 layer: kernel
-description: Graph class and catalog proposed for review; registration awaits a real D-63 release pin and isolation requirements.
+description: The graph driver is registered with its first pinned release. Whether D-63's isolation sentence allows that is open for the reviewer.
 ---
 
-# Graph store registration — pending D-63 review
+# Graph store registration
 
 PR #2301 originally registered graph under the unpinned-release proposal D-64.
 The later ratification of [D-63](../decisions/D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md)
-in #2306 explicitly rejected that proposal. This branch follows D-63 and retains
-main's release upload, canary, rollout, rollback and schema checks unchanged.
+in #2306 explicitly rejected that proposal. The registration that landed follows D-63:
+one pinned release in `STORE_DRIVERS`, class `Store`, every reserved operation, and
+the catalog below. A hosted push that declares `driver: 'graph'` is no longer refused
+for an unregistered driver. Running the release still needs its bytes uploaded and a
+control-plane deploy that contains the pin. Neither is done here.
 
-Graph is **not registered**. `STORE_DRIVERS` stays empty and a hosted push declaring
-`driver: 'graph'` is refused. This document preserves the proposed registration for
-review; it does not authorize running a release.
+D-63 also says no driver written outside this repo is registered until a driver cannot
+affect data outside the object it serves. That sentence and this registration are in
+conflict. The registration is here for review; it does not claim the isolation exists.
 
-## Proposed identity and catalog
+## Identity and catalog
 
-The proposed driver id is `graph`, implemented in Python by class `Store` from the
-ontomate workspace. The class and catalog still need review against an actual
-source commit. Administration operations are excluded from the vertical catalog.
+The driver id is `graph`, implemented in Python by class `Store`. The class and
+catalog are what the registration pins. Administration operations are excluded from
+the vertical catalog.
 The platform's `RESERVED_STORE_OPERATIONS`, including `substrat.erase`, are required
 separately.
 
 ```text
-getSession
-getScope
-putScope
-getContract
-getSchemaOperations
-getSchemaResourceByName
-getSchemaResource
-getSchemaNeighbourhood
+createHistoryTag
+getDataInstance
+getDataOperations
+getHistoryChanges
+getHistoryRevisions
+getHistoryTags
+getPackageInstallationList
+getPackagePartFile
+getResourceHistory
+getSchemaChanges
 getSchemaDeclarations
+getSchemaNeighbourhood
+getSchemaOperations
+getSchemaResource
+getSchemaResourceByName
 getSchemaSearch
 getSchemaStatistics
-postSchemaBatch
-getSchemaChanges
-postSchemaRevert
-postSchemaCommit
-getDataOperations
-postDataBatch
-getDataInstance
+getScope
+getSession
+graphqlData
+graphqlSchema
+graphqlScope
 listDataInstances
-searchDataInstances
-getHistoryRevisions
-getHistoryChanges
-getHistoryTags
-createHistoryTag
-getResourceHistory
+postDataBatch
 postFactHistory
+postPackageExport
+postPackageExportPlan
+postPackageInstallation
+postSchemaBatch
+postSchemaCommit
+postSchemaRevert
+putPackageUpload
+putScope
 resolveHistoryRevision
+searchDataInstances
 ```
 
-## Before enabling graph
+## Before the release runs
 
-- Review a real release bundle and its source commit. Record its computed sha256,
-  full source commit and nonnegative schema version in the registration's
-  `releases` list; do not substitute placeholder pins or an empty list.
-- Review the exact class and operation catalog, the envelope, every reserved
-  operation, and the absence of per-object state at module level. D-63's
-  ratified text defers registering an external driver until stronger isolation
-  exists; confirm that requirement is satisfied before enabling this one.
-- Check that the release fits the current Python module rules: one `driver_`
-  package, plus `python_modules/<path>` for its dependencies. It may not ship
-  `workers`, `js`, `pyodide`, the workers runtime SDK, or a vendored path that
-  takes the driver's or the entry's name. The original proposal does not
-  establish compatibility with these rules.
-- Exercise the real dispatch upload and reserved-operation canary, and verify
-  schema compatibility for rollout and rollback. Local entry tests alone do
-  not establish a production dispatch upload.
+- The pin is the registration in `packages/contracts/src/deploy.ts`. Review the
+  packed release against it. The schema is 0.
+- Review the class and the catalog, the envelope, and every reserved operation.
+  D-63 defers registering a driver written outside this repo until a driver
+  cannot affect data outside the object it serves. That requirement is not
+  claimed to be met.
+- The release is one `driver_` package plus `python_modules/<path>` for its
+  dependencies. It does not ship `workers`, `js`, `pyodide` or the workers
+  runtime SDK. Three files the current rule still allows are in the pin:
+  `python_modules/asgi.py`, `python_modules/_cloudflare_compat_flags.pyi` and
+  `python_modules/_pyodide_entrypoint_helper.pyi`. Whether those should be
+  refused is open.
+- A dispatch upload, the reserved-operation canary, and a rollout have not
+  been run. Local packing does not establish that a production upload of this
+  size succeeds.
 
 Use the existing `substrat store-driver upload`, `rollout`, `rollback` and `status`
 flow, with a human staff sign-in for writes. Uploading bytes can precede the pin;

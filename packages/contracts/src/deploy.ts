@@ -369,7 +369,7 @@ export type StoreDriverRelease = z.infer<typeof storeDriverRelease>;
  * A store driver, registered in this repo and pinned (D-63): every release the platform may run,
  * the class it runs, the catalog a vertical may call, and every reserved operation. A release is
  * pinned by a reviewed change to this list, and a pin is never removed, a superseded release
- * included. The list itself is {@link STORE_DRIVERS}. Empty until a driver is reviewed in.
+ * included. The list itself is {@link STORE_DRIVERS}.
  */
 export const storeDriverRegistration = z.object({
   // Held to the driver-id grammar first (L20), so a second driver cannot be added outside it.
@@ -390,8 +390,64 @@ export const storeDriverRegistration = z.object({
 });
 export type StoreDriverRegistration = z.infer<typeof storeDriverRegistration>;
 
-/** Registered store drivers. None, until a reviewed registration lands (#2210). */
-export const STORE_DRIVERS: readonly StoreDriverRegistration[] = [];
+/**
+ * Registered store drivers (D-63). The graph driver's first release is pinned here.
+ * `schema` is 0, the lowest nonnegative value the pin allows: this release has not
+ * migrated stored data, and a later release that changes the stored shape raises it.
+ * The sha256 is {@link storeDriverReleaseDigest} of the packed release. The source
+ * commit is the commit that release was built from.
+ */
+export const STORE_DRIVERS: readonly StoreDriverRegistration[] = [
+  {
+    driver: 'graph',
+    className: 'Store',
+    platformOperations: [...RESERVED_STORE_OPERATIONS],
+    operations: [
+      'createHistoryTag',
+      'getDataInstance',
+      'getDataOperations',
+      'getHistoryChanges',
+      'getHistoryRevisions',
+      'getHistoryTags',
+      'getPackageInstallationList',
+      'getPackagePartFile',
+      'getResourceHistory',
+      'getSchemaChanges',
+      'getSchemaDeclarations',
+      'getSchemaNeighbourhood',
+      'getSchemaOperations',
+      'getSchemaResource',
+      'getSchemaResourceByName',
+      'getSchemaSearch',
+      'getSchemaStatistics',
+      'getScope',
+      'getSession',
+      'graphqlData',
+      'graphqlSchema',
+      'graphqlScope',
+      'listDataInstances',
+      'postDataBatch',
+      'postFactHistory',
+      'postPackageExport',
+      'postPackageExportPlan',
+      'postPackageInstallation',
+      'postSchemaBatch',
+      'postSchemaCommit',
+      'postSchemaRevert',
+      'putPackageUpload',
+      'putScope',
+      'resolveHistoryRevision',
+      'searchDataInstances',
+    ],
+    releases: [
+      {
+        sha256: '1fb0bb0be73c05239b5e769280461c3049ef295f2f92cab90cba9c15ba5ad122',
+        sourceCommit: 'f49ef6bb16691517a38fd36268ceb79834d6fbc6',
+        schema: 0,
+      },
+    ],
+  },
+];
 
 /** The most module bytes one release bundle may carry (#2300), decoded. A bigger upload is 413. */
 export const STORE_RELEASE_MAX_BYTES = 10 * 1024 * 1024;

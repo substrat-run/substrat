@@ -153,10 +153,20 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
     );
   });
 
-  it('refuses graph while no driver is registered', () => {
+  it('admits graph, the registered driver', () => {
     const stores = [{ binding: 'GRAPH', driver: 'graph' as const }];
-    expect(() => assertScopeStoresRegistered(stores)).toThrow(/not registered/);
-    expect(() => assertDeclaredScopeStores({ scopeStores: stores })).toThrow(/not registered/);
+    expect(() => assertScopeStoresRegistered(stores)).not.toThrow();
+    expect(() => assertDeclaredScopeStores({ scopeStores: stores })).not.toThrow();
+    expect(STORE_DRIVERS.map((driver) => driver.driver)).toEqual(['graph']);
+    expect(STORE_DRIVERS[0]?.className).toBe('Store');
+    expect(STORE_DRIVERS[0]?.operations).toHaveLength(35);
+    expect(STORE_DRIVERS[0]?.releases).toEqual([
+      {
+        sha256: '1fb0bb0be73c05239b5e769280461c3049ef295f2f92cab90cba9c15ba5ad122',
+        sourceCommit: 'f49ef6bb16691517a38fd36268ceb79834d6fbc6',
+        schema: 0,
+      },
+    ]);
   });
 
   it('refuses a registration that does not answer substrat.erase', () => {
@@ -358,10 +368,18 @@ describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
   });
 
   it('with no driver registered nothing may hold a store, whatever the manifest says', () => {
-    expect(STORE_DRIVERS).toEqual([]);
     for (const json of [declaring, manifest(), null, undefined, '{not json']) {
-      expect(mayHoldScopeStores(json)).toBe(false);
+      expect(mayHoldScopeStores(json, [])).toBe(false);
     }
+  });
+
+  it('the registered graph driver may hold a store a manifest declares, and not one that declares none', () => {
+    expect(STORE_DRIVERS.map((driver) => driver.driver)).toEqual(['graph']);
+    expect(mayHoldScopeStores(declaring)).toBe(true);
+    expect(mayHoldScopeStores(undefined)).toBe(true);
+    expect(mayHoldScopeStores('{not json')).toBe(true);
+    expect(mayHoldScopeStores(manifest())).toBe(false);
+    expect(mayHoldScopeStores(null)).toBe(false);
   });
 
   it('with a driver registered, unknown and unreadable count as may, and only a known "none" does not', () => {
