@@ -84,7 +84,7 @@ reader. The two are independent:
 So "S5 · Personal data is classified and erasable: blocking" stays a blocking-severity item, and a
 model's S5 finding is still advisory, because no script confirmed it. The checklist's report shape
 already has the hook for this: a finding the reader could not settle is `[S5 unconfirmed]`. This
-RFC asks (Q5) that the per-item `judgement` mark the gates work introduces be what the hosted
+RFC asks (Q5d) that the per-item `judgement` mark the gates work introduces be what the hosted
 runner reads, rather than a list kept inside the runner.
 
 ## 3. What exists
@@ -97,7 +97,7 @@ runner reads, rather than a list kept inside the runner.
 | Model calls and their ledger | `@substrat-run/model-providers` (provider table, catalogue, generated rate card); `createModelHost` in `@substrat-run/vertical-host` with an optional `guard` consulted before the call (the budget seam) and a `record` that yields one `ModelUsageLine` after it. A vertical raises the line as a `model-usage` platform intent and the drain writes it to the platform's ledger, kept 400 days (`MODEL_USAGE_RETENTION_DAYS`); the margin (`MODEL_MARGIN_PERCENT`) is applied at read time. D-59. | The host runs **in the vertical**, so the line is self-reported and no budget is enforced on that path; #1073 designs the platform-side, connector-shaped host and is not built. The review runner is platform code, so it can construct the host itself and write an observed line. `ModelAttribution` is fixed at five keys and **requires a `scope`**; a review is about a vertical version, not a scope (Q1). |
 | Metering a tenant's usage in its own scope | `engine-metering`: an append-only ledger of quantities inside a scope, deduplicated per meter, with closed periods. It knows no prices and enforces no limit. ticket0 records its assistant's tokens there beside the platform intent. | A review runs outside every scope, so the engine is not where a review's cost lands; the model ledger is. |
 | What the platform holds of a push | A **built bundle**, never source: the deploy endpoint runs in a Worker and cannot bundle (`docs/architecture/self-serve-deploy.md` §2). `versionOrigin` records `source` (`git`/`cli`), `gitRepo`, `gitCommit`, `gitRef`, and the CLI's push-gate receipt `gate` (`passed`/`skipped`/`none`, #955), all self-reported: *"the platform never lints the uploaded bundle (it receives built output, not source)"*. | **The platform has no copy of the change to review.** This is the precondition the issue did not name (Q9). |
-| A link to the customer's git | The dashboard's GitHub App: installation tokens, repository and branch listing, `pull_request` webhooks, and `upsertPrComment`, which keeps one marked comment per pull request up to date. Repository CI setup (`setupRepoCi`) needs the installation to hold contents, workflow and secret write. Nothing server-side clones or reads a repository's contents; *"the platform cannot build a PR's code — the repo's own CI does."* | GitHub only, and an installation that can write. Nothing equivalent for another git host. |
+| A link to the customer's git | The dashboard's GitHub App: installation tokens, repository and branch listing, `pull_request` webhooks, and `upsertPrComment`, which keeps one marked comment per pull request up to date. Repository CI setup (`setupRepoCi`) needs the installation to hold contents, workflow and secret write. Nothing server-side clones or reads a repository's contents; *"The platform cannot build a PR's code — the repo's own CI does."* | GitHub only, and an installation that can write. Nothing equivalent for another git host. |
 | Where a version is shown | The dashboard's Deployments tab, per vertical and per version, where `OriginTag` already renders the push-gate receipt and flags anything but `passed`; the promote dialog, backed by `PromotionReview` (the permission and migration diff); the console for staff; `substrat push` / `substrat versions` output. | No review status anywhere. |
 | Tenant-facing findings | The findings store (#1748): per tenant, recurring operational findings with a status (`open`, `acked`, `resolved`, `suppressed`) and suppress rules, kept 180 days after the last occurrence (`FINDING_RETENTION_DAYS`). | A different thing with the same word: those are recurring and keyed by fingerprint, a review finding is about one version's code (Q3b). |
 | Turning a feature on for a tenant | Entitlements, stored in the directory and projected into each scope; granted per tenant by staff from the console. Tenant self-grant was removed (#977). The builder studio's own entitlement is the precedent. | No review entitlement or per-vertical switch (Q2). |
@@ -156,13 +156,12 @@ precondition for Q3, Q4 and Q6: read it first if you read only one.
   numbers exist per model; C also depends on #1073, which is not built. *If wrong:* tenants with a
   residency or vendor constraint (D-54: the model provider is a disclosed subprocessor the tenant
   may constrain) cannot use the runner until B or C lands. The jurisdiction rule in Q3c limits the
-  damage: an `eu` tenant gets no review rather than a `global` one.
+  damage: a vertical serving an `eu` scope gets no model review rather than a `global` one.
 
 **Q1b — Who pays.**
 
-- **A. Metered to the tenant** at list price times the platform margin, through the same ledger
-  as every other platform-run model call (`ModelUsageLine`, D-59), as a line attributed to the
-  review.
+- **A. Metered to the tenant** at list price times the platform margin, through the ledger every
+  model call already lands in (`ModelUsageLine`, D-59), as a line attributed to the review.
 - **B. Included** in a plan, the platform absorbing the cost, metered for our own information
   only.
 - **C. A flat price per review**, independent of tokens.
@@ -205,8 +204,8 @@ precondition for Q3, Q4 and Q6: read it first if you read only one.
 - *Who may turn it on:* whoever may commit the tenant to spend. Today that is the tenant owner
   and admin roles; a vertical's own roles grant nothing here, because the runner is a platform
   service billed to the tenant, not an operation of the vertical.
-- *Recommendation:* **C**, with the switch on the vertical's Settings and the change of state
-  written to the tenant's admin log. Turning it off stops new reviews and deletes nothing. The
+- *Recommendation:* **C**, with the switch on the vertical's Settings and every change of state
+  recorded with who made it and when. Turning it off stops new reviews and deletes nothing. The
   entitlement stays staff-granted through phase 2 and becomes plan-shaped at phase 3. *If wrong:*
   A alone cannot trial the runner on one vertical of a tenant with many, and charges for all of
   them; B alone leaves staff no lever during the advisory phases. C costs one extra switch.
@@ -278,9 +277,11 @@ subprocessor (D-54).
 - *Recommendation:* **B**, with C's redaction applied to what is **stored** (the quotes) rather
   than to what is sent: redacting source before a reviewer reads it changes the code under review,
   and S7 (secrets) is exactly an item that needs to see a hard-coded token to report it. The
-  provider route follows the tenant's jurisdiction (K-32): an `eu` or `us` tenant is reviewed only
-  where a route in that region exists, and otherwise gets gate results with the reader half
-  `skipped: no provider in jurisdiction`, never a silent `global` route. *If wrong:* B's exclusions
+  provider route follows jurisdiction (K-32). Jurisdiction is recorded per scope and a review has
+  no scope, so the review takes the strictest jurisdiction among the scopes the vertical serves:
+  if any is `eu` or `us`, the reader half runs only where a route in that region exists, and
+  otherwise the record carries gate results with the reader half `skipped: no provider in
+  jurisdiction`, never a silent `global` route. *If wrong:* B's exclusions
   mean a personal-data field added in a seed file is not seen by the reader half; S5 on the model
   file still is, which is where the classification lives.
 
@@ -309,8 +310,8 @@ and never used by the platform to block.
   tenants from the builder. For a listed vertical the audience is wider, and a human at admission
   is the right holder of the override.
 - *If wrong:* letting anything but a script block means a model's mistaken finding stops a
-  production deploy, and a prompt-injected change can *create* a blocking finding to stop someone
-  else's deploy, which is a denial of service by text. Gating on scripts only removes both. If B
+  production deploy, and text planted in a change (in a vendored dependency, say) can *create* a
+  blocking finding and stop a deploy, which is a denial of service by text. Gating on scripts only removes both. If B
   is chosen before Q9 is answered with B or C, the gate is only as strong as the source the
   customer chose to upload: enough for a builder's own safety net, not a control anyone else can
   rely on.
@@ -357,6 +358,18 @@ would have to copy it.
   procedure, the change and the gate results, and nothing else. *If wrong:* the two runners drift
   on procedure while sharing the rules: the hosted one stops disproving its candidates, say, and
   its false-positive rate rises for a reason Q7 cannot see.
+
+**Q5d — Which items the model reads.**
+
+- **A. The checklist says.** Each item, or each part of an item, carries the `judgement` mark the
+  gates work (D3) introduces, and the runner asks the model about exactly those.
+- **B. The runner keeps its own list** of items to send to the model.
+- *Recommendation:* **A.** B is a second copy of a fact about the rules, which D1 forbids; it
+  would also let the two runners disagree about which items a model reads. The local runner, which
+  is itself a model, reads every item but reports a script item through its gate (as the checklist
+  already instructs), so the mark changes nothing locally. *If wrong:* an item that loses its gate
+  and keeps no mark is read by neither half, silently; Q8's phase-0 exit condition (every item is
+  a gate or marked `judgement`) is what refuses that.
 
 ### Q6 — Trust and abuse
 
@@ -410,11 +423,12 @@ are advisory by construction, and why the gates do not depend on the reader.
   credential in its environment and network limited to the package registry, and it is discarded
   after the run. The reader half runs no customer code. The two halves exchange only the gate
   results, as data.
-- *Recommendation:* all of the above, and for phase 1 a gate half that runs only the gates that
-  execute no customer code (boundary-lint over source text, the migration replay through the
-  kernel's own `replayMigrations`) until the container half is built. *If wrong:* a gate half that
-  holds any platform credential turns a malicious `postinstall` into platform access; there is no
-  "mostly isolated" version of this.
+- *Recommendation:* all of the above. Phase 1 reviews only our own verticals, so its gate half may
+  run every gate outside a container, still holding no platform credential; **the container is a
+  precondition of the first customer's review** (phase 2), not a later hardening. Until it exists,
+  a customer change gets only the gates that execute none of its code (boundary-lint reads source
+  as text). *If wrong:* a gate half that holds any platform credential turns a malicious
+  `postinstall` into platform access; there is no "mostly isolated" version of this.
 
 ### Q7 — False-positive tracking before anything becomes required
 
@@ -440,8 +454,8 @@ are advisory by construction, and why the gates do not depend on the reader.
 | Phase | Who | What runs | Exit when |
 |---|---|---|---|
 | 0 | — | This RFC answered; the `judgement` marks and the gates work (D3) landed; the checklist digest printed by the local skill. | Every checklist item is either a gate or marked `judgement`. |
-| 1 | Staff, on our own demo verticals and the seeded corpus | Gate half without customer code execution; reader half on one model; records stored; CLI read only. Zero-rated. | Q1c's caps set from real numbers; Q7 C has a baseline per item. |
-| 2 | Invited tenants, by entitlement | Advisory only. Record, CLI read, dashboard, push headline. Container gate half. Metered, zero-rated. | Owner feedback (Q7 A) over at least four weeks; cost per review known. |
+| 1 | Staff, on our own demo verticals and the seeded corpus | Every gate, outside a container, with no platform credential; reader half on one model; records stored; CLI read only. Zero-rated. | Q1c's caps set from real numbers; Q7 C has a baseline per item; the container gate half works. |
+| 2 | Invited tenants, by entitlement | Advisory only. Record, CLI read, dashboard, push headline. Container gate half from the first customer review. Metered, zero-rated. | Owner feedback (Q7 A) over at least four weeks; cost per review known. |
 | 3 | Any tenant that enables it | Advisory only. Metered and billed (Q1b). Plan-shaped entitlement. | Per-item thresholds published. |
 | 4 | Opt-in per vertical | Q4 B: script-confirmed blocking findings refuse promote, with an owner override. | — |
 
@@ -499,6 +513,7 @@ The platform holds a built bundle, not source (§3). A reviewer needs source.
 | Q5a | Checklist source | A: bundled from this repository at build |
 | Q5b | Versioning | A: content digest plus plugin version, printed by both runners |
 | Q5c | Procedure | Move it beside the checklist and into the digest |
+| Q5d | Which items the model reads | A: the checklist's own `judgement` mark |
 | Q6 | Trust and abuse | Structural: no acting tools, script-checked quotes, no credentials, container per review |
 | Q7 | False positives | A + B + C; corpus first; thresholds set at phase 3 |
 | Q8 | Rollout | Phases 0–4 as tabled |
@@ -528,6 +543,8 @@ The platform holds a built bundle, not source (§3). A reviewer needs source.
   runner names eight. Which of the eight a pushed external vertical can run is not established.
 - **Provider routes per jurisdiction** for the model Q1a would pick: not recorded here, and the
   assistant RFC lists the same gap.
+- **Which jurisdiction a review takes** (Q3c). The strictest of the vertical's scopes is this
+  RFC's proposal; nothing in the repository decides jurisdiction for code rather than data.
 - **Whether `ModelAttribution` can take a review without a scope** (Q1b) without breaking the
   five-key limit's reason: unexamined.
 
