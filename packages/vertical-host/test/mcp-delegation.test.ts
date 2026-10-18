@@ -456,6 +456,24 @@ describe('nothing but the MCP endpoint answers at its path', () => {
     expect(app.routes).toEqual([]);
   });
 
+  it('registers nothing when two operations would be one MCP tool, through either mount, plain and under a basePath()', () => {
+    const clashing = {
+      'desk/a.b': { summary: 'A', permission: 'tickets:read', http: { method: 'GET', path: '/one' } },
+      'desk/a/b': { summary: 'B', permission: 'tickets:read', http: { method: 'GET', path: '/two' } },
+    };
+    const clash = "'desk/a/b' and 'desk/a.b' both render as the tool name 'desk_a_b'";
+    for (const app of [new Hono(), new Hono().basePath('/v1')]) {
+      expect(() => mountOperations(app, clashing, stub)).toThrow(`mountOperations: ${clash}`);
+      expect(() => mountMcp(app, clashing, stub)).toThrow(`mountMcp: ${clash}`);
+      expect(app.routes).toEqual([]);
+    }
+    expect(() => mcpToolsOf(clashing)).toThrow(`mcpToolsOf: ${clash}`);
+    // The twin: with the endpoint off no tool is derived, so the same operations mount.
+    const off = new Hono();
+    expect(() => mountOperations(off, clashing, stub, { mcp: false })).not.toThrow();
+    expect(off.routes.map((r) => r.path)).toEqual(['/api/one', '/api/two']);
+  });
+
   it('reads a basePath() prefix exactly as Hono applies it when it registers a route', () => {
     for (const app of [new Hono(), new Hono().basePath('/v1'), new Hono().basePath('/v1').basePath('/v2/'), new Hono().basePath('/')]) {
       const served = servedPathOf(app, '/api/mcp');

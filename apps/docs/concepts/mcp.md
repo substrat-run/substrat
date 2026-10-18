@@ -210,9 +210,10 @@ What each half does:
   `mountOperations` on the same base path. The path judged is the one the endpoint really
   answers at, an `app.basePath()` prefix included. A `*` is judged as `TrieRouter` reads it,
   so `/api/*`, `/api/mcp/*`, `/*/mcp`, a `GET *` fallback, `/api/mc*` and `/ap*` all stop it
-  too; register such a route after the mount, or as middleware. A route registered after the
-  endpoint never runs there, since the endpoint answers every method but `OPTIONS` itself,
-  with a `405` and `Allow: POST` for all but `POST`. Not judged:
+  too; register such a route after the mount, or make it middleware that answers only once
+  `await next()` has found nothing. A route registered after the endpoint never runs there,
+  since the endpoint answers every method but `OPTIONS` itself, with a `405` and
+  `Allow: POST` for all but `POST`. Not judged:
   - `app.use`, `app.all` and `app.mount`, which Hono records alike as middleware, and
     `OPTIONS` routes;
   - the routes of an app this one is mounted into later with `app.route()`;

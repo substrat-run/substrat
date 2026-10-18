@@ -86,6 +86,34 @@ export function servedPathOf(app: object, path: string): string {
 }
 
 /**
+ * Refuse operations two of which would render as one MCP tool name. `toolName` is
+ * `mcpToolName`, passed in so this module stays free of `mcp.ts`. The operations that get a
+ * tool are the ones with a route that did not opt out (`mcp: false`), walked in name order, so
+ * every caller names the same pair. `caller` is what the error names: `mcpToolsOf` itself, or
+ * the mount that judges it before registering anything.
+ */
+export function assertDistinctToolNames(
+  operations: Readonly<Record<string, object>>,
+  toolName: (operation: string) => string,
+  caller: 'mcpToolsOf' | 'mountMcp' | 'mountOperations',
+): void {
+  const byName = new Map<string, string>();
+  for (const operation of Object.keys(operations).sort()) {
+    const op = operations[operation] as { http?: unknown; mcp?: unknown } | undefined;
+    if (!op?.http || op.mcp === false) continue;
+    const name = toolName(operation);
+    const clash = byName.get(name);
+    if (clash) {
+      throw new Error(
+        `${caller}: '${operation}' and '${clash}' both render as the tool name '${name}' — ` +
+          'operation names must stay distinct once non-alphanumerics collapse to `_`',
+      );
+    }
+    byName.set(name, operation);
+  }
+}
+
+/**
  * Refuse an MCP endpoint at `path` when a route already registered on `app` would answer there
  * in its place (`routeAnsweringAt`, at the path the endpoint is served at). Called before
  * anything is registered, so a refused mount leaves the app as it found it. `caller` is the

@@ -87,7 +87,7 @@ import { PermissionDenied, type ScopeStub } from '@substrat-run/kernel';
 import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, requestIdOf, type InvocationRecord } from './invocation-log.js';
 import { classifyError, messageOf, problemResponse } from './errors.js';
 import { observeOutputFields, outputWalkOf, type OutputWalk } from './field-coverage.js';
-import { assertMcpPathFree, bearerClaims, carriesAct } from './mcp-guard.js';
+import { assertDistinctToolNames, assertMcpPathFree, bearerClaims, carriesAct } from './mcp-guard.js';
 
 /** What `invocationLog` handed this request (#1746, #1237). Both absent without the middleware. */
 interface McpInvocation {
@@ -307,7 +307,7 @@ function project(value: unknown, walk: OutputWalk | undefined, fields: readonly 
  */
 export function mcpToolsOf(operations: Readonly<Record<string, object>>): McpTool[] {
   const tools: McpTool[] = [];
-  const byName = new Map<string, string>();
+  assertDistinctToolNames(operations, mcpToolName, 'mcpToolsOf');
 
   for (const operation of Object.keys(operations).sort()) {
     const op = operations[operation] as McpDecl | undefined;
@@ -315,15 +315,6 @@ export function mcpToolsOf(operations: Readonly<Record<string, object>>): McpToo
     if (!op?.http || op.mcp === false) continue;
 
     const name = mcpToolName(operation);
-    const clash = byName.get(name);
-    if (clash) {
-      throw new Error(
-        `mcpToolsOf: '${operation}' and '${clash}' both render as the tool name '${name}' — ` +
-          'operation names must stay distinct once non-alphanumerics collapse to `_`',
-      );
-    }
-    byName.set(name, operation);
-
     const declared = op.input ? jsonSchemaOf(op.input) : { type: 'object', properties: {} };
     const shape = declared as { properties?: Record<string, unknown>; required?: string[] };
     const inputSchema: Record<string, unknown> = {
@@ -663,6 +654,8 @@ export function mountMcp(
   resolveStub: (c: Context) => Promise<ScopeStub>,
   options: MountMcpOptions & { readonly basePath?: string } = {},
 ): { path: string; tools: number } {
+  // Both refusals come before anything is registered, named for this mount.
+  assertDistinctToolNames(operations, mcpToolName, 'mountMcp');
   const tools = mcpToolsOf(operations);
   const path = options.path ?? mcpEndpointPath(options.basePath);
   assertMcpPathFree(app, path, 'mountMcp');
