@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { migrationDigest } from '../packages/kernel/dist/index.js';
-import { appendOnlyOffences, ledgerPackages, ledgerRows, parseLedger, renderLedger, type LedgerRow } from './migration-ledger.mts';
+import { appendOnlyOffences, ledgerPackages, ledgerRows, ledgerStep, parseLedger, renderLedger, type LedgerRow } from './migration-ledger.mts';
 import type { Registration } from './package-registrations.mts';
 
 const row = (version: string, digest: string, module = 'notes'): LedgerRow => ({ module, version, digest });
@@ -97,4 +97,15 @@ test('the next number, appended, passes; so does a first migration of a new modu
   assert.deepEqual(appendOnlyOffences('demos/x', [row('0001', A)], [row('0001', A), row('0001', B, 'tasks')]), []);
   assert.deepEqual(appendOnlyOffences('demos/x', [row('init', A)], [row('init', A), row('add-due', B)]), []);
   assert.match(appendOnlyOffences('demos/x', [row('init', A), row('due', B)], [row('init', A), row('early', C), row('due', B)])[0]!, /sits before notes@due/);
+});
+
+test('a hand-written MIGRATIONS.md is never refused where no ledger belongs, and never removed or overwritten', () => {
+  const ours = renderLedger('demos/x', 'src/provision.ts', [row('0001', A)]);
+  const prose = '# Migrations\n\nHow this package migrates, written by hand.\n';
+  assert.equal(ledgerStep(undefined, prose), null);
+  assert.equal(ledgerStep(ours, prose)?.act, 'refuse');
+  assert.equal(ledgerStep(undefined, ours)?.act, 'remove');
+  assert.equal(ledgerStep(ours, undefined)?.act, 'write');
+  assert.equal(ledgerStep(ours, ours.replace(A, B))?.act, 'write');
+  assert.equal(ledgerStep(ours, ours), null);
 });
