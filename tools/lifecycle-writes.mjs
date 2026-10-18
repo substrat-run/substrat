@@ -35,7 +35,15 @@
  * modules, a table name interpolated, a guard asked in another file, and a JS regex literal with a
  * quote in it (read as a string). A guard also counts whichever lifecycle it names, so asking
  * about one entity covers a write of another's state in the same function (a fixture pins that
- * gap). Which edge an operation takes is the compiler's and the reader's. On main, and across the
+ * gap). Also, one line each:
+ * - an escaped `\"` inside a double-quoted JS string reads as a quote, so a quoted identifier
+ *   written that way can end the scan early;
+ * - a `}` inside a string inside a template's `${…}` ends the interpolation early;
+ * - a message string that reads like SQL (`'UPDATE shop_orders SET status = … failed'`) is read
+ *   as SQL;
+ * - a guard on the same line as the write, or an arrow function defined before it and never
+ *   called, counts as cover: cover is read from token order and blocks, not from calls made.
+ * Which edge an operation takes is the compiler's and the reader's. On main, and across the
  * 208 commits before it that touched a package with a lifecycle, it reports nothing.
  *
  * Exit 0: every declared state write asks first. 1: at least one does not (each printed).
@@ -174,9 +182,27 @@ function identAt(sql, i) {
   return end === i ? null : { name: sql.slice(i, end), end };
 }
 
-const skipSpace = (sql, i) => {
-  while (i < sql.length && /\s/.test(sql[i])) i += 1;
+/** Past a SQL comment at `i` (`-- …` to the line's end, `/* … *\/`), or `i` when none starts there. */
+function pastComment(sql, i) {
+  if (sql[i] === '-' && sql[i + 1] === '-') {
+    const end = sql.indexOf('\n', i);
+    return end < 0 ? sql.length : end + 1;
+  }
+  if (sql[i] === '/' && sql[i + 1] === '*') {
+    const end = sql.indexOf('*/', i + 2);
+    return end < 0 ? sql.length : end + 2;
+  }
   return i;
+}
+
+/** Past whitespace and SQL comments. */
+const skipSpace = (sql, i) => {
+  for (;;) {
+    while (i < sql.length && /\s/.test(sql[i])) i += 1;
+    const next = pastComment(sql, i);
+    if (next === i) return i;
+    i = next;
+  }
 };
 
 /** Past a SQL string literal opening at `i` (`''` is an escaped quote). */
@@ -196,7 +222,8 @@ function namesIn(sql, i) {
   let j = i;
   while (j < sql.length) {
     const c = sql[j];
-    if (c === "'") j = pastLiteral(sql, j);
+    if (pastComment(sql, j) !== j) j = pastComment(sql, j);
+    else if (c === "'") j = pastLiteral(sql, j);
     else if (c === '(') (depth += 1), (j += 1);
     else if (c === ')') {
       j += 1;
@@ -214,8 +241,8 @@ function namesIn(sql, i) {
 const STOP = new Set(['where', 'returning', 'from']);
 
 /**
- * Does the SET clause starting at `i` assign `field`? A linear scan: string literals and quoted
- * identifiers are skipped whole, parentheses are counted, the clause is split into items at
+ * Does the SET clause starting at `i` assign `field`? A linear scan: string literals, SQL comments
+ * and quoted identifiers are skipped whole, parentheses are counted, the clause is split into items at
  * depth-0 commas and ends at a depth-0 WHERE, RETURNING, FROM or `;` (or at an unmatched `)`).
  * Only each item's TARGET is judged — `<field> =`, or `(…, <field>, …) =` — so the state read in a
  * value (`CASE WHEN status = …`, a subquery) is not a write.
@@ -247,6 +274,7 @@ export function setAssigns(sql, i, field) {
     }
     const c = sql[i];
     if (c === "'") i = pastLiteral(sql, i);
+    else if (pastComment(sql, i) !== i) i = pastComment(sql, i);
     else if (c === '"' || c === '[' || c === '\x60') i = identAt(sql, i)?.end ?? i + 1;
     else if (c === '(') (depth += 1), (i += 1);
     else if (c === ')') {

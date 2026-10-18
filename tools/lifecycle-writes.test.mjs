@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { guardNames, inScope, lifecyclesOf, unguardedWrites } from './lifecycle-writes.mjs';
@@ -282,18 +283,35 @@ function b(ctx, row, fast) {
   assert.deepEqual(at(text), [6]);
 });
 
-test('the scan is linear: a 30-deep run of open parens and a very long SET list finish in milliseconds', () => {
-  const wrap = (set) => "function a(ctx) { ctx.sql.exec('UPDATE shop_orders SET " + set + "'); }";
-  const deep = wrap('total = ' + '('.repeat(30) + '1, status = ?');
-  const nested = wrap('total = ' + '('.repeat(30) + '1' + ')'.repeat(30) + ', status = ?');
-  const items = Array.from({ length: 5000 }, (_, i) => 'c' + i + ' = ' + '('.repeat(i % 7) + '?' + ')'.repeat(i % 7));
-  const long = wrap(items.join(', ') + ', status = ?');
-  for (const text of [deep, nested, long]) {
-    const started = performance.now();
-    at(text);
-    assert.ok(performance.now() - started < 500, `took ${performance.now() - started} ms`);
-  }
+test('the scan is linear: a 30-deep run of open parens and a very long SET list finish in milliseconds', { timeout: 10_000 }, () => {
+  // In a child with a hard kill: a scanner that hangs (a backtracking regex, a loop that stops
+  // advancing) blocks the thread synchronously, which no in-process test timeout can interrupt.
+  const run = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import { unguardedWrites } from ${JSON.stringify(new URL('./lifecycle-writes.mjs', import.meta.url).href)};
+    const LC = [{ entity: 'order', table: 'shop_orders', field: 'status' }];
+    const at = (text) => unguardedWrites([{ path: 'demos/shop/src/module.ts', text }], LC).map((h) => h.line);
+    const wrap = (set) => "function a(ctx) { ctx.sql.exec('UPDATE shop_orders SET " + set + "'); }";
+    const deep = wrap('total = ' + '('.repeat(30) + '1, status = ?');
+    const nested = wrap('total = ' + '('.repeat(30) + '1' + ')'.repeat(30) + ', status = ?');
+    const items = Array.from({ length: 5000 }, (_, i) => 'c' + i + ' = ' + '('.repeat(i % 7) + '?' + ')'.repeat(i % 7));
+    const long = wrap(items.join(', ') + ', status = ?');
+    const ms = [deep, nested, long].map((text) => { const s = performance.now(); at(text); return performance.now() - s; });
+    console.log(JSON.stringify({ ms, nested: at(nested), long: at(long) }));
+  `], { encoding: 'utf8', timeout: 8_000 });
+  assert.equal(run.signal, null, 'the scan did not finish within 8 s and was killed');
+  assert.equal(run.status, 0, run.stderr);
+  const { ms, nested, long } = JSON.parse(run.stdout);
+  for (const m of ms) assert.ok(m < 500, `took ${m} ms`);
   // Thirty unclosed parens leave the state at depth 30, which is no SET target; closed, it is one.
-  assert.deepEqual(at(nested), [1]);
-  assert.deepEqual(at(long), [1]);
+  assert.deepEqual(nested, [1]);
+  assert.deepEqual(long, [1]);
+});
+
+test('SQL comments in a SET clause are skipped like literals', () => {
+  const text = `
+function a(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET note = ? /* WHERE */, status = ? WHERE id = ?', ['n', 'x', id]); }
+function b(ctx, id) { ctx.sql.exec(\`UPDATE shop_orders SET note = ? -- ; WHERE
+  , status = ? WHERE id = ?\`, ['n', 'x', id]); }
+function c(ctx, id) { ctx.sql.exec('UPDATE shop_orders SET /* status = */ note = ? WHERE id = ?', ['n', id]); }`;
+  assert.deepEqual(at(text), [2, 3]);
 });

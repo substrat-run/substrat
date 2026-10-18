@@ -124,6 +124,9 @@ const numberOf = (version: string): number | undefined => {
  * meant to be strict: a new one is exactly the last plus one. Date-style versions
  * (`20261018-x`) are deliberately out of scope; none exists, and a module that adopted them would
  * fail the +1 rule on its second migration, so the rule would have to change with it.
+ *
+ * Two pull requests that each add the same next number pass alone. The second to merge is red
+ * on the push-to-main run, where its base is the first one's merge.
  */
 export function appendOnlyOffences(label: string, base: readonly LedgerRow[], head: readonly LedgerRow[]): string[] {
   const key = (r: LedgerRow): string => `${r.module}@${r.version}`;

@@ -96,7 +96,10 @@ function everyPr(condition) {
  * several). Read line by line, not as full YAML: a step's `run:` (inline, or a `|`, `|-`, `>` or
  * `>-` block), its `if:`, `continue-on-error:` and `working-directory:`, and a job's `if:`. A step
  * that may fail without failing the PR, runs under a condition other than `everyPr`'s, or runs in
- * another directory (another script) does not count.
+ * another directory (another script) does not count. Not read, so a gate under one still counts:
+ * a job-level `continue-on-error`; a shell `if … fi` inside a `run:` block, which the lines
+ * inside it are taken as always running; and a folded `>` block, whose lines are read one command
+ * each rather than joined.
  */
 export function ciCommands(yaml) {
   const out = [];
