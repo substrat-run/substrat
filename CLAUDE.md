@@ -149,6 +149,15 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   instead of a deployed scope (#1776). Wired beside the LIKE preload in the root `pnpm test`
   and CI's test step; it reads the kernel's built `dist`. No opt-out exists yet: add one, with the
   reason at its call, when a node-only path legitimately exceeds a limit.
+- **An operation that declares a `permission` and never calls `ctx.check` fails every node
+  suite** (#2387). Both scope hosts count each invocation's checks (a refused, caught or
+  throwing check counts, and so does one made in a helper), and on zero they write a `warn`
+  line through `ctx.log`. In production that line is all that happens. `tools/vitest/unchecked-operations.cjs`,
+  wired with the two preloads above, makes the operation throw `UncheckedOperation` and roll
+  back. Not held: derived handlers, `narrows` walks (an empty walk asks nothing, and is right
+  to), and `undeclaredOperations` modules. An operation that deliberately checks nothing
+  declares `narrows: { reason, checks: [], unchecked: true }`. `pnpm test:preloads` refuses a
+  preload missing from the root `test`, CI's test step or `test:affected`.
 - **`overrides:` in `pnpm-workspace.yaml` are checked at every severity** (#1601).
   Dependabot reads package.json ranges and the catalog blocks, never `overrides`, so a
   pin there has no updater. An override that only needs a version says `'catalog:'`
