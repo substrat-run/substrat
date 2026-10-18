@@ -158,7 +158,10 @@ assistant looking up that user's orders, say. It does not hold the user's token.
 auth server mints it one by [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693) token
 exchange, and only when the platform has recorded that your app delegates to it, for a
 named set of your permission keys. The token's `sub` is the user, `act` names the acting
-app, `aud` is this endpoint, and `scope` is the keys it may act with. It lives five minutes.
+app, `aud` is this endpoint, and `scope` is the keys it may act with. The auth server mints it
+for five minutes, with no refresh, and the vertical refuses a delegated token whose lifetime
+(`exp − iat`) is longer than that, or whose `iat` is more than 30 seconds ahead of its clock.
+`maxLifetimeSeconds` beside `actors` can lower the bound, never raise it.
 
 Nothing accepts such a token until the vertical opts in, in two places:
 

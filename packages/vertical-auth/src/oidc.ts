@@ -56,7 +56,24 @@ export interface DelegationOption {
    * authorized party. An empty list admits nobody.
    */
   actors: readonly string[];
+  /**
+   * The longest lifetime (`exp − iat`, in seconds) a delegated token may have. It can only
+   * be LOWERED: anything above `DELEGATED_TOKEN_MAX_LIFETIME_SECONDS` counts as that, and a
+   * value that is not a positive number admits no token at all.
+   */
+  maxLifetimeSeconds?: number;
 }
+
+/**
+ * The longest a delegated token may live, in seconds: the lifetime the team auth-server's
+ * exchange mints (`EXCHANGED_TOKEN_TTL_SECONDS` in `demos/auth-server/src/token-exchange.ts`
+ * — keep the two equal). A delegated token is re-minted, never refreshed, so a longer one is
+ * not one this platform issued.
+ */
+export const DELEGATED_TOKEN_MAX_LIFETIME_SECONDS = 300;
+
+/** How far ahead of this clock a delegated token's `iat` may be, in seconds. */
+export const DELEGATED_TOKEN_CLOCK_SKEW_SECONDS = 30;
 
 function bearerFrom(headers: Headers): string | null {
   const auth = headers.get('authorization');
@@ -168,8 +185,11 @@ function isMcpResource(value: string, resourceOf: (origin: string) => string): b
  *    user's MCP token (`isOwnToken` rule 1, which any route admits), a delegated token
  *    stands for the user only where a ceiling is applied to it — the MCP endpoint — so a
  *    caller that passes no `url`, or a REST route, never admits one.
- *  - **A scope, and an expiry.** `scope` is a non-empty space-separated list (the grammar
- *    the exchange writes, RFC 6749 §3.3), and `exp` is present. `jwtVerify` has already
+ *  - **A scope, and a short life.** `scope` is a non-empty space-separated list (the grammar
+ *    the exchange writes, RFC 6749 §3.3). `iat` and `exp` are both present, `exp − iat` is
+ *    at most the bound (`maxLifetimeSeconds`, never above the exchange's own lifetime), and
+ *    `iat` is not later than `DELEGATED_TOKEN_CLOCK_SKEW_SECONDS` ahead of this clock — so no
+ *    delegated token stays usable past a few minutes from now. `jwtVerify` has already
  *    refused a token whose `exp` has passed.
  */
 function delegationOf(
@@ -177,6 +197,7 @@ function delegationOf(
   delegation: DelegationOption,
   resourceOf: (origin: string) => string,
   url: string | undefined,
+  nowSeconds: number,
 ): { actor: string; scope: string[] } | null {
   const act = payload['act'];
   if (act === null || typeof act !== 'object' || Array.isArray(act)) return null;
@@ -197,7 +218,13 @@ function delegationOf(
   }
   if (aud !== resourceOf(target.origin) || aud !== `${target.origin}${target.pathname}`) return null;
 
-  if (typeof payload.exp !== 'number') return null;
+  const { exp, iat } = payload;
+  if (typeof exp !== 'number' || typeof iat !== 'number') return null;
+  const asked = delegation.maxLifetimeSeconds;
+  const bound = asked === undefined ? DELEGATED_TOKEN_MAX_LIFETIME_SECONDS : Math.min(asked, DELEGATED_TOKEN_MAX_LIFETIME_SECONDS);
+  // Written as "not within", so a bound that is not a number (NaN) admits nothing.
+  if (!(bound > 0 && exp - iat <= bound)) return null;
+  if (!(iat <= nowSeconds + DELEGATED_TOKEN_CLOCK_SKEW_SECONDS)) return null;
   const scope = typeof payload['scope'] === 'string' ? [...new Set(payload['scope'].split(' ').filter((s) => s.length > 0))] : [];
   if (scope.length === 0) return null;
   return { actor, scope };
@@ -241,7 +268,9 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
       // the opt-in, and never by the rules below, which would take it as the user's own.
       let delegation: AuthSubject['delegation'];
       if (payload['act'] !== undefined) {
-        const admitted = cfg.delegation && cfg.resourceOf ? delegationOf(payload, cfg.delegation, cfg.resourceOf, url) : null;
+        // Host code, so the real clock is right here (jose reads the same one for `exp`).
+        const now = Math.floor(Date.now() / 1000);
+        const admitted = cfg.delegation && cfg.resourceOf ? delegationOf(payload, cfg.delegation, cfg.resourceOf, url, now) : null;
         if (!admitted) return null;
         delegation = admitted;
       } else if (!cfg.audience && cfg.clientId) {

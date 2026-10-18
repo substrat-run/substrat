@@ -60,17 +60,19 @@ interface SignOptions {
   issuer?: string;
   /** Seconds from now; `null` signs a token with no `exp` at all. */
   expiresIn?: number | null;
+  /** `iat`, in seconds from now; `null` signs a token with no `iat`. */
+  issuedAt?: number | null;
   key?: CryptoKey;
 }
 
-/** A token with exactly these claims, plus iss/sub/iat and (unless told otherwise) exp. */
+/** A token with exactly these claims, plus iss/sub and (unless told otherwise) iat and exp. */
 async function token(claims: Record<string, unknown>, opts: SignOptions = {}): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const jwt = new SignJWT({ email: 'pat@acme.test', ...claims })
     .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
     .setIssuer(opts.issuer ?? ISSUER)
-    .setSubject('user-1')
-    .setIssuedAt(now);
+    .setSubject('user-1');
+  if (opts.issuedAt !== null) jwt.setIssuedAt(now + (opts.issuedAt ?? 0));
   if (opts.expiresIn !== null) jwt.setExpirationTime(now + (opts.expiresIn ?? 300));
   return jwt.sign(opts.key ?? privateKey);
 }
@@ -199,6 +201,30 @@ describe('the scope and the lifetime', () => {
     expect(await subAt(opted, await delegated({}, { expiresIn: 60 }))).toBe('user-1');
   });
 
+  it('refuses one that lives longer than the exchange mints, has no iat, or was issued ahead of this clock', async () => {
+    expect(await resolveAt(opted, await delegated({}, { expiresIn: 600 }))).toBeNull();
+    expect(await resolveAt(opted, await delegated({}, { expiresIn: 60 * 60 * 24 * 365 * 10 }))).toBeNull();
+    expect(await resolveAt(opted, await delegated({}, { issuedAt: null }))).toBeNull();
+    // A lifetime inside the bound, but starting two minutes from now.
+    expect(await resolveAt(opted, await delegated({}, { issuedAt: 120, expiresIn: 420 }))).toBeNull();
+    // Twins: exactly the exchange's lifetime, and an iat within the stated skew.
+    expect(await subAt(opted, await delegated({}, { expiresIn: 300 }))).toBe('user-1');
+    expect(await subAt(opted, await delegated({}, { issuedAt: 20, expiresIn: 320 }))).toBe('user-1');
+  });
+
+  it('takes a lower bound, never a higher one, and admits nothing on a bound that is not a positive number', async () => {
+    const withBound = (maxLifetimeSeconds: number): OidcRpConfig => ({ ...plain, delegation: { actors: [ACTOR], maxLifetimeSeconds } });
+    expect(await resolveAt(withBound(60), await delegated({}, { expiresIn: 300 }))).toBeNull();
+    expect(await subAt(withBound(60), await delegated({}, { expiresIn: 60 }))).toBe('user-1');
+    expect(await resolveAt(withBound(900), await delegated({}, { expiresIn: 600 }))).toBeNull();
+    expect(await subAt(withBound(900), await delegated({}, { expiresIn: 300 }))).toBe('user-1');
+    for (const bound of [0, -1, Number.NaN]) {
+      expect(await resolveAt(withBound(bound), await delegated({}, { expiresIn: 30 }))).toBeNull();
+      // Even one whose `exp` precedes its `iat`, which no bound of zero or less would catch alone.
+      expect(await resolveAt(withBound(bound), await delegated({}, { issuedAt: 25, expiresIn: 20 }))).toBeNull();
+    }
+  });
+
   it('keeps the signature and issuer checks: a forged or foreign token is nobody', async () => {
     expect(await resolveAt(opted, await delegated({}, { key: otherKey }))).toBeNull();
     expect(await resolveAt(opted, await delegated({}, { issuer: 'https://elsewhere.test' }))).toBeNull();
@@ -242,6 +268,11 @@ describe('the option reaches the verifier, and never leaks between configuration
     const other: OidcRpConfig = { ...plain, delegation: { actors: ['someone-else'] } };
     expect(await subAt({ ...plain, delegation: { actors: [ACTOR] } }, t)).toBe('user-1');
     expect(await resolveAt(other, t)).toBeNull();
+    // And between configurations that differ only in the lifetime bound.
+    const tight: OidcRpConfig = { ...plain, delegation: { actors: [ACTOR], maxLifetimeSeconds: 60 } };
+    expect(await resolveAt(tight, t)).toBeNull();
+    expect(await subAt(opted, t)).toBe('user-1');
+    expect(await resolveAt(tight, t)).toBeNull();
   });
 
   it('threads through instanceAuthFor, as a hosted vertical builds its provider', async () => {

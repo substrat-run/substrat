@@ -163,14 +163,26 @@ const bearerCache = new Map<string, AuthProvider>();
 function bearerVerifier(cfg: OidcRpConfig): AuthProvider {
   // A delivered `audience` still wins over it; `oidcAuthProvider` is where that is decided.
   const own = cfg.sharedIssuer ? cfg.clientId : undefined;
-  const key = JSON.stringify([cfg.issuer, cfg.audience ?? '', own ?? '', cfg.delegation ? [...cfg.delegation.actors].sort() : null]);
+  const delegation = cfg.delegation
+    ? {
+        actors: [...cfg.delegation.actors],
+        ...(cfg.delegation.maxLifetimeSeconds === undefined ? {} : { maxLifetimeSeconds: cfg.delegation.maxLifetimeSeconds }),
+      }
+    : undefined;
+  const key = JSON.stringify([
+    cfg.issuer,
+    cfg.audience ?? '',
+    own ?? '',
+    // NaN would stringify as null and collide with "no bound", so the bound is keyed as text.
+    delegation ? [[...delegation.actors].sort(), String(delegation.maxLifetimeSeconds)] : null,
+  ]);
   let p = bearerCache.get(key);
   if (!p) {
     p = oidcAuthProvider({
       issuer: cfg.issuer,
       ...(cfg.audience ? { audience: cfg.audience } : {}),
       ...(own ? { clientId: own, resourceOf: (origin: string) => mcpResourceOf(origin) } : {}),
-      ...(cfg.delegation ? { delegation: { actors: [...cfg.delegation.actors] } } : {}),
+      ...(delegation ? { delegation } : {}),
     });
     bearerCache.set(key, p);
   }
