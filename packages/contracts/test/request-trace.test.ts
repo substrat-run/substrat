@@ -68,6 +68,11 @@ describe('request trace', () => {
     expect(requestTrace.safeParse(trace(TRACE_STEP_CAP + 1)).success).toBe(false);
   });
 
+  it('accepts fractional step timings, as a performance.now() recorder produces', () => {
+    const step = { type: 'log', atMs: 1.25, durationMs: 0.04, level: 'info', message: 'm' };
+    expect(traceStep.safeParse(step).success).toBe(true);
+  });
+
   it('lists every step kind the schema carries', () => {
     const kinds = traceStep.options.map((o) => o.shape.type.value).sort();
     expect(kinds).toEqual([...TRACE_STEP_TYPES].sort());

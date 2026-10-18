@@ -45,7 +45,7 @@ export type TraceStepType = (typeof TRACE_STEP_TYPES)[number];
 
 /** Fields every step carries. */
 interface TraceStepBase {
-  /** Milliseconds from the invocation's start to this step. */
+  /** Milliseconds from the invocation's start to this step; fractional where the clock is. */
   atMs: number;
   /** How long it took, when it has a duration. */
   durationMs?: number;
@@ -177,13 +177,15 @@ export interface TraceHead {
  * duration) and the scope host (operation, principal, events). Each sends the keys it knows.
  */
 export type TraceHeadPatch = Partial<TraceHead>;
+// A key whose value is `undefined` means "this part does not know", never "erase": a sink
+// skips it when merging, so the middleware cannot blank what the scope host reported.
 
 /**
  * Where a host sends what it saw. All three are synchronous and best-effort: a recorder
  * batches and writes elsewhere, and a host calls them inside a guard.
  */
 export interface TraceSink {
-  /** Merge what one part of the host knows about the invocation. */
+  /** Merge what one part of the host knows about the invocation; `undefined` values are skipped. */
   head(invocationId: string, patch: TraceHeadPatch): void;
   /** Append one step. */
   step(invocationId: string, step: TraceStep): void;

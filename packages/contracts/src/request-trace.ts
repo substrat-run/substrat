@@ -16,8 +16,10 @@ import { TRACE_STEP_CAP } from './trace-sink.js';
  * import without zod; `request-trace.test.ts` fails the build if the two disagree.
  */
 
-const atMs = z.number().int().min(0);
-const stepBase = { atMs, durationMs: z.number().int().min(0).optional() };
+// Not `.int()`: a recorder times with `performance.now()`, and a sub-millisecond SQL statement
+// is the common case. The head's `durationMs` is fractional for the same reason.
+const atMs = z.number().min(0);
+const stepBase = { atMs, durationMs: z.number().min(0).optional() };
 
 export const traceCheckStep = z.object({
   type: z.literal('check'),
