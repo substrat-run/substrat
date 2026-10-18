@@ -65,6 +65,7 @@ const NOT_IMPLEMENTED: readonly (readonly [string, 'GET' | 'POST', Record<string
   ['/internal/peer-switch', 'POST', { scopeId: s, vertical: 'peer', to: 'off' }],
   ['/internal/exported-events', 'POST', { ...ids, input: { consumer: 'peer', after: null, wants: [{ type: 'todo.done', schemaVersion: 1 }], limit: 10 } }],
   ['/internal/import-state', 'GET', {}],
+  ['/internal/import-cursor', 'POST', { ...ids, at: { move: { mode: 'replay', from: 'peer', after: null, acknowledge: 'rerun-handlers', reason: 'test' }, source: { vertical: 'peer', scopeId: s }, replayId: ulid() } }],
   ['/internal/import-events', 'POST', { ...ids, batch: { source: { vertical: 'peer', scopeId: s }, after: null, next: event, events: [], withheld: [] } }],
   ['/internal/owner-transfer', 'POST', { ...ids, from: ulid(), to: ulid() }],
 ];

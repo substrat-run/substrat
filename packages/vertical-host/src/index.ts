@@ -1999,10 +1999,7 @@ export function mountPlatformSurface<Env extends object>(
     const body = importCursorBody.parse(await c.req.json());
     const host = deps.hostFor(c.env);
     if (!host.importCursorLocal) {
-      return c.json(
-        { error: 'this deployment cannot move an import watermark (#1705) — redeploy it. Nothing was moved.' },
-        501,
-      );
+      return refuseStatus(c, 501, 'this deployment cannot move an import watermark (#1705) — redeploy it. Nothing was moved.');
     }
     return c.json(await host.importCursorLocal(body.tenantId, body.scopeId, body.at));
   });
