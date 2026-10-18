@@ -92,6 +92,15 @@ const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typ
 const NAME_MAPS = new Set(['properties', 'patternProperties', '$defs', 'definitions', 'schemas', 'responses', 'content']);
 /** Keywords whose value is DATA (an enum member, a constant): compared verbatim, nothing stripped. */
 const LITERALS = new Set(['enum', 'const']);
+/**
+ * Keywords whose array value is a SET: order carries no meaning, so it is sorted before comparing.
+ * The emitter writes `required` and `enum` in declaration order, so moving a field or a member
+ * in `spec/model.ts` reorders them without changing anything — and the enum's consumers read it
+ * as a set too (`emit-sql`'s `CHECK (col IN (…))`, `emit-client`'s `'a' | 'b'` union).
+ */
+const SET_VALUED = new Set(['required', 'enum', 'type']);
+/** `false` is these keywords' default: written out, it says nothing more than absent. */
+const FALSE_IS_ABSENT = new Set(['readOnly', 'writeOnly']);
 
 /** A value as a comparable string, keys sorted, optionally without annotations at any depth. */
 function canon(v: unknown, stripAnnotations: boolean): string {
@@ -102,9 +111,17 @@ function canon(v: unknown, stripAnnotations: boolean): string {
     const out: Record<string, unknown> = {};
     for (const k of Object.keys(x).sort()) {
       if (mode === 'schema' && stripAnnotations && (ANNOTATIONS.has(k) || k.startsWith('x-'))) continue;
+      if (mode === 'schema' && FALSE_IS_ABSENT.has(k) && x[k] === false) continue;
       const next: Mode =
         mode === 'literal' ? 'literal' : mode === 'names' ? 'schema' : LITERALS.has(k) ? 'literal' : NAME_MAPS.has(k) ? 'names' : 'schema';
-      out[k] = walk(x[k], next);
+      const value = walk(x[k], next);
+      out[k] =
+        mode === 'schema' && SET_VALUED.has(k) && Array.isArray(value)
+          ? [...value].sort((a, b) => {
+              const [sa, sb] = [JSON.stringify(a), JSON.stringify(b)];
+              return sa < sb ? -1 : sa > sb ? 1 : 0;
+            })
+          : value;
     }
     return out;
   };
@@ -198,7 +215,8 @@ function compareSchema(
     outer(level, at, detail);
   };
 
-  if (canon(base.type, false) !== canon(head.type, false)) {
+  // Compared under its key, so an array `type` is compared as the set it is.
+  if (canon({ type: base.type }, false) !== canon({ type: head.type }, false)) {
     push('major', path, `type changed from ${canon(base.type, false)} to ${canon(head.type, false)}`);
   }
 

@@ -243,6 +243,50 @@ describe('model.json — entities', () => {
     expect(judge((m) => (enumOf('x')(m), (m.entities.item.fields.properties.kind.description = 'which kind'))).bump).toBe('patch');
   });
 
+  it('a pure reorder of a set-valued keyword is no change; a real removal from one still ranks', () => {
+    const fields = (m: Json) => m.entities.list.fields;
+    expect(model((m) => fields(m).required.reverse()).bump).toBe('none');
+    expect(model((m) => m.entities.item.fields.properties.state.enum.reverse()).bump).toBe('none');
+    expect(model((m) => (m.entities.item.fields.properties.text.type = ['string', 'null'])).bump).toBe('major');
+    const nullable = clone(MODEL);
+    nullable.entities.item.fields.properties.text.type = ['string', 'null'];
+    const reordered = clone(nullable);
+    reordered.entities.item.fields.properties.text.type = ['null', 'string'];
+    expect(classifyModel(JSON.stringify(nullable), JSON.stringify(reordered)).bump).toBe('none');
+    // The twins: a member really gone is still judged as before.
+    expect(model((m) => (fields(m).required = ['name'])).bump).toBe('major');
+    expect(model((m) => (m.entities.item.fields.properties.state.enum = ['done'])).bump).toBe('major');
+    // A reorder beside a real change still ranks that change, and only that.
+    const both = model((m) => {
+      m.entities.item.fields.properties.state.enum = ['snoozed', 'done', 'open'];
+    });
+    expect(both.bump).toBe('minor');
+    expect(both.changes).toEqual([expect.objectContaining({ detail: expect.stringMatching(/enum value\(s\) added: "snoozed"/) })]);
+  });
+
+  it('readOnly or writeOnly written out as false is the same as absent; true on an input is still major', () => {
+    expect(oas((d) => (createBody(d).properties.name.readOnly = false)).bump).toBe('none');
+    expect(oas((d) => (d.components.schemas.List.properties.name.writeOnly = false)).bump).toBe('none');
+    expect(oas((d) => (createBody(d).properties.name.readOnly = true)).bump).toBe('major');
+  });
+
+  it('a field moved in spec/model.ts — properties and required re-emitted in a new order — is no change', () => {
+    // A real emission: ticket0's model, with one entity's first field moved to the end, the way
+    // the emitter re-writes `properties` and `required` in declaration order.
+    const text = readFileSync(join(__dirname, '..', '..', '..', 'demos', 'ticket0', 'model.json'), 'utf8');
+    const doc = JSON.parse(text) as Json;
+    const [name, entity] = Object.entries(doc.entities as Record<string, Json>).find(
+      ([, e]) => (e.fields.required?.length ?? 0) > 2,
+    )!;
+    const props = entity.fields.properties as Json;
+    const [first, ...rest] = Object.keys(props);
+    entity.fields.properties = Object.fromEntries([...rest, first!].map((k) => [k, props[k]]));
+    entity.fields.required = [...entity.fields.required.filter((k: string) => k !== first), ...(entity.fields.required.includes(first) ? [first] : [])];
+    const moved = JSON.stringify(doc, null, 2);
+    expect(moved, `${name} must actually be re-ordered`).not.toBe(text);
+    expect(classifyModel(text, moved).bump).toBe('none');
+  });
+
   it('a table renamed is major; a field description is patch', () => {
     expect(model((m) => (m.entities.list.table = 'lists')).bump).toBe('major');
     expect(model((m) => (m.entities.list.fields.properties.name.description = 'what it is called')).bump).toBe('patch');
