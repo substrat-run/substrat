@@ -384,6 +384,12 @@ export function enclosingNames(names, all) {
  */
 export const READS = [
   { reader: '@substrat-run/console', paths: /^engines\/[^/]+\/src\/index\.ts$/, suite: 'apps/console/test/skus.test.ts' },
+  // The local source answered over a real vertical's artifacts, not only the suite's world.
+  {
+    reader: '@substrat-run/console-data',
+    paths: /^demos\/todo\/(model\.json|PERMISSIONS\.md)$/,
+    suite: 'packages/console-data/test/local.test.ts',
+  },
   // The platform's worker script names, held to every deployed wrangler config.
   {
     reader: '@substrat-run/contracts',

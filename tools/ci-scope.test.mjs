@@ -297,6 +297,11 @@ test('readersOf: kernel and adapter-sqlite source select the CLI, whose push lin
   assert.deepEqual(readersOf(['packages/adapter-sqlite/src/index.ts']), ['@substrat-run/cli']);
   assert.deepEqual(readersOf(['packages/kernel/test/migration-replay.test.ts', 'packages/adapter-cloudflare/src/index.ts']), []);
 });
+test("readersOf: todo's model.json and PERMISSIONS.md select console-data, whose local suite reads them", () => {
+  assert.deepEqual(readersOf(['demos/todo/model.json']), ['@substrat-run/console-data']);
+  assert.deepEqual(readersOf(['demos/todo/PERMISSIONS.md']), ['@substrat-run/console-data']);
+  assert.deepEqual(readersOf(['demos/todo/openapi.json', 'demos/shop/model.json']), []);
+});
 test('READS: every entry names a suite that exists, in the package it names', () => {
   // A misspelled or renamed reader is a pnpm filter that selects nothing, silently.
   for (const r of READS) {
