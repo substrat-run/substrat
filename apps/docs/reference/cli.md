@@ -121,7 +121,7 @@ when fetched) and prints:
 | Section | What it shows |
 |---|---|
 | Entities | Each entity added, changed or removed, with what changed in it, and the model as a Mermaid `erDiagram` before and after — the same diagram `concept sync` draws |
-| Lifecycles | States added or removed, and every transition added, removed or retargeted, with the operation that triggers it |
+| Lifecycles | States added or removed, and every transition added, removed or retargeted, with the operation that triggers it. Which permission key that operation checks is not in the artifacts yet ([#2384](https://github.com/substrat-run/substrat/issues/2384)), so the delta names the operation and does not guess the key |
 | Permissions | The permission-diff table — key, description, which roles held it before and hold it now — and each change listed for the human checkpoint |
 | Spec-version impact | `none`, `patch`, `minor` or `major`, from the [`changeset`](#changeset) classifier, with the changes that set it — so the bump approved is the bump the release is held to |
 | Proposed decisions-log entry | The entry approving it writes, and the command that does |

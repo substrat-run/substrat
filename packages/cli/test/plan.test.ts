@@ -101,6 +101,7 @@ describe('conceptDelta — each section, and its twin when nothing changed', () 
     expect(d.lifecycles.after).toHaveLength(1);
     const text = renderDelta(d, OPTS);
     expect(text).toContain('| `item` | `open` | `acme/cancel` | `cancelled` | added |');
+    expect(text).toContain('not in the artifacts yet (https://github.com/substrat-run/substrat/issues/2384)');
     expect(text).toContain('stateDiagram-v2');
   });
 

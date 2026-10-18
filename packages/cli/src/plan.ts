@@ -310,7 +310,7 @@ export function renderDelta(d: ConceptDelta, opts: { base: string; digest: strin
       }
       out.push(
         '',
-        'Who may trigger a transition is whoever may run its operation. The artifacts do not yet record which key each operation checks, so the operation is named here; who holds each key is the roles table in spec/concept.md, and any change to it is under Permissions below.',
+        'Who may trigger a transition is whoever may run its operation. Which key each operation checks is not in the artifacts yet (https://github.com/substrat-run/substrat/issues/2384), so the operation is named here; who holds each key is the roles table in spec/concept.md, and any change to it is under Permissions below.',
       );
     }
     const other = l.changes.filter((c) => !/\.on\./.test(c.path));
