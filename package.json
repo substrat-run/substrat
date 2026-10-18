@@ -68,6 +68,7 @@
     "lint:attachment-writers": "node tools/attachment-writers.mjs",
     "lint:review-checklist": "node tools/review-checklist.mjs",
     "lint:secret-literals": "node tools/secret-literals.mjs",
+    "lint:lifecycle-writes": "node tools/lifecycle-writes.mjs",
     "lint:floating-promises": "node tools/floating-promises.mjs",
     "test:workerd-rejections": "node --test tools/vitest/workerd-rejections.test.mjs",
     "lint:docs": "node tools/lint-docs.mjs",
@@ -105,7 +106,8 @@
     "test:bare-regexp": "node --test tools/bare-regexp.test.mjs",
     "test:attachment-writers": "node --test tools/attachment-writers.test.mjs",
     "test:review-checklist": "node --test tools/review-checklist.test.mjs",
-    "test:secret-literals": "node --test tools/secret-literals.test.mjs"
+    "test:secret-literals": "node --test tools/secret-literals.test.mjs",
+    "test:lifecycle-writes": "node --test tools/lifecycle-writes.test.mjs"
   },
   "devDependencies": {
     "@babel/parser": "^7.29.7",

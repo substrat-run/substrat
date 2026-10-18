@@ -381,6 +381,12 @@ jobs:
       # dump load can then write a row for that id. Held by its own fixtures first.
       - run: pnpm test:attachment-writers
       - run: pnpm lint:attachment-writers
+      # A declared lifecycle's state is written behind a lifecycle question (#2365, S6): every
+      # `UPDATE <table> SET <state> =` in a package whose model.json declares that lifecycle has
+      # assertTransition / transitionFor (or a local wrapper of one) before it, so the coded machine
+      # cannot drift from the declared one. Shares attachment-writers' function reading.
+      - run: pnpm test:lifecycle-writes
+      - run: pnpm lint:lifecycle-writes
       # The review checklist (plugin/substrat/review/checklist.md, #2365) names, per item, the gates
       # that already refuse it, and a review runner trusts that list instead of re-reading what a
       # gate decides. So every command an item's `gates:` line names must exist and be run in

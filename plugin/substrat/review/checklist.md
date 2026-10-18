@@ -113,10 +113,13 @@ gates: `pnpm typecheck` · `npm run typecheck` · `pnpm lint:model --check` · j
 ### S6 · State changes go through declared lifecycles: blocking
 
 - *Gate:* the compiler checks the joins between a lifecycle and its operations.
-- *Reader:* a raw `UPDATE … SET status = …`; a transition coded but not declared; a guard
-  rewritten inline beside a lifecycle that already draws that edge.
+  `pnpm lint:lifecycle-writes` refuses a write of a declared lifecycle's state with no
+  `assertTransition` / `transitionFor` (or a local wrapper of one) before it.
+- *Reader:* a state field that should have a declared lifecycle and has none (the gate reads
+  only declared ones); a transition coded but not declared; a guard asked in another file, or
+  rewritten inline beside the lifecycle call.
 
-gates: `pnpm typecheck` · `npm run typecheck` · judgement
+gates: `pnpm typecheck` · `npm run typecheck` · `pnpm lint:lifecycle-writes` · judgement
 
 ### S7 · Secrets stay out of source and logs: blocking
 
