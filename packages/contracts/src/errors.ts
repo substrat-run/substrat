@@ -587,6 +587,7 @@ const STATUS_TITLES: Readonly<Record<number, string>> = {
   412: 'Precondition failed',
   415: 'Unsupported media type',
   422: 'Unprocessable content',
+  426: 'Upgrade required',
   429: 'Too many requests',
   500: 'Internal error',
   501: 'Not implemented',
