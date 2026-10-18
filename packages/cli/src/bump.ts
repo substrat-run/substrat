@@ -80,16 +80,21 @@ const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typ
 
 /** Keywords whose keys are NAMES (a field called `title`), never keywords to strip. */
 const NAME_MAPS = new Set(['properties', 'patternProperties', '$defs', 'definitions', 'schemas', 'responses', 'content']);
+/** Keywords whose value is DATA (an enum member, a constant): compared verbatim, nothing stripped. */
+const LITERALS = new Set(['enum', 'const']);
 
 /** A value as a comparable string, keys sorted, optionally without annotations at any depth. */
 function canon(v: unknown, stripAnnotations: boolean): string {
-  const walk = (x: unknown, names = false): unknown => {
-    if (Array.isArray(x)) return x.map((y) => walk(y));
+  type Mode = 'schema' | 'names' | 'literal';
+  const walk = (x: unknown, mode: Mode = 'schema'): unknown => {
+    if (Array.isArray(x)) return x.map((y) => walk(y, mode === 'literal' ? 'literal' : 'schema'));
     if (!isRecord(x)) return x;
     const out: Record<string, unknown> = {};
     for (const k of Object.keys(x).sort()) {
-      if (!names && stripAnnotations && (ANNOTATIONS.has(k) || k.startsWith('x-'))) continue;
-      out[k] = walk(x[k], !names && NAME_MAPS.has(k));
+      if (mode === 'schema' && stripAnnotations && (ANNOTATIONS.has(k) || k.startsWith('x-'))) continue;
+      const next: Mode =
+        mode === 'literal' ? 'literal' : mode === 'names' ? 'schema' : LITERALS.has(k) ? 'literal' : NAME_MAPS.has(k) ? 'names' : 'schema';
+      out[k] = walk(x[k], next);
     }
     return out;
   };

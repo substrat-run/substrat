@@ -227,6 +227,22 @@ describe('model.json — entities', () => {
     expect(classifyModel(JSON.stringify(base), JSON.stringify(MODEL)).bump).toBe('major');
   });
 
+  it('an enum or const VALUE is data: a key named like an annotation inside it is not stripped', () => {
+    const enumOf = (description: string) => (m: Json) =>
+      (m.entities.item.fields.properties.kind = { enum: [{ description, v: 1 }] });
+    const base = clone(MODEL);
+    enumOf('x')(base);
+    const judge = (mutate: (m: Json) => void) => {
+      const head = clone(MODEL);
+      mutate(head);
+      return classifyModel(JSON.stringify(base), JSON.stringify(head));
+    };
+    expect(judge(enumOf('y')).bump).toBe('major'); // the member { description: 'x' } is gone
+    expect(judge((m) => (m.entities.item.fields.properties.kind = { const: { title: 'y' } })).bump).toBe('major');
+    // The twin: the schema's own description beside the enum is still documentation.
+    expect(judge((m) => (enumOf('x')(m), (m.entities.item.fields.properties.kind.description = 'which kind'))).bump).toBe('patch');
+  });
+
   it('a table renamed is major; a field description is patch', () => {
     expect(model((m) => (m.entities.list.table = 'lists')).bump).toBe('major');
     expect(model((m) => (m.entities.list.fields.properties.name.description = 'what it is called')).bump).toBe('patch');
