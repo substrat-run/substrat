@@ -27,6 +27,7 @@ The package has no runtime dependencies and ships web-standard + `node:*` only. 
 |---|---|
 | `substrat init --ci github` | Write `.github/workflows/substrat-deploy.yml` — the deploy + preview workflow, generated rather than re-derived. |
 | `substrat model view [dir]` | Render the entity model as a self-contained HTML page and print its path — the design gate, as something you can look at. Offline. |
+| `substrat concept sync [dir]` | Rewrite the generated sections of `spec/concept.md` — roles and permissions, the entity diagram, one state diagram per lifecycle — from `model.json` and `PERMISSIONS.md`. Offline, idempotent; `--check` writes nothing and exits 1 when the file is stale. |
 | `substrat login` | Sign in via the browser (per-human), or store a CI service token with `--token`. |
 | `substrat whoami` | Print who you are and the workspaces you can build for. |
 | `substrat push [dir]` | Build the vertical and push a version — **admitted** for a private vertical, **pending** for a listed one. No flags needed from inside the project. |
@@ -78,6 +79,26 @@ branch from `.git/HEAD`; `--slug` / `--branch` override, `--out` relocates the f
 existing file is never replaced without `--force`. You still add the
 [push token](/guide/deploying#deploy-from-ci) as the `SUBSTRAT_SERVICE_TOKEN` Actions secret
 yourself; the command prints the steps.
+
+### `concept sync`
+
+```bash
+substrat concept sync                     # this directory's spec/concept.md
+substrat concept sync ./apps/helpdesk     # a directory, or its model.json
+substrat concept sync --check             # write nothing; exit 1 if it is stale
+```
+
+A vertical's `spec/concept.md` is the readable description of it for the people who own it,
+and three of its sections are generated, between `<!-- substrat:roles -->`,
+`<!-- substrat:entities -->` and `<!-- substrat:processes -->` markers (each closed by
+`<!-- /substrat:… -->`): the roles and permissions table, a Mermaid `erDiagram` of the
+entities, and a `stateDiagram-v2` per declared lifecycle. Everything outside the markers is
+yours and is never touched. The same input gives byte-identical output, so running it twice
+changes nothing.
+
+`pnpm lint:concept` is the gate: it fails when a generated section is stale, and, given
+`--base <ref>`, when `model.json` or `PERMISSIONS.md` changed without a new entry in the
+document's *Decisions log*. Write that entry yourself; it is the part a tool cannot.
 
 ### `model view`
 

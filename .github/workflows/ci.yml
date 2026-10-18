@@ -174,6 +174,12 @@ jobs:
       # if no vertical declares entities, so the checkpoint can never pass by
       # scanning nothing.
       - run: pnpm lint:model --check
+      # spec/concept.md's generated sections (roles, entity diagram, lifecycles) re-rendered from
+      # model.json and PERMISSIONS.md (#2362): a stale one is red. The base half — a changed model or
+      # permission snapshot with no new Decisions-log entry — runs in the step below, where the base
+      # is fetched.
+      - run: pnpm test:concept
+      - run: pnpm lint:concept
       # D-22 for exported events (#1705 PR 3): each exported type's payload schema in model.json,
       # compared with the base branch's. At an unchanged schemaVersion a removed, retyped, newly
       # required or no-longer-required field is red: another vertical's deployed code parses it.
@@ -201,6 +207,7 @@ jobs:
             base="HEAD^1"
           fi
           pnpm lint:export-schemas --base "$base"
+          pnpm lint:concept --base "$base"
       # The conformance receipt (#866, kernel-design §11.2): re-emit each package's
       # CONFORMANCE.md from its declared `substrat.conformance` module and fail on
       # drift. Also the only gate on §1's kernel citations — it verifies each named
