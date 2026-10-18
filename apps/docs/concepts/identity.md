@@ -266,7 +266,8 @@ signature and issuer. What else it checks depends on whose issuer it is.
   Another app's `id_token`, or a token minted for another vertical's MCP endpoint, is a `401`, even
   when the app's own client is the one it was issued to. A token carrying `act` (another app acting
   for the user) is a `401` too, unless the app has opted in to [delegated
-  calls](/concepts/mcp#a-call-made-for-a-user-by-another-app). The
+  calls](/concepts/mcp#a-call-made-for-a-user-by-another-app), and the token exchange's
+  intermediate assertion is a `401` on every issuer. The
   dashboard tells the app its issuer is shared (the `substrat:auth:shared-issuer` delivery) at
   install and on every Identity change. Apps installed earlier are told the next time anyone on the
   team opens the Apps list.
