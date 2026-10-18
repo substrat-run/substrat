@@ -22,16 +22,17 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { blankComments } from './attachment-writers.mjs';
 import { isMainModule } from './repo-path.mjs';
 import { baseFromArgv, registrations, testFiles } from './package-registrations.mts';
 
 /**
  * The operations no test text names as a whole quoted string. An operation name has no space or
  * quote in it, so the strings read are those runs alone, and an apostrophe in a test's prose
- * cannot pair with the wrong quote.
+ * cannot pair with the wrong quote. Comments are blanked first: a name in a TODO is not a test.
  */
 export function untested(operations: readonly string[], tests: readonly string[]): string[] {
-  const named = new Set(tests.flatMap((text) => [...text.matchAll(/['"`]([^'"`\s]+)['"`]/g)].map((m) => m[1])));
+  const named = new Set(tests.flatMap((text) => [...blankComments(text).matchAll(/['"`]([^'"`\s]+)['"`]/g)].map((m) => m[1])));
   return operations.filter((op) => !named.has(op));
 }
 

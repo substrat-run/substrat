@@ -45,3 +45,8 @@ test('on the base an operation counts as named only as a whole quoted name, not 
   assert.deepEqual(found('"todo/create"; `todo/create`'), ['todo/create', 'todo/create']);
   assert.deepEqual(found(`'aXb'`), [], 'a regex metacharacter in a name is literal');
 });
+
+test('an operation named only in a comment is not tested', () => {
+  const tests = ["// TODO 'todo/a'\n/* invoke('todo/b') */\ninvoke('todo/c');"];
+  assert.deepEqual(untested(['todo/a', 'todo/b', 'todo/c'], tests), ['todo/a', 'todo/b']);
+});
