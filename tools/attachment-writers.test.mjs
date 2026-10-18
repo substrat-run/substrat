@@ -289,3 +289,27 @@ test('a table renamed to the attachments table is a writer', () => {
   assert.equal(at('function f(db) { db.exec(\'ALTER TABLE main."tmp" RENAME TO "_substrat_attachments"\'); }').length, 1);
   assert.deepEqual(at("function f(db) { db.exec('ALTER TABLE tmp RENAME TO other'); }"), []);
 });
+
+test('a guard in a function with an object-literal return type does not cover a later function', () => {
+  const text = `
+function guarded(sql, id): { ok: boolean; id: string } {
+  refuseCondemnedAttachment(sql, id);
+  return { ok: true, id };
+}
+function unguarded(sql, id): void {
+  sql.exec('INSERT INTO _substrat_attachments (id) VALUES (?)', id);
+}
+`;
+  assert.equal(at(text).length, 1);
+});
+
+test('a guard in a function with an object-literal return type covers its own insert', () => {
+  const text = `
+function add(sql, id): Promise<{ id: string }> {
+  refuseCondemnedAttachment(sql, id);
+  sql.exec('INSERT INTO _substrat_attachments (id) VALUES (?)', id);
+  return Promise.resolve({ id });
+}
+`;
+  assert.deepEqual(at(text), []);
+});

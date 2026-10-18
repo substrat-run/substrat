@@ -47,6 +47,13 @@ jobs:
       # a commit that removes one scratch importer and leaves another adds nothing and
       # passes. This reads the FILE.
       - run: pnpm run lint:lockfile
+      # No credential is written into this public repo as a literal (#2365): the shapes a credential
+      # takes when its issuer gives it one (a PEM or JWK private key, a provider token prefix, a
+      # connection URL with a password). Prints file:line and the shape's name, never the value.
+      # An intended literal (the dev issuer's key) is listed in the tool with its reason. Reads
+      # files only, so it runs before the build. Held by its own fixtures first.
+      - run: pnpm test:secret-literals
+      - run: pnpm lint:secret-literals
       # Before the build, because a cycle makes the build's result a coin flip:
       # pnpm cannot order one, so it builds the members in parallel and whether
       # that passes depends on which tsc wins. Reading the declared graph gives
@@ -148,6 +155,11 @@ jobs:
       - run: pnpm test:store-keys
       - run: pnpm test:permission-diff
       - run: pnpm lint:permissions --check
+      # A package whose operations declare a check on one entity ({ key, entity, idFrom }) runs
+      # entityCheckConformanceSuite (#2365, S2): the declaration is held to the handler only by that
+      # suite, and only where it is called. Reads the registrations, so it needs the build above.
+      - run: pnpm test:entity-check-adoption
+      - run: pnpm lint:entity-check-adoption
       # A deployable vertical that declares schedules wires `defineScopeSweeperDO`, or
       # those schedules never fire on a pushed deploy (#1646): the control plane's own
       # cron iterates only its own module-less host's schedules, so a CP-less vertical
@@ -164,6 +176,12 @@ jobs:
       # instead of closing a populated scope after a promote. Loads the same registrations
       # lint:permissions does, so it needs the build above for the same reason.
       - run: pnpm lint:migration-fence
+      # The migration ledger (#2365): each package's MIGRATIONS.md lists the digest of every migration
+      # its own modules author, as the kernel computes it. In step with the code here; append-only
+      # against the base branch in the step below, where the base is fetched. A scope fails closed
+      # on a migration whose SQL changed after it applied it (#2066), so the edit is red in its PR.
+      - run: pnpm test:migration-ledger
+      - run: pnpm lint:migration-ledger --check
       # The API-surface checkpoint (design/api-surface.md §2.4): re-emit each
       # opted-in vertical's OpenAPI document from its operation catalog and fail
       # on drift — a surface change must appear in the PR diff.
@@ -208,6 +226,11 @@ jobs:
           fi
           pnpm lint:export-schemas --base "$base"
           pnpm lint:concept --base "$base"
+          pnpm lint:migration-ledger --base "$base"
+          # Advisory (#2365, S8): an operation new since the base that no test in its package names
+          # is a ::warning on the PR, never a failure.
+          pnpm test:operation-tests
+          pnpm lint:operation-tests --base "$base"
       # The computed changeset bump (#2364): each vertical's model.json, openapi.json and
       # PERMISSIONS.md diffed against the merge-base — removed or narrowed → major, added → minor,
       # docs → patch — and a changeset that names the vertical with a LOWER bump is red. A vertical
@@ -358,6 +381,19 @@ jobs:
       # dump load can then write a row for that id. Held by its own fixtures first.
       - run: pnpm test:attachment-writers
       - run: pnpm lint:attachment-writers
+      # A declared lifecycle's state is written behind a lifecycle question (#2365, S6): every
+      # `UPDATE <table> SET <state> =` in a package whose model.json declares that lifecycle has
+      # assertTransition / transitionFor (or a local wrapper of one) before it, so the coded machine
+      # cannot drift from the declared one. Shares attachment-writers' function reading.
+      - run: pnpm test:lifecycle-writes
+      - run: pnpm lint:lifecycle-writes
+      # The review checklist (plugin/substrat/review/checklist.md, #2365) names, per item, the gates
+      # that already refuse it, and a review runner trusts that list instead of re-reading what a
+      # gate decides. So every command an item's `gates:` line names must exist and be run in
+      # this workflow; a gate listed there and run nowhere would be reported as covered. Held by
+      # its own fixtures first.
+      - run: pnpm test:review-checklist
+      - run: pnpm lint:review-checklist
       # No promise in a workerd suite floats (#2131). A forgotten `await` is a rejection nobody
       # handles, and the workerd setup file fails a test on one only when the test drives that
       # path; oxlint's type-aware `no-floating-promises` sees every path. Reads the built

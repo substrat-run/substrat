@@ -217,14 +217,18 @@ function git(args: string[], cwd: string): string {
 }
 
 /** The base commit: the merge-base of `ref` and HEAD, or a refusal that says why it is missing. */
-export function baseCommit(ref: string, cwd: string): string {
+export function baseCommit(
+  ref: string,
+  cwd: string,
+  stakes = 'without it every export would read as new, and nothing would be compared',
+): string {
   const resolved = spawnSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd, encoding: 'utf8' });
   if (resolved.status !== 0) {
     const shallow = spawnSync('git', ['rev-parse', '--is-shallow-repository'], { cwd, encoding: 'utf8' }).stdout.trim();
     throw new CannotRun(
       `the base '${ref}' is not in this checkout` +
         (shallow === 'true' ? ' (a shallow clone: fetch it, or check out with full history)' : ' (fetch it first)') +
-        ' — without it every export would read as new, and nothing would be compared',
+        ` — ${stakes}`,
     );
   }
   const mb = spawnSync('git', ['merge-base', resolved.stdout.trim(), 'HEAD'], { cwd, encoding: 'utf8' });

@@ -31,20 +31,10 @@
  * Needs the build: it imports the kernel, adapter-sqlite and each engine from `dist`.
  */
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { replayMigrations, type ReplayModule, type SqlMigration, type SqlValue } from '../packages/kernel/dist/index.js';
+import { replayMigrations, type SqlMigration, type SqlValue } from '../packages/kernel/dist/index.js';
 import { SCOPE_SPINE_DDL } from '../packages/adapter-sqlite/dist/index.js';
-import { syncTemplate } from './template-sync.mjs';
-
-type Registration = ReplayModule & { manifest: { id: string } };
-
-const isRegistration = (m: unknown): m is Registration =>
-  typeof m === 'object' && m !== null && typeof (m as Registration).manifest?.id === 'string';
-
-/** The template's permissions entry: it has no committed package.json (see lint:schedule-sweeper). */
-const TEMPLATE_PERMISSIONS_ENTRY = 'src/provision.ts';
+import { registrations, type Registration } from './package-registrations.mts';
 
 interface Outcome {
   readonly failures: string[];
@@ -70,39 +60,6 @@ export function replay(label: string, modules: readonly Registration[]): Outcome
     failures: stopped ? [`${label}: ${stopped.message}`] : [],
     declared: outcome.declared.map((line) => `${label}: ${line}`),
   };
-}
-
-/** Every vertical's registrations, the engines on their own, and the template. */
-async function registrations(): Promise<[string, Registration[]][]> {
-  const out: [string, Registration[]][] = [];
-  const load = async (label: string, entry: string): Promise<void> => {
-    const mod = (await import(pathToFileURL(entry).href)) as { permissions?: { modules?: unknown[] } };
-    const modules = mod.permissions?.modules;
-    if (!Array.isArray(modules)) {
-      console.error(`migration-fence: ${entry} exports no \`permissions.modules\`; cannot replay ${label}.`);
-      process.exit(2);
-    }
-    out.push([label, modules.filter(isRegistration)]);
-  };
-  for (const root of ['demos', 'apps']) {
-    for (const name of readdirSync(root).sort()) {
-      const pkg = join(root, name, 'package.json');
-      if (!existsSync(pkg)) continue;
-      const entry = (JSON.parse(readFileSync(pkg, 'utf8')) as { substrat?: { permissions?: unknown } }).substrat?.permissions;
-      if (typeof entry === 'string' && entry.trim() !== '') await load(`${root}/${name}`, join(process.cwd(), root, name, entry));
-    }
-  }
-  for (const name of readdirSync('engines').sort()) {
-    const dist = join(process.cwd(), 'engines', name, 'dist', 'index.js');
-    if (!existsSync(dist)) {
-      console.error(`migration-fence: engines/${name} is not built (${dist}); run the build first.`);
-      process.exit(2);
-    }
-    const mod = (await import(pathToFileURL(dist).href)) as Record<string, unknown>;
-    out.push([`engines/${name}`, Object.values(mod).filter(isRegistration)]);
-  }
-  await load('template', join(syncTemplate(), TEMPLATE_PERMISSIONS_ENTRY));
-  return out;
 }
 
 /** The gate has to tell its own cases apart, or green means nothing. */
@@ -131,7 +88,7 @@ async function main(): Promise<void> {
   }
   const failures: string[] = [];
   let migrations = 0;
-  for (const [label, modules] of await registrations()) {
+  for (const { label, modules } of await registrations('migration-fence')) {
     migrations += modules.reduce((n, m) => n + (m.migrations?.length ?? 0), 0);
     const outcome = replay(label, modules);
     failures.push(...outcome.failures);
