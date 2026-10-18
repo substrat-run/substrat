@@ -72,15 +72,18 @@ const ANNOTATIONS = new Set([
 
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 
+/** Keywords whose keys are NAMES (a field called `title`), never keywords to strip. */
+const NAME_MAPS = new Set(['properties', 'patternProperties', '$defs', 'definitions', 'schemas', 'responses', 'content']);
+
 /** A value as a comparable string, keys sorted, optionally without annotations at any depth. */
 function canon(v: unknown, stripAnnotations: boolean): string {
-  const walk = (x: unknown): unknown => {
-    if (Array.isArray(x)) return x.map(walk);
+  const walk = (x: unknown, names = false): unknown => {
+    if (Array.isArray(x)) return x.map((y) => walk(y));
     if (!isRecord(x)) return x;
     const out: Record<string, unknown> = {};
     for (const k of Object.keys(x).sort()) {
-      if (stripAnnotations && (ANNOTATIONS.has(k) || k.startsWith('x-'))) continue;
-      out[k] = walk(x[k]);
+      if (!names && stripAnnotations && (ANNOTATIONS.has(k) || k.startsWith('x-'))) continue;
+      out[k] = walk(x[k], !names && NAME_MAPS.has(k));
     }
     return out;
   };
@@ -258,7 +261,7 @@ export function compareSchema(
   for (const k of [...new Set([...Object.keys(base), ...Object.keys(head)])].sort()) {
     if (UNDERSTOOD.has(k) || ANNOTATIONS.has(k) || k.startsWith('x-')) continue;
     if (canon(base[k], true) !== canon(head[k], true)) {
-      push('major', path, `'${k}' changed (not a keyword this classifier reads, so judged as breaking)`);
+      push('major', path, `'${k}' changed — not a change this classifier can rank, so judged as breaking`);
     }
   }
 }
@@ -675,7 +678,8 @@ export function parsePermissions(text: string): PermissionSnapshot {
   for (const section of sections) {
     const nl = section.indexOf('\n');
     const heading = (nl === -1 ? section : section.slice(0, nl)).replace(/^\d+\.\s*/, '').trim();
-    const firstKey = (cells: string[]) => codesIn(cells[0] ?? '')[0] ?? cells[0] ?? '';
+    // The FIRST code span names the row: a schedule's cell reads "`op` — purges a trashed `list`".
+    const firstKey = (cells: string[]) => /`([^`]+)`/.exec(cells[0] ?? '')?.[1] ?? cells[0] ?? '';
     if (/^Registry\b/.test(heading)) {
       for (const cells of rowsOf(section)) snap.registry[firstKey(cells)] = cells.slice(1);
     } else if (/^Roles\b/.test(heading)) {
