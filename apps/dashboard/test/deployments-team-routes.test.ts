@@ -3,10 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { platformActorId, principalId, scopeId, tenantId, type ScopeId, type TenantId } from '@substrat-run/contracts';
+import { channelHistoryEntry, opsFailureEntry, platformActorId, principalId, scopeId, tenantId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
-import { dashboardRoutes } from '../src/routes.js';
+import { channelHistoryRow, dashboardRoutes, deployFailureRow } from '../src/routes.js';
 import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 
 /**
@@ -595,5 +595,17 @@ describe('a plane newer than this dashboard (version skew)', () => {
       review: { base: 'v1', digest: 'a'.repeat(64) },
       exportBreaks: { affected: [expect.objectContaining({ vertical: 'other/app', type: 'a.thing-from-the-future' })], otherTenants: 1 },
     });
+  });
+});
+
+describe('rows that contracts already define are picked from it, not retyped', () => {
+  it('a failure row and a channel-history row are the contract’s own fields', () => {
+    // A copy would not follow a field contracts widens, and the route would start refusing its own rows.
+    for (const [key, schema] of Object.entries(deployFailureRow.shape)) {
+      expect(schema, `failure.${key}`).toBe(opsFailureEntry.shape[key as keyof typeof opsFailureEntry.shape]);
+    }
+    for (const [key, schema] of Object.entries(channelHistoryRow.shape)) {
+      expect(schema, `history.${key}`).toBe(channelHistoryEntry.shape[key as keyof typeof channelHistoryEntry.shape]);
+    }
   });
 });

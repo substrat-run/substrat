@@ -20,11 +20,13 @@
  */
 import {
   adminLogEntry,
+  channelHistoryEntry,
   channelName,
   defineRoutes,
   dnsRecord,
   hostnameStatus,
   LIST_PAGE_MAX,
+  opsFailureEntry,
   FINDINGS_LIMIT_MAX,
   findingEntry,
   findingKind,
@@ -274,25 +276,19 @@ export const promotionReviewRow = z.object({
  * and exactly when — the rollback picker's row. `at` is also the instant a point-in-time data
  * restore would rewind to.
  */
-export const channelHistoryRow = z.object({
-  id: z.string(),
-  versionId: z.string(),
-  fromVersionId: z.string().nullable(),
-  actor: z.string(),
-  at: z.string(),
-});
+export const channelHistoryRow = channelHistoryEntry.pick({ id: true, versionId: true, fromVersionId: true, actor: true, at: true });
 
 /** One recorded operational failure of a pushed vertical (#559) — a deploy, preview or provision the platform could not do. */
-export const deployFailureRow = z.object({
-  id: z.string(),
-  operation: z.string(),
-  stage: z.string().nullable(),
-  scopeId: z.string().nullable(),
-  status: z.number().int().nullable(),
-  message: z.string(),
+export const deployFailureRow = opsFailureEntry.pick({
+  id: true,
+  operation: true,
+  stage: true,
+  scopeId: true,
+  status: true,
+  message: true,
   /** The upstream provider's trace handle, when the message carried one. */
-  reference: z.string().nullable(),
-  at: z.string(),
+  reference: true,
+  at: true,
 });
 
 /** Failures grouped by shape (#1233): counts cover the 90-day evidence window, not all time. */
