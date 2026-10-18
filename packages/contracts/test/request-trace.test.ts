@@ -112,3 +112,31 @@ describe('the sink slot', () => {
     expect(installedTraceSink()).toBeUndefined();
   });
 });
+
+describe('the shared time axis', () => {
+  it('counts from the mark the request layer made, so two recorders agree on zero', async () => {
+    const { markTraceStart, traceOffsetMs, forgetTraceStart } = await import('../src/index.js');
+    const id = `axis-${Math.random()}`;
+    markTraceStart(id, performance.now() - 50);
+    expect(traceOffsetMs(id)).toBeGreaterThanOrEqual(50);
+    forgetTraceStart(id);
+  });
+
+  it('starts at its own first call when nothing marked a start, and a second mark does not move it', async () => {
+    const { markTraceStart, traceOffsetMs, forgetTraceStart } = await import('../src/index.js');
+    const id = `axis-${Math.random()}`;
+    expect(traceOffsetMs(id)).toBeLessThan(20);
+    markTraceStart(id, performance.now() + 10_000);
+    expect(traceOffsetMs(id)).toBeLessThan(20);
+    forgetTraceStart(id);
+  });
+
+  it('releases the start, so a finished invocation leaves nothing behind', async () => {
+    const { markTraceStart, forgetTraceStart } = await import('../src/index.js');
+    const id = `axis-${Math.random()}`;
+    markTraceStart(id);
+    forgetTraceStart(id);
+    const slots = globalThis as Record<symbol, Map<string, number>>;
+    expect(slots[Symbol.for('substrat.trace-starts')]!.has(id)).toBe(false);
+  });
+});

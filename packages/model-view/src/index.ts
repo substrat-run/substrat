@@ -392,3 +392,4 @@ Marks: PK primary key · KEY natural key · ERASABLE reachable by an erasure. <c
 </html>
 `;
 }
+export * from './concept.js';
