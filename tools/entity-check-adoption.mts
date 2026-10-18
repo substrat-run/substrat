@@ -12,8 +12,9 @@
  *
  * So this reads each package's own modules (the set `lint:migration-fence` reads, without the
  * template), takes the operations whose declared surface addresses an entity by id
- * (`declaredSurfaceOf`, the record `operationInputsOf` keeps), and refuses a package that has
- * any and no test file calling `entityCheckConformanceSuite(`. Which operations the suite then
+ * (`declaredSurfaceOf`, the record `operationInputsOf` keeps), and refuses a package whose tests
+ * call `entityCheckConformanceSuite(` fewer times than it has modules declaring such operations —
+ * the suite takes one module's operations — counting calls in code only, comments blanked. Which operations the suite then
  * covers, and which it lists as uncovered, is the suite's own assertion.
  *
  * What this does not reach: an operation with a bare scope-wide key that checks nothing at all.
@@ -25,34 +26,51 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { blankComments } from './attachment-writers.mjs';
 import { declaredSurfaceOf } from '../packages/contracts/dist/index.js';
 import { registrations, testFiles, type Registration } from './package-registrations.mts';
 
-const SUITE_CALL = /\bentityCheckConformanceSuite\s*\(/;
+const SUITE_CALL = /\bentityCheckConformanceSuite\s*\(/g;
 
-/** The operations `modules` declare as addressing one entity by id. */
-export function targetedOperations(modules: readonly Registration[]): string[] {
-  return modules.flatMap((m) => {
-    const surface = declaredSurfaceOf((m.operations as { inputs?: object } | undefined)?.inputs);
-    return surface ? Object.keys(surface.targets) : [];
-  });
+/** The operations one module declares as addressing one entity by id. */
+export function targetedOperations(module: Registration): string[] {
+  const surface = declaredSurfaceOf((module.operations as { inputs?: object } | undefined)?.inputs);
+  return surface ? Object.keys(surface.targets) : [];
 }
 
-export function adoptionOffences(packages: readonly { label: string; targeted: readonly string[]; tests: readonly string[] }[]): string[] {
-  return packages
-    .filter((p) => p.targeted.length > 0 && !p.tests.some((text) => SUITE_CALL.test(text)))
-    .map(
-      (p) =>
-        `${p.label}: ${p.targeted.length} operation(s) declare an entity check (${p.targeted.slice(0, 3).join(', ')}` +
-        `${p.targeted.length > 3 ? ', …' : ''}) and no test calls entityCheckConformanceSuite`,
-    );
+export interface Judged {
+  readonly label: string;
+  /** Each own module that declares entity checks, with those operations. */
+  readonly modules: readonly { readonly id: string; readonly targeted: readonly string[] }[];
+  readonly tests: readonly string[];
+}
+
+/**
+ * A package whose modules declare entity checks calls the suite once per such module: the suite
+ * takes one module's operations. Calls are counted in the test code, comments blanked, so a
+ * suite mentioned in prose or commented out is not one.
+ */
+export function adoptionOffences(packages: readonly Judged[]): string[] {
+  return packages.flatMap(({ label, modules, tests }) => {
+    const declaring = modules.filter((m) => m.targeted.length > 0);
+    if (declaring.length === 0) return [];
+    const calls = tests.reduce((n, text) => n + [...blankComments(text).matchAll(SUITE_CALL)].length, 0);
+    if (calls >= declaring.length) return [];
+    const ops = declaring.flatMap((m) => m.targeted);
+    const named = `${ops.length} operation(s) declare an entity check (${ops.slice(0, 3).join(', ')}${ops.length > 3 ? ', …' : ''})`;
+    return [
+      calls === 0
+        ? `${label}: ${named} and no test calls entityCheckConformanceSuite`
+        : `${label}: ${declaring.length} module(s) declare entity checks (${declaring.map((m) => m.id).join(', ')}) and the tests call entityCheckConformanceSuite ${calls} time(s) — once per module`,
+    ];
+  });
 }
 
 async function main(): Promise<void> {
   const packages = await registrations('entity-check-adoption', { template: false });
   const judged = packages.map(({ label, own }) => ({
     label,
-    targeted: targetedOperations(own),
+    modules: own.map((m) => ({ id: m.manifest.id, targeted: targetedOperations(m) })),
     tests: testFiles(join(process.cwd(), label)).map((f) => readFileSync(f, 'utf8')),
   }));
   const offences = adoptionOffences(judged);
@@ -65,9 +83,10 @@ async function main(): Promise<void> {
     );
     process.exit(1);
   }
-  const adopters = judged.filter((p) => p.targeted.length > 0);
+  const targeted = (p: Judged): number => p.modules.reduce((n, m) => n + m.targeted.length, 0);
+  const adopters = judged.filter((p) => targeted(p) > 0);
   console.log(
-    `entity-check-adoption: ${adopters.length} package(s) declare entity checks (${adopters.reduce((n, p) => n + p.targeted.length, 0)} operations); every one runs the conformance suite.`,
+    `entity-check-adoption: ${adopters.length} package(s) declare entity checks (${adopters.reduce((n, p) => n + targeted(p), 0)} operations); every one runs the conformance suite.`,
   );
 }
 
