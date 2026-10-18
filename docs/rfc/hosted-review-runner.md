@@ -41,7 +41,9 @@ to run it. It does not cover:
 
 ## 2. Already decided
 
-These are not open, and the questions in §6 are asked inside them.
+These are not open, and the questions in §6 are asked inside them — with one exception: §2.2 is a
+requirement this RFC derives and proposes, not a decision, and the human confirms or rejects it as
+Q6d.
 
 **D1 — One checklist, any runner.** `plugin/substrat/review/checklist.md` is the only copy of
 the rules. The local skill reads it today; the hosted runner reads the same file (Q5 says how).
@@ -128,9 +130,20 @@ A gate result counts as *script-confirmed* in the sense of D4 only when all of t
    source under review, comes from the platform or is pinned and verified by it: the gate's own
    configuration (for boundary-lint, its config file and its allow-hatches), compiler options and
    the types the compiler resolves, and which `@substrat-run/*` packages are present, at which
-   versions, with their integrity checked — engine table ownership included. A configuration or
-   hatch that the change itself adds or widens is reported as a finding of its own and is never
-   read as clean for the rule it affects.
+   versions, with their integrity checked — engine table ownership included. Two inputs need
+   saying outright:
+   - *What a gate judges.* The set of files boundary-lint judges is everything reachable from the
+     vertical's module registrations, as the platform resolves that graph from the declared entry.
+     It is not a fixed set of directories, and not the tree's own statement of which directories
+     count as module code.
+   - *What steers the compiler.* Suppressions in the source under review (`@ts-ignore`,
+     `@ts-expect-error`, `@ts-nocheck`), augmentation of a platform package's module declarations,
+     and type declarations supplied by third-party packages all change the compiler's verdict. They
+     are hatches in the sense of this condition.
+
+   A configuration or hatch that the change itself adds or widens — a gate's own, or one of the
+   compiler hatches above — is reported as a finding of its own and is never read as clean for the
+   rule it affects.
 3. **Reading before customer code runs.** Gates that read source as text run before any customer
    code executes, in a filesystem that step never shares, with only platform-verified packages
    present. Not every text gate can run before an install: boundary-lint's engine-ownership rule
@@ -150,8 +163,16 @@ A gate result counts as *script-confirmed* in the sense of D4 only when all of t
    record (§4).
 
 The archive itself is the first customer input the runner parses, so the **unpacker** (§4) holds
-no credential and refuses absolute paths, `..` entries, symlinks and hardlinks that leave the root,
-and device files, and enforces bounds on total size, file size and file count.
+no credential and extracts under these rules:
+
+- no absolute paths and no `..` entries;
+- no symlinks or hardlinks at all, which also rules out writing through a link an earlier entry
+  of the same archive created;
+- no device files, FIFOs or sockets, and setuid, setgid, sticky and other special mode bits
+  dropped from every file;
+- no duplicate entries, and no two entries whose paths are equal after case folding or Unicode
+  normalization;
+- bounds on total size, per-file size and file count, measured after decompression.
 
 A script that does not meet all seven is **customer-owned**: the customer's own tests (the
 `scenario` gate runs them) and any project script are in this class. Their results are reported,
@@ -219,7 +240,7 @@ None of the four writes to the customer's code, the version record or any scope.
 2. **The customer's text is data, never instructions.** The change, its comments, its file names,
    its commit messages and anything a customer-owned script prints are written by the party being
    reviewed.
-3. **Each part can do one thing.** The unpacker parses and holds nothing; the gate half executes
+3. **Each part can do one thing.** The unpacker parses and holds only its read handles; the gate half executes
    and holds nothing; the reader half reads and executes nothing; the assembler writes one record
    (Q6c).
 4. **What blocks is reproducible.** A blocking finding is one anyone can re-run the platform's
@@ -343,44 +364,55 @@ the question says the options may be combined.
 Two things are stored: the **source archive** (D5), which must exist from the push until the
 asynchronous review has run and which later reviews diff against, and the **review record**.
 
-- **A. Archive only where review is on; record of findings and digests.**
-  - *When an archive is stored:* only for a vertical with review enabled (Q2), until the controlled
-    build (D5 C) makes the archive the build input for every vertical. A push to a vertical without
-    review uploads no archive.
-  - *Where:* the archive's store is placed at upload, by the jurisdiction rule of Q3d evaluated at
-    upload. If no placement satisfies it, no archive is stored and the version's record says
-    `skipped: no placement in jurisdiction`. If jurisdiction is stricter at review start than at
-    upload, the review does not run, the archive is deleted, and the record says
-    `skipped: jurisdiction changed since upload`.
-  - *How long:* while the version is in the vertical's channel history, and for 180 days after it
-    leaves (the window the platform already uses for issues and findings). A version that never
-    enters channel history — a preview, or a push never promoted — keeps its archive for 30 days
-    from the push, or until it enters channel history, whichever comes first.
-  - *The diff base:* the archive of the last reviewed version of the same vertical. If that archive
-    has expired, or there is none, the review is a full-tree review and the record says so (`base:
-    none, full tree`).
-  - *The record:* each finding (item, severity, confirmation, `file:line`, a bounded quote,
-    fails-when, fix), each gate's name, status and exit code, the checklist digest, the model spec,
-    the runner version, the archive digest and the base archive's digest, the token counts and
-    container time. **Not** the prompt and **not** the model's transcript; the diff is recomputed
-    from the two archives while both exist. A review that did not run still writes a record, with
-    the reason (§5.1).
-- **B. A, plus the full transcript**, for debugging the runner.
+What every option shares:
+
+- *When an archive is stored:* only for a vertical with review enabled (Q2), until the controlled
+  build (D5 C) makes the archive the build input for every vertical. A push to a vertical without
+  review uploads no archive.
+- *Where:* the archive's store is placed at upload, by the jurisdiction rule of Q3d evaluated at
+  upload. If no placement satisfies it, no archive is stored and the version's record says
+  `skipped: no placement in jurisdiction`. If jurisdiction is stricter at review start than at
+  upload, the review does not run, the archive is deleted, and the record says
+  `skipped: jurisdiction changed since upload`.
+- *The diff base:* the archive of the last reviewed version of the same vertical. If that archive
+  has expired, or there is none, the review is a full-tree review and the record says so (`base:
+  none, full tree`).
+- *The record:* each finding (item, severity, confirmation, `file:line`, a bounded quote,
+  fails-when, fix), each gate's name, status and exit code, the checklist digest, the model spec,
+  the runner version, the archive digest and the base archive's digest, the token counts and
+  container time. Not the prompt; the diff is recomputed from the two archives while both exist. A
+  review that did not run still writes a record, with the reason (§5.1). The record lives in a store
+  of its own (not the #1748 findings store, whose findings are recurring and fingerprinted rather
+  than tied to one version) and shares the archive's retention.
+- *Deletion:* both are deleted when the vertical is deleted and when the tenant is reaped (#36).
+
+The options differ in how long the archive and the record are kept. Channel history is append-only
+and is removed only with the vertical, so "while the version is in channel history" never ends; the
+window is measured from the version's last *pointer* instead.
+
+- **A. A window after the version stops being pointed at.** Kept while any channel points at the
+  version, and for 180 days after the last channel stops pointing at it (the window the platform
+  already uses for issues and findings). A version no channel ever points at — a preview, or a push
+  never promoted — is kept for 30 days from the push, unless a channel points at it within that
+  time, in which case the first rule applies from then on.
+- **B. For the life of the version.** Kept until the vertical is deleted or the tenant is reaped,
+  so every version a channel ever served can still be diffed, rebuilt (once C exists) and shown
+  with its review.
+- **C. A or B, plus the model's full transcript**, for debugging the runner. May be combined with
+  either.
 - Not offered: deleting the archive as soon as its review has run. The next review would have no
   base, and C nothing to build from, which conflicts with D5.
-- *Depends on:* Q2 (which verticals store archives), Q3d (placement). B would feed Q7's corpus; A
-  feeds it only through opt-in cases.
-- *Recommendation:* **A.** The record lives in a store of its own (not the #1748 findings store,
-  whose findings are recurring and fingerprinted rather than tied to one version), on the same
-  retention as the archive. The record's usage line follows the model ledger's own 400 days, like
-  every other model call. Quotes are bounded (one line, a fixed character cap) and pass the same
-  redaction step the assistant RFC proposes for tenant text before they are stored. Both the
-  archive and the record are deleted when the vertical is deleted and when the tenant is reaped
-  (#36); a quote that survived redaction is erased with its record under subject erasure, since a
-  record has no other copy. *If wrong:* without B we cannot re-read the model's reasoning behind a
-  disputed finding, only the finding and the code; choosing B later is a policy change tenants must
-  be told about. A 30-day window for unpromoted versions that is too short makes a long-lived
-  preview's next review a full-tree one, which costs more but is never wrong.
+- *Depends on:* Q2 (which verticals store archives), Q3d (placement). C would feed Q7's corpus;
+  without it the corpus grows only through opt-in cases.
+- *Recommendation:* **A, without C.** The record's usage line follows the model ledger's own 400
+  days, like every other model call. Quotes are bounded (one line, a fixed character cap) and pass
+  the same redaction step the assistant RFC proposes for tenant text before they are stored; a quote
+  that survived redaction is erased with its record under subject erasure, since a record has no
+  other copy. *If wrong:* under A, a rollback to a version unpointed for more than 180 days finds no
+  archive, so its review cannot be shown or its tree rebuilt, and the next review is full-tree; B
+  avoids that at the cost of holding every served version's source for the vertical's whole life.
+  Without C we cannot re-read the model's reasoning behind a disputed finding, only the finding and
+  the code; choosing C later is a policy change tenants must be told about.
 
 **Q3c — Path exclusions: what the reader half is not sent.**
 
@@ -581,12 +613,14 @@ sub-question) that ships sooner; the cost of B is the gap it leaves.
 **Q6c — Credentials, isolation and blast radius.**
 
 - **A. All of:**
-  - **What may be read:** the gate half reads the one archive it was issued; the reader half reads
+  - **What may be read:** the unpacker reads the review's archive and its base archive; the gate
+    half reads only the tree the unpacker extracted for this review; the reader half reads
     the diff, the checklist and procedure, and the gate half's results. Nothing in any scope: no
     tenant data, no vertical secret or env value, no other vertical's code, no other tenant's
     anything.
-  - **What each part holds:** the gate half holds nothing but a single-use read handle for its
-    archive, issued per review and expiring with it. The reader half never sees a model
+  - **What each part holds:** the unpacker holds only single-use read handles for the two
+    archives, issued per review and expiring with it. The gate half holds nothing; its tree is
+    handed to it by the unpacker. The reader half never sees a model
     credential: the assembler's model host makes the call. Only the **assembler** holds a write
     credential, to one endpoint that accepts one review record for the review id it was issued,
     once.
@@ -659,7 +693,7 @@ The options may be combined.
 | 1 | Staff, on our own demo verticals and the seeded corpus | Gates under §2.2, without a container, holding no credential; reader half on one model; records stored; CLI read only. Zero-rated. | Q1c's caps set from real numbers; Q7 C has a baseline per item; the container gate half works. |
 | 2 | Invited tenants, by staff-granted entitlement | Advisory only. Record, CLI read, dashboard, push headline. Container gate half from the first customer review. Metered, zero-rated. | Owner feedback (Q7 A) over at least four weeks; cost per review known, model and container. |
 | 3 | Any tenant that enables it | Advisory only. Metered and billed (Q1b). Plan-shaped entitlement. | Per-item thresholds published; **the controlled build (D5 C) builds the bundle from the uploaded archive**. |
-| 4 | Opt-in per vertical | Q4 B: script-confirmed blocking findings refuse promote, with an owner override, on versions the platform built. | — |
+| 4 | Opt-in per vertical | Q4 B: script-confirmed blocking findings refuse promote, with an owner override, on versions the platform built. Possibly only S1 (boundary-lint) can refuse; every other item stays advisory (§2.2, Q4). | — |
 
 *If wrong:* B puts unmeasured caps in front of a customer; skipping phase 2's advisory window makes
 Q4's threshold a guess.
@@ -691,7 +725,7 @@ Where the reviewed change comes from is decided: §2, D5.
 | Q1c | Per-review budget | A + B: refuse before the call, hard cap during it; per-tenant spend limit in the guard; never shown as clean | nothing |
 | Q2 | Enable surface | C: entitlement per tenant (key reserved, staff-granted in phases 1–2), switch per vertical, held by tenant owner and admin | Q1b |
 | Q3a | Surfaces | A, then B, then C; D last and optional; not the console | A and C on D5 |
-| Q3b | Stored and retention | A: archive only where review is on, placed at upload; channel history then 180 days, 30 days from push if never in channel history; full-tree review once the base has expired; every non-run recorded | Q2, Q3d |
+| Q3b | Stored and retention | A: archive only where review is on, placed at upload; kept while a channel points at the version, then 180 days (30 days from push if never pointed at); no transcript; full-tree review once the base has expired; every non-run recorded | Q2, Q3d |
 | Q3c | Path exclusions | C: platform and customer exclusions; customer globs make a review `partial` | Q2 |
 | Q3d | Jurisdiction | B: every part follows it; evaluated at upload and at review start | regional placements (§9) |
 | Q3e | Model path | A: the HTTP gateway row only | Q1a |
