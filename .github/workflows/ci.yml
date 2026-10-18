@@ -222,6 +222,10 @@ jobs:
           pnpm lint:export-schemas --base "$base"
           pnpm lint:concept --base "$base"
           pnpm lint:migration-ledger --base "$base"
+          # Advisory (#2365, S8): an operation new since the base that no test in its package names
+          # is a ::warning on the PR, never a failure.
+          pnpm test:operation-tests
+          pnpm lint:operation-tests --base "$base"
       # The computed changeset bump (#2364): each vertical's model.json, openapi.json and
       # PERMISSIONS.md diffed against the merge-base — removed or narrowed → major, added → minor,
       # docs → patch — and a changeset that names the vertical with a LOWER bump is red. A vertical

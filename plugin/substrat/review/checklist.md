@@ -130,11 +130,12 @@ gates: `pnpm lint:secret-literals` · judgement
 ### S8 · A new operation has an acceptance test: advisory
 
 - *Gate:* `pnpm lint:tests` refuses a test that reads the emitted model to decide what to
-  assert.
+  assert. `pnpm lint:operation-tests --base origin/main` warns (never fails) on an operation
+  new since the base that no test in its package names.
 - *Reader:* an operation added with no scenario calling it, or only a happy path where it
   has a permission failure and a not-found.
 
-gates: `pnpm lint:tests` · judgement
+gates: `pnpm lint:tests` · `pnpm lint:operation-tests --base <ref>` · judgement
 
 ## Not listed here
 
