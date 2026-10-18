@@ -361,6 +361,7 @@ router need has subpaths of its own, each importing nothing at run time but one 
 | `@substrat-run/contracts/wire-headers` | the wire header names (`PLATFORM_SECRET_HEADER`, `LIVE_MODE_HEADER`, …), also exported from the root |
 | `@substrat-run/contracts/invocation-record` | the invocation record the router meters a request by, and `invocationLevelOf`, also exported from the root |
 | `@substrat-run/contracts/wire-auth` | `assertPlatformCall`, `PlatformCallError` and `secretMatches`: is the platform itself calling? It **fails closed with no configuration at all** — an unset secret is a refusal, never a bypass, because an open provisioning endpoint lets a stranger mint tenants inside a vertical. Its callers are verticals (through [`@substrat-run/vertical-host`](/reference/vertical-host), which re-exports the first two), the control plane and the social relay. `secretMatches` is the constant-time compare behind it and behind `readRoutedNode` |
+| `@substrat-run/contracts/trace-sink` | `TraceSink`, the slot a host reads it from (`TRACE_SINK_KEY`) and the plain types of a trace's head and steps. `substrat dev` installs a sink; a host with none records nothing. The matching schemas (`requestTrace`, `traceStep`) are in the root |
 
 ## Versioning
 

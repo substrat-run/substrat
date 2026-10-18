@@ -58,7 +58,7 @@ function strayImports(file: string, siblings: readonly (readonly [string, string
 }
 
 describe('zero-import subpaths (#1998)', () => {
-  it('the kernel has the two the platform entry reaches, contracts the four', () => {
+  it('the kernel has the two the platform entry reaches, contracts the five', () => {
     expect(KERNEL.map(([path]) => path).sort()).toEqual(['./invocation-line', './ulid']);
     // And the exemption names a subpath that exists, so it cannot outlive what it exempts.
     const all = subpathsOf(join(import.meta.dirname, '..')).map(([path]) => path);
@@ -66,6 +66,7 @@ describe('zero-import subpaths (#1998)', () => {
     expect(CONTRACTS.map(([path]) => path).sort()).toEqual([
       './invocation-record',
       './scope-store-envelope',
+      './trace-sink',
       './wire-auth',
       './wire-headers',
     ]);
