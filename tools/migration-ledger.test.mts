@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { migrationDigest } from '../packages/kernel/dist/index.js';
@@ -55,4 +56,11 @@ test('whitespace in the SQL is part of what a scope hashes, so it is an edit too
   const before = await migrationDigest('CREATE TABLE notes (id TEXT);');
   const after = await migrationDigest('CREATE TABLE notes (id  TEXT);');
   assert.equal(appendOnlyOffences('demos/x', [row('0001', before)], [row('0001', after)]).length, 1);
+});
+
+test('a base the checkout does not hold is exit 2, in the ledger\'s own terms', () => {
+  const run = spawnSync('npx', ['tsx', 'tools/migration-ledger.mts', '--base', 'refs/heads/no-such-base-2365'], { encoding: 'utf8' });
+  assert.equal(run.status, 2);
+  assert.match(run.stderr, /no migration the base shipped would be compared/);
+  assert.doesNotMatch(run.stderr, /export/);
 });

@@ -94,15 +94,16 @@ export function testFiles(dir: string): string[] {
  * The `--base <ref>` a gate was given, resolved to its merge-base with HEAD (`baseCommit`, the
  * rule `lint:export-schemas` judges by): `undefined` without the flag, exit 2 when the ref is
  * missing or not in this checkout. The merge-base, not the ref's tip, so a commit the base gained
- * after this branch left it is never read as something this branch removed.
+ * after this branch left it is never read as something this branch removed. `stakes` is what the
+ * refusal says is lost without the base, in the gate's own terms.
  */
-export function baseFromArgv(tool: string, argv: readonly string[]): string | undefined {
+export function baseFromArgv(tool: string, argv: readonly string[], stakes: string): string | undefined {
   const at = argv.indexOf('--base');
   if (at === -1) return undefined;
   const ref = argv[at + 1];
   try {
     if (!ref || ref.startsWith('--')) throw new Error('--base needs a ref');
-    return baseCommit(ref, process.cwd());
+    return baseCommit(ref, process.cwd(), stakes);
   } catch (err) {
     console.error(`${tool}: cannot run — ${err instanceof Error ? err.message : String(err)}`);
     process.exit(2);

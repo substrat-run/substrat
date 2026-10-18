@@ -49,7 +49,7 @@ function namedOnBase(base: string, label: string, ops: readonly string[]): Set<s
 }
 
 async function main(): Promise<void> {
-  const base = baseFromArgv('operation-tests', process.argv.slice(2));
+  const base = baseFromArgv('operation-tests', process.argv.slice(2), 'without it no operation could be told new from old');
   const packages = await registrations('operation-tests', { template: false });
   let total = 0;
   const gaps: { label: string; op: string; isNew: boolean }[] = [];

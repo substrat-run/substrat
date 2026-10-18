@@ -107,7 +107,7 @@ const git = (args: string[]): string => execFileSync('git', args, { encoding: 'u
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const check = argv.includes('--check');
-  const base = baseFromArgv('migration-ledger', argv);
+  const base = baseFromArgv('migration-ledger', argv, 'without it no migration the base shipped would be compared');
 
   const packages = await registrations('migration-ledger', { template: false });
   const emitted = new Map<string, { rows: LedgerRow[]; text: string }>();
