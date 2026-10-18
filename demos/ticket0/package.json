@@ -126,6 +126,7 @@
       "entry": "src/worker.ts",
       "needsNodeCompat": true,
       "build": "pnpm --dir app build && node scripts/copy-widget.mjs",
+      "scopeStores": [{ "binding": "GRAPH", "driver": "graph" }],
       "stores": [
         {
           "binding": "SCOPE",
