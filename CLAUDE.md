@@ -648,6 +648,16 @@ never "every model.json is new". CI runs the tool's own tests first. What makes 
 (type, schemaVersion) its checked-in `model.json` does not carry, and `lint:model --check` holds
 that file to the declaration. No vertical in the repo exports yet, so today all three pass over
 nothing; the first export is held by all three),
+`lint:changeset-bump --base <ref>` (`tools/changeset-bump.mts`, #2364: each vertical's
+`model.json`, `openapi.json` and `PERMISSIONS.md` diffed against the merge-base by the classifier
+`substrat changeset` writes with (`packages/cli/src/bump.ts`) — removed or narrowed → major, added →
+minor, docs → patch, any permission change at least minor and flagged for the checkpoint, and
+anything it cannot rank → major — and a changeset naming the vertical with a LOWER bump is red. A
+vertical no changeset names is a warning carrying the computed bump, since most demo artifact
+changes are a platform regeneration. A reviewed exception is `<!-- bump-override: <package>
+<level> — <reason> -->` in that changeset, printed in CI; a malformed one is red. Engines and the
+`fixed` group are not judged: their surface is more than an artifact carries, so their changesets
+stay hand-written (#760)),
 `lint:skills` (`tools/skill-paths.mjs`: a repo-rooted path a skill cites in code — a bare
 `demos/todo/src/module.ts`, or the `tools/…` inside a command — exists, spelled the way the
 tree spells it. `.claude/skills/*` and `plugin/substrat/skills/*` are both read; a

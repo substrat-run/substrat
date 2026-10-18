@@ -20,7 +20,7 @@
  * (in the console) still gates serving.
  */
 import { bindConnectionScope, listConnectionBindings } from './connections.js';
-import { join } from 'node:path';
+import { join, resolve as resolvePath } from 'node:path';
 import { createInterface } from 'node:readline';
 import { loadConfig, saveConfig, resolveAuth } from './config.js';
 import { browserLogin } from './login.js';
@@ -52,6 +52,7 @@ import { printInstalls } from './installs.js';
 import { createPreview, deletePreview, listPreviews, formatPreviewLogin, formatPreviews, parseTtlHours } from './preview.js';
 import { writeCiWorkflow, detectDefaultBranch, nextStepsMessage } from './init.js';
 import { writeModelView } from './model.js';
+import { CannotRun, changesetCommand } from './changeset.js';
 import { syncConceptFile } from './concept.js';
 import {
   listVerticalHostnames,
@@ -265,6 +266,15 @@ Usage:
                                               open it in a browser. Reads the checked-in
                                               model.json, so it needs no login and no push.
                                               Writes a temp file unless --out places it
+  substrat changeset [dir] [--base <ref>]     write a .changeset file whose bump is COMPUTED
+                    [--summary <text>]        from the diff of model.json, openapi.json and
+                    [--check] [--json]        PERMISSIONS.md against the merge-base: removed
+                                              or narrowed → major, added → minor, docs → patch;
+                                              permission changes are flagged for review.
+                                              --check refuses a changeset declaring less than
+                                              the computed bump (exit 1); --json prints the
+                                              classification. --base defaults to the
+                                              changesets baseBranch on origin
   substrat concept sync [dir] [--check]       rewrite the generated regions of spec/concept.md —
                                               roles and permissions, the entity diagram, one state
                                               diagram per lifecycle — from model.json and
@@ -1237,6 +1247,41 @@ async function cmdModel(): Promise<void> {
 }
 
 /**
+ * `substrat changeset [dir] [--base <ref>] [--summary <text>] [--check] [--json]` — the bump,
+ * computed from the artifacts of record rather than chosen (#2364). No control plane and no
+ * auth: it reads the checked-in artifacts at the merge-base and in the working tree.
+ */
+function cmdChangeset(): void {
+  const usage = 'usage: substrat changeset [dir] [--base <ref>] [--summary <text>] [--check] [--json]';
+  for (const f of ['base', 'summary']) {
+    const v = flag(f);
+    if (argv.includes(`--${f}`) && (!v || v.startsWith('--'))) {
+      console.error(`${usage}\n\n--${f} needs a value.`);
+      process.exit(1);
+    }
+  }
+  const booleans = ['check', 'json'];
+  const dir = resolvePath(positional(0, booleans) ?? '.');
+  try {
+    const r = changesetCommand(dir, {
+      ...(flag('base') ? { base: flag('base')! } : {}),
+      ...(flag('summary') ? { summary: flag('summary')! } : {}),
+      check: argv.includes('--check'),
+      json: argv.includes('--json'),
+    });
+    for (const l of r.out) console.log(l);
+    for (const l of r.err) console.error(l);
+    if (r.code !== 0) process.exit(r.code);
+  } catch (err) {
+    if (err instanceof CannotRun) {
+      console.error(`error: ${err.message}`);
+      process.exit(2);
+    }
+    throw err;
+  }
+}
+
+/**
  * `substrat concept sync [dir] [--check]` — keep `spec/concept.md`'s generated regions true.
  * Offline like `model view`: it reads the checked-in `model.json` and `PERMISSIONS.md`.
  */
@@ -1311,6 +1356,8 @@ async function main(): Promise<void> {
       return cmdInit();
     case 'model':
       return cmdModel();
+    case 'changeset':
+      return cmdChangeset();
     case 'concept':
       return cmdConcept();
     case 'version':

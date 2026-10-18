@@ -32,6 +32,7 @@
     "lint:export-schemas": "tsx tools/export-schema-diff.mts",
     "test:concept": "tsx --test tools/concept-lint.test.mts",
     "test:export-schemas": "tsx --test tools/export-schema-diff.test.mts",
+    "lint:changeset-bump": "tsx tools/changeset-bump.mts",
     "lint:api": "tsx tools/api-diff.mts",
     "lint:client": "tsx tools/client-emit.mts",
     "lint:migrations": "pnpm -r --if-present --filter='!./.builder/projects/**' run emit:migrations",
