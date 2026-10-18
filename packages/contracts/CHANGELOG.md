@@ -1,5 +1,13 @@
 # @substrat-run/contracts
 
+## 0.150.0
+
+### Minor Changes
+
+- 52cc41f: A trace sink can say what it wants beyond the default: `TraceSink.capture.sqlParams` asks a host to send the values bound to each statement, and a host sends none unless it is asked. Every recorder stamps a step on one time axis: the layer that starts the request calls `markTraceStart`, and `traceOffsetMs` counts from that mark, so a step recorded by the scope host and one recorded by the HTTP layer agree on zero. An outbound step can carry the failure class (`reason`), and a head patch can carry `stepsDropped`, so a truncated list reads as truncated. A refusal on an entity check also names the entity grant that would have allowed it.
+- 9024575: A request trace has a shape. `requestTrace` is the head of the hosted invocation line (#1746, same field names) plus the steps inside the call: permission checks, SQL, emitted events, log lines, validation errors, outbound and store calls, and the error that ended it. A hosted record can fill the head alone; `capture` says what a recorder kept. `TraceSink` and `TRACE_SINK_KEY` are the seam a host records through: a host reads one slot on `globalThis` and does nothing when it is empty. Both are also on the new zero-import subpath `@substrat-run/contracts/trace-sink`, which a bundle without zod can use. Nothing records a trace yet.
+- 5f77e74: A role definition may declare `holder: 'system'` (absent still means a person). A system-held role is the one role that may carry a key reserved to a system principal, and `lint:permissions` renders it in its own section of `PERMISSIONS.md`. Additive: no existing role changes meaning.
+
 ## 0.149.0
 
 ### Minor Changes
@@ -6856,7 +6864,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
