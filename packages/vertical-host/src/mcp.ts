@@ -645,16 +645,16 @@ function statusOf(err: unknown): number | undefined {
  * hand-written `app.post('/api/mcp', …)`, a `/:slug` parameter route — refuses the mount,
  * loudly, at boot and before this mount registers anything (`assertMcpPathFree`), judged by
  * Hono's `TrieRouter` against the path the endpoint really answers at, a Hono `basePath()`
- * included. A route registered AFTER it never
- * runs here: every method but `OPTIONS` is answered by this mount. Not judged:
+ * included. A `*` is judged as `TrieRouter` reads it, so `/api/*`, `/api/mcp/*`, a `GET *`
+ * fallback and `/api/mc*` all refuse the mount. A route registered AFTER it never runs here:
+ * every method but `OPTIONS` is answered by this mount. Not judged:
  *  - `app.use`, `app.all` and `app.mount` (Hono records all three alike), and `OPTIONS` routes;
- *  - a pattern with a segment that is exactly `*`, a catch-all;
  *  - a prefix added after the mount by `app.route()`: the routes of the app it is mounted
- *    into are not seen here.
- * Any other `*` is judged as `TrieRouter` reads it, so `/api/mc*` refuses the mount. The
- * default router also dispatches some mid-segment forms `TrieRouter` does not match, such as
- * `/api/*cp`; those are not refused. The channel (`mcpChannelOf`) is what keeps a delegated
- * token away from every one of these all the same.
+ *    into are not seen here;
+ *  - the mid-segment `*` forms that the default router dispatches here and `TrieRouter` does
+ *    not match, such as `/api/*cp`: these are not refused.
+ * The channel (`mcpChannelOf`) is what keeps a delegated token away from every one of these
+ * all the same.
  */
 export function mountMcp(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

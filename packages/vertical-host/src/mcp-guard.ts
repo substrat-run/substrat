@@ -1,5 +1,5 @@
 import { TrieRouter } from 'hono/router/trie-router';
-import { mergePath, splitRoutingPath } from 'hono/utils/url';
+import { mergePath } from 'hono/utils/url';
 
 /**
  * What the MCP mount and the operation routes share to keep a delegated token (#1824) at the
@@ -41,24 +41,26 @@ export interface RegisteredRoute {
 
 /**
  * The first of `routes` that would answer a request for the concrete `path`, by any method but
- * `OPTIONS`. It is judged by Hono's `TrieRouter`, after Hono's own splitting of the pattern, so
- * parameters, regex parameters and optional parameters are read the way Hono reads them.
+ * `OPTIONS`. It is judged by Hono's own `TrieRouter`, so parameters, regex parameters, optional
+ * parameters and wildcards are read the way Hono reads them.
  *
  * Not judged, and never returned:
  *  - a route registered for every method (`app.use`, `app.all`, `app.mount`, which Hono records
  *    alike as `ALL`);
- *  - an `OPTIONS` route (a CORS preflight);
- *  - a pattern with a segment that is exactly `*`, a catch-all, which meets every path.
+ *  - an `OPTIONS` route (a CORS preflight).
  *
- * Any other `*` is judged as `TrieRouter` reads it: inside a segment (`/api/mc*`, `/ap*`, which
- * both Hono routers dispatch to `/api/mcp`, are returned) and inside a parameter's regex
- * (`/api/:p{m.*}`) alike. The default router also dispatches some mid-segment forms that
- * `TrieRouter` does not match, such as `/api/*cp` and `/ap*` + `/mcp`; those are not returned.
+ * A `*` is judged as `TrieRouter` reads it, wherever it is:
+ *  - A segment that is exactly `*` matches one segment, or, at the end, any rest including
+ *    none. Every Hono router that accepts such a pattern dispatches it alike. So `*`,
+ *    `/api/*`, `/api/mcp/*` and `/*` + `/mcp` are returned for `/api/mcp`, and `/other/*` and
+ *    `/api/*` + `/mcp` are not.
+ *  - A `*` inside a segment (`/api/mc*`, `/ap*`) or inside a parameter's regex is judged too.
+ *    The default router also dispatches some mid-segment forms that `TrieRouter` does not
+ *    match, such as `/api/*cp` and `/ap*` + `/mcp`. Those are not returned.
  */
 export function routeAnsweringAt(routes: readonly RegisteredRoute[], path: string): RegisteredRoute | undefined {
   for (const route of routes) {
     if (route.method === 'ALL' || route.method === 'OPTIONS') continue;
-    if (splitRoutingPath(route.path).includes('*')) continue;
     const probe = new TrieRouter<true>();
     try {
       probe.add(route.method, route.path, true);

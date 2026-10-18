@@ -248,8 +248,8 @@ describe('nothing but the MCP endpoint answers at its path', () => {
 
   /**
    * The oracle is Hono itself: each shape is first registered on a bare app and asked for
-   * `/api/mcp`. The mount must refuse exactly the shapes Hono would dispatch there, so this
-   * grammar cannot drift from Hono's.
+   * `/api/mcp`. The mount must refuse exactly the shapes in this table that Hono would
+   * dispatch there.
    */
   it.each([
     ['a literal', 'PUT', '/api/mcp'],
@@ -265,6 +265,12 @@ describe('nothing but the MCP endpoint answers at its path', () => {
     ['a regex that does not match', 'POST', '/api/:x{[0-9]+}'],
     ['a deeper path', 'POST', '/api/mcp/:x'],
     ['a longer segment', 'POST', '/api/mcps'],
+    ['a trailing wildcard', 'POST', '/api/mcp/*'],
+    ['a wildcard segment', 'POST', '/*/mcp'],
+    ['a wildcard under the base', 'POST', '/api/*'],
+    ['a GET fallback', 'GET', '*'],
+    ['a wildcard elsewhere', 'POST', '/other/*'],
+    ['a wildcard a segment deeper', 'POST', '/api/*/mcp'],
   ])('judges %s the way Hono dispatches it', async (_name, method, pattern) => {
     let dispatched = false;
     const bare = new Hono();
@@ -301,15 +307,39 @@ describe('nothing but the MCP endpoint answers at its path', () => {
     expect(() => mountOperations(app, operations, stub, { basePath: '/v2' })).not.toThrow();
   });
 
-  it('does not judge what meets every path: use, all, mount, OPTIONS and * catch-alls', async () => {
+  it('refuses a * segment that every Hono router dispatches to the MCP path, and not one that misses it', async () => {
+    const reaches = async (pattern: string) => {
+      const hits: boolean[] = [];
+      for (const app of [new Hono(), new Hono({ router: new TrieRouter() })]) {
+        let hit = false;
+        app.post(pattern, (c) => ((hit = true), c.text('mine')));
+        await app.request(`${A}/api/mcp`, { method: 'POST' });
+        hits.push(hit);
+      }
+      return hits;
+    };
+    for (const pattern of ['*', '/*', '/api/*', '/api/mcp/*', '/*/mcp', '/*/*']) {
+      expect(await reaches(pattern), pattern).toEqual([true, true]);
+      const app = new Hono();
+      app.post(pattern, (c) => c.text('mine'));
+      expect(() => mountOperations(app, operations, stub), pattern).toThrow(/is registered before the MCP endpoint/);
+    }
+    for (const pattern of ['/other/*', '/api/*/mcp', '/api/m/*', '/api/mcp/*/x', '/v1/*']) {
+      expect(await reaches(pattern), pattern).toEqual([false, false]);
+      const app = new Hono();
+      app.post(pattern, (c) => c.text('mine'));
+      expect(() => mountOperations(app, operations, stub), pattern).not.toThrow();
+    }
+  });
+
+  it('does not judge use, all, mount or OPTIONS', async () => {
     const app = new Hono();
     let seen = 0;
     app.use('/api/mcp', async (_c, next) => {
       seen++;
       await next();
     });
-    app.get('*', () => new Response('spa'));
-    app.post('/api/*', async (_c, next) => next());
+    app.use('*', async (_c, next) => next());
     app.options('/api/mcp', () => new Response(null, { status: 204 }));
     app.mount('/legacy', () => new Response('legacy'));
     expect(() => mountOperations(app, operations, stub)).not.toThrow();
@@ -354,7 +384,9 @@ describe('nothing but the MCP endpoint answers at its path', () => {
     expect(routeAnsweringAt([{ method: 'POST', path: '/api/:x' }], '/api/mcp')).toEqual({ method: 'POST', path: '/api/:x' });
     expect(routeAnsweringAt([{ method: 'ALL', path: '/api/mcp' }], '/api/mcp')).toBeUndefined();
     expect(routeAnsweringAt([{ method: 'OPTIONS', path: '/api/mcp' }], '/api/mcp')).toBeUndefined();
-    expect(routeAnsweringAt([{ method: 'GET', path: '/api/*' }], '/api/mcp')).toBeUndefined();
+    // A `*` segment is judged as TrieRouter reads it: one that reaches the path, and one that does not.
+    expect(routeAnsweringAt([{ method: 'GET', path: '/api/*' }], '/api/mcp')).toEqual({ method: 'GET', path: '/api/*' });
+    expect(routeAnsweringAt([{ method: 'GET', path: '/other/*' }], '/api/mcp')).toBeUndefined();
     // A `*` inside a segment is judged as TrieRouter reads it.
     for (const path of ['/api/mc*', '/api/mcp*', '/api/m*', '/a*', '/ap*']) {
       expect(routeAnsweringAt([{ method: 'POST', path }], '/api/mcp'), path).toEqual({ method: 'POST', path });

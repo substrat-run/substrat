@@ -208,18 +208,18 @@ What each half does:
   `TrieRouter` would dispatch a request for that path to, by any method but `OPTIONS` (`/mcp`,
   `/:slug`, `/:slug?`, a regex parameter), stops the vertical from mounting; so does a second
   `mountOperations` on the same base path. The path judged is the one the endpoint really
-  answers at, an `app.basePath()` prefix included. A route registered after it never runs
-  there, since the endpoint answers every method but `OPTIONS` itself, with a `405` and
-  `Allow: POST` for all but `POST`. Not judged:
+  answers at, an `app.basePath()` prefix included. A `*` is judged as `TrieRouter` reads it,
+  so `/api/*`, `/api/mcp/*`, `/*/mcp`, a `GET *` fallback, `/api/mc*` and `/ap*` all stop it
+  too; register such a route after the mount, or as middleware. A route registered after the
+  endpoint never runs there, since the endpoint answers every method but `OPTIONS` itself,
+  with a `405` and `Allow: POST` for all but `POST`. Not judged:
   - `app.use`, `app.all` and `app.mount`, which Hono records alike as middleware, and
     `OPTIONS` routes;
-  - a pattern with a segment that is exactly `*`, a catch-all;
-  - the routes of an app this one is mounted into later with `app.route()`.
+  - the routes of an app this one is mounted into later with `app.route()`;
+  - the mid-segment `*` forms that the default router dispatches there and `TrieRouter` does
+    not match, such as `/api/*cp`: these are not refused.
 
-  Any other `*` is judged as `TrieRouter` reads it, so `/api/mc*` or `/ap*` stops the vertical
-  from mounting. The default router also dispatches some mid-segment forms that `TrieRouter`
-  does not match, such as `/api/*cp`; those are not refused. None of these routes is handed
-  the channel, so none admits a delegated token.
+  None of these routes is handed the channel, so none admits a delegated token.
 - **A hand-written MCP surface owns its ceiling.** A vertical that serves its own MCP
   endpoint and passes `delegated` to the verifier itself takes on what the derived endpoint
   does: holding every call to `subject.delegation.scope`. Nothing checks that it does.
