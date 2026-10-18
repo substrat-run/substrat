@@ -44,7 +44,7 @@ describe('syncConceptFile', () => {
     const first = syncConceptFile(dir);
     expect(first.changed).toBe(true);
     const text = readFileSync(first.file, 'utf8');
-    expect(text).toContain('| `member` | `list:create` |');
+    expect(text).toContain('| `member` | `list:create` — Create |');
     expect(text).toContain('erDiagram');
     expect(syncConceptFile(dir).changed).toBe(false);
     expect(readFileSync(first.file, 'utf8')).toBe(text);
