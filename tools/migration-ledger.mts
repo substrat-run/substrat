@@ -119,6 +119,11 @@ const numberOf = (version: string): number | undefined => {
  * scope's), or, where versions are numbered, one not numbered after everything before it — not
  * above the base's highest, skipping a number, or repeating one. A version registered twice in a
  * module is refused too.
+ *
+ * The numbering rule is the repo's convention, sequence numbers (`0003`, `0004-add-due`), and is
+ * meant to be strict: a new one is exactly the last plus one. Date-style versions
+ * (`20261018-x`) are deliberately out of scope; none exists, and a module that adopted them would
+ * fail the +1 rule on its second migration, so the rule would have to change with it.
  */
 export function appendOnlyOffences(label: string, base: readonly LedgerRow[], head: readonly LedgerRow[]): string[] {
   const key = (r: LedgerRow): string => `${r.module}@${r.version}`;
