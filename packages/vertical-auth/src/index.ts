@@ -1,5 +1,5 @@
-export type { AuthProvider, AuthSubject } from './provider.js';
-export { oidcAuthProvider, type OidcConfig } from './oidc.js';
+export type { AuthProvider, AuthSubject, ResolveOptions } from './provider.js';
+export { oidcAuthProvider, type DelegationOption, type OidcConfig } from './oidc.js';
 export { oidcRpAuthProvider, type OidcRpConfig } from './oidc-rp-provider.js';
 export { IdentityDO, doAuthProvider, type IdentityDoEnv, type IdentityStub } from './identity-do.js';
 export { resolveCookieDomain } from './cookie-domain.js';
@@ -29,7 +29,9 @@ export {
   parseAuthChoice,
   selectAuthProvider,
   type AuthChoice,
+  type DelegationWiring,
   type InstanceAuth,
+  type InstanceDelegation,
 } from './instance-auth.js';
 // A login's places (#1670): what a vertical tells the identity pool about its own scope.
 export {
