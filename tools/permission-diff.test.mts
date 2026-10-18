@@ -159,7 +159,7 @@ test('each declared check gets its row: the key and what it narrows to, in the r
   row('docs/line', '`doc:write`', 'one `doc`, resolved in the handler: the doc a line sits on');
   row('docs/timeline', '`doc:read`', 'one entity, type from `type`, id from `id`');
   row('docs/attach', '`doc:write`', 'one entity, whole ref from `subject`');
-  row('docs/mine', '`doc:read`', 'each row, by a proof walk');
+  row('docs/mine', '`doc:read`', 'each row, by a proof walk: each doc the caller reads');
   row('docs/accept', '— none —', 'nothing: the invite \\| is the authority');
   // A handler with no declaration is said to be exactly that — never given a guessed key.
   row('docs/raw', '— checked in code, not declared —', '—');
@@ -217,4 +217,19 @@ test('round trip: a reason with a pipe reads back as one cell, so "Declared by" 
     keys: [],
     terms: ['— none —', 'nothing: the invite | is the authority', '`@fixture/docs`'],
   });
+});
+
+test('a reworded proof-walk reason is a changed row: --check refuses, and the classifier flags it minor', () => {
+  const at = (reason: string) => ({
+    handlers: handlers('docs/mine'),
+    checks: { 'docs/mine': { narrows: { reason, checks: ['doc:read'] } } },
+  });
+  const dir = writeOpsFixture(fresh(), at('each doc the caller reads'));
+  assert.equal(run(dir).status, 0);
+  const before = rendered(dir);
+  writeOpsFixture(dir, at('each doc the caller wrote'));
+  assert.equal(run(dir, '--check').status, 1, 'a reworded walk reason must be drift');
+  assert.equal(run(dir).status, 0);
+  const r = classifyPermissions(before, rendered(dir));
+  assert.deepEqual(r.changes.map((c) => [c.path, c.level, c.flagged]), [['operation docs/mine', 'minor', true]]);
 });

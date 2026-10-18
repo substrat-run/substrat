@@ -94,13 +94,13 @@ shapes.
 | `bike-shop/create-customer` | `customer:manage` | the scope | `@substrat-run/demo-handlebar` |
 | `bike-shop/create-repair` | `workorder:create` | the scope | `@substrat-run/demo-handlebar` |
 | `bike-shop/list-customers` | `customer:manage` | the scope | `@substrat-run/demo-handlebar` |
-| `bike-shop/portal-repairs` | — | each row, by a proof walk | `@substrat-run/demo-handlebar` |
+| `bike-shop/portal-repairs` | — | each row, by a proof walk: a customer sees their own repairs, not a denial | `@substrat-run/demo-handlebar` |
 | `bike-shop/price-list` | `customer:manage` | the scope | `@substrat-run/demo-handlebar` |
 | `bike-shop/register-bike` | `bike:manage` | the scope | `@substrat-run/demo-handlebar` |
 | `bike-shop/start-condition-report` | `protocol:create` | the scope | `@substrat-run/demo-handlebar` |
 | `bike-shop/timeline` | `workorder:read` | one entity, type from `entityType`, id from `entityId` | `@substrat-run/demo-handlebar` |
 | `bike-shop/upsert-price` | `customer:manage` | the scope | `@substrat-run/demo-handlebar` |
-| `bike-shop/whoami` | `customer:manage` | each row, by a proof walk | `@substrat-run/demo-handlebar` |
+| `bike-shop/whoami` | `customer:manage` | each row, by a proof walk: every principal may ask what they themselves may do | `@substrat-run/demo-handlebar` |
 | `invoicing/export` | `invoicing:export` | the scope | `@substrat-run/engine-invoicing` |
 | `invoicing/get` | `invoicing:read` | the scope | `@substrat-run/engine-invoicing` |
 | `invoicing/list` | `invoicing:read` | the scope | `@substrat-run/engine-invoicing` |

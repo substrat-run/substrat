@@ -191,7 +191,8 @@ function operationRow(check: CheckLike | undefined): { key: string; on: string }
   if (check === undefined) return { key: '— checked in code, not declared —', on: '—' };
   if ('narrows' in check) {
     if (check.narrows.unchecked) return { key: '— none —', on: `nothing: ${prose(check.narrows.reason)}` };
-    return { key: sorted(check.narrows.checks).map(code).join(', ') || '—', on: 'each row, by a proof walk' };
+    // The walk's stated reason is part of the check, as a `resolved` one is: reworded, the row changes.
+    return { key: sorted(check.narrows.checks).map(code).join(', ') || '—', on: `each row, by a proof walk: ${prose(check.narrows.reason)}` };
   }
   const p = check.permission;
   if (typeof p === 'string') return { key: code(p), on: 'the scope' };

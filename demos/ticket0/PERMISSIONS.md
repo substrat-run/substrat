@@ -190,7 +190,7 @@ shapes.
 | `ticket0/mark-notification-read` | `notification:read-own` | the scope | `@substrat-run/demo-ticket0` |
 | `ticket0/merge` | `conversation:merge` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
 | `ticket0/mint-kb-refresh-token` | `kb:manage` | one `kbSource`, id from `sourceId` | `@substrat-run/demo-ticket0` |
-| `ticket0/my-conversations` | `conversation:read-own` | each row, by a proof walk | `@substrat-run/demo-ticket0` |
+| `ticket0/my-conversations` | `conversation:read-own` | each row, by a proof walk: Returns only conversations belonging to the calling contact, or that it is copied in on | `@substrat-run/demo-ticket0` |
 | `ticket0/my-messages` | `conversation:read-own` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
 | `ticket0/my-notifications` | `notification:read-own` | the scope | `@substrat-run/demo-ticket0` |
 | `ticket0/notify-no-reply` | `conversation:escalate` | the scope | `@substrat-run/demo-ticket0` |

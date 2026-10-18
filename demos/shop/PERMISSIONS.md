@@ -81,10 +81,10 @@ shapes.
 | `shop/create-discount` | `discount:manage` | the scope | `@substrat-run/demo-shop` |
 | `shop/create-product` | `catalog:manage` | the scope | `@substrat-run/demo-shop` |
 | `shop/fulfil-order` | `order:fulfil` | the scope | `@substrat-run/demo-shop` |
-| `shop/my-customer` | `order:read` | each row, by a proof walk | `@substrat-run/demo-shop` |
+| `shop/my-customer` | `order:read` | each row, by a proof walk: reads checked customer grant ids and returns the first existing customer | `@substrat-run/demo-shop` |
 | `shop/order` | `order:read` | one `order`, id from `orderId` | `@substrat-run/demo-shop` |
 | `shop/orders` | `order:read` | the scope | `@substrat-run/demo-shop` |
-| `shop/portal-orders` | `order:read` | each row, by a proof walk | `@substrat-run/demo-shop` |
+| `shop/portal-orders` | `order:read` | each row, by a proof walk: narrows to a complete checked grant set when possible, then checks each order | `@substrat-run/demo-shop` |
 | `shop/publish-product` | `catalog:manage` | the scope | `@substrat-run/demo-shop` |
 | `shop/quote` | `cart:checkout` | the scope | `@substrat-run/demo-shop` |
 | `shop/remove-line` | `cart:checkout` | the scope | `@substrat-run/demo-shop` |
