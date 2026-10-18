@@ -540,15 +540,17 @@ customer-owned script's result is reported and never blocks.
 
 **Q5b — Versioning, and what a record pins.**
 
-- **A. A content digest**: the sha256 of the checklist file's bytes, computed at build, plus the
-  plugin version it shipped in.
+- **A. A content digest**: one sha256 over the bytes of the checklist followed by the bytes of the
+  procedure, in that fixed order (under Q5c A; under Q5c B, over the checklist alone), computed at
+  build, plus the plugin version it shipped in. Elsewhere in this RFC, "the checklist digest" means
+  this one digest.
 - **B. A hand-kept version field** in the checklist.
 - *Depends on:* Q5c (whether the procedure is inside the digest).
 - *Recommendation:* **A.** A hand-kept version is a field that exists only to go wrong (the same
   reason `docs/` has no `updated:` field). Both runners print the digest in the report's headline,
   so a local report and a hosted record can be compared at a glance, and a builder whose local
-  plugin is older sees that the two reviews used different rules. A review record pins: the
-  checklist and procedure digest and the plugin version, the runner's own version, the model spec,
+  plugin is older sees that the two reviews used different rules. A review record pins: that one
+  digest and the plugin version, the runner's own version, the model spec,
   the gate image's version, and the archive digests (D5). *If wrong:* without a digest, a finding
   cannot be tied to the rule text that produced it, and Q7's per-item numbers mix rule versions.
 
@@ -556,8 +558,8 @@ customer-owned script's result is reported and never blocks.
 disprove, report) is written in `SKILL.md`, not in the checklist.
 
 - **A. Move it beside the checklist** (`plugin/substrat/review/procedure.md`, or a section of the
-  checklist), have the skill point at it as it points at the checklist, and include it in the
-  digest. The hosted runner's prompt is then the checklist, the procedure, the diff and the gate
+  checklist), have the skill point at it as it points at the checklist, and include it in Q5b's
+  digest, after the checklist. The hosted runner's prompt is then the checklist, the procedure, the diff and the gate
   results, and nothing else.
 - **B. Leave it in the skill**, and have the hosted runner keep its own procedure.
 - *Depends on:* nothing.
