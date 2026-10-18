@@ -653,7 +653,8 @@ describe('engine-assistant', () => {
           const settled = await Promise.allSettled([resolveApproval(ctx, answer), resolveApproval(ctx, answer)]);
           return settled.map((s) => (s.status === 'fulfilled' ? 'ok' : (s.reason as { extensions?: { reason?: string } }).extensions?.reason));
         }, [PERM.use]);
-        expect(outcome).toEqual(['ok', 'already_resolved']);
+        // The property is that exactly one answer wins, not which: the two promises race.
+        expect([...outcome].sort()).toEqual(['already_resolved', 'ok']);
         expect(h.eventsOfType('assistant.approval-resolved')).toHaveLength(1);
       });
 
