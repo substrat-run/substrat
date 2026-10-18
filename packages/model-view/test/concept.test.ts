@@ -255,6 +255,35 @@ describe('parsePermissions / decisionsLog', () => {
   });
 });
 
+describe('parsePermissions — the Operations section (#2384)', () => {
+  const OPS = [
+    '## 5. Operations — which key each checks',
+    '',
+    '| Operation | Key | Checked on | Declared by |',
+    '| --- | --- | --- | --- |',
+    '| `todo/rename` | `list:manage` | one `list`, id from `listId` | `@acme/todo` |',
+    '| `todo/mine` | `list:read`, `list:manage` | each row, by a proof walk | `@acme/todo` |',
+    '| `todo/raw` | — checked in code, not declared — | — | `@acme/todo` |',
+    '| `todo/accept` | — none — | nothing: the invite is the authority | `@acme/todo` |',
+    '',
+  ].join('\n');
+
+  it('reads each operation’s declared keys and what they narrow to', () => {
+    const v = parsePermissions(`${PERMISSIONS}\n${OPS}`);
+    expect(Object.fromEntries(v.operations ?? [])).toEqual({
+      'todo/rename': { keys: ['list:manage'], checkedOn: 'one `list`, id from `listId`', declared: true },
+      'todo/mine': { keys: ['list:read', 'list:manage'], checkedOn: 'each row, by a proof walk', declared: true },
+      // The cell is prose: its comma is not a list, and it names no key.
+      'todo/raw': { keys: [], checkedOn: '—', declared: false },
+      'todo/accept': { keys: [], checkedOn: 'nothing: the invite is the authority', declared: true },
+    });
+  });
+
+  it('its twin: a file with no Operations section has no `operations` — absent, never "none"', () => {
+    expect(parsePermissions(PERMISSIONS).operations).toBeUndefined();
+  });
+});
+
 describe('entityDiagram / lifecycleDiagram', () => {
   it('are the generated regions themselves, so `substrat plan` draws what concept.md draws', () => {
     const synced = syncConcept(DOC, inputs);

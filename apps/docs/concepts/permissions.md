@@ -114,7 +114,11 @@ Three kinds of honesty, at three altitudes:
   for the [permission checkpoint](/concepts/modules). Because CI regenerates it with `--check`
   and fails on any difference, a role that gains a key cannot merge without showing up in the
   diff a reviewer must approve. The check reads the *same* declared objects the host registers,
-  so the artifact cannot drift from what is enforced.
+  so the artifact cannot drift from what is enforced. Its Operations section names the key each
+  operation declares it checks and what the check narrows to (the scope, one record, or a walk
+  over rows), so moving an operation to another key shows in that diff too. An operation whose
+  handler checks a key with nothing declared is listed as "checked in code, not declared", not
+  given a guessed key.
 - **Deploy-time.** The surface is carried in the version's deploy manifest and content-hashed
   as `digests.permission`, so **admission** can compute a genuine permission diff between the
   running version and the incoming one. The declared surface is **immutable per version** — it
