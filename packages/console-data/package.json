@@ -1,0 +1,41 @@
+{
+  "name": "@substrat-run/console-data",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The data-source contract the console views read from — query-first, with declared capabilities — and its local implementation over the working tree and a trace reader",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/substrat-run/substrat.git",
+    "directory": "packages/console-data"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/model-view": "workspace:^"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}
