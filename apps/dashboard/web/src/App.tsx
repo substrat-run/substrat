@@ -4,7 +4,7 @@ import { api, signIn, signOut, teamApi, ApiError, needsOnboarding, type AppAuthC
 import { ApiError as TeamApiError } from './lib/api.generated';
 import { DEV_MOCK, MOCK_APPS, MOCK_CATALOG, MOCK_DEPLOYMENTS, MOCK_GIT_REPOS, MOCK_ME, MOCK_MEMBERS } from './lib/mock';
 import { removalRefusalDetail } from './lib/bound-scopes';
-import { promoteWithCheckpoint, type Acks, type Checkpoint } from './lib/promote-review';
+import { promoteReviewOf, promoteWithCheckpoint, type Acks, type Checkpoint } from './lib/promote-review';
 import { navigate as go, obsPath, setTeamSlug, teamPath } from './lib/router';
 import { verticalMeta } from './lib/demo';
 import { DashShell, type Crumb, type NavKey } from './components/DashShell';
@@ -253,9 +253,9 @@ export function App() {
   );
 
   const reloadDeployments = useCallback(async () => {
-    if (DEV_MOCK) return;
-    setDeployments(await api.listDeployments());
-  }, []);
+    if (DEV_MOCK || !currentTeamId) return;
+    setDeployments(await teamApi(currentTeamId).listDeployments());
+  }, [currentTeamId]);
 
   // Git-import state is fetched lazily by the Create-App view (it hits GitHub), so it
   // isn't loaded on every dashboard open. Mock-aware so the dev preview renders it.
@@ -358,7 +358,7 @@ export function App() {
           teamApi(m.currentTeamId).listApps({}),
           teamApi(m.currentTeamId).listMembers({}).catch(() => emptyPage),
           api.catalog(),
-          api.listDeployments().catch(() => []),
+          teamApi(m.currentTeamId).listDeployments().catch(() => []),
         ]);
         if (!live) return;
         setApps(a.entries);
@@ -558,11 +558,13 @@ export function App() {
           let serving: string | null = null;
           const outcome = await promoteWithCheckpoint({
             review: async () => {
-              const r = await api.promoteReview(slug, versionId);
+              const r = promoteReviewOf(await teamClient().getPromotionReview({ slug, versionId }));
               serving = r.serving?.versionId ?? null;
               return r;
             },
-            promote: (acknowledge) => api.promoteDeployment(slug, channel, versionId, acknowledge),
+            promote: async (acknowledge) => {
+              await teamClient().promoteDeployment({ slug, channel, versionId, ...(acknowledge ? { acknowledge } : {}) });
+            },
             ask: (checkpoint) =>
               new Promise<Acks | null>((resolve) => {
                 setPromoteAsk({
@@ -588,7 +590,7 @@ export function App() {
         setPromoting(false);
       }
     },
-    [promoting, reloadDeployments, deployments],
+    [promoting, reloadDeployments, deployments, teamClient],
   );
 
   // Remove a pushed vertical (versions + channels included). The registry refuses while
@@ -608,7 +610,7 @@ export function App() {
         if (DEV_MOCK) {
           setDeployments((ds) => ds.filter((d) => d.slug !== slug));
         } else {
-          await api.deleteDeployment(slug);
+          await teamClient().deleteDeployment({ slug });
           await reloadDeployments();
         }
         setToast({ status: 'success', title: 'Vertical removed', detail: `${slug} was removed from the registry.` });
@@ -616,11 +618,11 @@ export function App() {
         // The registry's one 409 on this route is "still backs N scope(s)" — a count with
         // nowhere to go. The vertical's page lists exactly those installs and lets you move
         // or retire them, so a refusal takes you there rather than leaving you with a number.
-        if (e instanceof ApiError && e.status === 409) {
+        if (e instanceof TeamApiError && e.status === 409) {
           go(`/verticals/${encodeURIComponent(slug)}`);
           // The plane counts every team's installs; the page lists only this team's. When
           // none of the counted ones are ours, say so instead of pointing at an empty list.
-          const ours = await api.listBoundScopes(slug).then((v) => v.scopes.length).catch(() => null);
+          const ours = await teamClient().listBoundScopes({ slug }).then((v) => v.scopes.length).catch(() => null);
           setToast({ status: 'danger', title: 'Removal refused', detail: removalRefusalDetail(e.message, ours) });
         } else {
           setToast({ status: 'danger', title: 'Removal failed', detail: e instanceof Error ? e.message : String(e) });
@@ -629,7 +631,7 @@ export function App() {
         setPromoting(false);
       }
     },
-    [promoting, reloadDeployments],
+    [promoting, reloadDeployments, teamClient],
   );
 
   // Switch team → the server pins the choice in a cookie and the whole portal
@@ -978,6 +980,7 @@ export function App() {
         <Apps apps={apps} loading={appsLoading} onCreate={() => go('/apps/new')} onOpen={(s) => go(`/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={() => void loadMoreApps()} />
       ) : route.section === 'verticals' && openVertical ? (
         <VerticalDetail
+          teamId={me.currentTeamId}
           d={openVertical}
           deployments={deployments}
           busy={promoting}

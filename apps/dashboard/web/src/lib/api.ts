@@ -1,9 +1,13 @@
 import { problemDetail, REQUEST_ID_HEADER } from '@substrat-run/contracts';
-import { createClient, type DashboardClient } from './api.generated';
+import { createClient, type BoundScopeRow, type ChannelHistoryRow, type DashboardClient, type DeployFailureRow, type FailureGroupRow, type MoveReviewRow, type PreviewCreated, type PreviewRow, type ReleaseRow, type ReleasesView } from './api.generated';
 import { tenantLogsQuery } from './logs-query';
-import type { PromoteReviewWire, SentAcks } from './promote-review';
 import { exportBreaksIn } from './bind-ack';
-import type { EdgeHealthReport, MigrationDiff, PromotionReviewBinding, RebindReviewReason, ImportCursorMove, ImportCursorMoved, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PreviewAuth, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { EdgeHealthReport, RebindReviewReason, ImportCursorMove, ImportCursorMoved, CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+
+// The shapes the declared Deployments routes answer (#2170) are the generated client's own.
+export type { BoundScopeRow, DeployFailureRow, FailureGroupRow, MoveReviewRow, PreviewCreated, ReleaseRow, ReleasesView };
+export type ChannelHistoryEntry = ChannelHistoryRow;
+export type VerticalPreview = PreviewRow;
 
 /**
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
@@ -344,83 +348,10 @@ export interface AppDeployments extends Deployment {
   nextCursor: string | null;
 }
 
-/**
- * One builder preview of a vertical — a scope with data bound to a version, at its own
- * `--<tag>` URL (#509). A pinned one (`expiresAt: null`) with a custom domain is a
- * long-lived test environment.
- */
-export interface VerticalPreview {
-  scopeId: string;
-  tag: string | null;
-  versionId: string | null;
-  forkedFrom: string | null;
-  expiresAt: string | null;
-  hostname: string | null;
-  url: string | null;
-  /** The preview's OIDC callback — what an external issuer would need registered (#1704). */
-  callbackUrl?: string | null;
-}
 
-/** The result of creating (or reusing) a preview. `reused` ⇒ an existing tag was rebound. */
-export interface PreviewCreated {
-  scopeId: string;
-  hostname: string;
-  url: string;
-  versionId: string;
-  reused: boolean;
-  /** What happened to the preview's login (#1704); absent from a plane that predates it. */
-  auth?: PreviewAuth;
-  notes?: string[];
-}
 
-/**
- * One recorded go-live: what a channel started serving, what it replaced, who moved the
- * pointer and exactly when — the rollback picker's row. `at` is also the instant a
- * point-in-time data restore would rewind to.
- */
-export interface ChannelHistoryEntry {
-  id: string;
-  versionId: string;
-  fromVersionId: string | null;
-  actor: string;
-  at: string;
-}
 
-/**
- * One recorded operational failure of MY vertical (#559): what the platform could not
- * do — a rejected deploy bundle, a preview restore that hit a platform fault — with
- * the upstream `reference = <id>` when one exists (a Cloudflare support handle).
- */
-export interface DeployFailureRow {
-  id: string;
-  operation: string;
-  stage: string | null;
-  scopeId: string | null;
-  status: number | null;
-  message: string;
-  reference: string | null;
-  at: string;
-}
 
-/**
- * One version as a release (#1236): the version as the axis every other fact is
- * read against. Push instant, go-live moment, adoption, and the version-stamped
- * health facts — the join, not a new record.
- */
-export interface ReleaseRow {
-  versionId: string;
-  version: string;
-  pushedAt: string;
-  origin: string | null;
-  schemaChange: boolean;
-  wentLiveAt: string | null;
-  isProd: boolean;
-  isServing: boolean;
-  scopesPinned: number;
-  failures: number;
-  requests: number | null;
-  errors: number | null;
-}
 
 /** One migration as an app actually applied it (#1236) — its schema history. */
 export interface AppliedMigration {
@@ -867,25 +798,6 @@ export interface ReleaseComparison {
   owned: boolean;
 }
 
-/**
- * One install still bound to a vertical (#1592) — what a refused delete was counting.
- * Mirrors the worker's `BoundScope` (`src/bound-scopes.ts`); `api-parity.ts` is the
- * compiler check that the two agree.
- */
-export interface BoundScopeRow {
-  id: string;
-  slug: string;
-  name: string;
-  status: string;
-  /** A preview/snapshot fork: retiring deletes it, and it is never moved. */
-  fork: boolean;
-  /** Whether Move applies — not a fork, not archived. */
-  movable: boolean;
-  verticalVersionId: string | null;
-  createdAt: string;
-  /** Names that go offline first when this scope is retired. */
-  hostnames: string[];
-}
 
 export interface BoundScopesView {
   /** Neither archived nor reaped — the number `still backs N scope(s)` reports. */
@@ -901,49 +813,13 @@ export interface MoveScopesResult {
   refusal: { scopeId: string; message: string; reason?: RebindReviewReason } | null;
 }
 
-/** #2347: what one install's move would apply, and the binding its acknowledgement carries. */
-export interface MoveReviewRow {
-  scopeId: string;
-  slug: string;
-  base: { vertical: string; versionId: string } | null;
-  target: { vertical: string; versionId: string };
-  digestsMatch: boolean;
-  migrations: MigrationDiff | null;
-  /** The SQL is shown only to an owner of both verticals; the digests and the binding still are. */
-  migrationsWithheld: boolean;
-  review: PromotionReviewBinding;
-}
 
 export interface RetireScopesResult {
   retired: string[];
   failure: { scopeId: string; message: string } | null;
 }
 
-export interface ReleasesView {
-  releases: ReleaseRow[];
-  /** Scopes with no pin — they follow the prod channel. */
-  scopesTrackingProd: number;
-  /** False = the plane's observability is unconfigured; traffic renders as unknown, never zero. */
-  metricsAvailable: boolean;
-}
 
-/**
- * One failure shape on MY vertical (#1233): the fingerprint grouping over the
- * rows above, derived worker-side. Counts cover the evidence window (90 days),
- * not all time; there is no lifecycle here — verdicts are staff concerns.
- */
-export interface FailureGroupRow {
-  fingerprint: string;
-  operation: string;
-  stage: string | null;
-  code: string | null;
-  origin: string | null;
-  count: number;
-  firstSeen: string;
-  lastSeen: string;
-  lastMessage: string;
-  lastStatus: number | null;
-}
 
 /** The result of updating an app to its vertical's prod version. */
 export interface UpdateResult {
@@ -2011,8 +1887,6 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(choice),
     }),
-  listDeployments: () => call<Deployment[]>('/deployments'),
-
   // -- observability (design/observability.md §5, view 2) -------------------
   // Metrics/logs for THIS team's pushed verticals only — the worker narrows by
   // owned deployment refs. 501 = the platform has no observability backend.
@@ -2120,78 +1994,9 @@ export const api = {
     call<WorkflowPreview>(
       `/github/workflow-preview?repo=${encodeURIComponent(repo)}&branch=${encodeURIComponent(branch)}${path ? `&path=${encodeURIComponent(path)}` : ''}`,
     ),
-  promoteDeployment: (
-    slug: string,
-    channel: 'prod',
-    versionId: string,
-    acknowledge?: SentAcks,
-  ) =>
-    call<void>(`/deployments/${encodeURIComponent(slug)}/promote`, {
-      method: 'POST',
-      body: JSON.stringify({ channel, versionId, ...(acknowledge ? { acknowledge } : {}) }),
-    }),
-  /** What promoting `versionId` to prod changes in the permission surface (#1677): the
-   *  registry prod serves now against the incoming one. A failed read rejects — it is never
-   *  an empty review — so a promote can not proceed on a diff that was never drawn. */
-  promoteReview: (slug: string, versionId: string) =>
-    call<PromoteReviewWire>(
-      `/deployments/${encodeURIComponent(slug)}/promote-review?versionId=${encodeURIComponent(versionId)}`,
-    ),
-  /** Remove one of my verticals (versions + channels included). Refused while any app
-   *  still runs it — delete the apps first — and for a published vertical (staff-only). */
-  deleteDeployment: (slug: string) =>
-    call<void>(`/deployments/${encodeURIComponent(slug)}`, { method: 'DELETE' }),
-  /** The installs this vertical still backs — what a refused delete counted (#1592). */
-  listBoundScopes: (slug: string) =>
-    call<BoundScopesView>(`/deployments/${encodeURIComponent(slug)}/scopes`),
-  /** Rebind installs onto another vertical this team owns. A refusal mid-run comes back
-   *  in the result (with what did move), not as a thrown error. */
-  moveBoundScopes: (
-    slug: string,
-    input: { scopeIds: string[]; target: string; ackMigrations?: boolean; reviews?: Record<string, PromotionReviewBinding> },
-  ) =>
-    call<MoveScopesResult>(`/deployments/${encodeURIComponent(slug)}/scopes/move`, {
-      method: 'POST',
-      body: JSON.stringify(input),
-    }),
-  /** #2347: what moving these installs would apply, read before the Move dialog asks. */
-  readMoveReview: (slug: string, input: { scopeIds: string[]; target: string }) =>
-    call<{ scopes: MoveReviewRow[] }>(`/deployments/${encodeURIComponent(slug)}/scopes/move-review`, {
-      method: 'POST',
-      body: JSON.stringify(input),
-    }),
-  /** Archive and wipe installs. `confirm` is what the person TYPED — the count — and the
-   *  worker refuses without it. */
-  retireBoundScopes: (slug: string, input: { scopeIds: string[]; confirm: string }) =>
-    call<RetireScopesResult>(`/deployments/${encodeURIComponent(slug)}/scopes/retire`, {
-      method: 'POST',
-      body: JSON.stringify(input),
-    }),
-  /** One channel's promotion timeline (newest first) — the rollback picker's data. */
-  channelHistory: (slug: string, channel: 'prod') =>
-    call<ChannelHistoryEntry[]>(
-      `/deployments/${encodeURIComponent(slug)}/channels/${encodeURIComponent(channel)}/history`,
-    ),
-  /** This vertical's recorded deploy/preview/provision failures, newest first (#559) —
-   *  why a red CI run was red, from the durable record, without staff involvement. */
-  listFailures: (slug: string) =>
-    call<DeployFailureRow[]>(`/deployments/${encodeURIComponent(slug)}/failures`),
-
-  /** The same record grouped by failure shape (#1233) — counted, newest-seen first. */
-  listFailureGroups: (slug: string) =>
-    call<FailureGroupRow[]>(`/deployments/${encodeURIComponent(slug)}/issues`),
-
-  /** The release ledger (#1236) — every version with its adoption and health facts. */
-  listReleases: (slug: string) =>
-    call<ReleasesView>(`/deployments/${encodeURIComponent(slug)}/releases`),
-
   /** Running vs the version an update would move to (#1236) — the last question before Update. */
   releaseComparison: (scopeId: string) =>
     call<ReleaseComparison>(`/apps/${encodeURIComponent(scopeId)}/release-comparison`),
-
-  /** Traffic over time with the deploys drawn on it (#1236). */
-  deploymentTraffic: (slug: string, hours: number) =>
-    call<TrafficSeries>(`/deployments/${encodeURIComponent(slug)}/traffic?hours=${hours}`),
 
   /**
    * The same series for ONE installed app (#1447) — tenant grain, so the answer is this
@@ -2311,35 +2116,6 @@ export const api = {
         ...(opts?.ackExportBreak ? { acknowledge: { exportBreak: true } } : {}),
       }),
     }),
-  /** A vertical's live builder previews (each a fork/clean-room scope + `--<tag>` URL). */
-  listPreviews: (slug: string) => call<VerticalPreview[]>(`/deployments/${encodeURIComponent(slug)}/previews`),
-  /** Create (or reuse, per tag) a preview of an admitted version. `ttlHours: null` pins it
-   *  (a test env); `empty` provisions a clean-room scope when there is no prod to fork. */
-  createPreview: (
-    slug: string,
-    input: { tag: string; versionId: string; ttlHours?: number | null; empty?: boolean; sourceScopeId?: string; surface?: string; refresh?: boolean },
-  ) =>
-    call<PreviewCreated>(`/deployments/${encodeURIComponent(slug)}/previews`, {
-      method: 'POST',
-      body: JSON.stringify(input),
-    }),
-  /** Reap one preview by tag (idempotent). */
-  deletePreview: (slug: string, tag: string) =>
-    call<{ deleted: string | null }>(
-      `/deployments/${encodeURIComponent(slug)}/previews/${encodeURIComponent(tag)}`,
-      { method: 'DELETE' },
-    ),
-  /** Attach a custom domain to a preview scope — what turns a pinned preview into a
-   *  test environment at a stable address (crm-test.ahero.se). Lands pending, walks DNS. */
-  addPreviewDomain: (
-    slug: string,
-    tag: string,
-    input: { domain: string; surface?: string; canonical?: boolean },
-  ) =>
-    call<AppHostnameRow>(
-      `/deployments/${encodeURIComponent(slug)}/previews/${encodeURIComponent(tag)}/domain`,
-      { method: 'POST', body: JSON.stringify(input) },
-    ),
 };
 
 /**

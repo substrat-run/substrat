@@ -20,8 +20,10 @@
  */
 import {
   adminLogEntry,
+  channelName,
   defineRoutes,
   dnsRecord,
+  exportBreak,
   hostnameStatus,
   LIST_PAGE_MAX,
   FINDINGS_LIMIT_MAX,
@@ -31,6 +33,11 @@ import {
   findingRuleInput,
   findingStatus,
   findingStatusInput,
+  permissionRegistry,
+  previewAuth,
+  REBIND_REVIEW_REASONS,
+  promotionAcknowledgement,
+  versionOrigin,
   z,
 } from '@substrat-run/contracts';
 import { appAuthChoiceBody } from './app-auth-body.js';
@@ -160,6 +167,226 @@ const sentInvite = z.object({ invitationId: z.string(), acceptUrl: z.string(), e
 
 /** A surface the app's vertical declares it serves — the Domains tab's picker. */
 const declaredSurface = z.object({ name: z.string(), label: z.string() });
+
+/** One version of a pushed vertical, as the Deployments view lists it (newest first within a deployment). */
+export const deploymentVersion = z.object({
+  id: z.string(),
+  version: z.string(),
+  /** `pending` | `admitted` | `rejected` — kept a string, as the registry may add states. */
+  admission: z.string(),
+  admissionNote: z.string().nullable(),
+  deploymentRef: z.string().nullable(),
+  /** Updating TO this version crosses a migration boundary (#286). */
+  schemaChange: z.boolean(),
+  /** Where the push came from; null for a push from before origin tracking. */
+  origin: versionOrigin.nullable(),
+  createdAt: z.string(),
+});
+
+/** A vertical this team pushed: its versions and where the `prod` channel points. */
+export const deploymentRow = z.object({
+  /** The full registry id, e.g. `acme-co/helpdesk` — what the routes below take. */
+  slug: z.string(),
+  displaySlug: z.string(),
+  name: z.string(),
+  source: z.string(),
+  /** Published to the marketplace, which makes prod a staff decision. */
+  listed: z.boolean(),
+  versions: z.array(deploymentVersion),
+  /** `servingVersionId` is what prod's serving script actually runs (#321); it trails `versionId` after a failed serve. */
+  channels: z.array(z.object({ channel: z.string(), versionId: z.string(), servingVersionId: z.string().nullish() })),
+});
+
+/** The binding an acknowledgement carries to the review it answers (#2333): the base version and the digest read with it. */
+export const reviewBinding = promotionAcknowledgement.shape.review.unwrap();
+
+/** One migration as a review shows it; `sql` is null once the answer's byte budget ran out. */
+const migrationEntry = z.object({
+  moduleId: z.string(),
+  version: z.string(),
+  sql: z.string().nullable(),
+  moves: z.record(z.string(), z.string()).optional(),
+  discards: z.record(z.string(), z.string()).optional(),
+  declarationsLeftOut: z.literal(true).optional(),
+  edited: z.enum(['sql', 'declarations']).optional(),
+});
+
+/** The migrations a version adds on top of another (contracts `MigrationDiff`). */
+const migrationDiff = z.object({
+  baseline: z.enum(['version', 'none', 'unavailable']),
+  added: z.array(migrationEntry),
+  changed: z.array(migrationEntry),
+  total: z.number().int(),
+  truncated: z.boolean(),
+});
+
+/**
+ * What promoting a version to `prod` would change (#1677): the permission surface and the
+ * SQL, each against what `prod` serves now, whom the promotion breaks, and the binding an
+ * acknowledgement of THIS review carries. A `null` is "cannot show", never "no change".
+ */
+export const promotionReviewRow = z.object({
+  serving: z.object({ versionId: z.string() }).nullable(),
+  incoming: z.object({ versionId: z.string() }),
+  servingRegistry: permissionRegistry.nullable(),
+  incomingRegistry: permissionRegistry.nullable(),
+  migrations: migrationDiff.nullable(),
+  /** This tenant's own apps the promotion breaks by name, other tenants' as a count (#1705). */
+  exportBreaks: z.object({ affected: z.array(exportBreak), otherTenants: z.number().int().optional() }).nullable(),
+  review: reviewBinding.nullable(),
+});
+
+/**
+ * One recorded go-live: what a channel started serving, what it replaced, who moved the pointer
+ * and exactly when — the rollback picker's row. `at` is also the instant a point-in-time data
+ * restore would rewind to.
+ */
+export const channelHistoryRow = z.object({
+  id: z.string(),
+  versionId: z.string(),
+  fromVersionId: z.string().nullable(),
+  actor: z.string(),
+  at: z.string(),
+});
+
+/** One recorded operational failure of a pushed vertical (#559) — a deploy, preview or provision the platform could not do. */
+export const deployFailureRow = z.object({
+  id: z.string(),
+  operation: z.string(),
+  stage: z.string().nullable(),
+  scopeId: z.string().nullable(),
+  status: z.number().int().nullable(),
+  message: z.string(),
+  /** The upstream provider's trace handle, when the message carried one. */
+  reference: z.string().nullable(),
+  at: z.string(),
+});
+
+/** Failures grouped by shape (#1233): counts cover the 90-day evidence window, not all time. */
+export const failureGroupRow = z.object({
+  fingerprint: z.string(),
+  operation: z.string(),
+  stage: z.string().nullable(),
+  code: z.string().nullable(),
+  origin: z.string().nullable(),
+  count: z.number().int(),
+  firstSeen: z.string(),
+  lastSeen: z.string(),
+  lastMessage: z.string(),
+  lastStatus: z.number().int().nullable(),
+});
+
+/** One version as a release (#1236): push instant, go-live moment, adoption and the version-stamped health facts. */
+export const releaseRow = z.object({
+  versionId: z.string(),
+  version: z.string(),
+  pushedAt: z.string(),
+  origin: z.string().nullable(),
+  schemaChange: z.boolean(),
+  wentLiveAt: z.string().nullable(),
+  isProd: z.boolean(),
+  isServing: z.boolean(),
+  scopesPinned: z.number().int(),
+  failures: z.number().int(),
+  /** Null = metrics unavailable, which is not zero traffic. */
+  requests: z.number().nullable(),
+  errors: z.number().nullable(),
+});
+
+/** The release ledger (#1236). */
+export const releasesView = z.object({
+  releases: z.array(releaseRow),
+  /** Scopes with no pin: they follow prod, so belong to whatever `isProd` points at. */
+  scopesTrackingProd: z.number().int(),
+  metricsAvailable: z.boolean(),
+});
+
+/** One plotted bucket of traffic, zero-filled worker-side (#1236). */
+const trafficBucket = z.object({
+  start: z.string(),
+  requests: z.number(),
+  errors: z.number(),
+  durationP95: z.number().nullable(),
+  /** 2xx + 3xx and 4xx (#1693) — both present or both absent. */
+  green: z.number().optional(),
+  yellow: z.number().optional(),
+});
+
+/** The release chart's series (#1236): traffic over the window with every push and go-live drawn on it. */
+export const trafficSeries = z.object({
+  window: z.object({ since: z.string(), until: z.string() }).optional(),
+  buckets: z.array(trafficBucket),
+  markers: z.array(z.object({ at: z.string(), kind: z.enum(['pushed', 'went-live']), version: z.string(), versionId: z.string() })),
+  bucketMinutes: z.number(),
+  /** False = the plane cannot bucket; the chart says so instead of drawing silence. */
+  available: z.boolean(),
+});
+
+/** One install still bound to a vertical (#1592). */
+export const boundScopeRow = z.object({
+  id: z.string(),
+  slug: z.string(),
+  name: z.string(),
+  status: z.string(),
+  /** A preview or snapshot fork: retiring deletes it, and it is never moved. */
+  fork: z.boolean(),
+  movable: z.boolean(),
+  verticalVersionId: z.string().nullable(),
+  createdAt: z.string(),
+  /** Names that go offline first when this scope is retired. */
+  hostnames: z.array(z.string()),
+});
+
+/** What one install's Move would apply (#2347), and the binding its acknowledgement carries. */
+export const moveReviewRow = z.object({
+  scopeId: z.string(),
+  slug: z.string(),
+  base: z.object({ vertical: z.string(), versionId: z.string() }).nullable(),
+  target: z.object({ vertical: z.string(), versionId: z.string() }),
+  digestsMatch: z.boolean(),
+  migrations: migrationDiff.nullable(),
+  /** The SQL is shown only to an owner of both verticals; the digests and the binding still are. */
+  migrationsWithheld: z.boolean(),
+  review: reviewBinding,
+});
+
+/** One builder preview of a vertical (#509): a scope with data bound to a version, at its own `--<tag>` URL. */
+export const previewRow = z.object({
+  scopeId: z.string(),
+  tag: z.string().nullable(),
+  versionId: z.string().nullable(),
+  forkedFrom: z.string().nullable(),
+  expiresAt: z.string().nullable(),
+  hostname: z.string().nullable(),
+  url: z.string().nullable(),
+  /** What an external issuer would need registered (#1704). */
+  callbackUrl: z.string().nullish(),
+});
+
+/** The result of creating a preview, or of re-using one by tag (`reused`). */
+export const previewCreated = z.object({
+  scopeId: z.string(),
+  hostname: z.string(),
+  url: z.string(),
+  versionId: z.string(),
+  reused: z.boolean(),
+  auth: previewAuth.optional(),
+  notes: z.array(z.string()).optional(),
+});
+
+/** A hostname bound to a preview's scope: where issuance stands and what to publish. */
+export const previewDomainRow = z.object({
+  hostname: z.string(),
+  scopeId: z.string(),
+  surface: z.string(),
+  status: z.string(),
+  statusNote: z.string().nullish(),
+  canonical: z.boolean(),
+  createdAt: z.string(),
+  /** The Cloudflare-for-SaaS handle of a custom domain; null for a platform mint. */
+  customHostnameId: z.string().nullish(),
+  validationRecords: z.array(z.object({ type: z.string(), name: z.string(), value: z.string(), status: z.string().nullable() })).optional(),
+});
 
 export const dashboardRoutes = defineRoutes({
   // -- apps: the read side (#2170) --------------------------------------------
@@ -343,6 +570,162 @@ export const dashboardRoutes = defineRoutes({
     summary: 'Leave this team: your roster row is revoked and your login detached from it',
     output: z.object({ left: z.literal(true) }),
     http: { method: 'POST', path: '/leave' },
+  },
+
+  // -- deployments & previews (#2170) -----------------------------------------
+  // The verticals this team pushed (`{slug}` is the full registry id, `acme-co/helpdesk`, sent
+  // percent-encoded). Reads are open to every role (a viewer sees what they may not touch); the
+  // writes ask the dashboard scope's `dashboard:provision-app` first (#1595), exactly as the
+  // cookie routes they replace did. Every route below resolves the slug against the TEAM'S OWN
+  // verticals, so a slug another team pushed answers as an unknown one.
+  'dashboard/list-deployments': {
+    summary: 'The verticals this team pushed, with their versions and where the prod channel points',
+    output: z.array(deploymentRow),
+    http: { method: 'GET', path: '/deployments' },
+  },
+  'dashboard/promote-deployment': {
+    summary: 'Promote a version to prod (self-serve while the vertical is private; the registry gates migration and permission changes on a bound acknowledgement)',
+    input: z.object({
+      slug: z.string().min(1),
+      channel: channelName,
+      versionId: z.string().min(1),
+      // #2333: `review` binds the acknowledgements to the review they answer.
+      acknowledge: promotionAcknowledgement.optional(),
+    }),
+    // A declared route owes an output; the cookie route's empty 204 becomes this 200.
+    output: z.object({ promoted: z.literal(true) }),
+    http: { method: 'POST', path: '/deployments/{slug}/promote' },
+  },
+  'dashboard/get-promotion-review': {
+    summary: 'What promoting a version to prod would change in the permission surface and the SQL, read before the acknowledgement is given',
+    input: z.object({ slug: z.string().min(1), versionId: z.string().min(1) }),
+    output: promotionReviewRow,
+    http: { method: 'GET', path: '/deployments/{slug}/promote-review' },
+  },
+  'dashboard/list-channel-history': {
+    summary: "One channel's promotion timeline, newest first: the rollback picker",
+    input: z.object({ slug: z.string().min(1), channel: channelName }),
+    output: z.array(channelHistoryRow),
+    http: { method: 'GET', path: '/deployments/{slug}/channels/{channel}/history' },
+  },
+  'dashboard/list-deployment-failures': {
+    summary: "A vertical's recorded deploy, preview and provision failures, newest first (one page of 50)",
+    input: z.object({ slug: z.string().min(1) }),
+    output: z.array(deployFailureRow),
+    http: { method: 'GET', path: '/deployments/{slug}/failures' },
+  },
+  'dashboard/get-deployment-releases': {
+    summary: "A vertical's release ledger: each version against its go-live, adoption and health",
+    input: z.object({ slug: z.string().min(1) }),
+    output: releasesView,
+    http: { method: 'GET', path: '/deployments/{slug}/releases' },
+  },
+  'dashboard/get-deployment-traffic': {
+    summary: "A vertical's traffic over the last `hours` (1–72, default 24) with every push and go-live marked",
+    input: z.object({ slug: z.string().min(1), hours: z.number().optional() }),
+    output: trafficSeries,
+    http: { method: 'GET', path: '/deployments/{slug}/traffic' },
+  },
+  'dashboard/list-deployment-issues': {
+    summary: "A vertical's failures grouped by shape, over the evidence window",
+    input: z.object({ slug: z.string().min(1) }),
+    output: z.array(failureGroupRow),
+    http: { method: 'GET', path: '/deployments/{slug}/issues' },
+  },
+  'dashboard/delete-deployment': {
+    summary: 'Remove a vertical from the registry (refused for a published vertical, and while any scope still runs it)',
+    input: z.object({ slug: z.string().min(1) }),
+    // A declared route owes an output; the cookie route's empty 204 becomes this 200.
+    output: z.object({ removed: z.literal(true) }),
+    http: { method: 'DELETE', path: '/deployments/{slug}' },
+  },
+  'dashboard/list-bound-scopes': {
+    summary: 'The installs a vertical still backs: the list a refused delete is counting',
+    input: z.object({ slug: z.string().min(1) }),
+    output: z.object({ live: z.number().int(), archived: z.number().int(), scopes: z.array(boundScopeRow) }),
+    http: { method: 'GET', path: '/deployments/{slug}/scopes' },
+  },
+  'dashboard/review-scope-move': {
+    summary: "What moving the chosen installs onto another of this team's verticals would apply, and the binding to acknowledge it with",
+    input: z.object({ slug: z.string().min(1), scopeIds: z.array(z.string().min(1)).min(1).max(100), target: z.string().min(1) }),
+    output: z.object({ scopes: z.array(moveReviewRow) }),
+    http: { method: 'POST', path: '/deployments/{slug}/scopes/move-review' },
+  },
+  'dashboard/move-scopes': {
+    summary: "Rebind the chosen installs onto another of this team's verticals, stopping at the first refusal",
+    input: z.object({
+      slug: z.string().min(1),
+      scopeIds: z.array(z.string().min(1)).min(1).max(100),
+      target: z.string().min(1),
+      ackMigrations: z.boolean().optional(),
+      // #2347: per scope, the rebind review its acknowledgement answers.
+      reviews: z.record(z.string(), reviewBinding).optional(),
+    }),
+    output: z.object({
+      moved: z.array(z.string()),
+      /** `reason` (#2347): the review the acknowledgement answered moved, or none was sent. */
+      refusal: z
+        .object({ scopeId: z.string(), message: z.string(), reason: z.enum([REBIND_REVIEW_REASONS.stale, REBIND_REVIEW_REASONS.unbound]).optional() })
+        .nullable(),
+    }),
+    http: { method: 'POST', path: '/deployments/{slug}/scopes/move' },
+  },
+  'dashboard/retire-scopes': {
+    summary: 'Retire the chosen installs: release their names, archive and reap them. Wipes storage; `confirm` must be the count typed',
+    input: z.object({
+      slug: z.string().min(1),
+      scopeIds: z.array(z.string().min(1)).min(1).max(100),
+      // What the caller TYPED, verbatim — checked server-side against how many scopes are retired.
+      confirm: z.string(),
+    }),
+    output: z.object({
+      retired: z.array(z.string()),
+      failure: z.object({ scopeId: z.string(), message: z.string() }).nullable(),
+    }),
+    http: { method: 'POST', path: '/deployments/{slug}/scopes/retire' },
+  },
+  'dashboard/list-previews': {
+    summary: "A vertical's live previews: each a scope with data bound to a version, at its own `--<tag>` URL",
+    input: z.object({ slug: z.string().min(1) }),
+    output: z.array(previewRow),
+    http: { method: 'GET', path: '/deployments/{slug}/previews' },
+  },
+  'dashboard/create-preview': {
+    summary: 'Create a preview of an admitted version, or re-use the one with this tag (`reused`); `ttlHours: null` pins it',
+    input: z.object({
+      slug: z.string().min(1),
+      tag: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/, 'tag must be a short DNS-safe label, e.g. pr-123'),
+      versionId: z.string().min(1),
+      // `null` PINS the preview (a long-lived test env); absent = the plane's 72h default.
+      ttlHours: z.number().int().positive().max(720).nullable().optional(),
+      empty: z.boolean().optional(),
+      sourceScopeId: z.string().optional(),
+      surface: z.string().optional(),
+      refresh: z.boolean().optional(),
+    }),
+    output: previewCreated,
+    http: { method: 'POST', path: '/deployments/{slug}/previews' },
+    status: 201,
+  },
+  'dashboard/delete-preview': {
+    summary: 'Reap one preview by tag; idempotent (`deleted: null` when it was already gone)',
+    input: z.object({ slug: z.string().min(1), tag: z.string().min(1) }),
+    output: z.object({ deleted: z.string().nullable() }),
+    http: { method: 'DELETE', path: '/deployments/{slug}/previews/{tag}' },
+  },
+  'dashboard/bind-preview-domain': {
+    summary: "Attach a custom domain to a preview's scope: what makes a pinned preview a long-lived test environment",
+    input: z.object({
+      slug: z.string().min(1),
+      tag: z.string().min(1),
+      domain: z.string().min(1).max(253),
+      surface: z.string().min(1).max(32).optional(),
+      // An additive alias next to the `--<tag>` URL; never silently demotes it.
+      canonical: z.boolean().optional(),
+    }),
+    output: previewDomainRow,
+    http: { method: 'POST', path: '/deployments/{slug}/previews/{tag}/domain' },
+    status: 201,
   },
 
   // -- findings (#1748) ------------------------------------------------------

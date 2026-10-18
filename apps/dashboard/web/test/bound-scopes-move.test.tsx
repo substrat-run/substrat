@@ -1,8 +1,21 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { api, type BoundScopesView, type Deployment, type MoveReviewRow } from '../src/lib/api';
+import type { BoundScopesView, Deployment, MoveReviewRow } from '../src/lib/api';
 import { BoundScopes } from '../src/views/BoundScopes';
+
+// The team client the dialog reaches through `teamApi(teamId)` (#2170): the calls, not the wire, are
+// what these cases are about, and the wire is `deployments-client.test.ts`.
+const client = vi.hoisted(() => ({
+  listBoundScopes: vi.fn(),
+  reviewScopeMove: vi.fn(),
+  moveScopes: vi.fn(),
+  retireScopes: vi.fn(),
+}));
+vi.mock('../src/lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/lib/api')>()),
+  teamApi: () => client,
+}));
 
 /**
  * #2347: the Move dialog shows what a move onto another lineage would apply before it asks, and
@@ -43,7 +56,8 @@ describe('Bound scopes — Move acknowledges the review it shows (#2347)', () =>
     container = document.createElement('div');
     document.body.append(container);
     root = createRoot(container);
-    vi.spyOn(api, 'listBoundScopes').mockResolvedValue(VIEW);
+    for (const fn of Object.values(client)) fn.mockReset();
+    client.listBoundScopes.mockResolvedValue(VIEW);
   });
   afterEach(() => {
     act(() => root.unmount());
@@ -57,33 +71,33 @@ describe('Bound scopes — Move acknowledges the review it shows (#2347)', () =>
   const tick = (label: RegExp) => [...dialog().querySelectorAll('label')].find((l) => label.test(l.textContent ?? ''));
   const click = async (el: Element) => act(async () => (el as HTMLElement).click());
   const open = async () => {
-    await act(async () => root.render(<BoundScopes d={FROM} all={[FROM, TO]} onChanged={() => {}} />));
+    await act(async () => root.render(<BoundScopes teamId="T1" d={FROM} all={[FROM, TO]} onChanged={() => {}} />));
     await click([...container.querySelectorAll('label')].find((l) => /^HR/.test(l.textContent ?? ''))!);
     await click(button(/^Move… \(1\)$/));
   };
   const moveButton = () => [...dialog().querySelectorAll('button')].find((b) => b.textContent === 'Move')!;
 
   it('reads the review first, shows its migrations, and moves only once they are acknowledged, sending the binding', async () => {
-    const read = vi.spyOn(api, 'readMoveReview').mockResolvedValue({ scopes: [review()] });
-    const move = vi.spyOn(api, 'moveBoundScopes').mockResolvedValue({ moved: ['S1'], refusal: null });
+    const read = client.reviewScopeMove.mockResolvedValue({ scopes: [review()] });
+    const move = client.moveScopes.mockResolvedValue({ moved: ['S1'], refusal: null });
     await open();
     await click(moveButton());
-    expect(read).toHaveBeenCalledWith('acme/courses', { scopeIds: ['S1'], target: 'acme/coaching' });
+    expect(read).toHaveBeenCalledWith({ slug: 'acme/courses', scopeIds: ['S1'], target: 'acme/coaching' });
     expect(move).not.toHaveBeenCalled();
     expect(dialog().textContent).toContain('ALTER TABLE t ADD COLUMN a TEXT;');
     expect(moveButton().disabled).toBe(true);
     await click(tick(/I have read the migrations above/)!);
     expect(moveButton().disabled).toBe(false);
     await click(moveButton());
-    expect(move).toHaveBeenCalledWith('acme/courses', {
+    expect(move).toHaveBeenCalledWith({ slug: 'acme/courses',
       scopeIds: ['S1'], target: 'acme/coaching', ackMigrations: true, reviews: { S1: { base: 'V-FROM', digest: 'a'.repeat(64) } },
     });
   });
 
   it('a review that moved is read again and asked again from scratch', async () => {
     const changed = review({ target: { vertical: 'acme/coaching', versionId: 'V-TO2' }, migrations: migrations('DROP TABLE legacy;') as MoveReviewRow['migrations'], review: { base: 'V-FROM', digest: 'b'.repeat(64) } });
-    const read = vi.spyOn(api, 'readMoveReview').mockResolvedValueOnce({ scopes: [review()] }).mockResolvedValueOnce({ scopes: [changed] });
-    const move = vi.spyOn(api, 'moveBoundScopes')
+    const read = client.reviewScopeMove.mockResolvedValueOnce({ scopes: [review()] }).mockResolvedValueOnce({ scopes: [changed] });
+    const move = client.moveScopes
       .mockResolvedValueOnce({ moved: [], refusal: { scopeId: 'S1', message: 'the rebind review is stale', reason: 'rebind_review_stale' } })
       .mockResolvedValueOnce({ moved: ['S1'], refusal: null });
     await open();
@@ -97,14 +111,14 @@ describe('Bound scopes — Move acknowledges the review it shows (#2347)', () =>
     expect(moveButton().disabled).toBe(true);
     await click(tick(/I have read the migrations above/)!);
     await click(moveButton());
-    expect(move).toHaveBeenLastCalledWith('acme/courses', {
+    expect(move).toHaveBeenLastCalledWith({ slug: 'acme/courses',
       scopeIds: ['S1'], target: 'acme/coaching', ackMigrations: true, reviews: { S1: { base: 'V-FROM', digest: 'b'.repeat(64) } },
     });
   });
 
   it('a review whose SQL is withheld says so, and is still acknowledged and bound', async () => {
-    vi.spyOn(api, 'readMoveReview').mockResolvedValue({ scopes: [review({ migrations: null, migrationsWithheld: true })] });
-    const move = vi.spyOn(api, 'moveBoundScopes').mockResolvedValue({ moved: ['S1'], refusal: null });
+    client.reviewScopeMove.mockResolvedValue({ scopes: [review({ migrations: null, migrationsWithheld: true })] });
+    const move = client.moveScopes.mockResolvedValue({ moved: ['S1'], refusal: null });
     await open();
     await click(moveButton());
     expect(dialog().textContent).toContain('Their SQL is shown only to the team that owns both verticals.');
@@ -112,16 +126,16 @@ describe('Bound scopes — Move acknowledges the review it shows (#2347)', () =>
     expect(moveButton().disabled).toBe(true);
     await click(tick(/I have read the migrations above/)!);
     await click(moveButton());
-    expect(move).toHaveBeenCalledWith('acme/courses', {
+    expect(move).toHaveBeenCalledWith({ slug: 'acme/courses',
       scopeIds: ['S1'], target: 'acme/coaching', ackMigrations: true, reviews: { S1: { base: 'V-FROM', digest: 'a'.repeat(64) } },
     });
   });
 
   it('where the migrations match, it moves at once, with the binding and no acknowledgement', async () => {
-    vi.spyOn(api, 'readMoveReview').mockResolvedValue({ scopes: [review({ digestsMatch: true })] });
-    const move = vi.spyOn(api, 'moveBoundScopes').mockResolvedValue({ moved: ['S1'], refusal: null });
+    client.reviewScopeMove.mockResolvedValue({ scopes: [review({ digestsMatch: true })] });
+    const move = client.moveScopes.mockResolvedValue({ moved: ['S1'], refusal: null });
     await open();
     await click(moveButton());
-    expect(move).toHaveBeenCalledWith('acme/courses', { scopeIds: ['S1'], target: 'acme/coaching', reviews: { S1: { base: 'V-FROM', digest: 'a'.repeat(64) } } });
+    expect(move).toHaveBeenCalledWith({ slug: 'acme/courses', scopeIds: ['S1'], target: 'acme/coaching', reviews: { S1: { base: 'V-FROM', digest: 'a'.repeat(64) } } });
   });
 });
