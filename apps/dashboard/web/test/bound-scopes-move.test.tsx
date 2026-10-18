@@ -131,6 +131,23 @@ describe('Bound scopes — Move acknowledges the review it shows (#2347)', () =>
     });
   });
 
+  it('a SQL diff the dashboard could not read arrives as null: the dialog still opens and the acknowledgement still gates the move', async () => {
+    // A plane newer than the dashboard: the route answers `migrations: null` (not withheld, not matching).
+    client.reviewScopeMove.mockResolvedValue({ scopes: [review({ migrations: null, migrationsWithheld: false })] });
+    const move = client.moveScopes.mockResolvedValue({ moved: ['S1'], refusal: null });
+    await open();
+    await click(moveButton());
+    expect(dialog().textContent).toContain('SQL not available');
+    expect(moveButton().disabled).toBe(true);
+    expect(move).not.toHaveBeenCalled();
+    await click(tick(/I have read the migrations above/)!);
+    expect(moveButton().disabled).toBe(false);
+    await click(moveButton());
+    expect(move).toHaveBeenCalledWith({
+      slug: 'acme/courses', scopeIds: ['S1'], target: 'acme/coaching', ackMigrations: true, reviews: { S1: { base: 'V-FROM', digest: 'a'.repeat(64) } },
+    });
+  });
+
   it('where the migrations match, it moves at once, with the binding and no acknowledgement', async () => {
     client.reviewScopeMove.mockResolvedValue({ scopes: [review({ digestsMatch: true })] });
     const move = client.moveScopes.mockResolvedValue({ moved: ['S1'], refusal: null });

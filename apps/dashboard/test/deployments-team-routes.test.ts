@@ -605,6 +605,75 @@ describe('a plane newer than this dashboard (version skew)', () => {
   });
 });
 
+describe('a plane newer than this dashboard: the Move review and the preview domain', () => {
+  const digest = 'a'.repeat(64);
+
+  it('the Move review still opens: a SQL diff the dashboard cannot parse reads as "cannot show", a binding with a field it does not know keeps its base and digest', async () => {
+    const { a } = await teams();
+    const id = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: a.tenant, scopeId: id, slug: 'hr', name: 'hr', vertical: a.vertical });
+    await host.admin.activateScope(staff, a.tenant, id);
+    await host.admin.registerVertical(staff, { slug: 'acme/other', name: 'other', source: 'cli', ownerTenant: a.tenant });
+    planeAnswers = (method, path) =>
+      method === 'GET' && path === `/tenants/${a.tenant}/scopes/${id}/rebind-review`
+        ? Response.json({
+            base: { vertical: a.vertical, versionId: 'v1' },
+            target: { vertical: 'acme/other', versionId: 'v2' },
+            digestsMatch: false,
+            migrations: { baseline: 'from-the-future', added: [], changed: [], total: 0, truncated: false },
+            migrationsWithheld: false,
+            review: { base: 'v1', digest, scheme: 2 },
+          })
+        : undefined;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const res = await req('POST', inTeam(a, `${slugPath(a.vertical)}/scopes/move-review`), { body: { scopeIds: [id], target: 'acme/other' } });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await res.json()).toEqual({
+      scopes: [expect.objectContaining({ scopeId: id, digestsMatch: false, migrations: null, migrationsWithheld: false, review: { base: 'v1', digest } })],
+    });
+    // The drift is visible to an operator: the field, never the value the plane sent.
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!)).toMatchObject({ event: 'dashboard.output-drift', field: 'moveReview.migrations', paths: ['baseline'] });
+    expect(lines[0]).not.toContain('from-the-future');
+    warn.mockRestore();
+  });
+
+  it('the promote review accepts a binding with a field it does not know, keeping the plane’s base and digest', async () => {
+    const { a } = await teams();
+    planeAnswers = (method, path) => {
+      if (method !== 'GET') return undefined;
+      if (/^\/verticals\/[^/]+\/channels$/.test(path)) return Response.json({ entries: [{ channel: 'prod', versionId: 'v1' }], nextCursor: null });
+      if (/\/versions\/[^/]+\/registry$/.test(path)) return Response.json({ registry: null });
+      if (/\/versions\/[^/]+\/migrations$/.test(path)) return Response.json({ migrations: null, review: { base: 'v1', digest, scheme: 2 } });
+      if (/\/channels\/prod\/promote-impact$/.test(path)) return Response.json({ affected: [] });
+      return undefined;
+    };
+    const res = await req('GET', inTeam(a, `${slugPath(a.vertical)}/promote-review?versionId=v2`));
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(((await res.json()) as { review: unknown }).review).toEqual({ base: 'v1', digest });
+  });
+
+  it('a preview domain answers 201 when a validation record carries no status key, as the contract’s own record may', async () => {
+    const { a } = await teams();
+    planeAnswers = (method, path) =>
+      method === 'POST' && path === '/hostnames'
+        ? Response.json({
+            hostname: 'crm-test.example.com',
+            scopeId: 'S',
+            surface: 'app',
+            status: 'verifying',
+            canonical: false,
+            createdAt: '2026-10-18T00:00:00.000Z',
+            validationRecords: [{ type: 'txt', name: '_cf.crm-test.example.com', value: 'token' }],
+          })
+        : undefined;
+    const res = await req('POST', inTeam(a, `${slugPath(a.vertical)}/previews/pr-1/domain`), { body: { domain: 'crm-test.example.com' } });
+    expect(res.status, await res.clone().text()).toBe(201);
+    expect(await res.json()).toMatchObject({ validationRecords: [{ type: 'txt', name: '_cf.crm-test.example.com', value: 'token' }] });
+  });
+});
+
 describe('rows that contracts already define are picked from it, not retyped', () => {
   it('a failure row and a channel-history row are the contract’s own fields', () => {
     // A copy would not follow a field contracts widens, and the route would start refusing its own rows.

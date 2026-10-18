@@ -42,6 +42,7 @@ import {
   z,
 } from '@substrat-run/contracts';
 import { appAuthChoiceBody } from './app-auth-body.js';
+import { logOutputDrift } from './output-drift.js';
 import { APP_EVENT_KINDS } from './app-event-kinds.js';
 
 /** The shared page query: the platform's `limit`/`cursor` (default 20, `LIST_PAGE_MAX`), cursor opaque. */
@@ -186,6 +187,16 @@ const declaredSurface = z.object({ name: z.string(), label: z.string() });
  *   always reaches the dialog as the plane named it.
  */
 
+/**
+ * A plane-owned block that reads as `null` ("cannot show") when this dashboard cannot parse it,
+ * and says so in the log (`dashboard.output-drift`, the field and the issue paths only).
+ */
+const orNull = <T extends z.ZodType>(schema: T, field: string) =>
+  schema.nullable().catch((ctx) => {
+    logOutputDrift(field, ctx.error.issues);
+    return null;
+  });
+
 /** A preview's login status. The plane owns the set (known: wired, unregistered, ambiguous, unknown, superseded, not-applicable); a newer one reaches the panel as the plane said it. */
 const previewAuthOut = previewAuth.extend({ status: z.string() });
 
@@ -201,7 +212,7 @@ export const deploymentVersion = z.object({
   schemaChange: z.boolean(),
   /** Where the push came from; null for a push from before origin tracking. */
   // A push origin this dashboard cannot read is shown as an unknown one, not a failed list.
-  origin: versionOrigin.nullable().catch(null),
+  origin: orNull(versionOrigin, 'deployments.versions.origin'),
   createdAt: z.string(),
 });
 
@@ -221,6 +232,13 @@ export const deploymentRow = z.object({
 
 /** The binding an acknowledgement carries to the review it answers (#2333): the base version and the digest read with it. */
 export const reviewBinding = promotionAcknowledgement.shape.review.unwrap();
+
+/**
+ * The same binding as the plane answers it. `reviewBinding` is strict, as an INPUT should be (a
+ * field the host does not know is refused, not dropped); on the way OUT a field a newer plane
+ * adds must not fail the review, and the acknowledgement only ever carries `base` and `digest`.
+ */
+const reviewBindingOut = z.object({ base: z.string().min(1).nullable(), digest: z.string().regex(/^[0-9a-f]{64}$/) });
 
 /** One migration as a review shows it; `sql` is null once the answer's byte budget ran out. */
 const migrationEntry = z.object({
@@ -263,12 +281,12 @@ export const promotionReviewRow = z.object({
   incoming: z.object({ versionId: z.string() }),
   // A registry or SQL diff this dashboard cannot parse reads as "cannot show": the dialog then
   // asks for the acknowledgement it would ask for anyway, instead of the review failing to open.
-  servingRegistry: permissionRegistry.nullable().catch(null),
-  incomingRegistry: permissionRegistry.nullable().catch(null),
-  migrations: migrationDiff.nullable().catch(null),
+  servingRegistry: orNull(permissionRegistry, 'promotionReview.servingRegistry'),
+  incomingRegistry: orNull(permissionRegistry, 'promotionReview.incomingRegistry'),
+  migrations: orNull(migrationDiff, 'promotionReview.migrations'),
   /** This tenant's own apps the promotion breaks by name, other tenants' as a count (#1705). Declared loosely: see the note on version skew above. */
   exportBreaks: z.object({ affected: z.array(exportBreakOut), otherTenants: z.number().int().optional() }).nullable(),
-  review: reviewBinding.nullable(),
+  review: reviewBindingOut.nullable(),
 });
 
 /**
@@ -373,10 +391,10 @@ export const moveReviewRow = z.object({
   base: z.object({ vertical: z.string(), versionId: z.string() }).nullable(),
   target: z.object({ vertical: z.string(), versionId: z.string() }),
   digestsMatch: z.boolean(),
-  migrations: migrationDiff.nullable(),
+  migrations: orNull(migrationDiff, 'moveReview.migrations'),
   /** The SQL is shown only to an owner of both verticals; the digests and the binding still are. */
   migrationsWithheld: z.boolean(),
-  review: reviewBinding,
+  review: reviewBindingOut,
 });
 
 /** One builder preview of a vertical (#509): a scope with data bound to a version, at its own `--<tag>` URL. */
@@ -414,7 +432,8 @@ export const previewDomainRow = z.object({
   createdAt: z.string(),
   /** The Cloudflare-for-SaaS handle of a custom domain; null for a platform mint. */
   customHostnameId: z.string().nullish(),
-  validationRecords: z.array(z.object({ type: z.string(), name: z.string(), value: z.string(), status: z.string().nullable() })).optional(),
+  // `status` is `null` before a poll, and the contract's record defaults it, so its key may be absent.
+  validationRecords: z.array(z.object({ type: z.string(), name: z.string(), value: z.string(), status: z.string().nullish() })).optional(),
 });
 
 export const dashboardRoutes = defineRoutes({

@@ -243,7 +243,7 @@ export interface PreviewDomainRow {
   canonical: boolean;
   createdAt: string;
   customHostnameId?: string | null;
-  validationRecords?: ({ type: string; name: string; value: string; status: string | null })[];
+  validationRecords?: ({ type: string; name: string; value: string; status?: string | null })[];
 }
 
 /** `previewRow` — a published schema, not a stored row. */
