@@ -632,16 +632,16 @@ Named so the review is about a bounded thing:
 
 ```mermaid
 erDiagram
-    source ||--o{ mapping : has
-    run ||--o{ observation : has
-    source ||--o{ output_schema : has
-    run ||--o{ row : has
-    run ||--o{ rule_state : has
-    source ||--o{ run : has
-    source ||--o{ schema : has
-    run ||--o{ source_file : has
-    source ||--o{ variant : has
-    field_history {
+    e12 ||--o{ e3 : has
+    e9 ||--o{ e4 : has
+    e12 ||--o{ e5 : has
+    e9 ||--o{ e7 : has
+    e9 ||--o{ e8 : has
+    e12 ||--o{ e9 : has
+    e12 ||--o{ e11 : has
+    e9 ||--o{ e13 : has
+    e12 ||--o{ e14 : has
+    e1["field_history"] {
         string day PK
         string field PK
         string first_seen
@@ -649,14 +649,14 @@ erDiagram
         number n
         string source_key PK
     }
-    label {
+    e2["label"] {
         string captured_at
         string dim PK
         string label
         string run_id PK
         string value PK
     }
-    mapping {
+    e3["mapping"] {
         string created_at
         string created_by
         string id PK
@@ -666,7 +666,7 @@ erDiagram
         string variant_key
         number version
     }
-    observation {
+    e4["observation"] {
         number declared
         number distinct_estimate
         string field
@@ -677,7 +677,7 @@ erDiagram
         string run_id
         string variant_key
     }
-    output_schema {
+    e5["output_schema"] {
         string created_at
         string created_by
         string fields_json
@@ -686,7 +686,7 @@ erDiagram
         string source_key
         number version
     }
-    rollup {
+    e6["rollup"] {
         string dim1 PK
         string dim2 PK
         string dim_set PK
@@ -699,7 +699,7 @@ erDiagram
         string source_key PK
         string unit
     }
-    row {
+    e7["row"] {
         string dims_json
         string id PK
         string metrics_json
@@ -708,7 +708,7 @@ erDiagram
         string subject_key
         string variant_key
     }
-    rule_state {
+    e8["rule_state"] {
         string captured_at
         string content_hash
         string id PK
@@ -716,7 +716,7 @@ erDiagram
         string rule_kind
         string run_id
     }
-    run {
+    e9["run"] {
         number byte_size
         string content_hash
         string count_state_json
@@ -738,14 +738,14 @@ erDiagram
         string subject_field
         string time_field
     }
-    salt {
+    e10["salt"] {
         string created_at
         string day PK
         string destroyed_at
         string salt_id
         string secret
     }
-    schema {
+    e11["schema"] {
         string created_at
         string created_by
         string fields_json
@@ -754,14 +754,14 @@ erDiagram
         string variant_key
         number version
     }
-    source {
+    e12["source"] {
         string created_at
         string discriminators
         string expected_cadence
         string key PK
         string title
     }
-    source_file {
+    e13["source_file"] {
         number byte_size
         string content_hash
         string purge_after
@@ -769,7 +769,7 @@ erDiagram
         string storage_key
         string stored_at
     }
-    variant {
+    e14["variant"] {
         string created_at
         string id PK
         string key

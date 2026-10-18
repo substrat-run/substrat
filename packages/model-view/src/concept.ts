@@ -172,40 +172,54 @@ function attributeType(schema: unknown): string {
   return t === 'integer' ? 'number' : t === 'array' || t === 'object' ? 'json' : (t ?? 'json');
 }
 
+/** Mermaid's escape for a double quote inside a quoted label. */
+const label = (text: string): string => `"${text.replace(/"/g, '#quot;').replace(/\s+/g, ' ')}"`;
+
+/** An ER attribute name Mermaid accepts: word characters only, and not one of its key words. */
+const attributeName = (field: string): string => {
+  const word = field.replace(/[^A-Za-z0-9_]/g, '_');
+  return /^(PK|FK|UK)$/i.test(word) ? `${word}_` : word;
+};
+
 function renderEntities({ model }: ConceptInputs): string {
   const names = Object.keys(model.entities).sort();
   if (names.length === 0) return '_No entities are declared._';
+  // Every box is an alias with the real name as its label, so a name with a hyphen, a space or a
+  // quote — or one Mermaid reads as a key word — is still the diagram that was meant.
   const known = new Set(names);
+  const parents = new Set<string>();
+  for (const name of names) for (const p of model.entities[name]?.parents ?? []) if (!known.has(p)) parents.add(p);
+  const alias = new Map([...names, ...[...parents].sort()].map((n, i) => [n, `e${i + 1}`] as const));
   const edges: string[] = [];
   const nodes: string[] = [];
-  const external = new Set<string>();
   for (const name of names) {
     const e = model.entities[name];
     if (!e) continue;
-    for (const parent of [...(e.parents ?? [])].sort()) {
-      edges.push(`    ${parent} ||--o{ ${name} : has`);
-      if (!known.has(parent)) external.add(parent);
-    }
+    for (const parent of [...(e.parents ?? [])].sort()) edges.push(`    ${alias.get(parent)} ||--o{ ${alias.get(name)} : has`);
     const props = ((e.fields as { properties?: Record<string, unknown> }).properties ?? {}) as Record<string, unknown>;
     const pk = new Set(e.primaryKey ?? ['id']);
     const attrs = Object.keys(props)
       .sort()
-      .map((f) => `        ${attributeType(props[f])} ${f}${pk.has(f) ? ' PK' : ''}`);
-    nodes.push(`    ${name} {`, ...attrs, '    }');
+      .map((f) => `        ${attributeType(props[f])} ${attributeName(f)}${pk.has(f) ? ' PK' : ''}`);
+    nodes.push(`    ${alias.get(name)}[${label(name)}] {`, ...attrs, '    }');
   }
   // A parent no entity declares (the platform's `owner`, say) still gets its edge, as a bare box.
-  for (const x of [...external].sort()) nodes.push(`    ${x} {`, '    }');
+  for (const x of [...parents].sort()) nodes.push(`    ${alias.get(x)}[${label(x)}] {`, '    }');
   return ['```mermaid', 'erDiagram', ...edges, ...nodes, '```'].join('\n');
 }
 
 function renderLifecycle(entity: string, lc: EmittedLifecycle): string {
   const states = lc.states as Record<string, { on?: Record<string, string>; terminal?: boolean }>;
-  const lines = ['stateDiagram-v2', `    [*] --> ${lc.initial}`];
+  // A state is any value of the field's enum, so its spelling is not Mermaid's to restrict:
+  // `in-progress` is a parse error as an id. Each is declared once, as an alias with its name as the label.
+  const names = [...new Set([lc.initial, ...Object.keys(states), ...Object.values(states).flatMap((d) => Object.values(d.on ?? {}))])].sort();
+  const id = new Map(names.map((n, i) => [n, `s${i + 1}`] as const));
+  const lines = ['stateDiagram-v2', ...names.map((n) => `    state ${label(n)} as ${id.get(n)}`), `    [*] --> ${id.get(lc.initial)}`];
   for (const state of Object.keys(states).sort()) {
     const def = states[state] ?? {};
     const targets = Object.entries(def.on ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    for (const [op, target] of targets) lines.push(`    ${state} --> ${target} : ${op}`);
-    if (def.terminal || targets.length === 0) lines.push(`    ${state} --> [*]`);
+    for (const [op, target] of targets) lines.push(`    ${id.get(state)} --> ${id.get(target)} : ${op.replace(/\s+/g, ' ')}`);
+    if (def.terminal || targets.length === 0) lines.push(`    ${id.get(state)} --> [*]`);
   }
   return [`### ${entity}`, '', `Moves through its \`${lc.field}\`.`, '', '```mermaid', ...lines, '```'].join('\n');
 }

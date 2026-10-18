@@ -242,8 +242,8 @@ Shared one record at a time, without a role:
 
 ```mermaid
 erDiagram
-    employee ||--o{ employment-terms : has
-    employee {
+    e1 ||--o{ e2 : has
+    e1["employee"] {
         string created_at
         string email
         string id PK
@@ -253,7 +253,7 @@ erDiagram
         string principal_ref
         string started_at
     }
-    employment-terms {
+    e2["employment-terms"] {
         string created_at
         string created_by
         string currency

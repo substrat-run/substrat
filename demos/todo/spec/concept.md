@@ -167,10 +167,10 @@ Shared one record at a time, without a role:
 
 ```mermaid
 erDiagram
-    list ||--o{ item : has
-    owner ||--o{ list : has
-    list ||--o{ share : has
-    item {
+    e2 ||--o{ e1 : has
+    e3 ||--o{ e2 : has
+    e2 ||--o{ e4 : has
+    e1["item"] {
         string added_by
         string created_at
         number done
@@ -178,19 +178,19 @@ erDiagram
         string list_id
         string text
     }
-    list {
+    e2["list"] {
         string created_at
         string id PK
         string name
         string owner_id
     }
-    owner {
+    e3["owner"] {
         string created_at
         string display_name
         string email
         string id PK
     }
-    share {
+    e4["share"] {
         string created_at
         string email
         string id PK

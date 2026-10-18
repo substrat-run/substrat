@@ -206,16 +206,16 @@ Shared one record at a time, without a role:
 
 ```mermaid
 erDiagram
-    customer ||--o{ order : has
-    product ||--o{ variant : has
-    customer {
+    e1 ||--o{ e2 : has
+    e3 ||--o{ e4 : has
+    e1["customer"] {
         string created_at
         string id PK
         string name
         string number
         string org_ref
     }
-    order {
+    e2["order"] {
         string cart_id
         string currency
         string customer_id
@@ -230,7 +230,7 @@ erDiagram
         string subtotal_amount
         string total_amount
     }
-    product {
+    e3["product"] {
         string created_at
         string id PK
         string name
@@ -240,7 +240,7 @@ erDiagram
         number roast
         string slug
     }
-    variant {
+    e4["variant"] {
         string created_at
         string currency
         string grind
@@ -264,11 +264,15 @@ Moves through its `status`.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> placed
-    cancelled --> [*]
-    closed --> [*]
-    fulfilled --> closed : shop/close-order
-    placed --> fulfilled : shop/fulfil-order
+    state "cancelled" as s1
+    state "closed" as s2
+    state "fulfilled" as s3
+    state "placed" as s4
+    [*] --> s4
+    s1 --> [*]
+    s2 --> [*]
+    s3 --> s2 : shop/close-order
+    s4 --> s3 : shop/fulfil-order
 ```
 
 <!-- /substrat:processes -->

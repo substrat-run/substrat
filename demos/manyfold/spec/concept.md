@@ -106,7 +106,7 @@ surface shows honestly rather than hiding.
 
 ```mermaid
 erDiagram
-    manyfold-entry {
+    e1["manyfold-entry"] {
         string created_at
         number draft_rev
         string id PK
@@ -130,20 +130,26 @@ Moves through its `status`.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> draft
-    approved --> archived : manyfold/archive
-    approved --> published : manyfold/publish
-    approved --> in_review : manyfold/submit-for-review
-    archived --> [*]
-    draft --> archived : manyfold/archive
-    draft --> in_review : manyfold/submit-for-review
-    in_review --> approved : manyfold/approve
-    in_review --> archived : manyfold/archive
-    in_review --> draft : manyfold/reject
-    published --> archived : manyfold/archive
-    published --> unpublished : manyfold/unpublish
-    unpublished --> archived : manyfold/archive
-    unpublished --> in_review : manyfold/submit-for-review
+    state "approved" as s1
+    state "archived" as s2
+    state "draft" as s3
+    state "in_review" as s4
+    state "published" as s5
+    state "unpublished" as s6
+    [*] --> s3
+    s1 --> s2 : manyfold/archive
+    s1 --> s5 : manyfold/publish
+    s1 --> s4 : manyfold/submit-for-review
+    s2 --> [*]
+    s3 --> s2 : manyfold/archive
+    s3 --> s4 : manyfold/submit-for-review
+    s4 --> s1 : manyfold/approve
+    s4 --> s2 : manyfold/archive
+    s4 --> s3 : manyfold/reject
+    s5 --> s2 : manyfold/archive
+    s5 --> s6 : manyfold/unpublish
+    s6 --> s2 : manyfold/archive
+    s6 --> s4 : manyfold/submit-for-review
 ```
 
 <!-- /substrat:processes -->

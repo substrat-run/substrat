@@ -114,15 +114,15 @@ Shared one record at a time, without a role:
 
 ```mermaid
 erDiagram
-    customer ||--o{ bike : has
-    bike {
+    e2 ||--o{ e1 : has
+    e1["bike"] {
         string created_at
         string customer_id
         string frame_no
         string id PK
         string label
     }
-    customer {
+    e2["customer"] {
         string created_at
         string id PK
         string name

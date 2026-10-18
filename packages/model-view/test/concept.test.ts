@@ -84,11 +84,12 @@ describe('syncConcept', () => {
     const out = syncConcept(DOC, inputs);
     expect(out).toContain('| `member` | `list:create` — Create lists of your own |');
     expect(out).toContain('| `list` | `list:manage` — Rename and share a list |');
-    expect(out).toContain('erDiagram\n    list ||--o{ item : has\n    owner ||--o{ list : has');
+    expect(out).toContain('erDiagram\n    e2 ||--o{ e1 : has\n    e3 ||--o{ e2 : has');
+    expect(out).toContain('e1["item"] {');
     expect(out).toContain('        string id PK');
     expect(out).toContain('        number done');
     expect(out).toContain('        string note');
-    expect(out).toContain('    [*] --> open\n    closed --> [*]\n    open --> closed : todo/close');
+    expect(out).toContain('state "closed" as s1\n    state "open" as s2\n    [*] --> s2\n    s1 --> [*]\n    s2 --> s1 : todo/close');
     expect(out).not.toContain('stale');
   });
 
@@ -102,6 +103,34 @@ describe('syncConcept', () => {
   it('does not depend on declaration order', () => {
     const reordered: EmittedModel = { ...MODEL, entities: { item: MODEL.entities.item!, list: MODEL.entities.list! } };
     expect(syncConcept(DOC, { ...inputs, model: reordered })).toBe(syncConcept(DOC, inputs));
+  });
+
+  it('draws names Mermaid cannot take as ids through aliases', () => {
+    // `in-progress` is a parse error as a bare state id, and a quote would end a label early. Each
+    // is checked against mermaid 11's own parser when this was written; a string match here only
+    // pins that no raw name reaches an id position.
+    const odd: EmittedModel = {
+      entities: {
+        'my entity': { table: 't', fields: { type: 'object', properties: { id: { type: 'string' }, PK: { type: 'string' } } }, parents: ['own-er'] },
+      },
+      lifecycles: {
+        'my entity': {
+          field: 'state',
+          initial: 'to-do',
+          states: { 'to-do': { on: { 'a/go': 'in progress' } }, 'in progress': { on: { 'a/x': 'say "hi"' } }, 'say "hi"': {} },
+        },
+      } as EmittedModel['lifecycles'],
+    };
+    const out = syncConcept(DOC, { model: odd });
+    expect(out).toContain('state "in progress" as s1');
+    expect(out).toContain('state "say #quot;hi#quot;" as s2');
+    expect(out).toContain('state "to-do" as s3');
+    expect(out).toContain('[*] --> s3\n    s1 --> s2 : a/x');
+    expect(out).toContain('e1["my entity"] {');
+    expect(out).toContain('e2 ||--o{ e1 : has');
+    expect(out).toContain('e2["own-er"] {');
+    expect(out).toContain('string PK_');
+    expect(out).not.toMatch(/^ {4}(to-do|in-progress|own-er)\b/m);
   });
 
   it('goes stale when the model changes — a new field changes the output', () => {

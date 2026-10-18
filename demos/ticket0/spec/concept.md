@@ -577,17 +577,17 @@ Shared one record at a time, without a role:
 
 ```mermaid
 erDiagram
-    conversation ||--o{ aiTurn : has
-    contact ||--o{ conversation : has
-    contact ||--o{ conversationParticipant : has
-    conversation ||--o{ conversationParticipant : has
-    kbSource ||--o{ kbArticle : has
-    conversation ||--o{ message : has
-    publicThread ||--o{ message : has
-    conversation ||--o{ publicThread : has
-    widgetSession ||--o{ publicThread : has
-    conversation ||--o{ widgetSession : has
-    agentProfile {
+    e6 ||--o{ e2 : has
+    e5 ||--o{ e6 : has
+    e5 ||--o{ e8 : has
+    e6 ||--o{ e8 : has
+    e13 ||--o{ e12 : has
+    e6 ||--o{ e15 : has
+    e17 ||--o{ e15 : has
+    e6 ||--o{ e17 : has
+    e23 ||--o{ e17 : has
+    e6 ||--o{ e23 : has
+    e1["agentProfile"] {
         string avatar_url
         string created_at
         string display_name
@@ -595,7 +595,7 @@ erDiagram
         string principal PK
         string signature
     }
-    aiTurn {
+    e2["aiTurn"] {
         string cited_article_ids
         number confidence
         string conversation_id
@@ -609,12 +609,12 @@ erDiagram
         string outcome
         number output_tokens
     }
-    behaviourRun {
+    e3["behaviourRun"] {
         string behaviour PK
         number last_count
         string last_fired_at
     }
-    blockRule {
+    e4["blockRule"] {
         string created_at
         string created_by
         string id PK
@@ -622,7 +622,7 @@ erDiagram
         string reason
         string value
     }
-    contact {
+    e5["contact"] {
         string created_at
         string display_name
         string email
@@ -631,7 +631,7 @@ erDiagram
         string principal
         string verified_at
     }
-    conversation {
+    e6["conversation"] {
         string assignee
         string auto_tagged_at
         string channel
@@ -662,11 +662,11 @@ erDiagram
         string suspicion
         string updated_at
     }
-    conversationFollow {
+    e7["conversationFollow"] {
         string conversation_id PK
         string principal PK
     }
-    conversationParticipant {
+    e8["conversationParticipant"] {
         string added_by
         string contact_id
         string conversation_id
@@ -674,18 +674,18 @@ erDiagram
         string id PK
         string role
     }
-    conversationTag {
+    e9["conversationTag"] {
         string conversation_id PK
         string created_at
         string tag PK
     }
-    csat {
+    e10["csat"] {
         string comment
         string conversation_id PK
         number score
         string submitted_at
     }
-    deskSettings {
+    e11["deskSettings"] {
         number abandoned_after_days
         string allowed_origins
         number assistant_autonomous
@@ -699,7 +699,7 @@ erDiagram
         string updated_at
         string verification_secret
     }
-    kbArticle {
+    e12["kbArticle"] {
         string body
         string content_hash
         string heading_path
@@ -709,7 +709,7 @@ erDiagram
         string title
         string url
     }
-    kbSource {
+    e13["kbSource"] {
         string created_at
         string id PK
         string kind
@@ -723,14 +723,14 @@ erDiagram
         string token_last_used_at
         string url
     }
-    mailDelivery {
+    e14["mailDelivery"] {
         string conversation_id
         string direction
         string email_message_id PK
         string message_id
         string recorded_at
     }
-    message {
+    e15["message"] {
         string author_contact_id
         string author_kind
         string author_principal
@@ -747,7 +747,7 @@ erDiagram
         string visibility
         string withdrawn_at
     }
-    notification {
+    e16["notification"] {
         string conversation_id
         string created_at
         string id PK
@@ -755,10 +755,10 @@ erDiagram
         string principal
         string read_at
     }
-    publicThread {
+    e17["publicThread"] {
         string id PK
     }
-    savedReply {
+    e18["savedReply"] {
         string actions
         string body
         string created_at
@@ -770,13 +770,13 @@ erDiagram
         string title
         number use_count
     }
-    savedReplyFolder {
+    e19["savedReplyFolder"] {
         string created_at
         string created_by
         string id PK
         string name
     }
-    signup {
+    e20["signup"] {
         string confirm_token_hash
         string confirmed_at
         string created_at
@@ -790,13 +790,13 @@ erDiagram
         string unsubscribe_token
         string unsubscribed_at
     }
-    usageRate {
+    e21["usageRate"] {
         string currency
         string effective_from PK
         string meter_key PK
         string unit_price
     }
-    widgetOpening {
+    e22["widgetOpening"] {
         string browser
         string browser_version
         string city
@@ -815,7 +815,7 @@ erDiagram
         string token_hash
         string user_agent
     }
-    widgetSession {
+    e23["widgetSession"] {
         string browser
         string browser_version
         string city
@@ -849,31 +849,36 @@ Moves through its `state`.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> new
-    closed --> [*]
-    new --> open : ticket0/assign
-    new --> closed : ticket0/close
-    new --> closed : ticket0/discard
-    new --> closed : ticket0/discard-suspended
-    new --> open : ticket0/post-public-reply
-    new --> closed : ticket0/reap-abandoned
-    new --> resolved : ticket0/resolve
-    open --> closed : ticket0/close
-    open --> resolved : ticket0/resolve
-    open --> snoozed : ticket0/snooze
-    resolved --> closed : ticket0/auto-close
-    resolved --> closed : ticket0/close
-    resolved --> open : ticket0/ingest-message
-    resolved --> open : ticket0/post-public-reply
-    resolved --> open : ticket0/request-human
-    resolved --> open : ticket0/widget-post
-    snoozed --> closed : ticket0/close
-    snoozed --> open : ticket0/ingest-message
-    snoozed --> open : ticket0/request-human
-    snoozed --> resolved : ticket0/resolve
-    snoozed --> open : ticket0/wake
-    snoozed --> open : ticket0/wake-snoozed
-    snoozed --> open : ticket0/widget-post
+    state "closed" as s1
+    state "new" as s2
+    state "open" as s3
+    state "resolved" as s4
+    state "snoozed" as s5
+    [*] --> s2
+    s1 --> [*]
+    s2 --> s3 : ticket0/assign
+    s2 --> s1 : ticket0/close
+    s2 --> s1 : ticket0/discard
+    s2 --> s1 : ticket0/discard-suspended
+    s2 --> s3 : ticket0/post-public-reply
+    s2 --> s1 : ticket0/reap-abandoned
+    s2 --> s4 : ticket0/resolve
+    s3 --> s1 : ticket0/close
+    s3 --> s4 : ticket0/resolve
+    s3 --> s5 : ticket0/snooze
+    s4 --> s1 : ticket0/auto-close
+    s4 --> s1 : ticket0/close
+    s4 --> s3 : ticket0/ingest-message
+    s4 --> s3 : ticket0/post-public-reply
+    s4 --> s3 : ticket0/request-human
+    s4 --> s3 : ticket0/widget-post
+    s5 --> s1 : ticket0/close
+    s5 --> s3 : ticket0/ingest-message
+    s5 --> s3 : ticket0/request-human
+    s5 --> s4 : ticket0/resolve
+    s5 --> s3 : ticket0/wake
+    s5 --> s3 : ticket0/wake-snoozed
+    s5 --> s3 : ticket0/widget-post
 ```
 
 ### signup
@@ -882,11 +887,14 @@ Moves through its `state`.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> pending
-    confirmed --> unsubscribed : ticket0/unsubscribe-signup
-    pending --> confirmed : ticket0/confirm-signup
-    pending --> unsubscribed : ticket0/unsubscribe-signup
-    unsubscribed --> pending : ticket0/submit-signup
+    state "confirmed" as s1
+    state "pending" as s2
+    state "unsubscribed" as s3
+    [*] --> s2
+    s1 --> s3 : ticket0/unsubscribe-signup
+    s2 --> s1 : ticket0/confirm-signup
+    s2 --> s3 : ticket0/unsubscribe-signup
+    s3 --> s2 : ticket0/submit-signup
 ```
 
 <!-- /substrat:processes -->
