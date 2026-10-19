@@ -29,7 +29,14 @@ const MODEL = {
   },
 };
 
-const permissions = (roles: Record<string, string[]>, keys: Record<string, string> = { 'list:create': 'Create lists', 'list:manage': 'Manage a list' }) =>
+const roleRows = (roles: Record<string, string[]>) =>
+  ['| Role | Permissions |', '| --- | --- |', ...Object.entries(roles).map(([r, ks]) => `| \`${r}\` | ${ks.map((k) => `\`${k}\``).join(', ')} |`)];
+/** A `PERMISSIONS.md` as the emitter writes it, with §2a when some role is system-held (K-55). */
+const permissions = (
+  roles: Record<string, string[]>,
+  keys: Record<string, string> = { 'list:create': 'Create lists', 'list:manage': 'Manage a list' },
+  systemRoles: Record<string, string[]> = {},
+) =>
   [
     '## 1. Registry — every key a registered manifest declares',
     '',
@@ -39,10 +46,11 @@ const permissions = (roles: Record<string, string[]>, keys: Record<string, strin
     '',
     '## 2. Roles — as defined by this vertical\'s provisioning code',
     '',
-    '| Role | Permissions |',
-    '| --- | --- |',
-    ...Object.entries(roles).map(([r, ks]) => `| \`${r}\` | ${ks.map((k) => `\`${k}\``).join(', ')} |`),
+    ...roleRows(roles),
     '',
+    ...(Object.keys(systemRoles).length
+      ? ["### 2a. System-held roles — a platform host's standing principal", '', ...roleRows(systemRoles), '']
+      : []),
   ].join('\n');
 
 const PERMS = permissions({ member: ['list:create'], owner: ['list:create', 'list:manage'] });
@@ -139,6 +147,7 @@ describe('conceptDelta — each section, and its twin when nothing changed', () 
       keys: ['list:manage'],
       checkedOn: 'one `list`, resolved in the handler',
       roles: ['owner'],
+      systemRoles: [],
       grantShapes: ['list'],
     });
     const text = renderDelta(d, OPTS);
@@ -261,6 +270,32 @@ describe('conceptDelta — each section, and its twin when nothing changed', () 
     expect(conceptDelta(PKG, art(MODEL, reserving(base, 'list:reap')), art(MODEL, base)).permissions.rows).toEqual([
       { key: 'list:reap', description: 'Reap abandoned lists', before: [], after: [], reserved: { before: true, after: false } },
     ]);
+  });
+
+  it("permissions: a system-held role is named among a key's holders, and never as a role called `Role`", () => {
+    const people = { member: ['list:create'], owner: ['list:create', 'list:manage'] };
+    const base = reserving(permissions(people, REAP), 'list:reap');
+    const head = reserving(permissions(people, REAP, { reaper: ['list:reap'] }), 'list:reap');
+    const d = conceptDelta(PKG, art(MODEL, base), art(MODEL, head));
+    expect(d.permissions.rows).toEqual([
+      { key: 'list:reap', description: 'Reap abandoned lists', before: [], after: ['reaper'], reserved: { before: true, after: true } },
+    ]);
+    expect(renderDelta(d, OPTS)).toContain(
+      '| `list:reap` | Reap abandoned lists | — no role — · reserved to a system principal | `reaper` · reserved to a system principal |',
+    );
+    expect(d.permissions.changes).toEqual([expect.objectContaining({ path: 'system-held role reaper', flagged: true })]);
+    // And a transition whose operation checks the key names the system-held role holding it, as one.
+    const md = withOps(head, [`| \`acme/cancel\` | \`list:reap\` | the scope | \`${PKG}\` |`]);
+    const t = conceptDelta(PKG, art(MODEL, md), art(cancelled(), md));
+    expect(t.lifecycles.transitions[0]!.check).toMatchObject({ keys: ['list:reap'], roles: [], systemRoles: ['reaper'] });
+    expect(renderDelta(t, OPTS)).toContain('| added | `list:reap` on the scope — system-held roles `reaper` |');
+    // A key held by both kinds names each under its own word.
+    const both = withOps(reserving(permissions({ member: ['list:reap'] }, REAP, { reaper: ['list:reap'] }), 'list:reap'), [
+      `| \`acme/cancel\` | \`list:reap\` | the scope | \`${PKG}\` |`,
+    ]);
+    expect(renderDelta(conceptDelta(PKG, art(MODEL, both), art(cancelled(), both)), OPTS)).toContain(
+      '`list:reap` on the scope — roles `member`; system-held roles `reaper` |',
+    );
   });
 
   it('permissions: a registry the classifier cannot read gives no rows, only its finding', () => {

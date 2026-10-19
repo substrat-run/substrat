@@ -754,6 +754,89 @@ describe('PERMISSIONS.md', () => {
   });
 
   /**
+   * PERMS as the emitter writes it once a role is declared `holder: 'system'` (K-55): `list:manage`
+   * reserved, and held by a system-held role in §2a, under the person roles. The emitter's own
+   * output is read back in `tools/reserved-keys.test.mts`.
+   */
+  const SYSTEM = reserving('list:manage')(PERMS).replace(
+    '| `viewer` | `list:read` |\n',
+    "$&\n### 2a. System-held roles — a platform host's standing principal\n\nNever given to a person.\n\n| Role | Permissions |\n| --- | --- |\n| `reaper` | `list:manage` |\n",
+  );
+
+  it('reads a system-held role apart from the person roles, and the same file against itself is no change', () => {
+    const snap = parsePermissions(SYSTEM);
+    // Read as one table, §2a's header was a role named `Role`: "role Role added — widening".
+    expect(snap.roles).toEqual({ member: ['list:create', 'list:read'], viewer: ['list:read'] });
+    expect(snap.systemRoles).toEqual({ reaper: ['list:manage'] });
+    expect(snap.unread).toEqual({});
+    expect(classifyPermissions(SYSTEM, SYSTEM)).toEqual({ bump: 'none', changes: [] });
+  });
+
+  it('its twin: a file without §2a has no system-held role, and the same roles', () => {
+    expect(parsePermissions(PERMS).systemRoles).toEqual({});
+    expect(parsePermissions(PERMS).roles).toEqual(parsePermissions(SYSTEM).roles);
+  });
+
+  it('a system-held role added is a flagged widening, by its name; removed, a flagged narrowing', () => {
+    const added = classifyPermissions(reserving('list:manage')(PERMS), SYSTEM);
+    expect(added.bump).toBe('minor');
+    expect(added.changes).toEqual([
+      expect.objectContaining({ path: 'system-held role reaper', flagged: true, detail: expect.stringMatching(/added \(holds: list:manage\) — widening/) }),
+    ]);
+    const removed = classifyPermissions(SYSTEM, reserving('list:manage')(PERMS));
+    expect(removed.changes).toEqual([expect.objectContaining({ path: 'system-held role reaper', flagged: true, detail: expect.stringMatching(/narrowing/) })]);
+  });
+
+  it('a system-held role gaining a key is a flagged widening at minor, as a role gaining one is', () => {
+    const r = classifyPermissions(SYSTEM, SYSTEM.replace('| `reaper` | `list:manage` |', '| `reaper` | `list:create`, `list:manage` |'));
+    expect(r.bump).toBe('minor');
+    expect(r.changes).toEqual([expect.objectContaining({ path: 'system-held role reaper', flagged: true, detail: 'now holds list:create — widening' })]);
+  });
+
+  it("a key moving from a system-held role to a person's role is that role's flagged widening, and its reservation's", () => {
+    // The move lint:permissions lets through: the reservation dropped with it, and the system-held
+    // role, which may hold only reserved keys, gone.
+    const head = PERMS.replace('| `member` | `list:create`, `list:read` |', '| `member` | `list:create`, `list:manage`, `list:read` |');
+    const r = classifyPermissions(SYSTEM, head);
+    expect(r.bump).toBe('minor');
+    expect(r.changes.map((c) => [c.path, c.flagged, c.detail])).toEqual([
+      ['key list:manage', true, expect.stringMatching(/no longer reserved .* widening/)],
+      ['role member', true, 'now holds list:manage — widening'],
+      ['system-held role reaper', true, 'removed (held: list:manage) — narrowing'],
+    ]);
+  });
+
+  it("a system-held role becoming a person's role is a flagged widening on the person's side", () => {
+    const head = PERMS.replace('| `viewer` | `list:read` |', '| `reaper` | `list:manage` |\n| `viewer` | `list:read` |');
+    const r = classifyPermissions(SYSTEM, head);
+    expect(r.bump).toBe('minor');
+    expect(r.changes.map((c) => [c.path, c.flagged, c.detail])).toEqual([
+      ['key list:manage', true, expect.stringMatching(/no longer reserved .* widening/)],
+      ['role reaper', true, 'added (holds: list:manage) — widening'],
+      ['system-held role reaper', true, 'removed (held: list:manage) — narrowing'],
+    ]);
+  });
+
+  it('a Roles sub-section the classifier does not know is judged whole: major and flagged when it changes', () => {
+    const extra = (keys: string) => SYSTEM.replace('## 3. Coverage', `### 2b. Delegated roles\n\n| Role | Permissions |\n| --- | --- |\n| \`deputy\` | ${keys} |\n\n## 3. Coverage`);
+    expect(parsePermissions(extra('`list:read`')).roles).not.toHaveProperty('deputy');
+    const r = classifyPermissions(extra('`list:read`'), extra('`list:read`, `list:create`'));
+    expect(r.bump).toBe('major');
+    expect(r.changes).toEqual([expect.objectContaining({ path: expect.stringMatching(/^section "Roles\b.* › Delegated roles"$/), flagged: true })]);
+  });
+
+  it('so is a sub-section under any section: never read as more rows of that section’s table', () => {
+    const extra = (keys: string) =>
+      PERMS.replace('## 5. Scheduled work', `### 4a. Retired shapes\n\n| Entity type | Permissions |\n| --- | --- |\n| \`old\` | ${keys} |\n\n## 5. Scheduled work`);
+    // Read as one table, its header was a grant shape named `Entity type`.
+    expect(Object.keys(parsePermissions(extra('`list:read`')).grantShapes)).toEqual(['owner']);
+    const r = classifyPermissions(extra('`list:read`'), extra('`list:manage`'));
+    expect(r.changes).toEqual([
+      expect.objectContaining({ level: 'major', path: 'section "Entity-narrowed grant shapes › Retired shapes"', flagged: true }),
+    ]);
+  });
+
+  /**
    * Against the producer: every PERMISSIONS.md the repo's emitter wrote parses, and the registry
    * this parser finds has exactly the count the emitter printed in its own header. A drift in the
    * emitter's table layout reddens this, not a release.
@@ -769,7 +852,8 @@ describe('PERMISSIONS.md', () => {
       if (!header) continue; // "No permission surface"
       const snap = parsePermissions(text);
       expect(Object.keys(snap.registry).length, file).toBe(Number(header[1]));
-      expect(Object.keys(snap.roles).length, file).toBe(Number(header[2]));
+      // The header counts every role, system-held ones included.
+      expect(Object.keys(snap.roles).length + Object.keys(snap.systemRoles).length, file).toBe(Number(header[2]));
       expect(snap.unread, file).toEqual({});
       expect(classifyPermissions(text, text).bump, file).toBe('none');
       // #2384: the Operations section is read, one entry per row the emitter wrote.
