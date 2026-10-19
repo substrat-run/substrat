@@ -380,6 +380,10 @@ import {
   type PurgePass,
   refuseTrashedTarget,
   assertBoundOperations,
+  checkHeldOperationsOf,
+  countChecks,
+  noteUncheckedCompletion,
+  type CheckTally,
   registerTrashTargets,
   withheldKeysFor,
   statefulTablesOf,
@@ -1296,6 +1300,8 @@ export function defineScopeDO(
     private readonly purgeSchedules = new Map<string, { moduleId: string; entityType: string }>();
     /** #116: the operations that declared `idempotency: false` — refusals, not participants. */
     private readonly operationIdempotencyOptOut = new Set<string>();
+    /** #2387: the operations held to a `ctx.check` — the pure adapter's set, from the same kernel read. */
+    private readonly operationCheckHeld = new Set<string>();
     private readonly modules = new Map<string, RegisteredModule>();
     /** #1705: what this deployment exports to other verticals and imports from them. */
     private readonly crossVertical = new CrossVerticalRegistry();
@@ -1582,8 +1588,10 @@ export function defineScopeDO(
             'exclusion someone decided, of an operation that does not exist',
         );
       }
+      const checkHeld = checkHeldOperationsOf(registration.operations);
       for (const [name, handler] of Object.entries(registration.operations?.handlers ?? {})) {
         this.defineOperation(name, handler);
+        if (checkHeld.has(name) && this.operations.has(name)) this.operationCheckHeld.add(name);
         // The schema follows the HANDLER, not the name: a withdrawn operation
         // never binds, and has nothing to parse for.
         const schema = declaredInputs[name];
@@ -2974,6 +2982,7 @@ export function defineScopeDO(
             ? withheldKeysFor(this.purgeOnlyKeys.get(systemDoor.moduleId), target, purging)
             : undefined;
           await this.revision.transaction(async () => {
+            const checks: CheckTally = { calls: 0 };
             const ctx = this.operationContext(
               principal,
               tenantId,
@@ -2990,6 +2999,7 @@ export function defineScopeDO(
               peerSubject,
               undefined,
               withheld,
+              checks,
             );
             // #116: a retry is answered from the recording, and nothing else runs
             // — not the guards, not the handler, not the permission check inside
@@ -3031,7 +3041,11 @@ export function defineScopeDO(
               purging ? { gate: this.purgeGateFacts(systemDoor!.moduleId, tenantId) } : undefined,
             );
             await this.runGuards(operation, ctx, parsed);
+            // #2387: the handler's own checks only — the pure adapter's reset, for its reason.
+            checks.calls = 0;
             result = await (handler as OperationHandler<unknown, unknown>)(ctx, parsed);
+            // #2387: the pure adapter's record, through the same kernel function.
+            noteUncheckedCompletion(ctx, operation, checks, this.operationCheckHeld.has(operation));
             stamps?.assertHeld(ctx, operation);
             if (guardedRef && invokeOptions?.ifMatch !== undefined) {
               assertIfMatch(guardedRef, invokeOptions.ifMatch, seen ?? null);
@@ -7835,6 +7849,8 @@ export function defineScopeDO(
       delivery?: ConsumerDelivery,
       /** #119: keys this context's checks refuse whatever the subject holds (`purgeOnlyKeysOf`). */
       withheld?: ReadonlySet<string>,
+      /** #2387: where this invocation's checks are counted; absent where nothing reads the count. */
+      checks?: CheckTally,
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
@@ -7894,7 +7910,7 @@ export function defineScopeDO(
       // Lifted so `grant` reuses the SAME check the operation itself passes —
       // a delegation check that could differ from the operation's would be a
       // second opinion about what the caller holds.
-      const runCheck = async (unparsed: PermissionKey, entity?: EntityRef) => {
+      const decideUncounted = async (unparsed: PermissionKey, entity?: EntityRef) => {
         // #1642: parsed before the system actor's early return, which never reaches
         // the checker — a cast key would otherwise become that path's proof relation.
         const permission = assertPermissionKey(unparsed);
@@ -7925,6 +7941,8 @@ export function defineScopeDO(
         }
         return decision;
       };
+      // #2387: every check this context makes is counted, the kernel's own verbs' included.
+      const runCheck: OperationContext['check'] = checks ? countChecks(decideUncounted, checks) : decideUncounted;
 
       const runCanAssign = async (roleKey: string) => {
         const bound = await this.assignmentBound(subject, tenantId, scopeId, roleKey);
