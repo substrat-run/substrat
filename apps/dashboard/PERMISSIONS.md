@@ -56,48 +56,48 @@ shapes.
 
 | Operation | Key | Checked on | Declared by |
 | --- | --- | --- | --- |
-| `dashboard/accept-invite` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/app-events` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/authorize-findings-change` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/authorize-findings-read` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/authorize-scope-change` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/begin-connection` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/bind-app-hostname` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/consume-connect-link` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/delete-app` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/delete-app-env` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/delete-app-snapshot` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/delete-team` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/export-app-data` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/get-app-auth` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/init-team` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/install-steps` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/invite-link` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/invite-member` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/leave-self` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/list-app-env` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/list-apps` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/list-connect-links` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/list-members` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/mark-app-active` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/mark-app-failed` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/mint-connect-link` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/preview-invite` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/provision-app` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/reconcile-app-vertical` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/record-install-step` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/remove-member` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/resend-invite` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/restore-app-data` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/restore-connect-link` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/resume-app` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/revoke-connect-link` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/revoke-invite` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/set-app-auth` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/set-app-env` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/snapshot-app` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/unbind-app-hostname` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
-| `dashboard/update-app` | — checked in code, not declared — | — | `@substrat-run/dashboard` |
+| `dashboard/accept-invite` | — none — | nothing: Runs before the caller is a member, so there is no role to check: the invites engine verifies the identifier hash against the invitation, and that hash is the authority | `@substrat-run/dashboard` |
+| `dashboard/app-events` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
+| `dashboard/authorize-findings-change` | `dashboard:manage-findings` | the scope | `@substrat-run/dashboard` |
+| `dashboard/authorize-findings-read` | `dashboard:read-findings` | the scope | `@substrat-run/dashboard` |
+| `dashboard/authorize-scope-change` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/begin-connection` | `dashboard:manage-integrations` | the scope | `@substrat-run/dashboard` |
+| `dashboard/bind-app-hostname` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/consume-connect-link` | `dashboard:manage-integrations` | the scope | `@substrat-run/dashboard` |
+| `dashboard/delete-app` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/delete-app-env` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/delete-app-snapshot` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/delete-team` | `dashboard:manage-members` | the scope | `@substrat-run/dashboard` |
+| `dashboard/export-app-data` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/get-app-auth` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
+| `dashboard/init-team` | `dashboard:manage-members` | the scope | `@substrat-run/dashboard` |
+| `dashboard/install-steps` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
+| `dashboard/invite-link` | `dashboard:manage-members` | the scope | `@substrat-run/dashboard` |
+| `dashboard/invite-member` | `dashboard:manage-members` | the scope | `@substrat-run/dashboard` |
+| `dashboard/leave-self` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
+| `dashboard/list-app-env` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
+| `dashboard/list-apps` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
+| `dashboard/list-connect-links` | `dashboard:manage-integrations` | the scope | `@substrat-run/dashboard` |
+| `dashboard/list-members` | `dashboard:read` | the scope | `@substrat-run/dashboard` |
+| `dashboard/mark-app-active` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/mark-app-failed` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/mint-connect-link` | `dashboard:manage-integrations` | the scope | `@substrat-run/dashboard` |
+| `dashboard/preview-invite` | — none — | nothing: Runs before the caller is a member, so there is no role to check: the authority is the signed invite token the worker verifies before invoking, and it returns only that invitation’s own address, only while open | `@substrat-run/dashboard` |
+| `dashboard/provision-app` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/reconcile-app-vertical` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/record-install-step` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/remove-member` | `dashboard:manage-members` | the scope | `@substrat-run/dashboard` |
+| `dashboard/resend-invite` | `dashboard:manage-members` | the scope | `@substrat-run/dashboard` |
+| `dashboard/restore-app-data` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/restore-connect-link` | `dashboard:manage-integrations` | the scope | `@substrat-run/dashboard` |
+| `dashboard/resume-app` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/revoke-connect-link` | `dashboard:manage-integrations` | the scope | `@substrat-run/dashboard` |
+| `dashboard/revoke-invite` | `dashboard:manage-members` | the scope | `@substrat-run/dashboard` |
+| `dashboard/set-app-auth` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/set-app-env` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/snapshot-app` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/unbind-app-hostname` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
+| `dashboard/update-app` | `dashboard:provision-app` | the scope | `@substrat-run/dashboard` |
 | `invites/accept` | — none — | nothing: The recipient holds nothing yet — they are not a member of anything, so there is no grant a check could resolve. The invitation IS the authority, proven by re-hashing the identifier presented. Stated here so an ungated operation cannot pass for an oversight. | `@substrat-run/engine-invites` |
 | `invites/list` | `invites:read` | the scope | `@substrat-run/engine-invites` |
 | `invites/revoke` | `invites:revoke` | the scope | `@substrat-run/engine-invites` |
