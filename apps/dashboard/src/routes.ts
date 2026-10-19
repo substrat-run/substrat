@@ -67,7 +67,7 @@ const pageOutput = <T extends z.ZodTypeAny>(entry: T) =>
  *   as the plane said it (`hostnameStatusOut`, `adminLogRow`, `findingRow`, `previewAuthOut`);
  * - a block the dashboard only forwards to a human who must read it, and whose absence already
  *   means "cannot show you this" (a registry, a migration diff, a version's origin, a finding's
- *   evidence), falls back to `null` on a value it cannot parse. For the promote review that is the
+ *   evidence and likely cause), falls back to `null` on a value it cannot parse. For the promote review that is the
  *   safe direction: the dialog treats `null` as "cannot diff, ask for an acknowledgement", never
  *   as "no change";
  * - a block whose absence would mean "nothing to worry about" (`exportBreaks`: whom the promotion
@@ -108,8 +108,8 @@ export const adminLogRow = adminLogEntry.extend({
  * One finding (contracts `findingEntry`). The plane owns `kind` (known: invariant, drift,
  * recurring), `status` (known: open, acked, resolved, suppressed), `severity` (known: info,
  * warning, critical), `resolution` (known: verdict, stale), each of `codes` (known: contracts
- * `errorCode`) and a likely cause's `kind` (known: deploy). `evidence` names where the occurrences
- * are read: one this dashboard cannot follow reads as `null`.
+ * `errorCode`) and a likely cause's `kind` (known: deploy). `evidence` (where the occurrences are
+ * read) and `likelyCause` are only shown to a person: one this dashboard cannot read is `null`.
  */
 export const findingRow = findingEntry.extend({
   kind: z.string(),
@@ -118,11 +118,24 @@ export const findingRow = findingEntry.extend({
   resolution: z.string().nullable(),
   codes: z.array(z.string()),
   evidence: orNull(findingEvidence, 'findings.evidence'),
-  likelyCause: findingLikelyCause.extend({ kind: z.string() }).nullable(),
+  likelyCause: orNull(findingLikelyCause.extend({ kind: z.string() }), 'findings.likelyCause'),
 });
 
 /** A suppress rule (contracts `findingRuleEntry`). Its `kind` and `code` are the plane's, as on a finding. */
 export const findingRuleRow = findingRuleEntry.extend({ kind: z.string().nullable(), code: z.string().nullable() });
+
+/**
+ * A suppress rule's body (contracts `findingRuleInput`). Its `kind` and `code` are copied from a
+ * finding the plane answered and go back to the plane, which owns both sets and validates them: a
+ * closed set here refused a rule for a kind the plane knows before the plane was asked. That a rule
+ * narrows something stays this route's own check. Inputs the page builds from its own vocabulary
+ * (a tab's status filter, a verdict) stay closed.
+ */
+const findingRuleIn = z
+  .object({ ...findingRuleInput.shape, kind: z.string().min(1).optional(), code: z.string().min(1).optional() })
+  .refine((r) => r.kind !== undefined || r.operation !== undefined || r.code !== undefined || r.subject !== undefined, {
+    message: 'a suppress rule names at least one of kind, operation, code or subject',
+  });
 
 /** One installed app, as the Apps list shows it. */
 export const appRow = z.object({
@@ -848,7 +861,7 @@ export const dashboardRoutes = defineRoutes({
   },
   'dashboard/create-finding-rule': {
     summary: 'Suppress with a rule: a scope plus an expiry, audited by the plane',
-    input: findingRuleInput,
+    input: findingRuleIn,
     output: z.object({ rule: findingRuleRow, suppressed: z.number().int().nonnegative() }),
     http: { method: 'POST', path: '/findings/rules' },
     status: 201,

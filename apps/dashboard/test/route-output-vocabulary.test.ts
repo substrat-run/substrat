@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from '@substrat-run/contracts';
 import { dashboardRoutes } from '../src/routes.js';
 
 /**
@@ -37,12 +38,20 @@ interface Def {
   element?: unknown;
   innerType?: unknown;
   in?: unknown;
+  out?: unknown;
   options?: unknown[];
+  keyType?: unknown;
   valueType?: unknown;
 }
 const defOf = (schema: unknown) => (schema as { _zod: { def: Def } })._zod.def;
 
-/** Every closed vocabulary reachable in `schema`, by path (`[]` an array element). */
+/** A schema that admits any value of its type: nothing closed below it. */
+const OPEN_LEAVES = new Set(['string', 'number', 'boolean', 'unknown', 'null']);
+
+/**
+ * Every closed vocabulary reachable in `schema`, by path (`[]` an array element, `{}` a record's
+ * values). A schema type it is not taught throws, so a new one cannot hide a closed set from it.
+ */
 function closedIn(schema: unknown, path: string, found: string[]): string[] {
   const def = defOf(schema);
   switch (def.type) {
@@ -57,6 +66,7 @@ function closedIn(schema: unknown, path: string, found: string[]): string[] {
       closedIn(def.element, `${path}[]`, found);
       break;
     case 'record':
+      closedIn(def.keyType, `${path}{key}`, found);
       closedIn(def.valueType, `${path}{}`, found);
       break;
     case 'union':
@@ -64,6 +74,7 @@ function closedIn(schema: unknown, path: string, found: string[]): string[] {
       break;
     case 'pipe':
       closedIn(def.in, path, found);
+      closedIn(def.out, path, found);
       break;
     case 'optional':
     case 'nullable':
@@ -75,6 +86,8 @@ function closedIn(schema: unknown, path: string, found: string[]): string[] {
     case 'catch':
       // `orNull`: what it cannot parse reads as null, so its vocabulary may stay closed.
       break;
+    default:
+      if (!OPEN_LEAVES.has(def.type ?? '')) throw new Error(`closedIn: a '${def.type}' at '${path}' is not taught here; teach it before it hides a closed set`);
   }
   return found;
 }
@@ -85,7 +98,15 @@ describe('the declared routes’ outputs (#2401)', () => {
   );
 
   it('hold no closed vocabulary but the dashboard’s own', () => {
-    expect(closed.filter((c) => !(c in NOT_THE_PLANES))).toEqual([]);
+    expect(closed.filter((c) => !Object.hasOwn(NOT_THE_PLANES, c))).toEqual([]);
+  });
+
+  it('a schema type the walk is not taught fails it, rather than passing unseen', () => {
+    expect(() => closedIn(z.object({ pair: z.tuple([z.string(), z.enum(['a'])]) }), '', [])).toThrow(/'tuple' at 'pair' is not taught/);
+    expect(() => closedIn(z.lazy(() => z.string()), '', [])).toThrow(/'lazy'/);
+    // The twins: what it is taught still reads, a record's closed keys and a pipe's output side included.
+    expect(closedIn(z.record(z.enum(['a', 'b']), z.string()), 'r', [])).toEqual(['r{key}']);
+    expect(closedIn(z.string().pipe(z.enum(['x'])), 'p', [])).toEqual(['p']);
   });
 
   it('list nothing that is no longer there', () => {

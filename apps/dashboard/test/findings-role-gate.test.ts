@@ -299,6 +299,57 @@ describe('the findings routes ask the caller’s permission (#1748)', () => {
       expect(warned.join('\n')).not.toMatch(/traces|trace-from-the-future/);
     });
 
+    it('a likely cause this dashboard cannot read reads as null, and a verdict that happened still answers 200', async () => {
+      // A cause with no deploy version: the newer plane's, a config change say.
+      env.CONTROL_PLANE_SVC = rewrittenPlane(
+        env.CONTROL_PLANE_SVC,
+        (p) => /\/findings/.test(p),
+        patchRows((o) => ('severity' in o && 'subject' in o ? { ...o, likelyCause: { kind: 'config', reason: 'a setting changed' } } : undefined)),
+      );
+      const listed = await asRole('viewer', 'GET', `/api/teams/${tenant}/findings`);
+      expect(listed.status, await listed.clone().text()).toBe(200);
+      expect(((await listed.json()) as { entries: unknown[] }).entries).toEqual([expect.objectContaining({ kind: 'anomaly', likelyCause: null })]);
+      const f = await myFinding();
+      const verdict = await asRole('member', 'PUT', `/api/teams/${tenant}/findings/${f.id}/status`, { status: 'resolved' });
+      expect(verdict.status, await verdict.clone().text()).toBe(200);
+      expect(await verdict.json()).toMatchObject({ id: f.id, likelyCause: null });
+      expect((await myFinding()).status).toBe('resolved');
+      expect(warned.map((l) => (JSON.parse(l) as { field: string }).field)).toContain('findings.likelyCause');
+      expect(warned.join('\n')).not.toContain('a setting changed');
+    });
+
+    describe('a suppress rule names the kind and code the finding carries, and the plane judges them', () => {
+      const newer = () => ({ ...rule(), kind: 'anomaly', code: 'teapot' });
+      const posted = () => planeCalls.filter((c) => c === `POST /tenants/${tenant}/finding-rules`);
+
+      it('a plane that does not know them refuses the rule: its 400 is relayed, after it was asked', async () => {
+        const res = await asRole('member', 'POST', `/api/teams/${tenant}/findings/rules`, newer());
+        expect(res.status, await res.clone().text()).toBe(400);
+        expect(posted()).toHaveLength(1);
+        expect(await host.admin.listFindingRules(staff, tenant, { active: true })).toEqual([]);
+      });
+
+      it('a plane that knows them makes the rule: 201, answered in its own words', async () => {
+        const plain = env.CONTROL_PLANE_SVC as { fetch: (u: string | URL | Request, i?: RequestInit) => Promise<Response> };
+        env.CONTROL_PLANE_SVC = {
+          // The newer plane, standing in: it files the kind and code it knows as ones today's store holds.
+          fetch: (u: string | URL | Request, i?: RequestInit) =>
+            plain.fetch(u, typeof i?.body === 'string' ? { ...i, body: i.body.replace('"anomaly"', '"recurring"').replace('"teapot"', '"conflict"') } : i),
+        };
+        const res = await asRole('member', 'POST', `/api/teams/${tenant}/findings/rules`, newer());
+        expect(res.status, await res.clone().text()).toBe(201);
+        expect(((await res.json()) as { rule: unknown }).rule).toMatchObject(FUTURE_RULE);
+        expect(posted()).toHaveLength(1);
+        expect(await host.admin.listFindingRules(staff, tenant, { active: true })).toEqual([expect.objectContaining({ kind: 'recurring', code: 'conflict' })]);
+      });
+
+      it('a rule that narrows nothing is still refused here, before the plane is asked', async () => {
+        const res = await asRole('member', 'POST', `/api/teams/${tenant}/findings/rules`, { expiresAt: rule().expiresAt, reason: 'everything' });
+        expect(res.status).toBe(400);
+        expect(posted()).toEqual([]);
+      });
+    });
+
     it('a verdict that happened answers 200, in the status the plane named', async () => {
       const f = await myFinding();
       const res = await asRole('member', 'PUT', `/api/teams/${tenant}/findings/${f.id}/status`, { status: 'resolved' });

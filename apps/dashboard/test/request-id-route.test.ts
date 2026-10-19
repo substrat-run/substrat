@@ -203,7 +203,7 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
         errorName: 'Error',
         errorCode: 'internal',
         route: 'dashboard/list-findings',
-        outputPaths: ['entries.0.firstSeen'],
+        outputPaths: ['entries[].firstSeen'],
       },
     ]);
     expect(logged.join('\n')).not.toContain('a-broken-instant');

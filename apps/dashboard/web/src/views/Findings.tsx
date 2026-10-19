@@ -37,15 +37,20 @@ import type { FindingsClient } from '../lib/mock-findings';
  * refusal, because the role the page guessed from may be a reload behind the answer.
  */
 
-// The plane owns severity and kind (#2401): one this page does not know is shown as the plane named it.
-const SEVERITY: Record<string, 'danger' | 'warning' | 'info' | undefined> = {
-  critical: 'danger',
-  warning: 'warning',
-  info: 'info',
-};
+// The plane owns severity and kind (#2401): one this page does not know is shown as the plane named
+// it. Maps, not object literals: a value named like an Object.prototype key must not find one.
+const SEVERITY = new Map<string, 'danger' | 'warning' | 'info'>([
+  ['critical', 'danger'],
+  ['warning', 'warning'],
+  ['info', 'info'],
+]);
 
-const KIND_LABEL: Record<string, string | undefined> = { invariant: 'Invariant', drift: 'Drift', recurring: 'Recurring' };
-const kindLabel = (kind: string) => KIND_LABEL[kind] ?? kind;
+const KIND_LABEL = new Map([
+  ['invariant', 'Invariant'],
+  ['drift', 'Drift'],
+  ['recurring', 'Recurring'],
+]);
+const kindLabel = (kind: string) => KIND_LABEL.get(kind) ?? kind;
 
 type Load =
   | { state: 'loading' }
@@ -313,7 +318,7 @@ function FindingRow({
     >
       <div style={{ flex: 1, minWidth: 0, display: 'grid', gap: 4 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <Badge status={SEVERITY[f.severity] ?? 'neutral'}>{f.severity}</Badge>
+          <Badge status={SEVERITY.get(f.severity) ?? 'neutral'}>{f.severity}</Badge>
           <span style={{ fontSize: 14, fontWeight: 550, color: 'var(--text-primary)' }}>{f.title}</span>
           {f.regressed && <Badge status="warning" dot={false}>Regressed</Badge>}
           <Badge status="neutral" dot={false}>{kindLabel(f.kind)}</Badge>

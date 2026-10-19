@@ -255,6 +255,23 @@ describe('Findings view', () => {
     expect([...kinds!.options].map((o) => o.textContent)).toEqual(['Any kind', 'anomaly']);
   });
 
+  it('#2401: a kind or severity named like an Object.prototype key is shown as named, not looked up there', async () => {
+    await mount(fake([finding({ id: 'p', title: 'prototype-named', kind: 'constructor', severity: 'toString' })]));
+    const r = row('p');
+    expect(r.textContent).toContain('constructor');
+    expect(r.textContent).toContain('toString');
+  });
+
+  it('#2401: the default suppress of a finding of a newer kind sends that kind and the code picked, for the plane to judge', async () => {
+    const client = fake([finding({ id: 'n', title: 'from a newer plane', kind: 'anomaly', codes: ['teapot'] })]);
+    await mount(client);
+    await click(button('Suppress…', row('n')));
+    await pick('Error code', 'teapot');
+    await typeReason('known');
+    await click(button('Suppress', document.body));
+    expect(client.calls.create![0]).toMatchObject({ kind: 'anomaly', code: 'teapot', operation: 'tickets/create', reason: 'known' });
+  });
+
   it('#2401: a verdict the plane answers in a status the inbox has no tab for leaves the tab, and is no error', async () => {
     const client = fake(entries);
     client.setFindingStatus = async (input) => ({ ...entries.find((e) => e.id === input.id)!, status: 'snoozed' });

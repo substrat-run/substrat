@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { defineRoutes, errorCodeOf, toProblem, z, type RouteImpl } from '@substrat-run/contracts';
-import { mountRoutes, RouteOutputMismatch } from '../src/index.js';
+import { issuePathsOf, mountRoutes, RouteOutputMismatch } from '../src/index.js';
 
 /**
  * `mountRoutes` (#2170): a declared route set whose handlers are host code. What it owes
@@ -140,10 +140,13 @@ describe('mountRoutes (#2170)', () => {
     expect(thrown[0]).toMatchObject({ route: 'acme/broken', issuePaths: ['ok'] });
   });
 
-  it('#2401: the issue paths are distinct and at most ten, and carry no value', () => {
-    const issues = Array.from({ length: 30 }, (_, i) => ({ path: ['entries', i % 12, 'at'] }));
-    const err = new RouteOutputMismatch('acme/list', [...issues, { path: ['entries', 0, 'at'] }]);
-    expect(err.issuePaths).toEqual(Array.from({ length: 10 }, (_, i) => `entries.${i}.at`));
+  it('#2401: the issue paths are distinct fields, an index written `[]`, at most ten, and carry no value', () => {
+    // One field broken in every row of a list is one path, so a second broken field is not crowded out.
+    const everyRow = Array.from({ length: 30 }, (_, i) => ({ path: ['entries', i, 'at'] }));
+    const err = new RouteOutputMismatch('acme/list', [...everyRow, { path: ['entries', 29, 'id'] }, { path: [0, 'tags', 3] }, { path: ['total'] }]);
+    expect(err.issuePaths).toEqual(['entries[].at', 'entries[].id', '[].tags[]', 'total']);
+    const fields = Array.from({ length: 12 }, (_, i) => ({ path: ['entries', 0, `f${i}`] }));
+    expect(issuePathsOf(fields)).toEqual(Array.from({ length: 10 }, (_, i) => `entries[].f${i}`));
     expect(err.code).toBe('internal');
     expect(err.message).toBe("mountRoutes: 'acme/list' answered outside its declared output");
   });

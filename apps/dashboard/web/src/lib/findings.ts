@@ -1,5 +1,5 @@
 import { ApiError } from './api.generated';
-import type { DashboardClient, FindingEntry, FindingRuleEntry } from './api.generated';
+import type { FindingEntry, FindingRuleEntry } from './api.generated';
 
 /**
  * The Findings inbox's logic (#1748), kept out of the view so the rules a reader would
@@ -12,12 +12,6 @@ import type { DashboardClient, FindingEntry, FindingRuleEntry } from './api.gene
  * know (#2401): a finding in it belongs to no tab, and offers no move.
  */
 export type FindingStatus = 'open' | 'acked' | 'resolved' | 'suppressed';
-
-/**
- * What a rule may name. A finding's own kind or code is the plane's word; one this dashboard's
- * input does not accept is refused (400), and the dialog says so.
- */
-type RuleInput = Parameters<DashboardClient['createFindingRule']>[0];
 
 /** The inbox's tabs, in the order the design gives them. A tab is a status. */
 export const FINDING_TABS: { value: FindingStatus; label: string }[] = [
@@ -121,7 +115,11 @@ export interface SuppressDraft {
   reason: string;
 }
 
-/** The dialog's starting point: the finding's own scope, a week, no reason yet. */
+/**
+ * The dialog's starting point: the finding's own scope, a week, no reason yet. Its kind is the
+ * plane's word even when this page does not know it: the rule goes back to the plane, which
+ * validates it (#2401).
+ */
 export function draftFor(f: FindingEntry): SuppressDraft {
   return { kind: f.kind, operation: f.operation ?? '', code: '', subject: '', days: '7', reason: '' };
 }
@@ -142,9 +140,9 @@ export function draftReady(d: SuppressDraft): boolean {
 export function ruleInput(d: SuppressDraft, now: number) {
   const days = EXPIRY_CHOICES.find((c) => c.value === d.days)?.days ?? 7;
   return {
-    ...(d.kind ? { kind: d.kind as RuleInput['kind'] } : {}),
+    ...(d.kind ? { kind: d.kind } : {}),
     ...(d.operation ? { operation: d.operation } : {}),
-    ...(d.code ? { code: d.code as RuleInput['code'] } : {}),
+    ...(d.code ? { code: d.code } : {}),
     ...(d.subject ? { subject: d.subject } : {}),
     expiresAt: new Date(now + days * 86_400_000).toISOString(),
     reason: d.reason.trim(),

@@ -33,12 +33,13 @@ const MOCK_DOMAINS: DomainRow[] = [
 ];
 
 // The plane owns the set (#2401): a status this page does not know is shown as the plane named it.
-const STATUS: Record<string, { kind: PillKind; label: string; pulse?: boolean } | undefined> = {
-  active: { kind: 'success', label: 'Active' },
-  verifying: { kind: 'warning', label: 'Verifying', pulse: true },
-  pending: { kind: 'warning', label: 'Pending verification', pulse: true },
-  failed: { kind: 'danger', label: 'Verification failed' },
-};
+// A Map, not an object literal: a status named like an Object.prototype key must not find one.
+const STATUS = new Map<string, { kind: PillKind; label: string; pulse?: boolean }>([
+  ['active', { kind: 'success', label: 'Active' }],
+  ['verifying', { kind: 'warning', label: 'Verifying', pulse: true }],
+  ['pending', { kind: 'warning', label: 'Pending verification', pulse: true }],
+  ['failed', { kind: 'danger', label: 'Verification failed' }],
+]);
 
 /** Domains — account level (screens 1o, 1p). Custom hostnames across the team's apps. */
 export function Domains({ teamId }: { teamId: string }) {
@@ -197,7 +198,7 @@ function DomainRowView({
   onRemove: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const s = STATUS[d.status] ?? { kind: 'neutral', label: d.status };
+  const s = STATUS.get(d.status) ?? { kind: 'neutral', label: d.status };
   const hasRecords = d.validationRecords.length > 0 && d.status !== 'active';
   return (
     <div style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}>
@@ -221,7 +222,8 @@ function DomainRowView({
             {s.label}
           </Pill>
           {d.status === 'active' && d.primary && <MonoTag color="var(--text-tertiary)">primary</MonoTag>}
-          {(d.status === 'verifying' || d.status === 'pending' || d.status === 'failed') && (
+          {/* Any status but active may still change, a new one included: re-polling only asks the plane again. */}
+          {d.status !== 'active' && (
             <span
               onClick={busy ? undefined : onVerify}
               style={{ fontSize: 12, color: 'var(--text-brand)', cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.5 : 1 }}
@@ -285,10 +287,13 @@ export function DnsRecords({ records }: { records: DnsRecord[] }) {
 }
 
 /** The DNS record type to create for each kind the plane names; one this page does not know is shown as the plane named it. */
-const RECORD_TYPE: Record<string, string | undefined> = { hostname: 'CNAME', txt: 'TXT' };
+const RECORD_TYPE = new Map([
+  ['hostname', 'CNAME'],
+  ['txt', 'TXT'],
+]);
 
 function RecordRow({ r }: { r: DnsRecord }) {
-  const type = RECORD_TYPE[r.type] ?? r.type;
+  const type = RECORD_TYPE.get(r.type) ?? r.type;
   return (
     <>
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{type}</span>

@@ -68,4 +68,36 @@ describe('Domains: values from a newer plane (#2401)', () => {
     expect(container.textContent).toContain('cname-flattened');
     expect(container.textContent).toContain('_x.shop.acme.example');
   });
+
+  const rowOf = (hostname: string) =>
+    [...container.querySelectorAll('div')].find((d) => d.firstElementChild?.textContent === hostname && d.style.display === 'grid');
+
+  it('offers "Check again" on a status it does not know, as on every status but active', async () => {
+    client.listDomains.mockResolvedValue({
+      entries: [domain({ status: 'quarantined' }), domain({ hostname: 'ok.acme.example', status: 'active' })],
+      nextCursor: null,
+    });
+    await act(async () => root.render(<Domains teamId="T" />));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(rowOf('shop.acme.example')?.textContent).toContain('Check again');
+    expect(rowOf('ok.acme.example')?.textContent).not.toContain('Check again');
+  });
+
+  it('a status or record type named like an Object.prototype key is shown as named, not looked up there', async () => {
+    client.listDomains.mockResolvedValue({
+      entries: [domain({ status: 'constructor', validationRecords: [{ type: 'toString', name: '_y.shop.acme.example', value: 'v', status: null }] })],
+      nextCursor: null,
+    });
+    await act(async () => root.render(<Domains teamId="T" />));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(container.textContent).toContain('constructor');
+    await act(async () => {
+      container.querySelector('button[aria-label="Show DNS records"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(container.textContent).toContain('toString');
+  });
 });

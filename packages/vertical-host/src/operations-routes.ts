@@ -672,10 +672,14 @@ type SafeParse = (
 
 /**
  * A parse failure as an operator's log line may name it: the distinct issue PATHS, at most ten,
- * never a value or a message, because what failed to parse may be anybody's data.
+ * never a value or a message, because what failed to parse may be anybody's data. An array index
+ * is written `[]` (`entries[].firstSeen`), so a field that fails in every row of a list is one
+ * path, and a second failing field still makes the ten.
  */
 export function issuePathsOf(issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey> }>): string[] {
-  return [...new Set(issues.map((i) => i.path.map(String).join('.')))].slice(0, 10);
+  const pathOf = (path: ReadonlyArray<PropertyKey>) =>
+    path.map((seg, i) => (typeof seg === 'number' ? '[]' : `${i === 0 ? '' : '.'}${String(seg)}`)).join('');
+  return [...new Set(issues.map((i) => pathOf(i.path)))].slice(0, 10);
 }
 
 /**

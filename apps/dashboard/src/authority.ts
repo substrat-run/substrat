@@ -2226,8 +2226,10 @@ export class TenantNarrowedControlPlane {
     return (await this.call<{ entries: FindingRuleEntry[] }>(`/tenants/${this.tenantId}/finding-rules${q}`)).entries;
   }
 
-  /** Suppress with a rule: a scope plus an expiry (#1748). */
-  createFindingRule(input: FindingRuleInput): Promise<{ rule: FindingRuleEntry; suppressed: number }> {
+  /** Suppress with a rule: a scope plus an expiry (#1748). `kind` and `code` are the plane's to validate (#2401). */
+  createFindingRule(
+    input: Omit<FindingRuleInput, 'kind' | 'code'> & { kind?: string; code?: string },
+  ): Promise<{ rule: FindingRuleEntry; suppressed: number }> {
     return this.post(`/tenants/${this.tenantId}/finding-rules`, input);
   }
 

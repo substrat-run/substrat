@@ -46,7 +46,8 @@ export function actionKeyWords(action: string): string[] {
 export function actionWords(action: string): string {
   const [verb, ...rest] = actionKeyWords(action);
   if (!verb) return action;
-  const past = PAST[verb];
+  // Own keys only: an action starting `constructor` must not find Object's.
+  const past = Object.hasOwn(PAST, verb) ? PAST[verb] : undefined;
   return past ? [past, ...rest].join(' ') : `admin action: ${[verb, ...rest].join(' ')}`;
 }
 

@@ -329,7 +329,7 @@ export interface DashboardClient {
    *
    * `POST /findings/rules` — `dashboard/create-finding-rule`
    */
-  createFindingRule(input: { kind?: "invariant" | "drift" | "recurring"; operation?: string; code?: "unauthenticated" | "permission_denied" | "forbidden" | "not_found" | "conflict" | "validation_failed" | "precondition_failed" | "rate_limited" | "unavailable" | "internal"; subject?: string; expiresAt: string; reason: string }): Promise<{ rule: FindingRuleEntry; suppressed: number }>;
+  createFindingRule(input: { kind?: string; operation?: string; code?: string; subject?: string; expiresAt: string; reason: string }): Promise<{ rule: FindingRuleEntry; suppressed: number }>;
 
   /**
    * Create a preview of an admitted version, or re-use the one with this tag (`reused`); `ttlHours: null` pins it
