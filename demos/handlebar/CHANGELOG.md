@@ -1,5 +1,25 @@
 # @substrat-run/demo-bike-shop
 
+## 0.2.2
+
+### Patch Changes
+
+- 34c4455: The scaffold template, the demo verticals and the dashboard hand their scope hosts the permission surface `substrat push` reads (`permissions`), so a module registered beside that surface is refused at registration rather than judged by neither lint nor push (#2430). The todo demo's `MODULES` and `ROLES` move into `src/provision.ts` beside it; `src/seed.ts` still exports both.
+- Updated dependencies [bf18880]
+- Updated dependencies [34c4455]
+- Updated dependencies [34c4455]
+- Updated dependencies [1872bb7]
+  - @substrat-run/contracts@0.154.0
+  - @substrat-run/kernel@0.154.0
+  - @substrat-run/vertical-host@0.154.0
+  - @substrat-run/adapter-sqlite@0.154.0
+  - @substrat-run/engine-invoicing@0.11.38
+  - @substrat-run/engine-notifications@0.2.2
+  - @substrat-run/engine-protocol@0.13.39
+  - @substrat-run/engine-workorder@0.12.38
+  - @substrat-run/dev-issuer@0.2.36
+  - @substrat-run/attachment-extractors@0.2.15
+
 ## 0.2.1
 
 ### Patch Changes
