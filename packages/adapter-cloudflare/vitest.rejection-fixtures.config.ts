@@ -16,6 +16,8 @@ export default defineConfig({
     }),
   ],
   test: {
+    // vitest 5.0.4+ turns the module cache on by default, which crashes the workerd pool (WebSocket 1009).
+    fsModuleCache: false,
     include: ['rejection-fixtures/**/*.fixture.ts'],
     fileParallelism: false,
     retry: 2,
