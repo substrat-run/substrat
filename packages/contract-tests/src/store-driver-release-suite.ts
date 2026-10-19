@@ -15,6 +15,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { platformActorId } from '@substrat-run/contracts';
 import { ulid, type ManualClock, type ScopeHost } from '@substrat-run/kernel';
 import { expectRefusal } from './scope-host-suite.js';
+import { fixtureVersion } from './fixture-version.js';
 
 export interface StoreDriverReleaseFixture {
   host: ScopeHost;
@@ -316,7 +317,7 @@ export function storeDriverReleaseContractSuite(adapterName: string, makeFixture
         await host.admin.publishVersion(staff, {
           id,
           verticalSlug: slug,
-          version: `1.0.${id.slice(-6).toLowerCase()}`,
+          version: fixtureVersion(id),
           manifestDigest: `m-${id}`,
           permissionDigest: 'p',
           migrationDigest: 'g',
@@ -350,7 +351,7 @@ export function storeDriverReleaseContractSuite(adapterName: string, makeFixture
       await host.admin.publishVersion(staff, {
         id,
         verticalSlug: slugC,
-        version: `1.0.${id.slice(-6).toLowerCase()}`,
+        version: fixtureVersion(id),
         manifestDigest: `m-${id}`,
         permissionDigest: 'p',
         migrationDigest: 'g',
@@ -472,7 +473,7 @@ export function storeDriverReleaseContractSuite(adapterName: string, makeFixture
         await host.admin.publishVersion(staff, {
           id,
           verticalSlug: slug,
-          version: `1.0.${id.slice(-6).toLowerCase()}`,
+          version: fixtureVersion(id),
           manifestDigest: `m-${id}`,
           permissionDigest: 'p',
           migrationDigest: 'g',

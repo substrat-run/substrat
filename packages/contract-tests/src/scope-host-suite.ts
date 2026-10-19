@@ -76,6 +76,7 @@ import {
 } from './modules.js';
 import { testOperations } from './test-operations.js';
 import { derivedDigestOf, heldMigrations } from './held-migrations.js';
+import { fixtureVersion } from './fixture-version.js';
 
 export interface ScopeHostFixture {
   host: ScopeHost;
@@ -6140,7 +6141,7 @@ export function scopeHostContractSuite(
       await host.admin.publishVersion(staff, {
         id: versionId,
         verticalSlug: slug,
-        version: `1.0.${versionId.slice(-4).toLowerCase()}`,
+        version: fixtureVersion(versionId),
         manifestDigest: `m-${versionId}`,
         permissionDigest: 'p',
         migrationDigest: 'g',
@@ -6208,7 +6209,7 @@ export function scopeHostContractSuite(
         return host.admin.publishVersion(staff, {
           id,
           verticalSlug: slug,
-          version: `1.0.${id.slice(-6).toLowerCase()}`,
+          version: fixtureVersion(id),
           manifestDigest: `m-${id}`,
           permissionDigest: 'p',
           migrationDigest: 'g',
@@ -6819,7 +6820,7 @@ export function scopeHostContractSuite(
       const publish = async (manifest: Record<string, unknown> | string) => {
         const id = ulid();
         await host.admin.publishVersion(staff, {
-          id, verticalSlug: 'migrationsapart', version: `1.0.${id.toLowerCase()}`, manifestDigest: 'm',
+          id, verticalSlug: 'migrationsapart', version: fixtureVersion(id), manifestDigest: 'm',
           permissionDigest: 'p', deploymentRef: null,
           // #2339: a set it carries is hashed as the host derives it; the others store none to check.
           migrationDigest: typeof manifest === 'string' || !Array.isArray(manifest.migrations) ? 'g' : await derivedDigestOf(manifest),
@@ -6884,7 +6885,7 @@ export function scopeHostContractSuite(
       const publish = async (migrationDigest: string, migrations?: unknown[], doClasses?: string[]) => {
         const id = ulid();
         await host.admin.publishVersion(staff, {
-          id, verticalSlug: slug, version: `1.0.${id.toLowerCase()}`, manifestDigest: 'm', permissionDigest: 'p',
+          id, verticalSlug: slug, version: fixtureVersion(id), manifestDigest: 'm', permissionDigest: 'p',
           migrationDigest, deploymentRef: null,
           ...(migrations ? { manifestJson: JSON.stringify({ migrations, ...(doClasses ? { doClasses } : {}) }) } : {}),
         });
@@ -7166,7 +7167,7 @@ export function scopeHostContractSuite(
         const put = async (perm: string, mig: string, migrations?: unknown[]) => {
           const id = ulid();
           await host.admin.publishVersion(staff, {
-            id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
+            id, verticalSlug: slug, version: fixtureVersion(id), manifestDigest: `m-${id}`,
             // #2339: the digest is the one the stored migrations give; `mig` names the set without them.
             permissionDigest: perm, deploymentRef: null,
             ...(migrations
@@ -7331,7 +7332,7 @@ export function scopeHostContractSuite(
         const put = async (slug: string) => {
           const id = ulid();
           await host.admin.publishVersion(staff, {
-            id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: 'm', permissionDigest: 'p',
+            id, verticalSlug: slug, version: fixtureVersion(id), manifestDigest: 'm', permissionDigest: 'p',
             migrationDigest: 'g', deploymentRef: null,
           });
           await host.admin.admitVersion(staff, id);
@@ -7440,7 +7441,7 @@ export function scopeHostContractSuite(
       const publishShaped = async (slug: string, entityGrants: unknown[], admit = true) => {
         const id = ulid();
         await host.admin.publishVersion(staff, {
-          id, verticalSlug: slug, version: `3.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
+          id, verticalSlug: slug, version: fixtureVersion(id, 3), manifestDigest: `m-${id}`,
           permissionDigest: 'p', deploymentRef: null,
           ...(await heldMigrations('g', { registry: { permissions: [], roles: [], entityGrants } })),
         });

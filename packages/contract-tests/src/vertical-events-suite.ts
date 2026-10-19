@@ -35,6 +35,7 @@ import {
 import { expectAnswered, expectSettledUnknown, withRefusedOutcome, type AdminRowFault } from './switch-audit-fault.js';
 import { testOperations } from './test-operations.js';
 import { heldMigrations } from './held-migrations.js';
+import { fixtureVersion } from './fixture-version.js';
 
 // -- the two fixture verticals ------------------------------------------------
 //
@@ -1481,7 +1482,7 @@ export function verticalEventsContractSuite(
         await fx.consumer.admin.publishVersion(staff, {
           id,
           verticalSlug: slug,
-          version: `1.0.${id.slice(-4).toLowerCase()}`,
+          version: fixtureVersion(id),
           manifestDigest: `m-${id}`,
           permissionDigest: perm,
           deploymentRef: null,
@@ -1550,7 +1551,7 @@ export function verticalEventsContractSuite(
     const publishManifest = async (slug: string, manifestJson: string, migrations = 'g') => {
       const id = ulid();
       await fx.consumer.admin.publishVersion(staff, {
-        id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
+        id, verticalSlug: slug, version: fixtureVersion(id), manifestDigest: `m-${id}`,
         permissionDigest: 'p', deploymentRef: null,
         ...(await heldMigrations(migrations, JSON.parse(manifestJson) as Record<string, unknown>)),
       });
