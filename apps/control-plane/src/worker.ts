@@ -1976,7 +1976,13 @@ export function drainContextOf(
   };
 }
 
-async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDrainReport> {
+async function drainOneScope(
+  env: Env,
+  t: TenantId,
+  s: ScopeId,
+  /** #2431: intents an earlier drain this pass already tried — `PlatformDrainOptions.skip`. */
+  opts?: { skip?: readonly string[] },
+): Promise<ScopeDrainReport & { attempted?: string[] }> {
   const host = hostFor(env);
   const resolveVerticalForScope = resolveVerticalForScopeFor(env);
   const target = await drainTarget(await host.admin.getScopeRecord(SWEEP_ACTOR, t, s), resolveVerticalForScope);
@@ -1992,7 +1998,8 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDr
     resolveVerticalForScope,
     patchScriptBindings: patchScriptBindingsFor(env),
   };
-  return drainScopePlatformRequests(
+  const attempted: string[] = [];
+  const report = await drainScopePlatformRequests(
     client,
     drainContextOf(rec, vertical, await host.admin.getTenant(SWEEP_ACTOR, t)),
     {
@@ -2050,8 +2057,12 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDr
       recordFailure: (entry) => {
         void host.admin.recordOpsFailure({ actor: SWEEP_ACTOR, ...entry }).catch(() => undefined);
       },
+      ...(opts?.skip?.length ? { skip: new Set(opts.skip) } : {}),
+      attempted,
     },
   );
+  // Only for the sweep, which passes options: the kick route returns its report to the router as is.
+  return opts ? { ...report, attempted } : report;
 }
 
 /**
@@ -2156,7 +2167,7 @@ export default {
     // #1840: what the drain row is stamped with — the drain phase's end, or the pass start
     // when the phase reached no scope at all.
     const passStartedAt = new Date();
-    const platformDrain = timedDrain((t: TenantId, s: ScopeId) => drainOneScope(env, t, s));
+    const platformDrain = timedDrain((t: TenantId, s: ScopeId, o?: { skip?: readonly string[] }) => drainOneScope(env, t, s, o));
     const report = await runPlatformSweep(host, {
       actor: SWEEP_ACTOR,
       // Sanctioned egress for the connector sweepers below.

@@ -125,13 +125,11 @@ const sweeper = await bundle(
     `  },`,
     // A pass that failed, or failed a unit, says so in the script's logs: nobody else is
     // watching a sweeper the vertical never wrote.
-    // #2431: so does one whose schedules enqueued platform requests, which wait for the
-    // platform's next drain sweep because nothing routes this alarm. Counts only.
+    // Only those: a pass whose schedules merely enqueued platform requests is routine, and a line
+    // for each would bury the failures (#2431). The count is in the report all the same.
     `  onPass(outcome) {`,
     `    if ('error' in outcome || outcome.errors.length > 0) {`,
     `      console.error(JSON.stringify({ substrat: 'scope-sweep', ...outcome }));`,
-    `    } else if (outcome.schedules.platformRequests) {`,
-    `      console.log(JSON.stringify({ substrat: 'scope-sweep', scopes: outcome.scopes, schedules: outcome.schedules }));`,
     `    }`,
     `  },`,
     `});`,
