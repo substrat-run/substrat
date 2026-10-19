@@ -1,5 +1,22 @@
 # @substrat-run/kernel
 
+## 0.151.0
+
+### Minor Changes
+
+- 4efc88d: `PERMISSIONS.md` names the key each operation checks. A new Operations section lists every registered operation with the key it declares, and what that check narrows to: the scope, one record (id from an input field, or resolved in the handler), a whole ref, or a walk over rows. An operation whose handler checks a key with nothing declared is listed as "checked in code, not declared", never given a guessed key. To make this readable, the bound operations a module registers now carry the check each operation declares (`operationChecksOf` in `@substrat-run/contracts`, read the same way as the concurrency map), and the host itself ignores it. `substrat changeset` and `lint:changeset-bump` read the section: an operation moved to another key, narrowed differently, added or removed is a permission change, at least minor and listed for review. `substrat plan` shows each lifecycle transition with the key its operation checks and the roles and per-record grant shapes holding it. `@substrat-run/model-view`'s `parsePermissions` returns the section as `operations`.
+- a00c87a: Both scope hosts now count the `ctx.check` calls each invocation makes. An operation that declares a `permission` and returns without calling `ctx.check` writes a `warn` line through `ctx.log` (template `operation completed without a permission check`, field `finding: 'unchecked-operation'`), stamped with the tenant, scope, operation and invocation like every other line. The invocation itself is unchanged: no error and no rollback. A refused, caught or throwing check counts, and so does one made inside a helper or a kernel verb. Derived handlers, `narrows` walks and modules bound with `undeclaredOperations` are not held to a check. An operation that deliberately checks nothing declares `narrows: { reason, checks: [], unchecked: true }`.
+
+  A node test run can make it a failure by setting the registered `globalThis` flag named by `REFUSE_UNCHECKED_OPERATIONS_KEY`: the operation then throws `UncheckedOperation` after the line and rolls back. The kernel exports `countChecks`, `noteUncheckedCompletion`, `checkHeldOperationsOf`, `UncheckedOperation`, `REFUSE_UNCHECKED_OPERATIONS_KEY`, `UNCHECKED_OPERATION_TEMPLATE` and `UNCHECKED_OPERATION_FINDING`. `@substrat-run/contract-tests` adds `checkTallyContractSuite`, which every adapter runs.
+
+### Patch Changes
+
+- Updated dependencies [8273013]
+- Updated dependencies [4efc88d]
+- Updated dependencies [a667881]
+- Updated dependencies [f614b00]
+  - @substrat-run/contracts@0.151.0
+
 ## 0.150.0
 
 ### Patch Changes
@@ -6599,7 +6616,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

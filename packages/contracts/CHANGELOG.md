@@ -1,5 +1,21 @@
 # @substrat-run/contracts
 
+## 0.151.0
+
+### Minor Changes
+
+- 4efc88d: `PERMISSIONS.md` names the key each operation checks. A new Operations section lists every registered operation with the key it declares, and what that check narrows to: the scope, one record (id from an input field, or resolved in the handler), a whole ref, or a walk over rows. An operation whose handler checks a key with nothing declared is listed as "checked in code, not declared", never given a guessed key. To make this readable, the bound operations a module registers now carry the check each operation declares (`operationChecksOf` in `@substrat-run/contracts`, read the same way as the concurrency map), and the host itself ignores it. `substrat changeset` and `lint:changeset-bump` read the section: an operation moved to another key, narrowed differently, added or removed is a permission change, at least minor and listed for review. `substrat plan` shows each lifecycle transition with the key its operation checks and the roles and per-record grant shapes holding it. `@substrat-run/model-view`'s `parsePermissions` returns the section as `operations`.
+
+### Patch Changes
+
+- 8273013: `problemForStatus(426)` is titled `Upgrade required` instead of the class-wide `Request failed`.
+- a667881: A Python store-driver release may carry `python_modules/<path>` beside its one `driver_` package. The upload sends those as Data modules, and the release sha256 covers them. The source commit vouches for the driver package and the pyproject/lock it was installed from; `python_modules/` is install output, so `substrat store-driver upload` does not hold it to the commit, skips the two markers `pywrangler sync` writes there, and says the sha256 alone vouches for those bytes. The workers runtime SDK stays out of the bundle: the script imports it from the runtime the upload selects.
+- f614b00: Prepares the graph store driver's registration. No store driver is registered yet, so a push that declares `driver: 'graph'` is still refused with "declares driver 'graph', which is not registered".
+
+  `assertScopeStoresRegistered`, `assertDeclaredScopeStores` and `assertSandboxContract` take the registry they judge against, `STORE_DRIVERS` when none is passed, and the control plane's deploy route and both uploads read its `storeDrivers` option.
+
+  Once a driver is registered, a scope whose running version cannot be named, or whose manifest cannot be read, answers 503 before a backup, a full export, a snapshot, a reap, a restore, a subject erasure, the storage gauge or a sweep's wipe only where a version of its vertical has declared a store. A scope of a vertical that never declared one proceeds as it did before stores, and a vertical whose declarations cannot be read still refuses.
+
 ## 0.150.0
 
 ### Minor Changes
@@ -6864,7 +6880,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
