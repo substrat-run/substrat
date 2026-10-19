@@ -504,6 +504,7 @@ import {
   registerTrashTargets,
   assertModuleDeclared,
   noteReservedKeys,
+  reservedGrantRefusal,
   reservedRoleRefusal,
   type DeclaredPermissions,
   type PurgePass,
@@ -1507,6 +1508,10 @@ interface ScopeStubRpc {
   ): Promise<Coverage | 'not-held' | 'unknown-to' | { refused: string }>;
   /** #2430: why a role may not be conferred through a door here, or null — see `scope-do.ts`. */
   reservedRoleRefusalFor(tenantId: TenantId, roleKey: string, door: 'person' | 'platform'): Promise<string | null>;
+  /** #2430: the same, against the tenant the scope's provisioning receipt names. */
+  reservedRoleRefusalHere(roleKey: string, door: 'person' | 'platform'): Promise<string | null>;
+  /** #2430: why a raw grant of these keys is refused against the scope class's reservations, or null. */
+  reservedGrantRefusalFor(permissions: string[]): Promise<string | null>;
   revokeScopeRolesBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
   ): Promise<{ coverage: Coverage; revoked: string[] }>;
@@ -2922,6 +2927,8 @@ export class CloudflareScopeHost implements ScopeHost {
   constructor(options: CloudflareScopeHostOptions) {
     this.servicePrincipals = options.servicePrincipals;
     this.permissions = options.permissions;
+    // #2430: what the declared surface reserves holds here too, whatever is registered under its ids.
+    for (const m of options.permissions?.modules ?? []) noteReservedKeys(this.reservedKeys, m.manifest);
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
     this.tenantStores = options.tenantStores;
     this.blobStores = options.blobStores;
@@ -5888,6 +5895,9 @@ export class CloudflareScopeHost implements ScopeHost {
       throw unknownScopeForTenant(tenantId, scopeId);
     }
     await this.peerScopeGate(tenantId, scopeId, 'canAssign');
+    // #2430: the answer a person's door would give — a role carrying a reserved key is refused.
+    const refused = await this.scopeStub(scopeId).reservedRoleRefusalFor(tenantId, roleKey, 'person');
+    if (refused) throw substratError('forbidden', refused);
     const bound = await this.scopeStub(scopeId).canAssignFor(tenantId, scopeId, principalId.parse(principal), roleKey);
     if (!bound) throw unknownRoleError(roleKey);
     return coverage.parse(bound);
@@ -7437,12 +7447,15 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       assignRole: async (actor, assignment: RoleAssignment) => {
         // #2430: the platform's door — a role mixing reserved and other keys is refused (K-55).
-        // Read where the checker reads the role: the scope's own reader at a scope node.
-        if (this.reservedKeys.size > 0) {
+        // At a scope node, read where the checker reads the role, against the scope class's own
+        // reservations (it answers null when it has none). At the tenant node, against this host's.
+        {
           const { tenantId, scopeId } = assignment.node;
           const refusal = scopeId
             ? await this.scopeStub(scopeId).reservedRoleRefusalFor(tenantId, assignment.roleKey, 'platform')
-            : await this.cp.getRole(tenantId, assignment.roleKey).then((role) => role && reservedRoleRefusal(role, this.reservedKeys, 'platform'));
+            : this.reservedKeys.size > 0
+              ? await this.cp.getRole(tenantId, assignment.roleKey).then((role) => role && reservedRoleRefusal(role, this.reservedKeys, 'platform'))
+              : null;
           if (refusal) throw substratError('forbidden', refusal);
         }
         const subject = `principal:${assignment.principalId}`;
@@ -7507,6 +7520,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // trust: the parse is where an `expiresAt` carrying a UTC offset is normalised
         // to Z text (#963), and liveness here is a lexicographic `expires_at > ?`.
         const grant = capabilityGrant.parse(raw);
+        await this.refuseReservedGrant([grant.permission], grant.node.scopeId); // #2430
         await writeGrant(
           `principal:${grant.principalId}`,
           grant.permission,
@@ -7762,6 +7776,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // The org must exist in the node's tenant. A grant to a phantom org looks
         // applied, resolves for nobody, and still shows up in the permission diff.
         await requireOrg(node.tenantId, orgId);
+        await this.refuseReservedGrant([permission], node.scopeId); // #2430: an org's members are people
         await writeGrant(`org:${orgId}`, permission, node, entity);
         await this.recordAdmin(
           actor,
@@ -11708,6 +11723,10 @@ export class CloudflareScopeHost implements ScopeHost {
    * already projected (via `provisionScopeLocal`), or the local checker expands it to nothing.
    */
   async assignScopeRole(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<void> {
+    // #2430: a platform door, as `HostAdmin.assignRole` is — a role mixing reserved and other keys
+    // is refused, against the scope class's own reservations and the tenant its receipt names.
+    const refusal = await this.scopeStub(scopeId).reservedRoleRefusalHere(roleKey, 'platform');
+    if (refusal) throw substratError('forbidden', refusal);
     unwrapReply(await this.scopeStub(scopeId).writeTuple(`principal:${principal}`, `role:${roleKey}`, `scope:${scopeId}`, null));
   }
 
@@ -11780,6 +11799,7 @@ export class CloudflareScopeHost implements ScopeHost {
     permission: PermissionKey,
     entity: EntityRef,
   ): Promise<void> {
+    await this.refuseReservedGrant([permission], scopeId); // #2430
     unwrapReply(await this.scopeStub(scopeId).writeTuple(
       `principal:${principal}`,
       `granted:${permission}`,
@@ -11802,7 +11822,19 @@ export class CloudflareScopeHost implements ScopeHost {
     entity: EntityRef,
     permissions: readonly PermissionKey[],
   ): Promise<void> {
+    await this.refuseReservedGrant(permissions, scopeId); // #2430
     await this.scopeStub(scopeId).grantEntityShape(principal, entity, permissions);
+  }
+
+  /**
+   * #2430: refuse a raw grant of a reserved key (`reservedGrantRefusal`): against this host's
+   * reservations, and at a scope node against the scope class's own, which may name more.
+   */
+  private async refuseReservedGrant(permissions: readonly PermissionKey[], scopeId: ScopeId | null): Promise<void> {
+    const refusal =
+      reservedGrantRefusal(permissions, this.reservedKeys) ??
+      (scopeId ? await this.scopeStub(scopeId).reservedGrantRefusalFor([...permissions]) : null);
+    if (refusal) throw substratError('forbidden', refusal);
   }
 
   /**

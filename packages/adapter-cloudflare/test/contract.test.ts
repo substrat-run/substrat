@@ -265,6 +265,40 @@ reservedRoleContractSuite('adapter-cloudflare', async (options) => {
   return { host, cleanup: async () => host.close() };
 });
 
+// #2430: the scope class's own reservations decide at a scope node, whatever the coordinator in
+// front of it registers — here one that registers no module reserving anything.
+describe('a coordinator that reserves nothing, in front of a ScopeDO class that does (#2430)', () => {
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+  const MIXED = [permissionKey.parse('rsv:use'), permissionKey.parse('rsv:run')];
+
+  beforeAll(async () => {
+    await host.admin.createTenant(staff, { id: t, slug: `rsv-front-${t.slice(-10).toLowerCase()}`, name: 'Front' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'rsv-front' });
+    await host.admin.activateScope(staff, t, s);
+    await host.admin.defineRole(staff, t, { key: 'mixed', permissions: MIXED, source: 'vertical' });
+  });
+  afterAll(() => host.close());
+
+  it('refuses a mixed role at a scope node, and a raw grant of the reserved key there', async () => {
+    const who = principalId.parse(ulid());
+    const refusal = await host.admin
+      .assignRole(staff, { principalId: who, roleKey: 'mixed', node: { tenantId: t, scopeId: s } })
+      .then(() => undefined, (e: unknown) => e);
+    expect(errorCodeOf(refusal)).toBe('forbidden');
+    const grant = await host.admin
+      .grant(staff, { principalId: who, permission: MIXED[1]!, node: { tenantId: t, scopeId: s }, grantedBy: who })
+      .then(() => undefined, (e: unknown) => e);
+    expect(errorCodeOf(grant)).toBe('forbidden');
+  });
+
+  it('its twin: at the tenant node it reads its own reservations, which are none, so it assigns (a stated residual)', async () => {
+    await host.admin.assignRole(staff, { principalId: principalId.parse(ulid()), roleKey: 'mixed', node: { tenantId: t, scopeId: null } });
+  });
+});
+
 // The permission suite runs against the DO's default tuple checker (scope tuples
 // in the ScopeDO, tenant tuples + roles in the ControlPlaneDO).
 permissionContractSuite('adapter-cloudflare', async () => {

@@ -116,6 +116,7 @@ import {
   type ScopeRoleHolder,
   assertModuleDeclared,
   noteReservedKeys,
+  reservedGrantRefusal,
   reservedRoleRefusal,
   type DeclaredPermissions,
   effectiveRoleGrantQuery,
@@ -1261,6 +1262,9 @@ export function defineScopeDO(
   // At definition, not at construction: a worker whose module list drifted fails at its first
   // import, rather than at the first scope it wakes.
   for (const registration of modules) assertModuleDeclared(options.permissions, registration.manifest.id);
+  // What the declared surface reserves holds in every instance too, whatever registers under its ids.
+  const declaredReserved = new Set<string>();
+  for (const m of options.permissions?.modules ?? []) noteReservedKeys(declaredReserved, m.manifest);
   return class ScopeDO extends DurableObject<ScopeDoEnv> {
     private readonly sql: SqlStorage;
     private continuationOrder = 0;
@@ -1316,8 +1320,11 @@ export function defineScopeDO(
     /** #2387: the operations held to a `ctx.check` — the pure adapter's set, from the same kernel read. */
     private readonly operationCheckHeld = new Set<string>();
     private readonly modules = new Map<string, RegisteredModule>();
-    /** #2430: what a registered module declares `holder: 'system'` — the role doors' refusal reads it. */
-    private readonly reservedKeys = new Set<string>();
+    /**
+     * #2430: what a registered module, or a module the class's declared `permissions` lists, declares
+     * `holder: 'system'` — the role and grant doors' refusals read it.
+     */
+    private readonly reservedKeys = new Set<string>(declaredReserved);
     /** #1705: what this deployment exports to other verticals and imports from them. */
     private readonly crossVertical = new CrossVerticalRegistry();
     /**
@@ -4884,6 +4891,21 @@ export function defineScopeDO(
       return role ? reservedRoleRefusal(role, this.reservedKeys, door) : null;
     }
 
+    /**
+     * #2430: `reservedRoleRefusalFor` for a caller that names no tenant — `assignScopeRole` — read
+     * against the tenant this scope's provisioning receipt names. A scope with no receipt holds no
+     * projected role, so nothing is refused.
+     */
+    async reservedRoleRefusalHere(roleKey: string, door: 'person' | 'platform'): Promise<string | null> {
+      const tenantId = this.provisionedFor();
+      return tenantId ? this.reservedRoleRefusalFor(tenantId as TenantId, roleKey, door) : null;
+    }
+
+    /** #2430: why a raw grant of `permissions` is refused against this class's reservations, or null. */
+    async reservedGrantRefusalFor(permissions: string[]): Promise<string | null> {
+      return reservedGrantRefusal(permissions, this.reservedKeys);
+    }
+
     /** The kernel's `revokeScopeRoles` in one serialized scope task (#1150). */
     async revokeScopeRolesBoundedFor(
       tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
@@ -7989,6 +8011,9 @@ export function defineScopeDO(
       const runCheck: OperationContext['check'] = checks ? countChecks(decideUncounted, checks) : decideUncounted;
 
       const runCanAssign = async (roleKey: string) => {
+        // #2430: the answer a person's door would give — a role carrying a reserved key is refused.
+        const refused = await this.reservedRoleRefusalFor(tenantId, roleKey, 'person');
+        if (refused) throw substratError('forbidden', refused);
         const bound = await this.assignmentBound(subject, tenantId, scopeId, roleKey);
         if (!bound) {
           throw unknownRoleError(roleKey);
@@ -8229,6 +8254,9 @@ export function defineScopeDO(
         grant: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
           assertImpersonationWrites(impersonation, 'ctx.grant');
           entityObjectRef(entity, 'ctx.grant'); // #1856: a tuple the walk can read back
+          // #2430: whoever the caller is — a system actor passes guardrail 2 by construction.
+          const reserved = reservedGrantRefusal([permission], this.reservedKeys);
+          if (reserved) throw substratError('forbidden', reserved);
           const held = await runCheck(permission, entity);
           if (!held.allowed) {
             throw new PermissionDenied(

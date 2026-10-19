@@ -448,6 +448,7 @@ import {
   type ScopeRoleHolder,
   assertModuleDeclared,
   noteReservedKeys,
+  reservedGrantRefusal,
   reservedRoleRefusal,
   type DeclaredPermissions,
   admitPeer,
@@ -2135,6 +2136,8 @@ export class SqliteScopeHost implements ScopeHost {
     this.versionId = options.versionId ?? null;
     this.migrationsDigest = options.migrationsDigest;
     this.permissions = options.permissions;
+    // #2430: what the declared surface reserves holds here too, whatever is registered under its ids.
+    for (const m of options.permissions?.modules ?? []) noteReservedKeys(this.reservedKeys, m.manifest);
     this.scopeStoreVertical = options.scopeStores?.vertical;
     this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
     this.scopeStoreLifecycle = scopeStoreLifecycleOf(this.scopeStoreRunners);
@@ -5471,7 +5474,11 @@ export class SqliteScopeHost implements ScopeHost {
   async canAssign(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<Coverage> {
     const rt = await this.openActiveScope(tenantId, scopeId);
     const subject = asPrincipal(principalId.parse(principal));
-    return rt.actor.enqueue(() => this.assignmentBound(subject, tenantId, scopeId, roleKey));
+    return rt.actor.enqueue(() => {
+      // #2430: the answer a person's door would give — a role carrying a reserved key is refused.
+      this.refuseReservedRole(tenantId, roleKey, 'person');
+      return this.assignmentBound(subject, tenantId, scopeId, roleKey);
+    });
   }
 
   async assignScopeRoleBounded(
@@ -5484,8 +5491,9 @@ export class SqliteScopeHost implements ScopeHost {
     const rt = await this.openActiveScope(tenantId, scopeId);
     const subject = asPrincipal(principalId.parse(caller));
     const target = principalId.parse(assignee);
-    this.refuseReservedRole(tenantId, roleKey, 'person'); // #2430
     return rt.actor.turn(async () => {
+      // #2430: read in the same serialized task as the bound and the grant.
+      this.refuseReservedRole(tenantId, roleKey, 'person');
       const bound = await this.assignmentBound(subject, tenantId, scopeId, roleKey);
       if (bound.covered) applyScopeRoleChange(switchSqlOf(rt.db), scopeId, target, { revoke: [], grant: roleKey }, this.clock());
       return bound;
@@ -5508,11 +5516,12 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<Coverage> {
     const rt = await this.openActiveScope(tenantId, scopeId);
     const target = principalId.parse(principal);
-    // #2430: the role moved TO is conferred by a person; the one moved from is only taken back.
-    this.refuseReservedRole(tenantId, to, 'person');
-    const answer = await rt.actor.turn(() =>
-      changeScopeRole(switchSqlOf(rt.db), scopeId, target, from, to, this.clock(), this.roleBound(caller, tenantId, scopeId), (run) => rt.db.transaction(run)()),
-    );
+    const answer = await rt.actor.turn(() => {
+      // #2430: the role moved TO is conferred by a person; the one moved from is only taken back.
+      // Read in the same serialized task as the bound and the write.
+      this.refuseReservedRole(tenantId, to, 'person');
+      return changeScopeRole(switchSqlOf(rt.db), scopeId, target, from, to, this.clock(), this.roleBound(caller, tenantId, scopeId), (run) => rt.db.transaction(run)());
+    });
     if (answer === 'not-held') throw substratError('conflict', `${target} does not hold '${from}' at this scope`);
     if (answer === 'unknown-to') throw unknownRoleError(to);
     return answer;
@@ -5668,6 +5677,12 @@ export class SqliteScopeHost implements ScopeHost {
   private refuseReservedRole(tenantId: TenantId, roleKey: string, door: 'person' | 'platform'): void {
     const role = this.roles.get(`${tenantId}/${roleKey}`);
     const refusal = role ? reservedRoleRefusal(role, this.reservedKeys, door) : null;
+    if (refusal) throw substratError('forbidden', refusal);
+  }
+
+  /** #2430: refuse a raw grant of a key a module registered here reserves (`reservedGrantRefusal`). */
+  private refuseReservedGrant(permissions: readonly string[]): void {
+    const refusal = reservedGrantRefusal(permissions, this.reservedKeys);
     if (refusal) throw substratError('forbidden', refusal);
   }
 
@@ -8723,6 +8738,7 @@ export class SqliteScopeHost implements ScopeHost {
         // trust: the parse is where an `expiresAt` carrying a UTC offset is normalised
         // to Z text (#963), and liveness here is a lexicographic `expires_at > ?`.
         const grant = capabilityGrant.parse(raw);
+        this.refuseReservedGrant([grant.permission]); // #2430
         await onNode(grant.node, () =>
           writeGrant(
             `principal:${grant.principalId}`,
@@ -8743,6 +8759,7 @@ export class SqliteScopeHost implements ScopeHost {
       grantEntityShape: async (actor, grant) => {
         const { tenantId, scopeId } = grant.node;
         this.assertScope(tenantId, scopeId);
+        this.refuseReservedGrant(grant.permissions); // #2430
         const rt = this.runtime(tenantId, scopeId);
         // One unit on the scope actor (#1678): the marker and its keys land together or not at all.
         await rt.actor.turn(() =>
@@ -9039,6 +9056,7 @@ export class SqliteScopeHost implements ScopeHost {
         // Checked once before the turn, so a refusal opens no scope file; then again with
         // the write in one body, on the scope actor when the node is a scope (#1678).
         requireOrg(node.tenantId, orgId);
+        this.refuseReservedGrant([permission]); // #2430: an org's members are people
         await onNode(node, () => {
           requireOrg(node.tenantId, orgId);
           writeGrant(`org:${orgId}`, permission, node, entity);
@@ -13552,8 +13570,11 @@ export class SqliteScopeHost implements ScopeHost {
         }
       : decideCheck;
 
-    const runCanAssign: OperationContext['canAssign'] = (roleKey) =>
-      this.assignmentBound(subject, rt.tenantId, rt.scopeId, roleKey);
+    // #2430: the answer a person's door would give — a role carrying a reserved key is refused.
+    const runCanAssign: OperationContext['canAssign'] = async (roleKey) => {
+      this.refuseReservedRole(rt.tenantId, roleKey, 'person');
+      return this.assignmentBound(subject, rt.tenantId, rt.scopeId, roleKey);
+    };
 
     // ctx.emit's writer, and the kernel's own events' (#1864): one path to the outbox, with the
     // reserved-type refusal applied to module code only. Never handed to module code as-is.
@@ -13824,6 +13845,8 @@ export class SqliteScopeHost implements ScopeHost {
       grant: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
         assertImpersonationWrites(impersonation, 'ctx.grant');
         entityObjectRef(entity, 'ctx.grant'); // #1856: a tuple the walk can read back
+        // #2430: whoever the caller is — a system actor passes guardrail 2 by construction.
+        this.refuseReservedGrant([permission]);
         const held = await runCheck(permission, entity);
         if (!held.allowed) {
           throw new PermissionDenied(

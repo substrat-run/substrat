@@ -206,6 +206,7 @@ import {
   migrationsDigestBindings,
   deployManifest,
   storedDeployManifest,
+  pushedOwnerGrantProblems,
   pushedPermissionRegistry,
   deploymentRefFor,
   stableDeploymentRefFor,
@@ -7574,6 +7575,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         const registry = pushedPermissionRegistry.safeParse(checked.data.registry);
         if (!registry.success) return refuseManifest(registry.error.issues[0]!, ['registry']);
       }
+      // #2430: an owner grant is a person's, so it holds no key the registry reserves.
+      const ownerGrants = pushedOwnerGrantProblems(checked.data);
+      if (ownerGrants.length > 0) return refuseManifest({ path: ['ownerGrants'], message: ownerGrants.join('; ') });
     }
     await c.var.admin.publishVersion(c.get('actor'), input);
     const version = await c.var.admin.getVersion(c.get('actor'), input.id, slug);
@@ -8332,6 +8336,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const raw = form.get('manifest');
     if (typeof raw !== 'string') return refuse(c, 'validation_failed', 'missing manifest part');
     const manifest = deployManifest.parse(JSON.parse(raw));
+    // #2430: an owner grant is a person's, so it holds no key the registry reserves.
+    const ownerGrants = pushedOwnerGrantProblems(manifest);
+    if (ownerGrants.length > 0) return refuse(c, 'validation_failed', `manifest ownerGrants: ${ownerGrants.join('; ')}`);
 
     // §4 sandbox contract, before anything reaches the namespace.
     assertSandboxContract(manifest, options.storeDrivers);

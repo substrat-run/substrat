@@ -549,6 +549,8 @@ export const INDEX_VALUE_EXPORTS = [
   'repointScopeGrants',
   'requestEmail',
   'requiredEntitlementFor',
+  // #2430: the refusal both adapters' raw grant doors and `ctx.grant` answer for a reserved key.
+  'reservedGrantRefusal',
   // #2430: the one refusal both adapters' role doors (and the ControlPlaneDO's membership unit) answer.
   'reservedRoleRefusal',
   'resolveAttachmentTextBounds',

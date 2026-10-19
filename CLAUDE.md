@@ -196,12 +196,17 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   each reserved key, so dropping a declaration shows in the reviewed diff. The rule is one
   function set in `@substrat-run/contracts` (`reservedKeysOf`, `reservedKeyOffences`), and
   three more places apply it (#2430): `buildPermissionRegistry`, so `substrat push` refuses
-  before upload in this lint's words; the push boundary (`pushedPermissionRegistry`, read off
-  the `holder` the registry rows now carry); and a scope host's role doors (the kernel's
-  `reservedRoleRefusal`, reading the modules the host REGISTERS). A person's doors
-  (`assignScopeRoleBounded`, `changeScopeRoleBounded`, a membership add) refuse any role
-  carrying a reserved key; `HostAdmin.assignRole` refuses one mixing reserved and other keys
-  and admits an all-reserved role, since a stored role does not record its holder. The
+  before upload in this lint's words; the push boundary (`pushedPermissionRegistry` and
+  `pushedOwnerGrantProblems`, read off the `holder` the registry rows now carry); and a scope
+  host's doors (the kernel's `reservedRoleRefusal` and `reservedGrantRefusal`, reading the modules
+  the host REGISTERS and those its `permissions` lists). An owner grant (a module's
+  `ownerGrants`, or `substrat.ownerGrants`) is judged as a person's. A person's doors
+  (`assignScopeRoleBounded`, `changeScopeRoleBounded`, a membership add, `canAssign`) refuse any
+  role carrying a reserved key; a raw grant (`HostAdmin.grant`, `grantToOrg`, `grantEntityShape`,
+  `ctx.grant` whoever calls it) of one is refused; `HostAdmin.assignRole` and `assignScopeRole`
+  refuse a role mixing reserved and other keys and admit an all-reserved role, since a stored
+  role does not record its holder. The diff a promote shows itemises a moved reservation and a
+  moved role holder (`reservationChanges`, `roleChanges[].holder`). The
   reservation follows the vertical's `permissions.modules`, so that list has to be what the
   host registers: a host given the same `permissions` (`new SqliteScopeHost({ …, permissions })`,
   `defineScopeDO(MODULES, {}, { permissions })`) refuses a module it leaves out, and

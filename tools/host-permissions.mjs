@@ -24,8 +24,10 @@
  * pass it says why with `host-permissions-allow: <reason>`, which is printed on every run. Tests are
  * out of scope: they construct hosts over fixture modules with no surface behind them.
  *
- * What this does NOT judge: whether the object passed IS the surface push reads. That is the
- * vertical's `substrat.permissions` entry, and the convention is to import it from there.
+ * What this does NOT judge: whether the object passed IS the surface push reads (that is the
+ * vertical's `substrat.permissions` entry, and the convention is to import it from there), and a
+ * host constructed in one file whose modules are registered from another, which reads as a host
+ * that registers nothing. The host's own check holds the declared ids, and their reservations.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -57,9 +59,16 @@ function* walk(node) {
   }
 }
 
+/** A `permissions` property in the options literal, whose value is not the bare `undefined`. */
 const hasPermissions = (options) =>
   options?.type === 'ObjectExpression' &&
-  options.properties.some((p) => p.type === 'ObjectProperty' && !p.computed && (p.key.name ?? p.key.value) === 'permissions');
+  options.properties.some(
+    (p) =>
+      p.type === 'ObjectProperty' &&
+      !p.computed &&
+      (p.key.name ?? p.key.value) === 'permissions' &&
+      !(p.value.type === 'Identifier' && p.value.name === 'undefined'),
+  );
 
 /**
  * The host constructions in `source` that register modules (`checked`), and each of them that
@@ -93,6 +102,8 @@ const SELF_TEST = [
   ["const h = new SqliteScopeHost({ dir, 'permissions': p });\nh.registerModule(m);", 0],
   ['const h = new SqliteScopeHost({ dir });\nfor (const m of M) h.registerModule(m);', 1],
   ['const h = new CloudflareScopeHost(options);\nh.registerModule(m);', 1],
+  // Present but empty is no surface at all.
+  ['const h = new SqliteScopeHost({ dir, permissions: undefined });\nh.registerModule(m);', 1],
   // A host that registers nothing has no module to hold to a list.
   ['const h = new CloudflareScopeHost({ scope });', 0],
   ['export const ScopeDO = defineScopeDO(MODULES, {}, { permissions });', 0],

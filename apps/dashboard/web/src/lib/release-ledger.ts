@@ -1,6 +1,6 @@
 import { reviewLine, type EmittedModel, type MigrationDiff } from '@substrat-run/contracts';
 import type { ChannelHistoryEntry, DeploymentVersion, ReleaseRow } from './api';
-import { grantShapeHolderNotes, type RegistryDiff, type RegistryLike } from './registry-diff';
+import { grantShapeHolderNotes, reservationNote, roleHolderNote, type RegistryDiff, type RegistryLike } from './registry-diff';
 
 /**
  * The Deployments tab's derivations (#1767): the running → available comparison as
@@ -32,10 +32,11 @@ export function permissionDiffItems(diff: RegistryDiff, from: RegistryLike, to: 
   for (const k of diff.addedKeys) items.push({ kind: 'added', name: k, note: describe(to, k) || 'new permission' });
   for (const k of diff.changedKeys) items.push({ kind: 'changed', name: k, note: `description now: ${describe(to, k)}` });
   for (const k of diff.removedKeys) items.push({ kind: 'removed', name: k, note: describe(from, k) || 'no longer declared' });
+  for (const c of diff.reservationChanges) items.push({ kind: 'changed', name: c.key, note: reservationNote(c) });
   for (const r of diff.roleChanges) {
     if (r.isNew) items.push({ kind: 'added', name: `role ${r.key}`, note: r.added.length ? `holds ${r.added.join(', ')}` : 'new role' });
     else if (r.isGone) items.push({ kind: 'removed', name: `role ${r.key}`, note: 'no longer declared' });
-    else items.push({ kind: 'changed', name: `role ${r.key}`, note: signed(r.added, r.removed) });
+    else items.push({ kind: 'changed', name: `role ${r.key}`, note: [signed(r.added, r.removed), roleHolderNote(r)].filter(Boolean).join('; ') });
   }
   for (const g of diff.grantChanges) {
     if (g.isNew) items.push({ kind: 'added', name: `grant on ${g.entityType}`, note: g.added.join(', ') || 'new grant shape' });

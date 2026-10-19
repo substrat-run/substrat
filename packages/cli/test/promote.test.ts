@@ -174,6 +174,23 @@ describe('the diff formatters', () => {
     expect(formatRegistryDiff(null, reg(), true)[0]).toMatch(/serving version carries no permission registry/);
   });
 
+  it('formatRegistryDiff: a lifted reservation and a role holder move are lines of their own, beside any other change (#2430)', () => {
+    const at = (reserved: boolean, holder?: 'system') =>
+      ({
+        ...reg(),
+        permissions: [
+          { key: 'desk:run', description: 'Run', declaredBy: ['desk'], ...(reserved ? { holder: 'system' } : {}) },
+          { key: 'desk:read', description: 'Read tickets', declaredBy: ['desk'] },
+        ],
+        roles: [{ key: 'host', permissions: ['desk:run'], source: 'vertical', ...(holder ? { holder } : {}) }],
+      }) as unknown as PermissionRegistry;
+    expect(formatRegistryDiff(at(true, 'system'), at(false), true)).toEqual([
+      '! desk:run is no longer reserved to a system principal: a person\'s role may now hold it',
+      'role host:',
+      '  now a role a person can hold, no longer held by a system principal',
+    ]);
+  });
+
   it('formatRegistryDiff: a retired shape key says who loses it, a direct grant on the entity included (#2082)', () => {
     const shaped = (permissions: string[], retired?: string[]) =>
       ({ ...reg(), entityGrants: [{ entityType: 'ticket', permissions, bootstrap: true, ...(retired ? { retired } : {}) }] }) as unknown as PermissionRegistry;

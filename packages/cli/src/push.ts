@@ -13,6 +13,7 @@ import {
   assetsNeed,
   ATTACHMENT_BLOB_BINDING,
   buildPermissionRegistry,
+  ownerGrantSets,
   reservedKeyMessage,
   reservedKeyOffences,
   reservedKeysOf,
@@ -386,7 +387,7 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
     );
   }
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
-    substrat?: { permissions?: string };
+    substrat?: { permissions?: string; ownerGrants?: unknown[] };
   };
   const entry = pkg.substrat?.permissions;
   if (!entry) {
@@ -476,11 +477,20 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
         );
       }
     }
-    // #2430: a key a module declares `holder: 'system'` in a role a person can hold, or in an entity
-    // grant shape, refused before anything uploads, in `lint:permissions`' own words. The registry
-    // build below refuses it too; this is the message that names the remedy.
+    // #2430: a key a module declares `holder: 'system'` in a role a person can hold, an entity grant
+    // shape or an owner grant (a module's, or this package's `substrat.ownerGrants`, which an install
+    // grants its owner), refused before anything uploads, in `lint:permissions`' own words. The
+    // registry build below refuses most of it too; this is the message that names the remedy.
     const reserved = reservedKeysOf(mod.permissions.modules);
-    const offences = reservedKeyOffences({ roles: mod.permissions.roles, grants: mod.permissions.entityGrants ?? [] }, reserved);
+    const ownerGrants = (pkg.substrat?.ownerGrants ?? []).filter((k): k is string => typeof k === 'string');
+    const offences = reservedKeyOffences(
+      {
+        roles: mod.permissions.roles,
+        grants: mod.permissions.entityGrants ?? [],
+        personGrants: ownerGrantSets(mod.permissions.modules, ownerGrants),
+      },
+      reserved,
+    );
     if (offences.length > 0) throw new Error(reservedKeyMessage(basename(resolve(dir)), entry, offences, reserved));
     // #1234: the declared half of a declared-vs-observed finding — what the modules say
     // they emit and consume, which exists nowhere off their manifests.

@@ -40,14 +40,39 @@ engine inherits the reservation with the manifest, and the permission snapshot m
 so that removing `holder: 'system'` shows in the reviewed diff. Leave `holder` out and the
 key may be held by anyone it is granted to, which is what every key meant before the field.
 
-The same rule holds past the lint. `substrat push` refuses a role or shape holding a reserved
-key before anything is uploaded, in the lint's words, and the platform refuses such a push
-too: the registry a push ships marks each reserved key, and each system-held role, with
-`holder: 'system'`. At runtime, a host refuses to hand a person such a key through a role,
-whatever the role table says. Inviting someone into a role that carries one is refused, as is
-moving them into it, and so is a membership request for it. The platform's own role
-assignment refuses a role that mixes a reserved key with keys a person may hold. The host
-reads the reservations off the modules it actually registers.
+### Past the lint
+
+`substrat push` refuses the same things before anything is uploaded, and words the refusal the
+way the lint does:
+
+- a role or shape holding a reserved key;
+- an owner grant holding one: a module's `ownerGrants`, or your package's `substrat.ownerGrants`.
+
+The registry a push ships marks each reserved key, and each system-held role, with
+`holder: 'system'`. The platform refuses a push whose registry rows mark a key that a role, a
+shape or the owner grants hold. A registry from a CLI too old to write the marks carries none,
+and the platform refuses it nothing.
+
+At runtime, a host reads the reservations off the modules it registers, and refuses at these
+doors:
+
+- **Inviting someone into a role that carries a reserved key** is refused. So is moving them
+  into one, and so is a membership request for one. `canAssign` gives the same answer.
+- **Granting a reserved key directly** to a principal or an org is refused, whoever asks. That
+  covers a platform grant, a declared shape granted to a person, and `ctx.grant` from an
+  operation, including one running as a system actor.
+- **The platform's own role assignment** refuses a role that mixes a reserved key with keys a
+  person may hold. It admits a role made only of reserved keys, because that is the shape a
+  system-held role has. A stored role does not record its holder, so this door cannot tell such
+  a role from a person's role made the same way.
+
+Not covered yet:
+
+- a role or grant a host seats or composes itself;
+- a role definition widened after it was assigned;
+- a role conferred on a host that registers no modules.
+
+Push and the lint hold what a vertical declares there.
 
 Those modules have to be the ones the lint and the push read, which are your permission
 entry's `modules`. Give the host the same `permissions` and it refuses to register a module

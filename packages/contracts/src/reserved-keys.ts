@@ -31,6 +31,8 @@ export interface ReservedKeySource {
   manifest: {
     id: string;
     permissions: readonly { key: string; description: string; holder?: 'system' }[];
+    /** What a fresh install's owner is granted on day one: a person's grant (#2430). */
+    ownerGrants?: readonly string[];
   };
 }
 
@@ -55,7 +57,10 @@ export function reservedKeysOf(modules: readonly ReservedKeySource[]): Map<strin
 }
 
 export interface ReservedKeyOffence {
-  /** Where it was granted: `role <key>`, `system-held role <key>` or `grant shape on <entityType>`. */
+  /**
+   * Where it was granted: `role <key>`, `system-held role <key>`, `grant shape on <entityType>`, or
+   * a person grant's own name (`owner grants of <module>`, `owner grants (substrat.ownerGrants)`).
+   */
   where: string;
   key: string;
   /** Set for a system-held role holding a key that is not reserved to a system principal. */
@@ -64,10 +69,29 @@ export interface ReservedKeyOffence {
   empty?: true;
 }
 
-/** The surface a reservation is judged against: the roles and the entity grant shapes. */
+/** The surface a reservation is judged against: the roles, the entity grant shapes, and person grants. */
 export interface ReservedKeySurface {
   roles: readonly { key: string; permissions: readonly string[]; holder?: 'person' | 'system' }[];
   grants: readonly { entityType: string; permissions: readonly string[] }[];
+  /** #2430: keys a person is granted directly, each set named as the refusal names it (`ownerGrantSets`). */
+  personGrants?: readonly { where: string; permissions: readonly string[] }[];
+}
+
+/**
+ * #2430: the owner grants a vertical declares, as named person grants — each module manifest's
+ * `ownerGrants` and, when given, the deployment's own `substrat.ownerGrants` (package.json). An
+ * install grants them to its owner, a person, so a reserved key among them is a person's grant.
+ */
+export function ownerGrantSets(
+  modules: readonly ReservedKeySource[],
+  deployment?: readonly string[],
+): { where: string; permissions: readonly string[] }[] {
+  return [
+    ...modules
+      .filter((m) => m.manifest.ownerGrants?.length)
+      .map((m) => ({ where: `owner grants of ${m.manifest.id}`, permissions: m.manifest.ownerGrants! })),
+    ...(deployment?.length ? [{ where: 'owner grants (substrat.ownerGrants)', permissions: deployment }] : []),
+  ];
 }
 
 /** Every person-facing grant of a reserved key, and every malformed system-held role, in surface order. */
@@ -93,18 +117,28 @@ export function reservedKeyOffences(surface: ReservedKeySurface, reserved: { has
       if (reserved.has(p)) out.push({ where: `grant shape on ${g.entityType}`, key: p });
     }
   }
+  for (const g of surface.personGrants ?? []) {
+    for (const p of g.permissions) {
+      if (reserved.has(p)) out.push({ where: g.where, key: p });
+    }
+  }
   return out;
 }
 
-/** One offence on one line: where, which key, and why it is refused. */
-export function reservedKeyLine(o: ReservedKeyOffence, reserved: ReadonlyMap<string, ReservedKey>): string {
+/**
+ * One offence on one line: where, which key, and why it is refused. `reserved` names the module
+ * that marks the key; without it (the push boundary, which has only the registry's rows, whose
+ * `declaredBy` lists every declarer, marked or not) the line attributes the mark to nobody.
+ */
+export function reservedKeyLine(o: ReservedKeyOffence, reserved?: ReadonlyMap<string, ReservedKey>): string {
   if (o.empty) return `${o.where} → ${o.key}: a system-held role must hold at least one key reserved to a system principal`;
   if (o.notReserved) {
     return `${o.where} → ${o.key}: a system-held role holds only keys reserved to a system principal (a key its module declares \`holder: 'system'\`)`;
   }
-  // A person-side offence is only ever found for a key `reserved` holds.
-  const r = reserved.get(o.key)!;
-  return `${o.where} → ${o.key}: declared \`holder: 'system'\` by ${r.declaredBy.join(', ')} (${r.description})`;
+  const r = reserved?.get(o.key);
+  return r
+    ? `${o.where} → ${o.key}: declared \`holder: 'system'\` by ${r.declaredBy.join(', ')} (${r.description})`
+    : `${o.where} → ${o.key}: reserved to a system principal (\`holder: 'system'\` on its registry row)`;
 }
 
 /** The refusal's text, naming the vertical, the file, each grant, who reserved the key and the remedy. */
@@ -120,9 +154,9 @@ export function reservedKeyMessage(
   const parts: string[] = [];
   if (person.length) {
     parts.push(
-      `${rel}/${entry} grants a key reserved to a system principal to a person's role or grant shape:\n` +
+      `${rel}/${entry} grants a key reserved to a system principal to a person's role, grant shape or owner grant:\n` +
         lines(person) +
-        `\n\n  Remedy: take the key out of the role or shape. A module's own system principal gets it\n` +
+        `\n\n  Remedy: take the key out of the role, shape or owner grant. A module's own system principal gets it\n` +
         `  from a schedule's \`permissions\` (or a peer's); a platform host's standing principal gets it\n` +
         `  from a role declared \`holder: 'system'\` (K-55). Never from a role a person can hold.`,
     );

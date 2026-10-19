@@ -22,6 +22,7 @@ import {
   type ScopeHost,
 } from '@substrat-run/kernel';
 import { INVITEFIX_A, INVITEFIX_B, membershipFixtureMod } from './membership-module.js';
+import { RSV_RUN, reservedRoleMod } from './reserved-role-module.js';
 import type { ScopeHostFixture } from './scope-host-suite.js';
 
 /**
@@ -66,6 +67,8 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       w.fixture = await makeFixture();
       w.host = w.fixture.host;
       w.host.registerModule(membershipFixtureMod);
+      // #2430: a module reserving `rsv:run`, so an invite for a role carrying it meets the refusal.
+      w.host.registerModule(reservedRoleMod);
       // `baseDelayMs: 0` so the backstop case can retry inside a test.
       registerMembershipExecutor(intercepting(w.host, w, opts.hold, opts.legacy), { actor: staff, retry: { baseDelayMs: 0 }, orgs: opts.orgs });
       const { host, t } = w;
@@ -77,8 +80,13 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       }
       await host.admin.defineRole(staff, t, { key: 'lead', permissions: [INVITEFIX_A, INVITEFIX_B], source: 'vertical' });
       await host.admin.defineRole(staff, t, { key: 'member', permissions: [INVITEFIX_A], source: 'vertical' });
+      // #2430: a role carrying a reserved key beside a person's, and the reserved-only role that
+      // lets alice cover it, so the bound passes and the refusal is the reservation's.
+      await host.admin.defineRole(staff, t, { key: 'reserved', permissions: [INVITEFIX_A, RSV_RUN], source: 'vertical' });
+      await host.admin.defineRole(staff, t, { key: 'runner', permissions: [RSV_RUN], source: 'vertical' });
       await host.admin.createOrg(staff, { id: w.org, tenantId: t, slug: 'team', name: 'Team' });
       await host.admin.assignRole(staff, { principalId: w.alice, roleKey: 'lead', node: { tenantId: t, scopeId: null } });
+      await host.admin.assignRole(staff, { principalId: w.alice, roleKey: 'runner', node: { tenantId: t, scopeId: null } });
       await host.admin.assignRole(staff, { principalId: w.bob, roleKey: 'member', node: { tenantId: t, scopeId: null } });
     });
     afterAll(async () => {
@@ -270,6 +278,13 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       // Terminal: the backstop does not try again.
       expect((await w.host.drainDue(w.t, w.s)).attempted).toBe(0);
       expect(await holds(w, joe, INVITEFIX_A)).toBe(false);
+    });
+
+    it('refuses an invite for a role carrying a key reserved to a system principal, for good, and says why (#2430)', async () => {
+      const joe = principalId.parse(ulid());
+      const outcomes = await asJoiner(w, joe, 'invitefix/accept', await send(w, w.alice, 'reserved'));
+      await expectRefused(w, outcomes, joe, /role 'reserved' cannot be given to a person: it holds rsv:run/);
+      expect((await w.host.drainDue(w.t, w.s)).attempted).toBe(0);
     });
 
     it('an add confers no org membership — whatever the org it names holds, at the tenant or in a scope', async () => {

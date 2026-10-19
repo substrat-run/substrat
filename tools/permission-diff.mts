@@ -34,7 +34,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from '
 import { join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { repoRoot, toPosix } from './repo-path.mjs';
-import { reservedKeyMessage, reservedKeyOffences, reservedKeysOf } from './reserved-keys.mts';
+import { ownerGrantSets, reservedKeyMessage, reservedKeyOffences, reservedKeysOf } from './reserved-keys.mts';
 
 // Structural shapes — deliberately not imported from the kernel. The tool needs
 // four fields, and depending on the packages it inspects would be a cycle.
@@ -108,6 +108,8 @@ interface Surface {
   MODULES?: ModuleLike[];
   ROLES?: RoleLike[];
   ENTITY_GRANTS?: EntityGrantLike[];
+  /** #2430: package.json `substrat.ownerGrants` — what an install grants its owner, a person. */
+  OWNER_GRANTS?: string[];
 }
 /** What a vertical's declared entry (`substrat.permissions`) exports: a definePermissions() result. */
 interface PermissionsLike {
@@ -365,9 +367,12 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
   }
 
   // A key a manifest declares `holder: 'system'` sits on the schedules/peers side above, or in a
-  // system-held role, never in a role or a per-entity shape a person can be handed.
+  // system-held role, never in a role, a per-entity shape or an owner grant a person can be handed.
   const reservedKeys = reservedKeysOf(modules);
-  const offences = reservedKeyOffences({ roles, grants }, reservedKeys);
+  const offences = reservedKeyOffences(
+    { roles, grants, personGrants: ownerGrantSets(modules, src.OWNER_GRANTS) },
+    reservedKeys,
+  );
   if (offences.length) cannot(reservedKeyMessage(rel, entry, offences, reservedKeys));
 
   const holders = new Map<string, string[]>();
@@ -665,6 +670,8 @@ interface Vertical {
   dir: string;
   entry: string;
   pkg: string;
+  /** package.json `substrat.ownerGrants`, the string members of it (#2430). */
+  ownerGrants: string[];
 }
 
 /** The declared entry of one project directory, or `undefined` when it declares none. */
@@ -685,7 +692,7 @@ function declaredEntry(dir: string, rel: string): Vertical | undefined {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     cannot(`${rel}/package.json is valid JSON but not an object.`);
   }
-  const pkgJson = parsed as { name?: string; substrat?: { permissions?: string } };
+  const pkgJson = parsed as { name?: string; substrat?: { permissions?: string; ownerGrants?: unknown } };
   const entry = pkgJson.substrat?.permissions;
   if (entry === undefined || entry === null) return undefined;
   // Declared-but-not-a-path is a broken declaration, not an absent one. `join(dir,
@@ -698,7 +705,10 @@ function declaredEntry(dir: string, rel: string): Vertical | undefined {
         `  \`"substrat": { "permissions": "src/provision.ts" }\`. See demos/todo.`,
     );
   }
-  return { rel, dir, entry, pkg: pkgJson.name ?? rel };
+  const ownerGrants = Array.isArray(pkgJson.substrat?.ownerGrants)
+    ? pkgJson.substrat.ownerGrants.filter((k): k is string => typeof k === 'string')
+    : [];
+  return { rel, dir, entry, pkg: pkgJson.name ?? rel, ownerGrants };
 }
 
 const verticals: Vertical[] = [];
@@ -762,7 +772,7 @@ if (projectDir !== undefined) {
 }
 
 const drifted: string[] = [];
-for (const { rel, dir, entry, pkg } of verticals) {
+for (const { rel, dir, entry, pkg, ownerGrants } of verticals) {
   const mod = (await import(pathToFileURL(join(dir, entry)).href)) as VerticalModule;
   const surface = mod.permissions;
   // The vacuity plug: a declared entry that exports no `permissions` (or an empty one) would
@@ -782,6 +792,7 @@ for (const { rel, dir, entry, pkg } of verticals) {
     MODULES: surface.modules,
     ROLES: surface.roles,
     ENTITY_GRANTS: surface.entityGrants ?? [],
+    OWNER_GRANTS: ownerGrants,
   };
 
   // D-22 for exported events (#1705 PR 3): an export's payload is a contract with another

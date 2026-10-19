@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
 import { ApiError as TeamApiError } from '../lib/api.generated';
 import { api, teamApi, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type EmittedLifecycle, type AppMembersView, type MemberInviteView, type AuditedAnswerView } from '../lib/api';
-import { diffRegistries, grantShapeHolderNotes, hasRegistryChange } from '../lib/registry-diff';
+import { diffRegistries, grantShapeHolderNotes, hasRegistryChange, reservationNote, roleHolderNote } from '../lib/registry-diff';
 import { timelineTargets, type TimelineTarget } from '../lib/history';
 import { readOwnerSeat } from '../lib/owner-seat';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
@@ -1441,18 +1441,29 @@ function Permissions({ app }: { app: AppRow }) {
             {diff!.addedKeys.length > 0 && <DiffRow label="New permissions" kind="info">{diff!.addedKeys.map((k) => <MonoTag key={k}>{k}</MonoTag>)}</DiffRow>}
             {diff!.removedKeys.length > 0 && <DiffRow label="Removed" kind="danger">{diff!.removedKeys.map((k) => <MonoTag key={k}>{k}</MonoTag>)}</DiffRow>}
             {diff!.changedKeys.length > 0 && <DiffRow label="Description changed" kind="warning">{diff!.changedKeys.map((k) => <MonoTag key={k}>{k}</MonoTag>)}</DiffRow>}
-            {diff!.roleChanges.map((rc) => (
-              <div key={rc.key} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <Pill kind={rc.isGone ? 'neutral' : rc.added.length > 0 ? 'warning' : rc.isNew ? 'info' : 'neutral'}>
-                  {rc.isNew ? 'new role' : rc.isGone ? 'role removed' : rc.added.length > 0 ? 'role widened' : 'role narrowed'}
-                </Pill>
-                <MonoTag>{rc.key}</MonoTag>
-                <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {rc.added.map((p) => <span key={p} style={{ ...mono, color: 'var(--status-info-fg)' }}>+{p}</span>)}
-                  {rc.removed.map((p) => <span key={p} style={{ ...mono, color: 'var(--status-danger-fg)' }}>−{p}</span>)}
-                </span>
+            {diff!.reservationChanges.map((c) => (
+              <div key={c.key} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Pill kind="warning">reservation changed</Pill>
+                <MonoTag>{c.key}</MonoTag>
+                <span style={{ color: 'var(--text-secondary)' }}>{reservationNote(c)}</span>
               </div>
             ))}
+            {diff!.roleChanges.map((rc) => {
+              const held = roleHolderNote(rc);
+              return (
+                <div key={rc.key} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <Pill kind={rc.isGone ? 'neutral' : rc.added.length > 0 || held ? 'warning' : rc.isNew ? 'info' : 'neutral'}>
+                    {rc.isNew ? 'new role' : rc.isGone ? 'role removed' : rc.added.length > 0 ? 'role widened' : held ? 'role holder changed' : 'role narrowed'}
+                  </Pill>
+                  <MonoTag>{rc.key}</MonoTag>
+                  <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {rc.added.map((p) => <span key={p} style={{ ...mono, color: 'var(--status-info-fg)' }}>+{p}</span>)}
+                    {rc.removed.map((p) => <span key={p} style={{ ...mono, color: 'var(--status-danger-fg)' }}>−{p}</span>)}
+                  </span>
+                  {held && <span style={{ flexBasis: '100%', color: 'var(--text-secondary)' }}>{held}</span>}
+                </div>
+              );
+            })}
             {diff!.grantChanges.map((gc) => (
               <div key={gc.entityType} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <Pill kind={gc.isGone ? 'neutral' : gc.added.length > 0 || gc.isNew ? 'warning' : 'neutral'}>

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Checkbox, Dialog } from '@substrat-run/ui';
-import { grantShapeHolderNotes, registryDirection, type RegistryDirection, type RegistryLike } from '../lib/registry-diff';
+import { grantShapeHolderNotes, registryDirection, reservationNote, roleHolderNote, type RegistryDirection, type RegistryLike } from '../lib/registry-diff';
 import { outstanding, readyToPromote, type Acks, type Checkpoint, type PermissionSection, type Unverifiable } from '../lib/promote-review';
 import { ExportBreakAck } from './ExportBreakAck';
 import { PromoteMigrations } from './PromoteMigrations';
@@ -183,18 +183,29 @@ function PermissionBody({ section, servingLabel, incomingLabel }: { section: Per
           ))}
         </Group>
       )}
+      {diff.reservationChanges.length > 0 && (
+        <Group label="Reservation changed" kind="warning">
+          {diff.reservationChanges.map((c) => (
+            <KeyLine key={c.key} k={c.key} note={reservationNote(c)} />
+          ))}
+        </Group>
+      )}
       {diff.roleChanges.length > 0 && (
         <Group label="Roles" kind="neutral">
-          {diff.roleChanges.map((r) => (
-            <ShapeLine
-              key={r.key}
-              name={r.key}
-              added={r.added}
-              removed={r.removed}
-              status={r.isNew ? 'new role' : r.isGone ? 'role removed' : r.added.length > 0 ? 'role widened' : 'role narrowed'}
-              kind={r.isGone ? 'neutral' : r.added.length > 0 || r.isNew ? 'warning' : 'neutral'}
-            />
-          ))}
+          {diff.roleChanges.map((r) => {
+            const held = roleHolderNote(r);
+            return (
+              <ShapeLine
+                key={r.key}
+                name={r.key}
+                added={r.added}
+                removed={r.removed}
+                notes={held ? [held] : []}
+                status={r.isNew ? 'new role' : r.isGone ? 'role removed' : r.added.length > 0 ? 'role widened' : held ? 'role holder changed' : 'role narrowed'}
+                kind={r.isGone ? 'neutral' : r.added.length > 0 || r.isNew || held ? 'warning' : 'neutral'}
+              />
+            );
+          })}
         </Group>
       )}
       {diff.grantChanges.length > 0 && (

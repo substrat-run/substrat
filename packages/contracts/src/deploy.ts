@@ -11,7 +11,14 @@ import { substratError } from './errors.js';
 import { blankReason } from './review-text.js';
 import { SCOPE_STORE_CANARY, STORE_DRIVER_ID } from './script-names.js';
 import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
-import { reservedKeyLine, reservedKeyOffences, reservedKeysOf, type ReservedKey } from './reserved-keys.js';
+import {
+  ownerGrantSets,
+  reservedKeyLine,
+  reservedKeyOffences,
+  reservedKeysOf,
+  type ReservedKey,
+  type ReservedKeySurface,
+} from './reserved-keys.js';
 
 // The deploy manifest is the JSON part a `substrat push` sends alongside the
 // module files (self-serve-deploy.md). It lives here — not in the transport
@@ -1530,19 +1537,37 @@ export const pushedPermissionRegistry = permissionRegistry
   });
 
 /**
- * #2430: a registry's reserved-key offences, one line each — a person's role or grant shape holding
- * a key its row marks `holder: 'system'`, and a system-held role holding anything else or nothing.
- * Checked where a registry is BUILT ({@link buildPermissionRegistry}) and where a push carries one
- * ({@link pushedPermissionRegistry}), both from the rows, so the two cannot word it differently.
- * A registry from a CLI that predates the field marks no key, so it is refused nothing.
+ * #2430: a registry's reserved-key offences, one line each — a person's role, grant shape or
+ * owner grant holding a reserved key, and a system-held role holding anything else or nothing.
+ * Checked where a registry is BUILT ({@link buildPermissionRegistry}, which passes the `reserved`
+ * map it read off the manifests, so a refusal names the module that marks the key) and where a push
+ * carries one ({@link pushedPermissionRegistry}, which has only the rows' marks and names no
+ * module). A registry from a CLI that predates the field marks no key, so it is refused nothing.
  */
-function registryReservedKeyProblems(registry: Pick<PermissionRegistry, 'permissions' | 'roles' | 'entityGrants'>): string[] {
-  const reserved = new Map<string, ReservedKey>(
-    registry.permissions
-      .filter((p) => p.holder === 'system')
-      .map((p) => [p.key, { description: p.description, declaredBy: p.declaredBy }]),
+function registryReservedKeyProblems(
+  registry: Pick<PermissionRegistry, 'permissions' | 'roles' | 'entityGrants'>,
+  reserved?: ReadonlyMap<string, ReservedKey>,
+  personGrants: ReservedKeySurface['personGrants'] = [],
+): string[] {
+  const marked = reserved ?? new Set(registry.permissions.filter((p) => p.holder === 'system').map((p) => p.key));
+  return reservedKeyOffences({ roles: registry.roles, grants: registry.entityGrants, personGrants }, marked).map((o) =>
+    reservedKeyLine(o, reserved),
   );
-  return reservedKeyOffences({ roles: registry.roles, grants: registry.entityGrants }, reserved).map((o) => reservedKeyLine(o, reserved));
+}
+
+/**
+ * #2430: the deploy manifest's `ownerGrants` (package.json `substrat.ownerGrants`, which an install
+ * grants to its owner, a person) against the reservations its registry's rows mark. The control
+ * plane's push routes call it beside {@link pushedPermissionRegistry}: a manifest cannot carry a
+ * refinement, since history is read through an `extend` of it.
+ */
+export function pushedOwnerGrantProblems(manifest: { ownerGrants?: readonly string[]; registry?: Pick<PermissionRegistry, 'permissions' | 'roles' | 'entityGrants'> }): string[] {
+  if (!manifest.registry || !manifest.ownerGrants?.length) return [];
+  return registryReservedKeyProblems(
+    { permissions: manifest.registry.permissions, roles: [], entityGrants: [] },
+    undefined,
+    ownerGrantSets([], manifest.ownerGrants),
+  );
 }
 
 /**
@@ -1707,7 +1732,7 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
   const problems = [
     ...entityGrants.flatMap(retiredShapeProblems),
     ...entityGrants.flatMap((g) => bindShapeProblems(g, new Set(declaredBy.keys()))),
-    ...registryReservedKeyProblems({ permissions, roles, entityGrants }),
+    ...registryReservedKeyProblems({ permissions, roles, entityGrants }, reserved, ownerGrantSets(input.modules)),
   ];
   if (problems.length > 0) throw new Error(`buildPermissionRegistry: ${problems.join('; ')}`);
 

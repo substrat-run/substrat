@@ -1,4 +1,4 @@
-import { reservedKeysOf, type ModuleManifest } from '@substrat-run/contracts';
+import { reservedKeysOf, type ReservedKeySource } from '@substrat-run/contracts';
 
 /**
  * The runtime half of a key reserved to a system principal (#2430, K-55), shared by both adapters
@@ -45,17 +45,41 @@ export function reservedRoleRefusal(
   );
 }
 
-/** Add what `manifest` reserves to a host's set — a union over every module it registers. */
-export function noteReservedKeys(reserved: Set<string>, manifest: Pick<ModuleManifest, 'id' | 'permissions'>): void {
-  for (const key of reservedKeysOf([{ manifest }]).keys()) reserved.add(key);
+/**
+ * Why `permissions` may not be granted directly to a principal or an org, or null (#2430): a raw
+ * grant (`HostAdmin.grant`, `grantToOrg`, `grantEntityShape`, `ctx.grant`) names a person, or an
+ * org of people. A system principal holds a reserved key through a schedule's or a peer's
+ * `permissions`, or a role declared `holder: 'system'` (K-55), never through such a grant, whoever
+ * makes it. A key no module registered on the host marks is a person's key, and passes.
+ */
+export function reservedGrantRefusal(permissions: readonly string[], reserved: ReadonlySet<string>): string | null {
+  const held = permissions.filter((p) => reserved.has(p));
+  if (held.length === 0) return null;
+  return (
+    `${held.join(', ')} cannot be granted to a principal or an org: reserved to a system principal ` +
+    `(a module this host registers declares it \`holder: 'system'\`)`
+  );
 }
 
 /**
+ * Add what `manifest` reserves to a host's set — a union over every module it registers, and every
+ * module its declared `permissions` lists (a manifest there with no permission list adds nothing).
+ */
+export function noteReservedKeys(reserved: Set<string>, manifest: DeclaredManifest): void {
+  for (const key of reservedKeysOf([{ manifest: { id: manifest.id, permissions: manifest.permissions ?? [] } }]).keys()) reserved.add(key);
+}
+
+/** A manifest as far as a reservation and the declared-module check read it. */
+export type DeclaredManifest = Omit<ReservedKeySource['manifest'], 'permissions'> & { permissions?: ReservedKeySource['manifest']['permissions'] };
+
+/**
  * The permission surface a scope host may be given (#2430): the vertical's `definePermissions(...)`
- * value, the one `substrat push` and `lint:permissions` read. Only its module ids are read here.
+ * value, the one `substrat push` and `lint:permissions` read. Its module ids are what registration
+ * is held to, and what its manifests reserve joins what the registered ones reserve, so a module
+ * registered under a listed id with different declarations cannot shed a reservation the list makes.
  */
 export interface DeclaredPermissions {
-  modules: readonly { manifest: { id: string } }[];
+  modules: readonly { manifest: DeclaredManifest }[];
 }
 
 /**

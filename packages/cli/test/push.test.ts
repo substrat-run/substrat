@@ -890,11 +890,20 @@ export const permissions = {
   it.runIf(built)('refuses a role holding a key a module reserves to a system principal, in lint:permissions’ words (#2430)', () => {
     const r = runCheck(verticalWith(reservedSurface([{ key: 'member', permissions: ['run:use', 'run:drive'], source: 'vertical' }])));
     expect(r.status).not.toBe(0);
-    expect(r.stderr).toMatch(/perms\.mjs grants a key reserved to a system principal to a person's role or grant shape/);
+    expect(r.stderr).toMatch(/perms\.mjs grants a key reserved to a system principal to a person's role, grant shape or owner grant/);
     expect(r.stderr).toMatch(/role member → run:drive: declared `holder: 'system'` by @acme\/engine-run \(Drive a run\)/);
-    expect(r.stderr).toMatch(/Remedy: take the key out of the role or shape/);
+    expect(r.stderr).toMatch(/Remedy: take the key out of the role, shape or owner grant/);
     // Refused before anything was derived to ship.
     expect(r.stdout).not.toMatch(/digest:/);
+  });
+
+  it.runIf(built)('…and refuses a reserved key in `substrat.ownerGrants`, which an install grants its owner; its twin passes', () => {
+    const roles = [{ key: 'member', permissions: ['run:use'], source: 'vertical' }];
+    const refused = runCheck(verticalWith(reservedSurface(roles), { substrat: { permissions: 'perms.mjs', ownerGrants: ['run:use', 'run:drive'] } }));
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toMatch(/owner grants \(substrat\.ownerGrants\) → run:drive: declared `holder: 'system'` by @acme\/engine-run/);
+    const passed = runCheck(verticalWith(reservedSurface(roles), { substrat: { permissions: 'perms.mjs', ownerGrants: ['run:use'] } }));
+    expect(passed.status, passed.stderr).toBe(0);
   });
 
   it.runIf(built)('…and refuses a system-held role holding a person’s key (K-55)', () => {

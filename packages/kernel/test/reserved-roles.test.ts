@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { moduleManifest } from '@substrat-run/contracts';
-import { assertModuleDeclared, noteReservedKeys, reservedRoleRefusal } from '../src/reserved-roles.js';
+import { assertModuleDeclared, noteReservedKeys, reservedGrantRefusal, reservedRoleRefusal } from '../src/reserved-roles.js';
 
 const manifest = (id: string, permissions: { key: string; description: string; holder?: 'system' }[]) =>
   moduleManifest.parse({
@@ -35,7 +35,21 @@ describe('reservedRoleRefusal', () => {
   });
 });
 
+describe('reservedGrantRefusal', () => {
+  it('refuses a raw grant naming any reserved key, and passes one naming none', () => {
+    expect(reservedGrantRefusal(['a:use', 'a:run'], reserved)).toMatch(/^a:run cannot be granted to a principal or an org: reserved to a system principal/);
+    expect(reservedGrantRefusal(['a:use'], reserved)).toBeNull();
+    expect(reservedGrantRefusal(['a:run'], new Set())).toBeNull();
+  });
+});
+
 describe('noteReservedKeys', () => {
+  it('reads a declared manifest with no permission list as reserving nothing', () => {
+    const keys = new Set<string>();
+    noteReservedKeys(keys, { id: '@t/declared' });
+    expect(keys.size).toBe(0);
+  });
+
   it('collects the keys a manifest marks, as a union over modules, and nothing else', () => {
     const keys = new Set<string>();
     noteReservedKeys(keys, manifest('@t/a', [{ key: 'a:run', description: 'run', holder: 'system' }, { key: 'a:use', description: 'use' }]));

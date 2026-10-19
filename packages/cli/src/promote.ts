@@ -21,6 +21,8 @@
 import {
   diffRegistries,
   grantShapeHolderNotes,
+  reservationNote,
+  roleHolderNote,
   promoteReviewReasonIn,
   clipReviewText,
   discardTally,
@@ -194,7 +196,11 @@ export function formatRegistryDiff(from: PermissionRegistry | null, to: Permissi
     ...diff.addedKeys.map((k) => `+ ${k}  ${describe(to, k)}`),
     ...diff.changedKeys.map((k) => `~ ${k}  “${describe(from, k)}” → “${describe(to, k)}”`),
     ...diff.removedKeys.map((k) => `- ${k}  ${describe(from, k)}`),
-    ...diff.roleChanges.map((r) => shape('role', r, r.key)),
+    ...diff.reservationChanges.map((c) => `! ${reservationNote(c)}`),
+    ...diff.roleChanges.flatMap((r) => {
+      const held = roleHolderNote(r);
+      return [shape('role', r, r.key), ...(held ? [`  ${held}`] : [])];
+    }),
     ...diff.grantChanges.flatMap((g) => [
       shape('grant shape', g, g.entityType),
       ...grantShapeHolderNotes(g).map((n) => `  ${n}`),
