@@ -1161,7 +1161,8 @@ export type MembershipChange = {
  * What the unit did: applied, or why not — fenced by a removal (an add only), out of the role's
  * bound, or out of the org's (#2047: `boundedBy` is no live member of it). A removal that
  * applied says whether it took anything (`changed`); one that took nothing still raised the
- * fence.
+ * fence. `reserved` (#2430) is an add of a role carrying a key a module registered on the host
+ * reserves to a system principal, which no person confers (`reservedRoleRefusal`), as its text.
  */
 export type MembershipChangeResult =
   | { applied: true; changed?: boolean }
@@ -1169,7 +1170,8 @@ export type MembershipChangeResult =
   | { applied: false; missing: PermissionKey[] }
   | { applied: false; unknownRole: string }
   | { applied: false; unknownOrg: OrgId }
-  | { applied: false; notMember: OrgId };
+  | { applied: false; notMember: OrgId }
+  | { applied: false; reserved: string };
 
 /**
  * An **executor**: out-of-band host code that effects, outside a scope, what a module

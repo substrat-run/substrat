@@ -502,6 +502,10 @@ import {
   purgeStillDue,
   assertBoundOperations,
   registerTrashTargets,
+  assertModuleDeclared,
+  noteReservedKeys,
+  reservedRoleRefusal,
+  type DeclaredPermissions,
   type PurgePass,
   type AsyncLinePass,
   type EmittedReport,
@@ -808,6 +812,7 @@ interface ControlPlaneStub {
   >;
   defineRole(tenantId: string, role: RoleDefinition): Promise<RoleDefinition | null>;
   listRoles(filter: { tenantId?: string; source?: string } & ListPage): Promise<RoleRow[]>;
+  getRole(tenantId: string, key: string): Promise<RoleDefinition | undefined>;
   writeTenantTuple(
     tenantId: string,
     subject: string,
@@ -925,7 +930,7 @@ interface ControlPlaneStub {
   ): Promise<boolean>;
   listOrgs(tenantId: string): Promise<OrgRow[]>;
   /** #1184: a bounded, fenced tenant-role add, as one DO unit. */
-  applyMembership(change: MembershipChange, row: AdminEntry, orgRow?: AdminEntry): Promise<MembershipChangeResult>;
+  applyMembership(change: MembershipChange, row: AdminEntry, orgRow?: AdminEntry, reserved?: readonly string[]): Promise<MembershipChangeResult>;
   /**
    * #1184: a tenant-level removal — the K-21 tombstone, the removal fence and (only if it
    * changed anything) the audit row — as one DO unit. Returns whether anything changed.
@@ -1494,12 +1499,14 @@ interface ScopeStubRpc {
   canAssignFor(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string, atTenant?: boolean): Promise<Coverage | null>;
   assignScopeRoleBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
-  ): Promise<Coverage | null>;
+  ): Promise<Coverage | null | { refused: string }>;
   /** #1150: the scope's role roster, and the two bounded writes over it — see `scope-do.ts`. */
   scopeRoleHoldersFor(scopeId: ScopeId, principal?: PrincipalId): Promise<ScopeRoleHolder[]>;
   changeScopeRoleBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId, from: string, to: string,
-  ): Promise<Coverage | 'not-held' | 'unknown-to'>;
+  ): Promise<Coverage | 'not-held' | 'unknown-to' | { refused: string }>;
+  /** #2430: why a role may not be conferred through a door here, or null — see `scope-do.ts`. */
+  reservedRoleRefusalFor(tenantId: TenantId, roleKey: string, door: 'person' | 'platform'): Promise<string | null>;
   revokeScopeRolesBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
   ): Promise<{ coverage: Coverage; revoked: string[] }>;
@@ -2402,6 +2409,13 @@ export interface CloudflareScopeHostOptions {
    */
   eventDrainDelegation?: EventDrainDelegation;
   /**
+   * The vertical's declared permission surface (#2430): its `definePermissions(...)` value, the one
+   * `substrat push` and `lint:permissions` read. Given, `registerModule` refuses a module its
+   * `modules` leaves out, as the pure host does. The ScopeDO takes the same through
+   * `defineScopeDO`'s third argument, since workerd constructs it and no option here reaches it.
+   */
+  permissions?: DeclaredPermissions;
+  /**
    * **There is deliberately no `clock` here** (#956), and the absence is the fact.
    *
    * The pure adapter takes one (`SqliteScopeHostOptions.clock`): it is what
@@ -2807,6 +2821,10 @@ export class CloudflareScopeHost implements ScopeHost {
   // Registration-mechanics bookkeeping (validation only — the DO executes).
   // Code-time, derived from the bundled modules, NOT durable directory state.
   private readonly moduleIds = new Set<string>();
+  /** #2430: what a registered module declares `holder: 'system'` — `assignRole`'s refusal reads it. */
+  private readonly reservedKeys = new Set<string>();
+  /** #2430: the declared permission surface `registerModule` holds each module to, when given. */
+  private readonly permissions: DeclaredPermissions | undefined;
   /**
    * #1705: this deployment's cross-vertical declarations. The DO holds the handlers and makes
    * every decision. The coordinator keeps its own copy for two reasons: registration refuses
@@ -2903,6 +2921,7 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   constructor(options: CloudflareScopeHostOptions) {
     this.servicePrincipals = options.servicePrincipals;
+    this.permissions = options.permissions;
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
     this.tenantStores = options.tenantStores;
     this.blobStores = options.blobStores;
@@ -4216,6 +4235,8 @@ export class CloudflareScopeHost implements ScopeHost {
     if (this.moduleIds.has(manifest.id)) {
       throw new Error(`module already registered: ${manifest.id}`);
     }
+    // #2430: a module the declared surface leaves out is judged by neither lint nor push.
+    assertModuleDeclared(this.permissions, manifest.id);
     // #2068: the same refusal the ScopeDO applies at code time, here at registration, so a
     // misdeclared erasure fails where it is registered on both hosts.
     moduleErasurePlan(registration);
@@ -4261,6 +4282,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // #1705: after the checks above, so a refused module leaves nothing registered here.
     this.crossVertical.register(manifest, registration.imports);
     this.moduleIds.add(manifest.id);
+    noteReservedKeys(this.reservedKeys, manifest);
     if (manifest.schedules && manifest.schedules.length > 0) {
       this.moduleSchedules.set(manifest.id, manifest.schedules);
     }
@@ -5883,6 +5905,7 @@ export class CloudflareScopeHost implements ScopeHost {
       tenantId, scopeId, principalId.parse(caller), principalId.parse(assignee), roleKey,
     );
     if (!bound) throw unknownRoleError(roleKey);
+    if ('refused' in bound) throw substratError('forbidden', bound.refused);
     return coverage.parse(bound);
   }
 
@@ -5901,6 +5924,7 @@ export class CloudflareScopeHost implements ScopeHost {
     );
     if (bound === 'not-held') throw substratError('conflict', `${target} does not hold '${from}' at this scope`);
     if (bound === 'unknown-to') throw unknownRoleError(to);
+    if ('refused' in bound) throw substratError('forbidden', bound.refused);
     return coverage.parse(bound);
   }
 
@@ -7413,6 +7437,15 @@ export class CloudflareScopeHost implements ScopeHost {
         );
       },
       assignRole: async (actor, assignment: RoleAssignment) => {
+        // #2430: the platform's door — a role mixing reserved and other keys is refused (K-55).
+        // Read where the checker reads the role: the scope's own reader at a scope node.
+        if (this.reservedKeys.size > 0) {
+          const { tenantId, scopeId } = assignment.node;
+          const refusal = scopeId
+            ? await this.scopeStub(scopeId).reservedRoleRefusalFor(tenantId, assignment.roleKey, 'platform')
+            : await this.cp.getRole(tenantId, assignment.roleKey).then((role) => role && reservedRoleRefusal(role, this.reservedKeys, 'platform'));
+          if (refusal) throw substratError('forbidden', refusal);
+        }
         const subject = `principal:${assignment.principalId}`;
         if (assignment.node.scopeId) {
           await this.writeScopeTuple(
@@ -8594,6 +8627,8 @@ export class CloudflareScopeHost implements ScopeHost {
           // #2047: the org's own row, when the change joins or leaves one. The unit fills in its
           // `before`/`after` and writes it only for what it does — a join's carries the expiry.
           orgId ? this.adminEntry(actor, op === 'add' ? 'addMember' : 'removeMember', { tenantId }, null, null) : undefined,
+          // #2430: what this host's modules reserve, so the unit refuses an add of a role carrying it.
+          [...this.reservedKeys],
         );
         // The tenant-level tuple, or its tombstone, reaches the projections.
         if (result.applied && (op === 'add' || result.changed)) await this.fanOut(tenantId);

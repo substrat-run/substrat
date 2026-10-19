@@ -446,6 +446,10 @@ import {
   scopeRoleHolders,
   type RoleBound,
   type ScopeRoleHolder,
+  assertModuleDeclared,
+  noteReservedKeys,
+  reservedRoleRefusal,
+  type DeclaredPermissions,
   admitPeer,
   boundToPeerDeclarations,
   peerCallerAt,
@@ -1113,6 +1117,13 @@ export interface SqliteScopeHostOptions {
    * matches (`migrationSetDivergence`). Omitted, nothing is compared.
    */
   migrationsDigest?: string;
+  /**
+   * The vertical's declared permission surface (#2430): its `definePermissions(...)` value, the one
+   * `substrat push` and `lint:permissions` read. Given, `registerModule` refuses a module its
+   * `modules` leaves out, since nothing that module declares would be judged by either. Omitted,
+   * nothing is compared (a test fixture, a host with no declared surface).
+   */
+  permissions?: DeclaredPermissions;
 }
 
 /**
@@ -2005,6 +2016,10 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly tenantStoreDbs = new Map<string, Database.Database>();
   private readonly operations = new Map<string, OperationHandler<never, unknown>>();
   private readonly modules = new Map<string, RegisteredModule>();
+  /** #2430: what a registered module declares `holder: 'system'` — the role doors' refusal reads it. */
+  private readonly reservedKeys = new Set<string>();
+  /** #2430: the declared permission surface `registerModule` holds each module to, when given. */
+  private readonly permissions: DeclaredPermissions | undefined;
   /** #1705: what this deployment exports to other verticals and imports from them. */
   private readonly crossVertical = new CrossVerticalRegistry();
   /** operation name → guards declared before it, in registration order (K-17). */
@@ -2119,6 +2134,7 @@ export class SqliteScopeHost implements ScopeHost {
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
     this.versionId = options.versionId ?? null;
     this.migrationsDigest = options.migrationsDigest;
+    this.permissions = options.permissions;
     this.scopeStoreVertical = options.scopeStores?.vertical;
     this.scopeStoreRunners = scopeStoreRunnersOf(options.scopeStores);
     this.scopeStoreLifecycle = scopeStoreLifecycleOf(this.scopeStoreRunners);
@@ -3031,6 +3047,8 @@ export class SqliteScopeHost implements ScopeHost {
     if (this.modules.has(manifest.id)) {
       throw new Error(`module already registered: ${manifest.id}`);
     }
+    // #2430: a module the declared surface leaves out is judged by neither lint nor push.
+    assertModuleDeclared(this.permissions, manifest.id);
     // #1835: the operations are the binder's own value, or the maps beside the handlers are a
     // copy nothing bound to them.
     assertBoundOperations(manifest.id, registration.operations);
@@ -3156,6 +3174,7 @@ export class SqliteScopeHost implements ScopeHost {
       peers: manifest.peers ?? [],
       purgeOnlyKeys: purgeOnlyKeysOf(manifest.schedules ?? []),
     });
+    noteReservedKeys(this.reservedKeys, manifest);
     if (erasure) this.erasurePlans.push(erasure);
     for (const rel of manifest.entityRelations ?? []) {
       const parents = this.relations.get(rel.entityType) ?? new Set<string>();
@@ -5467,6 +5486,7 @@ export class SqliteScopeHost implements ScopeHost {
     const subject = asPrincipal(principalId.parse(caller));
     const target = principalId.parse(assignee);
     return rt.actor.turn(async () => {
+      this.refuseReservedRole(tenantId, roleKey, 'person');
       const bound = await this.assignmentBound(subject, tenantId, scopeId, roleKey);
       if (bound.covered) applyScopeRoleChange(switchSqlOf(rt.db), scopeId, target, { revoke: [], grant: roleKey }, this.clock());
       return bound;
@@ -5489,6 +5509,8 @@ export class SqliteScopeHost implements ScopeHost {
   ): Promise<Coverage> {
     const rt = await this.openActiveScope(tenantId, scopeId);
     const target = principalId.parse(principal);
+    // #2430: the role moved TO is conferred by a person; the one moved from is only taken back.
+    this.refuseReservedRole(tenantId, to, 'person');
     const answer = await rt.actor.turn(() =>
       changeScopeRole(switchSqlOf(rt.db), scopeId, target, from, to, this.clock(), this.roleBound(caller, tenantId, scopeId), (run) => rt.db.transaction(run)()),
     );
@@ -5637,6 +5659,17 @@ export class SqliteScopeHost implements ScopeHost {
   private holdingsAt(tenantId: TenantId, scopeId: ScopeId): ((principal: PrincipalId) => Promise<Holdings>) | undefined {
     const checker = this.checker;
     return checker.holdings ? (principal) => checker.holdings!(asPrincipal(principal), { tenantId, scopeId }) : undefined;
+  }
+
+  /**
+   * #2430: refuse conferring `roleKey` through `door` when the tenant's role carries a key a module
+   * registered here reserves (`reservedRoleRefusal`). A role the tenant does not define is left to
+   * the door's own answer for it.
+   */
+  private refuseReservedRole(tenantId: TenantId, roleKey: string, door: 'person' | 'platform'): void {
+    const role = this.roles.get(`${tenantId}/${roleKey}`);
+    const refusal = role ? reservedRoleRefusal(role, this.reservedKeys, door) : null;
+    if (refusal) throw substratError('forbidden', refusal);
   }
 
   /** The caller's bound per role at the scope, `null` for a role this tenant does not define (#1150). */
@@ -8637,6 +8670,8 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
       assignRole: async (actor: PlatformActorId, assignment: RoleAssignment) => {
+        // #2430: the platform's door — a role mixing reserved and other keys is refused (K-55).
+        this.refuseReservedRole(assignment.node.tenantId, assignment.roleKey, 'platform');
         const subject = `principal:${assignment.principalId}`;
         if (assignment.node.scopeId) {
           const scopeNode = assignment.node.scopeId;
@@ -10580,6 +10615,9 @@ export class SqliteScopeHost implements ScopeHost {
           }
           const role = directoryReader.getRole(tenantId, roleKey);
           if (!role) return { applied: false, unknownRole: roleKey };
+          // #2430: an add is a person conferring a role on a person (a removal only takes one back).
+          const reserved = change.op === 'add' ? reservedRoleRefusal(role, this.reservedKeys, 'person') : null;
+          if (reserved) return { applied: false, reserved };
           const bound = tenantCoverage(directoryReader, tenantId, boundedBy, role.permissions);
           if (!bound.covered) return { applied: false, missing: bound.missing };
           // #2047: the org, bounded by `boundedBy`'s own live membership of it.
