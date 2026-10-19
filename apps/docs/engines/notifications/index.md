@@ -82,7 +82,7 @@ consumer, pass the event's id. The engine registers as one frozen constant, like
   `notifications:self`, pages the caller's deliveries, newest first. It takes no principal, so
   holding the key never reaches anyone else's rows. Its rows leave out the idempotency key and
   the platform's send-intent id, and show a `reason` only for a skipped delivery (muted, no
-  address, held for a digest). The platform's outcome code on a refused or dead-lettered send is
+  address, held for a digest, or set aside as unreadable). The platform's outcome code on a refused or dead-lettered send is
   left to whoever reads the whole log.
 - **An address never rides an event.** It lives on the engine's recipient row, which a subject
   erasure deletes. The same erasure cancels a send that is still held.

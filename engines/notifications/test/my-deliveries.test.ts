@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type Page, type PrincipalId } from '@substrat-run/contracts';
 import { manualClock, ulid, type OperationContext, type ScopeStub } from '@substrat-run/kernel';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
@@ -178,6 +178,23 @@ describe('engine-notifications — a person reads their own deliveries', () => {
       expect((await mine()).entries.map((d) => [d.topic, d.status, d.reason])).toEqual([
         ['order-assigned', 'skipped', 'no_address'],
         ['order-watched', 'skipped', 'muted'],
+      ]);
+    });
+
+    it('a held message set aside as unreadable is listed, skipped/quarantined, with its reason', async () => {
+      await me.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: true, cadence: 'daily-digest' });
+      const [held] = await send(assigned([me.principal]));
+      await h.run((ctx) => void ctx.sql.exec(`UPDATE notifications_digest_items SET subject = X'00' WHERE id = '${held!.deliveryId}'`));
+      clock.advance(DAY);
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(await h.run((ctx) => sendDigests(ctx))).toMatchObject({ quarantined: 1 });
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect((await mine()).entries).toMatchObject([
+        { id: held!.deliveryId, status: 'skipped', reason: 'quarantined', settled_at: expect.any(String) },
       ]);
     });
 

@@ -681,8 +681,9 @@ export function listDeliveries(ctx: OperationContext, page: PageParams): Page<z.
 }
 
 /**
- * What became of each notification sent to the caller, newest first: `listDeliveries` with the
- * `principal` filter pinned to `ctx.principal`, last, so nothing in `page` can name anyone else.
+ * What became of each notification sent to the caller, newest first: the same page as
+ * `listDeliveries`, with the `principal` filter pinned to `ctx.principal`, last, so nothing in
+ * `page` can name anyone else.
  *
  * Every delivery of theirs is listed, including the ones that were not mailed on their own — a
  * topic they muted (`skipped`/`muted`), a missing address (`skipped`/`no_address`), an occasion
@@ -699,7 +700,11 @@ export function listDeliveries(ctx: OperationContext, page: PageParams): Page<z.
  * No permission check: like every by-call engine function, the caller checks first.
  */
 export function listMyDeliveries(ctx: OperationContext, page: PageParams): Page<z.infer<typeof myDeliveryRow>> {
-  const mine = listDeliveries(ctx, { ...page, filters: { ...page.filters, principal: ctx.principal } });
+  const mine = ctx.page<Record<string, unknown>>('notification-delivery', {
+    ...page,
+    filters: { ...page.filters, principal: ctx.principal },
+  });
+  // Parsed once, by the person's shape: a stored row that left it throws under this surface's name.
   return mapPage(mine, (row) =>
     returns(myDeliveryRow, 'notifications/my-deliveries', {
       ...row,
