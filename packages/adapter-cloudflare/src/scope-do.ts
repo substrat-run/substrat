@@ -7453,6 +7453,9 @@ export function defineScopeDO(
           if (seq > head.nextSeq) {
             throw substratError('precondition_failed', `stage page ${seq} arrived before page ${head.nextSeq}`);
           }
+          // #2314: a page carrying an attachment row this store condemned is refused here, at the
+          // page, as the commit refuses it again before its first drop (`loadTables`).
+          refuseCondemnedInDump(doSpineSql(this.sql), tables);
           for (const t of tables) {
             const columns = JSON.stringify(t.columns);
             let held = this.sql
