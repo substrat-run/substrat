@@ -1,5 +1,15 @@
 # @substrat-run/vertical-host
 
+## 0.152.0
+
+### Patch Changes
+
+- 8c04244: A declared route (`mountRoutes`) whose handler answers outside its declared output now throws `RouteOutputMismatch`, an `internal` error, instead of a plain `Error`. The taxonomy renders it as a `500` with no `detail`, so the schema's issues no longer reach the caller, and an app whose error handler fell back to `400` for an unclassified throw no longer tells the caller to look at what they sent. The route name and the issue paths (never a value, an array index written `[]`, at most ten distinct) ride on the error as `route` and `issuePaths`, for the app's own log. `issuePathsOf(issues)` is exported for a log line that names a parse failure the same way.
+- Updated dependencies [482e9b7]
+  - @substrat-run/contracts@0.152.0
+  - @substrat-run/kernel@0.152.0
+  - @substrat-run/model-providers@0.5.42
+
 ## 0.151.0
 
 ### Minor Changes

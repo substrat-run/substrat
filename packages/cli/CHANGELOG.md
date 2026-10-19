@@ -1,5 +1,16 @@
 # @substrat-run/cli
 
+## 0.47.1
+
+### Patch Changes
+
+- 482e9b7: `substrat plan` reads whether each permission key is reserved to a system principal (the registry column `lint:permissions` writes once a manifest declares `holder: 'system'`). A key that stops being reserved is a flagged widening at minor and one that becomes reserved is a flagged narrowing, as a role gaining or losing a key is. A `PERMISSIONS.md` without the column reads as nothing reserved. Its permission table shows a key whose reservation changed, marked on the side where it is reserved, and gives no rows for a registry it cannot read.
+- Updated dependencies [482e9b7]
+- Updated dependencies [482e9b7]
+  - @substrat-run/model-view@0.5.0
+  - @substrat-run/contracts@0.152.0
+  - @substrat-run/control-plane-client@0.3.3
+
 ## 0.47.0
 
 ### Minor Changes

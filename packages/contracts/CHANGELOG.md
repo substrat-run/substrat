@@ -1,5 +1,11 @@
 # @substrat-run/contracts
 
+## 0.152.0
+
+### Minor Changes
+
+- 482e9b7: A manifest's permission declaration may say `holder: 'system'`: the key is reserved to a system principal, and `lint:permissions` refuses it in any role a person can hold and in any entity grant shape. Additive: a declaration without it means what it meant before, anyone may hold the key. `engine-assistant` declares it on `assistant:run`, which replaces the table of reserved keys the permission checkpoint used to keep. A vertical built from its model reserves a key of its own through `manifestOperations`, whose `permissions` now also take `{ description, holder: 'system' }`.
+
 ## 0.151.0
 
 ### Minor Changes
@@ -6880,7 +6886,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
