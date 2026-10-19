@@ -293,6 +293,10 @@ import {
   purgeStillDue,
   refuseTrashedTarget,
   assertBoundOperations,
+  checkHeldOperationsOf,
+  countChecks,
+  noteUncheckedCompletion,
+  type CheckTally,
   registerTrashTargets,
   runPurgePass,
   withheldKeysFor,
@@ -2055,6 +2059,11 @@ export class SqliteScopeHost implements ScopeHost {
    * exceptions rather than a map of participants.
    */
   private readonly operationIdempotencyOptOut = new Set<string>();
+  /**
+   * #2387: the operations held to a `ctx.check` — declared with a `permission`, handler authored
+   * (`checkHeldOperationsOf`). One that returns without asking is recorded (`noteUncheckedCompletion`).
+   */
+  private readonly operationCheckHeld = new Set<string>();
   private readonly roles = new Map<string, RoleDefinition>(); // 'tenantId/roleKey'
   /** Executor id → {eventType, handler} (K-22 §4.2). Host code, not module code. */
   private readonly executors = new Map<string, RegisteredEffector>();
@@ -3235,8 +3244,10 @@ export class SqliteScopeHost implements ScopeHost {
       entitlementKey: manifest.entitlementKey,
       scheduledOperations: new Set((manifest.schedules ?? []).map((sch) => sch.operation)),
     };
+    const checkHeld = checkHeldOperationsOf(registration.operations);
     for (const [name, handler] of Object.entries(registration.operations?.handlers ?? {})) {
       this.defineOperation(name, handler);
+      if (checkHeld.has(name) && this.operations.has(name)) this.operationCheckHeld.add(name);
       // Record which SKU flag gates this operation (§4.3). Bare defineOperation
       // bindings (tests, glue) carry no manifest and stay ungated.
       this.operationEntitlement.set(name, entitlementBinding);
@@ -6199,8 +6210,9 @@ export class SqliteScopeHost implements ScopeHost {
               ? withheldKeysFor(this.modules.get(subject.id)?.purgeOnlyKeys, target, purging)
               : undefined;
           trace?.head({ operation, tenantId, scopeId, principalKind: subject.kind, principal: actorOf(subject) });
+          const checks: CheckTally = { calls: 0 };
           const ctx = this.operationContext(
-            rt, subject, undefined, signals, session, operation, minted, undefined, undefined, withheld,
+            rt, subject, undefined, signals, session, operation, minted, undefined, undefined, withheld, checks,
           );
           const clonedInput = structuredClone(input);
           // #893: parse, don't trust — at the scope door, from the operation's own
@@ -6298,7 +6310,13 @@ export class SqliteScopeHost implements ScopeHost {
             // transaction, before the handler. A throw here blocks the operation
             // and rolls back exactly like a handler throw — fail closed.
             await this.runGuards(operation, ctx, parsed as I | undefined);
+            // #2387: the handler's own checks only. A guard that asked a key is not the handler
+            // asking, so the tally starts here.
+            checks.calls = 0;
             result = await (handler as OperationHandler<I | undefined, O>)(ctx, parsed as I | undefined);
+            // #2387: a declared-permission operation that asked nothing. Recorded; refused only
+            // under a test run's flag, and then it rolls back like any throw from here.
+            noteUncheckedCompletion(ctx, operation, checks, this.operationCheckHeld.has(operation));
             stamps?.assertHeld(ctx, operation);
             // #119: the purge gate's AUTHORITATIVE read. Lifecycle, primacy and tenant live in the
             // directory, which this transaction does not cover and whose writers (a suspend, a
@@ -13341,6 +13359,8 @@ export class SqliteScopeHost implements ScopeHost {
      * purge-only keys, outside the purge sweep's own invoke (`purgeOnlyKeysOf`).
      */
     withheld?: ReadonlySet<string>,
+    /** #2387: where this invocation's checks are counted; absent where nothing reads the count. */
+    checks?: CheckTally,
   ): OperationContext {
     // For a connection, system, capability or peer-vertical subject this carries THAT id so
     // the type holds — it is not a person, and the event actor below says what it is instead.
@@ -13405,7 +13425,7 @@ export class SqliteScopeHost implements ScopeHost {
     // Lifted out of the object literal so `grant` can reuse it: a delegation
     // check has to be the SAME check the operation itself passes, or the two
     // could disagree about what the caller holds.
-    const decideCheck: OperationContext['check'] = async (unparsed, entity?) => {
+    const decideUncounted: OperationContext['check'] = async (unparsed, entity?) => {
       // #1642: parsed before the override actor's early return, which never reaches
       // the checker — a cast key would otherwise become that path's proof relation.
       const permission = assertPermissionKey(unparsed);
@@ -13441,6 +13461,8 @@ export class SqliteScopeHost implements ScopeHost {
       }
       return decision;
     };
+    // #2387: every check this context makes is counted, the kernel's own verbs' included.
+    const decideCheck = checks ? countChecks(decideUncounted, checks) : decideUncounted;
     // #2358: the same check, recorded. It reads the decision `decideCheck` already made and
     // changes nothing about it; the explanation of a refusal (which roles would have allowed it,
     // which the caller holds) is gathered only when a sink is installed.

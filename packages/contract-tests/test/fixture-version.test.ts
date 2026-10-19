@@ -7,6 +7,7 @@
  * The collision is too rare to wait for, so the test mints enough versions that the old spelling
  * collides for certain and asserts the new one does not.
  */
+import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createUlid } from '@substrat-run/kernel';
 import { fixtureVersion } from '../src/fixture-version.js';
@@ -44,5 +45,20 @@ describe('fixtureVersion (#2402)', () => {
     expect(fixtureVersion(id)).toBe(`1.0.${id.toLowerCase()}`);
     expect(fixtureVersion(id, 3)).toBe(`3.0.${id.toLowerCase()}`);
     expect(fixtureVersion(id)).toBe(fixtureVersion(id).toLowerCase());
+  });
+});
+
+describe('no suite spells a version from part of an id (#2402)', () => {
+  it('has no `version:` built from a slice of an id in the suites', () => {
+    const src = new URL('../src/', import.meta.url);
+    const offenders = readdirSync(src)
+      .filter((file) => file.endsWith('.ts'))
+      .flatMap((file) =>
+        readFileSync(new URL(file, src), 'utf8')
+          .split('\n')
+          .map((line, i) => ({ at: `${file}:${i + 1}`, line }))
+          .filter(({ line }) => /\bversion:/.test(line) && /\.slice\(-?\d/.test(line)),
+      );
+    expect(offenders).toEqual([]);
   });
 });

@@ -27,6 +27,8 @@ export { timelineContractSuite } from './timeline-suite.js';
 export { concurrencyContractSuite } from './concurrency-suite.js';
 export { emittedReportContractSuite } from './emitted-suite.js';
 export { moduleLogContractSuite } from './module-log-suite.js';
+export { checkTallyContractSuite } from './check-tally-suite.js';
+export { checkTallyMod, checkTallyOperations, CHECK_TALLY_MODULE_ID, undeclaredTallyMod } from './check-tally-module.js';
 export { asyncLogContractSuite, type AsyncLogFixture } from './async-log-suite.js';
 export { idempotencyContractSuite } from './idempotency-suite.js';
 export { listContractSuite } from './list-suite.js';

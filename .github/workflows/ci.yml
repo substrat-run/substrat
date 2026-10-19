@@ -404,6 +404,10 @@ jobs:
       # that leave a rejection where it must be caught (a later test under retry, the file's last
       # turn) and a twin that must pass, run in workerd and read back from vitest's report.
       - run: pnpm test:workerd-rejections
+      # Every node preload in tools/vitest (the LIKE and SQL limits, the unchecked-operation
+      # refusal) is `--require`d by the root test script, the test step below and test:affected:
+      # one left out of a place turns its gate off there with every suite still green (#2387).
+      - run: pnpm test:preloads
       # The `_substrat_*` spine is built independently by each adapter — the pure one in
       # adapter-sqlite, the hosted one across scope-do.ts and control-plane-do.ts. The
       # copies were in step when written and nothing kept them so, which makes a column
@@ -555,7 +559,7 @@ jobs:
         env:
           SCOPE_FILTERS: ${{ steps.scope.outputs.filters }}
           SCOPE_PARTS: ${{ steps.scope.outputs.parts }}
-          NODE_OPTIONS: --require=${{ github.workspace }}/tools/vitest/like-pattern-limit.cjs --require=${{ github.workspace }}/tools/vitest/sql-limits.cjs
+          NODE_OPTIONS: --require=${{ github.workspace }}/tools/vitest/like-pattern-limit.cjs --require=${{ github.workspace }}/tools/vitest/sql-limits.cjs --require=${{ github.workspace }}/tools/vitest/unchecked-operations.cjs
         run: |
           read -ra filters <<< "$SCOPE_FILTERS"
           if [ "${#filters[@]}" -gt 0 ]; then
