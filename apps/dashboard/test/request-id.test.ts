@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { REQUEST_ID_HEADER, problemForStatus } from '@substrat-run/contracts';
+import { REQUEST_ID_HEADER, SubstratError, problemForStatus } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
-import { requestIdOf } from '@substrat-run/vertical-host';
+import { RouteOutputMismatch, requestIdOf } from '@substrat-run/vertical-host';
 import { dashboardRequestId, withRequestIdOf } from '../src/request-id.js';
 
 /**
@@ -40,6 +40,17 @@ function appUnderTest() {
   app.get('/throws-named', () => {
     const e = new Error('nothing');
     e.name = 'Bearer abc token=abc';
+    throw e;
+  });
+  app.get('/throws-substrat', () => {
+    throw new SubstratError('not_found', 'nothing here');
+  });
+  app.get('/throws-mismatch', () => {
+    throw new RouteOutputMismatch('GET /things', [{ path: ['id'] }]);
+  });
+  app.get('/throws-fake-substrat', () => {
+    const e = new Error('nothing');
+    e.name = 'Substrat.not_a_code\nforged';
     throw e;
   });
   // An upgrade. Node's `Response` refuses a 101, so the status is set on a real response the
@@ -147,6 +158,29 @@ describe('the dashboard request id (#2192)', () => {
     await appUnderTest().request('/throws-named');
     expect(logged).toHaveLength(1);
     expect(logged[0]).not.toMatch(/bearer|token=abc/i);
+    expect((JSON.parse(logged[0]!) as { errorName: string }).errorName).toBe('Error');
+  });
+
+  it('a SubstratError and a RouteOutputMismatch are logged by their real name', async () => {
+    const logged: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => void logged.push(String(args[0])));
+    for (const [path, errorName] of [
+      ['/throws-substrat', 'Substrat.not_found'],
+      ['/throws-mismatch', 'Substrat.internal'],
+    ] as const) {
+      logged.length = 0;
+      await appUnderTest().request(path);
+      expect(logged).toHaveLength(1);
+      expect((JSON.parse(logged[0]!) as { errorName: string }).errorName).toBe(errorName);
+    }
+  });
+
+  it('a Substrat. name with a code outside the catalog falls back to Error', async () => {
+    const logged: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => void logged.push(String(args[0])));
+    await appUnderTest().request('/throws-fake-substrat');
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).not.toContain('forged');
     expect((JSON.parse(logged[0]!) as { errorName: string }).errorName).toBe('Error');
   });
 

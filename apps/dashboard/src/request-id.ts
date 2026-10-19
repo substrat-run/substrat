@@ -1,5 +1,5 @@
 import type { Context, MiddlewareHandler } from 'hono';
-import { REQUEST_ID_HEADER, errorCodeOf } from '@substrat-run/contracts';
+import { ERROR_NAME_PREFIX, REQUEST_ID_HEADER, errorCode, errorCodeOf } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { ulid } from '@substrat-run/kernel';
 import { RouteOutputMismatch, requestIdOf } from '@substrat-run/vertical-host';
@@ -40,7 +40,8 @@ export function dashboardRequestId(): MiddlewareHandler {
  * What failed is named by fixed vocabulary only, never by a message. A message is free text,
  * and much of it is not ours: a `ControlPlaneError`'s is the plane's problem detail, which a
  * handler may rethrow inside an `HTTPException`, and no pattern can promise that a detail
- * holds no token or personal data. So the line carries the error's class name, the declared
+ * holds no token or personal data. So the line carries the error's class name (or, for a
+ * `SubstratError`, its `Substrat.<code>` name), the declared
  * code (from the error catalog, by `errorCodeOf` or the plane's `problemCode`), the
  * plane's status when the plane was the failure, and, when a declared route answered outside
  * its output, the route and the issue paths. The message stays in the response the caller
@@ -59,8 +60,17 @@ function logFailedRequest(c: Context, requestId: string): void {
   );
 }
 
-/** A class name is code's, unless something assigned `name`: then it is just `Error`. */
-const ERROR_NAME = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
+const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
+
+/**
+ * A class name is code's, unless something assigned `name`: then it is just `Error`. A
+ * `SubstratError` assigns one itself, `Substrat.<code>`, so that shape is code's too, but only
+ * with a code the catalog declares: the dot is not licence for anything after it.
+ */
+function isCodeName(name: string): boolean {
+  if (name.startsWith(ERROR_NAME_PREFIX)) return errorCode.safeParse(name.slice(ERROR_NAME_PREFIX.length)).success;
+  return IDENTIFIER.test(name);
+}
 
 function failureOf(err: unknown): {
   errorName?: string;
@@ -70,13 +80,13 @@ function failureOf(err: unknown): {
   outputPaths?: readonly string[];
 } {
   if (err === undefined) return {};
-  const errorName = err instanceof Error && ERROR_NAME.test(err.name) ? err.name : 'Error';
+  const errorName = err instanceof Error && isCodeName(err.name) ? err.name : 'Error';
   // The plane's failure, thrown as itself or carried as the cause of what a handler rethrew.
   const plane = [err, err instanceof Error ? err.cause : undefined].find((e) => e instanceof ControlPlaneError);
-  const errorCode = errorCodeOf(err) ?? plane?.problemCode;
+  const code = errorCodeOf(err) ?? plane?.problemCode;
   return {
     errorName,
-    ...(errorCode ? { errorCode } : {}),
+    ...(code ? { errorCode: code } : {}),
     ...(plane ? { upstreamStatus: plane.status } : {}),
     // #2401: the caller got a bare 500, so this line is where the drift can be found.
     ...(err instanceof RouteOutputMismatch ? { route: err.route, outputPaths: err.issuePaths } : {}),

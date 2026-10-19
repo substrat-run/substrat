@@ -200,7 +200,7 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
         method: 'GET',
         path: `/api/teams/${team}/findings`,
         status: 500,
-        errorName: 'Error',
+        errorName: 'Substrat.internal',
         errorCode: 'internal',
         route: 'dashboard/list-findings',
         outputPaths: ['entries[].firstSeen'],
