@@ -396,11 +396,139 @@ export const STORE_DRIVERS: readonly StoreDriverRegistration[] = [];
 /** The most module bytes one release bundle may carry (#2300), decoded. A bigger upload is 413. */
 export const STORE_RELEASE_MAX_BYTES = 10 * 1024 * 1024;
 
+/** The most modules one release bundle may carry (#2300, #2390). A bigger upload is 422. */
+export const STORE_RELEASE_MAX_MODULES = 1000;
+
+/**
+ * A driver's own module: one top-level package that starts with `driver_`, then identifiers,
+ * ending in `.py`. The prefix keeps it off every name the Python entry imports or the runtime
+ * provides.
+ */
+const PYTHON_DRIVER_MODULE = /^(driver_[a-z0-9_]+)(?:\/[A-Za-z_][A-Za-z0-9_]*)*\/[A-Za-z_][A-Za-z0-9_]*\.py$/;
+
+/** One segment of a vendored path: no empty segment, no `.` or `..`, no leading dot. */
+const VENDORED_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/;
+
+/**
+ * Python 3.13's standard library, as `sys.stdlib_module_names` lists it: the Python the store
+ * entry's compatibility date selects (Pyodide 3.13.2, whose list is CPython 3.13's). A vendored
+ * copy of one of these could shadow the module the entry, its verifier glue or the runtime
+ * imports. Hand-copied, and held to the runtime by `packages/store-entry-python/probe.mjs`, which
+ * asks the running worker for its own list and for every top-level module it has loaded.
+ */
+const PYTHON_STDLIB_MODULES: readonly string[] = (
+  '__future__ _abc _aix_support _android_support _apple_support _ast _asyncio _bisect _blake2 _bz2 _codecs _codecs_cn _codecs_hk ' +
+  '_codecs_iso2022 _codecs_jp _codecs_kr _codecs_tw _collections _collections_abc _colorize _compat_pickle _compression ' +
+  '_contextvars _csv _ctypes _curses _curses_panel _datetime _dbm _decimal _elementtree _frozen_importlib ' +
+  '_frozen_importlib_external _functools _gdbm _hashlib _heapq _imp _interpchannels _interpqueues _interpreters _io ' +
+  '_ios_support _json _locale _lsprof _lzma _markupbase _md5 _multibytecodec _multiprocessing _opcode _opcode_metadata ' +
+  '_operator _osx_support _overlapped _pickle _posixshmem _posixsubprocess _py_abc _pydatetime _pydecimal _pyio _pylong ' +
+  '_pyrepl _queue _random _scproxy _sha1 _sha2 _sha3 _signal _sitebuiltins _socket _sqlite3 _sre _ssl _stat _statistics ' +
+  '_string _strptime _struct _suggestions _symtable _sysconfig _thread _threading_local _tkinter _tokenize _tracemalloc ' +
+  '_typing _uuid _warnings _weakref _weakrefset _winapi _wmi _zoneinfo abc antigravity argparse array ast asyncio atexit ' +
+  'base64 bdb binascii bisect builtins bz2 cProfile calendar cmath cmd code codecs codeop collections colorsys compileall ' +
+  'concurrent configparser contextlib contextvars copy copyreg csv ctypes curses dataclasses datetime dbm decimal difflib ' +
+  'dis doctest email encodings ensurepip enum errno faulthandler fcntl filecmp fileinput fnmatch fractions ftplib ' +
+  'functools gc genericpath getopt getpass gettext glob graphlib grp gzip hashlib heapq hmac html http idlelib imaplib ' +
+  'importlib inspect io ipaddress itertools json keyword linecache locale logging lzma mailbox marshal math mimetypes ' +
+  'mmap modulefinder msvcrt multiprocessing netrc nt ntpath nturl2path numbers opcode operator optparse os pathlib pdb ' +
+  'pickle pickletools pkgutil platform plistlib poplib posix posixpath pprint profile pstats pty pwd py_compile pyclbr ' +
+  'pydoc pydoc_data pyexpat queue quopri random re readline reprlib resource rlcompleter runpy sched secrets select ' +
+  'selectors shelve shlex shutil signal site smtplib socket socketserver sqlite3 sre_compile sre_constants sre_parse ssl ' +
+  'stat statistics string stringprep struct subprocess symtable sys sysconfig syslog tabnanny tarfile tempfile termios ' +
+  'textwrap this threading time timeit tkinter token tokenize tomllib trace traceback tracemalloc tty turtle turtledemo ' +
+  'types typing unicodedata unittest urllib uuid venv warnings wave weakref webbrowser winreg winsound wsgiref xml ' +
+  'xmlrpc zipapp zipfile zipimport zlib zoneinfo'
+).split(' ');
+
+/**
+ * The top-level names a vendored path may not take (#2390), each with why. A path's top-level
+ * name is its first segment under `python_modules/` up to the first `.` or `-`, so a package
+ * directory, a module, a compiled extension and a distribution's metadata all read as the name
+ * they would be imported or installed as: `workers/`, `workers.py`, `workers.cpython-312.so` and
+ * `workers_runtime_sdk-1.9.3.dist-info` are `workers`, `workers`, `workers` and
+ * `workers_runtime_sdk`. A `prefix` row refuses every name that starts with one of its `names`.
+ */
+const PYTHON_VENDORED_RESERVED: readonly { readonly match: 'name' | 'prefix'; readonly names: readonly string[]; readonly why: string }[] = [
+  { match: 'prefix', names: ['driver_'], why: 'it takes the driver package prefix' },
+  { match: 'prefix', names: ['substrat_'], why: "it takes the entry's prefix" },
+  // The SDK's own files, as workers-runtime-sdk 1.9 installs them: its package, the `asgi` module
+  // beside it, its patch loader and the two stubs it ships for the runtime's private modules.
+  { match: 'name', names: ['workers', 'workers_runtime_sdk', 'workers_py', 'asgi'], why: "it is the workers runtime SDK, which is the platform's runtime, not a vendored copy" },
+  { match: 'prefix', names: ['_workers_sdk', '_cloudflare'], why: "it is the workers runtime SDK, which is the platform's runtime, not a vendored copy" },
+  { match: 'name', names: ['js', 'pyodide', 'pyodide_js'], why: 'the Python workers runtime provides it' },
+  { match: 'prefix', names: ['_pyodide'], why: 'the Python workers runtime provides it' },
+  { match: 'name', names: ['__main__', 'sitecustomize', 'usercustomize'], why: 'the interpreter runs it when it starts' },
+  { match: 'name', names: PYTHON_STDLIB_MODULES, why: "it is in Python's standard library" },
+  // `sysconfig`'s data module, named for the platform (`_sysconfigdata__emscripten_wasm32-emscripten`
+  // under Pyodide), so it is not in `sys.stdlib_module_names`. The probe found the runtime loads it.
+  { match: 'prefix', names: ['_sysconfigdata'], why: "it is in Python's standard library" },
+];
+const PYTHON_VENDORED_RESERVED_NAMES = new Map(
+  PYTHON_VENDORED_RESERVED.filter((row) => row.match === 'name').flatMap((row) => row.names.map((name) => [name, row.why] as const)),
+);
+const PYTHON_VENDORED_RESERVED_PREFIXES = PYTHON_VENDORED_RESERVED.filter((row) => row.match === 'prefix').flatMap((row) =>
+  row.names.map((prefix) => [prefix, row.why] as const),
+);
+
+/** The file names a vendored path may not end in, each with why: installer output, not a dependency. */
+const PYTHON_VENDORED_FILES: readonly { readonly match: 'name' | 'suffix'; readonly names: readonly string[]; readonly why: string }[] = [
+  { match: 'suffix', names: ['.pth'], why: 'a path file runs code when the interpreter starts' },
+  { match: 'name', names: ['pyvenv.cfg'], why: "it is a virtual environment's marker" },
+  { match: 'suffix', names: ['.synced'], why: "it is an installer's sync marker" },
+];
+
+export type PythonStoreModuleClass = { readonly kind: 'driver'; readonly packageName: string } | { readonly kind: 'vendored' };
+
+function refusePythonStoreModule(name: string, why: string): never {
+  throw new Error(`a store driver release may not ship a module named '${name}': ${why}`);
+}
+
+/**
+ * Which kind of module a Python store-driver release is shipping (#2390).
+ *
+ * The driver's own code is one `driver_<package>/…/<module>.py` file. Beside that package a
+ * release may carry `python_modules/<path>`, the driver's dependencies, which the upload sends
+ * as Data modules under the same names. Refused: a path that climbs (`..`), is absolute, or
+ * contains a backslash; a vendored top-level name in {@link PYTHON_VENDORED_RESERVED}; a vendored
+ * file in {@link PYTHON_VENDORED_FILES}.
+ *
+ * The script imports `workers` from the Python workers runtime the upload selects, not from a
+ * copy in the bundle. A lock file is not a module here.
+ */
+export function classifyPythonStoreModule(name: string): PythonStoreModuleClass {
+  if (name.includes('\\') || name.startsWith('/') || /^[A-Za-z]:/.test(name)) {
+    refusePythonStoreModule(name, 'a path is relative and uses no backslash');
+  }
+  const parts = name.split('/');
+  if (parts.some((part) => part === '' || part === '.' || part === '..')) {
+    refusePythonStoreModule(name, 'a path does not climb out of the release');
+  }
+  const driver = PYTHON_DRIVER_MODULE.exec(name);
+  if (driver) return { kind: 'driver', packageName: driver[1]! };
+  if (!name.startsWith('python_modules/')) {
+    refusePythonStoreModule(name, 'a driver module is driver_<package>/…/<module>.py, or a dependency is python_modules/<path>');
+  }
+  const rest = parts.slice(1);
+  const top = rest[0]!.split(/[.-]/)[0]!;
+  const reserved = PYTHON_VENDORED_RESERVED_NAMES.get(top) ?? PYTHON_VENDORED_RESERVED_PREFIXES.find(([prefix]) => top.startsWith(prefix))?.[1];
+  if (reserved) refusePythonStoreModule(name, `a vendored path may not take the top-level name '${top}': ${reserved}`);
+  const file = rest[rest.length - 1]!;
+  const installer = PYTHON_VENDORED_FILES.find((row) =>
+    row.names.some((fileName) => (row.match === 'name' ? file === fileName : file.endsWith(fileName))),
+  );
+  if (installer) refusePythonStoreModule(name, installer.why);
+  if (!rest.every((part) => VENDORED_SEGMENT.test(part))) {
+    refusePythonStoreModule(name, 'a vendored path is relative segments');
+  }
+  return { kind: 'vendored' };
+}
+
 /**
  * A release bundle as `substrat store-driver upload` sends it (#2300): the commit it was built from,
  * the module the platform's entry imports, and every module, base64. The control plane stores it
  * keyed by its {@link storeDriverReleaseDigest}, which it computes itself. Module names are judged
- * by the Python entry's package rule when the bundle arrives, the same rule its upload applies.
+ * by {@link classifyPythonStoreModule} when the bundle arrives, the same rule its upload applies.
  */
 export const storeDriverReleaseUpload = z
   .object({
@@ -409,7 +537,7 @@ export const storeDriverReleaseUpload = z
     modules: z
       .array(z.object({ name: z.string().min(1), contentBase64: z.string() }).strict())
       .min(1)
-      .max(1000),
+      .max(STORE_RELEASE_MAX_MODULES),
   })
   .strict();
 export type StoreDriverReleaseUpload = z.infer<typeof storeDriverReleaseUpload>;
@@ -423,9 +551,11 @@ const RELEASE_DIGEST_NAME = /^[\x21-\x7e]+$/;
 /**
  * The sha256 that pins a store driver's release (D-63), as lowercase hex. It covers everything that
  * decides what runs, apart from the class the registration names: the module the platform's
- * entry imports, and every module's name and bytes. Framed as {@link STORE_RELEASE_DIGEST_TAG}
+ * entry imports, and every module's name and bytes, a vendored `python_modules/` file included.
+ * Framed as {@link STORE_RELEASE_DIGEST_TAG}
  * and one zero byte, the entry's name and one zero byte, then each module in name order: its
  * name, one zero byte, its length as an unsigned 64-bit big-endian integer, then its exact bytes.
+ * A vendored `python_modules/` module is a module, so its name and bytes are covered the same way.
  *
  * The framing is what makes the digest name one release, so its preconditions are held here,
  * not left to a caller: every name (the entry's included) is non-empty printable ASCII without

@@ -14,6 +14,7 @@ import {
   STORE_VERIFIER_MODULE,
 } from '../src/store-entry.generated.js';
 import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
+import { STORE_PYTHON_DATA_CONTENT_TYPE, withPythonStoreEntry } from '../src/store-entry.js';
 
 /**
  * The Python entry and its verifier, as the upload ships them (#2290). The entry running under
@@ -44,6 +45,27 @@ describe('the Python entry, as shipped', () => {
 
   it('parses no envelope of its own', () => {
     expect(STORE_ENTRY_PYTHON_SOURCE).not.toMatch(/split\("\\n"\)|b64decode|hashlib|importKey/);
+  });
+
+  it('uploads vendored python_modules as Data and does not ship the workers runtime SDK', async () => {
+    expect(STORE_ENTRY_PYTHON_SOURCE).toContain('from workers import');
+    const platform = await generateScopeStoreKeyPair();
+    const script = withPythonStoreEntry(
+      {
+        entry: 'driver_counter/store.py',
+        modules: [
+          { name: 'driver_counter/store.py', content: new TextEncoder().encode('class CounterStore: pass\n') },
+          { name: 'python_modules/vendor_probe/__init__.py', content: new TextEncoder().encode('def label():\n    return "vendor-probe"\n') },
+          { name: 'python_modules/vendor_probe/payload.txt', content: new TextEncoder().encode('payload-ok\n') },
+        ],
+      },
+      { className: 'CounterStore', script: vector.script!, callerPublicKeys: [vector.publicKey!], platformPublicKeys: [platform.publicKey] },
+    );
+    const types = Object.fromEntries(script.modules.map((module) => [module.name, module.contentType]));
+    expect(types['driver_counter/store.py']).toBe('text/x-python');
+    expect(types['python_modules/vendor_probe/__init__.py']).toBe(STORE_PYTHON_DATA_CONTENT_TYPE);
+    expect(types['python_modules/vendor_probe/payload.txt']).toBe(STORE_PYTHON_DATA_CONTENT_TYPE);
+    expect(script.modules.some((module) => /(^|\/)(workers|js|pyodide)(\/|\.py$)/.test(module.name))).toBe(false);
   });
 });
 
