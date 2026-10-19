@@ -380,6 +380,22 @@ describe('a preview’s MCP registration beside its client (#1704)', () => {
     expect(check()).toBe(true);
   });
 
+  it('stays no parent through the platform’s reap order — clear, then retire — even beside a stranger’s client', async () => {
+    await dcr([PARENT_CALLBACK], 'Desk');
+    resourceBinding(PARENT);
+    const preview = scopeId.parse(ulid());
+    await mintPreviewClient(sql, register, mintInput(preview), transaction);
+    deliver(preview, [PREVIEW_MCP]);
+    // Open DCR: anybody may register a client that redirects to the preview's callback.
+    await dcr([mintInput(preview).redirectUri], 'Not the platform');
+    const asParent = { parentScopeId: preview, parentRedirectUris: [mintInput(preview).redirectUri] };
+    expect(check(asParent)).toBe(false);
+    deliver(preview, []); // the registration goes first, while the preview's clients still mark it one
+    expect(check(asParent)).toBe(false);
+    retire(preview);
+    expect(check(asParent)).toBe(false);
+  });
+
   it('is the platform’s delivery to clear: retiring the preview’s clients does not reach the registry', async () => {
     await dcr([PARENT_CALLBACK], 'Desk');
     resourceBinding(PARENT);

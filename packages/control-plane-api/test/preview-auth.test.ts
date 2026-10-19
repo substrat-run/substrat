@@ -106,6 +106,8 @@ class FakeIssuers {
   beforeRetire: ((body: Record<string, unknown>) => Promise<void>) | null = null;
   /** Awaited after a check answers — before the caller can mint. */
   afterCheck: (() => Promise<void>) | null = null;
+  /** Awaited when a configure delivery arrives, before it applies. */
+  beforeConfigure: ((body: Record<string, unknown>) => Promise<void>) | null = null;
   private gen = 0;
   private n = 0;
 
@@ -170,6 +172,7 @@ class FakeIssuers {
     const inst = this.instances.get(String(body.scopeId));
     if (!inst || inst.tenantId !== body.tenantId) return json(403, { error: 'not an issuer of that tenant' });
     if (isConfigure) {
+      if (this.beforeConfigure) await this.beforeConfigure(body);
       this.configure(inst, body.entries as Array<{ key: string; value: string }>);
       return json(200, { applied: (body.entries as unknown[]).length });
     }
@@ -544,16 +547,28 @@ describe('a preview’s MCP endpoint is registered where its login is (#1704)', 
     expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
   });
 
-  it('a reap whose un-registration fails keeps the preview, so the retry still finds it', async () => {
+  it('a reap whose un-registration fails keeps the preview, and its clients, so the retry still finds both', async () => {
     const out = await created({ tag: 'pr-7', versionId: versions[1] });
     issuers.failNext.set('POST /internal/configure', 503);
     const failed = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
     expect(failed.ok).toBe(false);
     expect(await host.admin.getScopeRecord(staff, tenant, out.scopeId)).toBeDefined();
     expect(issuers.registered(issuerScope, out.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+    // Cleared BEFORE retired: a registration never outlives the clients that make the issuer
+    // read the preview as one (`claimsParent`), even when the clear is what failed.
+    expect(issuers.tagged(issuerScope, out.scopeId)).toHaveLength(1);
     const retried = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
     expect(retried.status).toBe(200);
     expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.tagged(issuerScope, out.scopeId)).toEqual([]);
+  });
+
+  it('a registration that fails once is retried like the delivery beside it', async () => {
+    app = api({ provisionRetryDelaysMs: [0] });
+    issuers.failNext.set('POST /internal/configure', 503);
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+    expect(out.auth.note).toContain(`MCP: ${PREVIEW_MCP('pr-7')} registered there`);
   });
 
   it('a registration that fails does not fail the login — the note says so, and the next push registers it', async () => {
@@ -569,17 +584,179 @@ describe('a preview’s MCP endpoint is registered where its login is (#1704)', 
     expect(issuers.registered(issuerScope, out.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
   });
 
-  it('a preview reaped while its push runs keeps no registration at the issuer', async () => {
-    const base = await created({ tag: 'pr-7', versionId: versions[1] });
-    // The reap lands between this push's registration and its last look at the binding.
-    issuers.beforeRetire = async (body) => {
-      if (body.keep) await host.admin.suspendScope(staff, tenant, base.scopeId);
+});
+
+/**
+ * The real reap racing a push (#1704): the DELETE route's own `reapPreview`, which keeps the
+ * preview's row until its last step, `deleteSnapshot`. Each test holds that last step until
+ * the push has answered, so the push meets the row still there — the case a row-only look
+ * cannot tell from a live preview.
+ */
+describe('a reap racing a push leaves nothing at the issuer (#1704)', () => {
+  const del = () => app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
+
+  /** Hold the reap's `deleteSnapshot` until released; `reached` resolves when the reap gets there. */
+  function holdRowDelete(): { reached: Promise<void>; release: () => void; restore: () => void } {
+    const reached = gate();
+    const release = gate();
+    const original = host.deleteSnapshot.bind(host);
+    host.deleteSnapshot = async (...args) => {
+      reached.open();
+      await release.wait;
+      return original(...args);
     };
-    const out = await created({ tag: 'pr-7', versionId: versions[2] });
-    expect(out.auth.status).toBe('superseded');
+    return { reached: reached.wait, release: release.open, restore: () => (host.deleteSnapshot = original) };
+  }
+
+  it('archives the preview before its first issuer call, and clears before it retires', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    let statusAtFirstCall: string | undefined;
+    issuers.beforeConfigure = async () => {
+      statusAtFirstCall ??= (await host.admin.getScopeRecord(staff, tenant, out.scopeId))?.status;
+    };
+    const from = issuers.calls.length;
+    expect((await del()).status).toBe(200);
+    expect(statusAtFirstCall).toBe('archived');
+    expect(issuers.calls.slice(from).map((c) => c.method)).toEqual(['POST', 'DELETE']);
+  });
+
+  it('a reap whose issuer step lands between a push’s mint and its next look: the push removes nothing it keeps', async () => {
+    const base = await created({ tag: 'pr-7', versionId: versions[1] });
+    const rowDelete = holdRowDelete();
+    const minted = gate();
+    const resume = gate();
+    let stalled = false;
+    issuers.afterMint = async () => {
+      if (stalled) return;
+      stalled = true;
+      minted.open();
+      await resume.wait;
+    };
+    try {
+      const push = create({ tag: 'pr-7', versionId: versions[2] });
+      await minted.wait;
+      const reap = del();
+      await rowDelete.reached; // the reap's issuer step is done; its row is still there
+      resume.open();
+      const pushed = (await (await push).json()) as Created;
+      expect(pushed.auth.status).toBe('superseded');
+      rowDelete.release();
+      expect((await reap).status).toBe(200);
+    } finally {
+      rowDelete.restore();
+    }
+    expect(await host.admin.getScopeRecord(staff, tenant, base.scopeId)).toBeUndefined();
     expect(issuers.registered(issuerScope, base.scopeId)).toEqual([]);
     expect(issuers.tagged(issuerScope, base.scopeId)).toEqual([]);
     expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+    expect(issuers.instances.get(issuerScope)!.clients.has(PROD_CLIENT)).toBe(true);
+  });
+
+  it('a push whose registration lands after the reap’s clear removes it itself, registration first', async () => {
+    const base = await created({ tag: 'pr-7', versionId: versions[1] });
+    const rowDelete = holdRowDelete();
+    const registering = gate();
+    const resume = gate();
+    let stalled = false;
+    issuers.beforeConfigure = async (body) => {
+      const [entry] = body.entries as Array<{ key: string; value: string }>;
+      if (stalled || entry?.value === '') return;
+      stalled = true;
+      registering.open();
+      await resume.wait;
+    };
+    let from = 0;
+    try {
+      const push = create({ tag: 'pr-7', versionId: versions[2] });
+      await registering.wait;
+      const reap = del();
+      await rowDelete.reached; // the reap cleared and retired; this push's registration is next
+      from = issuers.calls.length;
+      resume.open();
+      expect(((await (await push).json()) as Created).auth.status).toBe('superseded');
+      rowDelete.release();
+      expect((await reap).status).toBe(200);
+    } finally {
+      rowDelete.restore();
+    }
+    expect(issuers.registered(issuerScope, base.scopeId)).toEqual([]);
+    expect(issuers.tagged(issuerScope, base.scopeId)).toEqual([]);
+    // After its own late registration, the push cleared before it retired.
+    const own = issuers.calls.slice(from + 1);
+    const clear = own.findIndex((c) => c.path === '/internal/configure');
+    const retireAll = own.findIndex((c) => c.method === 'DELETE' && !c.body.keep && !c.body.only);
+    expect(clear).toBeGreaterThanOrEqual(0);
+    expect(clear).toBeLessThan(retireAll);
+  });
+
+  it('a push that registers and retires between the reap’s clear and its retire is caught by its last look', async () => {
+    const base = await created({ tag: 'pr-7', versionId: versions[1] });
+    const rowDelete = holdRowDelete();
+    const pushRegistering = gate();
+    const resumePush = gate();
+    const reapRetiring = gate();
+    const resumeReap = gate();
+    let pushStalled = false;
+    let reapStalled = false;
+    issuers.beforeConfigure = async (body) => {
+      const [entry] = body.entries as Array<{ key: string; value: string }>;
+      if (pushStalled || entry?.value === '') return;
+      pushStalled = true;
+      pushRegistering.open();
+      await resumePush.wait;
+    };
+    issuers.beforeRetire = async (body) => {
+      if (reapStalled || body.keep || body.only) return;
+      reapStalled = true; // the reap's own retire, after its clear
+      reapRetiring.open();
+      await resumeReap.wait;
+    };
+    try {
+      const push = create({ tag: 'pr-7', versionId: versions[2] });
+      await pushRegistering.wait; // past its look after the delivery
+      const reap = del();
+      await reapRetiring.wait; // archived and cleared; its retire is held
+      resumePush.open(); // registers after that clear, and keeps its own client
+      expect(((await (await push).json()) as Created).auth.status).toBe('superseded');
+      resumeReap.open();
+      await rowDelete.reached;
+      rowDelete.release();
+      expect((await reap).status).toBe(200);
+    } finally {
+      rowDelete.restore();
+    }
+    expect(issuers.registered(issuerScope, base.scopeId)).toEqual([]);
+    expect(issuers.tagged(issuerScope, base.scopeId)).toEqual([]);
+  });
+
+  it('a removal that fails after the preview was reaped mid-push is said — a 502 and an ops-failure row', async () => {
+    await created({ tag: 'pr-7', versionId: versions[1] });
+    const rowDelete = holdRowDelete();
+    const minted = gate();
+    const resume = gate();
+    let stalled = false;
+    issuers.afterMint = async () => {
+      if (stalled) return;
+      stalled = true;
+      minted.open();
+      await resume.wait;
+    };
+    try {
+      const push = create({ tag: 'pr-7', versionId: versions[2] });
+      await minted.wait;
+      const reap = del();
+      await rowDelete.reached;
+      issuers.failNext.set('POST /internal/configure', 503);
+      resume.open();
+      const res = await push;
+      expect(res.status).toBe(502);
+      expect(((await res.json()) as { error: string }).error).toContain('reaped while this push ran');
+      rowDelete.release();
+      expect((await reap).status).toBe(200);
+    } finally {
+      rowDelete.restore();
+    }
+    expect(JSON.stringify(await host.admin.listOpsFailures(staff, { limit: 50 }))).toContain('reaped while this push ran');
   });
 });
 
@@ -691,13 +868,20 @@ describe('version skew and transients read as what they are (#1704)', () => {
     expect(out.auth.note).not.toContain('EXTERNAL');
   });
 
-  it('the reap skips an auth server that predates the routes — it cannot have minted, nor registered', async () => {
-    await created({ tag: 'pr-7', versionId: versions[1] });
+  it('the reap at an auth server that predates the routes: its 501 retire is skipped, and the clear is a no-op', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
     issuers.predates = true;
-    const registrations = configures().length;
     const del = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
     expect(del.status).toBe(200);
-    expect(configures()).toHaveLength(registrations);
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+  });
+
+  it('the reap skips a deployment that takes no delivery — it cannot hold a registration', async () => {
+    await created({ tag: 'pr-7', versionId: versions[1] });
+    issuers.failNext.set('POST /internal/configure', 501);
+    const del = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
+    expect(del.status).toBe(200);
   });
 });
 

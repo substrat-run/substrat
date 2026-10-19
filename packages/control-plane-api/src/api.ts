@@ -9447,10 +9447,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const wipeStores = await platformStoresWipe(c, preview);
     // A preview is still routed until its row goes: unroute before the wipe.
     await unrouteScope(c.var.admin, actor, preview);
-    // A fork's own sign-in clients go once nothing routes to it, and before the row (#1704): an
-    // unroute that fails leaves the preview signing in, and a failure here leaves the preview in
-    // place, so the retry a PR-close job makes still finds it — after the row is gone, nothing
-    // would name those clients again. A clean room never had one.
+    // A fork's own sign-in clients and MCP registration go once nothing routes to it, and before
+    // the row (#1704): an unroute that fails leaves the preview signing in, and a failure here
+    // leaves the preview in place (archived first, so no push still running wires it again), so
+    // the retry a PR-close job makes still finds it — after the row is gone, nothing would name
+    // those clients again. A clean room never had one.
     await retireClientsOfReapedScope(previewAuthDeps(c), preview);
     await wipeStores();
     let storageStranded = false;
@@ -9470,6 +9471,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     admin: c.var.admin,
     actor: c.get('actor'),
     issuerClient: (scope) => verticalForScope(c, scope),
+    retry: retryTransient,
   });
 
   /** Given a base hostname `<label>.<domain>`, mint (or find) the preview's `--<tag>`

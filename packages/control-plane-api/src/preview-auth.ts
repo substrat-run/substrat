@@ -61,6 +61,21 @@ import type { VerticalClient } from './vertical-client.js';
  * rows marked for that key, so prod's registration is never read or written. The value is
  * the whole set, so every push re-asserts it at no cost, and the reap clears it. Like the
  * dashboard's registration it is best-effort: a login that works is not failed for it.
+ *
+ * ## A reap racing a push
+ *
+ * The reap keeps the preview's row until its very last step, so the row alone cannot tell a
+ * push that the preview is going. The reap therefore ARCHIVES it before it touches any issuer
+ * (`retireClientsOfReapedScope`), and a push reads anything but `active` as gone. Archived is
+ * one-way here: no push ever restores a scope. Every issuer write of a push is followed by
+ * one of its looks at the binding before it answers, so either that look came before the
+ * archive, and the reap's issuer step, which runs after the archive, removes what the push
+ * wrote; or the look sees the archive, and the push removes what it wrote itself.
+ *
+ * Both removals clear the registration BEFORE they retire the clients. The issuer refuses to
+ * treat a scope it minted preview clients for as a parent, while the registration's row
+ * carries the same platform marker an app's does; clearing first means that row never
+ * outlives the clients that make the issuer read the scope as a preview.
  */
 
 /** The capability a vertical declares to be a team issuer (manifest `provides`, #427). */
@@ -72,11 +87,16 @@ const MAX_PARENT_CALLBACKS = 32;
 const MAX_ATTEMPTS = 3;
 
 export interface PreviewAuthDeps {
-  admin: Pick<HostAdmin, 'listScopes' | 'listVerticals' | 'listHostnames' | 'getScopeRecord'>;
+  admin: Pick<HostAdmin, 'listScopes' | 'listVerticals' | 'listHostnames' | 'getScopeRecord' | 'archiveScope'>;
   actor: PlatformActorId;
   /** The deployment serving an ISSUER scope — where its `/internal/preview-client` and `/internal/configure` live. */
   issuerClient(scope: Scope): Promise<VerticalClient | undefined>;
+  /** Re-run an issuer call that failed transiently, as a delivery to the preview is. Default: once. */
+  retry?: <T>(fn: () => Promise<T>) => Promise<T>;
 }
+
+/** The statuses `archiveScope` leaves; anything else is gone already, or past archived. */
+const ARCHIVABLE: ReadonlySet<string> = new Set(['provisioning', 'active', 'suspended']);
 
 /** The team's own auth-servers: active, not a fork, not a preview, of a vertical that provides `oidc-issuer`. */
 export async function tenantIssuers(deps: PreviewAuthDeps, tenantId: TenantId): Promise<Scope[]> {
@@ -227,20 +247,37 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
       (e: unknown) => reasonOf(e),
     );
   const registerMcp = (resources: readonly string[]) =>
-    claim.client.configureInstance({
-      tenantId: input.tenantId,
-      scopeId: claim.scope.id,
-      entries: [previewResourcesEntry(input.previewId, resources)],
-    });
+    (deps.retry ?? ((fn) => fn()))(() =>
+      claim.client.configureInstance({
+        tenantId: input.tenantId,
+        scopeId: claim.scope.id,
+        entries: [previewResourcesEntry(input.previewId, resources)],
+      }),
+    );
+  /** Anything but `active` is gone: the reap archives a preview before its issuer step. */
   const bound = async (): Promise<'ours' | 'moved' | 'gone'> => {
     const rec = await deps.admin.getScopeRecord(deps.actor, input.tenantId, input.previewId);
     if (!rec || rec.status !== 'active') return 'gone';
     return rec.verticalVersionId === input.versionId ? 'ours' : 'moved';
   };
+  /** Set once this push has minted: from then on it may have left something at the issuer. */
+  let wrote = false;
   const reapedMeanwhile = async (): Promise<PreviewAuth> => {
-    // The preview was reaped while this push ran: nothing may outlive it at the issuer.
-    await claim.client.retirePreviewClients(address).catch(() => undefined);
-    await registerMcp([]).catch(() => undefined);
+    // The preview was reaped while this push ran. What this push wrote after the reap's issuer
+    // step is this push's to remove (see "A reap racing a push"), and a removal that fails is
+    // said: after the row is gone, nothing names those writes again.
+    if (wrote) {
+      try {
+        await registerMcp([]);
+        await claim.client.retirePreviewClients(address);
+      } catch (e) {
+        throw new ControlPlaneError(
+          502,
+          `preview '${input.tag}' was reaped while this push ran, and removing what this push left at the ` +
+            `auth server ${claim.scope.id} failed (${reasonOf(e)}).`,
+        );
+      }
+    }
     return superseded(callbackUrl, 'the preview was reaped while this push ran');
   };
   // The preview's endpoints by the dashboard's rule (`mcpResourcesFor`): one per hostname it
@@ -276,6 +313,7 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
     } catch (e) {
       throw noLogin(`the auth server ${claim.scope.id} did not mint its client (${reasonOf(e)})`);
     }
+    wrote = true;
 
     try {
       await input.deliver([
@@ -295,10 +333,11 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
     }
 
     const after = await bound();
-    if (after !== 'ours') {
+    if (after === 'gone') return reapedMeanwhile(); // which removes our client with the rest
+    if (after === 'moved') {
       // Our client sits only in our own version's store, which is no longer served.
       await retireOwn(minted);
-      return after === 'gone' ? reapedMeanwhile() : superseded(callbackUrl, 'another push re-bound the preview');
+      return superseded(callbackUrl, 'another push re-bound the preview');
     }
 
     // Delivered and bound: the issuer signs this preview in now, so it may mint for the
@@ -314,17 +353,18 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
           `pointed at the preview gets invalid_target until the next push registers it.`,
       );
 
-    let retired;
+    let older = '';
     try {
-      retired = await claim.client.retirePreviewClients({ ...address, keep: minted.clientId });
+      const retired = await claim.client.retirePreviewClients({ ...address, keep: minted.clientId });
+      if (retired.kept === false) continue; // our own client vanished while our version is bound
     } catch (e) {
       // Delivered and bound: the login works. What is left is older clients, which the next
       // push or the reap removes — said, not hidden.
-      return wired(claim.scope.id, issuer, minted.clientId, callbackUrl, `${mcp} Older clients of this preview could not be removed yet (${reasonOf(e)}); the next push or the reap removes them.`);
+      older = ` Older clients of this preview could not be removed yet (${reasonOf(e)}); the next push or the reap removes them.`;
     }
-    if (retired.kept === false) continue; // our own client vanished while our version is bound
+    // The look after this push's last issuer write, on every way to `wired` (see "A reap racing a push").
     if ((await bound()) === 'gone') return reapedMeanwhile();
-    return wired(claim.scope.id, issuer, minted.clientId, callbackUrl, mcp);
+    return wired(claim.scope.id, issuer, minted.clientId, callbackUrl, `${mcp}${older}`);
   }
   throw noLogin(`its client kept disappearing at the auth server ${claim.scope.id} (${MAX_ATTEMPTS} attempts)`);
 }
@@ -340,12 +380,15 @@ function wired(issuerScopeId: ScopeId, issuer: string, clientId: string, callbac
   };
 }
 
+/** A refusal that says the deployment does not implement the call: it cannot hold what the call removes. */
+const predates = (e: unknown): boolean => e instanceof ControlPlaneError && e.status === 501;
+
 /**
- * Delete every client minted for a preview, and un-register its MCP endpoint, at every
- * auth-server of its tenant — the reap's half, run BEFORE the preview's storage and row go,
- * so a failure leaves a preview a retry can still find. An auth-server that predates preview
- * clients cannot have minted one, nor registered an endpoint for it (that follows a mint),
- * and is skipped; any other failure throws.
+ * Un-register a preview's MCP endpoint and delete every client minted for it, at every
+ * auth-server of its tenant, in that order (see "A reap racing a push") — the reap's half,
+ * run BEFORE the preview's storage and row go, so a failure leaves a preview a retry can still
+ * find. A deployment that takes no delivery holds no registration, and one that predates
+ * preview clients holds no client; each is skipped for that half. Any other failure throws.
  */
 export async function retireAllPreviewClients(
   deps: PreviewAuthDeps,
@@ -356,24 +399,41 @@ export async function retireAllPreviewClients(
   for (const scope of await tenantIssuers(deps, tenantId)) {
     const client = await deps.issuerClient(scope);
     if (!client) throw new ControlPlaneError(502, `the auth server ${scope.id} could not be reached to delete preview ${previewScopeId}'s clients`);
+    await client
+      .configureInstance({ tenantId, scopeId: scope.id, entries: [previewResourcesEntry(previewScopeId, [])] })
+      .catch((e: unknown) => {
+        if (!predates(e)) throw e;
+      });
     try {
       deleted.push(...(await client.retirePreviewClients({ tenantId, scopeId: scope.id, previewScopeId })).deleted);
     } catch (e) {
-      if (e instanceof ControlPlaneError && e.status === 501) continue;
-      throw e;
+      if (!predates(e)) throw e;
     }
-    await client.configureInstance({ tenantId, scopeId: scope.id, entries: [previewResourcesEntry(previewScopeId, [])] });
   }
   return deleted;
 }
 
 /**
  * The reap's half for ANY scope about to go, as the platform sweep's expiry GC sees it: a
- * preview fork's clients are retired and its MCP registration cleared, and anything else — a
- * snapshot, a clean room — has neither and is left alone. One predicate for the interactive
- * reap and the sweep, so they agree.
+ * preview fork is archived — so no push still running can wire it again — and then its MCP
+ * registration is cleared and its clients retired; anything else — a snapshot, a clean room —
+ * has neither and is left alone. One predicate for the interactive reap and the sweep, so
+ * they agree. A reap that fails after the archive leaves an archived preview, which the reap's
+ * retry (the DELETE, the sweep's next pass, a create of the same tag) finds and finishes.
  */
 export async function retireClientsOfReapedScope(deps: PreviewAuthDeps, scope: Scope | undefined): Promise<string[]> {
   if (!scope || scope.kind !== 'preview' || !scope.forkedFrom) return [];
+  await archiveForReap(deps, scope);
   return retireAllPreviewClients(deps, scope.tenantId, scope.id);
+}
+
+/** Archive a preview about to be reaped, unless it is archived (or gone) already — by a reap racing this one, too. */
+async function archiveForReap(deps: PreviewAuthDeps, scope: Scope): Promise<void> {
+  const current = async () => (await deps.admin.getScopeRecord(deps.actor, scope.tenantId, scope.id))?.status;
+  const status = await current();
+  if (status === undefined || !ARCHIVABLE.has(status)) return;
+  await deps.admin.archiveScope(deps.actor, scope.tenantId, scope.id).catch(async (e: unknown) => {
+    const now = await current();
+    if (now !== undefined && ARCHIVABLE.has(now)) throw e;
+  });
 }
