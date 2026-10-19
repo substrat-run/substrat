@@ -12,6 +12,7 @@ Keep the filled files in a password manager; only the `.example` templates are c
 | builder | `apps/builder` | `substrat-builder` / `…-test` |
 | dashboard | `apps/dashboard` | `substrat-dashboard` / `…-test` |
 | router | `apps/router` | `substrat-router` / `…-test` |
+| social-relay | `apps/social-relay` | `substrat-social-relay` / `…-test` |
 
 `apps/docs` is a static Pages site (no secrets). Demo verticals keep their own `.dev.vars`
 — out of scope here. (Every demo vertical is OIDC-only and runs no credential store at
@@ -92,7 +93,7 @@ throwaway — never reuse a prod secret locally.
 | `secrets.mjs generate` | Fill blank *generatable* random secrets in the file. |
 | `secrets.mjs github` | Publish the allow-listed account **ids** to the repo's Actions **variables**. Never secrets. |
 | `pnpm store-keys generate\|doctor\|rotate` | The scope-store envelope keys: make one, check the set, walk a rotation. Never edits the file. See [store-keys.md](./store-keys.md). |
-| flags | `--file <path>` · `--only control-plane\|builder\|dashboard\|router` · `--dry-run` · `--skip-verticals` |
+| flags | `--file <path>` · `--only control-plane\|builder\|dashboard\|router\|social-relay` · `--dry-run` · `--skip-verticals` |
 
 Root aliases: `pnpm secrets:check`, `pnpm secrets:push`, `pnpm secrets:dev`.
 
@@ -122,6 +123,12 @@ The env file holds one canonical key; the tool sets it under each worker's own n
 | `STORE_PLATFORM_KEY` | `STORE_PLATFORM_KEY` | — | — |
 | `STORE_CALLER_KEY` | — | — | `STORE_CALLER_KEY` |
 | `STORE_CALLER_PUBLIC_KEYS` / `STORE_PLATFORM_PUBLIC_KEYS` | same names | — | — |
+
+The social relay (`id.substrat.net`, #1544) takes one OAuth client per upstream, under
+`RELAY_GOOGLE_*`, `RELAY_GITHUB_*` and `RELAY_APPLE_*` in the file and the unprefixed names
+(`GITHUB_CLIENT_ID`, …) on the worker. Each provider is optional: one with blank keys
+answers 404 everywhere, discovery included. The GitHub one is an **OAuth App** with
+callback `https://id.substrat.net/github/callback`, never the GitHub App above.
 
 The four `STORE_*` keys sign and verify the scope-store envelope (K-52). Each private key
 lives on its signer alone; the two public lists are not secret and live on the control
