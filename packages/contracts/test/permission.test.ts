@@ -94,4 +94,15 @@ describe('manifestOperations carries holder: system', () => {
     ]);
     expect(declared.map((p) => permissionDeclaration.parse(p))).toEqual(declared);
   });
+
+  it('refuses an empty description in either form, naming the key', () => {
+    const reap = { 'list/reap': { permission: 'list:reap' } };
+    for (const text of ['', { description: '', holder: 'system' as const }]) {
+      expect(() => manifestOperations(reap, { permissions: { 'list:reap': text } })).toThrow(/no description for permission\(s\) list:reap/);
+    }
+    // Its twin: described, in either form, it passes.
+    for (const text of ['Reap', { description: 'Reap', holder: 'system' as const }]) {
+      expect(() => manifestOperations(reap, { permissions: { 'list:reap': text } })).not.toThrow();
+    }
+  });
 });
