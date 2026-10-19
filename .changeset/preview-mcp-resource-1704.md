@@ -19,8 +19,12 @@ Every door that reaps a preview fork now runs that step. That includes the gener
 - A deployment that takes no delivery is skipped for the clear, and one that predates preview clients is skipped for the retire.
 - Any other failure throws, so the reap keeps the preview for its retry.
 
-**A push that finds its preview reaped mid-flight** removes what it wrote itself, registration first. That includes a push whose last attempt ran out. If that removal fails, it answers 502, which records an ops failure, instead of reporting `superseded`.
+**A push that finds its preview reaped mid-flight** removes what it wrote itself, including a push whose last attempt ran out. Its steps run in this order: clear the registration, hand back any row (below), retire the client.
+- Each step runs whatever the others did, except one rule: when the clear fails, the client is kept, so the registration never outlives it.
+- A step that fails makes the push answer 502, which records an ops failure, instead of reporting `superseded`. The message names each step that failed.
 
-The auth server moves a row to whichever key delivered it last. If such a push had moved a newer same-tag preview's row onto its own key, its removal hands that row back: the preview of the same app that now holds the hostname gets its own set again, under its own key.
+A last attempt whose preview a newer push re-bound answers `superseded`, as the loop does, rather than reporting no working login.
+
+**The hand-back.** The auth server moves a row to whichever key delivered it last. So such a push may have moved a newer same-tag preview's row onto its own key. Its removal then hands that row back: the preview of the same app that now holds the hostname gets its own whole set again, under its own key. The push then checks that preview again, and clears its key once more if it was reaped while the hand-back was in flight.
 
 **Unchanged:** external issuers, ambiguous or unreachable auth servers, and clean-room previews. Nothing is registered for them.

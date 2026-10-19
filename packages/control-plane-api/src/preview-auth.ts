@@ -286,11 +286,20 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
   let wrote = false;
   /** What this push last asked the issuer to register — the rows its delivery may have moved. */
   let registeredHosts: string[] = [];
+  /** Is this scope an active preview of the same app — one a hand-back may write for? */
+  const liveSibling = async (scopeId: ScopeId): Promise<boolean> => {
+    const rec = await deps.admin.getScopeRecord(deps.actor, input.tenantId, scopeId);
+    return rec?.status === 'active' && rec.kind === 'preview' && rec.forkedFrom === parent.id;
+  };
   /**
    * After this push cleared its own key: hand back a row it moved off a NEWER preview of the
    * same app (the same `--<tag>` hostname under a fresh scope), which the clear just deleted.
    * The directory names who holds each hostname now; that preview gets its own whole set back
    * under its own key, as its own push sends it. Anything else holding one is left alone.
+   *
+   * The hand-back is an issuer write like any other, so it is followed by a look: a holder
+   * reaped while it was in flight has its key cleared again. Its reap archives it before its
+   * own clear, so either this look sees the archive or that clear lands after this write.
    */
   const handBack = async (): Promise<void> => {
     const holders = new Set<ScopeId>();
@@ -299,25 +308,36 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
       if (route && route.tenantId === input.tenantId && route.scopeId !== input.previewId) holders.add(route.scopeId);
     }
     for (const holder of holders) {
-      const rec = await deps.admin.getScopeRecord(deps.actor, input.tenantId, holder);
-      if (rec?.status !== 'active' || rec.kind !== 'preview' || rec.forkedFrom !== parent.id) continue;
+      if (!(await liveSibling(holder))) continue;
       await registerMcp(holder, await activeHosts(holder));
+      if (!(await liveSibling(holder))) await registerMcp(holder, []);
     }
   };
   const reapedMeanwhile = async (): Promise<PreviewAuth> => {
     // The preview was reaped while this push ran. What this push wrote after the reap's issuer
-    // step is this push's to remove (see "A reap racing a push"), and a removal that fails is
-    // said: after the row is gone, nothing names those writes again.
+    // step is this push's to remove (see "A reap racing a push"), and a step that fails is
+    // said, each in its own words: after the row is gone, nothing names those writes again.
+    // Every step runs whatever the others did, except that the clients stay when the clear
+    // failed, so the registration never outlives them (clear first, as the reap does).
     if (wrote) {
-      try {
-        await registerMcp(input.previewId, []);
-        await claim.client.retirePreviewClients(address);
-        await handBack();
-      } catch (e) {
+      const failed: string[] = [];
+      const step = (what: string, run: () => Promise<unknown>) =>
+        run().then(
+          () => true,
+          (e: unknown) => {
+            failed.push(`${what} failed (${reasonOf(e)})`);
+            return false;
+          },
+        );
+      const cleared = await step("clearing this preview's MCP registration", () => registerMcp(input.previewId, []));
+      await step('handing back the MCP registration of the newer preview that holds its hostname', handBack);
+      if (cleared) await step("deleting this push's client", () => claim.client.retirePreviewClients(address));
+      else failed.push("its client was kept, so it does not outlive the registration that failed to clear");
+      if (failed.length > 0) {
         throw new ControlPlaneError(
           502,
-          `preview '${input.tag}' was reaped while this push ran, and removing what this push left at the ` +
-            `auth server ${claim.scope.id} failed (${reasonOf(e)}).`,
+          `preview '${input.tag}' was reaped while this push ran, and at the auth server ${claim.scope.id} ` +
+            `${failed.join('; ')}.`,
         );
       }
     }
@@ -403,8 +423,11 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
     if ((await bound()) === 'gone') return reapedMeanwhile();
     return wired(claim.scope.id, issuer, minted.clientId, callbackUrl, `${mcp}${older}`);
   }
-  // The last attempt's `continue` lands here, after its writes: the same look, before giving up.
-  if ((await bound()) === 'gone') return reapedMeanwhile();
+  // The last attempt's `continue` lands here, after its writes: the same look, before giving up,
+  // and the same answers the loop gives.
+  const last = await bound();
+  if (last === 'gone') return reapedMeanwhile();
+  if (last === 'moved') return superseded(callbackUrl, 'another push re-bound the preview');
   throw noLogin(`its client kept disappearing at the auth server ${claim.scope.id} (${MAX_ATTEMPTS} attempts)`);
 }
 
