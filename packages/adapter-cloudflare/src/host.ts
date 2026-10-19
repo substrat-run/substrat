@@ -1515,6 +1515,8 @@ interface ScopeStubRpc {
   reservedGrantRefusalFor(permissions: string[]): Promise<string | null>;
   /** #2430: why a reconcile of these declared shapes is refused against the scope class's reservations, or null. */
   reservedShapeRefusalFor(shapes: { entityType: string; permissions: string[] }[]): Promise<string | null>;
+  /** #2430: which of these keys the scope class's modules reserve to a system principal. */
+  reservedAmong(permissions: string[]): Promise<string[]>;
   revokeScopeRolesBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
   ): Promise<{ coverage: Coverage; revoked: string[] }>;
@@ -2481,6 +2483,25 @@ export const tenantUnrecordedLine = (tenantId: string, scopeId: string) => ({
   tenantId,
   scopeId,
   message: 'admitted to a scope whose tenant is not recorded; a reconcile or lifecycle delivery records it',
+});
+
+/** #2430: a delivered connection grant a provision or reconcile did not seat, and why it is reported. */
+export interface SkippedConnectionGrant {
+  connectionId: string;
+  permission: string;
+}
+
+/**
+ * #2430: the line a host writes when a provision or reconcile skips delivered connection grants that
+ * name a key reserved to a system principal here. Ids and keys only.
+ */
+const connectionGrantsSkippedLine = (tenantId: string, scopeId: string, skipped: readonly SkippedConnectionGrant[]) => ({
+  substrat: 'connection-grants-skipped' as const,
+  level: 'warn' as const,
+  tenantId,
+  scopeId,
+  skipped,
+  message: 'delivered connection grants naming a key reserved to a system principal were not seated',
 });
 
 /**
@@ -7590,6 +7611,12 @@ export class CloudflareScopeHost implements ScopeHost {
             );
           }
         }
+        // #2430: a connection acts for the external provider holding its token, so it is never
+        // given a key reserved to a system principal — refused before the directory record, so a
+        // refused grant is gathered by no later provision. Against this host's reservations, and
+        // the scope class's when the scope is served here; a delegated scope's deployment judges
+        // its own at delivery (`connectorGrantLocal`). A grant recorded before stays.
+        await this.refuseReservedGrant([grant.permission], this.connectorDelegation ? null : (grant.node.scopeId ?? null));
         // #592: the directory-side record FIRST, so a grant whose tuple delivery
         // fails below is still gathered by the next provision/reconcile — the
         // repair channel — instead of vanishing. The tuple stays the only thing
@@ -11563,10 +11590,13 @@ export class CloudflareScopeHost implements ScopeHost {
     /** #2184: when `entityGrants` were reconciled, every type this scope has ever bound
      *  (`shape-bound`, sticky), sorted. Absent when none ran, or from a ScopeDO that predates it. */
     boundShapeTypes?: string[];
+    /** #2430: delivered connection grants not seated because they name a reserved key; absent when none. */
+    skippedConnectionGrants?: SkippedConnectionGrant[];
   }> {
     const carry = recordedOffFromWire(input);
     // #2430: refused before anything is written, rather than at the top-up after the projection.
     if (input.entityGrants) await this.refuseReservedShapes(input.entityGrants, input.scopeId);
+    const connections = await this.seatableConnectionGrants(input.tenantId, input.scopeId, input.connectionGrants);
     const services = await this.servicePrincipals?.(input.tenantId, input.scopeId);
     const stub = this.scopeStub(input.scopeId);
     await this.migrateAndRecord(input.scopeId); // create the module tables (setMigrationState no-ops on a null CP)
@@ -11606,7 +11636,7 @@ export class CloudflareScopeHost implements ScopeHost {
           expires_at: null,
           lockout_reseat: true,
         },
-        ...this.declaredSeatsLocal(input.scopeId, input.connectionGrants),
+        ...this.declaredSeatsLocal(input.scopeId, connections.seat),
       ],
       // #406: identity links, delivered by the platform with provisioning exactly as
       // entitlements are (#310). Preserve-on-undefined, so an absent field never wipes
@@ -11643,7 +11673,33 @@ export class CloudflareScopeHost implements ScopeHost {
       ...(carry ? { switchedOff } : {}),
       ...(shapes ? { retirementsLeftOpen: shapes.retirementsLeftOpen ?? 0 } : {}),
       ...(shapes?.boundEver ? { boundShapeTypes: shapes.boundEver } : {}),
+      ...(connections.skipped.length ? { skippedConnectionGrants: connections.skipped } : {}),
     };
+  }
+
+  /**
+   * #2430: the delivered connection grants a provision or reconcile may seat, and those it skips. A
+   * connection acts for the external provider holding its token, so a grant naming a key reserved
+   * to a system principal here (this host's reservations, or the scope class's) is never seated.
+   * The directory may have recorded it before these checks existed, so it is skipped and reported
+   * (in the answer and as a warn line), never a failed provision: one such grant must not stop a
+   * promote or a reconcile seating everything else.
+   */
+  private async seatableConnectionGrants(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    grants: readonly ProjectedConnectionGrant[] | undefined,
+  ): Promise<{ seat: readonly ProjectedConnectionGrant[] | undefined; skipped: SkippedConnectionGrant[] }> {
+    if (!grants?.length) return { seat: grants, skipped: [] };
+    const permissions = [...new Set(grants.map((g) => g.permission as string))];
+    const reserved = new Set([
+      ...permissions.filter((p) => this.reservedKeys.has(p)),
+      ...(await this.scopeStub(scopeId).reservedAmong(permissions)),
+    ]);
+    if (reserved.size === 0) return { seat: grants, skipped: [] };
+    const skipped = grants.filter((g) => reserved.has(g.permission)).map((g) => ({ connectionId: g.connectionId, permission: g.permission as string }));
+    console.warn(JSON.stringify(connectionGrantsSkippedLine(tenantId, scopeId, skipped)));
+    return { seat: grants.filter((g) => !reserved.has(g.permission)), skipped };
   }
 
   /**
@@ -11695,16 +11751,20 @@ export class CloudflareScopeHost implements ScopeHost {
     switchedOffPeers?: readonly string[];
     tenantHeldPeers?: readonly string[];
     switchFences?: Readonly<Record<string, string>>;
-  }): Promise<{ switchedOff?: SwitchedOff[] }> {
+  }): Promise<{ switchedOff?: SwitchedOff[]; skippedConnectionGrants?: SkippedConnectionGrant[] }> {
     const stub = this.scopeStub(input.scopeId);
     if (!(await stub.servesTenant(input.tenantId))) throw unknownScopeForTenant(input.tenantId, input.scopeId);
     const carry = recordedOffFromWire(input);
+    const connections = await this.seatableConnectionGrants(input.tenantId, input.scopeId, input.connectionGrants); // #2430
     await this.migrateAndRecord(input.scopeId);
     const switchedOff = await stub.seatTuples(
-      this.declaredSeatsLocal(input.scopeId, input.connectionGrants),
+      this.declaredSeatsLocal(input.scopeId, connections.seat),
       carry ? { scopeId: input.scopeId, at: new Date().toISOString(), ...carry } : undefined,
     );
-    return carry ? { switchedOff } : {};
+    return {
+      ...(carry ? { switchedOff } : {}),
+      ...(connections.skipped.length ? { skippedConnectionGrants: connections.skipped } : {}),
+    };
   }
 
   /**
@@ -11983,6 +12043,8 @@ export class CloudflareScopeHost implements ScopeHost {
     permission: PermissionKey,
     expiresAt?: string,
   ): Promise<void> {
+    // #2430: against the reservations of the scope served here, as `grantToConnection` asks.
+    await this.refuseReservedGrant([permission], scopeId);
     await this.writeScopeTuple(
       scopeId,
       subjectRef({ kind: 'connection', id: connectionId }),

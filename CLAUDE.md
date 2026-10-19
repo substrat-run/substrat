@@ -203,8 +203,10 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   lists). An owner grant (a module's `ownerGrants`, or `substrat.ownerGrants`) is judged as a
   person's. A person's doors (`assignScopeRoleBounded`, `changeScopeRoleBounded`, a membership
   add, `canAssign`) refuse any role carrying a reserved key; a raw grant (`HostAdmin.grant`,
-  `grantToOrg`, `grantEntityShape`, `ctx.grant` whoever calls it) of one is refused, and so is a
-  reconcile of declared shapes holding one; `HostAdmin.assignRole` and `assignScopeRole` refuse
+  `grantToOrg`, `grantEntityShape`, `ctx.grant` whoever calls it) of one is refused, and so are a
+  reconcile of declared shapes holding one and a connection grant of one (`grantToConnection`,
+  `connectorGrantLocal`: a connection acts for the external provider holding its token, and
+  `lint:connector-grants` refuses one in a connector's standing grants); `HostAdmin.assignRole` and `assignScopeRole` refuse
   a role mixing reserved and other keys and admit an all-reserved role, since a stored role does
   not record its holder. The diff a promote shows itemises a moved reservation and a moved role
   holder (`reservationChanges`, `roleChanges[].holder`), and marks a system-held role
@@ -756,7 +758,8 @@ awaited RPC rejection does not — and it refuses
 `expect(<RPC promise>).rejects`, which vitest asserts on a pipelined call on the result: write
 `expect(() => stub.method()).rejects`), `lint:connector-grants` (`tools/connector-grants.mts`: a dashboard door and
 the `CONNECTORS` registration behind it are the two ends of one connector — this checks
-both directions and the standing grants the door must carry, see the connector rule
+both directions and the standing grants the door must carry, none of them a key an engine
+reserves to a system principal (#2430), see the connector rule
 below), the review checklist's mechanical half (#2365: `plugin/substrat/review/checklist.md`
 gives each item a machine-read `gates:` line, and a review runner trusts what it names) —
 `lint:review-checklist` (`tools/review-checklist.mjs`: every command a `gates:` line names is a

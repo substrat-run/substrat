@@ -45,7 +45,7 @@ describe('reservedRoleRefusal', () => {
 
 describe('reservedGrantRefusal', () => {
   it('refuses a raw grant naming any reserved key, and passes one naming none', () => {
-    expect(reservedGrantRefusal(['a:use', 'a:run'], reserved)).toMatch(/^a:run cannot be granted to a principal or an org: reserved to a system principal/);
+    expect(reservedGrantRefusal(['a:use', 'a:run'], reserved)).toMatch(/^a:run cannot be granted to a principal, an org or a connection: reserved to a system principal/);
     expect(reservedGrantRefusal(['a:use'], reserved)).toBeNull();
     expect(reservedGrantRefusal(['a:run'], new Set())).toBeNull();
   });
@@ -57,7 +57,7 @@ describe('reservedShapeRefusal', () => {
       { entityType: 'doc', permissions: ['a:use'] },
       { entityType: 'run', permissions: ['a:use', 'a:run'] },
     ];
-    expect(reservedShapeRefusal(shapes, reserved)).toMatch(/^the entity grant shape on run: a:run cannot be granted to a principal or an org/);
+    expect(reservedShapeRefusal(shapes, reserved)).toMatch(/^the entity grant shape on run: a:run cannot be granted to a principal, an org or a connection/);
   });
 
   it('passes shapes holding none, and a reserved key a shape only retires (it is taken back, never given)', () => {

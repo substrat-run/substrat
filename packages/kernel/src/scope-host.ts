@@ -2095,6 +2095,10 @@ export interface HostAdmin {
    * diff. A separate "allowed operations" list on the connection was the
    * alternative and was rejected — two mechanisms for one gate is worse than
    * either, and only one of them would have shown up in a review.
+   *
+   * Throws `forbidden` (#2430), before anything is recorded, for a key reserved to a system
+   * principal: a connection acts for the external provider that holds its token, and such a
+   * key is only ever a system principal's. A grant recorded before stays as it is.
    */
   grantToConnection(actor: PlatformActorId, grant: ConnectionGrant): Promise<void>;
   /**

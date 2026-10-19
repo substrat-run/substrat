@@ -262,7 +262,9 @@ membershipExecutorContractSuite('adapter-cloudflare', async () => {
 // #2430: the role doors and the declared module list, on the default tuple checker. The ScopeDO's
 // own module set (`contractTestModules`) carries the reserving module, as a deployed one would.
 reservedRoleContractSuite('adapter-cloudflare', async (options) => {
-  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, ...options });
+  // The box seals the secret of the connection the suite grants to.
+  const secretBox = webCryptoSecretBox('test-key', new Uint8Array(32).fill(7));
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, secretBox, ...options });
   return { host, cleanup: async () => host.close() };
 });
 
@@ -272,7 +274,8 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
   const staff = platformActorId.parse(ulid());
   const t = tenantId.parse(ulid());
   const s = scopeId.parse(ulid());
-  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+  // The box seals the secret of the connection granted to below.
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)) });
   const MIXED = [permissionKey.parse('rsv:use'), permissionKey.parse('rsv:run')];
 
   beforeAll(async () => {
@@ -300,10 +303,90 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
     const entity = { entityType: 'rsvdoc', entityId: ulid() };
     const refused = await host.grantEntityLocal(s, who, MIXED[1]!, entity).then(() => undefined, (e: unknown) => e);
     expect(errorCodeOf(refused)).toBe('forbidden');
-    expect((refused as Error).message).toMatch(/rsv:run cannot be granted to a principal or an org: reserved to a system principal/);
-    expect(await grantedTo(s, who)).toEqual([]);
+    expect((refused as Error).message).toMatch(/rsv:run cannot be granted to a principal, an org or a connection: reserved to a system principal/);
+    expect(await grantedTo(s, `principal:${who}`)).toEqual([]);
     await host.grantEntityLocal(s, who, MIXED[0]!, entity);
-    expect(await grantedTo(s, who)).toEqual([`granted:${MIXED[0]}`]);
+    expect(await grantedTo(s, `principal:${who}`)).toEqual([`granted:${MIXED[0]}`]);
+  });
+
+  // A connection acts for the external provider holding its token, so it is refused a reserved key
+  // like a person is — here by the serving scope class's reservations, the coordinator having none.
+  describe('a connection grant', () => {
+    const connection = async () => {
+      const conn = connectionId.parse(ulid());
+      await host.admin.createConnection(staff, {
+        id: conn,
+        tenantId: t,
+        vertical: 'rsv-front',
+        provider: `rsv-${conn.toLowerCase()}`,
+        label: 'reserved-key connection',
+        secret: { accessToken: 'tok' },
+      });
+      return conn;
+    };
+
+    it('connectorGrantLocal refuses the reserved key at the scope it serves and writes nothing; its twin grants', async () => {
+      const conn = await connection();
+      const refused = await host.connectorGrantLocal(conn, s, MIXED[1]!).then(() => undefined, (e: unknown) => e);
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(await grantedTo(s, `connection:${conn}`)).toEqual([]);
+      await host.connectorGrantLocal(conn, s, MIXED[0]!);
+      expect(await grantedTo(s, `connection:${conn}`)).toEqual([`granted:${MIXED[0]}`]);
+    });
+
+    // A grant the directory recorded (before these checks, or before the serving deployment judged it)
+    // reaches a scope again at every provision and reconcile: skipped there and reported, never a
+    // failed provision, while every other delivered grant is seated.
+    it('a provision and a reconcile re-seat skip a delivered grant naming the reserved key and report it, seating the rest', async () => {
+      const local = new CloudflareScopeHost({ scope: env.SCOPE }); // CP-less, as a deployed vertical's host is
+      const owned = scopeId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const conn = connectionId.parse(ulid());
+      const other = connectionId.parse(ulid());
+      const delivered = [
+        { connectionId: conn, permission: MIXED[1]! },
+        { connectionId: conn, permission: MIXED[0]! },
+      ];
+      try {
+        const provisioned = await local.provisionScopeLocal({
+          tenantId: tenant,
+          scopeId: owned,
+          owner: principalId.parse(ulid()),
+          roles: [{ key: 'member', permissions: [MIXED[0]!], source: 'vertical' }],
+          ownerRoleKey: 'member',
+          connectionGrants: delivered,
+        });
+        expect(provisioned.skippedConnectionGrants).toEqual([{ connectionId: conn, permission: MIXED[1] }]);
+        expect(await grantedTo(owned, `connection:${conn}`)).toEqual([`granted:${MIXED[0]}`]);
+        const seated = await local.seatScopeLocal({
+          tenantId: tenant,
+          scopeId: owned,
+          connectionGrants: [...delivered, { connectionId: other, permission: MIXED[0]! }],
+        });
+        expect(seated.skippedConnectionGrants).toEqual([{ connectionId: conn, permission: MIXED[1] }]);
+        expect(await grantedTo(owned, `connection:${conn}`)).toEqual([`granted:${MIXED[0]}`]);
+        expect(await grantedTo(owned, `connection:${other}`)).toEqual([`granted:${MIXED[0]}`]);
+        // Its twin: nothing reserved delivered, nothing reported.
+        expect(await local.seatScopeLocal({ tenantId: tenant, scopeId: owned, connectionGrants: [{ connectionId: other, permission: MIXED[0]! }] })).not.toHaveProperty(
+          'skippedConnectionGrants',
+        );
+      } finally {
+        await local.close();
+      }
+    });
+
+    it('grantToConnection at a scope served here refuses it before the directory records anything; its twin records', async () => {
+      const conn = await connection();
+      const grant = (permission: (typeof MIXED)[number]) =>
+        host.admin.grantToConnection(staff, { connectionId: conn, permission, node: { tenantId: t, scopeId: s }, grantedBy: staff });
+      const recorded = async () => (await host.admin.listConnectionGrants(staff, t)).filter((g) => g.connectionId === conn).map((g) => g.permission);
+      const refused = await grant(MIXED[1]!).then(() => undefined, (e: unknown) => e);
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(await recorded()).toEqual([]);
+      expect(await grantedTo(s, `connection:${conn}`)).toEqual([]);
+      await grant(MIXED[0]!);
+      expect(await recorded()).toEqual([MIXED[0]]);
+    });
   });
 
   it('a reconcile of declared shapes refuses one holding the reserved key at a scope node; its twin reconciles', async () => {
@@ -418,10 +501,10 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       projectRole(tenantId: string, role: { key: string; permissions: string[]; source: string }): Promise<void>;
     };
   }
-  /** The `granted:` relations a principal holds in a scope, read off its tuples. */
-  function grantedTo(scope: ScopeId, who: string) {
+  /** The `granted:` relations a subject (`principal:<id>`, `connection:<id>`) holds in a scope, read off its tuples. */
+  function grantedTo(scope: ScopeId, subject: string) {
     return runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
-      (state.storage.sql.exec(`SELECT relation FROM _substrat_tuples WHERE subject = ? AND revoked_at IS NULL ORDER BY relation`, `principal:${who}`).toArray() as { relation: string }[]).map((r) => r.relation),
+      (state.storage.sql.exec(`SELECT relation FROM _substrat_tuples WHERE subject = ? AND revoked_at IS NULL ORDER BY relation`, subject).toArray() as { relation: string }[]).map((r) => r.relation),
     );
   }
 });

@@ -44,12 +44,24 @@
  * What remains is the return path, which runs top-level with no delivered event behind
  * it and therefore genuinely needs standing authority.
  *
+ * **No key reserved to a system principal** (#2430). A connection acts for the external
+ * provider that holds its token, so a key a module declares `holder: 'system'` is never one
+ * it holds: neither a connector's standing grants nor the door's may name one. The host's
+ * `grantToConnection` refuses it at run time too; this makes the declaration red first. The
+ * reservations are read off every engine's manifest, whose keys are the ones connectors are
+ * granted.
+ *
  * Exit codes follow boundary-lint's: 0 = fine, 1 = drift (the checkpoint firing),
  * 2 = the tool could not do its job. A checkpoint that checked nothing must never
  * print a green light.
  */
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { CONNECTORS } from '../apps/control-plane/src/connectors.js';
 import { PROVIDERS } from '../apps/dashboard/src/integrations.js';
+import { repoRoot } from './repo-path.mjs';
+import { reservedKeysOf } from './reserved-keys.mts';
 
 const fail = (message: string, code: 1 | 2): never => {
   console.error(message);
@@ -62,6 +74,50 @@ if (CONNECTORS.length === 0) {
 
 const catalog = PROVIDERS as Record<string, { grants?: readonly string[]; sendsMail?: true } | undefined>;
 const problems: string[] = [];
+
+type ReservedKeys = ReturnType<typeof reservedKeysOf>;
+
+/** #2430: every grant a connector's registration or its door names that a module reserves to a system principal. */
+function reservedConnectorGrants(
+  connectors: readonly { provider: string; grants: readonly string[] }[],
+  doors: Record<string, { grants?: readonly string[] } | undefined>,
+  reserved: ReservedKeys,
+): string[] {
+  const line = (where: string, key: string) =>
+    `${where} grants ${key}, which ${reserved.get(key)!.declaredBy.join(', ')} declares \`holder: 'system'\` — ` +
+    `a connection acts for the external provider holding its token, and a key reserved to a system principal is never its`;
+  return [
+    ...connectors.flatMap((c) => c.grants.filter((g) => reserved.has(g)).map((g) => line(`${c.provider}: the connector registration`, g))),
+    ...Object.entries(doors).flatMap(([provider, door]) =>
+      (door?.grants ?? []).filter((g) => reserved.has(g)).map((g) => line(`${provider}: the dashboard door`, g)),
+    ),
+  ];
+}
+
+// The predicate, held on every run before it judges anything (as `lint:host-permissions` does):
+// a reserved key on a registration and on a door is each reported, and an unreserved one is not.
+{
+  const reserved: ReservedKeys = new Map([['x:run', { description: 'run', declaredBy: ['@t/x'] }]]);
+  const found = reservedConnectorGrants([{ provider: 'p', grants: ['x:use', 'x:run'] }], { p: { grants: ['x:run'] }, q: { grants: ['x:use'] } }, reserved);
+  if (found.length !== 2 || !found[0]!.startsWith('p: the connector registration grants x:run') || !found[1]!.startsWith('p: the dashboard door grants x:run')) {
+    fail(`connector wiring: the reserved-key check does not report what it must (self-test): ${JSON.stringify(found)}`, 2);
+  }
+}
+
+// Every engine's module registrations, read off its entry: an export carrying a manifest.
+const root = repoRoot(import.meta.url);
+const engineModules: { manifest: { id: string; permissions: readonly { key: string; description: string; holder?: 'system' }[] } }[] = [];
+for (const engine of readdirSync(join(root, 'engines'), { withFileTypes: true }).filter((d) => d.isDirectory())) {
+  const entry = join(root, 'engines', engine.name, 'src', 'index.ts');
+  const exported: Record<string, unknown> = await import(pathToFileURL(entry).href);
+  const modules = Object.values(exported).filter(
+    (v): v is (typeof engineModules)[number] =>
+      typeof v === 'object' && v !== null && 'manifest' in v && Array.isArray((v as { manifest?: { permissions?: unknown } }).manifest?.permissions),
+  );
+  if (modules.length === 0) fail(`connector wiring: engines/${engine.name} exports no module registration to read reservations from`, 2);
+  engineModules.push(...modules);
+}
+problems.push(...reservedConnectorGrants(CONNECTORS, catalog, reservedKeysOf(engineModules)));
 
 for (const connector of CONNECTORS) {
   const { provider } = connector;
@@ -126,12 +182,14 @@ if (problems.length > 0) {
     `\nAdd the key to the provider's \`grants\` in apps/dashboard/src/integrations.ts, drop it ` +
       `from the connector's declaration if the authority now rides the dispatch (#726), or add ` +
       `the missing entry to \`CONNECTORS\` in apps/control-plane/src/connectors.ts. For mail, make ` +
-      `the door's \`sendsMail\` and the registration's \`mail\` agree.`,
+      `the door's \`sendsMail\` and the registration's \`mail\` agree. A key reserved to a system ` +
+      `principal comes off both lists: no connection may hold one.`,
   );
   process.exit(1);
 }
 
 console.log(
   `connector wiring: ${CONNECTORS.length} connector${CONNECTORS.length === 1 ? '' : 's'} checked ` +
-    `— each has a door, a probe, every declared grant the door carries, and the same answer on mail`,
+    `— each has a door, a probe, every declared grant the door carries, the same answer on mail, ` +
+    `and no key reserved to a system principal`,
 );

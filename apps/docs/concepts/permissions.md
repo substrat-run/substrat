@@ -59,9 +59,12 @@ At runtime, a host reads the reservations off the modules it registers and the m
 - **Inviting someone into a role that carries a reserved key** is refused. So is moving them
   into one, and so is a membership request for one. `canAssign` gives the same answer, and since
   it is also the bound on taking a role away, a person cannot remove such a role either.
-- **Granting a reserved key directly** to a principal or an org is refused, whoever asks. That
-  covers a platform grant, a declared shape granted to a person, and `ctx.grant` from an
-  operation, including one running as a system actor.
+- **Granting a reserved key directly** to a principal, an org or a connection is refused,
+  whoever asks. That covers a platform grant, a declared shape granted to a person, a
+  connection's grant (a connection acts for the outside provider that holds its token), and
+  `ctx.grant` from an operation, including one running as a system actor. A connection grant
+  the platform already recorded is skipped when a provision or reconcile delivers it, and
+  reported in that answer, so it never fails the provision.
 - **Reconciling declared shapes** is refused when a shape holds a reserved key, before anyone is
   topped up: the reconcile would give the key to every holder of the shape, and record it as what
   a binding link gives. A shape may still list a reserved key in `retired`, which takes it back.
@@ -134,7 +137,9 @@ without pretending to be a person: `host.admin.grantToConnection(...)`, and a ch
 subject is polymorphic (`{ kind: 'principal' | 'connection' | 'system', id }`). A
 connection is keyed `(tenant, vertical, provider)`, so granting it one permission reaches
 only that tenant's scopes running that vertical — the blast radius of a leaked provider
-token is one permission on one vertical's data, readable in a diff.
+token is one permission on one vertical's data, readable in a diff. A key reserved to a
+system principal is never granted to a connection, and `lint:connector-grants` refuses a
+connector whose standing grants name one.
 
 A **module's system principal** is the third such subject — the caller behind
 [scheduled work](/concepts/modules#recurring-work-schedules). A schedule runs an operation

@@ -29,6 +29,7 @@ tracking: ["#2283"]
 - **Enforced at runtime, by keys alone (#2430).** A host reads the reserved keys off the modules it registers and the modules its declared `permissions` lists, and refuses them at its doors:
   - The person-facing role doors (an invite's scope role, a role change, a membership add) refuse any role carrying a reserved key, and `canAssign` answers the same, for taking such a role away as for giving it.
   - A raw grant of one to a principal or an org is refused, `ctx.grant` included, whoever the caller is.
+  - So is a grant of one to a connection, which acts for the external provider holding its token, and `lint:connector-grants` refuses a connector whose standing grants name one. A connection grant already recorded is skipped and reported when a provision or reconcile delivers it, never failing the provision.
   - A reconcile of declared entity-grant shapes refuses a shape holding one, before it tops up any holder or records what a binding link grants.
   - The platform's role assignment refuses a role that mixes reserved keys with others, and admits a role made only of reserved keys, since that is this record's shape.
 - **Not checked yet.** Roles and grants a host seats or composes itself, a role definition widened after it was assigned, roles and grants conferred on a host that registers no modules, and grants and shape bindings a scope recorded before these checks existed, with what reaches a person through them later.

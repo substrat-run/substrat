@@ -4936,6 +4936,11 @@ export function defineScopeDO(
       return reservedShapeRefusal(shapes, this.reservedKeys);
     }
 
+    /** #2430: which of `permissions` this class's modules reserve to a system principal. */
+    async reservedAmong(permissions: string[]): Promise<string[]> {
+      return permissions.filter((p) => this.reservedKeys.has(p));
+    }
+
     /** The kernel's `revokeScopeRoles` in one serialized scope task (#1150). */
     async revokeScopeRolesBoundedFor(
       tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,

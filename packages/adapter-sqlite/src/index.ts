@@ -8850,6 +8850,10 @@ export class SqliteScopeHost implements ScopeHost {
           }
           return conn;
         };
+        // #2430: a connection acts for the external provider holding its token, so it is never
+        // given a key reserved to a system principal — refused before the tuple and the directory
+        // row, so a refused grant is gathered by no later provision. A grant recorded before stays.
+        this.refuseReservedGrant([grant.permission]);
         // Once BEFORE the turn, so a refused grant never opens (and so creates) the scope's
         // file; then again inside it, with the tuple and the directory row, in ONE body on
         // the scope actor (#1678) — so the tuple cannot roll back with a stranger's

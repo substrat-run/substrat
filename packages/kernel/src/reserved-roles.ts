@@ -51,16 +51,17 @@ export function reservedRoleRefusal(
 }
 
 /**
- * Why `permissions` may not be granted directly to a principal or an org, or null (#2430): a raw
- * grant (`HostAdmin.grant`, `grantToOrg`, `grantEntityShape`, `ctx.grant`) names a person, or an
- * org of people. A system principal holds a reserved key through a schedule's or a peer's
- * `permissions`, or a role declared `holder: 'system'` (K-55), never through such a grant, whoever
- * makes it. A key no module registered on the host marks is a person's key, and passes.
+ * Why `permissions` may not be granted directly to a principal, an org or a connection, or null
+ * (#2430): a raw grant (`HostAdmin.grant`, `grantToOrg`, `grantEntityShape`, `ctx.grant`) names a
+ * person, or an org of people, and a connection grant (`grantToConnection`) names the external
+ * provider that holds the connection's token. A system principal holds a reserved key through a
+ * schedule's or a peer's `permissions`, or a role declared `holder: 'system'` (K-55), never through
+ * such a grant, whoever makes it. A key no module registered on the host marks passes.
  */
 export function reservedGrantRefusal(permissions: readonly string[], reserved: ReadonlySet<string>): string | null {
   const held = permissions.filter((p) => reserved.has(p));
   if (held.length === 0) return null;
-  return `${held.join(', ')} cannot be granted to a principal or an org: reserved to a system principal (${RESERVED_BY})`;
+  return `${held.join(', ')} cannot be granted to a principal, an org or a connection: reserved to a system principal (${RESERVED_BY})`;
 }
 
 /**

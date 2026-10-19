@@ -1441,6 +1441,40 @@ describe('mountPlatformSurface — flavored routes and their hooks', () => {
     expect(bound).toEqual([['contact'], [], undefined, undefined, undefined, undefined]);
   });
 
+  /**
+   * #2430: a delivered connection grant the host skipped, naming a key reserved to a system
+   * principal, is reported in the answer of each route that seats them — the provision, the full
+   * reconcile and the ownerless one — so the platform reads it where it reads the rest. Empty or
+   * nonsense is left out.
+   */
+  it('provision and both reconciles answer the connection grants the host skipped, and none when it skipped none', async () => {
+    const skipped = [{ connectionId: 'conn-1', permission: 'x:run' }];
+    // The provision's answer, then the full reconcile's four: reported, empty, none, nonsense.
+    const answers: unknown[] = [
+      { skippedConnectionGrants: skipped },
+      { skippedConnectionGrants: skipped },
+      { skippedConnectionGrants: [] },
+      undefined,
+      { skippedConnectionGrants: [{ connectionId: 7 }] },
+    ];
+    const host = fakeHost({
+      provisionScopeLocal: async () => answers.shift() as never,
+      seatScopeLocal: async () => ({ skippedConnectionGrants: skipped }),
+    });
+    const post = (path: string, deps: Parameters<typeof appWith>[1], body: Record<string, unknown>) =>
+      appWith(host, deps).request(
+        path,
+        { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE, ...body }) },
+        ENV,
+      );
+    const reported = async (res: Response) => ((await res.json()) as { skippedConnectionGrants?: unknown }).skippedConnectionGrants;
+    expect(await reported(await post('/internal/provision', {}, { owner: OWNER }))).toEqual(skipped);
+    for (const expected of [skipped, undefined, undefined, undefined]) {
+      expect(await reported(await post('/internal/reconcile', { resolveOwner: async () => OWNER as never }, {}))).toEqual(expected);
+    }
+    expect(await reported(await post('/internal/reconcile', {}, { ownerless: 'seat' }))).toEqual(skipped);
+  });
+
   it('delete-scope runs the host then the onDeleteScope hook', async () => {
     const host = fakeHost();
     let forgotten: { scopeId: string; tenantId: string | undefined } | null = null;

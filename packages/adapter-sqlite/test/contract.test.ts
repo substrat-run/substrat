@@ -221,7 +221,8 @@ membershipExecutorContractSuite('adapter-sqlite', async () => {
 // hold for a caller the bound would let through.
 reservedRoleContractSuite('adapter-sqlite', async (options) => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-reserved-role-'));
-  const host = new SqliteScopeHost({ dir, ...options });
+  // The box seals the secret of the connection the suite grants to.
+  const host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)), ...options });
   return {
     host,
     cleanup: async () => {

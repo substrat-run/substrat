@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { instant, moduleId, orgId, platformActorId, principalId, scopeId, tenantId, type PermissionKey, type PrincipalId } from '@substrat-run/contracts';
+import { connectionId, instant, moduleId, orgId, platformActorId, principalId, scopeId, tenantId, type PermissionKey, type PrincipalId } from '@substrat-run/contracts';
 import { ulid, type DeclaredPermissions, type ScopeHost } from '@substrat-run/kernel';
 import { expectRefusal, type ScopeHostFixture } from './scope-host-suite.js';
 import { permMod } from './modules.js';
@@ -18,6 +18,8 @@ import { RSV_RUN, RSV_USE, reservedRoleMod, unmarkedReservedRoleMod } from './re
  * - A raw grant (`HostAdmin.grant`, `grantToOrg`, `grantEntityShape`, `ctx.grant`) of a reserved
  *   key is refused whoever makes it — a person, or a system actor, which passes `ctx.grant`'s
  *   delegation re-check by construction. Its twin, a key no module reserves, passes.
+ * - So is a connection grant (`grantToConnection`), at either node: a connection acts for the
+ *   external provider holding its token. Nothing is recorded for a later provision to deliver.
  * - Each refusal writes nothing: the principal holds nothing afterwards.
  *
  * And the host option `permissions`: a host given its declared surface refuses to register a
@@ -172,7 +174,7 @@ export function reservedRoleContractSuite(
         await expectRefusal(
           host.admin.grant(staff, { principalId: who, permission: RSV_RUN, node: { tenantId: t1, scopeId: scope }, grantedBy: alice }),
           'forbidden',
-          /rsv:run cannot be granted to a principal or an org: reserved to a system principal/,
+          /rsv:run cannot be granted to a principal, an org or a connection: reserved to a system principal/,
         );
         expect(await holds(who, RSV_RUN)).toBe(false);
         await host.admin.grant(staff, { principalId: who, permission: RSV_USE, node: { tenantId: t1, scopeId: scope }, grantedBy: alice });
@@ -197,6 +199,33 @@ export function reservedRoleContractSuite(
         expect(await holds(who, RSV_USE, on)).toBe(true);
       });
 
+      it.each([
+        ['a scope node', s1],
+        ['the tenant node', null],
+      ])('grantToConnection refuses a reserved key at %s, recording nothing; its twin grants a person’s key', async (_where, scope) => {
+        const conn = connectionId.parse(ulid());
+        await host.admin.createConnection(staff, {
+          id: conn,
+          tenantId: t1,
+          vertical: 'rsv-vertical',
+          provider: `rsv-${conn.toLowerCase()}`,
+          label: 'reserved-key connection',
+          secret: { accessToken: 'tok' },
+        });
+        const grant = (permission: PermissionKey) =>
+          host.admin.grantToConnection(staff, { connectionId: conn, permission, node: { tenantId: t1, scopeId: scope }, grantedBy: staff });
+        const recorded = async () =>
+          (await host.admin.listConnectionGrants(staff, t1)).filter((g) => g.connectionId === conn).map((g) => g.permission);
+        const connectionHolds = async (permission: PermissionKey) =>
+          (await (await host.getConnectorScope(conn, s1)).invoke<{ allowed: boolean }>('perm/probe', { permission })).allowed;
+        await expectRefusal(grant(RSV_RUN), 'forbidden', /rsv:run cannot be granted to a principal, an org or a connection/);
+        expect(await recorded()).toEqual([]);
+        expect(await connectionHolds(RSV_RUN)).toBe(false);
+        await grant(RSV_USE);
+        expect(await recorded()).toEqual([RSV_USE]);
+        expect(await connectionHolds(RSV_USE)).toBe(true);
+      });
+
       it('reconcileEntityGrantShapes refuses a shape holding a reserved key before topping anyone up; one only retiring it reconciles', async () => {
         const who = person();
         const on = entity();
@@ -205,7 +234,7 @@ export function reservedRoleContractSuite(
         await expectRefusal(
           host.admin.reconcileEntityGrantShapes(staff, node, [{ entityType: 'rsvdoc', permissions: [RSV_USE, RSV_RUN], bootstrap: true }]),
           'forbidden',
-          /the entity grant shape on rsvdoc: rsv:run cannot be granted to a principal or an org/,
+          /the entity grant shape on rsvdoc: rsv:run cannot be granted to a principal, an org or a connection/,
         );
         expect(await holds(who, RSV_RUN, on)).toBe(false);
         const twin = await host.admin.reconcileEntityGrantShapes(staff, node, [{ entityType: 'rsvdoc', permissions: [RSV_USE], retired: [RSV_RUN], bootstrap: true }]);
