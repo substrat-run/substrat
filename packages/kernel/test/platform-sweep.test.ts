@@ -1552,7 +1552,7 @@ describe('runPlatformSweep — recurring schedules (#383)', () => {
       }
     });
 
-    it('a second drain that reaches no deployment leaves the first drain’s figures standing', async () => {
+    it('a second drain that reaches no deployment leaves the first drain’s figures standing, and is counted unreachable', async () => {
       const c = redrainCase({
         sending: [
           { drained: 0, done: 0, failed: 0, pending: 5, unsettleable: { count: 1, ids: ['x'] } },
@@ -1561,10 +1561,17 @@ describe('runPlatformSweep — recurring schedules (#383)', () => {
       });
       const report = await runPlatformSweep(c.host, opts({ drainPlatformRequestsFn: c.drainPlatformRequestsFn }));
       expect(c.timeline.filter((e) => e === 'drain:sending')).toHaveLength(2);
-      // It saw no queue, so it says nothing about one: the first drain's queue is the pass's.
-      expect(report.platformRequestTotals).toMatchObject({ pending: 5, unsettleable: 1, unreachable: 0 });
+      // It saw no queue, so it says nothing about one: the first drain's queue is the pass's. It
+      // is still counted, since what the schedules enqueued is missing from these totals.
+      expect(report.platformRequestTotals).toMatchObject({ pending: 5, unsettleable: 1, unreachable: 1 });
       expect(report.platformRequestUnsettleable).toEqual([{ tenantId: T, scopeId: c.sending, count: 1, ids: ['x'] }]);
       expect(report.errors).toEqual([]);
+    });
+
+    it('a second drain that reaches its deployment counts nothing unreachable (the twin)', async () => {
+      const c = redrainCase({ sending: [{ ...quiet, pending: 1 }, { drained: 3, done: 3, failed: 0, pending: 0 }] });
+      const report = await runPlatformSweep(c.host, opts({ drainPlatformRequestsFn: c.drainPlatformRequestsFn }));
+      expect(report.platformRequestTotals).toMatchObject({ pending: 0, done: 3, unreachable: 0 });
     });
 
     it('records a second drain that throws, and the pass goes on', async () => {

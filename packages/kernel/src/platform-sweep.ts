@@ -934,7 +934,8 @@ export interface PlatformRequestUnsettleable {
  * Platform-intent drain counts, summed across scopes in one pass. A scope the pass drains twice,
  * once more after its schedules enqueued requests (#2431), adds what each drain did, while
  * `pending` and `unsettleable` are its later drain's: they describe the queue the pass leaves. A
- * later drain that reached no deployment, or threw, leaves the earlier one's figures standing.
+ * later drain that reached no deployment, or threw, leaves the earlier one's figures standing,
+ * and is counted in `unreachable`, or recorded in `errors`, as a first drain would be.
  */
 export interface PlatformRequestDrainTotals {
   /** Active scopes that had at least one intent drained. */
@@ -954,7 +955,9 @@ export interface PlatformRequestDrainTotals {
   skipped: number;
   /**
    * Active scopes whose drain reported it could reach no deployment for them (#1840) — the
-   * drain fn returned `unreachable: true`. Their queues are not in the counts above either.
+   * drain fn returned `unreachable: true`. Their queues are not in the counts above either. A
+   * scope whose second drain (#2431) reached none counts here too: its figures above are its
+   * first drain's, without what its schedules enqueued after it.
    */
   unreachable: number;
   /**
@@ -1375,12 +1378,15 @@ export async function runPlatformSweep(
         // nothing, so it cannot loop, and only on a scope the drain phase reached; any other waits
         // for the next pass. The cost: an intent the first drain left pending is tried again here,
         // one more attempt toward its ceiling. A second drain that reached no deployment saw no
-        // queue, so the first drain's figures stand, as they do when it throws.
+        // queue, so the first drain's figures stand, as they do when it throws. It is counted
+        // `unreachable`, as a thrown one lands in `errors`: what the schedules just enqueued is
+        // missing from the totals, and the drain row says they are a floor.
         const earlier = drainedThisPass.get(s.id);
         if (!earlier || !drain) return;
         try {
           const again = await drain(s.tenantId, s.id);
-          if (!again.unreachable) tallyPlatformDrain(report, s, again, earlier);
+          if (again.unreachable) report.platformRequestTotals.unreachable += 1;
+          else tallyPlatformDrain(report, s, again, earlier);
         } catch (err) {
           report.errors.push({ kind: 'platform-request', id: s.id, error: message(err) });
         }

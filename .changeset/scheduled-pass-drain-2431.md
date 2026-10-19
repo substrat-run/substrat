@@ -21,7 +21,7 @@ A scheduled pass now reports the platform requests its schedules enqueued, and a
   Whatever it does not count waits for the next drain, as before. The field is absent when the count is zero.
 - `runPlatformSweep` drains a scope once more, right after its schedules, when they report requests and `drainPlatformRequestsFn` is set. It does so once per scope, only for a scope the drain phase reached, and never fires a schedule from it. The drain before the schedules stays where it was, so a schedule still finds the scope's whole headroom under the 32-request cap.
   - In `platformRequestTotals`, a scope drained twice adds what each drain did, while `pending` and `unsettleable` are its later drain's.
-  - A second drain that reaches no deployment, or throws, leaves the first drain's figures standing.
+  - A second drain that reaches no deployment, or throws, leaves the first drain's figures standing. It is counted in `unreachable`, or recorded in `errors`, as a first drain would be, so the drain's totals read as a floor.
   - An intent the first drain left pending is tried again by the second.
   - `ScheduleSweepReport` gains an optional `platformRequests` total.
   - No sweep in this repository reaches the second drain yet: the control plane's sweep drains platform requests, but its host runs no schedules. A self-hosted sweep that does both gets it.
