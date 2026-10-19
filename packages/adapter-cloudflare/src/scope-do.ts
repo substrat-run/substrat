@@ -43,6 +43,8 @@ import {
   type PrincipalId,
   type ScopeId,
   type ScopeDumpTable,
+  type ScopeDumpPage,
+  SCOPE_DUMP_PAGE_MAX_BYTES,
   type ScopeQueryResult,
   type ScopeTable,
   type DenialFilter,
@@ -448,7 +450,8 @@ import type {
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, scopeTupleReader, type ControlPlaneReader } from './checker.js';
 import { settlePlatformRequestIn, type PlatformRequestSettle } from '@substrat-run/kernel';
-import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertSpineTablesBuilt, capabilitiesForLoad, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
+import { loadDropsRowsOf } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertSpineTablesBuilt, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 import { GRANT_CHILDREN_INDEX_DDL, SHAPE_MARKER_INDEX_DDL, grantedEntitiesForContext, type ShapeCursor } from '@substrat-run/kernel';
 
 /**
@@ -960,6 +963,113 @@ function kernelEmit(ctx: OperationContext, event: DomainEventInput): void {
   const write = kernelEmitters.get(ctx);
   if (!write) throw new Error('kernelEmit: not an operation context this host built');
   write(event);
+}
+
+/** What `importDump` takes beside the tables (and `commitStagedDump`, #2450). */
+type ImportDumpOptions = {
+  /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
+   *  the replay re-points the grants, in the same event: a dump from before the switch was
+   *  pulled carries the grants live and no marker. Needs `destScopeId`, the scope restored. */
+  switchOff?: RecordedOffCarry & { at: string };
+  /** The scope the dump was captured FROM (#1869), whose grants the re-point moves. */
+  sourceScopeId?: ScopeId;
+  /** The platform exported this dump itself, so the re-point never falls back (`RepointSource`). */
+  exact?: boolean;
+  /** #1722: the stamp this load leaves (`LOAD_STAMP_KEY`) — a carry names one, so the copy
+   *  it lands can later be wiped under a fence. Without one, a load leaves no stamp. */
+  loadStamp?: string;
+  /** #1722: load only if this store still holds this load stamp (null: none) and, when
+   *  `revision` is given, this write revision (null: never written). Compared inside the
+   *  load's transaction, before the first drop; a mismatch throws `precondition_failed`
+   *  and the store is untouched. */
+  expect?: { loadStamp: string | null; revision?: string | null };
+  /** #1722: the staff resolution of a kept copy, the one load a kept copy takes. It must be
+   *  one (the marker set) at this write revision, the one the operator acted on. */
+  resolveKept?: { revision: string | null; loadStamp?: string | null };
+  /** #2005: the directory says this scope is not primary, so mark it a copy in its own
+   *  storage (`markCopyOrigin`) — a carry of a copy that predates the marker brings none. */
+  markCopy?: boolean;
+  /** #2016: the tenant the platform says this scope belongs to. Recorded as its receipt; a
+   *  store whose receipt names another tenant refuses the load (`conflict`) untouched. */
+  provisionedFor?: TenantId;
+  /** #1722: a copy move's lease (`CopyRestoreFence`). Read against this store's own clock
+   *  inside the load's transaction: past `notAfter`, the load is refused and nothing is
+   *  written, since a sweep, reap or erasure may already have settled the move. */
+  fence?: CopyRestoreFence;
+};
+
+/** A load's answer, its refusals as values (#1722). */
+type CheckedLoad =
+  | { refused: 'changed' | 'kept' | 'lapsed' }
+  | { refused: 'tenant'; message: string }
+  | { refused: false; switchedOff: SwitchedOff[] };
+
+/** #2450: a commit or a page naming a stage this store no longer holds. */
+const STAGE_GONE = 'the staged load is not here any more (another carry replaced it, or it was already loaded); nothing was loaded';
+
+/** A table a load replays (#2450): its schema, and its rows, read when the load reaches them. */
+type LoadTable = { name: string; ddl: string; columns: string[]; rows: () => Iterable<unknown[]> };
+
+/**
+ * A staged load's own tables (#2450): `_substrat_stage` (which load, and the next page it takes),
+ * `_substrat_stage_tables` (each staged table's name, DDL and columns) and one
+ * `_substrat_stage_rows_<n>` per staged table. They hold a carry's pages until the load commits
+ * from them, so they are this store's, never its data: no dump carries them, and a load's drops
+ * leave them to the commit that reads them.
+ */
+const STAGE_GLOB = '_substrat_stage*';
+const STAGE_TABLES_DDL = [
+  `CREATE TABLE _substrat_stage (stage_id TEXT NOT NULL, next_seq INTEGER NOT NULL)`,
+  `CREATE TABLE _substrat_stage_tables (ord INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, ddl TEXT NOT NULL, columns TEXT NOT NULL)`,
+];
+const stageRowsTable = (ord: number): string => `_substrat_stage_rows_${ord}`;
+/** How many staged rows a commit reads at a time. */
+const STAGE_READ_BATCH = 500;
+/** How many rows a dump page reads from a table at a time; each batch is read to its end. */
+const DUMP_READ_BATCH = 500;
+
+/** The names under which SQLite answers a table's rowid, unless a column takes one. */
+const ROWID_NAMES: ReadonlySet<string> = new Set(['rowid', '_rowid_', 'oid']);
+
+/**
+ * The rows of `name` a dump carries, as a WHERE clause and its bindings. #1722: the load stamp and
+ * the write revision describe THIS store, so they never leave in a dump (`exportDumpStamped` hands
+ * the stamp over beside one); every load writes its own. #2350: the orphan sweep's licence is this
+ * store's own, so its rows never leave either.
+ */
+function dumpRowFilter(name: string): { where: string; bindings: unknown[] } {
+  if (name === '_substrat_meta') {
+    return { where: `key NOT IN (${STORE_LOCAL_META_KEYS.map(() => '?').join(', ')})`, bindings: [...STORE_LOCAL_META_KEYS] };
+  }
+  if (name === ATTACHMENT_SWEEP_LICENCE_TABLE) return { where: '0', bindings: [] };
+  return { where: '1', bindings: [] };
+}
+
+/** An estimate of a row's size on the wire, for sizing a dump page (#2450). Over, never under. */
+function rowBytes(row: readonly unknown[]): number {
+  let n = 0;
+  for (const cell of row) {
+    if (typeof cell === 'string') n += cell.length * 3 + 2;
+    else if (cell instanceof ArrayBuffer || ArrayBuffer.isView(cell)) n += (cell as ArrayBuffer).byteLength * 4 + 2;
+    else n += 24;
+  }
+  return n;
+}
+
+/** Where a dump page resumes (#2450): a table, and the last rowid (or offset) read from it. */
+type DumpCursor = { table: string; after: number };
+const encodeDumpCursor = (at: DumpCursor): string => JSON.stringify([at.table, at.after]);
+function decodeDumpCursor(cursor: string): DumpCursor {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cursor);
+  } catch {
+    parsed = null;
+  }
+  if (!Array.isArray(parsed) || parsed.length !== 2 || typeof parsed[0] !== 'string' || !Number.isSafeInteger(parsed[1])) {
+    throw substratError('validation_failed', 'not a dump page cursor');
+  }
+  return { table: parsed[0], after: parsed[1] as number };
 }
 
 /**
@@ -6800,38 +6910,110 @@ export function defineScopeDO(
      * with the scope's identity after the K-3 check (host.ts admin.exportScope).
      */
     exportDump(): ScopeDumpTable[] {
-      // The derived search index (#827) is excluded: its shadow tables cannot be
-      // replayed — this host answers "object name reserved for internal use" — and
-      // it is recomputable, so `importDump` rebuilds it from the loaded rows. A dump
-      // carries the rows, never the index over them.
-      const defs = (
-        this.sql
-          .exec(
-            `SELECT name, sql FROM sqlite_master
-              WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*' AND sql IS NOT NULL
-              ORDER BY name`,
-          )
-          .toArray() as unknown as { name: string; sql: string }[]
-      ).filter(({ name }) => !isSearchIndexTable(name));
-      return defs.map(({ name, sql }) => {
+      return this.dumpTableDefs().map(({ name, sql }) => {
         // Raw positional rows, cells as-is (blobs kept as bytes, not nulled like a UI
         // read) so the dump reloads faithfully. The name is from the live schema.
-        // #1722: the load stamp and the write revision describe THIS store, so they never leave
-        // in a dump (`exportDumpStamped` hands the stamp over beside one); every load writes its own.
-        const cursor =
-          name === '_substrat_meta'
-            ? this.sql.exec(
-                `SELECT * FROM "${name}" WHERE key NOT IN (${STORE_LOCAL_META_KEYS.map(() => '?').join(', ')})`,
-                ...STORE_LOCAL_META_KEYS,
-              )
-            : // #2350: the orphan sweep's licence is this store's own, so its rows never leave in a dump.
-              name === ATTACHMENT_SWEEP_LICENCE_TABLE
-              ? this.sql.exec(`SELECT * FROM "${name}" WHERE 0`)
-              : this.sql.exec(`SELECT * FROM "${name}"`);
+        const { where, bindings } = dumpRowFilter(name);
+        const cursor = this.sql.exec(`SELECT * FROM "${name}" WHERE ${where}`, ...bindings);
         const columns = cursor.columnNames;
         const rows = Array.from(cursor.raw(), (row) => row as unknown[]);
         return { name, ddl: sql, columns, rows };
       });
+    }
+
+    /**
+     * The tables a dump carries, by name. The derived search index (#827) is excluded: its shadow
+     * tables cannot be replayed — this host answers "object name reserved for internal use" — and
+     * it is recomputable, so `importDump` rebuilds it from the loaded rows. A dump carries the rows,
+     * never the index over them. A staged load's own tables (#2450) are this store's, not its data.
+     */
+    private dumpTableDefs(): { name: string; sql: string }[] {
+      return (
+        this.sql
+          .exec(
+            `SELECT name, sql FROM sqlite_master
+              WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'
+                AND name NOT GLOB '${STAGE_GLOB}' AND sql IS NOT NULL
+              ORDER BY name`,
+          )
+          .toArray() as unknown as { name: string; sql: string }[]
+      ).filter(({ name }) => !isSearchIndexTable(name));
+    }
+
+    /**
+     * One page of `exportDumpStamped` (#2450): the tables in the same order, each table's rows in
+     * rowid order, until about `maxBytes` of cells are read (a single larger row rides alone). Every
+     * table is in some page, empty or not. Each page is read in one turn, so it is consistent on its
+     * own; the pages are one consistent read only while `revision` stays the same, which the reader
+     * compares. With `stamp`, the first page (`cursor` null) mints the load stamp, as
+     * `exportDumpStamped` does; without it the export writes nothing, as `exportDump`.
+     */
+    exportDumpPage(cursor: string | null, opts: { stamp?: boolean; maxBytes?: number } = {}): Promise<DoReply<ScopeDumpPage>> {
+      // Answered as data, so a refusal's code survives the hop (#113).
+      return replyOf(() => this.dumpPage(cursor, opts));
+    }
+
+    private dumpPage(
+      cursor: string | null,
+      { stamp = false, maxBytes = SCOPE_DUMP_PAGE_MAX_BYTES }: { stamp?: boolean; maxBytes?: number },
+    ): ScopeDumpPage {
+      let loadStamp = this.loadStamp();
+      if (stamp && cursor === null && !loadStamp && !this.carriedAwayCopy) {
+        loadStamp = ulid();
+        this.sql.exec(`INSERT INTO _substrat_meta (key, value) VALUES (?, ?)`, LOAD_STAMP_KEY, loadStamp);
+      }
+      const at = cursor === null ? null : decodeDumpCursor(cursor);
+      const tables: ScopeDumpTable[] = [];
+      let bytes = 0;
+      let next: string | null = null;
+      for (const { name, sql } of this.dumpTableDefs()) {
+        // Tables are read in name order: those before the cursor's are done. A cursor naming a
+        // table that is gone resumes at the next name.
+        if (at && name < at.table) continue;
+        const after = at && name === at.table ? at.after : null;
+        const { where, bindings } = dumpRowFilter(name);
+        // Read to its end (it holds no row), as every cursor here is: see the batches below.
+        const probe = this.sql.exec(`SELECT * FROM "${name}" WHERE 0`);
+        probe.toArray();
+        const columns = probe.columnNames;
+        // A table without a rowid, or with a column that takes the name, is read by offset.
+        const byRowid = !/\bWITHOUT\s+ROWID\b/i.test(sql) && !columns.some((c) => ROWID_NAMES.has(c.toLowerCase()));
+        // In batches, each read to its end: a cursor left part-read keeps its table locked, and
+        // the next statement that drops or alters it fails with SQLITE_LOCKED.
+        const batch = (from: number | null): unknown[][] =>
+          Array.from(
+            !byRowid
+              ? this.sql.exec(`SELECT * FROM "${name}" WHERE ${where} LIMIT ? OFFSET ?`, ...bindings, DUMP_READ_BATCH, from ?? 0).raw()
+              : from === null
+                ? this.sql.exec(`SELECT rowid, * FROM "${name}" WHERE ${where} ORDER BY rowid LIMIT ?`, ...bindings, DUMP_READ_BATCH).raw()
+                : this.sql
+                    .exec(`SELECT rowid, * FROM "${name}" WHERE (${where}) AND rowid > ? ORDER BY rowid LIMIT ?`, ...bindings, from, DUMP_READ_BATCH)
+                    .raw(),
+            (raw) => raw as unknown[],
+          );
+        const rows: unknown[][] = [];
+        let last: number | null = after;
+        let full = false;
+        for (;;) {
+          const read = batch(last);
+          for (const cells of read) {
+            rows.push(byRowid ? cells.slice(1) : cells);
+            last = byRowid ? Number(cells[0]) : (last ?? 0) + 1;
+            bytes += rowBytes(rows[rows.length - 1]!);
+            if (bytes >= maxBytes) {
+              full = true;
+              break;
+            }
+          }
+          if (full || read.length < DUMP_READ_BATCH) break;
+        }
+        tables.push({ name, ddl: sql, columns, rows });
+        if (full) {
+          next = encodeDumpCursor({ table: name, after: last ?? 0 });
+          break;
+        }
+      }
+      return { tables, next, loadStamp, revision: this.metaValue(WRITE_REVISION_KEY) };
     }
 
     /**
@@ -7029,6 +7211,24 @@ export function defineScopeDO(
     async importDump(
       tables: ScopeDumpTable[],
       destScopeId?: ScopeId,
+      opts: ImportDumpOptions = {},
+    ): Promise<SwitchedOff[]> {
+      return this.loadTables(
+        tables.map((t) => ({ name: t.name, ddl: t.ddl, columns: t.columns, rows: () => t.rows })),
+        destScopeId,
+        opts,
+      );
+    }
+
+    /**
+     * The load `importDump` runs, over tables whose rows are read lazily (#2450): from the dump's
+     * arrays, or from a staged load's tables (`commitStagedDump`), so a load never needs every row
+     * in memory at once. `stageId` names the staged load the rows come from: checked inside the
+     * load's transaction, and its tables dropped in it once the rows are in.
+     */
+    private async loadTables(
+      tables: LoadTable[],
+      destScopeId: ScopeId | undefined,
       {
         switchOff,
         sourceScopeId,
@@ -7039,37 +7239,8 @@ export function defineScopeDO(
         markCopy,
         provisionedFor,
         fence,
-      }: {
-        /** The directory's recorded-off modules (#1742), switched off on `destScopeId` right after
-         *  the replay re-points the grants, in the same event: a dump from before the switch was
-         *  pulled carries the grants live and no marker. Needs `destScopeId`, the scope restored. */
-        switchOff?: RecordedOffCarry & { at: string };
-        /** The scope the dump was captured FROM (#1869), whose grants the re-point moves. */
-        sourceScopeId?: ScopeId;
-        /** The platform exported this dump itself, so the re-point never falls back (`RepointSource`). */
-        exact?: boolean;
-        /** #1722: the stamp this load leaves (`LOAD_STAMP_KEY`) — a carry names one, so the copy
-         *  it lands can later be wiped under a fence. Without one, a load leaves no stamp. */
-        loadStamp?: string;
-        /** #1722: load only if this store still holds this load stamp (null: none) and, when
-         *  `revision` is given, this write revision (null: never written). Compared inside the
-         *  load's transaction, before the first drop; a mismatch throws `precondition_failed`
-         *  and the store is untouched. */
-        expect?: { loadStamp: string | null; revision?: string | null };
-        /** #1722: the staff resolution of a kept copy, the one load a kept copy takes. It must be
-         *  one (the marker set) at this write revision, the one the operator acted on. */
-        resolveKept?: { revision: string | null; loadStamp?: string | null };
-        /** #2005: the directory says this scope is not primary, so mark it a copy in its own
-         *  storage (`markCopyOrigin`) — a carry of a copy that predates the marker brings none. */
-        markCopy?: boolean;
-        /** #2016: the tenant the platform says this scope belongs to. Recorded as its receipt; a
-         *  store whose receipt names another tenant refuses the load (`conflict`) untouched. */
-        provisionedFor?: TenantId;
-        /** #1722: a copy move's lease (`CopyRestoreFence`). Read against this store's own clock
-         *  inside the load's transaction: past `notAfter`, the load is refused and nothing is
-         *  written, since a sweep, reap or erasure may already have settled the move. */
-        fence?: CopyRestoreFence;
-      } = {},
+      }: ImportDumpOptions = {},
+      stageId?: string,
     ): Promise<SwitchedOff[]> {
       // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
       //
@@ -7093,11 +7264,9 @@ export function defineScopeDO(
       // rather than failing a restore over data about to be recomputed.
       // Matched without case, as SQLite resolves a table name (#1883 review).
       // #1686: a copy into another scope id loads no capability rows; a same-scope restore keeps them.
-      const replayable = capabilitiesForLoad(
-        tables.filter((t) => !isSearchIndexTable(t.name.toLowerCase())),
-        destScopeId,
-        sourceScopeId,
-      );
+      const replayable = tables
+        .filter((t) => !isSearchIndexTable(t.name.toLowerCase()))
+        .map((t) => (loadDropsRowsOf(t.name, destScopeId, sourceScopeId) ? { ...t, rows: () => [] } : t));
       // The dump is untrusted input (#1143). `SqlStorage.exec` runs every statement
       // in the string it is given, so a `ddl` with anything appended to its CREATE
       // TABLE executed that too — with entirely plain identifiers, which is why no
@@ -7117,6 +7286,11 @@ export function defineScopeDO(
           fenceRefusals.add(lapsed);
           throw lapsed;
         }
+        // #2450: the staged load is still the one this commit names: a later carry's first page
+        // replaces a stage, and a load that already committed dropped its own.
+        if (stageId !== undefined && this.stageHead()?.stageId !== stageId) {
+          throw substratError('precondition_failed', STAGE_GONE);
+        }
         const before = this.loadMarker();
         // #1713: the lifecycle the platform delivered here, read before the drops take it.
         const lifecycleBefore = readLifecycle(this.switchSql());
@@ -7125,7 +7299,16 @@ export function defineScopeDO(
         // must agree with the receipt held, and is refused before the first drop if it does not.
         // #2314: a row for an id the orphan sweep condemned here is refused, as the insert refuses it.
         // Judged on `replayable`, the very tables whose rows the replay below inserts.
-        refuseCondemnedInDump(doSpineSql(this.sql), replayable);
+        // Only the ids are read (#2450): a staged load holds no table whole, this one included.
+        refuseCondemnedInDump(
+          doSpineSql(this.sql),
+          replayable
+            .filter((t) => t.name.toLowerCase() === '_substrat_attachments')
+            .map((t) => {
+              const at = t.columns.indexOf('id');
+              return { name: t.name, columns: ['id'], rows: at < 0 ? [] : Array.from(t.rows(), (row) => [row[at]]) };
+            }),
+        );
         const receiptBefore = this.provisionedFor();
         if (provisionedFor !== undefined && receiptBefore !== null && receiptBefore !== provisionedFor) {
           const refused = substratError('conflict', tenantReceiptRefusal(receiptBefore, provisionedFor));
@@ -7159,7 +7342,11 @@ export function defineScopeDO(
           const existing = this.sql
             // Nor workerd's own `_cf_*` (the live reaper's alarm keeps `_cf_METADATA`), which
             // it refuses to drop.
-            .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'`)
+            // Nor a staged load's own tables (#2450): this commit reads its rows from them below.
+            .exec(
+              `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'
+                 AND name NOT GLOB '${STAGE_GLOB}'`,
+            )
             .toArray() as unknown as { name: string }[];
           // Search index tables are left alone here and rebuilt below (#827): dropping a
           // shadow table directly is an error, and `sqlite_master` order would reach one
@@ -7198,8 +7385,11 @@ export function defineScopeDO(
           }
           for (const t of replayable) {
             const insert = dumpRowsInsert(t, columnsOf);
-            for (const row of t.rows) this.sql.exec(insert, ...(row as unknown[]));
+            for (const row of t.rows()) this.sql.exec(insert, ...row);
           }
+          // #2450: the staged rows are in, so the stage goes, with the load: a load refused or
+          // rolled back after this keeps it, for a retry of the same commit.
+          if (stageId !== undefined) this.dropStage();
           // #1738: a dump's `provisioned_for` names the scope (and tenant) it was captured from,
           // not this one, so it is never carried over. #2016: what stays is THIS store's own —
           // the platform's word when the load carries it (a copy into a fresh scope records its
@@ -7319,10 +7509,158 @@ export function defineScopeDO(
     async importDumpChecked(
       tables: ScopeDumpTable[],
       destScopeId: ScopeId,
-      opts: Parameters<this['importDump']>[2],
-    ): Promise<{ refused: 'changed' | 'kept' | 'lapsed' } | { refused: 'tenant'; message: string } | { refused: false; switchedOff: SwitchedOff[] }> {
+      opts: ImportDumpOptions,
+    ): Promise<CheckedLoad> {
+      return this.checkedLoad(() => this.importDump(tables, destScopeId, opts));
+    }
+
+    /**
+     * Stage one page of a dump for a later `commitStagedDump` (#2450). The rows go into this
+     * store's own staging tables, untyped, so every cell is kept as it arrived; nothing of the
+     * scope's data is touched, and the write revision does not move, so the marker a carry read
+     * here before staging still holds at the commit. Page `0` of a new stage replaces any
+     * other; the following pages must arrive in order. A page already staged (page `0` included)
+     * answers `staged: false` and changes nothing, so a retried page is harmless.
+     */
+    stageDumpPage(stageId: string, seq: number, tables: ScopeDumpTable[]): Promise<DoReply<{ staged: boolean }>> {
+      // Answered as data, so a refusal's code survives the hop (#113).
+      return replyOf(() => this.stagePage(stageId, seq, tables));
+    }
+
+    private stagePage(stageId: string, seq: number, tables: ScopeDumpTable[]): { staged: boolean } {
+      if (!Number.isSafeInteger(seq) || seq < 0) throw substratError('validation_failed', 'a stage page is numbered from 0');
+      // The identifiers reach SQL below as text, so they are held to the replay rules first.
+      assertReplayableDump(tables, { maxColumns: DO_SQL_LIMITS.columns });
+      this.revisionSuspended = true;
       try {
-        return { refused: false, switchedOff: await this.importDump(tables, destScopeId, opts) };
+        return this.revision.transactionSync(() => {
+          // A page 0 that already opened this stage is a retry, answered below as one.
+          if (seq === 0 && this.stageHead()?.stageId !== stageId) {
+            this.dropStage();
+            for (const ddl of STAGE_TABLES_DDL) this.sql.exec(ddl);
+            this.sql.exec(`INSERT INTO _substrat_stage (stage_id, next_seq) VALUES (?, 0)`, stageId);
+          }
+          const head = this.stageHead();
+          if (head?.stageId !== stageId) throw substratError('precondition_failed', STAGE_GONE);
+          if (seq < head.nextSeq) return { staged: false };
+          if (seq > head.nextSeq) {
+            throw substratError('precondition_failed', `stage page ${seq} arrived before page ${head.nextSeq}`);
+          }
+          // #2314: a page carrying an attachment row this store condemned is refused here, at the
+          // page, as the commit refuses it again before its first drop (`loadTables`).
+          refuseCondemnedInDump(doSpineSql(this.sql), tables);
+          for (const t of tables) {
+            const columns = JSON.stringify(t.columns);
+            let held = this.sql
+              .exec(`SELECT ord, ddl, columns FROM _substrat_stage_tables WHERE name = ?`, t.name)
+              .toArray()[0] as { ord: number; ddl: string; columns: string } | undefined;
+            if (!held) {
+              const ord = Number((this.sql.exec(`SELECT COUNT(*) AS n FROM _substrat_stage_tables`).toArray()[0] as { n: number }).n);
+              this.sql.exec(
+                `INSERT INTO _substrat_stage_tables (ord, name, ddl, columns) VALUES (?, ?, ?, ?)`,
+                ord, t.name, t.ddl, columns,
+              );
+              // Untyped columns: no affinity, so a cell is stored exactly as it came.
+              this.sql.exec(`CREATE TABLE "${stageRowsTable(ord)}" (${t.columns.map((_, i) => `c${i}`).join(', ')})`);
+              held = { ord, ddl: t.ddl, columns };
+            } else if (held.ddl !== t.ddl || held.columns !== columns) {
+              throw substratError('precondition_failed', `table ${t.name} changed between dump pages; nothing more was staged`);
+            }
+            const insert = `INSERT INTO "${stageRowsTable(held.ord)}" VALUES (${t.columns.map(() => '?').join(', ')})`;
+            for (const row of t.rows) {
+              if (row.length !== t.columns.length) {
+                throw substratError('validation_failed', `a row of ${t.name} has ${row.length} cells for ${t.columns.length} columns`);
+              }
+              this.sql.exec(insert, ...row);
+            }
+          }
+          this.sql.exec(`UPDATE _substrat_stage SET next_seq = ?`, seq + 1);
+          return { staged: true };
+        });
+      } finally {
+        this.revisionSuspended = false;
+      }
+    }
+
+    /**
+     * Load the dump staged under `stageId` (#2450): `importDump`, its rows read from the stage a
+     * batch at a time rather than handed over whole, in the same one transaction with the same
+     * fences and refusals. The stage is dropped with the load; a refused load keeps it.
+     */
+    async commitStagedDumpChecked(
+      stageId: string,
+      destScopeId: ScopeId,
+      opts: ImportDumpOptions,
+    ): Promise<CheckedLoad & { tables?: number }> {
+      let count = 0;
+      const out = await this.checkedLoad(() => {
+        const head = this.stageHead();
+        if (head?.stageId !== stageId) throw substratError('precondition_failed', STAGE_GONE);
+        const staged = this.sql
+          .exec(`SELECT ord, name, ddl, columns FROM _substrat_stage_tables ORDER BY name`)
+          .toArray() as unknown as { ord: number; name: string; ddl: string; columns: string }[];
+        const tables: LoadTable[] = staged.map((t) => ({
+          name: t.name,
+          ddl: t.ddl,
+          columns: JSON.parse(t.columns) as string[],
+          rows: () => this.stagedRows(t.ord),
+        }));
+        count = tables.length;
+        return this.loadTables(tables, destScopeId, opts, stageId);
+      });
+      return out.refused === false ? { ...out, tables: count } : out;
+    }
+
+    /** Drop a staged load (#2450), if it is still `stageId`'s. A carry that gave up calls it. */
+    discardStagedDump(stageId: string): { discarded: boolean } {
+      if (this.stageHead()?.stageId !== stageId) return { discarded: false };
+      this.revisionSuspended = true;
+      try {
+        this.revision.transactionSync(() => this.dropStage());
+      } finally {
+        this.revisionSuspended = false;
+      }
+      return { discarded: true };
+    }
+
+    /** One staged table's rows, in the order they were staged, a batch at a time. */
+    private *stagedRows(ord: number): Generator<unknown[]> {
+      let after = 0;
+      for (;;) {
+        const batch = Array.from(
+          this.sql
+            .exec(`SELECT rowid, * FROM "${stageRowsTable(ord)}" WHERE rowid > ? ORDER BY rowid LIMIT ?`, after, STAGE_READ_BATCH)
+            .raw(),
+          (row) => row as unknown[],
+        );
+        for (const row of batch) yield row.slice(1);
+        if (batch.length < STAGE_READ_BATCH) return;
+        after = Number(batch[batch.length - 1]![0]);
+      }
+    }
+
+    /** The staged load this store holds (#2450), or null. */
+    private stageHead(): { stageId: string; nextSeq: number } | null {
+      const present = this.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_substrat_stage'`).toArray();
+      if (present.length === 0) return null;
+      const row = this.sql.exec(`SELECT stage_id, next_seq FROM _substrat_stage`).toArray()[0] as
+        | { stage_id: string; next_seq: number }
+        | undefined;
+      return row ? { stageId: row.stage_id, nextSeq: Number(row.next_seq) } : null;
+    }
+
+    /** Drop every staging table (#2450). Inside the caller's transaction. */
+    private dropStage(): void {
+      const names = this.sql
+        .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB '${STAGE_GLOB}'`)
+        .toArray() as unknown as { name: string }[];
+      for (const { name } of names) this.sql.exec(`DROP TABLE "${name}"`);
+    }
+
+    /** A load's refusals answered as values (#1722): across the RPC a throw carries only its message. */
+    private async checkedLoad(run: () => Promise<SwitchedOff[]>): Promise<CheckedLoad> {
+      try {
+        return { refused: false, switchedOff: await run() };
       } catch (e) {
         if (e instanceof Error && fenceRefusals.has(e)) return { refused: 'lapsed' };
         const code = errorCodeOf(e);

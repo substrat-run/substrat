@@ -126,6 +126,7 @@ import {
   SOCIAL_RELAY_VERTICALS,
 } from '@substrat-run/contracts';
 import type {
+  ScopeDumpTable,
   BindAcknowledgement,
   RebindAcknowledgement,
   ChannelName,
@@ -182,7 +183,7 @@ import {
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
-import { connectionGrantsForScope, type VerticalClient } from './vertical-client.js';
+import { connectionGrantsForScope, transferScope, type StagedDump, type VerticalClient } from './vertical-client.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
 import type { ScopeStoreEnsurerOptions, StoreCanaryTarget } from './store-script.js';
@@ -3593,8 +3594,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           { role: 'destination', loadStamp: restoredStamp, leaseMs: copyLeaseMs });
       }
       const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, tenantId, scopeId);
-      const { tables: dump, loadStamp: sourceStamp, revision: sourceRevision } = await retryTransient(() =>
-        source.exportScopeStamped(scopeId),
+      // #2450: a page at a time into the destination's stage, so a scope of any size moves.
+      const { dump, loadStamp: sourceStamp, revision: sourceRevision } = await transferScope(
+        source, dest, { from: scopeId }, { retry: retryTransient },
       );
       const restored = await restoreCarryingSwitches(actor, dest, tenantId, scopeId, dump, {
         scopeId, exact: true, loadStamp: restoredStamp,
@@ -3757,8 +3759,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await c.var.admin.recordScopeScriptCopy(actor, scope.tenantId, scope.id, to, moveId,
         { role: 'destination', loadStamp: restoredStamp, leaseMs: copyLeaseMs });
       const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, scope.tenantId, scope.id);
-      const { tables: dump, loadStamp: sourceStamp, revision: sourceRevision } = await retryTransient(() =>
-        source.exportScopeStamped(scope.id),
+      // #2450: a page at a time into the destination's stage, so a scope of any size moves. The
+      // stage moves neither the destination's load stamp nor its write revision, so the marker read
+      // next still describes the store the restore below commits into.
+      const { dump, loadStamp: sourceStamp, revision: sourceRevision, meta } = await transferScope(
+        source, dest, { from: scope.id }, { retry: retryTransient },
       );
       // What the destination holds now, read before the binding is checked again. The restore
       // sends it back and is refused if the store moved since: another carry into the same script
@@ -3777,7 +3782,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             `moved or bound (#1722). Reload the scope and retry.`,
         );
       }
-      if (dumpMetaValue(dump, CARRIED_AWAY_KEY) !== null) {
+      if (dumpMetaValue(meta, CARRIED_AWAY_KEY) !== null) {
         throw new ControlPlaneError(
           412,
           `the copy of scope ${scope.id} in '${from}' was already carried to another script and wiped, so nothing ` +
@@ -4188,10 +4193,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await releaseIfLive(c, scope, versionId, carried, carried.dest, carried.to);
       let sourceMarker = { loadStamp: carried.sourceStamp, revision: carried.sourceRevision };
       if (await isCarriedAway(carried.dest, scope)) {
-        const { tables: dump, loadStamp: stamp, revision } = await retryTransient(() =>
-          carried.source.exportScopeStamped(scope.id),
+        const { dump, loadStamp: stamp, revision, meta } = await transferScope(
+          carried.source, carried.dest, { from: scope.id }, { retry: retryTransient },
         );
-        if (dumpMetaValue(dump, CARRIED_AWAY_KEY) !== null) {
+        if (dumpMetaValue(meta, CARRIED_AWAY_KEY) !== null) {
           throw new ControlPlaneError(500, `both copies of scope ${scope.id} hold the carried_away tombstone; nothing was wiped`);
         }
         // The re-carry is a copy move of its own (#1722): in the ledger and leased before it
@@ -9940,7 +9945,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     };
     let row: ProvisionScopeInput;
     /** `fenced`: the ledger stamp and lease of this fork's restore (#1722), when it has one. */
-    let restore: ((fenced: { loadStamp?: string; fence?: CopyRestoreFence }) => Promise<unknown>) | null;
+    let restore: ((fenced: { loadStamp?: string; fence?: CopyRestoreFence }, dump?: ScopeDumpTable[] | StagedDump) => Promise<unknown>) | null;
+    /** #2450: the fork's data, moved into the preview's copy once the ledger names it. */
+    let forkData: (() => Promise<ScopeDumpTable[] | StagedDump>) | null = null;
     /** #2009: the directory's classification of the row below, which every restore of it carries. */
     const markCopyOfRow = () => {
       const lineage = copyLineageOf({ kind: row.kind ?? '', forkedFrom: row.forkedFrom ?? null });
@@ -9955,7 +9962,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         throw new ControlPlaneError(501, 'preview needs dispatch resolution for the PR version');
       }
       const canonical = await c.var.admin.exportScope(actor, tenantId, source.id);
-      const tables = sourceClient ? await sourceClient.exportScope(source.id) : canonical.tables;
+      // #2450: from a vertical, the fork's data moves a page at a time into the preview's own stage
+      // there, so a scope of any size forks. Unstamped, as the whole export was: a fork writes
+      // nothing into its source. Moved once, after the row and the ledger name the preview's copy
+      // (K-31: no copied data without a record) and ahead of the restore's own retries, so a
+      // restore blip reloads the same stage and an export fault is not recorded as a restore's.
+      forkData = sourceClient
+        ? async () =>
+          (await transferScope(sourceClient, target, { from: source.id, to: previewId }, { retry: retryTransient, stamp: false })).dump
+        : async () => canonical.tables;
       // Directory row FIRST as `provisioning` (K-31 two-phase): a crash before the data
       // copy leaves an inert row that — carrying `forkedFrom` + `expiresAt` — the GC sweep
       // reaps, never copied data with no record.
@@ -9978,8 +9993,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // pushes a fresh version per try) — #559 (2).
       // #2009: a load classifies nothing by itself, so the restore carries the directory's
       // classification of the row below, as every restore onto a non-primary scope does.
-      restore = (fenced) =>
-        target.restoreScope(tenantId, previewId, tables, { sourceScopeId: source.id, exact: true, ...markCopyOfRow(), ...fenced });
+      restore = (fenced, dump) =>
+        target.restoreScope(tenantId, previewId, dump ?? [], { sourceScopeId: source.id, exact: true, ...markCopyOfRow(), ...fenced });
     } else {
       // A clean-room preview (#509 (b)): an EMPTY scope, no source to export. No `forkedFrom`
       // — the reap sweep and `deleteSnapshot` reap it by `kind === 'preview'` instead. The
@@ -10025,7 +10040,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           fenced = { loadStamp: restoredStamp, fence: copyRestoreFence(moveId, recordedAt, copyLeaseMs, erasureEpoch) };
         }
         const load = restore;
-        await restoreOrRecord(() => load(fenced));
+        const dump = forkData ? await forkData() : undefined;
+        await restoreOrRecord(() => load(fenced, dump));
       }
       await c.var.admin.activateScope(actor, tenantId, previewId);
       // Bind the PR version. A private vertical's push self-admitted, so this is accepted; a

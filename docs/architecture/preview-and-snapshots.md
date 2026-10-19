@@ -54,8 +54,24 @@ Two adapter implementations behind one interface, mirroring the whole platform:
   or the online backup API — one consistent, cheap operation.
 - **adapter-cloudflare** (prod): no file handle — Cloudflare seals the DO's SQLite behind the
   storage engine — so the export is a **logical** copy (stream the tables out through
-  `ctx.storage.sql`). Tractable because a scope is single-tenant-small, and *clean* because
-  the DO is single-threaded: you read a consistent snapshot with no concurrent writer.
+  `ctx.storage.sql`).
+
+  "Tractable because a scope is single-tenant-small", as this section first said, did not hold.
+  A hosted production scope crossed 32 MiB in 2026-10, and a whole dump stopped fitting through
+  a Durable Object RPC (32 MiB per message) and the two isolates it crossed (128 MB each). Since
+  #2450, a move between scripts runs in pages:
+  - The source answers a page of about 4 MiB at a time (`exportDumpPage`).
+  - The destination keeps each page in its own staging tables (`stageDumpPage`).
+  - One commit loads from the stage, in the single transaction a whole restore runs
+    (`commitStagedDumpChecked`).
+  - The control plane holds one page at a time (`transferScope`).
+
+  "*Clean* because the DO is single-threaded" now holds per page only, since each page is read
+  in one turn. The pages are one consistent read only while the source's write revision stays
+  where the first page read it. A copy that it moves under is started again, and refused after
+  three attempts. Two steps remain open in #2450:
+  - running the copy as a durable job outside the request;
+  - an online copy with catch-up, for a busy scope at GB scale.
 
 Once a cloud export lands in a local file it's a real SQLite again — `cp`, `VACUUM INTO`,
 Datasette, a step debugger all return. **Pull once (logical, governed); branch freely after.**

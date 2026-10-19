@@ -47,6 +47,11 @@ const event = ulid();
 /** [route, method, body] — the body is just enough to get past parsing to the refusal. */
 const NOT_IMPLEMENTED: readonly (readonly [string, 'GET' | 'POST', Record<string, unknown>])[] = [
   ['/internal/load-marker', 'GET', {}],
+  // #2450: the paged copy verbs.
+  ['/internal/export-page', 'GET', {}],
+  ['/internal/stage', 'POST', { scopeId: s, stageId: 'stage-1', seq: 0, tables: [] }],
+  ['/internal/restore-staged', 'POST', { ...ids, stageId: 'stage-1' }],
+  ['/internal/stage/discard', 'POST', { scopeId: s, stageId: 'stage-1' }],
   ['/internal/kept-copy', 'GET', {}],
   ['/internal/kept-copy/release', 'POST', { scopeId: s, revision: null }],
   ['/internal/kept-copy/discard', 'POST', { scopeId: s, revision: null, carriedTo: 'other', at }],

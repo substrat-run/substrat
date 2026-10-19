@@ -407,6 +407,8 @@ export const INDEX_VALUE_EXPORTS = [
   'listScopeStoreStorageRows',
   'listSystemSwitchRecords',
   'loadDirectoryDump',
+  // #2450: a staged load drops a copy's capability rows by table name, never holding them as an array.
+  'loadDropsRowsOf',
   'manualClock',
   'mapDenialRow',
   'mapDenialSummaryBuckets',

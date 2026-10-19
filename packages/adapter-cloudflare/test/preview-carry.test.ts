@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:test';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { errorCodeOf, platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId, type ScopeLineage, type TenantId } from '@substrat-run/contracts';
 import { CARRIED_AWAY_KEY, COPY_RESTORE_FENCE_LAPSED, LOAD_STAMP_KEY, SCOPE_COPY_LEASE_MS, WRITE_REVISION_KEY, dumpMetaValue, type CopyRestoreFence, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
@@ -45,6 +45,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
   // Makes v3's restore fail INSIDE the DO's transaction, after its drops: the dump gains a
   // table whose schema the DO refuses, so the import throws and SQLite rolls it all back.
   let sabotageV3 = false;
+  // #2450: whether the scripts answer the paged verbs (off: they predate them, and carry whole),
+  // and how small their pages are, so a few notes already take many.
+  let paged = false;
+  const PAGE_BYTES = 400;
   // #1722: the scripts built before the fenced wipe (`/internal/wipe-carried` answers 404 there),
   // and hooks that hold one request at a chosen step so a test can interleave two of them.
   const unfenced = new Set<string>();
@@ -52,7 +56,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
   // `marker` runs before a `loadMarker` read and `markerRead` after it: a carry reads the
   // destination's marker after its export, and the source's again right before its bind (r12).
   const hooks: {
-    export?: Hook; marker?: Hook; markerRead?: Hook; kept?: Hook; restore?: Hook; restored?: Hook; read?: Hook; wipe?: Hook; release?: Hook; redact?: Hook;
+    export?: Hook; page?: Hook; marker?: Hook; markerRead?: Hook; kept?: Hook; restore?: Hook; restored?: Hook; read?: Hook; wipe?: Hook; release?: Hook; redact?: Hook;
   } = {};
 
   const notes = (...bodies: string[]): ScopeDumpTable[] => [
@@ -90,10 +94,23 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
           if (!unfenced.has(ref)) return host.exportScopeStampedLocal(sid);
           return { tables: await host.exportScopeLocal(sid), loadStamp: null, revision: null };
         }),
+      ...(paged
+        ? {
+            exportScopePage: (sid: ScopeId, cursor: string | null, opts?: { stamp?: boolean }) =>
+              relay(async () => {
+                await (cursor === null ? hooks.export : hooks.page)?.(ref, sid);
+                return host.exportScopePageLocal(sid, cursor, { ...opts, maxBytes: PAGE_BYTES });
+              }),
+            stageScopePage: (sid: ScopeId, stageId: string, seq: number, tables: ScopeDumpTable[]) =>
+              relay(() => host.stageScopePageLocal(sid, stageId, seq, tables)),
+            discardStagedScope: (sid: ScopeId, stageId: string) =>
+              relay(() => host.discardStagedScopeLocal(sid, stageId)).then(() => undefined),
+          }
+        : {}),
       restoreScope: (
         _t: unknown,
         sid: ScopeId,
-        tables: ScopeDumpTable[],
+        tables: ScopeDumpTable[] | { stageId: string },
         opts?: {
           sourceScopeId?: ScopeId;
           exact?: boolean;
@@ -105,13 +122,27 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       ) =>
         relay(async () => {
           // What the platform sends, before a script that cannot fence drops it (#1722).
-          fencesSent.push({ ref, sid, fence: opts?.fence, wipe: dumpMetaValue(tables, CARRIED_AWAY_KEY) !== null });
-          await hooks.restore?.(ref, sid, tables);
+          const dump = Array.isArray(tables) ? tables : undefined;
+          fencesSent.push({ ref, sid, fence: opts?.fence, wipe: dump !== undefined && dumpMetaValue(dump, CARRIED_AWAY_KEY) !== null });
+          await hooks.restore?.(ref, sid, dump);
+          if (!dump) {
+            // #2450: the dump waits in this script's stage; the restore loads it from there.
+            const loaded = await host.restoreStagedScopeLocal(sid, (tables as { stageId: string }).stageId, {
+              sourceScopeId: opts?.sourceScopeId,
+              exact: opts?.exact,
+              loadStamp: opts?.loadStamp,
+              expect: opts?.expect,
+              fence: opts?.fence,
+              ...(opts?.markCopy ? { markCopy: opts.markCopy } : {}),
+            });
+            await hooks.restored?.(ref, sid);
+            return loaded;
+          }
           const out = await host.restoreScopeLocal(
             sid,
             sabotageV3 && ref === refOf.get(version.v3)
-              ? [...tables, { name: 'zz_bad', ddl: 'CREATE TABLE not_zz_bad (x TEXT)', columns: ['x'], rows: [] }]
-              : tables,
+              ? [...dump, { name: 'zz_bad', ddl: 'CREATE TABLE not_zz_bad (x TEXT)', columns: ['x'], rows: [] }]
+              : dump,
             // A script that cannot fence keeps no stamp and takes no expectation: it predates both.
             {
               // As the vertical's `/internal/restore` forwards them: a carry names its own scope as
@@ -122,7 +153,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
               ...(opts?.markCopy ? { markCopy: opts.markCopy } : {}),
             },
           );
-          await hooks.restored?.(ref, sid, tables);
+          await hooks.restored?.(ref, sid, dump);
           return out;
         }),
       keptCopy: async (sid: ScopeId) => {
@@ -2117,6 +2148,92 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         if (dryRun) expect(reads).toEqual([]);
       }
       expect(await ledgerOf(pinned)).toEqual([]);
+    });
+  });
+
+  describe('a scope that takes many pages forks and carries the same way (#2450)', () => {
+    const many = (n: number, tag: string) => Array.from({ length: n }, (_, i) => `${tag} ${i} `.repeat(8));
+    let pagedPreview: ScopeId;
+    let pagedUrl: string;
+    beforeAll(() => {
+      paged = true;
+    });
+    afterAll(() => {
+      paged = false;
+    });
+
+    it('a fork, then a carry onto each later version, serves every row', async () => {
+      const rows = many(40, 'prod');
+      // Wherever earlier cases left prod's data: the script its hostname routes to.
+      const prodHost = hostOf.get((await served('carry-acme.global.substrat.run')).ref)!;
+      await prodHost.restoreScopeLocal(prod, notes(...rows));
+      const pages = [];
+      for (let cursor: string | null = null, first = true; first || cursor !== null; first = false) {
+        const page = await prodHost.exportScopePageLocal(prod, cursor, { maxBytes: PAGE_BYTES });
+        pages.push(page);
+        cursor = page.next;
+      }
+      expect(pages.length).toBeGreaterThan(10);
+
+      // Earlier cases leave other prod scopes behind, so the fork names its source.
+      const created = await push('paged', 'v1', { sourceScopeId: prod });
+      expect(created.status).toBe(201);
+      pagedPreview = created.body.scopeId;
+      pagedUrl = created.body.hostname;
+      expect(await served(pagedUrl)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+
+      const review = [...rows, ...many(10, 'review')];
+      await hostFor('v1').restoreScopeLocal(pagedPreview, notes(...review));
+      expect((await push('paged', 'v2', { sourceScopeId: prod })).status).toBe(200);
+      expect(await served(pagedUrl)).toEqual({ ref: refOf.get(version.v2), bodies: review });
+      // No stage is left in either script.
+      for (const v of ['v1', 'v2'] as const) {
+        const names = (await hostFor(v).introspectScopeTables(pagedPreview)).map((tb) => tb.name);
+        expect(names.filter((n) => n.startsWith('_substrat_stage'))).toEqual([]);
+      }
+    });
+
+    it('a fork whose source is written between two pages is copied again, never torn', async () => {
+      // A fork has no later fence that re-reads its source, so the pages' revision is the only
+      // thing that tells a torn copy from a true one.
+      const prodHost = hostOf.get((await served('carry-acme.global.substrat.run')).ref)!;
+      const before = bodiesIn(await prodHost.exportScopeLocal(prod)) as string[];
+      expect(before.length).toBeGreaterThan(10);
+      const after = ['prod rewritten mid-fork', ...before.slice(1)];
+      let wrote = false;
+      hooks.page = async (_ref, sid) => {
+        if (wrote || sid !== prod) return;
+        wrote = true;
+        await prodHost.restoreScopeLocal(prod, notes(...after));
+      };
+      let forked: Awaited<ReturnType<typeof push>>;
+      try {
+        forked = await push('paged-torn', 'v1', { sourceScopeId: prod });
+      } finally {
+        delete hooks.page;
+      }
+      expect(forked.status).toBe(201);
+      expect(wrote).toBe(true);
+      expect((await served(forked.body.hostname)).bodies).toEqual(after);
+    });
+
+    it('a source written between two pages is copied again, so a row an earlier page read carries its new value', async () => {
+      const before = bodiesIn(await hostFor('v2').exportScopeLocal(pagedPreview));
+      // A row the first page already read: only a fresh copy carries its new value.
+      const after = ['rewritten mid-copy', ...before.slice(1)];
+      let wrote = false;
+      hooks.page = async (ref, sid) => {
+        if (wrote || ref !== refOf.get(version.v2) || sid !== pagedPreview) return;
+        wrote = true;
+        await hostFor('v2').restoreScopeLocal(pagedPreview, notes(...(after as string[])));
+      };
+      try {
+        expect((await push('paged', 'v3', { sourceScopeId: prod })).status).toBe(200);
+      } finally {
+        delete hooks.page;
+      }
+      expect(wrote).toBe(true);
+      expect(await served(pagedUrl)).toEqual({ ref: refOf.get(version.v3), bodies: after });
     });
   });
 });

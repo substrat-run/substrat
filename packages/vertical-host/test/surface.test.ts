@@ -3060,3 +3060,75 @@ describe('entity-grant shapes on a reconcile come only from the platform body (#
     expect(deps).toBeDefined();
   });
 });
+
+describe('mountPlatformSurface — the paged copy verbs (#2450)', () => {
+  const json = (body: unknown) => ({
+    method: 'POST',
+    headers: authed({ 'content-type': 'application/json' }),
+    body: JSON.stringify(body),
+  });
+  const page = { tables: [], next: null, loadStamp: 'st', revision: '3' };
+
+  it('a page of the export forwards the cursor and whether it is a carry\'s', async () => {
+    const seen: unknown[] = [];
+    const host = fakeHost({
+      exportScopePageLocal: async (sid, cursor, opts) => {
+        seen.push([sid, cursor, opts]);
+        return page;
+      },
+    });
+    const first = await appWith(host).request(`/internal/export-page?scopeId=${SCOPE}&stamp=1`, { headers: authed() }, ENV);
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual(page);
+    await appWith(host).request(`/internal/export-page?scopeId=${SCOPE}&cursor=${encodeURIComponent('["t",4]')}`, { headers: authed() }, ENV);
+    expect(seen).toEqual([
+      [SCOPE, null, { stamp: true }],
+      [SCOPE, '["t",4]', { stamp: false }],
+    ]);
+  });
+
+  it('a stage page is parsed and forwarded whole', async () => {
+    const seen: unknown[] = [];
+    const host = fakeHost({
+      stageScopePageLocal: async (sid, stageId, seq, tables) => {
+        seen.push([sid, stageId, seq, tables]);
+        return { staged: true };
+      },
+    });
+    const tables = [{ name: 't', ddl: 'CREATE TABLE t (x)', columns: ['x'], rows: [[1], ['a']] }];
+    const res = await appWith(host).request('/internal/stage', json({ scopeId: SCOPE, stageId: 'stage-1', seq: 2, tables }), ENV);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ staged: true });
+    expect(seen).toEqual([[SCOPE, 'stage-1', 2, tables]]);
+    const bad = await appWith(host).request('/internal/stage', json({ scopeId: SCOPE, stageId: 'stage-1', seq: -1, tables }), ENV);
+    expect(bad.status).toBe(400);
+  });
+
+  it('the restore from a stage forwards what /internal/restore forwards, then re-projects the roles', async () => {
+    const seen: unknown[] = [];
+    const host = fakeHost({
+      restoreStagedScopeLocal: async (sid, stageId, opts) => {
+        seen.push([sid, stageId, opts]);
+        return { tables: 4 };
+      },
+    });
+    const expect_ = { loadStamp: 'st', revision: '3' };
+    const res = await appWith(host).request(
+      '/internal/restore-staged',
+      json({ tenantId: TENANT, scopeId: SCOPE, stageId: 'stage-1', sourceScopeId: SCOPE, exact: true, loadStamp: 'new', expect: expect_ }),
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ tables: 4 });
+    expect(seen).toEqual([[SCOPE, 'stage-1', expect.objectContaining({ tenantId: TENANT, sourceScopeId: SCOPE, exact: true, loadStamp: 'new', expect: expect_ })]]);
+    expect(host.calls).toContain('projectRolesLocal');
+    // `exact` without the source it vouches for is refused before the host is reached.
+    const refused = await appWith(host).request(
+      '/internal/restore-staged',
+      json({ tenantId: TENANT, scopeId: SCOPE, stageId: 'stage-1', exact: true }),
+      ENV,
+    );
+    expect(refused.status).toBe(400);
+    expect(seen).toHaveLength(1);
+  });
+});
