@@ -15,6 +15,7 @@ const SHIPPED = [
   { type: 'notifications.topic-recorded', schemaVersion: 1 },
   // #118: added, never a bump — every shipped type keeps its version.
   { type: 'notifications.digest-sent', schemaVersion: 1 },
+  { type: 'notifications.digest-failed', schemaVersion: 1 },
 ];
 
 describe('notifications: event schemaVersion has one home', () => {

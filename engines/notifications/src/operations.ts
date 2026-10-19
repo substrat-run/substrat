@@ -101,7 +101,7 @@ export const notificationsOperations = defineOperations(notificationsEntities, N
   },
 
   'notifications/send-digests': {
-    summary: 'Send every person their digest of what was held back for it',
+    summary: 'Send each person whose digest is due one mail of what was held for it',
     // The digest schedule's key, held by the engine's system principal: no person needs it.
     permission: 'notifications:send-digests',
     input: z.object({}),
@@ -111,6 +111,10 @@ export const notificationsOperations = defineOperations(notificationsEntities, N
       digests: z.number().int(),
       /** The occasions those digests carried. */
       items: z.number().int(),
+      /** People whose digest could not be composed; theirs stay held, and a window passes before the next try. */
+      failed: z.number().int(),
+      /** People who were due but left for a later pass, for want of room in the scope's send backlog. */
+      deferred: z.number().int(),
     }),
   },
 });

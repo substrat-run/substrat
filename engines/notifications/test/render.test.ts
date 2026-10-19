@@ -66,6 +66,16 @@ describe('digestOf', () => {
     expect(d.subject).toBe('<i>x</i> & y (+1)');
   });
 
+  it('a whole-document template cannot nest: in a digest of several its text stands in, as one body', () => {
+    const doc = m('A', 'one\n\nmore', '<!DOCTYPE html><html><head><style>p{}</style></head><body><p>one</p></body></html>');
+    const d = digestOf([doc, m('B', 'two')]);
+    expect(d.html).not.toMatch(/<!doctype|<html|<head|<body/i);
+    expect(d.html).toContain('<h2>A</h2>\n<p>one</p>\n<p>more</p>');
+    expect(d.html).toContain('<h2>B</h2>\n<p>two</p>');
+    // Alone, it is that message, document and all.
+    expect(digestOf([doc]).html).toBe(doc.html);
+  });
+
   it('no messages is no digest: refused rather than sent empty', () => {
     expect(() => digestOf([])).toThrow(/at least one/);
   });

@@ -33,6 +33,8 @@ describe('engine-notifications on workerd', () => {
   const s = scopeId.parse(ulid());
   const techId: PrincipalId = principalId.parse(ulid());
   const adminId: PrincipalId = principalId.parse(ulid());
+  // Holds the schedule's key, so a pass can be run on demand and its result read.
+  const systemId: PrincipalId = principalId.parse(ulid());
   let host: CloudflareScopeHost;
   let tech: ScopeStub;
   let admin: ScopeStub;
@@ -69,6 +71,8 @@ describe('engine-notifications on workerd', () => {
     });
     await host.admin.assignRole(staff, { principalId: techId, roleKey: 'tech', node: { tenantId: t, scopeId: s } });
     await host.admin.assignRole(staff, { principalId: adminId, roleKey: 'office', node: { tenantId: t, scopeId: s } });
+    await host.admin.defineRole(staff, t, { key: 'digests', permissions: [NOTIFICATIONS_PERM.sendDigests], source: 'vertical' });
+    await host.admin.assignRole(staff, { principalId: systemId, roleKey: 'digests', node: { tenantId: t, scopeId: s } });
     tech = await host.getScope(techId, t, s);
     admin = await host.getScope(adminId, t, s);
   });
@@ -117,7 +121,7 @@ describe('engine-notifications on workerd', () => {
     expect(row!.settled_at).not.toBeNull();
   });
 
-  it('a digest topic is held, and the daily schedule sends one mail of everything held', async () => {
+  it('a digest topic is held, and once a day old the schedule sends one mail of everything held', async () => {
     await tech.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: true, cadence: 'daily-digest' });
     const before = (await intents()).length;
     await assign('WO-D1');
@@ -125,13 +129,29 @@ describe('engine-notifications on workerd', () => {
     expect(await intents()).toHaveLength(before);
     expect((await deliveries({ status: 'skipped' })).filter((d) => d.reason === 'digest')).toHaveLength(2);
 
-    // Never run on this scope, so the first pass is due — under the engine's system principal.
-    const report = await host.runDueSchedules(moduleId.parse(notificationsManifest.id), t, s);
-    expect(report).toMatchObject({ fired: 1, failed: 0 });
+    // Never run on this scope, so the first pass is due — and finds nobody whose digest is.
+    const schedule = moduleId.parse(notificationsManifest.id);
+    expect(await host.runDueSchedules(schedule, t, s)).toMatchObject({ fired: 1, failed: 0 });
+    expect(await intents()).toHaveLength(before);
+
+    await admin.invoke('probe/age-held', {});
+    const pass = await (await host.getScope(systemId, t, s)).invoke('notifications/send-digests', {});
+    expect(pass).toEqual({ digests: 1, items: 2, failed: 0, deferred: 0 });
     const digest = (await intents()).find((i) => (i.payload as { subject: string }).subject === 'Assigned: WO-D1 (+1)');
     expect(digest).toBeDefined();
     expect(await intents()).toHaveLength(before + 1);
     expect(await deliveries({ topic: DIGEST_TOPIC })).toMatchObject([{ status: 'requested', request_id: digest!.id, principal: techId }]);
+    // The occasions it carried are settled into it.
+    const carried = (await deliveries({ status: 'skipped' })).filter((d) => d.reason === 'digest');
+    expect(carried.every((d) => d.settled_at !== null)).toBe(true);
+  });
+
+  it('a switch-off withdraws what is held, and its deliveries read as muted', async () => {
+    await assign('WO-W');
+    await tech.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: false });
+    const muted = (await deliveries({ status: 'skipped' })).filter((d) => d.reason === 'muted' && d.settled_at !== null);
+    expect(muted).toHaveLength(1);
+    await tech.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: true });
   });
 
   it("an erasure deletes the address and the held digest items, and cancels the person's held send", async () => {

@@ -57,17 +57,44 @@ host.registerModule(notificationsModule);
   `no_address`, or `digest`.
 - **Daily digests.** A person can take any topic that is not required as a daily digest
   (`notifications/set-my-preference` with `cadence: 'daily-digest'`). `notify` then records the
-  occasion as `skipped` with reason `digest` and holds the rendered message. Once a day the
-  engine's own schedule (`notifications/send-digests`, run by its system principal) sends each
-  person one mail of everything held for them. That mail is one more delivery, under the
-  reserved topic `@digest` (`DIGEST_TOPIC`), and it settles like any other.
-  `notifications.digest-sent` lists the occasions it carried. A mute still wins: switching a
-  topic off withdraws what is held for it. A required topic always goes out at once.
+  occasion as `skipped` with reason `digest` and holds the rendered message.
+
+  The engine's own schedule, `notifications/send-digests`, runs every 15 minutes
+  (`DIGEST_TICK_MINUTES`) under the engine's system principal. A person is due once their oldest
+  held message is a day old, so nothing waits much longer than a day and nobody gets more than
+  one digest a day. When a digest is due depends on that person's activity, not on a clock.
+
+  Each due person gets one mail of everything held for them. That mail is one more delivery,
+  under the reserved topic `@digest` (`DIGEST_TOPIC`), and it settles like any other. The
+  occasions it carried are settled into it: still `skipped`/`digest`, now with a `settled_at`.
+  `notifications.digest-sent` lists them.
+
+  **Backlog limit.** A scope holds at most 32 sends waiting for the platform's drain
+  (`MAX_PENDING_PLATFORM_REQUESTS`). A pass therefore sends to at most the room left, less
+  `DIGEST_RESERVE` (8) slots kept for mail that must not wait. Everyone else stays held for the
+  next pass, oldest first, so a backlog drains over a few passes. The pass never meets the
+  cap's refusal.
+
+  **Contained failures.** Each person's digest is its own `ctx.atomic`. If one cannot be
+  composed (a held row that no longer reads, say), their messages stay held and everyone
+  else's digest still goes out. `notifications.digest-failed` and an error line say so, and
+  their next attempt waits a day.
+
+  **Mutes and required topics.** A mute still wins: switching a topic off withdraws what is
+  held for it, and those occasions' deliveries then read `skipped`/`muted`. A required topic
+  always goes out at once.
 
   A digest adds no words of its own. A digest of one message is that message. A digest of
   several uses the first one's subject with `(+N)` and puts each message under its own subject,
-  so the mail stays in the vertical's language. It goes out at the time of day the scope's
-  schedule first ran.
+  so the mail stays in the vertical's language. The result is one document. A message whose
+  html is a whole document (`<!doctype html><html>…`) cannot nest, so its text part stands in.
+
+  **Something must run the schedule.** On the hosted platform the scope sweeper does, once a
+  scope's provision has granted the schedule's key: an install provisioned before this engine
+  declared the schedule gets it from the reconcile that follows a promote. A self-hosted server
+  must run `runDueSchedules` or `startPlatformSweeper`, as Handlebar's dev server does. Where
+  nothing runs it, messages are held and nothing fails. A hold that finds a person's oldest
+  message two days old writes a warning line asking whether the schedule is running.
 
 **One topic, one declaration.** A topic's `description` and `required` are recorded from the call that uses it, and follow the latest caller, so a deploy that changes them updates the scope. Every call site for a topic must pass the same pair: two that disagree make the topic flip with whichever ran last, and a mute be refused or allowed accordingly. Keep each topic in one constant that its call sites spread, and change it there.
 
@@ -76,7 +103,9 @@ host.registerModule(notificationsModule);
 Events carry principals, never addresses. The address lives on the engine's recipient row,
 which a subject erasure deletes (K-46). The send intent carries the recipient as its
 `subjectId`, so the same erasure cancels a send that is still waiting. A message held for a
-digest is rendered mail addressed to the person, so the same erasure deletes it too.
+digest is rendered mail addressed to the person, so the same erasure deletes it too. Its
+occasion's delivery keeps reason `digest` with no `settled_at`, the way a cancelled send's keeps
+`requested`: an erasure writes no event the engine could settle it from.
 
 ## Not yet
 

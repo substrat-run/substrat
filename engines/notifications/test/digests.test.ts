@@ -1,9 +1,17 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { dataSubjectId, moduleId, platformActorId, type PrincipalId } from '@substrat-run/contracts';
+import {
+  dataSubjectId,
+  MAX_PENDING_PLATFORM_REQUESTS,
+  moduleId,
+  platformActorId,
+  type PrincipalId,
+} from '@substrat-run/contracts';
 import { manualClock, ulid, type ScopeStub } from '@substrat-run/kernel';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
+  DIGEST_RESERVE,
+  DIGEST_TICK_MINUTES,
   DIGEST_TOPIC,
   NOTIFICATIONS_PERM as PERM,
   notificationsManifest,
@@ -25,6 +33,7 @@ import { deliveriesOf, intentsOf, settleEmail } from './kit.js';
 
 const ORDER = { entityType: 'workorder', entityId: '01JEXAMPLEORDER00000000000' } as const;
 const DAY = 24 * 60 * 60_000;
+const TICK = DIGEST_TICK_MINUTES * 60_000;
 const ENGINE = moduleId.parse(notificationsManifest.id);
 
 const assigned = (recipients: string[], over: Partial<NotifyInput> = {}): NotifyInput => ({
@@ -55,6 +64,7 @@ describe('engine-notifications — digests', () => {
       ctx.sql.query<{ id: string; principal: string; topic: string }>('SELECT id, principal, topic FROM notifications_digest_items'),
     );
   const sweep = () => h.host.runDueSchedules(ENGINE, h.tenant, h.scope);
+  const pass = () => h.run((ctx) => sendDigests(ctx));
   /** A person with an address. */
   const person = async (email: string) => {
     const p = await h.mintPrincipal([PERM.self]);
@@ -154,13 +164,48 @@ describe('engine-notifications — digests', () => {
       expect(await held()).toEqual([]);
     });
 
-    it('switching a topic off withdraws what is already held for it, and nothing else', async () => {
+    it('switching a topic off withdraws what is already held for it, and nothing else — and says so', async () => {
       await chooseDigest(tech);
       await chooseDigest(tech, 'order-watched');
-      await send(assigned([tech.principal]));
-      await send(assigned([tech.principal], watched));
+      const [withdrawn] = await send(assigned([tech.principal]));
+      const [kept] = await send(assigned([tech.principal], watched));
+      clock.advance(60_000);
       await tech.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: false });
       expect((await held()).map((r) => r.topic)).toEqual(['order-watched']);
+
+      // The withdrawn occasion reads as a mute now, settled when it was withdrawn; the kept one waits.
+      const rows = await deliveries({ status: 'skipped' });
+      expect(rows.find((r) => r.id === withdrawn!.deliveryId)).toMatchObject({ reason: 'muted', settled_at: clock.now() });
+      expect(rows.find((r) => r.id === kept!.deliveryId)).toMatchObject({ reason: 'digest', settled_at: null });
+      expect(h.eventsOfType('notifications.preference-set').at(-1)!.payload).toMatchObject({
+        topic: 'order-assigned',
+        enabled: false,
+        withdrawn: [withdrawn!.deliveryId],
+      });
+    });
+
+    it('a switch-off with nothing held names nothing withdrawn', async () => {
+      await tech.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: false });
+      expect(h.eventsOfType('notifications.preference-set').at(-1)!.payload).not.toHaveProperty('withdrawn');
+    });
+
+    it('messages held twice a day too long — a schedule that is not running — say so on the next hold', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const warnings = () =>
+          warn.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('is the digest schedule running'));
+        await chooseDigest(tech);
+        await send(assigned([tech.principal]));
+        clock.advance(2 * DAY - 60_000);
+        await send(assigned([tech.principal]));
+        expect(warnings()).toEqual([]);
+        clock.advance(60_001);
+        await send(assigned([tech.principal]));
+        expect(warnings()).toHaveLength(1);
+        expect(JSON.parse(warnings()[0]!)).toMatchObject({ level: 'warn', fields: { principal: tech.principal } });
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it('no address is skipped as before, and not held', async () => {
@@ -182,7 +227,7 @@ describe('engine-notifications — digests', () => {
   });
 
   describe('sending the digest', () => {
-    it('composes ONE mail per person from everything held for them, oldest first', async () => {
+    it('composes ONE mail per person from everything held for them, oldest first, and settles what it carried', async () => {
       const other = await person('other@example.test');
       await chooseDigest(tech);
       await chooseDigest(tech, 'order-watched');
@@ -193,8 +238,9 @@ describe('engine-notifications — digests', () => {
       clock.advance(60_000);
       const c = await send(assigned([tech.principal], { vars: { orderId: 'WO-3' } }));
 
+      clock.advance(DAY);
       const result = await (await h.as([PERM.sendDigests])).invoke('notifications/send-digests', {});
-      expect(result).toEqual({ digests: 2, items: 4 });
+      expect(result).toEqual({ digests: 2, items: 4, failed: 0, deferred: 0 });
 
       const mails = await intents();
       expect(mails).toHaveLength(2);
@@ -221,6 +267,11 @@ describe('engine-notifications — digests', () => {
           expect.objectContaining({ principal: other.principal, status: 'requested', request_id: toOther.id }),
         ]),
       );
+      // Each occasion it carried is settled into it: still skipped as `digest`, now with a time.
+      const carried = new Set([a[0]!.deliveryId, a[1]!.deliveryId, b[0]!.deliveryId, c[0]!.deliveryId]);
+      const occasions = (await deliveries({ status: 'skipped' })).filter((d) => carried.has(d.id as string));
+      expect(occasions).toHaveLength(4);
+      for (const o of occasions) expect(o).toMatchObject({ reason: 'digest', settled_at: clock.now() });
 
       const sent = digestsSent().find((d) => d.principal === tech.principal)!;
       expect(sent).toMatchObject({ channel: 'email', cadence: 'daily-digest', status: 'requested', reason: null, request: toTech.id });
@@ -234,17 +285,31 @@ describe('engine-notifications — digests', () => {
       await chooseDigest(tech);
       await send(assigned([tech.principal], { vars: { orderId: '<b>1</b>' } }));
       await send(assigned([tech.principal], { vars: { orderId: '2' } }));
-      await h.run((ctx) => sendDigests(ctx));
+      clock.advance(DAY);
+      await pass();
       const [mail] = await intents();
       const html = (mail!.payload as { html: string }).html;
       expect(html).toContain('<h2>Assigned: &lt;b&gt;1&lt;/b&gt;</h2>');
       expect(html).not.toContain('<b>1</b>');
     });
 
+    it('a digest of whole-document templates is one document: each nested one gives way to its text', async () => {
+      await chooseDigest(tech);
+      const branded = { subject: 'Assigned: {{orderId}}', text: 'You have work order {{orderId}}.', html: '<!doctype html><html><body><p>{{orderId}}</p></body></html>' };
+      await send(assigned([tech.principal], { template: branded, vars: { orderId: 'WO-1' } }));
+      await send(assigned([tech.principal], { template: branded, vars: { orderId: 'WO-2' } }));
+      clock.advance(DAY);
+      await pass();
+      const html = ((await intents())[0]!.payload as { html: string }).html;
+      expect(html).not.toMatch(/<!doctype|<html|<body/i);
+      expect(html).toContain('<p>You have work order WO-1.</p>');
+    });
+
     it('a digest settles like any delivery when the outcome comes back', async () => {
       await chooseDigest(tech);
       await send(assigned([tech.principal]));
-      await h.run((ctx) => sendDigests(ctx));
+      clock.advance(DAY);
+      await pass();
       const [mail] = await intents();
       // A digest is about nobody's entity, so its outcome is about the request itself.
       await settleEmail(h, 'email.sent', mail!.id);
@@ -255,7 +320,8 @@ describe('engine-notifications — digests', () => {
       await chooseDigest(tech);
       const [held1] = await send(assigned([tech.principal]));
       await tech.stub.invoke('notifications/set-my-address', { email: null });
-      await h.run((ctx) => sendDigests(ctx));
+      clock.advance(DAY);
+      await pass();
       expect(await intents()).toEqual([]);
       expect(await held()).toEqual([]);
       expect(await deliveries({ topic: DIGEST_TOPIC })).toMatchObject([{ status: 'skipped', reason: 'no_address' }]);
@@ -265,7 +331,7 @@ describe('engine-notifications — digests', () => {
     });
 
     it('nothing held sends nothing', async () => {
-      expect(await h.run((ctx) => sendDigests(ctx))).toEqual({ digests: 0, items: 0 });
+      expect(await pass()).toEqual({ digests: 0, items: 0, failed: 0, deferred: 0 });
       expect(digestsSent()).toEqual([]);
     });
 
@@ -276,38 +342,118 @@ describe('engine-notifications — digests', () => {
     });
   });
 
-  describe('the daily schedule', () => {
-    it('is declared on the engine, under its own key', () => {
+  describe('who is due, and when', () => {
+    it('the schedule ticks every few minutes, under its own key', () => {
       expect(notificationsManifest.schedules).toEqual([
-        { operation: 'notifications/send-digests', cadence: { everyMinutes: 1440 }, permissions: ['notifications:send-digests'] },
+        {
+          operation: 'notifications/send-digests',
+          cadence: { everyMinutes: DIGEST_TICK_MINUTES },
+          permissions: ['notifications:send-digests'],
+        },
       ]);
+      expect(DIGEST_TICK_MINUTES).toBeLessThan(60);
     });
 
-    it('sends once a day, on the clock: not before the day is up, and then everything held', async () => {
-      // The first pass after provisioning fires and finds nothing.
+    it('a person is due once their oldest held message is a day old: not a tick sooner, and then everything held', async () => {
+      // The first pass after provisioning fires and finds nobody due.
       expect(await sweep()).toMatchObject({ fired: 1, failed: 0 });
       await chooseDigest(tech);
       await send(assigned([tech.principal], { vars: { orderId: 'WO-1' } }));
 
-      clock.advance(DAY - 60_000);
+      clock.advance(DAY - TICK);
       await send(assigned([tech.principal], { vars: { orderId: 'WO-2' } }));
-      expect(await sweep()).toMatchObject({ fired: 0, skipped: 1 });
+      expect(await sweep()).toMatchObject({ fired: 1, failed: 0 });
       expect(await intents()).toEqual([]);
 
-      clock.advance(60_000);
+      clock.advance(TICK);
       expect(await sweep()).toMatchObject({ fired: 1, failed: 0 });
       const [mail, ...rest] = await intents();
       expect(rest).toEqual([]);
       expect(mail!.payload).toMatchObject({ to: 'tech@example.test', subject: 'Assigned: WO-1 (+1)' });
 
-      // What arrives after is held for the next day's digest.
+      // At most one a day: what arrives after waits its own day, however often the schedule ticks.
       await send(assigned([tech.principal], { vars: { orderId: 'WO-3' } }));
-      clock.advance(DAY - 1);
-      await sweep();
+      for (let t = 0; t < DAY / TICK - 1; t += 1) {
+        clock.advance(TICK);
+        await sweep();
+      }
       expect(await intents()).toHaveLength(1);
-      clock.advance(1);
+      clock.advance(TICK);
       await sweep();
       expect(await intents()).toHaveLength(2);
+    });
+
+    it('each person is due on their own clock, not on when the schedule first ran', async () => {
+      const other = await person('other@example.test');
+      await chooseDigest(tech);
+      await chooseDigest(other);
+      await send(assigned([tech.principal]));
+      clock.advance(DAY / 2);
+      await send(assigned([other.principal]));
+      clock.advance(DAY / 2);
+      expect(await pass()).toMatchObject({ digests: 1 });
+      expect((await intents()).map((i) => (i.payload as { to: string }).to)).toEqual(['tech@example.test']);
+      clock.advance(DAY / 2);
+      expect(await pass()).toMatchObject({ digests: 1 });
+      expect((await intents()).map((i) => (i.payload as { to: string }).to).sort()).toEqual([
+        'other@example.test',
+        'tech@example.test',
+      ]);
+    });
+  });
+
+  describe('the send backlog has room for so many, and a digest never takes the last of it', () => {
+    /** `n` people taking `order-assigned` as a digest, each holding one occasion. */
+    const crowd = async (n: number) => {
+      const people = [];
+      for (let i = 0; i < n; i += 1) {
+        const p = await person(`p${i}@example.test`);
+        await chooseDigest(p);
+        people.push(p);
+      }
+      await send(assigned(people.map((p) => p.principal)));
+      return people;
+    };
+    const room = MAX_PENDING_PLATFORM_REQUESTS - DIGEST_RESERVE;
+    const drainAll = async () => {
+      for (const i of await intents()) if (i.status === 'pending') await settleEmail(h, 'email.sent', i.id);
+    };
+
+    it(`more people than the cap allows: a pass sends ${room}, never throws, and the rest go on later ticks — once each`, async () => {
+      const people = await crowd(MAX_PENDING_PLATFORM_REQUESTS + 8);
+      clock.advance(DAY);
+      const first = await (await h.as([PERM.sendDigests])).invoke('notifications/send-digests', {});
+      expect(first).toEqual({ digests: room, items: room, failed: 0, deferred: people.length - room });
+      expect(await intents()).toHaveLength(room);
+
+      // Nothing drained yet: the next tick finds no room, defers everyone, and still succeeds.
+      clock.advance(TICK);
+      expect(await sweep()).toMatchObject({ fired: 1, failed: 0 });
+      expect(await intents()).toHaveLength(room);
+
+      await drainAll();
+      clock.advance(TICK);
+      expect(await sweep()).toMatchObject({ fired: 1, failed: 0 });
+      const to = (await intents()).map((i) => (i.payload as { to: string }).to).sort();
+      expect(to).toEqual(people.map((_, i) => `p${i}@example.test`).sort());
+      expect(await held()).toEqual([]);
+      expect(digestsSent()).toHaveLength(people.length);
+    });
+
+    it('sends waiting on the drain shrink the room a pass takes', async () => {
+      await crowd(20);
+      // Ten immediate mails nobody has drained yet.
+      for (let i = 0; i < 10; i += 1) await send(assigned([tech.principal], watched));
+      clock.advance(DAY);
+      expect(await pass()).toEqual({ digests: room - 10, items: room - 10, failed: 0, deferred: 20 - (room - 10) });
+    });
+
+    it('a full digest pass leaves room for mail that must not wait', async () => {
+      await crowd(room + 4);
+      clock.advance(DAY);
+      expect(await pass()).toMatchObject({ digests: room, deferred: 4 });
+      const [outcome] = await send(assigned([tech.principal], locked));
+      expect(outcome).toMatchObject({ status: 'requested' });
     });
   });
 
@@ -332,16 +478,23 @@ describe('engine-notifications — digests', () => {
     const shippedRecorded = z.object({ status: z.enum(['requested', 'skipped']), reason: z.string().nullable(), topic: z.string() });
 
     await chooseDigest(tech);
+    await chooseDigest(tech, 'order-watched');
     await send(assigned([tech.principal]));
+    await send(assigned([tech.principal], watched));
+    // Withdrawn by a switch-off: its delivery settles skipped/muted.
+    await tech.stub.invoke('notifications/set-my-preference', { topic: 'order-watched', enabled: false });
     await tech.stub.invoke('notifications/set-my-address', { email: null });
-    await send(assigned([tech.principal], watched)); // skipped as no_address beside the held one
+    await send(assigned([tech.principal], locked)); // skipped as no_address beside the held one
     await tech.stub.invoke('notifications/set-my-address', { email: 'tech@example.test' });
-    await h.run((ctx) => sendDigests(ctx));
+    clock.advance(DAY);
+    await pass();
 
     const rows = await deliveries();
     expect(rows.map((r) => [r.topic, r.status, r.reason])).toEqual(
       expect.arrayContaining([
         ['order-assigned', 'skipped', 'digest'],
+        ['order-watched', 'skipped', 'muted'],
+        ['account-locked', 'skipped', 'no_address'],
         [DIGEST_TOPIC, 'requested', null],
       ]),
     );
@@ -366,7 +519,8 @@ describe('engine-notifications — digests', () => {
     );
     // Only theirs: the other person's held item waits for their digest.
     expect(await held()).toEqual([expect.objectContaining({ principal: other.principal })]);
-    await h.run((ctx) => sendDigests(ctx));
+    clock.advance(DAY);
+    await pass();
     expect((await intents()).map((i) => (i.payload as { to: string }).to)).toEqual(['other@example.test']);
   });
 });

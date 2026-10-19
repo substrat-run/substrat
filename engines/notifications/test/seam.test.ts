@@ -3,14 +3,25 @@
  * publishes, the caller gets a throw, never wrong data. The drift is simulated by moving the
  * table under a running engine, which is what a version skew looks like from inside.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { isPlatformRequest } from '@substrat-run/contracts';
+import { manualClock } from '@substrat-run/kernel';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
-import { NOTIFICATIONS_PERM as PERM, notificationsModule, notify } from '../src/index.js';
+import {
+  NOTIFICATIONS_PERM as PERM,
+  notificationsModule,
+  notify,
+  type NotificationsDigestFailedPayload,
+} from '../src/index.js';
+
+const DAY = 24 * 60 * 60_000;
 
 describe('engine-notifications — the seam is parsed, not asserted', () => {
   let h: EngineHarness;
+  let clock: ReturnType<typeof manualClock>;
   beforeEach(async () => {
-    h = await engineHarness({ modules: [notificationsModule] });
+    clock = manualClock('2026-03-02T07:00:00.000Z');
+    h = await engineHarness({ modules: [notificationsModule], clock: clock.read });
   });
   afterEach(async () => {
     await h.close();
@@ -68,15 +79,46 @@ describe('engine-notifications — the seam is parsed, not asserted', () => {
     await expect(me.stub.invoke('notifications/my-preferences', {})).rejects.toMatchObject({ code: 'internal' });
   });
 
-  it('a held item whose text stopped being text throws rather than being mailed, and stays held', async () => {
-    const me = await someone();
-    await me.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: true, cadence: 'daily-digest' });
-    await assign([me.principal], 'held');
-    await drift(`UPDATE notifications_digest_items SET subject = X'00'`);
-    const schedule = await h.as([PERM.sendDigests]);
-    await expect(schedule.invoke('notifications/send-digests', {})).rejects.toMatchObject({ code: 'internal' });
-    // The throw rolled the whole digest back: the item is still held, and no mail was written.
-    expect(await h.run((ctx) => ctx.sql.query('SELECT id FROM notifications_digest_items'))).toHaveLength(1);
-    expect(await h.host.listPlatformRequestHistory(h.tenant, h.scope)).toEqual([]);
+  it("a held item that stopped being text throws for its person only: theirs stays held, everyone else's goes out, and it is said", async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const me = await someone();
+      const other = await someone();
+      for (const p of [me, other]) {
+        await p.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: true, cadence: 'daily-digest' });
+      }
+      await assign([me.principal, other.principal], 'held');
+      await drift(`UPDATE notifications_digest_items SET subject = X'00' WHERE principal = '${me.principal}'`);
+      clock.advance(DAY);
+      const schedule = await h.as([PERM.sendDigests]);
+
+      // The pass succeeds: the other person's digest is written, mine is not, and nothing of mine was let go.
+      expect(await schedule.invoke('notifications/send-digests', {})).toEqual({ digests: 1, items: 1, failed: 1, deferred: 0 });
+      const intents = (await h.host.listPlatformRequestHistory(h.tenant, h.scope)).filter(isPlatformRequest);
+      expect(intents).toHaveLength(1);
+      expect(intents[0]!.payload).toMatchObject({ subjectId: other.principal });
+      const heldNow = () =>
+        h.run((ctx) => ctx.sql.query<{ principal: string; failed_at: string | null }>('SELECT principal, failed_at FROM notifications_digest_items'));
+      expect(await heldNow()).toEqual([{ principal: me.principal, failed_at: clock.now() }]);
+
+      // Said on the spine, naming the person and what waits, and on an error line with the cause.
+      const failed = () => h.eventsOfType('notifications.digest-failed').map((e) => e.payload as NotificationsDigestFailedPayload);
+      const retryAt = new Date(Date.parse(clock.now()) + DAY).toISOString();
+      expect(failed()).toEqual([{ principal: me.principal, channel: 'email', cadence: 'daily-digest', items: 1, code: 'internal', retryAt }]);
+      const lines = error.mock.calls.map(([l]) => JSON.parse(String(l)) as { fields: Record<string, unknown>; message: string });
+      expect(lines).toEqual([
+        expect.objectContaining({ fields: expect.objectContaining({ principal: me.principal, items: 1 }), message: expect.stringContaining('does not match the shape') }),
+      ]);
+
+      // Not retried on every tick: a window passes first, then it is tried — and said — again.
+      clock.advance(DAY - 60_000);
+      expect(await schedule.invoke('notifications/send-digests', {})).toEqual({ digests: 0, items: 0, failed: 0, deferred: 0 });
+      expect(failed()).toHaveLength(1);
+      clock.advance(60_000);
+      expect(await schedule.invoke('notifications/send-digests', {})).toMatchObject({ failed: 1 });
+      expect(failed()).toHaveLength(2);
+    } finally {
+      error.mockRestore();
+    }
   });
 });

@@ -32,14 +32,28 @@ when the platform's drain writes the outcome back.
 
 **Digests.** A person can take a topic as a `daily-digest` instead of `immediate`, unless the
 topic is required. `notify` then records the occasion `skipped` with reason `digest` and holds
-the rendered message. The engine's manifest declares a daily schedule,
-`notifications/send-digests`, run by the engine's system principal under
-`notifications:send-digests`, a key reserved to system principals. It sends each person one mail
-of what was held, through the same `requestEmail` and delivery row, under the reserved topic
-`@digest`, and emits `notifications.digest-sent` naming the occasions carried. A mute still
-wins: switching a topic off withdraws what is held for it. The digest adds no wording of its
-own: one held message goes out as it is, and several go out under the first one's subject with
-`(+N)`.
+the rendered message.
+
+The engine's manifest declares a schedule, `notifications/send-digests`, every 15 minutes. It
+runs as the engine's system principal under `notifications:send-digests`, a key reserved to
+system principals. A person is due once their oldest held message is a day old, so nobody gets
+more than one digest a day and nothing waits much longer than that.
+
+Each due person gets one mail through the same `requestEmail` and delivery row, under the
+reserved topic `@digest`, and `notifications.digest-sent` names the occasions it carried. A pass
+sends to at most the room left in the scope's backlog of 32 pending sends, less 8 kept for
+immediate mail, and defers everyone else to the next pass. Each person is their own
+sub-transaction: one whose digest cannot be composed stays held, is reported by
+`notifications.digest-failed`, and waits a day before the next try.
+
+A mute still wins: switching a topic off withdraws what is held for it and settles those
+occasions `skipped`/`muted`. The digest adds no wording of its own: one held message goes out as
+it is, and several go out under the first one's subject with `(+N)`, as one document.
+
+Held messages wait, and nothing fails, wherever the schedule cannot run. That covers an install
+provisioned before the schedule existed, until its provision runs again, and a self-hosted
+server that runs no sweeper. A hold whose person's oldest message is two days old logs a
+warning.
 
 What it holds:
 
@@ -50,7 +64,7 @@ What it holds:
 | `notifications_mutes` | a topic a person switched off, per channel | none: no personal data beyond the principal id |
 | `notifications_deliveries` | what became of each (dedupe key, topic, principal, channel); a digest is one more, under topic `@digest` | none: principal and request id only, never the address |
 | `notifications_cadences` | a topic a person takes as a digest, per channel; no row is `immediate` | none: no personal data beyond the principal id |
-| `notifications_digest_items` | each rendered message held for a person's next digest, deleted when it is sent | deleted with the principal (K-46) |
+| `notifications_digest_items` | each rendered message held for a person's next digest, deleted when it is sent or withdrawn; `failed_at` marks a person whose digest failed | deleted with the principal (K-46); their occasions' deliveries keep `digest`, as a cancelled send's keeps `requested` |
 
 A vertical composing it needs the `emailSender` grant: without it the platform refuses
 every send, and each delivery settles `refused` with reason `permission_denied`.
@@ -62,6 +76,6 @@ Not built, in the order a vertical is expected to ask for them:
 
 - channels beyond email;
 - tenant-edited and per-locale templates, a digest's own wording among them;
-- quiet hours, and the time of day a digest goes out;
+- quiet hours, and a digest at a chosen time of day;
 - digest cadences other than daily;
 - a person's own delivery history.

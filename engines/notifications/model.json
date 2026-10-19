@@ -198,6 +198,16 @@
           },
           "queued_at": {
             "type": "string"
+          },
+          "failed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -211,7 +221,8 @@
           "html",
           "about_type",
           "about_id",
-          "queued_at"
+          "queued_at",
+          "failed_at"
         ],
         "additionalProperties": false
       },

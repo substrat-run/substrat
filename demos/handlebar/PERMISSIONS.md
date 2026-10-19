@@ -89,7 +89,7 @@ schedule can do exactly this and no more.
 
 | Operation | Cadence | System principal | Permissions |
 | --- | --- | --- | --- |
-| `notifications/send-digests` | every 1440 min | `system:@substrat-run/engine-notifications` | `notifications:send-digests` |
+| `notifications/send-digests` | every 15 min | `system:@substrat-run/engine-notifications` | `notifications:send-digests` |
 
 ## 6. Operations — which key each checks
 

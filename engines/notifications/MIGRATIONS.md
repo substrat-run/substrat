@@ -12,4 +12,4 @@ once it is on the base branch: add a new migration instead.
 | Module | Version | sha256 |
 |---|---|---|
 | @substrat-run/engine-notifications | 0001-init | `5c93d2eac1e05ffaab1a77a132d615fdec6bedbfd742be5f51c405724fed2310` |
-| @substrat-run/engine-notifications | 0002-digests | `cef42ba8d7ae1cf8e0674b4c972fac73c11852f63133d003510b9453b6de398f` |
+| @substrat-run/engine-notifications | 0002-digests | `0e8856233fa2d93a844d07096ab8f5586e10bb5f26737ddfc820f61ed5a44e2e` |

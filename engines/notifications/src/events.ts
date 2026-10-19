@@ -24,7 +24,10 @@ import type { OperationContext } from '@substrat-run/kernel';
  * `requested`: a send intent was written, and `request` is its id. `skipped`: nothing was
  * sent on its own, by preference (`reason: 'muted'`), for want of an address (`'no_address'`),
  * or because the person takes this topic in a digest (`'digest'`): the occasion is held for
- * their next one, and that digest's `notifications.digest-sent` names it by this `deliveryId`.
+ * their next one. What becomes of a held occasion is told later, naming this `deliveryId`: the
+ * `notifications.digest-sent` that carried it, or the `notifications.preference-set` whose
+ * switch-off withdrew it (its delivery then reads `skipped`/`muted`). An erasure of the person
+ * deletes it with no event, like a held send it cancels, and its delivery stays as it was.
  * `dedupeKey` is the occasion as the caller named it — from a consumer, the triggering event's id.
  *
  * A digest is a delivery as well, under the reserved topic `@digest` (no vertical topic can be
@@ -59,7 +62,7 @@ export interface NotificationsDeliverySettledPayload {
 
 /**
  * A person switched one topic on or off for one channel, and perhaps chose when it arrives.
- * A switch-off also withdraws that topic's items still held for their digest.
+ * A switch-off also withdraws that topic's occasions still held for their digest.
  */
 export interface NotificationsPreferenceSetPayload {
   principal: string;
@@ -71,6 +74,11 @@ export interface NotificationsPreferenceSetPayload {
    * Absent on events written before digests existed.
    */
   cadence?: 'immediate' | 'daily-digest';
+  /**
+   * The deliveries of the occasions this switch-off withdrew from the person's digest, each now
+   * `skipped`/`muted`. Absent when it withdrew none.
+   */
+  withdrawn?: string[];
 }
 
 /** A person set or cleared where their notifications go — whether, never what. */
@@ -113,6 +121,22 @@ export interface NotificationsDigestSentPayload {
   items: NotificationsDigestItem[];
 }
 
+/**
+ * A person's digest was due and could not be composed — a held message that no longer reads,
+ * say. Nothing was sent for them and nothing of theirs was let go: their `items` stay held, and
+ * the next attempt is at `retryAt`, a window later. Everyone else's digest in the same pass went
+ * out regardless. `code` is the platform's error code; the cause itself is on the error line the
+ * pass writes, not here.
+ */
+export interface NotificationsDigestFailedPayload {
+  principal: string;
+  channel: string;
+  cadence: 'daily-digest';
+  items: number;
+  code: string;
+  retryAt: string;
+}
+
 export type NotificationsEvents = {
   events: {
     'notifications.delivery-recorded': NotificationsDeliveryRecordedPayload;
@@ -121,6 +145,7 @@ export type NotificationsEvents = {
     'notifications.recipient-updated': NotificationsRecipientUpdatedPayload;
     'notifications.topic-recorded': NotificationsTopicRecordedPayload;
     'notifications.digest-sent': NotificationsDigestSentPayload;
+    'notifications.digest-failed': NotificationsDigestFailedPayload;
   };
 };
 
@@ -135,6 +160,7 @@ export const notificationsEventVersions = {
   'notifications.recipient-updated': 1,
   'notifications.topic-recorded': 1,
   'notifications.digest-sent': 1,
+  'notifications.digest-failed': 1,
 } as const satisfies Record<NotificationsEventType, number>;
 
 /** The manifest's `events.emits`, read off {@link notificationsEventVersions}. */
