@@ -15,7 +15,7 @@
  */
 import { SELF, env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { scopeId, tenantId } from '@substrat-run/contracts';
+import { MCP_RESOURCES_CONFIG_PREFIX, mcpResourceOf, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from 'jose';
 
@@ -835,9 +835,9 @@ describe('auth-server mints and retires a preview’s own client (#1704)', () =>
 
   it('mints for the preview’s MCP endpoint once registered under the preview’s key, not after the reap — prod’s row as it was', async () => {
     const w = await issuerWithParent();
-    const prodMcp = `https://${parentHost}/api/mcp`;
-    const previewMcp = 'https://desk--pr-7.acme.test/api/mcp';
-    expect((await configure(w.scope, [{ key: `substrat:resources:${w.parent}`, value: JSON.stringify([prodMcp]) }])).status).toBe(200);
+    const prodMcp = mcpResourceOf(`https://${parentHost}`);
+    const previewMcp = mcpResourceOf('https://desk--pr-7.acme.test');
+    expect((await configure(w.scope, [{ key: `${MCP_RESOURCES_CONFIG_PREFIX}${w.parent}`, value: JSON.stringify([prodMcp]) }])).status).toBe(200);
     const prodRow = async () => (await dumpOf(w.scope))['oauth_resource']!.find((r) => r.includes(prodMcp));
     const prodBefore = await prodRow();
     expect(prodBefore).toBeDefined();
@@ -847,7 +847,7 @@ describe('auth-server mints and retires a preview’s own client (#1704)', () =>
     // The plane's create: the preview's own client, then its endpoint under the preview's key.
     const preview = scopeId.parse(ulid());
     expect((await previewCall('POST', '/internal/preview-client', mintBody(w, preview))).status).toBe(201);
-    const key = `substrat:resources:${preview}`;
+    const key = `${MCP_RESOURCES_CONFIG_PREFIX}${preview}`;
     expect((await configure(w.scope, [{ key, value: JSON.stringify([previewMcp]) }])).status).toBe(200);
     expect((await authorizeFor(w.scope, client, previewMcp)).startsWith('/login?')).toBe(true);
     expect(await prodRow()).toBe(prodBefore);

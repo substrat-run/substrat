@@ -57,10 +57,9 @@ import {
  *   - only whoever may create the preview triggers any of it.
  *
  * The issuer is a faithful fake of `demos/auth-server`'s three routes and its resources
- * delivery, speaking through the
- * REAL `VerticalClient` (so the skew handling under test is the shipped one) and parsing every
- * request with the contract's own schemas. The issuer's real implementation is proven against
- * the same schemas in its own package, on node and on workerd.
+ * delivery, speaking through the REAL `VerticalClient` (so the skew handling under test is the
+ * shipped one) and parsing every request with the contract's own schemas. The issuer's real
+ * implementation is proven against the same schemas in its own package, on node and on workerd.
  */
 
 const staff = platformActorId.parse(ulid());
@@ -125,7 +124,7 @@ class FakeIssuers {
 
   /** The identifiers registered for `owner` at `scope` — what this issuer would mint for. */
   registered(scope: string, owner: string): string[] {
-    return [...(this.instances.get(scope)?.resources ?? new Map<string, string>())]
+    return [...(this.instances.get(scope)?.resources ?? [])]
       .filter(([, o]) => o === owner)
       .map(([identifier]) => identifier);
   }
@@ -159,8 +158,8 @@ class FakeIssuers {
       new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
     // `/internal/configure` predates the preview-client routes (#1619), so even a deployment
     // built before those takes it.
-    const configures = url.pathname === '/internal/configure';
-    if (!configures && (!url.pathname.startsWith(PREVIEW_CLIENT_PATH) || this.predates)) {
+    const isConfigure = url.pathname === '/internal/configure';
+    if (!isConfigure && (!url.pathname.startsWith(PREVIEW_CLIENT_PATH) || this.predates)) {
       return json(501, { error: `auth-server does not implement ${method} ${url.pathname}` });
     }
     const fail = this.failNext.get(`${method} ${url.pathname}`);
@@ -170,7 +169,7 @@ class FakeIssuers {
     }
     const inst = this.instances.get(String(body.scopeId));
     if (!inst || inst.tenantId !== body.tenantId) return json(403, { error: 'not an issuer of that tenant' });
-    if (configures) {
+    if (isConfigure) {
       this.configure(inst, body.entries as Array<{ key: string; value: string }>);
       return json(200, { applied: (body.entries as unknown[]).length });
     }
@@ -446,13 +445,15 @@ describe('a preview of an app on a team auth server gets its own login (#1704)',
 });
 
 describe('the reap deletes the preview’s client (#1704)', () => {
-  it('DELETE removes the preview’s clients before the preview, and prod’s survives', async () => {
+  it('DELETE removes the preview’s clients and MCP registration before the preview, and prod’s survive', async () => {
     const out = await created({ tag: 'pr-7', versionId: versions[1] });
     expect(issuers.tagged(issuerScope, out.scopeId)).toHaveLength(1);
     const del = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
     expect(del.status).toBe(200);
     expect(issuers.tagged(issuerScope, out.scopeId)).toEqual([]);
     expect(issuers.instances.get(issuerScope)!.clients.has(PROD_CLIENT)).toBe(true);
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
   });
 
   it('a reap whose client delete fails keeps the preview, so the retry still finds it', async () => {
@@ -469,7 +470,7 @@ describe('the reap deletes the preview’s client (#1704)', () => {
 });
 
 describe('the expiry sweep retires an expired preview’s client too (#1704)', () => {
-  it('as apps/control-plane composes it: the preview’s client goes with it, a snapshot is left alone', async () => {
+  it('as apps/control-plane composes it: the preview’s client and MCP registration go with it, a snapshot is left alone', async () => {
     const out = await created({ tag: 'pr-7', versionId: versions[1], ttlHours: 1 });
     await host.admin.setScopeExpiresAt(staff, tenant, out.scopeId, new Date(Date.now() - 1000).toISOString());
     const issuerClient = new VerticalClient({ fetch: issuers.fetch, platformSecret: 'test' });
@@ -485,6 +486,8 @@ describe('the expiry sweep retires an expired preview’s client too (#1704)', (
     expect(report.snapshotsReaped).toBeGreaterThanOrEqual(1);
     expect(issuers.tagged(issuerScope, out.scopeId)).toEqual([]);
     expect(issuers.instances.get(issuerScope)!.clients.has(PROD_CLIENT)).toBe(true);
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
     // Anything that is not a preview fork has no client to retire, and is never asked about.
     const before = issuers.calls.length;
     expect(await retireClientsOfReapedScope(deps, (await host.admin.getScopeRecord(staff, tenant, prod))!)).toEqual([]);
@@ -541,14 +544,6 @@ describe('a preview’s MCP endpoint is registered where its login is (#1704)', 
     expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
   });
 
-  it('the reap un-registers it, and prod’s stays', async () => {
-    const out = await created({ tag: 'pr-7', versionId: versions[1] });
-    const del = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
-    expect(del.status).toBe(200);
-    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
-    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
-  });
-
   it('a reap whose un-registration fails keeps the preview, so the retry still finds it', async () => {
     const out = await created({ tag: 'pr-7', versionId: versions[1] });
     issuers.failNext.set('POST /internal/configure', 503);
@@ -559,22 +554,6 @@ describe('a preview’s MCP endpoint is registered where its login is (#1704)', 
     const retried = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
     expect(retried.status).toBe(200);
     expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
-  });
-
-  it('the expiry sweep, as apps/control-plane composes it, un-registers it too', async () => {
-    const out = await created({ tag: 'pr-7', versionId: versions[1], ttlHours: 1 });
-    await host.admin.setScopeExpiresAt(staff, tenant, out.scopeId, new Date(Date.now() - 1000).toISOString());
-    const issuerClient = new VerticalClient({ fetch: issuers.fetch, platformSecret: 'test' });
-    await runPlatformSweep(host, {
-      actor: staff,
-      drainRetries: false,
-      deleteSnapshotFn: async (t, s) => {
-        await retireClientsOfReapedScope({ admin: host.admin, actor: staff, issuerClient: async () => issuerClient }, await host.admin.getScopeRecord(staff, t, s));
-        await host.deleteSnapshot(staff, t, s);
-      },
-    });
-    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
-    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
   });
 
   it('a registration that fails does not fail the login — the note says so, and the next push registers it', async () => {
@@ -715,10 +694,10 @@ describe('version skew and transients read as what they are (#1704)', () => {
   it('the reap skips an auth server that predates the routes — it cannot have minted, nor registered', async () => {
     await created({ tag: 'pr-7', versionId: versions[1] });
     issuers.predates = true;
-    const from = issuers.calls.length;
+    const registrations = configures().length;
     const del = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
     expect(del.status).toBe(200);
-    expect(issuers.calls.slice(from).filter((c) => c.path === '/internal/configure')).toEqual([]);
+    expect(configures()).toHaveLength(registrations);
   });
 });
 

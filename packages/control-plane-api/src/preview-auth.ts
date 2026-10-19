@@ -74,7 +74,7 @@ const MAX_ATTEMPTS = 3;
 export interface PreviewAuthDeps {
   admin: Pick<HostAdmin, 'listScopes' | 'listVerticals' | 'listHostnames' | 'getScopeRecord'>;
   actor: PlatformActorId;
-  /** The deployment serving an ISSUER scope — where its `/internal/preview-client` lives. */
+  /** The deployment serving an ISSUER scope — where its `/internal/preview-client` and `/internal/configure` live. */
   issuerClient(scope: Scope): Promise<VerticalClient | undefined>;
 }
 
@@ -313,7 +313,6 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
           ` MCP: the preview's endpoint could not be registered there (${reasonOf(e)}), so an MCP client ` +
           `pointed at the preview gets invalid_target until the next push registers it.`,
       );
-    const wiredNow = (extra = '') => wired(claim.scope.id, issuer, minted.clientId, callbackUrl, `${mcp}${extra}`);
 
     let retired;
     try {
@@ -321,11 +320,11 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
     } catch (e) {
       // Delivered and bound: the login works. What is left is older clients, which the next
       // push or the reap removes — said, not hidden.
-      return wiredNow(` Older clients of this preview could not be removed yet (${reasonOf(e)}); the next push or the reap removes them.`);
+      return wired(claim.scope.id, issuer, minted.clientId, callbackUrl, `${mcp} Older clients of this preview could not be removed yet (${reasonOf(e)}); the next push or the reap removes them.`);
     }
     if (retired.kept === false) continue; // our own client vanished while our version is bound
     if ((await bound()) === 'gone') return reapedMeanwhile();
-    return wiredNow();
+    return wired(claim.scope.id, issuer, minted.clientId, callbackUrl, mcp);
   }
   throw noLogin(`its client kept disappearing at the auth server ${claim.scope.id} (${MAX_ATTEMPTS} attempts)`);
 }
@@ -370,8 +369,9 @@ export async function retireAllPreviewClients(
 
 /**
  * The reap's half for ANY scope about to go, as the platform sweep's expiry GC sees it: a
- * preview fork's clients are retired, and anything else — a snapshot, a clean room — has none
- * and is left alone. One predicate for the interactive reap and the sweep, so they agree.
+ * preview fork's clients are retired and its MCP registration cleared, and anything else — a
+ * snapshot, a clean room — has neither and is left alone. One predicate for the interactive
+ * reap and the sweep, so they agree.
  */
 export async function retireClientsOfReapedScope(deps: PreviewAuthDeps, scope: Scope | undefined): Promise<string[]> {
   if (!scope || scope.kind !== 'preview' || !scope.forkedFrom) return [];

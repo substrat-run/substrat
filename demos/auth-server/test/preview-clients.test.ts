@@ -93,13 +93,19 @@ function placeBinding(app: string, tenant: string, clientId: string): void {
   );
 }
 
-/** What the dashboard's MCP registration writes (#1619) — a platform-marked resource row. */
-function resourceBinding(app: string): void {
+const PARENT_MCP = mcpResourceOf(`https://${PARENT_HOST}`);
+
+/** The platform's resources delivery for one scope (#1619), as `/internal/configure` applies it. */
+const deliver = (app: string, identifiers: string[]) =>
   syncPlatformResources(
     sql,
-    parseResourcesEntry(`${RESOURCES_KEY_PREFIX}${app}`, JSON.stringify([mcpResourceOf(`https://${PARENT_HOST}`)])),
+    parseResourcesEntry(`${RESOURCES_KEY_PREFIX}${app}`, identifiers.length ? JSON.stringify(identifiers) : ''),
     Date.now(),
   );
+
+/** What the dashboard's MCP registration writes (#1619) — a platform-marked resource row. */
+function resourceBinding(app: string): void {
+  deliver(app, [PARENT_MCP]);
 }
 
 const check = (over: Partial<{ tenantId: string; parentScopeId: string; parentRedirectUris: string[] }> = {}) =>
@@ -339,16 +345,9 @@ describe('retiring preview clients (#1704) — by tag, and by generation', () =>
 });
 
 describe('a preview’s MCP registration beside its client (#1704)', () => {
-  const PARENT_MCP = mcpResourceOf(`https://${PARENT_HOST}`);
   const PREVIEW_MCP = mcpResourceOf('https://desk-acme--pr-7.global.substrat.run');
-  /** The platform's delivery for one scope, as `/internal/configure` applies it. */
-  const deliver = (app: string, identifiers: string[]) =>
-    syncPlatformResources(
-      sql,
-      parseResourcesEntry(`${RESOURCES_KEY_PREFIX}${app}`, identifiers.length ? JSON.stringify(identifiers) : ''),
-      Date.now(),
-    );
   const resourceRow = (identifier: string) => db.prepare('SELECT * FROM oauth_resource WHERE identifier = ?').get(identifier);
+  const resourceRows = () => db.prepare('SELECT * FROM oauth_resource ORDER BY identifier').all();
 
   it('leaves the parent’s binding — the proof the next push mints on — as it was, through its registration and its clear', async () => {
     await dcr([PARENT_CALLBACK], 'Desk');
@@ -387,8 +386,8 @@ describe('a preview’s MCP registration beside its client (#1704)', () => {
     const preview = scopeId.parse(ulid());
     await mintPreviewClient(sql, register, mintInput(preview), transaction);
     deliver(preview, [PREVIEW_MCP]);
-    const before = db.prepare('SELECT * FROM oauth_resource ORDER BY identifier').all();
+    const before = resourceRows();
     retire(preview);
-    expect(db.prepare('SELECT * FROM oauth_resource ORDER BY identifier').all()).toEqual(before);
+    expect(resourceRows()).toEqual(before);
   });
 });

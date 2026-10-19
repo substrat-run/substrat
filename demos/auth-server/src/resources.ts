@@ -24,7 +24,7 @@ import type { SqlExec } from './introspect.js';
  * or an Identity change away from this issuer). No unauthenticated request can create a
  * row: `/internal/configure` answers only the platform secret.
  *
- * A per-PR PREVIEW of a vertical is the one other writer (#1704): when this issuer signs a
+ * A per-PR PREVIEW of a vertical gets the same entry (#1704): when this issuer signs a
  * preview in with a client of its own (`preview-clients.ts`), the control plane delivers the
  * same entry under the PREVIEW's scope id, naming its `--<tag>` hostname, and `""` when the
  * preview is reaped. It is a scope like any other here, so the two keys never reach each
