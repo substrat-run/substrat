@@ -43,6 +43,8 @@ export default defineConfig({
     }),
   ],
   test: {
+    // vitest 5.0.4+ turns the module cache on by default, which crashes the workerd pool (WebSocket 1009).
+    fsModuleCache: false,
     include: ['test/**/*.test.ts'],
     // When the pool reloads the shared worker between test files, the first in-flight
     // Durable Object fetch can fail with "…invalidating this Durable Object. Please

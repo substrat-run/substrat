@@ -45,6 +45,8 @@ export default defineConfig({
   // One deployment walked through provision → pass → delete: storage carries across `it`s.
   plugins: [cloudflareTest({ wrangler: { configPath: config } })],
   test: {
+    // vitest 5.0.4+ turns the module cache on by default, which crashes the workerd pool (WebSocket 1009).
+    fsModuleCache: false,
     include: ['supplied-sweeper/**/*.test.ts'],
     testTimeout: 30_000,
     // One file at a time, as the old pool's `singleWorker` ran them.
