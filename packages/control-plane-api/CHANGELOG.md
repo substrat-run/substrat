@@ -1,5 +1,24 @@
 # @substrat-run/control-plane-api
 
+## 0.151.0
+
+### Patch Changes
+
+- f614b00: Prepares the graph store driver's registration. No store driver is registered yet, so a push that declares `driver: 'graph'` is still refused with "declares driver 'graph', which is not registered".
+
+  `assertScopeStoresRegistered`, `assertDeclaredScopeStores` and `assertSandboxContract` take the registry they judge against, `STORE_DRIVERS` when none is passed, and the control plane's deploy route and both uploads read its `storeDrivers` option.
+
+  Once a driver is registered, a scope whose running version cannot be named, or whose manifest cannot be read, answers 503 before a backup, a full export, a snapshot, a reap, a restore, a subject erasure, the storage gauge or a sweep's wipe only where a version of its vertical has declared a store. A scope of a vertical that never declared one proceeds as it did before stores, and a vertical whose declarations cannot be read still refuses.
+
+- Updated dependencies [8273013]
+- Updated dependencies [4efc88d]
+- Updated dependencies [a667881]
+- Updated dependencies [f614b00]
+- Updated dependencies [a00c87a]
+  - @substrat-run/contracts@0.151.0
+  - @substrat-run/kernel@0.151.0
+  - @substrat-run/control-plane-client@0.3.2
+
 ## 0.150.0
 
 ### Patch Changes

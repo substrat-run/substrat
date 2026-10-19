@@ -1,5 +1,72 @@
 # @substrat-run/vertical-host
 
+## 0.151.0
+
+### Minor Changes
+
+- e829918: Delegated calls at a vertical's MCP endpoint: another app of the team acting for a user, with a token the team auth server minted by RFC 8693 token exchange.
+
+  `@substrat-run/vertical-auth`: a bearer carrying `act` is now refused on every configuration unless the vertical opts in with `delegation: { actors }` (on `instanceAuthFor`, `selectAuthProvider`, `oidcRpAuthProvider` or `oidcAuthProvider`). On `instanceAuthFor`, `actors` may be a list or a function of the install's delivered wiring (`{ identity, config }`). A resolver that throws, or returns nothing usable, admits no delegated token.
+
+  `AuthProvider.resolve` takes an optional third argument, `{ delegated }`: the MCP endpoint's channel, `mcpChannelOf(c)` from `@substrat-run/vertical-host`. A delegated token is admitted only through it. An admitted token must:
+
+  - name a listed actor of this issuer;
+  - be issued to that actor;
+  - carry a non-empty `scope`;
+  - carry an `iat` no more than 30 seconds ahead of the verifier's clock;
+  - live no longer than five minutes (`exp − iat`; `maxLifetimeSeconds` can lower that, never raise it);
+  - have exactly the channel's resource as its only `aud`, on the request's own origin.
+
+  A call without the channel refuses it. That covers a REST route, a stray handler, and `resolve(headers)` alone. The resolved `AuthSubject` then carries `delegation: { actor, scope }`.
+
+  Two other refusals apply on every configuration:
+
+  - A token carrying a `substrat_delegation` claim but no `act` (the token exchange's intermediate assertion) is never accepted as a bearer.
+  - On a shared issuer, a token whose `aud` is another app's MCP endpoint is refused even when it was issued to this app's own client. This includes this app's own endpoint on another of its hostnames, and any spelling of the endpoint (case, trailing slash, percent-encoding).
+
+  `@substrat-run/vertical-host`: `mountMcp` sets a channel for the span of its own `resolveStub` call, and `mcpChannelOf(c)` reads it (`null` everywhere else, and nothing a request sends can set it). `setMcpDelegation(c, subject.delegation)` hands the admitted delegation back. Every `tools/call` is then refused, in-band and before the operation runs, unless the tool's leading permission key is in the delegated scope. A tool with no single leading key (`narrows`) is outside every scope. If a bearer carries `act` and no delegation was handed over, every tool call is refused.
+
+  Every route `mountOperations` mounts answers a bearer carrying `act` with a `401`, before resolving the caller.
+
+  The MCP endpoint is now the only route at its path:
+
+  - A route registered before it that Hono would dispatch there, by any method but `OPTIONS` (`/mcp`, `/:slug`, `/:slug?`, a regex parameter), now throws at mount.
+  - A second `mountOperations` on the same base path now throws at mount too, because the first endpoint is already there.
+  - The endpoint answers every method but `OPTIONS` itself: `POST` is MCP, and anything else is a `405`. A route registered after it never runs there.
+  - Not judged: `app.use`, `app.all` and `app.mount`, `OPTIONS` routes, and `*` catch-alls.
+
+  `McpTool` gains `permission`, the leading key.
+
+### Patch Changes
+
+- 5436493: Every `405` the MCP endpoint answers carries `Allow: POST`, as RFC 9110 requires, so a client can learn which method is served there.
+
+  A delivered `audience` is checked on a delegated token too, so one that is not the MCP endpoint's resource admits no delegated token. That still fails closed. The bearer verifier now logs a warning when a host that opted in to delegation on a shared issuer has a delivered `audience` and the MCP endpoint's channel names another resource. It warns once per isolate for each issuer and audience, and names the field, not its value.
+
+  The MCP endpoint's mount-time check now judges earlier routes against the path the endpoint really answers at, including an `app.basePath()` prefix. A route on a `basePath` app that would answer there now throws at mount, and a root route at the unprefixed path no longer does, since it is not in the way.
+
+  Every refusal of a mount is now judged before `mountOperations` or `mountMcp` registers anything, so a refused mount leaves the app as it was. That covers a route already at the endpoint's path, one of the mount's own operations there, an operation no registered module provides, and two operations whose names render as one MCP tool name (such as `desk/a.b` and `desk/a/b`). The error names the mount that raised it.
+
+  **Behaviour change:** a `*` is now judged as Hono's `TrieRouter` reads it, wherever it is. #2398 skipped every pattern with a segment that is exactly `*`. Now a route with a `*` segment that `TrieRouter` dispatches to the endpoint's path throws at mount when it is registered before the mount with a method. That covers `*`, `/*`, `/api/*`, `/api/mcp/*`, `/*/mcp` and `/*/*`, so a `GET *` fallback is among them. A `*` segment that misses the path, such as `/other/*`, is not refused, and `/api/mc*` still is.
+
+  Remedy, one line: register the fallback after the mount (`mountOperations(app, …)` first, then `app.get('*', …)`), or make it middleware (`app.use('*', …)`, which is not judged) that answers only once `await next()` has found nothing.
+
+  Not judged, and stated:
+
+  - `app.use`, `app.all` and `app.mount`, and `OPTIONS` routes.
+  - The routes of an app this one is later mounted into with `app.route()`.
+  - The `*` forms that the default router dispatches there and `TrieRouter` does not match. Hono's routers do not all agree on `*`, so these are not refused: a `*` inside a segment, such as `/api/*cp`, and a pattern ending in two or more `*` segments that reaches the path only if its last `*` matches nothing, such as `/api/*/*` or `/*/*/*` (`/*/*` matches `/api/mcp` segment for segment, and is refused).
+
+- 8273013: `/internal` refusals ("this deployment cannot …", the `countOnly` 400) and the live-read refusals (426, 501, 403, 401) answer `application/problem+json` problem documents instead of `application/json` `{ error }`. Statuses and the `error` sentence are unchanged, and the live refusals keep their `x-substrat-live` header. The 426 title (`Upgrade required`) comes from `@substrat-run/contracts`, released with it.
+- Updated dependencies [8273013]
+- Updated dependencies [4efc88d]
+- Updated dependencies [a667881]
+- Updated dependencies [f614b00]
+- Updated dependencies [a00c87a]
+  - @substrat-run/contracts@0.151.0
+  - @substrat-run/kernel@0.151.0
+  - @substrat-run/model-providers@0.5.41
+
 ## 0.150.0
 
 ### Minor Changes
