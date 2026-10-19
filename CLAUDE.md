@@ -193,9 +193,20 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   marking a key reserves it whatever another declaring it says, so a vertical cannot lift an
   engine's reservation by re-declaring the key. The system side is a schedule's or a peer's
   `permissions`, or a role declared `holder: 'system'` (K-55). §1 of `PERMISSIONS.md` marks
-  each reserved key, so dropping a declaration shows in the reviewed diff. The reservation
-  follows the vertical's `permissions.modules`, so that list has to be what the host
-  registers: by convention both read one `MODULES` constant, and nothing checks it yet.
+  each reserved key, so dropping a declaration shows in the reviewed diff. The rule is one
+  function set in `@substrat-run/contracts` (`reservedKeysOf`, `reservedKeyOffences`), and
+  three more places apply it (#2430): `buildPermissionRegistry`, so `substrat push` refuses
+  before upload in this lint's words; the push boundary (`pushedPermissionRegistry`, read off
+  the `holder` the registry rows now carry); and a scope host's role doors (the kernel's
+  `reservedRoleRefusal`, reading the modules the host REGISTERS). A person's doors
+  (`assignScopeRoleBounded`, `changeScopeRoleBounded`, a membership add) refuse any role
+  carrying a reserved key; `HostAdmin.assignRole` refuses one mixing reserved and other keys
+  and admits an all-reserved role, since a stored role does not record its holder. The
+  reservation follows the vertical's `permissions.modules`, so that list has to be what the
+  host registers: a host given the same `permissions` (`new SqliteScopeHost({ …, permissions })`,
+  `defineScopeDO(MODULES, {}, { permissions })`) refuses a module it leaves out, and
+  `pnpm lint:host-permissions` refuses a host construction that registers modules without it
+  in any package declaring a surface.
 - `pnpm lint:changelog` — the published weekly changelog (`apps/docs/changelog/`).
   With no flag it prints a week's raw material — every first-parent merge grouped by
   area, the commits that landed without a PR, and each package's version span
@@ -645,6 +656,12 @@ writes nothing, which from the outside is the same empty view. Same shape as
 `lint:vite-proxy`, for the same reason: no scenario suite drives the mounted app, #1418.
 Local-only demos with a `server.ts` harness and no worker entry are out of scope, since
 no router fronts them and no request carries an asserted tenant),
+`lint:host-permissions` (`tools/host-permissions.mjs`: in a package that declares
+`substrat.permissions`, and the scaffold template, every `new SqliteScopeHost`/`new
+CloudflareScopeHost` in a file that registers modules, and every `defineScopeDO` over a
+non-empty module list, passes `permissions` in its options literal, so the host refuses a
+module the surface push reads leaves out, #2430. Tests are out of scope; a file that cannot
+pass it says why with `host-permissions-allow: <reason>`),
 `lint:like-pattern` (`tools/like-pattern-length.mjs`: a `LIKE`/`GLOB` pattern written into
 source is at most 50 bytes, the limit a Durable Object enforces and node does not, #1655),
 `lint:worker-node-imports` (`tools/worker-node-imports.mjs`: a worker deployed without

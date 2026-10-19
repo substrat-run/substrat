@@ -138,6 +138,12 @@ jobs:
       # traffic. Same shape as the two checks above: no suite drives the mounted app, so
       # the source is the only place this can be caught.
       - run: pnpm lint:invocation-log
+      # A vertical's scope host is given the permission surface `substrat push` reads, so it
+      # refuses to register a module that surface leaves out (#2430). The option is opt-in, and
+      # forgetting it is silent: lint and push then judge a module list the host does not run.
+      # Every host construction that registers modules, in a package that declares a surface,
+      # passes `permissions`.
+      - run: pnpm lint:host-permissions
       # A skill that cites a repo path cites one that exists. The two repo skills are
       # what an agent reads before it builds a vertical, and they teach by pointing at
       # files; `new-vertical` spent months pointing at two that were gone (#982) with

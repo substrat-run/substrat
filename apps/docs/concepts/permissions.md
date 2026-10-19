@@ -40,6 +40,24 @@ engine inherits the reservation with the manifest, and the permission snapshot m
 so that removing `holder: 'system'` shows in the reviewed diff. Leave `holder` out and the
 key may be held by anyone it is granted to, which is what every key meant before the field.
 
+The same rule holds past the lint. `substrat push` refuses a role or shape holding a reserved
+key before anything is uploaded, in the lint's words, and the platform refuses such a push
+too: the registry a push ships marks each reserved key, and each system-held role, with
+`holder: 'system'`. At runtime, a host refuses to hand a person such a key through a role,
+whatever the role table says. Inviting someone into a role that carries one is refused, as is
+moving them into it, and so is a membership request for it. The platform's own role
+assignment refuses a role that mixes a reserved key with keys a person may hold. The host
+reads the reservations off the modules it actually registers.
+
+Those modules have to be the ones the lint and the push read, which are your permission
+entry's `modules`. Give the host the same `permissions` and it refuses to register a module
+the list leaves out:
+
+```ts
+const host = new CloudflareScopeHost({ scope: env.SCOPE, permissions });
+export const ScopeDO = defineScopeDO(MODULES, {}, { permissions });
+```
+
 ### Roles @ nodes
 
 A role bundles permissions; an assignment binds a principal to a role **at a node of the
