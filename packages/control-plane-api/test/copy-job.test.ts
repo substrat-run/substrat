@@ -64,7 +64,7 @@ function harness(opts: { renew?: () => boolean; pageFails?: (n: number) => Error
     now: () => clock.now,
   };
   const spec = (over: Partial<CopyJobSpec> = {}): CopyJobSpec => ({
-    id: copyJobId('fork', preview, 'v2'),
+    id: copyJobId('fork', preview),
     kind: 'fork',
     tenantId: t,
     scopeId: preview,

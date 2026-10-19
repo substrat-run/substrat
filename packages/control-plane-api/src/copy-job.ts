@@ -19,7 +19,10 @@ import { transferStep, type TransferState, type TransferredScope, type VerticalC
  * a test) stores it and calls `advanceCopyJob` until it is no longer `copying`.
  */
 export interface CopyJobSpec {
-  /** One job per copy: `copyJobId(kind, scopeId, versionId)`. */
+  /**
+   * `copyJobId(kind, scopeId)`: one job of each kind per preview at a time. A newer push's copy
+   * supersedes an older one's, which the route cancels; the version is in `versionId`.
+   */
   id: string;
   /** A preview's first copy from its source (`fork`), or a re-push moving it on (`carry`). */
   kind: 'fork' | 'carry';
@@ -37,6 +40,8 @@ export interface CopyJobSpec {
   /** What the route read when it recorded the move, for its restore fence and bind (#1722). */
   erasureEpoch: number;
   restoredStamp: string;
+  /** A carry's: the preview's binding and pin when the copy began. Its restore is refused if either moved. */
+  expected?: { versionId: string | null; servingRef: string | null };
   /** Epoch ms. Past `deadline` the job fails, and stops renewing a lease erasure and reap wait on. */
   startedAt: number;
   deadline: number;
@@ -91,8 +96,7 @@ export const COPY_JOB_MAX_MS = 6 * 3_600_000;
 export const COPY_JOB_MAX_FAULTS = 6;
 const backoffMs = (faults: number): number => Math.min(60_000, 1_000 * 2 ** faults);
 
-export const copyJobId = (kind: CopyJobSpec['kind'], scopeId: string, versionId: string): string =>
-  `${kind}:${scopeId}:${versionId}`;
+export const copyJobId = (kind: CopyJobSpec['kind'], scopeId: string): string => `${kind}:${scopeId}`;
 
 /** A job's first record, around the state `beginTransfer` left. */
 export function newCopyJob(spec: CopyJobSpec, state: TransferState, now: number = Date.now()): CopyJobRecord {
