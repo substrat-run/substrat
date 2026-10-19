@@ -237,6 +237,40 @@ describe('conceptDelta — each section, and its twin when nothing changed', () 
     expect(d.permissions.rows).toEqual([{ key: 'list:manage', description: 'Manage a list', before: ['owner'], after: ['member', 'owner'] }]);
   });
 
+  /** §1 as the emitter writes it once some key is reserved: a last cell, `yes` or `—`, on every row. */
+  const reserving = (md: string, ...keys: string[]) =>
+    md
+      .split('\n')
+      .map((l) => {
+        if (l === '| Key | Description | Declared by |') return `${l} Reserved to a system principal |`;
+        if (l === '| --- | --- | --- |') return `${l} --- |`;
+        const key = /^\| `([^`]+)` \|/.exec(l)?.[1];
+        return key && l.endsWith(`| \`${PKG}\` |`) ? `${l} ${keys.includes(key) ? 'yes' : '—'} |` : l;
+      })
+      .join('\n');
+  const REAP = { 'list:create': 'Create lists', 'list:manage': 'Manage a list', 'list:reap': 'Reap abandoned lists' };
+
+  it('permissions: a key becoming reserved to a system principal is a row, marked on the side where it is', () => {
+    const base = permissions({ member: ['list:create'], owner: ['list:create', 'list:manage'] }, REAP);
+    const d = conceptDelta(PKG, art(MODEL, base), art(MODEL, reserving(base, 'list:reap')));
+    expect(d.permissions.rows).toEqual([
+      { key: 'list:reap', description: 'Reap abandoned lists', before: [], after: [], reserved: { before: false, after: true } },
+    ]);
+    expect(renderDelta(d, OPTS)).toContain('| `list:reap` | Reap abandoned lists | — no role — | — no role — · reserved to a system principal |');
+    // And back: no longer reserved is a row too, marked on the base side.
+    expect(conceptDelta(PKG, art(MODEL, reserving(base, 'list:reap')), art(MODEL, base)).permissions.rows).toEqual([
+      { key: 'list:reap', description: 'Reap abandoned lists', before: [], after: [], reserved: { before: true, after: false } },
+    ]);
+  });
+
+  it('permissions: a registry the classifier cannot read gives no rows, only its finding', () => {
+    const base = permissions({ member: ['list:create'] }, REAP);
+    const head = reserving(base, 'list:reap').replace('| `list:reap` | Reap abandoned lists | `' + PKG + '` | yes |', '| `list:reap` | Reap abandoned lists | `' + PKG + '` | maybe |');
+    const d = conceptDelta(PKG, art(MODEL, base), art(MODEL, head));
+    expect(d.permissions.rows).toEqual([]);
+    expect(d.permissions.changes).toEqual([expect.objectContaining({ path: 'registry', level: 'major', flagged: true })]);
+  });
+
   it('permissions twin: unchanged permissions say so', () => {
     expect(same.permissions).toEqual({ rows: [], changes: [] });
     expect(sameText).toContain('_No permission key, role or grant shape changes._');

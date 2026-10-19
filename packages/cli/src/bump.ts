@@ -48,7 +48,7 @@
  * authoring notation (`tools/model-diff.mts`). The same classifier is what `substrat changeset`
  * writes, what `--check` holds a hand-written changeset to, and what a status line can show.
  */
-import { operationsTableProblem, operationsUnknownFor } from '@substrat-run/model-view';
+import { operationsTableProblem, operationsUnknownFor, readRegistryTable } from '@substrat-run/model-view';
 
 export type Level = 'patch' | 'minor' | 'major';
 export type Bump = 'none' | Level;
@@ -697,8 +697,13 @@ function classifyContent(push: Push, dir: Direction, at: string, base: unknown, 
  * cell (a key, a role, an entity type, a scheduled operation) to the row.
  */
 export interface PermissionSnapshot {
-  /** Permission key → its description and declaring module. */
-  readonly registry: Record<string, string[]>;
+  /** Permission key → its description and declaring module, and whether it is reserved to a system principal. */
+  readonly registry: Record<string, { terms: string[]; reserved: boolean }>;
+  /**
+   * The Registry table is not one the emitter writes ({@link readRegistryTable}, the judgement
+   * model-view shares). Judged major, never read as nothing reserved.
+   */
+  registryUnreadable?: string;
   /** Role → the keys it holds. */
   readonly roles: Record<string, string[]>;
   /** Entity type → keys granted per entity, then its remaining cells as written. */
@@ -755,7 +760,7 @@ function rowsOf(section: string): string[][] {
  */
 export function parsePermissions(text: string): PermissionSnapshot {
   const snap = {
-    registry: {} as Record<string, string[]>,
+    registry: {} as PermissionSnapshot['registry'],
     roles: {} as Record<string, string[]>,
     grantShapes: {} as Record<string, { keys: string[]; terms: string[] }>,
     schedules: {} as Record<string, { keys: string[]; terms: string[] }>,
@@ -768,7 +773,9 @@ export function parsePermissions(text: string): PermissionSnapshot {
     // The FIRST code span names the row: a schedule's cell reads "`op` — purges a trashed `list`".
     const firstKey = (cells: string[]) => /`([^`]+)`/.exec(cells[0] ?? '')?.[1] ?? cells[0] ?? '';
     if (/^Registry\b/.test(heading)) {
-      for (const cells of rowsOf(section)) snap.registry[firstKey(cells)] = cells.slice(1);
+      const read = readRegistryTable(section);
+      if ('unreadable' in read) snap.registryUnreadable = read.unreadable;
+      else for (const r of read.rows) snap.registry[r.key] = { terms: [...r.terms], reserved: r.reserved };
     } else if (/^Roles\b/.test(heading)) {
       for (const cells of rowsOf(section)) snap.roles[firstKey(cells)] = codesIn(cells[1] ?? '');
     } else if (/^Entity-narrowed grant shapes\b/.test(heading)) {
@@ -806,13 +813,22 @@ export function classifyPermissions(baseText: string | null, headText: string | 
   // Every permission change is at least minor and flagged: the human checkpoint reads both ways.
   const flag = (path: string, detail: string) => push('minor', path, detail, true);
 
-  keyed(b.registry, h.registry, {
-    removed: (k) => flag(`key ${k}`, 'removed from the registry — whoever held it loses what it gated'),
-    added: (k) => flag(`key ${k}`, 'added to the registry'),
-    both: (k, bd, hd) => {
-      if (canon(bd, false) !== canon(hd, false)) push('patch', `key ${k}`, 'description or declaring module changed');
-    },
-  });
+  if (b.registryUnreadable !== undefined || h.registryUnreadable !== undefined) {
+    const side = h.registryUnreadable !== undefined ? 'now' : 'at the base';
+    push('major', 'registry', `section cannot be read ${side} (${h.registryUnreadable ?? b.registryUnreadable}) — judged as breaking`, true);
+  } else {
+    keyed(b.registry, h.registry, {
+      removed: (k) => flag(`key ${k}`, 'removed from the registry — whoever held it loses what it gated'),
+      added: (k, hd) => flag(`key ${k}`, hd.reserved ? 'added to the registry, reserved to a system principal' : 'added to the registry'),
+      both: (k, bd, hd) => {
+        if (canon(bd.terms, false) !== canon(hd.terms, false)) push('patch', `key ${k}`, 'description or declaring module changed');
+        // Reserved to a system principal means no person may be given the key: losing that widens
+        // who may hold it, as a role gaining a key does, and gaining it narrows.
+        if (!bd.reserved && hd.reserved) flag(`key ${k}`, "now reserved to a system principal — narrowing: no person's role or grant shape may hold it");
+        if (bd.reserved && !hd.reserved) flag(`key ${k}`, "no longer reserved to a system principal — widening: a person's role or grant shape may now hold it");
+      },
+    });
+  }
 
   const holders = (what: string, base: Record<string, string[]>, head: Record<string, string[]>) =>
     keyed(base, head, {

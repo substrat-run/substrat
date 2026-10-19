@@ -11,6 +11,8 @@ tracking: ["#2283"]
 
 # K-51 — The assistant's record is an engine composed by call; the run is host code, written by a key no person holds
 
+> **The table this names is now a declaration; the decision stands.** `assistant:run` is reserved to a system principal by `holder: 'system'` on engine-assistant's manifest permission entry, and `lint:permissions` reads the reserved keys off the loaded manifests rather than a table in `tools/reserved-keys.mts`.
+
 **The assistant RFC ([#2284](https://github.com/substrat-run/substrat/pull/2284)) puts a chat between a person and an assistant in every product.** This records the one placement decision its first build needs, which is who owns what: the conversation's record is an engine, `engine-assistant`, and the loop that produces it is not.
 
 **The engine owns the record and its invariants, and never talks to a model.** Module code has no network, no streaming and no clock of its own, so it cannot run a loop. A host (the platform's assistant host, or a vertical composing the engine) runs the loop and calls the engine's in-scope functions to write what happened. This is the by-call shape of workorder, booking and notifications: the vertical or host composes exported functions in its own transaction. Five things are guaranteed in the engine, because they are invariants and not conventions:
