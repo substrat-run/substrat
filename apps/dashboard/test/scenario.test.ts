@@ -1297,7 +1297,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     const publish = async (slug: string, manifestJson: string): Promise<string> => {
       const id = ulid();
       await host.admin.publishVersion(staff, {
-        id, verticalSlug: slug, version: `0.1.${id.slice(-4).toLowerCase()}`, manifestDigest: 'm', permissionDigest: 'p',
+        id, verticalSlug: slug, version: `0.1.${id.toLowerCase()}`, manifestDigest: 'm', permissionDigest: 'p',
         migrationDigest: 'g', deploymentRef: null, manifestJson,
       });
       await host.admin.admitVersion(staff, id);

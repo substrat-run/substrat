@@ -174,6 +174,7 @@ describe('the handshake', () => {
     const { app } = harness();
     const res = await app.request('/api/mcp');
     expect(res.status).toBe(405);
+    expect(res.headers.get('allow')).toBe('POST');
   });
 });
 

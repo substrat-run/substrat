@@ -47,8 +47,8 @@ import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, requestId
 import { classifyError } from './errors.js';
 import { observeOutputFields, outputWalkOf } from './field-coverage.js';
 import { defOf, transparentInner } from './zod-structural.js';
-import { mountMcp, type MountMcpOptions } from './mcp.js';
-import { carriesAct, routeAnsweringAt } from './mcp-guard.js';
+import { mcpToolName, mountMcp, type MountMcpOptions } from './mcp.js';
+import { assertDistinctToolNames, assertMcpPathFree, carriesAct, routeAnsweringAt } from './mcp-guard.js';
 
 export type ResolveStub = (c: Context) => Promise<ScopeStub>;
 
@@ -373,10 +373,15 @@ export function mountOperations(
 
   assertNoUnreachable(declared);
 
-  // #1824: the MCP endpoint mounted below must be the only route at its path. `mountMcp`
-  // refuses any earlier route there too; this says which OPERATION it was.
+  // #1824: the MCP endpoint mounted below must be the only route at its path. Everything that
+  // can refuse the mount is judged in this pass, before any route is registered, so a refused
+  // mount registers nothing: two operations that would be one tool, a route already on the app
+  // there (`mountMcp` judges both too), then an operation of this mount there, named.
   const mcpPath = options.mcp === false ? undefined : (options.mcp?.path ?? mcpEndpointPath(base));
-
+  if (mcpPath !== undefined) {
+    assertDistinctToolNames(operations, mcpToolName, 'mountOperations');
+    assertMcpPathFree(app, mcpPath, 'mountOperations');
+  }
   for (const [name, op] of declared) {
     if (mcpPath !== undefined && routeAnsweringAt([{ method: op.http.method, path: `${base}${toHonoPath(op.http.path)}` }], mcpPath)) {
       throw new Error(
@@ -390,6 +395,9 @@ export function mountOperations(
           'registered module provides it — check the name against the engine that owns it',
       );
     }
+  }
+
+  for (const [name, op] of declared) {
     const { method, path } = op.http;
     const params = pathParams(path);
     const full = `${base}${toHonoPath(path)}`;

@@ -128,7 +128,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
     await host.admin.publishVersion(staff, {
       id,
       verticalSlug: slug,
-      version: `1.0.${id.slice(-4).toLowerCase()}`,
+      version: `1.0.${id.toLowerCase()}`,
       manifestDigest: `m-${id}`,
       permissionDigest: 'p',
       migrationDigest: 'g',

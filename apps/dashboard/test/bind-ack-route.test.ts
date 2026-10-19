@@ -72,7 +72,7 @@ describe('an Update or a Bind refused for what it would break (#1756)', () => {
   const registry = (extra: object) => JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [], ...extra } });
   const publish = async (slug: string, id: string, manifestJson: string) => {
     await host.admin.publishVersion(staff, {
-      id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
+      id, verticalSlug: slug, version: `1.0.${id.toLowerCase()}`, manifestDigest: `m-${id}`,
       permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null, manifestJson,
     });
     await host.admin.admitVersion(staff, id);

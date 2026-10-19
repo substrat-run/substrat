@@ -60,7 +60,7 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
     await host.admin.publishVersion(staff, {
       id,
       verticalSlug: 'docs',
-      version: `1.0.${id.slice(-4).toLowerCase()}`,
+      version: `1.0.${id.toLowerCase()}`,
       manifestDigest: `m-${id}`,
       permissionDigest: 'p',
       migrationDigest: 'g',

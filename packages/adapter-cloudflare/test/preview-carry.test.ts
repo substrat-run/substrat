@@ -1938,7 +1938,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const serving = (await dir.admin.verticalServing(staff, target))!;
       const next = ulid();
       await dir.admin.publishVersion(staff, await heldVersion({
-        id: next, verticalSlug: target, version: `1.0.${next.slice(-4).toLowerCase()}`, manifestDigest: 'm-dst2', permissionDigest: 'p',
+        id: next, verticalSlug: target, version: `1.0.${next.toLowerCase()}`, manifestDigest: 'm-dst2', permissionDigest: 'p',
         migrationDigest: 'g', deploymentRef: `${target}-${next.toLowerCase()}`, manifestJson: JSON.stringify({ doClasses: ['ScopeDO'] }),
       }));
       // The rebind has judged both sides; the target's serving script moves on while the bytes are in flight.

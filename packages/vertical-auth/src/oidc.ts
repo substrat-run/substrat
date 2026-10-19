@@ -248,6 +248,24 @@ function delegationOf(
   return { actor, scope };
 }
 
+/**
+ * A delivered `audience` holds every bearer to it, a delegated one included: `jwtVerify`
+ * refuses a token whose `aud` does not name it before `delegationOf` runs, and a delegated
+ * token's one `aud` must be the channel's resource. So at an MCP endpoint whose resource is
+ * not the audience, the opt-in is off. That fails closed, and would be silent without this
+ * line. Once per isolate for each issuer and audience; it names the field, never the value,
+ * like the actor resolver's warning, since the value is delivered configuration.
+ */
+const audienceWarned = new Set<string>();
+function warnAudienceRefusesDelegation(issuer: string, audience: string): void {
+  const key = JSON.stringify([issuer, audience]);
+  if (audienceWarned.has(key)) return;
+  audienceWarned.add(key);
+  console.warn("vertical-auth: the delivered audience is not this MCP endpoint's resource, so no delegated bearer is admitted here", {
+    field: 'audience',
+  });
+}
+
 export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
   let keysPromise: Promise<JWTVerifyGetKey> | undefined;
   const getKeys = async (): Promise<JWTVerifyGetKey> => {
@@ -281,6 +299,10 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
     url: string | undefined,
     options: ResolveOptions | undefined,
   ): Promise<AuthSubject | null> {
+    const channel = options?.delegated?.resource;
+    if (cfg.delegation && cfg.resourceOf && cfg.audience && typeof channel === 'string' && channel !== cfg.audience) {
+      warnAudienceRefusesDelegation(cfg.issuer, cfg.audience);
+    }
     try {
       const { payload } = await jwtVerify(token, await getKeys(), {
         issuer: cfg.issuer,
