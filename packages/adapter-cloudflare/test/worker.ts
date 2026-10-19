@@ -32,6 +32,7 @@ import { CloudflareScopeHost } from './test-host.js';
 import { definePlatformSweeperDO } from '../src/platform-sweeper-do.js';
 import { defineScopeSweeperDO } from '../src/scope-sweeper-do.js';
 import { defineKickCoalescerDO } from '../src/kick-coalescer-do.js';
+import { defineCopyJobDO, type CopyJobDoRecord } from '../src/copy-job-do.js';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
 import { DurableObject } from 'cloudflare:workers';
 import { wipedCopyMod } from './wiped-copy-module.js';
@@ -602,3 +603,26 @@ export default {
     return new Response('substrat adapter-cloudflare test worker', { status: 200 });
   },
 };
+
+// -- the background copy's job object (copy-job-do.test.ts, #2450 step 2) -----------------------
+
+/** A job whose every step counts once and finishes at `target`. */
+export interface TestCopyJob extends CopyJobDoRecord {
+  steps: number;
+  target: number;
+  /** Epoch ms: a step before it throws, as a step whose I/O failed outright would. */
+  throwUntil?: number;
+  /** A step waits this long first, ms: long enough for a test to land a cancel inside it. */
+  holdMs?: number;
+}
+
+const testCopyStep = async (_env: unknown, job: TestCopyJob): Promise<TestCopyJob> => {
+  if (job.throwUntil !== undefined && Date.now() < job.throwUntil) throw new Error('a step that threw');
+  if (job.holdMs) await new Promise((r) => setTimeout(r, job.holdMs));
+  const steps = job.steps + 1;
+  return { ...job, steps, status: steps >= job.target ? 'done' : 'copying', nextDelayMs: 0, updatedAt: Date.now() };
+};
+
+export const CopyJobTestDO = defineCopyJobDO<unknown, TestCopyJob>({ retainMs: 60_000, advance: testCopyStep });
+/** The same job object with a retention short enough for a test to outlive. */
+export const CopyJobShortDO = defineCopyJobDO<unknown, TestCopyJob>({ retainMs: 30, advance: testCopyStep });
