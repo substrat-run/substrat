@@ -11,6 +11,7 @@ import {
   substratError,
   type BindAcknowledgement,
   type ExportBreak,
+  type Page,
   type PermissionKey,
   type PlatformActorId,
   type PrincipalId,
@@ -26,6 +27,7 @@ import { MEMBER_ROLES, dashboardModule, type DashboardAppRow } from './module.js
 import { ControlPlaneError, TenantNarrowedControlPlane, type DnsRecordRow, type SnapshotRecord } from './authority.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice, type RegisterOidcClientFn } from './auth-wiring.js';
 import { clearAppMcpResources, isSharedIssuer, registerAppMcpResources, type TeamIssuer } from './mcp-resources.js';
+import { allApps } from './walk-all.js';
 
 /** This vertical's slug and the DO/entitlement key it registers under. */
 export const VERTICAL = 'dashboard';
@@ -123,8 +125,9 @@ export async function ensureRosterSeeded(
   rosterChecked.add(node.tenantId);
   try {
     const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
-    const members = (await scope.invoke('dashboard/list-members', {})) as unknown[];
-    if (members.length > 0) return;
+    // Whether the roster has anyone at all: one row answers it.
+    const members = await scope.invoke<Page<unknown>>('dashboard/list-members', { limit: 1 });
+    if (members.entries.length > 0) return;
     await host.admin.grantEntitlement(staff, node.tenantId, 'invites');
     let org = (await host.admin.listOrgs(staff, node.tenantId))[0]?.id;
     if (!org) {
@@ -818,7 +821,7 @@ export async function updateApp(
   // additively). Bind a URL for any newly-declared surface now, so "add a surface in a PR,
   // push" gives it a public URL on update with no manual bind. Best-effort: the version has
   // already moved, and a missing surface URL must never fail the update itself.
-  const apps = (await scope.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(scope);
   const appHostname = await resolveDefaultHostname(host, {
     node: input.node,
     appScopeId: input.appScopeId,
