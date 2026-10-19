@@ -7,6 +7,7 @@ import { orgId, platformActorId, principalId, scopeId, tenantId } from '@substra
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { registerDashboardMembership } from '../src/membership.js';
+import { walkAll } from '../src/walk-all.js';
 
 /**
  * Every dashboard route where a session's ADDRESS becomes who someone is (#1359), driven
@@ -113,10 +114,10 @@ async function team(tenant = tenantId.parse(ulid()), seedRoster = true) {
 }
 
 const membersOf = async (node: { tenant: string; dashScope: string; owner: string }) =>
-  (await (await host.getScope(principalId.parse(node.owner), tenantId.parse(node.tenant), scopeId.parse(node.dashScope))).invoke(
+  walkAll(
+    await host.getScope(principalId.parse(node.owner), tenantId.parse(node.tenant), scopeId.parse(node.dashScope)),
     'dashboard/list-members',
-    {},
-  )) as { email: string; role_key: string; status: string }[];
+  );
 
 describe('POST /api/invites/accept — the invite is addressed to an email', () => {
   const INVITEE = 'rae@team.test';

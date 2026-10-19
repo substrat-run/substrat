@@ -1,6 +1,19 @@
 import { z } from 'zod';
-import { type AppEventKind } from './app-event-kinds.js';
-import { defineOperations, moduleManifest, permissionKey, substratError, type PermissionKey, type OrgId } from '@substrat-run/contracts';
+import { appEvent, appRow, installStep, memberRow } from './rows.js';
+import {
+  CURSOR_FIELD_SEPARATOR,
+  defineOperations,
+  listLimitOf,
+  mapPage,
+  moduleManifest,
+  pageOf,
+  permissionKey,
+  substratError,
+  type Page,
+  type PagedInput,
+  type PermissionKey,
+  type OrgId,
+} from '@substrat-run/contracts';
 import {
   assertAllowed,
   MEMBER_ADD_REQUESTED,
@@ -13,6 +26,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  type SqlValue,
   operationsFor,
 } from '@substrat-run/kernel';
 import { INVITES_PERM, sendInvite, acceptInvite, revokeInvite, readInvitation } from '@substrat-run/engine-invites';
@@ -422,19 +436,22 @@ export const dashboardMigrations = [
   },
 ];
 
-export interface DashboardAppRow {
-  id: string;
-  app_scope_id: string;
-  vertical_slug: string;
-  name: string;
-  status: 'provisioning' | 'active' | 'failed';
-  hostname: string | null;
-  /** The vertical's non-secret provision result as JSON (#426); null for a bare ack. */
-  provision_result: string | null;
-  created_by: string;
-  created_at: string;
-  deleted_at: string | null;
-}
+/*
+ * The rows the operations below return, declared once as schemas (#2426) so each operation's
+ * `output` and its handler's type are the same object. Where the HTTP surface answers the same
+ * row (`rows.ts`, which routes.ts shares), the module's is that row plus the columns the route
+ * leaves out.
+ */
+
+/** One app as the module records it: the Apps list's row, plus its soft-delete stamp. */
+const dashboardAppRow = appRow.extend({
+  /** Optional on the route; every stored row has the column. */
+  provision_result: z.string().nullable(),
+  /** Set when the app was deleted; `list-apps` returns only rows where it is null. */
+  deleted_at: z.string().nullable(),
+});
+
+export type DashboardAppRow = z.infer<typeof dashboardAppRow>;
 
 /** One stored env var for an app (the raw row; secrets never leave the module unmasked). */
 export interface DashboardAppEnvRow {
@@ -448,39 +465,25 @@ export interface DashboardAppEnvRow {
 }
 
 /** One env var as the dashboard exposes it — a secret's value is never echoed back. */
-export interface AppEnvValue {
-  key: string;
-  isSecret: boolean;
+const appEnvValue = z.object({
+  key: z.string(),
+  isSecret: z.boolean(),
   /** Whether a value is stored (a secret shows "set" without revealing it). */
-  hasValue: boolean;
+  hasValue: z.boolean(),
   /** The plaintext for a non-secret; null for a secret (write-only). */
-  value: string | null;
-  updatedAt: string;
-}
+  value: z.string().nullable(),
+  updatedAt: z.string(),
+});
+
+export type AppEnvValue = z.infer<typeof appEnvValue>;
 
 /** One row of the app's audit trail — a lifecycle transition. */
-export interface DashboardAppEventRow {
-  id: string;
-  app_scope_id: string;
-  kind: AppEventKind;
-  detail: string | null;
-  actor: string;
-  created_at: string;
-}
+export type DashboardAppEventRow = z.infer<typeof appEvent>;
 
-/** One step of an app's install sequence (#424) — where the install is NOW, durably. */
-export interface DashboardInstallStepRow {
-  app_scope_id: string;
-  step: string;
-  /** Render order (the sequence position) — stable even if steps settle out of order. */
-  seq: number;
-  status: 'running' | 'done' | 'failed';
-  attempts: number;
-  /** The downstream error VERBATIM (a failed step), or null. */
-  last_error: string | null;
-  started_at: string;
-  settled_at: string | null;
-}
+/** One step of an app's install sequence (#424): `installStep`, plus the app it belongs to. */
+const installStepRow = installStep.extend({ app_scope_id: z.string() });
+
+export type DashboardInstallStepRow = z.infer<typeof installStepRow>;
 
 /** Append a lifecycle event for an app — the real Activity trail (created/active/failed/deleted). */
 function recordAppEvent(
@@ -494,6 +497,43 @@ function recordAppEvent(
      VALUES (?, ?, ?, ?, ?, ?)`,
     [ulid(), appScopeId, kind, detail ?? null, ctx.principal, ctx.now()],
   );
+}
+
+/**
+ * One keyset page of a list read that composes its own SQL (#811, #2426). `where` is the read up
+ * to and including its WHERE clause, and `params` its parameters; this adds the clause that
+ * resumes after the cursor, the ORDER BY and the LIMIT, and hands each row's cursor on.
+ *
+ * `columns` are the walk's sort and together unique, so a page boundary never falls between two
+ * rows that compare equal. Most reads here walk their ULID `id` alone: ids are minted at insert,
+ * so `id DESC` is the created-at order those lists always showed, and unique, which a timestamp
+ * is not. A cursor over several columns joins their values with `CURSOR_FIELD_SEPARATOR`.
+ *
+ * The cursor is exclusive. The direction is the caller's `order`, which the host's parse has
+ * already defaulted to the one the read declares. `limit` resolves against the platform default and ceiling
+ * (`listLimitOf`), so an in-process call that names no page gets the page an HTTP one would,
+ * never the whole table.
+ */
+function keysetPage<R>(
+  ctx: OperationContext,
+  where: string,
+  params: readonly SqlValue[],
+  columns: readonly (keyof R & string)[],
+  page: PagedInput,
+): Page<R> {
+  const ascending = page.order !== 'desc';
+  const after = page.cursor?.split(CURSOR_FIELD_SEPARATOR);
+  if (after && (after.length !== columns.length || after.includes(''))) {
+    throw substratError('validation_failed', 'invalid cursor: pass back the nextCursor a page answered');
+  }
+  const tuple = (parts: readonly string[]) => (parts.length === 1 ? parts[0]! : `(${parts.join(', ')})`);
+  const limit = listLimitOf(page.limit);
+  const rows = ctx.sql.query<R>(
+    `${where}${after ? ` AND ${tuple(columns)} ${ascending ? '>' : '<'} ${tuple(columns.map(() => '?'))}` : ''}` +
+      ` ORDER BY ${columns.map((c) => `${c} ${ascending ? 'ASC' : 'DESC'}`).join(', ')} LIMIT ?`,
+    [...params, ...(after ?? []), limit],
+  );
+  return pageOf(rows, limit, (row) => columns.map((c) => String(row[c])).join(CURSOR_FIELD_SEPARATOR));
 }
 
 // -- operations --------------------------------------------------------------
@@ -737,8 +777,12 @@ const resumeAppOp: OperationHandler<z.infer<typeof resumeAppInput>, DashboardApp
 
 const recordInstallStepInput = z.object({
   appScopeId: z.string().min(1),
-  /** The step's stable key — 'directory', 'provision', 'activate', 'hostname', 'identity'. */
-  step: z.string().min(1),
+  /**
+   * The step's stable key — 'directory', 'provision', 'activate', 'hostname', 'identity'. No
+   * control characters: the step is half of `install-steps`' cursor, joined by NUL
+   * (`CURSOR_FIELD_SEPARATOR`), and a name holding one would make the read refuse its own cursor.
+   */
+  step: z.string().regex(/^[^\u0000-\u001f\u007f]+$/, 'a step name holds no control characters'),
   /** Position in the install sequence (render order). */
   seq: z.number().int().min(0),
   status: z.enum(['running', 'done', 'failed']),
@@ -790,16 +834,22 @@ const recordInstallStepOp: OperationHandler<z.infer<typeof recordInstallStepInpu
 
 const installStepsInput = z.object({ appScopeId: z.string().min(1) });
 
-/** The install's step list, in sequence order — a plain read, gated by `dashboard:read`. */
-const installStepsOp: OperationHandler<z.infer<typeof installStepsInput>, DashboardInstallStepRow[]> = async (
-  ctx,
-  raw,
-) => {
+/**
+ * The install's step list, in sequence order — a plain read, gated by `dashboard:read`. Walked
+ * on (seq, step): `seq` is the render order and nothing makes it unique, while a step's name is
+ * unique per app (the primary key).
+ */
+const installStepsOp: OperationHandler<
+  z.infer<typeof installStepsInput> & PagedInput,
+  Page<DashboardInstallStepRow>
+> = async (ctx, input) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
-  const input = installStepsInput.parse(raw);
-  return ctx.sql.query<DashboardInstallStepRow>(
-    'SELECT * FROM dashboard_install_steps WHERE app_scope_id = ? ORDER BY seq',
+  return keysetPage<DashboardInstallStepRow>(
+    ctx,
+    'SELECT * FROM dashboard_install_steps WHERE app_scope_id = ?',
     [input.appScopeId],
+    ['seq', 'step'],
+    input,
   );
 };
 
@@ -830,29 +880,10 @@ const markAppFailedOp: OperationHandler<z.infer<typeof markAppFailedInput>, Dash
   return row;
 };
 
-/**
- * Optional keyset page params for the list reads (#458-shape). The sort AND the
- * cursor key on the row's own ULID id alone: ids are minted at insert, so `id DESC`
- * is chronologically identical to the created-at order the lists always showed —
- * and unique, which a timestamp is not. `cursor` is exclusive (rows strictly below
- * it); unset `limit` = unbounded, so existing callers are unchanged.
- */
-const listPageInput = {
-  limit: z.number().int().positive().optional(),
-  cursor: z.string().min(1).optional(),
-};
-
-const listAppsInput = z.object(listPageInput);
-
 /** The account's apps, newest first — a plain read, gated by `dashboard:read`. Deleted apps are hidden. */
-const listAppsOp: OperationHandler<z.infer<typeof listAppsInput> | undefined, DashboardAppRow[]> = async (ctx, raw) => {
+const listAppsOp: OperationHandler<PagedInput, Page<DashboardAppRow>> = async (ctx, input) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
-  const input = listAppsInput.parse(raw ?? {});
-  return ctx.sql.query<DashboardAppRow>(
-    `SELECT * FROM dashboard_apps WHERE deleted_at IS NULL${input.cursor ? ' AND id < ?' : ''}
-       ORDER BY id DESC${input.limit ? ' LIMIT ?' : ''}`,
-    [...(input.cursor ? [input.cursor] : []), ...(input.limit ? [input.limit] : [])],
-  );
+  return keysetPage<DashboardAppRow>(ctx, 'SELECT * FROM dashboard_apps WHERE deleted_at IS NULL', [], ['id'], input);
 };
 
 const deleteAppInput = z.object({ appScopeId: z.string().min(1) });
@@ -883,16 +914,20 @@ const deleteAppOp: OperationHandler<z.infer<typeof deleteAppInput>, DashboardApp
   return row;
 };
 
-const appEventsInput = z.object({ appScopeId: z.string().min(1), ...listPageInput });
+const appEventsInput = z.object({ appScopeId: z.string().min(1) });
 
-/** The app's audit trail — newest first (id DESC ≡ created_at DESC; see listPageInput). Gated read. */
-const appEventsOp: OperationHandler<z.infer<typeof appEventsInput>, DashboardAppEventRow[]> = async (ctx, raw) => {
+/** The app's audit trail — newest first (id DESC ≡ created_at DESC; see `keysetPage`). Gated read. */
+const appEventsOp: OperationHandler<z.infer<typeof appEventsInput> & PagedInput, Page<DashboardAppEventRow>> = async (
+  ctx,
+  input,
+) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
-  const input = appEventsInput.parse(raw);
-  return ctx.sql.query<DashboardAppEventRow>(
-    `SELECT * FROM dashboard_app_events WHERE app_scope_id = ?${input.cursor ? ' AND id < ?' : ''}
-       ORDER BY id DESC${input.limit ? ' LIMIT ?' : ''}`,
-    [input.appScopeId, ...(input.cursor ? [input.cursor] : []), ...(input.limit ? [input.limit] : [])],
+  return keysetPage<DashboardAppEventRow>(
+    ctx,
+    'SELECT * FROM dashboard_app_events WHERE app_scope_id = ?',
+    [input.appScopeId],
+    ['id'],
+    input,
   );
 };
 
@@ -937,18 +972,23 @@ const setAppEnvOp: OperationHandler<z.infer<typeof setAppEnvInput>, { saved: num
 
 const listAppEnvInput = z.object({ appScopeId: z.string().min(1) });
 
-/** An app's stored env/config, secrets masked (value: null). Gated read. */
-const listAppEnvOp: OperationHandler<z.infer<typeof listAppEnvInput>, AppEnvValue[]> = async (ctx, raw) => {
+/** An app's stored env/config in key order, secrets masked (value: null). Gated read. */
+const listAppEnvOp: OperationHandler<z.infer<typeof listAppEnvInput> & PagedInput, Page<AppEnvValue>> = async (
+  ctx,
+  input,
+) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
-  const input = listAppEnvInput.parse(raw);
   // The `substrat:*` namespace is reserved for platform-managed entries (the app's
   // Identity choice lives at `substrat:auth`) — those have their own ops with
   // field-wise redaction, so they never appear as an opaque blob in the Env tab.
-  const rows = ctx.sql.query<DashboardAppEnvRow>(
-    "SELECT * FROM dashboard_app_env WHERE app_scope_id = ? AND key NOT LIKE 'substrat:%' ORDER BY key",
+  const page = keysetPage<DashboardAppEnvRow>(
+    ctx,
+    "SELECT * FROM dashboard_app_env WHERE app_scope_id = ? AND key NOT LIKE 'substrat:%'",
     [input.appScopeId],
+    ['key'],
+    input,
   );
-  return rows.map((r) => ({
+  return mapPage(page, (r) => ({
     key: r.key,
     isSecret: r.is_secret === 1,
     hasValue: r.value !== '',
@@ -991,14 +1031,16 @@ const appAuthConfig = z.object({
 export type AppAuthConfig = z.infer<typeof appAuthConfig>;
 
 /** The identity record as exposed to callers — the clientSecret never leaves. */
-export interface AppAuthView {
-  mode: 'oidc';
-  issuer: string;
-  clientId: string;
-  audience: string | null;
-  hasClientSecret: boolean;
-  updatedAt: string;
-}
+const appAuthView = z.object({
+  mode: z.literal('oidc'),
+  issuer: z.string(),
+  clientId: z.string(),
+  audience: z.string().nullable(),
+  hasClientSecret: z.boolean(),
+  updatedAt: z.string(),
+});
+
+export type AppAuthView = z.infer<typeof appAuthView>;
 
 const setAppAuthInput = z.object({ appScopeId: z.string().min(1), config: appAuthConfig });
 
@@ -1066,25 +1108,13 @@ function readAppAuth(
 
 // -- team + members ----------------------------------------------------------
 
-export interface DashboardMemberRow {
-  id: string;
-  /** The kernel principal once accepted; null while still 'invited'. */
-  principal: string | null;
-  email: string;
-  role_key: string;
-  /**
-   * Stored: 'active' | 'invited' | 'revoked' | 'joining'. As `list-members` returns it, a
-   * 'joining' row is resolved against the membership executor's journal (#1184): 'active' once
-   * it joined, 'refused' (with `refusal`) once it never will, 'joining' while it is pending.
-   */
-  status: 'active' | 'invited' | 'revoked' | 'joining' | 'refused';
-  /** Why the membership was refused — only on a row `list-members` resolved to 'refused'. */
-  refusal?: string;
-  invitation_id: string | null;
-  invited_by: string;
-  invited_at: string;
-  joined_at: string | null;
-}
+/**
+ * One roster row (`memberRow`). Stored, its status is 'active' | 'invited' | 'revoked'
+ * | 'joining'. As `list-members` returns it, a 'joining' row is resolved against the membership
+ * executor's journal (#1184): 'active' once it joined, 'refused' (with `refusal`) once it never
+ * will, 'joining' while it is pending.
+ */
+export type DashboardMemberRow = z.infer<typeof memberRow>;
 
 const initTeamInput = z.object({
   orgId: z.string().min(1),
@@ -1289,18 +1319,17 @@ const revokeInviteOp: OperationHandler<z.infer<typeof revokeInviteInput>, void> 
   );
 };
 
-const listMembersInput = z.object(listPageInput);
-
 /** The team roster — active members + outstanding invites, newest first (id DESC ≡ invited_at DESC). Gated read. */
-const listMembersOp: OperationHandler<z.infer<typeof listMembersInput> | undefined, DashboardMemberRow[]> = async (ctx, raw) => {
+const listMembersOp: OperationHandler<PagedInput, Page<DashboardMemberRow>> = async (ctx, input) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
-  const input = listMembersInput.parse(raw ?? {});
-  const rows = ctx.sql.query<DashboardMemberRow>(
-    `SELECT * FROM dashboard_members WHERE status IN ('active','invited','joining')${input.cursor ? ' AND id < ?' : ''}
-       ORDER BY id DESC${input.limit ? ' LIMIT ?' : ''}`,
-    [...(input.cursor ? [input.cursor] : []), ...(input.limit ? [input.limit] : [])],
+  const page = keysetPage<DashboardMemberRow>(
+    ctx,
+    "SELECT * FROM dashboard_members WHERE status IN ('active','invited','joining')",
+    [],
+    ['id'],
+    input,
   );
-  return rows.map((row) => joinedAs(ctx, row));
+  return mapPage(page, (row) => joinedAs(ctx, row));
 };
 
 /**
@@ -1436,18 +1465,20 @@ const CONNECT_LINK_MAX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const CONNECT_LINK_DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** One minted connect link, as the module exposes it (never the signed token itself). */
-export interface ConnectLinkRow {
-  id: string;
-  provider: string;
-  app_scope_id: string;
-  status: 'outstanding' | 'used' | 'revoked';
-  created_by: string;
-  created_at: string;
-  expires_at: string;
-  used_at: string | null;
-  account_ref: string | null;
-  account_label: string | null;
-}
+const connectLinkRow = z.object({
+  id: z.string(),
+  provider: z.string(),
+  app_scope_id: z.string(),
+  status: z.enum(['outstanding', 'used', 'revoked']),
+  created_by: z.string(),
+  created_at: z.string(),
+  expires_at: z.string(),
+  used_at: z.string().nullable(),
+  account_ref: z.string().nullable(),
+  account_label: z.string().nullable(),
+});
+
+export type ConnectLinkRow = z.infer<typeof connectLinkRow>;
 
 const mintConnectLinkInput = z.object({
   provider: z.string().min(1).max(64),
@@ -1485,9 +1516,12 @@ const consumeConnectLinkInput = z.object({
  * renders a different page for each, and parsing error messages to tell them apart
  * is how a wording change becomes a wrong screen.
  */
-export type ConnectLinkConsume =
-  | { ok: true; link: ConnectLinkRow }
-  | { ok: false; reason: 'unknown' | 'used' | 'revoked' | 'expired' };
+const connectLinkConsume = z.union([
+  z.object({ ok: z.literal(true), link: connectLinkRow }),
+  z.object({ ok: z.literal(false), reason: z.enum(['unknown', 'used', 'revoked', 'expired']) }),
+]);
+
+export type ConnectLinkConsume = z.infer<typeof connectLinkConsume>;
 
 const consumeConnectLinkOp: OperationHandler<z.infer<typeof consumeConnectLinkInput>, ConnectLinkConsume> = async (ctx, raw) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.manageIntegrations));
@@ -1555,32 +1589,31 @@ const listConnectLinksInput = z.object({
   provider: z.string().min(1).max(64).optional(),
 });
 
-/** Outstanding links only — a used or revoked row is history, not something to revoke. */
-const listConnectLinksOp: OperationHandler<z.infer<typeof listConnectLinksInput>, ConnectLinkRow[]> = async (ctx, raw) => {
+/**
+ * Outstanding links only — a used or revoked row is history, not something to revoke. Newest
+ * first by id, which is the created-at order (see `keysetPage`).
+ */
+const listConnectLinksOp: OperationHandler<z.infer<typeof listConnectLinksInput> & PagedInput, Page<ConnectLinkRow>> = async (
+  ctx,
+  input,
+) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.manageIntegrations));
-  const input = listConnectLinksInput.parse(raw);
-  return ctx.sql.query<ConnectLinkRow>(
+  return keysetPage<ConnectLinkRow>(
+    ctx,
     `SELECT * FROM dashboard_connect_links
      WHERE status = 'outstanding' AND expires_at > ?
-       AND (? IS NULL OR app_scope_id = ?) AND (? IS NULL OR provider = ?)
-     ORDER BY created_at DESC`,
+       AND (? IS NULL OR app_scope_id = ?) AND (? IS NULL OR provider = ?)`,
     [ctx.now(), input.appScopeId ?? null, input.appScopeId ?? null, input.provider ?? null, input.provider ?? null],
+    ['id'],
+    input,
   );
 };
 
-/**
- * An operation's declared `output`, taken from the type of the handler bound to it. The dashboard
- * emits no API document, so nothing reads the output schema at run time (the host parses an
- * input, never a return); what a declaration needs is the TYPE, for `operationsFor` to hold the
- * handler to.
- *
- * The outputs are deliberately opaque until they are typed, and an opaque `z.custom` is not a
- * `ZodArray`, so `defineOperations`' #811 gate (`assertListsArePaged`) cannot see through it.
- * Six reads return a bare array and stay unpaged exactly as they were before they were declared:
- * `list-apps`, `list-members`, `app-events`, `install-steps`, `list-app-env` and
- * `list-connect-links`. Typing the outputs and paging those six is #2426.
- */
-const returnsOf = <H extends (...args: never[]) => unknown>(_handler: H) => z.custom<Awaited<ReturnType<H>>>();
+/** What an operation that only authorizes, or only records, answers. */
+const ok = z.object({ ok: z.literal(true) });
+
+/** A member the caller is to act on: their principal and the role they held. */
+const memberRef = z.object({ principal: z.string(), roleKey: z.string() });
 
 /**
  * The keys these operations may declare. A literal tuple rather than `Object.values(DASHBOARD_PERM)`:
@@ -1595,171 +1628,184 @@ export const DASHBOARD_PERMISSIONS = [
   DASHBOARD_PERM.manageFindings,
 ] as const;
 
-const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
+export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
   'dashboard/provision-app': {
     summary: 'Record a new app in this team, before its scope is provisioned',
     permission: DASHBOARD_PERM.provisionApp,
     input: provisionAppInput,
-    output: returnsOf(provisionAppOp),
+    output: dashboardAppRow,
   },
   'dashboard/mark-app-active': {
     summary: 'Mark a provisioned app active',
     permission: DASHBOARD_PERM.provisionApp,
     input: markAppActiveInput,
-    output: returnsOf(markAppActiveOp),
+    output: dashboardAppRow,
   },
   'dashboard/update-app': {
     summary: 'Record that an app moved to a newer version',
     permission: DASHBOARD_PERM.provisionApp,
     input: updateAppInput,
-    output: returnsOf(updateAppOp),
+    output: ok,
   },
   'dashboard/reconcile-app-vertical': {
     summary: 'Re-point an app’s record at the vertical slug the directory now names',
     permission: DASHBOARD_PERM.provisionApp,
     input: reconcileAppVerticalInput,
-    output: returnsOf(reconcileAppVerticalOp),
+    output: dashboardAppRow,
   },
   'dashboard/snapshot-app': {
     summary: 'Authorize taking a snapshot of an app’s data',
     permission: DASHBOARD_PERM.provisionApp,
     input: snapshotAppInput,
-    output: returnsOf(snapshotAppOp),
+    output: ok,
   },
   'dashboard/delete-app-snapshot': {
     summary: 'Authorize deleting an app’s snapshot',
     permission: DASHBOARD_PERM.provisionApp,
     input: snapshotAppInput,
-    output: returnsOf(deleteAppSnapshotOp),
+    output: ok,
   },
   'dashboard/export-app-data': {
     summary: 'Authorize exporting an app’s data',
     permission: DASHBOARD_PERM.provisionApp,
     input: snapshotAppInput,
-    output: returnsOf(exportAppDataOp),
+    output: ok,
   },
   'dashboard/restore-app-data': {
     summary: 'Authorize restoring an app’s data',
     permission: DASHBOARD_PERM.provisionApp,
     input: snapshotAppInput,
-    output: returnsOf(restoreAppDataOp),
+    output: ok,
   },
   'dashboard/bind-app-hostname': {
     summary: 'Authorize binding a custom hostname to an app',
     permission: DASHBOARD_PERM.provisionApp,
     input: snapshotAppInput,
-    output: returnsOf(bindAppHostnameOp),
+    output: ok,
   },
   'dashboard/unbind-app-hostname': {
     summary: 'Authorize unbinding a custom hostname from an app',
     permission: DASHBOARD_PERM.provisionApp,
     input: snapshotAppInput,
-    output: returnsOf(unbindAppHostnameOp),
+    output: ok,
   },
   'dashboard/authorize-scope-change': {
     summary: 'Answer whether the caller may move or retire the installs a vertical still backs',
     permission: DASHBOARD_PERM.provisionApp,
-    output: returnsOf(authorizeScopeChangeOp),
+    output: ok,
   },
   'dashboard/authorize-findings-read': {
     summary: 'Answer whether the caller may read the team’s findings',
     permission: DASHBOARD_PERM.readFindings,
-    output: returnsOf(authorizeFindingsReadOp),
+    output: ok,
   },
   'dashboard/authorize-findings-change': {
     summary: 'Answer whether the caller may act on the team’s findings',
     permission: DASHBOARD_PERM.manageFindings,
-    output: returnsOf(authorizeFindingsChangeOp),
+    output: ok,
   },
   'dashboard/mark-app-failed': {
     summary: 'Mark an app’s install failed',
     permission: DASHBOARD_PERM.provisionApp,
     input: markAppFailedInput,
-    output: returnsOf(markAppFailedOp),
+    output: dashboardAppRow,
   },
   'dashboard/record-install-step': {
     summary: 'Record one step of an app’s install',
     permission: DASHBOARD_PERM.provisionApp,
     input: recordInstallStepInput,
-    output: returnsOf(recordInstallStepOp),
+    output: ok,
   },
   'dashboard/install-steps': {
     summary: 'Read the steps recorded for an app’s install',
     permission: DASHBOARD_PERM.read,
     input: installStepsInput,
-    output: returnsOf(installStepsOp),
+    output: installStepRow,
+    // Bounded in practice, not by construction: the install flow writes one row per step of
+    // `INSTALL_STEPS` (five), but `record-install-step` takes any step name. So it pages like
+    // the rest rather than being exempt from #811; the steps route walks every page.
+    paged: { sortKey: 'seq', order: 'asc' },
   },
   'dashboard/resume-app': {
     summary: 'Authorize and record a resume of an install stuck at provisioning',
     permission: DASHBOARD_PERM.provisionApp,
     input: resumeAppInput,
-    output: returnsOf(resumeAppOp),
+    output: dashboardAppRow,
   },
   'dashboard/app-events': {
     summary: 'Read an app’s event trail',
     permission: DASHBOARD_PERM.read,
     input: appEventsInput,
-    output: returnsOf(appEventsOp),
+    output: appEvent,
+    // Unbounded: a row per lifecycle transition, for as long as the app lives. The Activity
+    // route serves one page at a time.
+    paged: { sortKey: 'id', order: 'desc' },
   },
   'dashboard/list-apps': {
     summary: 'List the team’s apps',
     permission: DASHBOARD_PERM.read,
-    input: listAppsInput,
-    inputOptional: true,
-    output: returnsOf(listAppsOp),
+    output: dashboardAppRow,
+    // Unbounded: a row per install. The Apps route serves one page at a time; a caller that
+    // needs every app (a lookup by scope id, a team-wide pass) walks the pages (`allApps`).
+    // No declared input: a call with none is still answered, because the host hands a paged
+    // read an empty page request rather than nothing.
+    paged: { sortKey: 'id', order: 'desc' },
   },
   'dashboard/delete-app': {
     summary: 'Delete an app’s record, keeping its history',
     permission: DASHBOARD_PERM.provisionApp,
     input: deleteAppInput,
-    output: returnsOf(deleteAppOp),
+    output: dashboardAppRow,
   },
   'dashboard/set-app-env': {
     summary: 'Set an app’s environment values',
     permission: DASHBOARD_PERM.provisionApp,
     input: setAppEnvInput,
-    output: returnsOf(setAppEnvOp),
+    output: z.object({ saved: z.number().int() }),
   },
   'dashboard/list-app-env': {
     summary: 'Read an app’s environment values',
     permission: DASHBOARD_PERM.read,
     input: listAppEnvInput,
-    output: returnsOf(listAppEnvOp),
+    output: appEnvValue,
+    // Not bounded by construction: `set-app-env` takes any UPPER_SNAKE_CASE key, not only the
+    // ones the vertical's env-spec declares. Walked in key order; the Env route reads every page.
+    paged: { sortKey: 'key', order: 'asc' },
   },
   'dashboard/delete-app-env': {
     summary: 'Delete one of an app’s environment values',
     permission: DASHBOARD_PERM.provisionApp,
     input: deleteAppEnvInput,
-    output: returnsOf(deleteAppEnvOp),
+    output: ok,
   },
   'dashboard/set-app-auth': {
     summary: 'Set how an app signs its users in',
     permission: DASHBOARD_PERM.provisionApp,
     input: setAppAuthInput,
-    output: returnsOf(setAppAuthOp),
+    output: appAuthConfig,
   },
   'dashboard/get-app-auth': {
     summary: 'Read how an app signs its users in',
     permission: DASHBOARD_PERM.read,
     input: getAppAuthInput,
-    output: returnsOf(getAppAuthOp),
+    output: appAuthView.nullable(),
   },
   'dashboard/init-team': {
     summary: 'Seed a new team with its invite-keying org and its owner',
     permission: DASHBOARD_PERM.manageMembers,
     input: initTeamInput,
-    output: returnsOf(initTeamOp),
+    output: z.void(),
   },
   'dashboard/invite-member': {
     summary: 'Invite someone to the team at a role the caller already holds',
     permission: DASHBOARD_PERM.manageMembers,
     input: inviteMemberInput,
-    output: returnsOf(inviteMemberOp),
+    output: z.object({ invitationId: z.string() }),
   },
   'dashboard/accept-invite': {
     summary: 'Accept an invitation, as the recipient',
     input: acceptInviteInput,
-    output: returnsOf(acceptInviteOp),
+    output: z.object({ roleKey: z.string() }),
     narrows: {
       reason:
         'Runs before the caller is a member, so there is no role to check: the invites engine verifies the ' +
@@ -1771,7 +1817,7 @@ const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
   'dashboard/preview-invite': {
     summary: 'Read the address and role a still-open invitation names',
     input: previewInviteInput,
-    output: returnsOf(previewInviteOp),
+    output: z.object({ email: z.string(), roleKey: z.string() }).nullable(),
     narrows: {
       reason:
         'Runs before the caller is a member, so there is no role to check: the authority is the signed invite ' +
@@ -1784,78 +1830,82 @@ const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
     summary: 'Re-send a pending invitation',
     permission: DASHBOARD_PERM.manageMembers,
     input: resendInviteInput,
-    output: returnsOf(resendInviteOp),
+    output: z.object({ invitationId: z.string(), email: z.string(), roleKey: z.string() }).nullable(),
   },
   'dashboard/invite-link': {
     summary: 'Read the link of a pending invitation',
     permission: DASHBOARD_PERM.manageMembers,
     input: inviteLinkInput,
-    output: returnsOf(inviteLinkOp),
+    output: z.union([z.object({ invitationId: z.string(), expiresAt: z.string() }), z.object({ lapsed: z.literal(true) })]).nullable(),
   },
   'dashboard/revoke-invite': {
     summary: 'Revoke a pending invitation',
     permission: DASHBOARD_PERM.manageMembers,
     input: revokeInviteInput,
-    output: returnsOf(revokeInviteOp),
+    output: z.void(),
   },
   'dashboard/list-members': {
     summary: 'List the team’s roster',
     permission: DASHBOARD_PERM.read,
-    input: listMembersInput,
-    inputOptional: true,
-    output: returnsOf(listMembersOp),
+    output: memberRow,
+    // Team-sized, not bounded by construction: invitations are rate-limited, not capped. The
+    // roster route serves one page at a time. No declared input, as `list-apps`.
+    paged: { sortKey: 'id', order: 'desc' },
   },
   'dashboard/remove-member': {
     summary: 'Remove a member from the team',
     permission: DASHBOARD_PERM.manageMembers,
     input: removeMemberInput,
-    output: returnsOf(removeMemberOp),
+    output: memberRef.nullable(),
   },
   'dashboard/leave-self': {
     summary: 'Leave the team',
     permission: DASHBOARD_PERM.read,
-    output: returnsOf(leaveSelfOp),
+    output: z.void(),
   },
   'dashboard/delete-team': {
     summary: 'Delete the team, listing the members to remove',
     permission: DASHBOARD_PERM.manageMembers,
-    output: returnsOf(deleteTeamOp),
+    output: z.object({ members: z.array(memberRef) }),
   },
   'dashboard/begin-connection': {
     summary: 'Authorize starting a connection to a third-party provider',
     permission: DASHBOARD_PERM.manageIntegrations,
     input: beginConnectionInput,
-    output: returnsOf(beginConnectionOp),
+    output: z.object({ principal: z.string() }),
   },
   'dashboard/mint-connect-link': {
     summary: 'Mint a one-time link for connecting a provider to an app',
     permission: DASHBOARD_PERM.manageIntegrations,
     input: mintConnectLinkInput,
-    output: returnsOf(mintConnectLinkOp),
+    output: connectLinkRow,
   },
   'dashboard/consume-connect-link': {
     summary: 'Use up a connect link',
     permission: DASHBOARD_PERM.manageIntegrations,
     input: consumeConnectLinkInput,
-    output: returnsOf(consumeConnectLinkOp),
+    output: connectLinkConsume,
   },
   'dashboard/restore-connect-link': {
     summary: 'Put back a connect link whose use did not complete',
     permission: DASHBOARD_PERM.manageIntegrations,
     input: restoreConnectLinkInput,
-    output: returnsOf(restoreConnectLinkOp),
+    output: z.object({ restored: z.boolean() }),
   },
   'dashboard/revoke-connect-link': {
     summary: 'Revoke an outstanding connect link',
     permission: DASHBOARD_PERM.manageIntegrations,
     input: revokeConnectLinkInput,
-    output: returnsOf(revokeConnectLinkOp),
+    output: z.object({ status: connectLinkRow.shape.status }).nullable(),
   },
   'dashboard/list-connect-links': {
     summary: 'List the outstanding connect links',
     permission: DASHBOARD_PERM.manageIntegrations,
     input: listConnectLinksInput,
-    output: returnsOf(listConnectLinksOp),
+    output: connectLinkRow,
+    // Not bounded by construction: an admin may mint any number of links. Each expires within
+    // 30 days, which bounds them in time, not in count. Its callers walk every page.
+    paged: { sortKey: 'id', order: 'desc' },
   },
 });
 
