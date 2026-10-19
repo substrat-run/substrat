@@ -17,6 +17,7 @@ const SHIPPED = [
   { type: 'notifications.digest-sent', schemaVersion: 1 },
   { type: 'notifications.digest-failed', schemaVersion: 1 },
   { type: 'notifications.digest-quarantined', schemaVersion: 1 },
+  { type: 'notifications.digest-released', schemaVersion: 1 },
 ];
 
 describe('notifications: event schemaVersion has one home', () => {

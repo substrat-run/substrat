@@ -31,13 +31,13 @@ export const digestCadence = z.enum(['daily-digest']);
  *   than at once, per channel. Like a mute, its presence is the fact: no row is `immediate`,
  *   which is what every person had before digests existed.
  * - **`notification-digest-item`** is one occasion held for a person's next digest: the
- *   message as `notify` rendered it, keyed by the occasion's own delivery row (`id`). Only
- *   pending items are here — sending the digest deletes them, and so does switching the topic
- *   off. `failed_at` marks a person whose digest could not be composed, so the next attempt
- *   waits; `quarantined_at` marks one row that no longer reads, set aside so it is never sent
- *   and never holds up the rest. The rendered text is about the occasion and addressed to the
- *   person, so it is erasable, and an erasure of the person deletes their items with their
- *   address.
+ *   message as `notify` rendered it, keyed by the occasion's own delivery row (`id`). A row
+ *   leaves when its digest is sent or a switch-off withdraws it. `failed_at` marks a person whose
+ *   digest could not be written, so the next attempt waits; `quarantined_at` marks a row found
+ *   unreadable, set aside — unsent, and in nobody's way — and stays until it reads again and is
+ *   released, or an erasure deletes it; it is when the row was last read and found unreadable.
+ *   The rendered text is about the occasion and addressed to the person, so it is erasable, and
+ *   an erasure of the person deletes all their items with their address.
  */
 export const notificationsEntities = defineEntities({
   'notification-topic': {
@@ -117,7 +117,7 @@ export const notificationsEntities = defineEntities({
       queued_at: z.string(),
       /** When the last attempt to send this person's digest failed; the next waits a window. */
       failed_at: z.string().nullable(),
-      /** When this row was found unreadable and set aside: never sent, kept for repair. */
+      /** When this row was last read and found unreadable; null while it is held as usual. */
       quarantined_at: z.string().nullable(),
     }),
     erasable: ['subject', 'text', 'html'],

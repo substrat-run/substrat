@@ -29,7 +29,8 @@ import { deliveriesOf, intentsOf, settleEmail } from './kit.js';
 
 /**
  * Digests (#118): a topic a person takes as `daily-digest` is held rather than mailed, and the
- * engine's daily schedule sends each person one mail of everything held for them. The schedule
+ * engine's digest schedule sends each person whose oldest held message is a day old one mail of
+ * what is held, up to `DIGEST_MAX_ITEMS`. The schedule
  * is driven the way the platform drives it — `runDueSchedules`, under the engine's system
  * principal — on a clock the test moves, so "a day later" is an assertion rather than a wait.
  */
@@ -243,7 +244,7 @@ describe('engine-notifications — digests', () => {
 
       clock.advance(DAY);
       const result = await (await h.as([PERM.sendDigests])).invoke('notifications/send-digests', {});
-      expect(result).toEqual({ digests: 2, items: 4, failed: 0, deferred: 0, quarantined: 0 });
+      expect(result).toEqual({ digests: 2, items: 4, failed: 0, deferred: 0, quarantined: 0, released: 0 });
 
       const mails = await intents();
       expect(mails).toHaveLength(2);
@@ -334,7 +335,7 @@ describe('engine-notifications — digests', () => {
     });
 
     it('nothing held sends nothing', async () => {
-      expect(await pass()).toEqual({ digests: 0, items: 0, failed: 0, deferred: 0, quarantined: 0 });
+      expect(await pass()).toEqual({ digests: 0, items: 0, failed: 0, deferred: 0, quarantined: 0, released: 0 });
       expect(digestsSent()).toEqual([]);
     });
 
@@ -426,7 +427,7 @@ describe('engine-notifications — digests', () => {
       const people = await crowd(MAX_PENDING_PLATFORM_REQUESTS + 8);
       clock.advance(DAY);
       const first = await (await h.as([PERM.sendDigests])).invoke('notifications/send-digests', {});
-      expect(first).toEqual({ digests: room, items: room, failed: 0, deferred: people.length - room, quarantined: 0 });
+      expect(first).toEqual({ digests: room, items: room, failed: 0, deferred: people.length - room, quarantined: 0, released: 0 });
       expect(await intents()).toHaveLength(room);
 
       // Nothing drained yet: the next tick finds no room, defers everyone, and still succeeds.
@@ -478,6 +479,19 @@ describe('engine-notifications — digests', () => {
       expect(latest!.payload).toMatchObject({ subject: `Assigned: WO-${DIGEST_MAX_ITEMS + 1} (+9)` });
       expect(await held()).toEqual([]);
     });
+
+    it('a younger remainder waits for its own day, not the next pass', async () => {
+      await chooseDigest(tech);
+      for (let i = 1; i <= DIGEST_MAX_ITEMS; i += 1) await send(assigned([tech.principal], { vars: { orderId: `WO-${i}` } }));
+      clock.advance(DAY / 2);
+      for (let i = 1; i <= 5; i += 1) await send(assigned([tech.principal], { vars: { orderId: `LATE-${i}` } }));
+      clock.advance(DAY / 2);
+      expect(await pass()).toMatchObject({ digests: 1, items: DIGEST_MAX_ITEMS });
+      clock.advance(TICK);
+      expect(await pass()).toMatchObject({ digests: 0 });
+      clock.advance(DAY / 2 - TICK);
+      expect(await pass()).toMatchObject({ digests: 1, items: 5 });
+    });
   });
 
   describe('one person at a time', () => {
@@ -519,6 +533,7 @@ describe('engine-notifications — digests', () => {
           failed: 1,
           deferred: 0,
           quarantined: 0,
+          released: 0,
         });
 
         expect((await intents()).map((i) => (i.payload as { to: string }).to)).toEqual(['other@example.test']);

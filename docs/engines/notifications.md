@@ -36,20 +36,24 @@ the rendered message.
 
 The engine's manifest declares a schedule, `notifications/send-digests`, every 15 minutes. It
 runs as the engine's system principal under `notifications:send-digests`, a key reserved to
-system principals. A person is due once their oldest held message is a day old, so nobody gets
-more than one digest a day and nothing waits much longer than that.
+system principals. A person is due once their oldest held message is a day old. Nothing waits
+much longer than that, and a person with no more than 50 held gets one digest a day.
 
 Each due person gets one mail through the same `requestEmail` and delivery row, under the
 reserved topic `@digest`, and `notifications.digest-sent` names the occasions it carried. A
-digest carries at most 50, oldest first, and the rest follow on the next pass. A pass sends to at
+digest carries at most 50, oldest first. The rest stay held and are due once the oldest of them
+is a day old, on the next pass if it already is. A pass sends to at
 most the room left in the scope's backlog of 32 pending sends, less 8 kept for immediate mail,
 and defers everyone else to the next pass.
 
 Each person is their own sub-transaction. One whose digest cannot be written stays held, is
 reported by `notifications.digest-failed`, and waits a day before the next try. A held row that
-no longer reads is set aside (`quarantined_at`): it is never sent and never retried, its
-delivery settles `skipped`/`quarantined`, and `notifications.digest-quarantined` names it. The
-rest of that person's messages go out.
+no longer reads is set aside (`quarantined_at`): it is not sent, its delivery settles
+`skipped`/`quarantined`, and `notifications.digest-quarantined` names it. It counts toward
+nothing: not who is due, not a withdrawal, not the stale-hold warning. The rest of that person's
+messages go out. A set-aside row is read again once a day. One that reads again is released
+(`notifications.digest-released`) and held as before, so a transient cause, such as a rolled-back
+version, does not lose it.
 
 A mute still wins: switching a topic off withdraws what is held for it and settles those
 occasions `skipped`/`muted`. The digest adds no wording of its own: one held message goes out as
@@ -76,7 +80,7 @@ What it holds:
 | `notifications_mutes` | a topic a person switched off, per channel | none: no personal data beyond the principal id |
 | `notifications_deliveries` | what became of each (dedupe key, topic, principal, channel); a digest is one more, under topic `@digest` | none: principal and request id only, never the address |
 | `notifications_cadences` | a topic a person takes as a digest, per channel; no row is `immediate` | none: no personal data beyond the principal id |
-| `notifications_digest_items` | each rendered message held for a person's next digest, deleted when it is sent or withdrawn; `failed_at` marks a person whose digest failed, `quarantined_at` a row set aside as unreadable | deleted with the principal (K-46); their occasions' deliveries keep `digest`, as a cancelled send's keeps `requested` |
+| `notifications_digest_items` | each rendered message held for a person's next digest, deleted when it is sent or withdrawn; `failed_at` marks a person whose digest failed; `quarantined_at` a row set aside as unreadable, which stays until it reads again or an erasure deletes it | deleted with the principal (K-46); their occasions' deliveries keep `digest`, as a cancelled send's keeps `requested` |
 
 A vertical composing it needs the `emailSender` grant: without it the platform refuses
 every send, and each delivery settles `refused` with reason `permission_denied`.

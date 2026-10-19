@@ -61,10 +61,12 @@ host.registerModule(notificationsModule);
 
   The engine's own schedule, `notifications/send-digests`, runs every 15 minutes
   (`DIGEST_TICK_MINUTES`) under the engine's system principal. A person is due once their oldest
-  held message is a day old, so nothing waits much longer than a day and nobody gets more than
-  one digest a day. When a digest is due depends on that person's activity, not on a clock.
+  held message is a day old, so nothing waits much longer than a day, and a person with no more
+  than 50 held gets one digest a day. When a digest is due depends on that person's activity,
+  not on a clock.
 
-  Each due person gets one mail of everything held for them. That mail is one more delivery,
+  Each due person gets one mail of what is held for them, up to 50 messages, oldest first. That
+  mail is one more delivery,
   under the reserved topic `@digest` (`DIGEST_TOPIC`), and it settles like any other. The
   occasions it carried are settled into it: still `skipped`/`digest`, now with a `settled_at`.
   `notifications.digest-sent` lists them.
@@ -76,8 +78,9 @@ host.registerModule(notificationsModule);
   cap's refusal.
 
   **Item limit.** One digest carries at most 50 occasions (`DIGEST_MAX_ITEMS`), oldest first.
-  The rest stay held and are due again on the next pass. That is the one case where a person
-  gets more than one digest a day.
+  The rest stay held and are due by the same rule: once the oldest of them is a day old. That is
+  on the very next pass if it already is. It is the one case where a person gets more than one
+  digest a day.
 
   **Contained failures.** Each person's digest is its own `ctx.atomic`. If writing it fails (a
   send or a write that throws), nothing of it happened for that person. Their messages stay held
@@ -85,10 +88,18 @@ host.registerModule(notificationsModule);
   so, and their next attempt waits a day.
 
   **Unreadable rows.** A held row that no longer reads, because it left the published shape, is
-  set aside rather than allowed to block the rest. It is marked `quarantined_at`, never sent and
-  never tried again, and kept for whoever repairs the data. Its occasion's delivery settles
-  `skipped`/`quarantined`. `notifications.digest-quarantined` and an error line name the
-  occasions, never their content. The person's readable messages go out as usual.
+  set aside rather than allowed to block the rest. It is marked `quarantined_at` and not sent.
+  It counts toward nothing: not who is due, not a switch-off's withdrawal, not the stale-hold
+  warning. Its occasion's delivery settles `skipped`/`quarantined`, and
+  `notifications.digest-quarantined` and an error line name the occasions, never their
+  content. The person's readable messages go out as usual.
+
+  The cause may pass, for instance a rollback to a version that rejects what a newer one
+  stored. So a set-aside row is read again once a day. When it reads, it is released: held
+  again, its delivery back to `skipped`/`digest`, and `notifications.digest-released` names it.
+  It then goes out in the person's next digest. A row that still does not read waits another
+  day, and nothing is said again. An erasure of the person deletes set-aside rows with the
+  rest.
 
   **Mutes and required topics.** A mute still wins: switching a topic off withdraws what is
   held for it, and those occasions' deliveries then read `skipped`/`muted`. A required topic

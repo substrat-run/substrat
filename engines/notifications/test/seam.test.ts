@@ -8,6 +8,7 @@ import { isPlatformRequest, type Page } from '@substrat-run/contracts';
 import { manualClock } from '@substrat-run/kernel';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
+  DIGEST_TICK_MINUTES,
   NOTIFICATIONS_PERM as PERM,
   notificationsModule,
   notify,
@@ -15,6 +16,7 @@ import {
 } from '../src/index.js';
 
 const DAY = 24 * 60 * 60_000;
+const TICK = DIGEST_TICK_MINUTES * 60_000;
 
 describe('engine-notifications — the seam is parsed, not asserted', () => {
   let h: EngineHarness;
@@ -100,6 +102,7 @@ describe('engine-notifications — the seam is parsed, not asserted', () => {
         failed: 0,
         deferred: 0,
         quarantined: 1,
+        released: 0,
       });
       // My readable message went out on its own, not behind the bad one.
       const intents = (await h.host.listPlatformRequestHistory(h.tenant, h.scope)).filter(isPlatformRequest);
@@ -125,9 +128,12 @@ describe('engine-notifications — the seam is parsed, not asserted', () => {
         expect.objectContaining({ fields: expect.objectContaining({ principal: me.principal, occasions: bad!.deliveryId, count: 1 }) }),
       ]);
 
-      // Never tried again, and never in the way: my next message goes out a day after it is held.
+      // Never in the way: my next message is due a day after it is held, not on the next tick
+      // for being behind an old set-aside row.
       await assign([me.principal], 'later');
-      clock.advance(DAY);
+      clock.advance(TICK);
+      expect(await schedule.invoke('notifications/send-digests', {})).toMatchObject({ digests: 0 });
+      clock.advance(DAY - TICK);
       expect(await schedule.invoke('notifications/send-digests', {})).toMatchObject({ digests: 1, items: 1, quarantined: 0 });
       expect(quarantined()).toHaveLength(1);
       expect(await rows()).toEqual([{ id: bad!.deliveryId, quarantined_at: expect.any(String) }]);
@@ -147,11 +153,107 @@ describe('engine-notifications — the seam is parsed, not asserted', () => {
       expect(await (await h.as([PERM.sendDigests])).invoke('notifications/send-digests', {})).toMatchObject({
         digests: 0,
         quarantined: 1,
+        released: 0,
       });
       expect(h.eventsOfType('notifications.digest-quarantined').map((e) => e.payload)).toEqual([
         { principal: me.principal, channel: 'email', occasions: [], unidentified: 1 },
       ]);
       expect(await h.host.listPlatformRequestHistory(h.tenant, h.scope)).toEqual([]);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  /** One person whose only held message has been set aside as unreadable. */
+  const setAside = async () => {
+    const me = await someone();
+    await me.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: true, cadence: 'daily-digest' });
+    const [bad] = await assign([me.principal], 'bad');
+    await drift(`UPDATE notifications_digest_items SET subject = X'00'`);
+    clock.advance(DAY);
+    const schedule = await h.as([PERM.sendDigests]);
+    expect(await schedule.invoke('notifications/send-digests', {})).toMatchObject({ quarantined: 1 });
+    const row = () =>
+      h.run((ctx) =>
+        ctx.sql.query<{ quarantined_at: string | null }>('SELECT quarantined_at FROM notifications_digest_items WHERE id = ?', [
+          bad!.deliveryId,
+        ]),
+      );
+    const delivery = async () =>
+      (await (await h.as([PERM.read])).invoke<Page<Record<string, unknown>>>('notifications/list-deliveries', {})).entries.find(
+        (d) => d.id === bad!.deliveryId,
+      );
+    return { me, bad: bad!, schedule, row, delivery };
+  };
+
+  it('a switch-off leaves a set-aside row alone: still there, still quarantined, and not counted as withdrawn', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { me, row, delivery } = await setAside();
+      await me.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: false });
+      expect(await row()).toEqual([{ quarantined_at: clock.now() }]);
+      expect(await delivery()).toMatchObject({ reason: 'quarantined' });
+      expect(h.eventsOfType('notifications.preference-set').at(-1)!.payload).not.toHaveProperty('withdrawn');
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('a set-aside row does not make a later hold look stale', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { me } = await setAside();
+      // The set-aside row was held two days and a moment ago; the new one is fresh.
+      clock.advance(DAY + 1);
+      await assign([me.principal], 'fresh');
+      expect(warn.mock.calls.map(([l]) => String(l)).filter((l) => l.includes('are sends being drained'))).toEqual([]);
+    } finally {
+      error.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it('a set-aside row that reads again — its cause gone — is released a window later and sent', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { me, bad, schedule, row, delivery } = await setAside();
+      // Whatever stored the bad value is gone: the row reads again.
+      await drift(`UPDATE notifications_digest_items SET subject = 'Assigned' WHERE id = '${bad.deliveryId}'`);
+      clock.advance(TICK);
+      expect(await schedule.invoke('notifications/send-digests', {})).toMatchObject({ released: 0, digests: 0 });
+      clock.advance(DAY - TICK);
+      expect(await schedule.invoke('notifications/send-digests', {})).toMatchObject({ released: 1, digests: 1, items: 1 });
+      expect(h.eventsOfType('notifications.digest-released').map((e) => e.payload)).toEqual([
+        { principal: me.principal, channel: 'email', occasions: [bad.deliveryId] },
+      ]);
+      const sent = (await h.host.listPlatformRequestHistory(h.tenant, h.scope)).filter(isPlatformRequest);
+      expect(sent.map((i) => (i.payload as { subjectId: string }).subjectId)).toEqual([me.principal]);
+      expect(await row()).toEqual([]);
+      expect(await delivery()).toMatchObject({ reason: 'digest', settled_at: clock.now() });
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('a set-aside row that still does not read stays set aside: read again once a window, and said only once', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { schedule, row, delivery } = await setAside();
+      for (let day = 1; day <= 3; day += 1) {
+        clock.advance(DAY);
+        expect(await schedule.invoke('notifications/send-digests', {})).toMatchObject({ released: 0, quarantined: 0, digests: 0 });
+        // Read again just now; not again until another window has passed.
+        expect(await row()).toEqual([{ quarantined_at: clock.now() }]);
+      }
+      const lastRead = clock.now();
+      clock.advance(TICK);
+      await schedule.invoke('notifications/send-digests', {});
+      expect(await row()).toEqual([{ quarantined_at: lastRead }]);
+      expect(await delivery()).toMatchObject({ reason: 'quarantined' });
+      expect(h.eventsOfType('notifications.digest-quarantined')).toHaveLength(1);
+      expect(h.eventsOfType('notifications.digest-released')).toEqual([]);
+      expect(error).toHaveBeenCalledTimes(1);
     } finally {
       error.mockRestore();
     }

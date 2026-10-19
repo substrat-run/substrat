@@ -21,9 +21,10 @@
  * Digests are the person's choice, per topic: a topic they take as `daily-digest` is held
  * rather than mailed. The engine's own schedule (`notifications/send-digests`, run by its system
  * principal every `DIGEST_TICK_MINUTES`) sends each person whose oldest held message is a day old
- * one mail of everything held for them, through the same send intent and delivery row as any
- * notification, one person at a time and never more at once than the scope's send backlog has
- * room for. A mute still wins, and a required topic always goes out at once.
+ * one mail of up to `DIGEST_MAX_ITEMS` of them, oldest first, through the same send intent and
+ * delivery row as any notification, one person at a time and never more at once than the
+ * scope's send backlog has room for. A mute still wins, and a required topic always goes out at
+ * once.
  *
  * Deferred, and stated so an absence reads as intent: channels other than email (SMS, push,
  * in-app — each a transport and a `notificationChannel` value), tenant-edited or per-locale
@@ -99,6 +100,7 @@ export {
   type NotificationsDigestFailedPayload,
   type NotificationsDigestItem,
   type NotificationsDigestQuarantinedPayload,
+  type NotificationsDigestReleasedPayload,
   type NotificationsDigestSentPayload,
   type NotificationsPreferenceSetPayload,
   type NotificationsRecipientUpdatedPayload,
@@ -147,11 +149,15 @@ const DIGEST_WINDOW_MS = 24 * 60 * 60_000;
 export const DIGEST_RESERVE = 8;
 
 /**
- * The most held occasions one digest carries, oldest first. The rest wait for the next pass, so
- * a person with more held than this gets several digests a pass apart rather than one unbounded
- * mail, and a pass reads a bounded number of rows for each person.
+ * The most held occasions one digest carries, oldest first. The rest stay held and are due by
+ * the same rule as any — once the oldest of them is a window old — so a person with more held
+ * than this gets several digests rather than one unbounded mail, and a pass reads a bounded
+ * number of rows for each person.
  */
 export const DIGEST_MAX_ITEMS = 50;
+
+/** The most set-aside rows a pass reads again. Each is a parse and an update, never a send. */
+const RELEASE_BATCH = 200;
 
 // ============================================================================
 // Manifest and migrations
@@ -687,8 +693,10 @@ export interface DigestPass {
   failed: number;
   /** People who were due but left for a later pass, because the scope had no room for more sends. */
   deferred: number;
-  /** Held occasions that no longer read, set aside this pass and never sent. */
+  /** Held occasions found unreadable and set aside this pass, unsent. */
   quarantined: number;
+  /** Set-aside occasions that read again this pass and are held for the digest once more. */
+  released: number;
 }
 
 /** One held row as stored, with the `rowid` that still names it when nothing else reads. */
@@ -698,9 +706,10 @@ type HeldRow = Record<string, unknown> & { row_id: number };
  * Send each person whose digest is due one mail of what is held for them.
  *
  * **Who is due.** A person is due once their oldest held message is a whole window old (a day,
- * for `daily-digest`). So nothing waits much longer than a day, and a person gets one digest a
- * day: everything held after it is younger. Oldest first, so a backlog drains in the order it
- * built up. A person whose last attempt failed waits a window before the next.
+ * for `daily-digest`). So nothing waits much longer than a day, and while no more than
+ * `DIGEST_MAX_ITEMS` are held, a person gets one digest a day: everything held after it is
+ * younger. Oldest first, so a backlog drains in the order it built up. A person whose last
+ * attempt failed waits a window before the next.
  *
  * **How many people.** Each mail is a platform send intent, and a scope may hold only
  * `MAX_PENDING_PLATFORM_REQUESTS` of those waiting for the drain — this transaction's own
@@ -709,12 +718,16 @@ type HeldRow = Record<string, unknown> & { row_id: number };
  * never asks for more room than there is, so it never meets the cap's refusal.
  *
  * **How much each.** One digest carries at most `DIGEST_MAX_ITEMS` occasions, oldest first. The
- * rest stay held and, being as old, are due again on the next pass — the one case where a person
- * gets more than one digest a day.
+ * rest stay held, and are due by the same rule: as soon as the oldest of them is a window old —
+ * on the very next pass if it already is. That is the one case where a person gets more than one
+ * digest a day.
  *
  * **What does not read.** A held row that no longer matches the published shape is set aside
  * (`quarantine`) rather than mailed or allowed to block the rest: the person's readable messages
- * go out, and the bad row is never tried again.
+ * go out, and the set-aside row counts toward nothing — not who is due, not a switch-off's
+ * withdrawal, not the stale-hold warning. Its cause may pass (a version that stored a shape this
+ * one rejects is rolled forward again), so each set-aside row is read again once a window
+ * (`releaseReadable`, at the start of a pass) and held once more when it reads.
  *
  * **One person at a time.** Each person's digest is its own `ctx.atomic`: one mail written with
  * `requestEmail`, one delivery under `DIGEST_TOPIC`, the carried occasions settled and no longer
@@ -730,6 +743,8 @@ type HeldRow = Record<string, unknown> & { row_id: number };
 export async function sendDigests(ctx: OperationContext): Promise<DigestPass> {
   const now = ctx.now();
   const cutoff = new Date(Date.parse(now) - DIGEST_WINDOW_MS).toISOString();
+  // First, so a row released now is sent in this very pass if its person is due.
+  const released = releaseReadable(ctx, now, cutoff);
   const due = ctx.sql.query<{ principal: string }>(
     `SELECT principal FROM notifications_digest_items WHERE channel = ? AND quarantined_at IS NULL
       GROUP BY principal
@@ -739,7 +754,7 @@ export async function sendDigests(ctx: OperationContext): Promise<DigestPass> {
   );
   const pending = ctx.platformRequests({ status: 'pending', limit: MAX_PENDING_PLATFORM_REQUESTS }).length;
   let room = MAX_PENDING_PLATFORM_REQUESTS - DIGEST_RESERVE - pending;
-  const pass: DigestPass = { digests: 0, items: 0, failed: 0, deferred: 0, quarantined: 0 };
+  const pass: DigestPass = { digests: 0, items: 0, failed: 0, deferred: 0, quarantined: 0, released };
   for (const [i, { principal }] of due.entries()) {
     if (room <= 0) {
       pass.deferred = due.length - i;
@@ -779,6 +794,48 @@ export async function sendDigests(ctx: OperationContext): Promise<DigestPass> {
     }
   }
   return pass;
+}
+
+/**
+ * Read again the set-aside rows whose last reading is a window old, at most `RELEASE_BATCH` a
+ * pass, oldest reading first. Each that reads now is held once more — `quarantined_at` cleared,
+ * its delivery back to `skipped`/`digest` and unsettled — and announced per person by
+ * `notifications.digest-released`. Each that still does not read is marked read now, so it waits
+ * another window, and is not announced again. Never throws over a row.
+ */
+function releaseReadable(ctx: OperationContext, now: string, cutoff: string): number {
+  const rows = ctx.sql.query<HeldRow>(
+    `SELECT rowid AS row_id, ${DIGEST_ITEM_COLUMNS} FROM notifications_digest_items
+      WHERE channel = ? AND quarantined_at IS NOT NULL AND quarantined_at <= ?
+      ORDER BY quarantined_at, rowid LIMIT ?`,
+    [CHANNEL, cutoff, RELEASE_BATCH],
+  );
+  const released = new Map<string, string[]>();
+  for (const { row_id: rowId, ...row } of rows) {
+    let item: z.infer<typeof digestItemRow>;
+    try {
+      item = returns(digestItemRow, 'notifications/send-digests', row);
+    } catch {
+      ctx.sql.exec('UPDATE notifications_digest_items SET quarantined_at = ? WHERE rowid = ?', [now, rowId]);
+      continue;
+    }
+    ctx.sql.exec('UPDATE notifications_digest_items SET quarantined_at = NULL WHERE rowid = ?', [rowId]);
+    ctx.sql.exec(
+      `UPDATE notifications_deliveries SET reason = 'digest', settled_at = NULL
+        WHERE id = ? AND status = 'skipped' AND reason = 'quarantined'`,
+      [item.id],
+    );
+    released.set(item.principal, [...(released.get(item.principal) ?? []), item.id]);
+  }
+  for (const [principal, occasions] of released) {
+    emitNotificationsEvent(ctx, {
+      type: 'notifications.digest-released',
+      entity: { entityType: 'notification-recipient', entityId: principal },
+      ...aboutPrincipal(principal),
+      payload: { principal, channel: CHANNEL, occasions },
+    });
+  }
+  return [...released.values()].reduce((n, o) => n + o.length, 0);
 }
 
 /** One person's digest: the held messages given, as one mail and one delivery. Whether a send was written. */
@@ -824,12 +881,12 @@ function sendDigestOf(ctx: OperationContext, principal: string, held: z.infer<ty
 }
 
 /**
- * Set aside held rows that no longer read. Each is marked `quarantined_at` — never sent, never
- * tried again, and no longer counted when deciding who is due — and kept, for whoever repairs
- * the scope's data, until an erasure of the person deletes it. Each occasion whose id still
- * reads has its delivery settled `skipped` with reason `quarantined`, which is what the delivery
- * log shows. `notifications.digest-quarantined` and an error line name the occasions, never
- * what the rows held.
+ * Set aside held rows found unreadable for the first time. Each is marked `quarantined_at` —
+ * not sent, and not counted when deciding who is due — until it reads again (`releaseReadable`)
+ * or an erasure of the person deletes it. Each occasion whose id still reads has its delivery
+ * settled `skipped` with reason `quarantined`, which is what the delivery log shows.
+ * `notifications.digest-quarantined` and an error line name the occasions, never what the rows
+ * held.
  */
 function quarantine(
   ctx: OperationContext,

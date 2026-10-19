@@ -61,18 +61,21 @@ consumer, pass the event's id. The engine registers as one frozen constant, like
   and kept to one line in the subject.
 - **A mute holds, except where it must not.** A topic passed as `required` cannot be switched off.
 - **A digest is the person's choice, per topic.** A topic someone takes as `daily-digest` is
-  held. Once their oldest held message is a day old, they get one mail of everything held for
-  them, tracked as one delivery. That is at most one a day, and nothing waits much longer. A
+  held. Once their oldest held message is a day old, they get one mail of up to 50 held
+  messages, tracked as one delivery. Nothing waits much longer than a day, and unless more than
+  50 are held, that is one digest a day. A
   mute still wins over a digest, and a required topic always goes out at once. The digest adds
   no wording of its own: one held message goes out as it is, and several go out under the first
   one's subject with `(+N)`, each under its own subject, as one document.
 - **A digest never crowds out mail that must not wait.** A scope holds a limited number of
   sends waiting for the platform. A digest pass takes at most the room left, less a reserve for
   immediate mail, and the rest goes out on the next passes.
-- **A digest is bounded.** It carries at most 50 messages; any more follow in the next one.
+- **A digest is bounded.** It carries at most 50 messages, oldest first. Any more follow in a
+  later digest, once the oldest of them is a day old.
 - **One person's trouble stays theirs.** A digest that cannot be written stays held and is
   reported, and never stops anyone else's. A held message that no longer reads is set aside
-  and reported, so it never holds up the rest of that person's digest.
+  and reported, so it never holds up the rest of that person's digest. It is read again daily
+  and goes out once it reads.
 - **An address never rides an event.** It lives on the engine's recipient row, which a subject
   erasure deletes. The same erasure cancels a send that is still held.
 

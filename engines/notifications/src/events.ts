@@ -27,8 +27,8 @@ import type { OperationContext } from '@substrat-run/kernel';
  * their next one. What becomes of a held occasion is told later, naming this `deliveryId`: the
  * `notifications.digest-sent` that carried it, the `notifications.preference-set` whose
  * switch-off withdrew it (its delivery then reads `skipped`/`muted`), or the
- * `notifications.digest-quarantined` that set it aside unreadable (`skipped`/`quarantined`). An
- * erasure of the person
+ * `notifications.digest-quarantined` that set it aside unreadable (`skipped`/`quarantined`, until
+ * a `notifications.digest-released` holds it again). An erasure of the person
  * deletes it with no event, like a held send it cancels, and its delivery stays as it was.
  * `dedupeKey` is the occasion as the caller named it — from a consumer, the triggering event's id.
  *
@@ -126,18 +126,28 @@ export interface NotificationsDigestSentPayload {
 /**
  * A person's digest was due and could not be composed or written — a send or a write that
  * failed. (A held message that no longer reads is set aside instead; see
- * `notifications.digest-quarantined`.) Nothing was sent for them and nothing of theirs was let go: their `items` stay held, and
- * the next attempt is at `retryAt`, a window later. Everyone else's digest in the same pass went
- * out regardless. `code` is the platform's error code; the cause itself is on the error line the
- * pass writes, not here.
+ * `notifications.digest-quarantined`.) Nothing was sent for them and nothing of theirs was let
+ * go: their `items` stay held, and the next attempt is at `retryAt`, a window later. Everyone
+ * else's digest in the same pass went out regardless. `code` is the platform's error code; the
+ * cause itself is on the error line the pass writes, not here.
  */
+export interface NotificationsDigestFailedPayload {
+  principal: string;
+  channel: string;
+  cadence: 'daily-digest';
+  items: number;
+  code: string;
+  retryAt: string;
+}
+
 /**
  * Held occasions of one person's digest no longer read — a stored row that left the shape this
- * engine publishes — and were set aside rather than mailed or allowed to block the rest: each is
- * marked and kept for repair, never tried again, and its delivery reads `skipped` with reason
- * `quarantined`. The person's readable messages went out as usual. `occasions` names the
- * deliveries whose id still read; `unidentified` counts the rows whose id did not. Never what a
- * row held.
+ * engine publishes — and were set aside rather than mailed or allowed to block the rest. Each is
+ * marked, its delivery reads `skipped` with reason `quarantined`, and the person's readable
+ * messages went out as usual. A set-aside row is read again once a window and released when it
+ * reads (`notifications.digest-released`); this event is written when a row is first set aside,
+ * never again while it stays unreadable. `occasions` names the deliveries whose id still read;
+ * `unidentified` counts the rows whose id did not. Never what a row held.
  */
 export interface NotificationsDigestQuarantinedPayload {
   principal: string;
@@ -146,13 +156,15 @@ export interface NotificationsDigestQuarantinedPayload {
   unidentified: number;
 }
 
-export interface NotificationsDigestFailedPayload {
+/**
+ * Set-aside occasions of one person read again — whatever left them unreadable, a version that
+ * stored a shape this one rejects, say, is gone — and are held for the digest once more: each
+ * delivery reads `skipped`/`digest` again, unsettled, and goes out in the person's next digest.
+ */
+export interface NotificationsDigestReleasedPayload {
   principal: string;
   channel: string;
-  cadence: 'daily-digest';
-  items: number;
-  code: string;
-  retryAt: string;
+  occasions: string[];
 }
 
 export type NotificationsEvents = {
@@ -165,6 +177,7 @@ export type NotificationsEvents = {
     'notifications.digest-sent': NotificationsDigestSentPayload;
     'notifications.digest-failed': NotificationsDigestFailedPayload;
     'notifications.digest-quarantined': NotificationsDigestQuarantinedPayload;
+    'notifications.digest-released': NotificationsDigestReleasedPayload;
   };
 };
 
@@ -181,6 +194,7 @@ export const notificationsEventVersions = {
   'notifications.digest-sent': 1,
   'notifications.digest-failed': 1,
   'notifications.digest-quarantined': 1,
+  'notifications.digest-released': 1,
 } as const satisfies Record<NotificationsEventType, number>;
 
 /** The manifest's `events.emits`, read off {@link notificationsEventVersions}. */

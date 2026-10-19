@@ -115,8 +115,10 @@ export const notificationsOperations = defineOperations(notificationsEntities, N
       failed: z.number().int(),
       /** People who were due but left for a later pass, for want of room in the scope's send backlog. */
       deferred: z.number().int(),
-      /** Held occasions that no longer read, set aside this pass and never sent. */
+      /** Held occasions found unreadable and set aside this pass, unsent. */
       quarantined: z.number().int(),
+      /** Set-aside occasions that read again this pass and are held for the digest once more. */
+      released: z.number().int(),
     }),
   },
 });
