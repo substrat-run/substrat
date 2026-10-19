@@ -343,9 +343,10 @@ function renderRoles({ permissionsMd }: ConceptInputs): string {
     ...bySort(rows, (r) => r.name).map((r) => `| \`${r.name}\` | ${renderKeys(r.keys, view.descriptions)} |`),
   ];
   const out: string[] =
-    view.roles.length === 0
-      ? ['_No roles are defined._']
-      : table('| Role | What they can do |', view.roles.map((r) => ({ name: r.role, keys: r.keys })));
+    view.roles.length > 0
+      ? table('| Role | What they can do |', view.roles.map((r) => ({ name: r.role, keys: r.keys })))
+      : // With only system-held roles there ARE roles, just none a person can be given.
+        [view.systemRoles.length > 0 ? '_No role a person can be given is defined._' : '_No roles are defined._'];
   if (view.systemRoles.length > 0) {
     out.push(
       '',

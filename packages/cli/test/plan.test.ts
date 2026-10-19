@@ -147,6 +147,7 @@ describe('conceptDelta — each section, and its twin when nothing changed', () 
       keys: ['list:manage'],
       checkedOn: 'one `list`, resolved in the handler',
       roles: ['owner'],
+      systemRoles: [],
       grantShapes: ['list'],
     });
     const text = renderDelta(d, OPTS);
@@ -283,9 +284,18 @@ describe('conceptDelta — each section, and its twin when nothing changed', () 
       '| `list:reap` | Reap abandoned lists | — no role — · reserved to a system principal | `reaper` · reserved to a system principal |',
     );
     expect(d.permissions.changes).toEqual([expect.objectContaining({ path: 'system-held role reaper', flagged: true })]);
-    // And a transition whose operation checks the key names the system-held role holding it.
+    // And a transition whose operation checks the key names the system-held role holding it, as one.
     const md = withOps(head, [`| \`acme/cancel\` | \`list:reap\` | the scope | \`${PKG}\` |`]);
-    expect(conceptDelta(PKG, art(MODEL, md), art(cancelled(), md)).lifecycles.transitions[0]!.check).toMatchObject({ keys: ['list:reap'], roles: ['reaper'] });
+    const t = conceptDelta(PKG, art(MODEL, md), art(cancelled(), md));
+    expect(t.lifecycles.transitions[0]!.check).toMatchObject({ keys: ['list:reap'], roles: [], systemRoles: ['reaper'] });
+    expect(renderDelta(t, OPTS)).toContain('| added | `list:reap` on the scope — system-held roles `reaper` |');
+    // A key held by both kinds names each under its own word.
+    const both = withOps(reserving(permissions({ member: ['list:reap'] }, REAP, { reaper: ['list:reap'] }), 'list:reap'), [
+      `| \`acme/cancel\` | \`list:reap\` | the scope | \`${PKG}\` |`,
+    ]);
+    expect(renderDelta(conceptDelta(PKG, art(MODEL, both), art(cancelled(), both)), OPTS)).toContain(
+      '`list:reap` on the scope — roles `member`; system-held roles `reaper` |',
+    );
   });
 
   it('permissions: a registry the classifier cannot read gives no rows, only its finding', () => {

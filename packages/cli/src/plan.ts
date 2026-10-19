@@ -66,8 +66,10 @@ export interface TransitionCheck {
   readonly keys: readonly string[];
   /** What the check narrows to, as `PERMISSIONS.md` words it ("one `list`, id from `listId`"). */
   readonly checkedOn: string;
-  /** Roles holding any of `keys`, system-held ones included. */
+  /** Roles a person can be given that hold any of `keys`. */
   readonly roles: readonly string[];
+  /** System-held roles (K-55, a platform host's standing principal) that hold any of `keys`. */
+  readonly systemRoles: readonly string[];
   /** Entity types whose grant shape gives any of `keys`, one record at a time. */
   readonly grantShapes: readonly string[];
 }
@@ -146,12 +148,6 @@ function transitionChanges(entity: string, base: EmittedLifecycle | undefined, h
 }
 
 /**
- * Every role that holds keys: a person's, and a system-held one (K-55). A system-held role holds only
- * reserved keys, and plan's rows say when a key is reserved.
- */
-const allRoles = (v: PermissionsView) => [...v.roles, ...v.systemRoles];
-
-/**
  * The permission-diff rows that differ: a key added, removed, re-described, held by other roles, or
  * reserved to a system principal or no longer. None when either registry cannot be read: the
  * classifier's finding says so, and a row read off an unreadable table would be a guess.
@@ -161,7 +157,8 @@ function permissionRows(baseMd: string | null, headMd: string | null): Permissio
     if (md === null) return { holders: new Map<string, string[]>(), descriptions: new Map<string, string>(), reserved: new Set<string>() };
     const v = parsePermissions(md);
     const holders = new Map<string, string[]>([...v.descriptions.keys()].map((k) => [k, []]));
-    for (const r of allRoles(v)) for (const k of r.keys) (holders.get(k) ?? holders.set(k, []).get(k)!).push(r.role);
+    // A system-held role (K-55) holds only reserved keys, and the row says when a key is reserved.
+    for (const r of [...v.roles, ...v.systemRoles]) for (const k of r.keys) (holders.get(k) ?? holders.set(k, []).get(k)!).push(r.role);
     for (const list of holders.values()) list.sort();
     return { holders, descriptions: v.descriptions, reserved: v.reserved, unreadable: v.registryUnreadable };
   };
@@ -188,14 +185,15 @@ function checksIn(md: string | null): { checks: Map<string, TransitionCheck>; un
   if (md === null) return { checks: out };
   const v = parsePermissions(md);
   if (v.operationsUnreadable !== undefined) return { checks: out, unreadable: v.operationsUnreadable };
-  const roles = allRoles(v);
   for (const [op, c] of v.operations ?? []) {
     const holds = (keys: readonly string[]) => keys.some((k) => c.keys.includes(k));
+    const holding = (rs: PermissionsView['roles']) => sorted(rs.filter((r) => holds(r.keys)).map((r) => r.role));
     out.set(op, {
       declared: c.declared,
       keys: c.keys,
       checkedOn: c.checkedOn,
-      roles: sorted(roles.filter((r) => holds(r.keys)).map((r) => r.role)),
+      roles: holding(v.roles),
+      systemRoles: holding(v.systemRoles),
       grantShapes: sorted(v.entityGrants.filter((g) => holds(g.keys)).map((g) => g.entityType)),
     });
   }
@@ -369,6 +367,7 @@ function checkCell(c: TransitionCheck | undefined): string {
   if (c.keys.length === 0) return cell(c.checkedOn);
   const holders = [
     c.roles.length ? `roles ${code(c.roles)}` : '',
+    c.systemRoles.length ? `system-held roles ${code(c.systemRoles)}` : '',
     c.grantShapes.length ? `per record on ${code(c.grantShapes)}` : '',
   ].filter(Boolean);
   return `${code(c.keys)} on ${cell(c.checkedOn)} — ${holders.join('; ') || 'no role or grant shape'}`;

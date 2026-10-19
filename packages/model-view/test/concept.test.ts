@@ -366,6 +366,20 @@ describe('parsePermissions — system-held roles (§2a, K-55)', () => {
     expect(syncConcept(DOC, inputs)).not.toContain('Held by a platform host');
   });
 
+  it('with only system-held roles, concept.md says no role a person can be given is defined — not that none is', () => {
+    const only = SYSTEM.replace('| `member` | `list:create` |\n', '');
+    expect(parsePermissions(only).roles).toEqual([]);
+    const out = syncConcept(DOC, { model: MODEL, permissionsMd: only });
+    expect(out).toContain(
+      '<!-- substrat:roles -->\n\n_No role a person can be given is defined._\n\nHeld by a platform host, never given to a person:\n\n| Role | What it can do |',
+    );
+    expect(out).not.toContain('_No roles are defined._');
+    // Its twin: no role of either kind is still "no roles".
+    expect(syncConcept(DOC, { model: MODEL, permissionsMd: PERMISSIONS.replace('| `member` | `list:create` |\n', '') })).toContain(
+      '<!-- substrat:roles -->\n\n_No roles are defined._\n',
+    );
+  });
+
   it('a Roles sub-section it does not know is returned by title, and adds no role', () => {
     const extra = SYSTEM.replace('## 3. Coverage', '### 2b. Delegated roles\n\n| Role | Permissions |\n| --- | --- |\n| `deputy` | `list:create` |\n\n## 3. Coverage');
     const v = parsePermissions(extra);
