@@ -880,10 +880,26 @@ const markAppFailedOp: OperationHandler<z.infer<typeof markAppFailedInput>, Dash
   return row;
 };
 
-/** The account's apps, newest first — a plain read, gated by `dashboard:read`. Deleted apps are hidden. */
-const listAppsOp: OperationHandler<PagedInput, Page<DashboardAppRow>> = async (ctx, input) => {
+/** `appScopeId` narrows the walk to that one app (#2437); with none, every app. */
+const listAppsInput = z.object({ appScopeId: z.string().min(1) });
+
+/**
+ * The account's apps, newest first — a plain read, gated by `dashboard:read`. Deleted apps are
+ * hidden. `appScopeId` only ever narrows: it is one more AND on the same tenant's rows, so a scope
+ * id that is not this team's answers an empty page rather than another team's app.
+ */
+const listAppsOp: OperationHandler<Partial<z.infer<typeof listAppsInput>> & PagedInput, Page<DashboardAppRow>> = async (
+  ctx,
+  input,
+) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
-  return keysetPage<DashboardAppRow>(ctx, 'SELECT * FROM dashboard_apps WHERE deleted_at IS NULL', [], ['id'], input);
+  return keysetPage<DashboardAppRow>(
+    ctx,
+    `SELECT * FROM dashboard_apps WHERE deleted_at IS NULL${input.appScopeId === undefined ? '' : ' AND app_scope_id = ?'}`,
+    input.appScopeId === undefined ? [] : [input.appScopeId],
+    ['id'],
+    input,
+  );
 };
 
 const deleteAppInput = z.object({ appScopeId: z.string().min(1) });
@@ -1744,11 +1760,14 @@ export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
   'dashboard/list-apps': {
     summary: 'List the team’s apps',
     permission: DASHBOARD_PERM.read,
+    input: listAppsInput,
+    // The filter is optional: a call with none is still answered, because the host hands a
+    // paged read an empty page request rather than nothing (#2418).
+    inputOptional: true,
     output: dashboardAppRow,
     // Unbounded: a row per install. The Apps route serves one page at a time; a caller that
-    // needs every app (a lookup by scope id, a team-wide pass) walks the pages (`allApps`).
-    // No declared input: a call with none is still answered, because the host hands a paged
-    // read an empty page request rather than nothing.
+    // needs every app (a team-wide pass) walks the pages (`allApps`), and one that has a scope
+    // id asks for just that app (`appByScopeId`) instead of walking to it.
     paged: { sortKey: 'id', order: 'desc' },
   },
   'dashboard/delete-app': {
@@ -1849,7 +1868,7 @@ export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
     permission: DASHBOARD_PERM.read,
     output: memberRow,
     // Team-sized, not bounded by construction: invitations are rate-limited, not capped. The
-    // roster route serves one page at a time. No declared input, as `list-apps`.
+    // roster route serves one page at a time. No declared input: the host hands a paged read an empty page request.
     paged: { sortKey: 'id', order: 'desc' },
   },
   'dashboard/remove-member': {

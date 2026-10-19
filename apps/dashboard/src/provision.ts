@@ -27,7 +27,7 @@ import { MEMBER_ROLES, dashboardModule, type DashboardAppRow } from './module.js
 import { ControlPlaneError, TenantNarrowedControlPlane, type DnsRecordRow, type SnapshotRecord } from './authority.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice, type RegisterOidcClientFn } from './auth-wiring.js';
 import { clearAppMcpResources, isSharedIssuer, registerAppMcpResources, type TeamIssuer } from './mcp-resources.js';
-import { allApps } from './walk-all.js';
+import { appByScopeId } from './walk-all.js';
 
 /** This vertical's slug and the DO/entitlement key it registers under. */
 export const VERTICAL = 'dashboard';
@@ -821,11 +821,10 @@ export async function updateApp(
   // additively). Bind a URL for any newly-declared surface now, so "add a surface in a PR,
   // push" gives it a public URL on update with no manual bind. Best-effort: the version has
   // already moved, and a missing surface URL must never fail the update itself.
-  const apps = await allApps(scope);
   const appHostname = await resolveDefaultHostname(host, {
     node: input.node,
     appScopeId: input.appScopeId,
-    stored: apps.find((a) => a.app_scope_id === input.appScopeId)?.hostname ?? null,
+    stored: (await appByScopeId(scope, input.appScopeId))?.hostname ?? null,
     ...(input.controlPlane ? { controlPlane: input.controlPlane } : {}),
   });
   await reconcileSurfaceHostnames(host, {
