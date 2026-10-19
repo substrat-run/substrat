@@ -824,7 +824,18 @@ describe('PERMISSIONS.md', () => {
     expect(parsePermissions(extra('`list:read`')).roles).not.toHaveProperty('deputy');
     const r = classifyPermissions(extra('`list:read`'), extra('`list:read`, `list:create`'));
     expect(r.bump).toBe('major');
-    expect(r.changes).toEqual([expect.objectContaining({ path: 'section "Roles › Delegated roles"', flagged: true })]);
+    expect(r.changes).toEqual([expect.objectContaining({ path: expect.stringMatching(/^section "Roles\b.* › Delegated roles"$/), flagged: true })]);
+  });
+
+  it('so is a sub-section under any section: never read as more rows of that section’s table', () => {
+    const extra = (keys: string) =>
+      PERMS.replace('## 5. Scheduled work', `### 4a. Retired shapes\n\n| Entity type | Permissions |\n| --- | --- |\n| \`old\` | ${keys} |\n\n## 5. Scheduled work`);
+    // Read as one table, its header was a grant shape named `Entity type`.
+    expect(Object.keys(parsePermissions(extra('`list:read`')).grantShapes)).toEqual(['owner']);
+    const r = classifyPermissions(extra('`list:read`'), extra('`list:manage`'));
+    expect(r.changes).toEqual([
+      expect.objectContaining({ level: 'major', path: 'section "Entity-narrowed grant shapes › Retired shapes"', flagged: true }),
+    ]);
   });
 
   /**

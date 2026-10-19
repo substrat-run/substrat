@@ -48,7 +48,13 @@
  * authoring notation (`tools/model-diff.mts`). The same classifier is what `substrat changeset`
  * writes, what `--check` holds a hand-written changeset to, and what a status line can show.
  */
-import { operationsTableProblem, operationsUnknownFor, readRegistryTable, readRolesSection } from '@substrat-run/model-view';
+import {
+  operationsTableProblem,
+  operationsUnknownFor,
+  permissionsSections,
+  readRegistryTable,
+  readRolesSection,
+} from '@substrat-run/model-view';
 
 export type Level = 'patch' | 'minor' | 'major';
 export type Bump = 'none' | Level;
@@ -758,7 +764,9 @@ function rowsOf(section: string): string[][] {
 /**
  * Parse a `PERMISSIONS.md` that `tools/permission-diff.mts` emitted. Sections are found by
  * their heading's words, not their number: the numbering shifts with which sections a vertical
- * has (§4 is grant shapes in one file and "not covered" in another).
+ * has (§4 is grant shapes in one file and "not covered" in another). They are split by
+ * model-view's `permissionsSections`, so each table here is the one model-view reads under the
+ * same heading; a sub-section no branch below claims is judged whole, like an unknown section.
  */
 export function parsePermissions(text: string): PermissionSnapshot {
   const snap = {
@@ -769,45 +777,43 @@ export function parsePermissions(text: string): PermissionSnapshot {
     schedules: {} as Record<string, { keys: string[]; terms: string[] }>,
     unread: {} as Record<string, string>,
   } as PermissionSnapshot;
-  const sections = text.split(/^## /m).slice(1);
-  for (const section of sections) {
-    const nl = section.indexOf('\n');
-    const heading = (nl === -1 ? section : section.slice(0, nl)).replace(/^\d+\.\s*/, '').trim();
+  for (const section of permissionsSections(text)) {
+    const { title: heading, body } = section;
+    let unclaimed = section.subsections;
     // The FIRST code span names the row: a schedule's cell reads "`op` — purges a trashed `list`".
     const firstKey = (cells: string[]) => /`([^`]+)`/.exec(cells[0] ?? '')?.[1] ?? cells[0] ?? '';
     if (/^Registry\b/.test(heading)) {
-      const read = readRegistryTable(section);
+      const read = readRegistryTable(body);
       if ('unreadable' in read) snap.registryUnreadable = read.unreadable;
       else for (const r of read.rows) snap.registry[r.key] = { terms: [...r.terms], reserved: r.reserved };
     } else if (/^Roles\b/.test(heading)) {
-      // The system-held roles' sub-section is its own table, read by model-view's judgement; one
-      // it does not know is judged whole, like an unknown section.
       const read = readRolesSection(section);
       for (const r of read.roles) snap.roles[r.role] = [...r.keys].sort();
       for (const r of read.systemRoles) snap.systemRoles[r.role] = [...r.keys].sort();
-      for (const [title, text] of Object.entries(read.unknown)) snap.unread[`Roles › ${title}`] = text;
+      unclaimed = read.unknown;
     } else if (/^Entity-narrowed grant shapes\b/.test(heading)) {
-      for (const cells of rowsOf(section)) snap.grantShapes[firstKey(cells)] = { keys: codesIn(cells[1] ?? ''), terms: cells.slice(2) };
+      for (const cells of rowsOf(body)) snap.grantShapes[firstKey(cells)] = { keys: codesIn(cells[1] ?? ''), terms: cells.slice(2) };
     } else if (/^Scheduled work\b/.test(heading)) {
       // | Operation | Cadence | System principal | Permissions |
-      for (const cells of rowsOf(section)) {
+      for (const cells of rowsOf(body)) {
         snap.schedules[firstKey(cells)] = { keys: codesIn(cells[cells.length - 1] ?? ''), terms: cells.slice(0, -1) };
       }
     } else if (/^Operations\b/.test(heading)) {
       // | Operation | Key | Checked on | Declared by | — the key cell's prose ("checked in code,
       // not declared") is a term, so an operation losing its declaration is still a change.
-      const why = operationsTableProblem(section);
+      const why = operationsTableProblem(body);
       if (why !== undefined) {
         snap.operationsUnreadable = why;
-        continue;
+      } else {
+        const ops: Record<string, { keys: string[]; terms: string[] }> = {};
+        for (const cells of rowsOf(body)) ops[firstKey(cells)] = { keys: codesIn(cells[1] ?? ''), terms: cells.slice(1) };
+        snap.operations = ops;
+        snap.operationsUnknownFor = operationsUnknownFor(body);
       }
-      const ops: Record<string, { keys: string[]; terms: string[] }> = {};
-      for (const cells of rowsOf(section)) ops[firstKey(cells)] = { keys: codesIn(cells[1] ?? ''), terms: cells.slice(1) };
-      snap.operations = ops;
-      snap.operationsUnknownFor = operationsUnknownFor(section);
     } else if (!DERIVED_SECTIONS.some((re) => re.test(heading))) {
-      snap.unread[heading] = section.slice(nl === -1 ? section.length : nl).trim();
+      snap.unread[heading] = body.trim();
     }
+    for (const sub of unclaimed) snap.unread[`${heading} › ${sub.title}`] = sub.body.trim();
   }
   return snap;
 }

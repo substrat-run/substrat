@@ -9,6 +9,7 @@ import {
   entityDiagram,
   lifecycleDiagram,
   parsePermissions,
+  permissionsSections,
   readRolesSection,
   syncConcept,
 } from '../src/index.js';
@@ -384,13 +385,24 @@ Never given to a person: no invitation, member operation or role picker offers t
     expect(syncConcept(DOC, inputs)).not.toContain('Held by a platform host');
   });
 
-  it('a Roles sub-section it does not know is returned whole by title, and adds no role', () => {
+  it('a Roles sub-section it does not know is returned by title, and adds no role', () => {
     const extra = SYSTEM.replace('## 3. Coverage', '### 2b. Delegated roles\n\n| Role | Permissions |\n| --- | --- |\n| `deputy` | `list:create` |\n\n## 3. Coverage');
     const v = parsePermissions(extra);
     expect(v.roles.map((r) => r.role)).toEqual(['member']);
     expect(v.systemRoles.map((r) => r.role)).toEqual(['reaper']);
-    const section = extra.slice(extra.indexOf('Identical in every'), extra.indexOf('## 3. Coverage'));
-    expect(readRolesSection(section).unknown).toEqual({ 'Delegated roles': '| Role | Permissions |\n| --- | --- |\n| `deputy` | `list:create` |' });
+    const roles = permissionsSections(extra).find((s) => s.title.startsWith('Roles'))!;
+    expect(readRolesSection(roles).unknown.map((s) => s.title)).toEqual(['Delegated roles']);
+  });
+
+  it('a file that opens on its first section, with no title above it, still has that section', () => {
+    const bare = PERMISSIONS.replace('# Permission snapshot\n\n', '');
+    expect(bare.startsWith('## 1. Registry')).toBe(true);
+    expect(parsePermissions(bare).descriptions.get('list:create')).toBe('Create lists of your own');
+  });
+
+  it('a sub-section under any section is never read as more rows of that section’s table', () => {
+    const v = parsePermissions(`${PERMISSIONS}\n### 4a. Retired shapes\n\n| Entity type | Permissions |\n| --- | --- |\n| \`old\` | \`list:create\` |\n`);
+    expect(v.entityGrants).toEqual([{ entityType: 'list', keys: ['list:manage'] }]);
   });
 });
 
