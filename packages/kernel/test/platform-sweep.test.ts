@@ -22,7 +22,7 @@ import {
   runPlatformSweep,
   startPlatformSweeper,
 } from '../src/platform-sweep.js';
-import type { ConnectorSweeper, CrossVerticalReach, PlatformSweepOptions } from '../src/platform-sweep.js';
+import type { ConnectorSweeper, CrossVerticalReach, PlatformRequestDrain, PlatformSweepOptions } from '../src/platform-sweep.js';
 import type { FetchLike, MigrateScopeOutcome, ScopeHost, SweepRunInput } from '../src/scope-host.js';
 
 /**
@@ -1459,35 +1459,30 @@ describe('runPlatformSweep — recurring schedules (#383)', () => {
   });
 
   describe('a scope whose schedules enqueued platform requests is drained again (#2431)', () => {
-    type Drained = Awaited<ReturnType<NonNullable<PlatformSweepOptions['drainPlatformRequestsFn']>>>;
-    const quiet: Drained = { drained: 0, done: 0, failed: 0, pending: 0 };
+    const quiet: PlatformRequestDrain = { drained: 0, done: 0, failed: 0, pending: 0 };
 
     /**
-     * Two primaries: `sending`'s schedules enqueue two requests, `idle`'s none. `drains` answers
-     * each scope's drains in order (the last answer repeats); `timeline` records the order of every
-     * drain and schedule pass.
+     * Two primaries: `sending`'s schedules enqueue `sendingRequests`, `idle`'s none. `drains` answers
+     * each scope's drains in order, then `quiet`; `timeline` records the order of every drain and
+     * schedule pass.
      */
-    function redrainCase(drains: Partial<Record<'sending' | 'idle', (Drained | Error)[]>> = {}) {
+    function redrainCase(drains: Partial<Record<'sending' | 'idle', (PlatformRequestDrain | Error)[]>> = {}, sendingRequests = 2) {
       const sending = sid();
       const idle = sid();
       const name = (s: string) => (s === sending ? 'sending' : 'idle');
       const timeline: string[] = [];
-      const seen = new Map<string, number>();
       const host = schedHost({
         scopes: [{ id: sending, forkedFrom: null }, { id: idle, forkedFrom: null }],
         run: async (_m, _t, s) => {
           timeline.push(`run:${name(s)}`);
-          return s === sending
-            ? { fired: 1, skipped: 0, failed: 0, errors: [], platformRequests: 2 }
+          return s === sending && sendingRequests > 0
+            ? { fired: 1, skipped: 0, failed: 0, errors: [], platformRequests: sendingRequests }
             : { fired: 1, skipped: 0, failed: 0, errors: [] };
         },
       });
-      const drainPlatformRequestsFn = async (_t: string, s: string): Promise<Drained> => {
+      const drainPlatformRequestsFn = async (_t: string, s: string): Promise<PlatformRequestDrain> => {
         timeline.push(`drain:${name(s)}`);
-        const answers = drains[name(s)] ?? [quiet];
-        const n = seen.get(s) ?? 0;
-        seen.set(s, n + 1);
-        const answer = answers[Math.min(n, answers.length - 1)]!;
+        const answer = drains[name(s)]?.shift() ?? quiet;
         if (answer instanceof Error) throw answer;
         return answer;
       };
@@ -1503,23 +1498,15 @@ describe('runPlatformSweep — recurring schedules (#383)', () => {
       expect(c.timeline.filter((e) => e.startsWith('drain:')).sort()).toEqual(['drain:idle', 'drain:sending', 'drain:sending']);
       expect(c.timeline.filter((e) => e.startsWith('run:')).sort()).toEqual(['run:idle', 'run:sending']);
       expect(c.timeline.indexOf('run:sending')).toBeGreaterThan(c.timeline.indexOf('drain:sending'));
-      expect(c.timeline.lastIndexOf('drain:sending')).toBeGreaterThan(c.timeline.indexOf('run:sending'));
       expect(c.timeline.at(-1)).toBe('drain:sending');
       expect(report.errors).toEqual([]);
     });
 
     it('a pass whose schedules enqueue nothing drains each scope once, and reports no count (the twin)', async () => {
-      const c = redrainCase();
-      const host = schedHost({
-        scopes: [{ id: c.sending, forkedFrom: null }],
-        run: async () => {
-          c.timeline.push('run:sending');
-          return { fired: 1, skipped: 0, failed: 0, errors: [] };
-        },
-      });
-      const report = await runPlatformSweep(host, opts({ drainPlatformRequestsFn: c.drainPlatformRequestsFn }));
-      expect(c.timeline).toEqual(['drain:sending', 'run:sending']);
-      expect(report.schedules).toEqual({ scopes: 1, fired: 1, skipped: 0, failed: 0 });
+      const c = redrainCase({}, 0);
+      const report = await runPlatformSweep(c.host, opts({ drainPlatformRequestsFn: c.drainPlatformRequestsFn }));
+      expect(c.timeline.filter((e) => e.startsWith('drain:')).sort()).toEqual(['drain:idle', 'drain:sending']);
+      expect(report.schedules).toEqual({ scopes: 2, fired: 2, skipped: 0, failed: 0 });
     });
 
     it("adds the second drain's work and stands on its pending and unsettleable", async () => {

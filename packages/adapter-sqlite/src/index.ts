@@ -5891,8 +5891,7 @@ export class SqliteScopeHost implements ScopeHost {
         if (schedule.purge) {
           // #119: a purge horizon's schedule runs its operation once per due entity, never once.
           // #2192: under the run's own id, so the purges and their deliveries join this run's line.
-          // #2431: not in `platformRequests`, as on the Durable Object, whose scope reports no
-          // count for its purges: what they enqueue waits for the next drain.
+          // #2431: what the purges enqueue is not counted (`ScheduleRunReport.platformRequests`).
           const pass = await this.runPurgeSweep(moduleId, tenantId, scopeId, schedule.operation, invocationId);
           stillDue = purgeStillDue(pass);
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);

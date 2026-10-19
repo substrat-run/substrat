@@ -965,7 +965,7 @@ export interface PlatformRequestDrainTotals {
 }
 
 /** What `drainPlatformRequestsFn` reports for one scope. */
-type PlatformRequestDrain = Awaited<ReturnType<NonNullable<PlatformSweepOptions['drainPlatformRequestsFn']>>>;
+export type PlatformRequestDrain = Awaited<ReturnType<NonNullable<PlatformSweepOptions['drainPlatformRequestsFn']>>>;
 
 /**
  * Fold one scope's platform-intent drain into the pass's totals. `earlier` is the same scope's
@@ -975,20 +975,16 @@ type PlatformRequestDrain = Awaited<ReturnType<NonNullable<PlatformSweepOptions[
 function tallyPlatformDrain(report: PlatformSweepReport, s: Scope, r: PlatformRequestDrain, earlier?: PlatformRequestDrain): void {
   const totals = report.platformRequestTotals;
   if (r.unreachable) totals.unreachable += 1;
-  if (r.drained > 0 && !(earlier && earlier.drained > 0)) totals.scopes += 1;
+  if (r.drained > 0 && !earlier?.drained) totals.scopes += 1;
   totals.drained += r.drained;
   totals.done += r.done;
   totals.failed += r.failed;
   totals.pending += r.pending - (earlier?.pending ?? 0);
   totals.unsettleable += (r.unsettleable?.count ?? 0) - (earlier?.unsettleable?.count ?? 0);
-  if (earlier?.unsettleable) {
-    const others = (report.platformRequestUnsettleable ?? []).filter((u) => u.scopeId !== s.id);
-    if (others.length > 0) report.platformRequestUnsettleable = others;
-    else delete report.platformRequestUnsettleable;
-  }
-  if (r.unsettleable) {
-    (report.platformRequestUnsettleable ??= []).push({ tenantId: s.tenantId, scopeId: s.id, ...r.unsettleable });
-  }
+  const listed = (report.platformRequestUnsettleable ?? []).filter((u) => u.scopeId !== s.id);
+  if (r.unsettleable) listed.push({ tenantId: s.tenantId, scopeId: s.id, ...r.unsettleable });
+  if (listed.length > 0) report.platformRequestUnsettleable = listed;
+  else delete report.platformRequestUnsettleable;
 }
 
 /**
@@ -1196,8 +1192,8 @@ export async function runPlatformSweep(
   // #2431: each scope this phase reached, with what its drain said, for the schedule phase's
   // second drain of a scope whose schedules enqueued requests.
   const drainedThisPass = new Map<string, PlatformRequestDrain>();
-  if (options.drainPlatformRequestsFn) {
-    const drain = options.drainPlatformRequestsFn;
+  const drain = options.drainPlatformRequestsFn;
+  if (drain) {
     const scopes = await host.admin.listScopes(options.actor, { status: 'active' });
     await mapBounded(scopes, concurrency, async (s) => {
       if (failedThisPass.has(s.id)) {
@@ -1374,14 +1370,14 @@ export async function runPlatformSweep(
         schedules.platformRequests = (schedules.platformRequests ?? 0) + platformRequests;
         // #2431: the schedules enqueued platform requests, so drain the scope again now rather
         // than leave them a sweep interval. After the schedules, not instead of the drain above:
-        // that one gives them the scope's whole headroom under the pending cap. Only a scope the
-        // drain phase reached, and once, firing nothing, so it cannot loop. One that drain could
-        // not reach waits for the next pass, as before. The cost: an intent the first drain left
-        // pending is tried again here, one more attempt toward its ceiling.
+        // that one gives them the scope's whole headroom under the pending cap. Once, firing
+        // nothing, so it cannot loop, and only on a scope the drain phase reached; any other waits
+        // for the next pass. The cost: an intent the first drain left pending is tried again here,
+        // one more attempt toward its ceiling.
         const earlier = drainedThisPass.get(s.id);
-        if (!earlier || !options.drainPlatformRequestsFn) return;
+        if (!earlier || !drain) return;
         try {
-          tallyPlatformDrain(report, s, await options.drainPlatformRequestsFn(s.tenantId, s.id), earlier);
+          tallyPlatformDrain(report, s, await drain(s.tenantId, s.id), earlier);
         } catch (err) {
           report.errors.push({ kind: 'platform-request', id: s.id, error: message(err) });
         }
