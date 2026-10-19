@@ -297,7 +297,6 @@ import {
   readSubscription,
   LIVE_DECIDE_ATTEMPTS,
   LIVE_FANOUT_LIMIT,
-  LIVE_MODE_HEADER,
   LIVE_PRINCIPAL_HEADER,
   LIVE_SCOPE_HEADER,
   LIVE_SUBSCRIBE_PATH,
@@ -308,7 +307,8 @@ import {
   LIVE_SOCKETS_PER_PRINCIPAL,
   decodeLiveWithin,
   liveInstant,
-  type LiveRefusal,
+  liveRefusal,
+  liveRefusalStatus,
   type LiveSubscription,
   type LiveWithin,
 } from './live-reads.js';
@@ -3238,13 +3238,10 @@ export function defineScopeDO(
       if (url.pathname !== LIVE_SUBSCRIBE_PATH) {
         // The DO has exactly one fetch surface. Anything else reaching here is a
         // coordinator bug, and a 404 says so without guessing at an intent.
-        return new Response('this scope has no such surface', { status: 404 });
+        return liveRefusalStatus(404, 'this scope has no such surface');
       }
       if (!isUpgradeRequest(request)) {
-        return new Response('live reads are a WebSocket surface', {
-          status: 426,
-          headers: { [LIVE_MODE_HEADER]: 'not-an-upgrade' satisfies LiveRefusal },
-        });
+        return liveRefusalStatus(426, 'live reads are a WebSocket surface', 'not-an-upgrade');
       }
       const principal = request.headers.get(LIVE_PRINCIPAL_HEADER);
       const tenantId = request.headers.get(LIVE_TENANT_HEADER);
@@ -3254,9 +3251,7 @@ export function defineScopeDO(
         // cannot be evaluated, and the only safe thing to do with a channel we cannot
         // filter is to refuse to open it. 500, not 400: the caller is the coordinator
         // in this same package, so a missing assertion is OUR bug, not the client's.
-        return new Response('live reads require an asserted principal, tenant and scope', {
-          status: 500,
-        });
+        return liveRefusal('internal', 'live reads require an asserted principal, tenant and scope');
       }
       // A narrowing the coordinator sent but this end cannot read is refused, never
       // dropped: dropping it would open the whole scope's feed — to a vouched
@@ -3264,13 +3259,13 @@ export function defineScopeDO(
       const withinHeader = request.headers.get(LIVE_WITHIN_HEADER);
       const within = withinHeader === null ? undefined : decodeLiveWithin(withinHeader);
       if (withinHeader !== null && !within) {
-        return new Response('live reads: unreadable within narrowing', { status: 500 });
+        return liveRefusal('internal', 'live reads: unreadable within narrowing');
       }
       // The same for an expiry: dropping it would keep the socket open past its session.
       const expiresHeader = request.headers.get(LIVE_EXPIRES_HEADER);
       const expiresAt = expiresHeader === null ? undefined : liveInstant(expiresHeader);
       if (expiresHeader !== null && !expiresAt) {
-        return new Response('live reads: unreadable expiry', { status: 500 });
+        return liveRefusal('internal', 'live reads: unreadable expiry');
       }
       // A subscriber arriving before the scope's migrations have run would be told
       // about events against a schema it cannot read back through. Same gate every
@@ -3296,10 +3291,7 @@ export function defineScopeDO(
         expired ||
         (within?.checked !== undefined && !(await this.mayWatchRoot(() => this.liveContext(subscriber), within)))
       ) {
-        return new Response('live reads: the subscriber may not watch this root', {
-          status: 403,
-          headers: { [LIVE_MODE_HEADER]: 'forbidden' satisfies LiveRefusal },
-        });
+        return liveRefusal('forbidden', 'live reads: the subscriber may not watch this root', 'forbidden');
       }
 
       const pair = new WebSocketPair();

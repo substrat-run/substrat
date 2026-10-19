@@ -2765,6 +2765,13 @@ export type PermissionsDeclaredBy<Ops> = {
 }[keyof Ops];
 
 /**
+ * A key's description in `manifestOperations`, or its description and who may hold it: the object
+ * form carries `holder: 'system'` onto the manifest's permission declaration, so a vertical built
+ * from its model reserves a key of its own where it describes it, as an engine does.
+ */
+export type PermissionDescription = string | { readonly description: string; readonly holder: 'system' };
+
+/**
  * The operation half of a module's manifest — derived, not written twice.
  *
  * `manifestEntities` already derives the entity-shaped fragments from the
@@ -2798,7 +2805,8 @@ export type PermissionsDeclaredBy<Ops> = {
 export function manifestOperations<const Ops extends Record<string, object>>(
   operations: Ops,
   spec: {
-    readonly permissions: Readonly<Record<PermissionsDeclaredBy<Ops>, string>> & Readonly<Record<string, string>>;
+    readonly permissions: Readonly<Record<PermissionsDeclaredBy<Ops>, PermissionDescription>> &
+      Readonly<Record<string, PermissionDescription>>;
     /**
      * Keys these operations CHECK but another module DECLARES — each named with
      * the module that owns it.
@@ -2823,17 +2831,22 @@ export function manifestOperations<const Ops extends Record<string, object>>(
     readonly consumes?: readonly { readonly type: string; readonly schemaVersion: number }[];
   },
 ): {
-  permissions: { key: string; description: string }[];
+  permissions: { key: string; description: string; holder?: 'system' }[];
   events: {
     emits: { type: string; schemaVersion: number }[];
     consumes: { type: string; schemaVersion: number }[];
   };
 } {
-  const described = spec.permissions as Record<string, string>;
+  const described = spec.permissions as Record<string, PermissionDescription>;
+  // The prose, in either form: an empty description is no description, written as a string or not.
+  const describedText = (key: string): string | undefined => {
+    const d = described[key];
+    return typeof d === 'string' ? d : d?.description;
+  };
   const elsewhere = spec.checksDeclaredElsewhere ?? {};
   const used = permissionsUsedBy(operations);
 
-  const undescribed = used.filter((key) => !described[key] && !elsewhere[key]);
+  const undescribed = used.filter((key) => !describedText(key) && !elsewhere[key]);
   if (undescribed.length > 0) {
     throw new Error(
       `manifestOperations: no description for permission(s) ${undescribed.join(', ')} — ` +
@@ -2853,7 +2866,7 @@ export function manifestOperations<const Ops extends Record<string, object>>(
   }
 
   // A key cannot be both this module's and someone else's.
-  const both = Object.keys(elsewhere).filter((key) => described[key]);
+  const both = Object.keys(elsewhere).filter((key) => describedText(key));
   if (both.length > 0) {
     throw new Error(
       `manifestOperations: permission(s) ${both.sort().join(', ')} are described here AND ` +
@@ -2864,7 +2877,10 @@ export function manifestOperations<const Ops extends Record<string, object>>(
   return {
     permissions: Object.keys(described)
       .sort()
-      .map((key) => ({ key, description: described[key] as string })),
+      .map((key) => {
+        const d = described[key]!;
+        return typeof d === 'string' ? { key, description: d } : { key, description: d.description, holder: d.holder };
+      }),
     events: {
       emits: eventsEmittedBy(operations),
       consumes: [...(spec.consumes ?? [])].sort((a, b) => a.type.localeCompare(b.type)),
