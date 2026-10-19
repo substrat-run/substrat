@@ -28,8 +28,9 @@
  * in-app — each a transport and a `notificationChannel` value), tenant-edited or per-locale
  * templates (a table keyed by topic overriding the template the caller passes, which is also
  * where a digest's own wording would come from), quiet hours and a digest's time of day, other
- * digest cadences (a `digestCadence` value and its schedule), and a person's own delivery
- * history.
+ * digest cadences (today any cadence row holds a topic for the one daily schedule: a second
+ * cadence needs a `digestCadence` value, the cadence recorded on each held item, and a schedule
+ * that sends only its own), and a person's own delivery history.
  */
 import { z } from 'zod';
 import {
@@ -82,7 +83,6 @@ export {
 } from './operations.js';
 import {
   myPreferences,
-  notificationCadence,
   notificationsOperations,
   type NotificationCadence,
   type NotificationChannel,
@@ -361,10 +361,10 @@ const isMuted = (ctx: OperationContext, principal: string, topic: string): boole
   ]).length > 0;
 
 /** The digest cadence a person chose for a topic, or null: no row is `immediate`. */
-const storedCadenceOf = (ctx: OperationContext, principal: string, topic: string, channel: string = CHANNEL): string | null =>
+const storedCadenceOf = (ctx: OperationContext, principal: string, topic: string): string | null =>
   ctx.sql.query<{ cadence: string }>(
     'SELECT cadence FROM notifications_cadences WHERE principal = ? AND topic = ? AND channel = ?',
-    [principal, topic, channel],
+    [principal, topic, CHANNEL],
   )[0]?.cadence ?? null;
 
 /** Hold one rendered occasion for the person's next digest, under its own delivery's id. */
@@ -577,7 +577,8 @@ export function setMyPreference(
       [...mine, input.cadence, ctx.now()],
     );
   }
-  const stored = storedCadenceOf(ctx, ctx.principal, input.topic, input.channel) ?? 'immediate';
+  // The cadence the event announces is the one the caller now reads back: one rule, one place.
+  const preferences = myPreferencesOf(ctx);
   emitNotificationsEvent(ctx, {
     type: 'notifications.preference-set',
     entity: { entityType: 'notification-recipient', entityId: ctx.principal },
@@ -587,11 +588,10 @@ export function setMyPreference(
       topic: input.topic,
       channel: input.channel,
       enabled: input.enabled,
-      cadence:
-        topic.required === 1 ? 'immediate' : returns(notificationCadence, 'notifications/set-my-preference', stored),
+      cadence: preferences.topics.find((t) => t.topic === input.topic)!.cadence,
     },
   });
-  return myPreferencesOf(ctx);
+  return preferences;
 }
 
 /** What became of each notification, newest first. */
@@ -637,16 +637,17 @@ export function sendDigests(ctx: OperationContext): { digests: number; items: nu
     items += held.length;
 
     const to = addressOf(ctx, principal);
-    const digest = { topic: DIGEST_TOPIC, dedupeKey: ulid(), principal, about: null };
-    const outcome =
-      to === null
-        ? recordDelivery(ctx, { ...digest, status: 'skipped', reason: 'no_address', request: null })
-        : recordDelivery(ctx, {
-            ...digest,
-            status: 'requested',
-            reason: null,
-            request: requestEmail(ctx, { to, ...digestOf(held), subjectId: dataSubjectId.parse(principal) }),
-          });
+    const request =
+      to === null ? null : requestEmail(ctx, { to, ...digestOf(held), subjectId: dataSubjectId.parse(principal) });
+    const outcome = recordDelivery(ctx, {
+      topic: DIGEST_TOPIC,
+      dedupeKey: ulid(),
+      principal,
+      about: null,
+      status: request === null ? 'skipped' : 'requested',
+      reason: request === null ? 'no_address' : null,
+      request,
+    });
     emitNotificationsEvent(ctx, {
       type: 'notifications.digest-sent',
       entity: { entityType: 'notification-delivery', entityId: outcome.deliveryId },

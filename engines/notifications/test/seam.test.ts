@@ -39,26 +39,28 @@ describe('engine-notifications — the seam is parsed, not asserted', () => {
     await expect(me.invoke('notifications/my-preferences', {})).rejects.toMatchObject({ code: 'internal' });
   });
 
+  const assign = (recipients: string[], dedupeKey: string) =>
+    h.run((ctx) =>
+      notify(ctx, {
+        topic: 'order-assigned',
+        description: 'A work order was assigned to you',
+        dedupeKey,
+        recipients,
+        template: { subject: 'Assigned', text: 'You have a work order.' },
+      }),
+    );
+
   /** A person with an address, and the topic used once so they can choose it. */
   const someone = async () => {
     const p = await h.mintPrincipal([PERM.self]);
     await p.stub.invoke('notifications/set-my-address', { email: 'me@example.test' });
-    await h.run((ctx) =>
-      notify(ctx, {
-        topic: 'order-assigned',
-        description: 'A work order was assigned to you',
-        dedupeKey: `seed-${p.principal}`,
-        recipients: [],
-        template: { subject: 'Assigned', text: 'You have a work order.' },
-      }),
-    );
+    await assign([], `seed-${p.principal}`);
     return p;
   };
 
   it('a cadence a later version might add throws on the preference read, never shows as immediate', async () => {
     const me = await someone();
-    await drift(`ALTER TABLE notifications_cadences RENAME TO old_cadences`);
-    await drift(`CREATE TABLE notifications_cadences AS SELECT * FROM old_cadences`);
+    // No CHECK holds the column, so a later version's value lands as written.
     await drift(
       `INSERT INTO notifications_cadences (principal, topic, channel, cadence, updated_at)
        VALUES ('${me.principal}', 'order-assigned', 'email', 'weekly-digest', '2030-01-01T00:00:00.000Z')`,
@@ -69,15 +71,7 @@ describe('engine-notifications — the seam is parsed, not asserted', () => {
   it('a held item whose text stopped being text throws rather than being mailed, and stays held', async () => {
     const me = await someone();
     await me.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: true, cadence: 'daily-digest' });
-    await h.run((ctx) =>
-      notify(ctx, {
-        topic: 'order-assigned',
-        description: 'A work order was assigned to you',
-        dedupeKey: 'held',
-        recipients: [me.principal],
-        template: { subject: 'Assigned', text: 'You have a work order.' },
-      }),
-    );
+    await assign([me.principal], 'held');
     await drift(`UPDATE notifications_digest_items SET subject = X'00'`);
     const schedule = await h.as([PERM.sendDigests]);
     await expect(schedule.invoke('notifications/send-digests', {})).rejects.toMatchObject({ code: 'internal' });
