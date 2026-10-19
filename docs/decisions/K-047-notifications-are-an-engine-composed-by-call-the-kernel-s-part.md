@@ -32,10 +32,10 @@ The vertical needs the staff-granted `emailSender` capability, as for any `reque
 ## What it does not do, stated
 
 - **Email is the only channel.** SMS, push and in-app are each a transport and a channel value, added when a vertical needs one.
-- **No digests.** A digest is a schedule over a pending queue, and is the next slice.
+- **Digests are daily only.** As planned, a digest is a schedule over a pending queue (#118). A person takes a topic as `daily-digest` and `notify` holds it. The engine's own schedule ticks every 15 minutes and sends each person whose oldest held message is a day old one mail, through the same send intent and delivery row. A pass sends to at most the room the scope's 32-intent send backlog has left, less a reserve kept for immediate mail. Each person's digest is its own sub-transaction. The digest's time of day, other cadences and its own wording are not built.
 - **Templates are the caller's code.** Tenant-edited and per-locale templates would be a table keyed by topic, overriding the template the caller passes.
 - **A topic cannot be muted before its first use.** The preferences screen lists only the topics this scope has sent.
-- **When an erasure cancels a send, its delivery stays `requested`.** The intent row records the cancellation. The kernel writes no outcome event for a cancellation, and an erasure hook may not emit, so the engine has nothing to settle the delivery from.
+- **When an erasure cancels a send, its delivery stays `requested`.** The intent row records the cancellation. The kernel writes no outcome event for a cancellation, and an erasure hook may not emit, so the engine has nothing to settle the delivery from. An occasion an erasure deletes from a person's digest keeps reason `digest` the same way.
 
 ## Why
 

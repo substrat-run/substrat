@@ -22,8 +22,19 @@ import type { OperationContext } from '@substrat-run/kernel';
  * What `notify` did for one (occasion, topic, person, channel).
  *
  * `requested`: a send intent was written, and `request` is its id. `skipped`: nothing was
- * sent, by preference (`reason: 'muted'`) or for want of an address (`'no_address'`).
+ * sent on its own, by preference (`reason: 'muted'`), for want of an address (`'no_address'`),
+ * or because the person takes this topic in a digest (`'digest'`): the occasion is held for
+ * their next one. What becomes of a held occasion is told later, naming this `deliveryId`: the
+ * `notifications.digest-sent` that carried it, the `notifications.preference-set` whose
+ * switch-off withdrew it (its delivery then reads `skipped`/`muted`), or the
+ * `notifications.digest-quarantined` that set it aside unreadable (`skipped`/`quarantined`, until
+ * a `notifications.digest-released` holds it again), or the `notifications.digest-withdrawn` that
+ * withdrew it because the topic was switched off since (`skipped`/`muted`). An erasure of the person
+ * deletes it with no event, like a held send it cancels, and its delivery stays as it was.
  * `dedupeKey` is the occasion as the caller named it — from a consumer, the triggering event's id.
+ *
+ * A digest is a delivery as well, under the reserved topic `@digest` (no vertical topic can be
+ * spelled that way), with `about: null`.
  */
 export interface NotificationsDeliveryRecordedPayload {
   deliveryId: string;
@@ -52,12 +63,25 @@ export interface NotificationsDeliverySettledPayload {
   request: string;
 }
 
-/** A person switched one topic on or off for one channel. */
+/**
+ * A person switched one topic on or off for one channel, and perhaps chose when it arrives.
+ * A switch-off also withdraws that topic's occasions still held for their digest.
+ */
 export interface NotificationsPreferenceSetPayload {
   principal: string;
   topic: string;
   channel: string;
   enabled: boolean;
+  /**
+   * When the topic reaches them after the call — always `immediate` for a required topic.
+   * Absent on events written before digests existed.
+   */
+  cadence?: 'immediate' | 'daily-digest';
+  /**
+   * The deliveries of the occasions this switch-off withdrew from the person's digest, each now
+   * `skipped`/`muted`. Absent when it withdrew none.
+   */
+  withdrawn?: string[];
 }
 
 /** A person set or cleared where their notifications go — whether, never what. */
@@ -73,6 +97,91 @@ export interface NotificationsTopicRecordedPayload {
   required: boolean;
 }
 
+/** One occasion a digest carried, named by its own (`skipped`, `digest`) delivery. */
+export interface NotificationsDigestItem {
+  deliveryId: string;
+  topic: string;
+  dedupeKey: string;
+  about: EntityRef | null;
+  queuedAt: string;
+}
+
+/**
+ * One person's digest was composed from everything held for them: the occasions it carried,
+ * oldest first, and the digest's own delivery (topic `@digest`). `status` is that delivery's:
+ * `requested` with the send intent's `request`, or `skipped` with `reason: 'no_address'` when
+ * the person had cleared their address since. Either way the items are no longer held, and the
+ * digest's delivery settles like any other.
+ */
+export interface NotificationsDigestSentPayload {
+  deliveryId: string;
+  principal: string;
+  channel: string;
+  cadence: 'daily-digest';
+  status: 'requested' | 'skipped';
+  reason: string | null;
+  request: string | null;
+  items: NotificationsDigestItem[];
+}
+
+/**
+ * A person's digest was due and could not be composed or written — a send or a write that
+ * failed. (A held message that no longer reads is set aside instead; see
+ * `notifications.digest-quarantined`.) Nothing was sent for them and nothing of theirs was let
+ * go: their `items` stay held, and the next attempt is at `retryAt`, a window later. Everyone
+ * else's digest in the same pass went out regardless. `code` is the platform's error code; the
+ * cause itself is on the error line the pass writes, not here.
+ */
+export interface NotificationsDigestFailedPayload {
+  principal: string;
+  channel: string;
+  cadence: 'daily-digest';
+  items: number;
+  code: string;
+  retryAt: string;
+}
+
+/**
+ * Held occasions of one person's digest no longer read — a stored row that left the shape this
+ * engine publishes — and were set aside rather than mailed or allowed to block the rest. Each is
+ * marked, its delivery reads `skipped` with reason `quarantined`, and the person's readable
+ * messages went out as usual. A set-aside row is read again once a window and released when it
+ * reads (`notifications.digest-released`); this event is written when a row is first set aside,
+ * never again while it stays unreadable. `occasions` names the deliveries whose id still read;
+ * `unidentified` counts the rows whose id did not. Never what a row held.
+ */
+export interface NotificationsDigestQuarantinedPayload {
+  principal: string;
+  channel: string;
+  occasions: string[];
+  unidentified: number;
+}
+
+/**
+ * Set-aside occasions of one person read again — whatever left them unreadable, a version that
+ * stored a shape this one rejects, say, is gone — and are held for the digest once more: each
+ * delivery reads `skipped`/`digest` again, unsettled, and goes out in the person's next digest.
+ * One whose topic the person has switched off since is not released but withdrawn
+ * (`notifications.digest-withdrawn`).
+ */
+export interface NotificationsDigestReleasedPayload {
+  principal: string;
+  channel: string;
+  occasions: string[];
+}
+
+/**
+ * Held occasions of one person were withdrawn, unsent, because the person has switched their
+ * topic off since they were held, found when a set-aside row read again or when the digest was
+ * composed. Each delivery reads `skipped`/`muted`. (A switch-off's own withdrawal is named on
+ * `notifications.preference-set`.) A mute always wins over a digest.
+ */
+export interface NotificationsDigestWithdrawnPayload {
+  principal: string;
+  channel: string;
+  occasions: string[];
+}
+
 export type NotificationsEvents = {
   events: {
     'notifications.delivery-recorded': NotificationsDeliveryRecordedPayload;
@@ -80,6 +189,11 @@ export type NotificationsEvents = {
     'notifications.preference-set': NotificationsPreferenceSetPayload;
     'notifications.recipient-updated': NotificationsRecipientUpdatedPayload;
     'notifications.topic-recorded': NotificationsTopicRecordedPayload;
+    'notifications.digest-sent': NotificationsDigestSentPayload;
+    'notifications.digest-failed': NotificationsDigestFailedPayload;
+    'notifications.digest-quarantined': NotificationsDigestQuarantinedPayload;
+    'notifications.digest-released': NotificationsDigestReleasedPayload;
+    'notifications.digest-withdrawn': NotificationsDigestWithdrawnPayload;
   };
 };
 
@@ -93,6 +207,11 @@ export const notificationsEventVersions = {
   'notifications.preference-set': 1,
   'notifications.recipient-updated': 1,
   'notifications.topic-recorded': 1,
+  'notifications.digest-sent': 1,
+  'notifications.digest-failed': 1,
+  'notifications.digest-quarantined': 1,
+  'notifications.digest-released': 1,
+  'notifications.digest-withdrawn': 1,
 } as const satisfies Record<NotificationsEventType, number>;
 
 /** The manifest's `events.emits`, read off {@link notificationsEventVersions}. */

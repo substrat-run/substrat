@@ -49,6 +49,7 @@ export const HANDLEBAR_PERMISSIONS = [
   // @substrat-run/engine-notifications
   'notifications:self',
   'notifications:read',
+  'notifications:send-digests',
 ] as const;
 
 /** A price-list row. A table, not an entity — no id, never an `EntityRef`. */
@@ -312,8 +313,9 @@ export const handlebarInvoicingRoutes = defineEngineRoutes(invoicingOperations)(
 });
 
 /**
- * The notifications engine's operations, at Handlebar's URLs. All four: the three under
- * `/me` act on the caller only, and the delivery log is the workshop lead's.
+ * The notifications engine's operations, at Handlebar's URLs: the three under `/me` act on the
+ * caller only, and the delivery log is the workshop lead's. `notifications/send-digests` has no
+ * URL: it is the engine's digest schedule, run by its system principal, and no person holds its key.
  */
 export const handlebarNotificationsRoutes = defineEngineRoutes(notificationsOperations)({
   'notifications/my-preferences': { method: 'GET', path: '/me/notifications' },

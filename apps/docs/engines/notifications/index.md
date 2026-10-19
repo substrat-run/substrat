@@ -11,10 +11,11 @@ one delivery per occasion, topic and person.
 | **Package** | `@substrat-run/engine-notifications` (not yet published to npm) |
 | **Entitlement key** | `notifications` |
 | **Composed** | by call: `notify(ctx, …)` inside your own transaction |
-| **Owns** | the topics a scope has used, where each person's notifications go, which topics they muted, and what became of every delivery |
-| **Emits** | `notifications.delivery-recorded`, `delivery-settled`, `preference-set`, `recipient-updated`, `topic-recorded` |
+| **Owns** | the topics a scope has used, where each person's notifications go, which topics they muted or take as a digest, what is held for each digest, and what became of every delivery |
+| **Emits** | `notifications.delivery-recorded`, `delivery-settled`, `preference-set`, `recipient-updated`, `topic-recorded`, `digest-sent`, `digest-failed`, `digest-quarantined`, `digest-released`, `digest-withdrawn` |
 | **Consumes** | `email.sent`, `email.refused`, `email.dead-lettered`, which settle its deliveries |
-| **Permissions** | 2 (`notifications:self`, `notifications:read`) |
+| **Schedules** | `notifications/send-digests`, every 15 minutes, sending each person whose digest is due |
+| **Permissions** | 3 (`notifications:self`, `notifications:read`, and `notifications:send-digests`, which only the digest schedule holds) |
 | **Status** | product seed, used by the Handlebar demo |
 
 ## Calling it
@@ -59,6 +60,24 @@ consumer, pass the event's id. The engine registers as one frozen constant, like
 - **A value cannot be turned against the reader.** Variables are HTML-escaped in the HTML part
   and kept to one line in the subject.
 - **A mute holds, except where it must not.** A topic passed as `required` cannot be switched off.
+- **A digest is the person's choice, per topic.** A topic someone takes as `daily-digest` is
+  held. Once their oldest held message is a day old, they get one mail of up to 50 held
+  messages, tracked as one delivery. Nothing waits much longer than a day, and unless more than
+  50 are held, that is one digest a day. A
+  mute still wins over a digest, and a required topic always goes out at once. The digest adds
+  no wording of its own: one held message goes out as it is, and several go out under the first
+  one's subject with `(+N)`, each under its own subject, as one document.
+- **A digest never crowds out mail that must not wait.** A scope holds a limited number of
+  sends waiting for the platform. A digest pass takes at most the room left, less a reserve for
+  immediate mail, and the rest goes out on the next passes.
+- **A digest is bounded.** It carries at most 50 messages, oldest first. Any more follow in a
+  later digest, once the oldest of them is a day old.
+- **One person's trouble stays theirs.** A digest that cannot be written stays held and is
+  reported, and never stops anyone else's. A held message that no longer reads is set aside
+  and reported, so it never holds up the rest of that person's digest. It is read again daily
+  and goes out once it reads, unless its topic has been switched off since.
+- **A mute is checked again at send time.** A held message whose topic is switched off is
+  withdrawn, never mailed, however it came to be held.
 - **An address never rides an event.** It lives on the engine's recipient row, which a subject
   erasure deletes. The same erasure cancels a send that is still held.
 
@@ -66,5 +85,10 @@ consumer, pass the event's id. The engine registers as one frozen constant, like
 
 - It does not talk to a mail provider. It writes the kernel's send intent, and the platform
   delivers it.
-- It has no digests, and no channels other than email yet.
+- It has no channels other than email yet. Digests are daily only. When one goes out depends
+  on when that person's oldest message arrived, not on a chosen time of day.
+- It sends no digest where nothing runs schedules, or where nothing drains the sends. On the
+  hosted platform the scope sweeper runs the schedule and the control plane drains the sends.
+  A self-hosted server must run `startPlatformSweeper` (or `runDueSchedules`) and drain its
+  platform intents, or held messages wait.
 - A topic appears on a person's preferences screen only once it has been used.

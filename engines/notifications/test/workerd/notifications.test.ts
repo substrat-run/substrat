@@ -1,6 +1,7 @@
 /**
  * engine-notifications on the Durable-Object host: one scope walked from an assignment to a
- * settled mail and an erasure, with every statement the engine runs executed by DO SQLite.
+ * settled mail, a daily digest and an erasure, with every statement the engine runs executed by
+ * DO SQLite.
  * Nothing is sent — the platform's drain is played by `settlePlatformRequest`, the settle the
  * real drain calls.
  */
@@ -9,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   dataSubjectId,
   isPlatformRequest,
+  moduleId,
   platformActorId,
   platformRequestId,
   principalId,
@@ -20,7 +22,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox, type ScopeStub } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { NOTIFICATIONS_PERM } from '../../src/index.js';
+import { DIGEST_TOPIC, NOTIFICATIONS_PERM, notificationsManifest } from '../../src/index.js';
 import { MODULES, PROBE_EMIT } from './fixture.js';
 
 const ORDER = { entityType: 'workorder', entityId: '01JEXAMPLEORDER00000000000' } as const;
@@ -31,13 +33,15 @@ describe('engine-notifications on workerd', () => {
   const s = scopeId.parse(ulid());
   const techId: PrincipalId = principalId.parse(ulid());
   const adminId: PrincipalId = principalId.parse(ulid());
+  // Holds the schedule's key, so a pass can be run on demand and its result read.
+  const systemId: PrincipalId = principalId.parse(ulid());
   let host: CloudflareScopeHost;
   let tech: ScopeStub;
   let admin: ScopeStub;
 
   const intents = async (): Promise<PlatformRequest[]> =>
     (await host.listPlatformRequestHistory(t, s)).filter(isPlatformRequest);
-  const deliveries = async (filters: { status?: string } = {}) =>
+  const deliveries = async (filters: { status?: string; topic?: string } = {}) =>
     (await admin.invoke<Page<Record<string, unknown>>>('notifications/list-deliveries', filters)).entries;
   const assign = (orderId: string) =>
     admin.invoke('probe/emit', {
@@ -67,6 +71,8 @@ describe('engine-notifications on workerd', () => {
     });
     await host.admin.assignRole(staff, { principalId: techId, roleKey: 'tech', node: { tenantId: t, scopeId: s } });
     await host.admin.assignRole(staff, { principalId: adminId, roleKey: 'office', node: { tenantId: t, scopeId: s } });
+    await host.admin.defineRole(staff, t, { key: 'digests', permissions: [NOTIFICATIONS_PERM.sendDigests], source: 'vertical' });
+    await host.admin.assignRole(staff, { principalId: systemId, roleKey: 'digests', node: { tenantId: t, scopeId: s } });
     tech = await host.getScope(techId, t, s);
     admin = await host.getScope(adminId, t, s);
   });
@@ -115,11 +121,51 @@ describe('engine-notifications on workerd', () => {
     expect(row!.settled_at).not.toBeNull();
   });
 
-  it("an erasure deletes the address and cancels the person's held send", async () => {
-    await assign('WO-3');
+  it('a digest topic is held, and once a day old a pass sends what reads and sets aside what does not', async () => {
+    await tech.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: true, cadence: 'daily-digest' });
+    const before = (await intents()).length;
+    await assign('WO-D1');
+    await assign('WO-D2');
+    expect(await intents()).toHaveLength(before);
+    expect((await deliveries({ status: 'skipped' })).filter((d) => d.reason === 'digest')).toHaveLength(2);
+
+    // Never run on this scope, so the first pass is due — and finds nobody whose digest is.
+    const schedule = moduleId.parse(notificationsManifest.id);
+    expect(await host.runDueSchedules(schedule, t, s)).toMatchObject({ fired: 1, failed: 0 });
+    expect(await intents()).toHaveLength(before);
+
+    await admin.invoke('probe/age-held', {});
+    await admin.invoke('probe/poison-newest-held', {});
+    const pass = await (await host.getScope(systemId, t, s)).invoke('notifications/send-digests', {});
+    expect(pass).toEqual({ digests: 1, items: 1, failed: 0, deferred: 0, quarantined: 1, released: 0, withdrawn: 0 });
+    const digest = (await intents()).find((i) => (i.payload as { subject: string }).subject === 'Assigned: WO-D1');
+    expect(digest).toBeDefined();
+    expect(await intents()).toHaveLength(before + 1);
+    expect(await deliveries({ topic: DIGEST_TOPIC })).toMatchObject([{ status: 'requested', request_id: digest!.id, principal: techId }]);
+    // The occasion it carried is settled into it; the unreadable one is set aside, and says so.
+    const occasions = await deliveries({ status: 'skipped' });
+    expect(occasions.filter((d) => d.reason === 'digest').every((d) => d.settled_at !== null)).toBe(true);
+    expect(occasions.filter((d) => d.reason === 'quarantined')).toHaveLength(1);
+  });
+
+  it('a switch-off withdraws what is held, and its deliveries read as muted', async () => {
+    await assign('WO-W');
+    await tech.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: false });
+    const muted = (await deliveries({ status: 'skipped' })).filter((d) => d.reason === 'muted' && d.settled_at !== null);
+    expect(muted).toHaveLength(1);
+    await tech.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: true });
+  });
+
+  it("an erasure deletes the address and the held digest items, and cancels the person's held send", async () => {
+    await assign('WO-3'); // held for tomorrow's digest
+    // The digest's own send, still pending.
     const held = (await intents()).find((i) => i.status === 'pending')!;
     const receipt = await host.admin.shredSubject(staff, t, s, dataSubjectId.parse(techId));
-    expect(receipt.verticalRows).toMatchObject([{ entityType: 'notification-recipient', mode: 'delete', rows: 1 }]);
+    // WO-3, held, and WO-D2, set aside: an erasure takes the quarantined row too.
+    expect(receipt.verticalRows).toMatchObject([
+      { entityType: 'notification-digest-item', mode: 'delete', rows: 2 },
+      { entityType: 'notification-recipient', mode: 'delete', rows: 1 },
+    ]);
     expect(await tech.invoke('notifications/my-preferences', {})).toMatchObject({ email: null });
     const after = (await intents()).find((i) => i.id === held.id)!;
     expect(after.status).toBe('failed');

@@ -171,6 +171,32 @@ export interface NotificationDelivery {
   settled_at: string | null;
 }
 
+/** `notifications_cadences` — declared in src/entities.ts + src/operations.ts + @substrat-run/engine-workorder + @substrat-run/engine-protocol + @substrat-run/engine-invoicing + @substrat-run/engine-notifications + @substrat-run/contracts. */
+export interface NotificationCadence {
+  principal: string;
+  topic: string;
+  channel: string;
+  cadence: "daily-digest";
+  updated_at: string;
+}
+
+/** `notifications_digest_items` — declared in src/entities.ts + src/operations.ts + @substrat-run/engine-workorder + @substrat-run/engine-protocol + @substrat-run/engine-invoicing + @substrat-run/engine-notifications + @substrat-run/contracts. */
+export interface NotificationDigestItem {
+  id: string;
+  principal: string;
+  channel: string;
+  topic: string;
+  dedupe_key: string;
+  subject: string;
+  text: string;
+  html: string;
+  about_type: string | null;
+  about_id: string | null;
+  queued_at: string;
+  failed_at: string | null;
+  quarantined_at: string | null;
+}
+
 /** `money` — a published schema, not a stored row. */
 export interface Money {
   amount: string;
@@ -457,21 +483,21 @@ export interface HandlebarClient {
    *
    * `GET /me/notifications` — `notifications/my-preferences`
    */
-  notificationsMyPreferences(input: Record<string, never>): Promise<{ email: string | null; topics: { topic: string; description: string; channel: "email"; enabled: boolean; required: boolean }[] }>;
+  notificationsMyPreferences(input: Record<string, never>): Promise<{ email: string | null; topics: ({ topic: string; description: string; channel: "email"; enabled: boolean; required: boolean; cadence: "immediate" | "daily-digest" })[] }>;
 
   /**
    * Set or clear where the caller's notifications go
    *
    * `PUT /me/notifications/address` — `notifications/set-my-address`
    */
-  notificationsSetMyAddress(input: { email: string | null }): Promise<{ email: string | null; topics: { topic: string; description: string; channel: "email"; enabled: boolean; required: boolean }[] }>;
+  notificationsSetMyAddress(input: { email: string | null }): Promise<{ email: string | null; topics: ({ topic: string; description: string; channel: "email"; enabled: boolean; required: boolean; cadence: "immediate" | "daily-digest" })[] }>;
 
   /**
-   * Switch one topic on or off for the caller, on one channel
+   * Switch one topic on or off for the caller, on one channel, and choose when it arrives
    *
    * `PUT /me/notifications/topics` — `notifications/set-my-preference`
    */
-  notificationsSetMyPreference(input: { topic: string; channel?: "email"; enabled: boolean }): Promise<{ email: string | null; topics: { topic: string; description: string; channel: "email"; enabled: boolean; required: boolean }[] }>;
+  notificationsSetMyPreference(input: { topic: string; channel?: "email"; enabled: boolean; cadence?: "immediate" | "daily-digest" }): Promise<{ email: string | null; topics: ({ topic: string; description: string; channel: "email"; enabled: boolean; required: boolean; cadence: "immediate" | "daily-digest" })[] }>;
 
   /**
    * Counter-sign an already-signed protocol, on the same frozen content

@@ -48,6 +48,22 @@ export const vertical: ModuleRegistration = {
       ctx.emit(input as DomainEventInput);
       return { emitted: true };
     },
+    // Test-only time travel: the Durable-Object host takes no clock, so a held message is made
+    // a day old by moving its stamp, which is the one thing a digest's due-ness reads.
+    'probe/age-held': async (ctx) => {
+      assertAllowed(await ctx.check(PROBE_EMIT));
+      ctx.sql.exec(`UPDATE notifications_digest_items SET queued_at = '2000-01-01T00:00:00.000Z'`);
+      return { aged: true };
+    },
+    // Test-only drift: the newest held row stops reading, as a version skew would leave it.
+    'probe/poison-newest-held': async (ctx) => {
+      assertAllowed(await ctx.check(PROBE_EMIT));
+      ctx.sql.exec(
+        `UPDATE notifications_digest_items SET subject = X'00'
+          WHERE rowid = (SELECT MAX(rowid) FROM notifications_digest_items)`,
+      );
+      return { poisoned: true };
+    },
   }),
 };
 

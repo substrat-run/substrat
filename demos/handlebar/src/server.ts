@@ -12,7 +12,7 @@ import {
   type Page,
   type TimelineEntry,
 } from '@substrat-run/contracts';
-import { PermissionDenied, ulid, type ScopeStub } from '@substrat-run/kernel';
+import { PermissionDenied, globalFetch, startPlatformSweeper, ulid, type ScopeStub } from '@substrat-run/kernel';
 import { externalJson, mountOperations, problemResponse, invocationLog } from '@substrat-run/vertical-host';
 import {
   handlebarInvoicingRoutes,
@@ -161,6 +161,34 @@ mountOperations(
   },
   stub,
 );
+
+// The scheduler's call site. Handlebar declares no schedule of its own, but the notifications
+// engine it composes does: `notifications/send-digests`, which sends a mechanic who takes
+// `repair-assigned` as a daily digest one mail of what was held. Without a sweeper nothing ever
+// runs it and the held messages wait for good.
+//
+// The kernel's default pass also retries consumer deliveries, reconciles migrations and collects
+// expired snapshot forks; the reapers stay off. It drains no platform intents (no
+// `drainPlatformRequestsFn`): every send intent here, a notification's or a digest's, stays
+// pending, and nothing is mailed. So once 24 are pending a digest pass finds no room — the
+// engine keeps 8 of the scope's 32 for mail that must not wait — and defers everyone, saying so
+// in an info line; two days on, a new hold for that person warns that sends are not being
+// drained. That is this demo telling the truth about a drain it does not run.
+{
+  const sweepMs = Number(process.env.SWEEP_MS ?? 60_000);
+  startPlatformSweeper(host, {
+    actor: staff,
+    fetch: globalFetch,
+    sweepers: {},
+    intervalMs: sweepMs,
+    onPass: (o) => {
+      if ('error' in o) console.error('[platform-sweep]', o.error);
+      else if (o.errors.length) console.error('[platform-sweep]', o.errors.length, 'error(s)', o.errors);
+      else if (o.schedules?.fired) console.log(`[platform-sweep] ran ${o.schedules.fired} schedule(s)`);
+    },
+  });
+  console.log(`  platform sweeper        every ${sweepMs / 1000}s (schedules: the notification digest)`);
+}
 
 serve({ fetch: app.fetch, port: PORT });
 console.log(`Handlebar demo API on http://localhost:${PORT} — data in ${dataDir}`);

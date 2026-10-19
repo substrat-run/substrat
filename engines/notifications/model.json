@@ -1,6 +1,45 @@
 {
-  "version": "0.0.1",
+  "version": "0.0.2",
   "entities": {
+    "notification-cadence": {
+      "table": "notifications_cadences",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          },
+          "channel": {
+            "type": "string"
+          },
+          "cadence": {
+            "type": "string",
+            "enum": [
+              "daily-digest"
+            ]
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "principal",
+          "topic",
+          "channel",
+          "cadence",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "principal",
+        "topic",
+        "channel"
+      ]
+    },
     "notification-delivery": {
       "table": "notifications_deliveries",
       "fields": {
@@ -107,6 +146,108 @@
         "principal",
         "topic"
       ]
+    },
+    "notification-digest-item": {
+      "table": "notifications_digest_items",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "channel": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          },
+          "dedupe_key": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "html": {
+            "type": "string"
+          },
+          "about_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "about_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "queued_at": {
+            "type": "string"
+          },
+          "failed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "quarantined_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "principal",
+          "channel",
+          "topic",
+          "dedupe_key",
+          "subject",
+          "text",
+          "html",
+          "about_type",
+          "about_id",
+          "queued_at",
+          "failed_at",
+          "quarantined_at"
+        ],
+        "additionalProperties": false
+      },
+      "erasable": [
+        "html",
+        "subject",
+        "text"
+      ],
+      "erasure": {
+        "mode": "delete",
+        "subjects": [
+          "principal"
+        ]
+      }
     },
     "notification-mute": {
       "table": "notifications_mutes",

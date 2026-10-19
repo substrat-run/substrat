@@ -1,13 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  dataSubjectId,
-  isPlatformRequest,
-  platformActorId,
-  platformRequestId,
-  type Page,
-  type PlatformRequest,
-  type PrincipalId,
-} from '@substrat-run/contracts';
+import { dataSubjectId, platformActorId, type PrincipalId } from '@substrat-run/contracts';
 import { ulid, type ScopeStub } from '@substrat-run/kernel';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
@@ -18,6 +10,7 @@ import {
   type NotificationsDeliverySettledPayload,
   type NotifyInput,
 } from '../src/index.js';
+import { deliveriesOf, intentsOf, settleEmail } from './kit.js';
 
 /**
  * engine-notifications, tested directly: `notify` is called the way a vertical calls it — inside
@@ -44,12 +37,8 @@ describe('engine-notifications', () => {
 
   const staff = platformActorId.parse(ulid());
   const send = (input: NotifyInput) => h.run((ctx) => notify(ctx, input));
-  const intents = async (): Promise<PlatformRequest[]> =>
-    (await h.host.listPlatformRequestHistory(h.tenant, h.scope)).filter(isPlatformRequest);
-  const deliveries = async (filter: { status?: string } = {}) => {
-    const admin = await h.as([PERM.read]);
-    return (await admin.invoke<Page<Record<string, unknown>>>('notifications/list-deliveries', filter)).entries;
-  };
+  const intents = () => intentsOf(h);
+  const deliveries = (filter: { status?: string } = {}) => deliveriesOf(h, filter);
   const recorded = () =>
     h.eventsOfType('notifications.delivery-recorded').map((e) => e.payload as NotificationsDeliveryRecordedPayload);
 
@@ -204,23 +193,6 @@ describe('engine-notifications', () => {
   });
 
   describe('the outcome comes back', () => {
-    const settle = async (type: 'email.sent' | 'email.refused' | 'email.dead-lettered', request: string, code: string | null) =>
-      h.host.settlePlatformRequest(h.tenant, h.scope, platformRequestId.parse(request), {
-        status: type === 'email.sent' ? 'done' : 'failed',
-        event: {
-          type,
-          entity: ORDER,
-          payload: {
-            request: platformRequestId.parse(request),
-            about: ORDER,
-            sender: 'platform',
-            messageId: type === 'email.sent' ? 'msg-1' : null,
-            attempts: 1,
-            code,
-            status: null,
-          },
-        },
-      });
 
     for (const [type, status, code] of [
       ['email.sent', 'sent', null],
@@ -230,7 +202,7 @@ describe('engine-notifications', () => {
       it(`${type} settles the delivery ${status}`, async () => {
         await send(assigned([tech.principal]));
         const [intent] = await intents();
-        await settle(type, intent!.id, code);
+        await settleEmail(h, type, intent!.id, { code, about: ORDER });
 
         const [row] = await deliveries();
         expect(row).toMatchObject({ status, reason: code });
@@ -248,7 +220,7 @@ describe('engine-notifications', () => {
           payload: { to: 'x@example.test', subject: 's', html: '<p>t</p>', text: 't' },
         }),
       );
-      await settle('email.sent', foreign, null);
+      await settleEmail(h, 'email.sent', foreign);
       expect(await deliveries()).toMatchObject([{ status: 'requested' }]);
       expect(h.eventsOfType('notifications.delivery-settled')).toEqual([]);
       expect(h.deadLetters()).toEqual([]);
@@ -258,7 +230,10 @@ describe('engine-notifications', () => {
   it("an erasure deletes the person's address and cancels their held send", async () => {
     await send(assigned([tech.principal]));
     const receipt = await h.host.admin.shredSubject(staff, h.tenant, h.scope, dataSubjectId.parse(tech.principal));
-    expect(receipt.verticalRows).toMatchObject([{ entityType: 'notification-recipient', mode: 'delete', rows: 1 }]);
+    expect(receipt.verticalRows).toMatchObject([
+      { entityType: 'notification-digest-item', mode: 'delete', rows: 0 },
+      { entityType: 'notification-recipient', mode: 'delete', rows: 1 },
+    ]);
 
     expect(await tech.stub.invoke('notifications/my-preferences', {})).toMatchObject({ email: null });
     const [intent] = await intents();
@@ -275,9 +250,9 @@ describe('engine-notifications', () => {
       expect(await tech.stub.invoke('notifications/my-preferences', {})).toEqual({
         email: 'tech@example.test',
         topics: [
-          { topic: 'account-locked', description: 'Your account was locked', channel: 'email', enabled: true, required: true },
-          { topic: 'order-assigned', description: 'A work order was assigned to you', channel: 'email', enabled: true, required: false },
-          { topic: 'order-watched', description: 'A watched order was assigned', channel: 'email', enabled: false, required: false },
+          { topic: 'account-locked', description: 'Your account was locked', channel: 'email', enabled: true, required: true, cadence: 'immediate' },
+          { topic: 'order-assigned', description: 'A work order was assigned to you', channel: 'email', enabled: true, required: false, cadence: 'immediate' },
+          { topic: 'order-watched', description: 'A watched order was assigned', channel: 'email', enabled: false, required: false, cadence: 'immediate' },
         ],
       });
     });
@@ -317,7 +292,7 @@ describe('engine-notifications', () => {
       await send(assigned([]));
       await tech.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: false });
       expect(h.eventsOfType('notifications.preference-set').map((e) => e.payload)).toEqual([
-        { principal: tech.principal, topic: 'order-assigned', channel: 'email', enabled: false },
+        { principal: tech.principal, topic: 'order-assigned', channel: 'email', enabled: false, cadence: 'immediate' },
       ]);
       expect(h.eventsOfType('notifications.recipient-updated').map((e) => e.payload)).toEqual([
         { principal: tech.principal, hasAddress: true },
@@ -337,6 +312,7 @@ describe('engine-notifications', () => {
       ['notifications/set-my-address', { email: 'a@example.test' }],
       ['notifications/set-my-preference', { topic: 'order-assigned', enabled: false }],
       ['notifications/list-deliveries', {}],
+      ['notifications/send-digests', {}],
     ] as const) {
       it(`${op} refuses a principal holding nothing`, async () => {
         const nobody = await h.as([]);

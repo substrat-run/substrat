@@ -148,3 +148,13 @@ _No lifecycle is declared: nothing here moves through stages._
   on every change to the model or to a permission.
 - 2026-10-18: PERMISSIONS.md re-emitted with its new Operations section, which names the key each
   operation declares it checks and what that check narrows to. No operation, key or role changed.
+- 2026-10-19: engine-notifications gained daily digests (#118). Its manifest adds the key
+  `notifications:send-digests` and a schedule, `notifications/send-digests`, every 15 minutes.
+  The engine's system principal holds that key, and no person may: the engine declares it
+  `holder: 'system'`, `PERMISSIONS.md` marks it reserved, no Handlebar role holds it, and the
+  operation has no URL here. A mechanic can now take `repair-assigned` as a daily
+  digest from their own preferences. The dev server now starts a schedule sweeper
+  (`src/server.ts`, `SWEEP_MS`), because nothing else would run the digest. It drains no
+  platform intents, so a digest is written as a pending send, like every notification here.
+  Once 24 are pending, every pass defers everyone. No Handlebar role, table or operation of its
+  own changed.
