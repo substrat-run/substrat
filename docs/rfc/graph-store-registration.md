@@ -14,9 +14,12 @@ PR #2301 first registered graph under the unpinned-release proposal D-64, which 
 ratification of [D-63](../decisions/D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md)
 in #2306 rejected. #2394 then proposed a D-63 pin of one release. That pin is
 dropped: [store driver releases are uploaded and approved](./store-driver-release-approval.md)
-(Q8) decided that #2394 lands the graph driver id only, without a pin, because
-releases become uploads a person approves in the control plane, and a pin beside
-approvals would let an older control plane ignore a revocation.
+(Q8) decided that the graph driver lands as an id without a pin, because releases
+become uploads a person approves in the control plane, and a pin beside approvals
+would let an older control plane ignore a revocation. Its §5 also places that id at
+step 5: before step 4 an id-only registration does not parse. So #2394 itself
+registers nothing. It prepares the registration (below), and `STORE_DRIVERS` stays
+empty until step 5.
 
 ## When graph is registered
 
