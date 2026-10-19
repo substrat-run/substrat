@@ -258,7 +258,10 @@ describe('engine-notifications', () => {
   it("an erasure deletes the person's address and cancels their held send", async () => {
     await send(assigned([tech.principal]));
     const receipt = await h.host.admin.shredSubject(staff, h.tenant, h.scope, dataSubjectId.parse(tech.principal));
-    expect(receipt.verticalRows).toMatchObject([{ entityType: 'notification-recipient', mode: 'delete', rows: 1 }]);
+    expect(receipt.verticalRows).toMatchObject([
+      { entityType: 'notification-digest-item', mode: 'delete', rows: 0 },
+      { entityType: 'notification-recipient', mode: 'delete', rows: 1 },
+    ]);
 
     expect(await tech.stub.invoke('notifications/my-preferences', {})).toMatchObject({ email: null });
     const [intent] = await intents();
@@ -275,9 +278,9 @@ describe('engine-notifications', () => {
       expect(await tech.stub.invoke('notifications/my-preferences', {})).toEqual({
         email: 'tech@example.test',
         topics: [
-          { topic: 'account-locked', description: 'Your account was locked', channel: 'email', enabled: true, required: true },
-          { topic: 'order-assigned', description: 'A work order was assigned to you', channel: 'email', enabled: true, required: false },
-          { topic: 'order-watched', description: 'A watched order was assigned', channel: 'email', enabled: false, required: false },
+          { topic: 'account-locked', description: 'Your account was locked', channel: 'email', enabled: true, required: true, cadence: 'immediate' },
+          { topic: 'order-assigned', description: 'A work order was assigned to you', channel: 'email', enabled: true, required: false, cadence: 'immediate' },
+          { topic: 'order-watched', description: 'A watched order was assigned', channel: 'email', enabled: false, required: false, cadence: 'immediate' },
         ],
       });
     });
@@ -317,7 +320,7 @@ describe('engine-notifications', () => {
       await send(assigned([]));
       await tech.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: false });
       expect(h.eventsOfType('notifications.preference-set').map((e) => e.payload)).toEqual([
-        { principal: tech.principal, topic: 'order-assigned', channel: 'email', enabled: false },
+        { principal: tech.principal, topic: 'order-assigned', channel: 'email', enabled: false, cadence: 'immediate' },
       ]);
       expect(h.eventsOfType('notifications.recipient-updated').map((e) => e.payload)).toEqual([
         { principal: tech.principal, hasAddress: true },
@@ -337,6 +340,7 @@ describe('engine-notifications', () => {
       ['notifications/set-my-address', { email: 'a@example.test' }],
       ['notifications/set-my-preference', { topic: 'order-assigned', enabled: false }],
       ['notifications/list-deliveries', {}],
+      ['notifications/send-digests', {}],
     ] as const) {
       it(`${op} refuses a principal holding nothing`, async () => {
         const nobody = await h.as([]);

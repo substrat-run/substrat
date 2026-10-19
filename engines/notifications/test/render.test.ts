@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { render } from '../src/render.js';
+import { digestOf, render } from '../src/render.js';
 
 describe('render', () => {
   it('fills every placeholder, tolerating spaces inside the braces', () => {
@@ -37,5 +37,36 @@ describe('render', () => {
       ok: true,
       message: { subject: '{{b}}', text: 'B' },
     });
+  });
+});
+
+describe('digestOf', () => {
+  const m = (subject: string, text: string, html = `<p>${text}</p>`) => ({ subject, text, html });
+
+  it('a digest of one message is that message, untouched — its three parts and nothing else', () => {
+    const only = m('Assigned: WO-1', 'You have WO-1.');
+    const heldRow = { ...only, id: 'a held row carries more' };
+    expect(digestOf([heldRow])).toStrictEqual(only);
+  });
+
+  it('several become one mail in order, under the first subject and a count, in no words of its own', () => {
+    expect(digestOf([m('A', 'one'), m('B', 'two'), m('C', 'three')])).toEqual({
+      subject: 'A (+2)',
+      text: 'A\n\none\n\n----\n\nB\n\ntwo\n\n----\n\nC\n\nthree',
+      html:
+        '<section>\n<h2>A</h2>\n<p>one</p>\n</section>\n<hr>\n' +
+        '<section>\n<h2>B</h2>\n<p>two</p>\n</section>\n<hr>\n' +
+        '<section>\n<h2>C</h2>\n<p>three</p>\n</section>',
+    });
+  });
+
+  it('a subject is header text, so it is escaped where it becomes a heading; the html it carries is kept', () => {
+    const d = digestOf([m('<i>x</i> & y', 't', '<p>&lt;already&gt;</p>'), m('z', 't')]);
+    expect(d.html).toContain('<h2>&lt;i&gt;x&lt;/i&gt; &amp; y</h2>\n<p>&lt;already&gt;</p>');
+    expect(d.subject).toBe('<i>x</i> & y (+1)');
+  });
+
+  it('no messages is no digest: refused rather than sent empty', () => {
+    expect(() => digestOf([])).toThrow(/at least one/);
   });
 });

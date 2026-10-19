@@ -2,9 +2,10 @@
  * The engine on the Durable-Object host — `test/workerd/`, and nothing else.
  *
  * The node suites prove the engine's logic on SQLite; this proves its SQL where it runs in
- * production: the migration, the UNIQUE and CHECK constraints, the list index the kernel
- * derives from `paged.over`, the erasure's delete, and the settle that writes the outcome
- * event back, all executed by a real ScopeDO in workerd.
+ * production: the migrations, the UNIQUE and CHECK constraints, the list index the kernel
+ * derives from `paged.over`, the digest schedule's read and delete of what was held, the
+ * erasure's deletes, and the settle that writes the outcome event back, all executed by a real
+ * ScopeDO in workerd.
  */
 import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { defineConfig } from 'vitest/config';

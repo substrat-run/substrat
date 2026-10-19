@@ -30,6 +30,17 @@ A topic is recorded on first use and follows its latest caller, which is coheren
 The engine's only consumers are the three `email.*` outcome events. They settle the deliveries
 when the platform's drain writes the outcome back.
 
+**Digests.** A person can take a topic as a `daily-digest` instead of `immediate`, unless the
+topic is required. `notify` then records the occasion `skipped` with reason `digest` and holds
+the rendered message. The engine's manifest declares a daily schedule,
+`notifications/send-digests`, run by the engine's system principal under
+`notifications:send-digests`, a key reserved to system principals. It sends each person one mail
+of what was held, through the same `requestEmail` and delivery row, under the reserved topic
+`@digest`, and emits `notifications.digest-sent` naming the occasions carried. A mute still
+wins: switching a topic off withdraws what is held for it. The digest adds no wording of its
+own: one held message goes out as it is, and several go out under the first one's subject with
+`(+N)`.
+
 What it holds:
 
 | Table | What | Erasure |
@@ -37,7 +48,9 @@ What it holds:
 | `notifications_topics` | each topic this scope has used: description, required | none: names nobody |
 | `notifications_recipients` | one address per principal | deleted with the principal (K-46) |
 | `notifications_mutes` | a topic a person switched off, per channel | none: no personal data beyond the principal id |
-| `notifications_deliveries` | what became of each (dedupe key, topic, principal, channel) | none: principal and request id only, never the address |
+| `notifications_deliveries` | what became of each (dedupe key, topic, principal, channel); a digest is one more, under topic `@digest` | none: principal and request id only, never the address |
+| `notifications_cadences` | a topic a person takes as a digest, per channel; no row is `immediate` | none: no personal data beyond the principal id |
+| `notifications_digest_items` | each rendered message held for a person's next digest, deleted when it is sent | deleted with the principal (K-46) |
 
 A vertical composing it needs the `emailSender` grant: without it the platform refuses
 every send, and each delivery settles `refused` with reason `permission_denied`.
@@ -47,8 +60,8 @@ that is still held.
 
 Not built, in the order a vertical is expected to ask for them:
 
-- digests;
 - channels beyond email;
-- tenant-edited and per-locale templates;
-- quiet hours;
+- tenant-edited and per-locale templates, a digest's own wording among them;
+- quiet hours, and the time of day a digest goes out;
+- digest cadences other than daily;
 - a person's own delivery history.

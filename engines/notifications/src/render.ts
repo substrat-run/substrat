@@ -16,7 +16,7 @@ export interface NotificationTemplate {
   html?: string;
 }
 
-interface RenderedMessage {
+export interface RenderedMessage {
   subject: string;
   text: string;
   html: string;
@@ -65,6 +65,28 @@ export function render(template: NotificationTemplate, vars: Readonly<Record<str
   const empty = Object.entries({ subject, text, html }).find(([, part]) => part.trim() === '');
   if (empty) return { ok: false, reason: `empty_message:${empty[0]}` };
   return { ok: true, message: { subject, text, html } };
+}
+
+/**
+ * One mail out of the messages held for a person's digest, oldest first.
+ *
+ * Every word in it is the vertical's: a digest of one message is that message, and a digest of
+ * several is the first one's subject marked `(+N)`, with each message under its own subject.
+ * The engine adds only that count and the rules between them, so a workshop that writes its
+ * notifications in Swedish does not receive an English digest. Each message was rendered — and
+ * its variables escaped — when it was held; a subject is header text, so it is escaped here
+ * before it becomes a heading.
+ */
+export function digestOf(messages: readonly RenderedMessage[]): RenderedMessage {
+  const [first, ...rest] = messages;
+  if (first === undefined) throw new Error('digestOf: a digest needs at least one message');
+  // The three parts and nothing else: a held row carries more, and a send intent refuses it.
+  if (rest.length === 0) return { subject: first.subject, text: first.text, html: first.html };
+  return {
+    subject: `${first.subject} (+${rest.length})`,
+    text: messages.map((m) => `${m.subject}\n\n${m.text}`).join('\n\n----\n\n'),
+    html: messages.map((m) => `<section>\n<h2>${escapeHtml(m.subject)}</h2>\n${m.html}\n</section>`).join('\n<hr>\n'),
+  };
 }
 
 /** The text part as HTML: escaped, paragraphs at blank lines, `<br>` at single breaks. */

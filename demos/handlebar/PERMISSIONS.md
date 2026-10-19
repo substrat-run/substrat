@@ -5,7 +5,7 @@
 
 # Permission snapshot — @substrat-run/demo-handlebar
 
-22 keys · 5 modules · 2 roles
+23 keys · 5 modules · 2 roles
 
 ## 1. Registry — every key a registered manifest declares
 
@@ -17,6 +17,7 @@
 | `invoicing:read` | Read invoice bases | `@substrat-run/engine-invoicing` |
 | `notifications:read` | Read what became of every notification in the scope | `@substrat-run/engine-notifications` |
 | `notifications:self` | Set where your own notifications go and which topics reach you | `@substrat-run/engine-notifications` |
+| `notifications:send-digests` | Send everyone their digest now — the digest schedule's key, held by the engine's system principal and never by a person | `@substrat-run/engine-notifications` |
 | `protocol:attach` | Attach a document to a protocol instance — the sealed signed PDF a signing connector lands on completion, or a human-uploaded document (the attachmentTargets write gate) | `@substrat-run/engine-protocol` |
 | `protocol:bind` | Bind vertical-owned document content (ref + hash) to an open document protocol | `@substrat-run/engine-protocol` |
 | `protocol:countersign` | Counter-sign an already-signed protocol — a second signature on the same frozen content (customer at pickup) | `@substrat-run/engine-protocol` |
@@ -53,6 +54,7 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `invoicing:read` | `workshop-admin` |
 | `notifications:read` | `workshop-admin` |
 | `notifications:self` | `mechanic`, `workshop-admin` |
+| `notifications:send-digests` | — no role — |
 | `protocol:attach` | — no role — |
 | `protocol:bind` | — no role — |
 | `protocol:countersign` | — no role — |
@@ -79,7 +81,17 @@ no role in §3 but listed here is deliberate, not a gap.
 | --- | --- | --- |
 | `customer` | `protocol:countersign`, `protocol:read`, `workorder:read` | yes — live holders of current or retired keys here; direct grants cannot give these keys |
 
-## 5. Operations — which key each checks
+## 5. Scheduled work — the system principal's grants
+
+Each runs on the platform sweep, under `system:<module>`, on the cadence shown.
+The permissions are what that system principal is granted at provisioning — a
+schedule can do exactly this and no more.
+
+| Operation | Cadence | System principal | Permissions |
+| --- | --- | --- | --- |
+| `notifications/send-digests` | every 1440 min | `system:@substrat-run/engine-notifications` | `notifications:send-digests` |
+
+## 6. Operations — which key each checks
 
 The check each registered operation DECLARES it opens with, and what it narrows to. A
 proof walk lists this module's keys only; a composed engine's key it reaches is declared by
@@ -106,6 +118,7 @@ shapes.
 | `invoicing/list` | `invoicing:read` | the scope | `@substrat-run/engine-invoicing` |
 | `notifications/list-deliveries` | `notifications:read` | the scope | `@substrat-run/engine-notifications` |
 | `notifications/my-preferences` | `notifications:self` | the scope | `@substrat-run/engine-notifications` |
+| `notifications/send-digests` | `notifications:send-digests` | the scope | `@substrat-run/engine-notifications` |
 | `notifications/set-my-address` | `notifications:self` | the scope | `@substrat-run/engine-notifications` |
 | `notifications/set-my-preference` | `notifications:self` | the scope | `@substrat-run/engine-notifications` |
 | `protocol/bind-document` | `protocol:bind` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
@@ -131,7 +144,7 @@ shapes.
 | `workorder/report-time` | `workorder:report` | the scope | `@substrat-run/engine-workorder` |
 | `workorder/start` | `workorder:report` | the scope | `@substrat-run/engine-workorder` |
 
-## 6. Not covered by this artifact
+## 7. Not covered by this artifact
 
 - **The grants themselves** — per-principal, per-entity, minted at runtime with
   random ULIDs. Only their shapes above are representable deterministically.

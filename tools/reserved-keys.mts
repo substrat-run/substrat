@@ -20,6 +20,9 @@
 export const RESERVED_TO_SYSTEM: Readonly<Record<string, string>> = {
   'assistant:run':
     "it drives a run (the lease, the assistant's side of a thread, a tool's execution) and belongs to the assistant host's system principal; a person holding it could write the assistant's side of their own thread",
+  // TEMPORARY until the holder:'system' declaration PR merges
+  'notifications:send-digests':
+    "it is the digest schedule's key, held by engine-notifications' system principal; a person holding it could send everyone's digest whenever they liked",
 };
 
 export interface ReservedKeyOffence {

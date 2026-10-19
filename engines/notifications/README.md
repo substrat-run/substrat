@@ -53,8 +53,21 @@ host.registerModule(notificationsModule);
   is used, and that record is what a preferences screen lists.
 - **Delivery tracking.** There is one row per (dedupe key, topic, person, channel), unique on
   those four. It moves from `requested` to `sent`, `refused` or `dead_lettered` when the
-  platform's outcome event arrives. A delivery that was not sent says why: `muted` or
-  `no_address`.
+  platform's outcome event arrives. A delivery that was not sent on its own says why: `muted`,
+  `no_address`, or `digest`.
+- **Daily digests.** A person can take any topic that is not required as a daily digest
+  (`notifications/set-my-preference` with `cadence: 'daily-digest'`). `notify` then records the
+  occasion as `skipped` with reason `digest` and holds the rendered message. Once a day the
+  engine's own schedule (`notifications/send-digests`, run by its system principal) sends each
+  person one mail of everything held for them. That mail is one more delivery, under the
+  reserved topic `@digest` (`DIGEST_TOPIC`), and it settles like any other.
+  `notifications.digest-sent` lists the occasions it carried. A mute still wins: switching a
+  topic off withdraws what is held for it. A required topic always goes out at once.
+
+  A digest adds no words of its own. A digest of one message is that message. A digest of
+  several uses the first one's subject with `(+N)` and puts each message under its own subject,
+  so the mail stays in the vertical's language. It goes out at the time of day the scope's
+  schedule first ran.
 
 **One topic, one declaration.** A topic's `description` and `required` are recorded from the call that uses it, and follow the latest caller, so a deploy that changes them updates the scope. Every call site for a topic must pass the same pair: two that disagree make the topic flip with whichever ran last, and a mute be refused or allowed accordingly. Keep each topic in one constant that its call sites spread, and change it there.
 
@@ -62,13 +75,15 @@ host.registerModule(notificationsModule);
 
 Events carry principals, never addresses. The address lives on the engine's recipient row,
 which a subject erasure deletes (K-46). The send intent carries the recipient as its
-`subjectId`, so the same erasure cancels a send that is still waiting.
+`subjectId`, so the same erasure cancels a send that is still waiting. A message held for a
+digest is rendered mail addressed to the person, so the same erasure deletes it too.
 
 ## Not yet
 
-Digests, channels other than email (SMS, push, in-app), tenant-edited or per-locale
-templates, quiet hours, and a person's own delivery history. See K-47 for where this engine
-sits and why it is not kernel code.
+Channels other than email (SMS, push, in-app), tenant-edited or per-locale templates
+(including a digest's own wording), quiet hours and a digest's time of day, digest cadences
+other than daily, and a person's own delivery history. See K-47 for where this engine sits and
+why it is not kernel code.
 
 ## Permissions
 
@@ -76,6 +91,7 @@ sits and why it is not kernel code.
 | --- | --- |
 | `notifications:self` | Set where your own notifications go and which topics reach you |
 | `notifications:read` | Read what became of every notification in the scope |
+| `notifications:send-digests` | The digest schedule's key. The engine's system principal holds it, and `lint:permissions` refuses a role that grants it to a person |
 
 ## Licence
 

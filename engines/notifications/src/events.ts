@@ -22,8 +22,13 @@ import type { OperationContext } from '@substrat-run/kernel';
  * What `notify` did for one (occasion, topic, person, channel).
  *
  * `requested`: a send intent was written, and `request` is its id. `skipped`: nothing was
- * sent, by preference (`reason: 'muted'`) or for want of an address (`'no_address'`).
+ * sent on its own, by preference (`reason: 'muted'`), for want of an address (`'no_address'`),
+ * or because the person takes this topic in a digest (`'digest'`): the occasion is held for
+ * their next one, and that digest's `notifications.digest-sent` names it by this `deliveryId`.
  * `dedupeKey` is the occasion as the caller named it — from a consumer, the triggering event's id.
+ *
+ * A digest is a delivery as well, under the reserved topic `@digest` (no vertical topic can be
+ * spelled that way), with `about: null`.
  */
 export interface NotificationsDeliveryRecordedPayload {
   deliveryId: string;
@@ -52,12 +57,20 @@ export interface NotificationsDeliverySettledPayload {
   request: string;
 }
 
-/** A person switched one topic on or off for one channel. */
+/**
+ * A person switched one topic on or off for one channel, and perhaps chose when it arrives.
+ * A switch-off also withdraws that topic's items still held for their digest.
+ */
 export interface NotificationsPreferenceSetPayload {
   principal: string;
   topic: string;
   channel: string;
   enabled: boolean;
+  /**
+   * When the topic reaches them after the call — always `immediate` for a required topic.
+   * Absent on events written before digests existed.
+   */
+  cadence?: 'immediate' | 'daily-digest';
 }
 
 /** A person set or cleared where their notifications go — whether, never what. */
@@ -73,6 +86,33 @@ export interface NotificationsTopicRecordedPayload {
   required: boolean;
 }
 
+/** One occasion a digest carried, named by its own (`skipped`, `digest`) delivery. */
+export interface NotificationsDigestItem {
+  deliveryId: string;
+  topic: string;
+  dedupeKey: string;
+  about: EntityRef | null;
+  queuedAt: string;
+}
+
+/**
+ * One person's digest was composed from everything held for them: the occasions it carried,
+ * oldest first, and the digest's own delivery (topic `@digest`). `status` is that delivery's:
+ * `requested` with the send intent's `request`, or `skipped` with `reason: 'no_address'` when
+ * the person had cleared their address since. Either way the items are no longer held, and the
+ * digest's delivery settles like any other.
+ */
+export interface NotificationsDigestSentPayload {
+  deliveryId: string;
+  principal: string;
+  channel: string;
+  cadence: 'daily-digest';
+  status: 'requested' | 'skipped';
+  reason: string | null;
+  request: string | null;
+  items: NotificationsDigestItem[];
+}
+
 export type NotificationsEvents = {
   events: {
     'notifications.delivery-recorded': NotificationsDeliveryRecordedPayload;
@@ -80,6 +120,7 @@ export type NotificationsEvents = {
     'notifications.preference-set': NotificationsPreferenceSetPayload;
     'notifications.recipient-updated': NotificationsRecipientUpdatedPayload;
     'notifications.topic-recorded': NotificationsTopicRecordedPayload;
+    'notifications.digest-sent': NotificationsDigestSentPayload;
   };
 };
 
@@ -93,6 +134,7 @@ export const notificationsEventVersions = {
   'notifications.preference-set': 1,
   'notifications.recipient-updated': 1,
   'notifications.topic-recorded': 1,
+  'notifications.digest-sent': 1,
 } as const satisfies Record<NotificationsEventType, number>;
 
 /** The manifest's `events.emits`, read off {@link notificationsEventVersions}. */
