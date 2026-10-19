@@ -729,6 +729,103 @@ describe('a reap racing a push leaves nothing at the issuer (#1704)', () => {
     expect(issuers.tagged(issuerScope, base.scopeId)).toEqual([]);
   });
 
+  it('a push’s LAST attempt that loses its client to a reap looks before it gives up, and removes what it left', async () => {
+    const base = await created({ tag: 'pr-7', versionId: versions[1] });
+    const rowDelete = holdRowDelete();
+    // Attempts 1 and 2 lose their kept client as to a same-version sibling; attempt 3 loses it to the reap.
+    let keeps = 0;
+    issuers.beforeRetire = async (body) => {
+      if (body.keep && ++keeps <= 2) issuers.instances.get(issuerScope)!.clients.delete(String(body.keep));
+    };
+    const registering = gate();
+    const resume = gate();
+    let registrations = 0;
+    issuers.beforeConfigure = async (body) => {
+      const [entry] = body.entries as Array<{ key: string; value: string }>;
+      if (entry?.value === '' || ++registrations !== 3) return;
+      registering.open();
+      await resume.wait;
+    };
+    try {
+      const push = create({ tag: 'pr-7', versionId: versions[2] });
+      await registering.wait; // the third attempt, past its looks, about to register
+      const reap = del();
+      await rowDelete.reached;
+      resume.open();
+      expect(((await (await push).json()) as Created).auth.status).toBe('superseded');
+      rowDelete.release();
+      expect((await reap).status).toBe(200);
+    } finally {
+      rowDelete.restore();
+    }
+    expect(issuers.registered(issuerScope, base.scopeId)).toEqual([]);
+    expect(issuers.tagged(issuerScope, base.scopeId)).toEqual([]);
+  });
+
+  it('a push for a reaped preview hands back the row it moved off the NEWER preview of the same tag', async () => {
+    const a = await created({ tag: 'pr-7', versionId: versions[1] });
+    // A push to A registers its set, read while A still held the hostname; the delivery is held.
+    const registering = gate();
+    const resume = gate();
+    let stalled = false;
+    issuers.beforeConfigure = async (body) => {
+      const [entry] = body.entries as Array<{ key: string; value: string }>;
+      if (stalled || entry?.value === '' || entry?.key !== `${MCP_RESOURCES_CONFIG_PREFIX}${a.scopeId}`) return;
+      stalled = true;
+      registering.open();
+      await resume.wait;
+    };
+    const push = create({ tag: 'pr-7', versionId: versions[2] });
+    await registering.wait;
+    // A is reaped and B, a fresh preview of the same tag, takes the same hostname and registers it.
+    const b = await created({ tag: 'pr-7', versionId: versions[3], refresh: true });
+    expect(b.scopeId).not.toBe(a.scopeId);
+    expect(issuers.registered(issuerScope, b.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+    // A's held delivery lands last, so the issuer moves the row onto A's key...
+    resume.open();
+    expect(((await (await push).json()) as Created).auth.status).toBe('superseded');
+    // ...and A's own removal hands it back to B, the preview that holds the hostname.
+    expect(issuers.registered(issuerScope, a.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, b.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+    expect(issuers.tagged(issuerScope, b.scopeId)).toEqual([b.auth.clientId]);
+  });
+
+  it('hands back only to a preview of the same app: another holder of the hostname is never registered for', async () => {
+    const a = await created({ tag: 'pr-7', versionId: versions[1] });
+    const registering = gate();
+    const resume = gate();
+    let stalled = false;
+    issuers.beforeConfigure = async (body) => {
+      const [entry] = body.entries as Array<{ key: string; value: string }>;
+      if (stalled || entry?.value === '' || entry?.key !== `${MCP_RESOURCES_CONFIG_PREFIX}${a.scopeId}`) return;
+      stalled = true;
+      registering.open();
+      await resume.wait;
+    };
+    const push = create({ tag: 'pr-7', versionId: versions[2] });
+    await registering.wait;
+    expect((await del()).status).toBe(200);
+    // The freed hostname goes to a scope that is no preview at all.
+    await host.admin.bindHostname(staff, { hostname: PREVIEW_HOST('pr-7'), tenantId: tenant, scopeId: prod, surface: 'app', region: null, canonical: false });
+    await host.admin.setHostnameStatus(staff, PREVIEW_HOST('pr-7'), 'active');
+    resume.open();
+    expect(((await (await push).json()) as Created).auth.status).toBe('superseded');
+    expect(issuers.registered(issuerScope, a.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+  });
+
+  it('registers only what the directory says the preview holds — never the hostname it was made with, once that is gone', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+    deployments.duringDelivery = async (version) => {
+      if (version === versions[2]) await host.admin.unbindHostname(staff, PREVIEW_HOST('pr-7'));
+    };
+    const again = await created({ tag: 'pr-7', versionId: versions[2] });
+    expect(again.auth.status).toBe('wired');
+    expect(again.auth.note).toContain('no active hostname');
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+  });
+
   it('a removal that fails after the preview was reaped mid-push is said — a 502 and an ops-failure row', async () => {
     await created({ tag: 'pr-7', versionId: versions[1] });
     const rowDelete = holdRowDelete();
@@ -757,6 +854,92 @@ describe('a reap racing a push leaves nothing at the issuer (#1704)', () => {
       rowDelete.restore();
     }
     expect(JSON.stringify(await host.admin.listOpsFailures(staff, { limit: 50 }))).toContain('reaped while this push ran');
+  });
+});
+
+describe('every door that reaps a preview fork runs its issuer step (#1704)', () => {
+  it('the generic fork DELETE (the console’s Prune/Retire, the dashboard’s Retire): archived, cleared, retired', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    let statusAtFirstCall: string | undefined;
+    issuers.beforeConfigure = async () => {
+      statusAtFirstCall ??= (await host.admin.getScopeRecord(staff, tenant, out.scopeId))?.status;
+    };
+    const from = issuers.calls.length;
+    const res = await app.request(`/tenants/${tenant}/scopes/${out.scopeId}`, { method: 'DELETE', headers: asStaff });
+    expect(res.status).toBe(200);
+    expect(statusAtFirstCall).toBe('archived');
+    expect(issuers.calls.slice(from).map((c) => `${c.method} ${c.path}`)).toEqual([
+      'POST /internal/configure',
+      `DELETE ${PREVIEW_CLIENT_PATH}`,
+    ]);
+    expect(await host.admin.getScopeRecord(staff, tenant, out.scopeId)).toBeUndefined();
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.tagged(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+    expect(issuers.instances.get(issuerScope)!.clients.has(PROD_CLIENT)).toBe(true);
+  });
+
+  it('the staff reap of an archived preview fork: cleared and retired', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    expect((await app.request(`/tenants/${tenant}/scopes/${out.scopeId}/archive`, { method: 'POST', headers: asStaff })).status).toBe(200);
+    for (const h of await host.admin.listHostnames(staff, { scopeId: out.scopeId })) await host.admin.unbindHostname(staff, h.hostname);
+    const res = await app.request(`/tenants/${tenant}/scopes/${out.scopeId}/reap`, { method: 'POST', headers: asStaff });
+    expect(res.status).toBe(200);
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.tagged(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+  });
+
+  it('a primary scope deleted or reaped through these doors asks no issuer', async () => {
+    const snapshot = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: tenant, scopeId: snapshot, vertical: APP, forkedFrom: prod, forkedAt: new Date().toISOString() });
+    await host.admin.activateScope(staff, tenant, snapshot);
+    const from = issuers.calls.length;
+    expect((await app.request(`/tenants/${tenant}/scopes/${snapshot}`, { method: 'DELETE', headers: asStaff })).status).toBe(200);
+    expect(issuers.calls.length).toBe(from);
+  });
+});
+
+describe('the reap’s archive tolerates a reaper that raced it there (#1704)', () => {
+  const issuerClient = () => new VerticalClient({ fetch: issuers.fetch, platformSecret: 'test' });
+
+  it('archived by another reaper between its read and its archive: it goes on to clear and retire', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    const racing = new Proxy(host.admin, {
+      get: (target, key, receiver) =>
+        key === 'archiveScope'
+          ? async (a: typeof staff, t: TenantId, s: ScopeId) => {
+              await target.archiveScope(a, t, s); // the other reaper's archive lands first
+              throw new Error('illegal scope transition for archiveScope: archived → archived');
+            }
+          : Reflect.get(target, key, receiver),
+    });
+    const client = issuerClient();
+    const rec = (await host.admin.getScopeRecord(staff, tenant, out.scopeId))!;
+    await retireClientsOfReapedScope({ admin: racing, actor: staff, issuerClient: async () => client }, rec);
+    expect((await host.admin.getScopeRecord(staff, tenant, out.scopeId))?.status).toBe('archived');
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.tagged(issuerScope, out.scopeId)).toEqual([]);
+  });
+
+  it('the twin: an archive that fails while the preview is still live stops the reap before any issuer call', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    const failing = new Proxy(host.admin, {
+      get: (target, key, receiver) =>
+        key === 'archiveScope'
+          ? async () => {
+              throw new Error('directory unavailable');
+            }
+          : Reflect.get(target, key, receiver),
+    });
+    const client = issuerClient();
+    const from = issuers.calls.length;
+    const rec = (await host.admin.getScopeRecord(staff, tenant, out.scopeId))!;
+    await expect(retireClientsOfReapedScope({ admin: failing, actor: staff, issuerClient: async () => client }, rec)).rejects.toThrow(
+      'directory unavailable',
+    );
+    expect(issuers.calls.length).toBe(from);
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
   });
 });
 

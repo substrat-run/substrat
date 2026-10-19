@@ -5428,6 +5428,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // Stop routing before the wipe: a call that lands between the wipe and the delete would
     // recreate the store object, and nothing left could reach it.
     await unrouteScope(c.var.admin, actor, scope);
+    // A preview fork reaped through this door (the console's Prune/Retire, the dashboard's
+    // Retire) holds sign-in clients and an MCP registration at its team's auth servers (#1704):
+    // archived, cleared and retired here exactly as `reapPreview` does. Anything else is a no-op.
+    await retireClientsOfReapedScope(previewAuthDeps(c), scope);
     // #2207: the stores first, on every path below: a routed scope's copies are reaped through
     // their scripts, and a store is per scope, not per script.
     await wipeStores();

@@ -129,8 +129,8 @@ it too. Your app's own client is never changed, and it never learns a preview's 
 The same auth server is also told to mint tokens for the preview's [MCP endpoint](../concepts/mcp.md),
 `https://<app>--<tag>.<base>/api/mcp`, so an MCP client pointed at the preview gets a login page instead
 of `invalid_target`. A token for the preview's endpoint is refused by your app's own endpoint, and the
-reverse. Deleting or expiring the preview un-registers the endpoint, and your app's registration is never
-touched. If the registration fails, the preview's login still works: `preview create` says so, and the
+reverse. Deleting the preview (by `preview delete`, or retiring it from the console or the dashboard) or
+letting it expire un-registers the endpoint, and your app's registration is never touched. If the registration fails, the preview's login still works: `preview create` says so, and the
 next push registers it again.
 
 Any other login isn't copied. For an **external issuer** (Auth0, Keycloak, Supabase, …), `preview create`

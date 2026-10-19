@@ -76,6 +76,13 @@ import type { VerticalClient } from './vertical-client.js';
  * treat a scope it minted preview clients for as a parent, while the registration's row
  * carries the same platform marker an app's does; clearing first means that row never
  * outlives the clients that make the issuer read the scope as a preview.
+ *
+ * One row per endpoint, and the issuer moves it to whichever key delivered it last. A fresh
+ * preview of the same tag holds the same `--<tag>` hostname under a new scope, so a push still
+ * running for the reaped one could move that preview's row onto its own key, and its removal
+ * would then delete it. A push therefore registers only the hostnames the directory says its
+ * preview holds now, and after its removal hands back any such row to the preview of the same
+ * app that holds the hostname (`handBack`).
  */
 
 /** The capability a vertical declares to be a team issuer (manifest `provides`, #427). */
@@ -87,7 +94,7 @@ const MAX_PARENT_CALLBACKS = 32;
 const MAX_ATTEMPTS = 3;
 
 export interface PreviewAuthDeps {
-  admin: Pick<HostAdmin, 'listScopes' | 'listVerticals' | 'listHostnames' | 'getScopeRecord' | 'archiveScope'>;
+  admin: Pick<HostAdmin, 'listScopes' | 'listVerticals' | 'listHostnames' | 'getScopeRecord' | 'archiveScope' | 'resolveHostname'>;
   actor: PlatformActorId;
   /** The deployment serving an ISSUER scope — where its `/internal/preview-client` and `/internal/configure` live. */
   issuerClient(scope: Scope): Promise<VerticalClient | undefined>;
@@ -246,14 +253,29 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
       () => null,
       (e: unknown) => reasonOf(e),
     );
-  const registerMcp = (resources: readonly string[]) =>
+  /** Deliver a scope's whole set of MCP endpoints, under that scope's own key, at this issuer. */
+  const registerMcp = (scopeId: ScopeId, hosts: readonly string[]) =>
     (deps.retry ?? ((fn) => fn()))(() =>
       claim.client.configureInstance({
         tenantId: input.tenantId,
         scopeId: claim.scope.id,
-        entries: [previewResourcesEntry(input.previewId, resources)],
+        entries: [previewResourcesEntry(scopeId, hosts.map((h) => mcpResourceOf(`https://${h}`)))],
       }),
     );
+  /**
+   * The hostnames a scope's endpoints are, by the dashboard's rule (`mcpResourcesFor`): every
+   * one the directory says it actively answers on NOW. Never one it no longer holds: the issuer
+   * moves a row to whichever key delivered it last, so a push still running for a reaped
+   * preview must not claim the `--<tag>` hostname a newer preview of the same tag holds.
+   */
+  const activeHosts = async (scopeId: ScopeId): Promise<string[]> =>
+    [
+      ...new Set(
+        (await deps.admin.listHostnames(deps.actor, { scopeId }))
+          .filter((h) => h.status === 'active')
+          .map((h) => h.hostname),
+      ),
+    ].sort();
   /** Anything but `active` is gone: the reap archives a preview before its issuer step. */
   const bound = async (): Promise<'ours' | 'moved' | 'gone'> => {
     const rec = await deps.admin.getScopeRecord(deps.actor, input.tenantId, input.previewId);
@@ -262,14 +284,35 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
   };
   /** Set once this push has minted: from then on it may have left something at the issuer. */
   let wrote = false;
+  /** What this push last asked the issuer to register — the rows its delivery may have moved. */
+  let registeredHosts: string[] = [];
+  /**
+   * After this push cleared its own key: hand back a row it moved off a NEWER preview of the
+   * same app (the same `--<tag>` hostname under a fresh scope), which the clear just deleted.
+   * The directory names who holds each hostname now; that preview gets its own whole set back
+   * under its own key, as its own push sends it. Anything else holding one is left alone.
+   */
+  const handBack = async (): Promise<void> => {
+    const holders = new Set<ScopeId>();
+    for (const hostname of registeredHosts) {
+      const route = await deps.admin.resolveHostname(hostname);
+      if (route && route.tenantId === input.tenantId && route.scopeId !== input.previewId) holders.add(route.scopeId);
+    }
+    for (const holder of holders) {
+      const rec = await deps.admin.getScopeRecord(deps.actor, input.tenantId, holder);
+      if (rec?.status !== 'active' || rec.kind !== 'preview' || rec.forkedFrom !== parent.id) continue;
+      await registerMcp(holder, await activeHosts(holder));
+    }
+  };
   const reapedMeanwhile = async (): Promise<PreviewAuth> => {
     // The preview was reaped while this push ran. What this push wrote after the reap's issuer
     // step is this push's to remove (see "A reap racing a push"), and a removal that fails is
     // said: after the row is gone, nothing names those writes again.
     if (wrote) {
       try {
-        await registerMcp([]);
+        await registerMcp(input.previewId, []);
         await claim.client.retirePreviewClients(address);
+        await handBack();
       } catch (e) {
         throw new ControlPlaneError(
           502,
@@ -279,15 +322,6 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
       }
     }
     return superseded(callbackUrl, 'the preview was reaped while this push ran');
-  };
-  // The preview's endpoints by the dashboard's rule (`mcpResourcesFor`): one per hostname it
-  // actively answers on — and always the one its login is wired for. The delivery is the whole
-  // set, so a hostname left out here would be un-registered.
-  const mcpResources = async (): Promise<string[]> => {
-    const live = (await deps.admin.listHostnames(deps.actor, { scopeId: input.previewId }))
-      .filter((h) => h.status === 'active')
-      .map((h) => h.hostname);
-    return [...new Set([input.previewHostname, ...live].map((h) => mcpResourceOf(`https://${h}`)))].sort();
   };
   const noLogin = (why: string): ControlPlaneError =>
     new ControlPlaneError(
@@ -342,10 +376,13 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
 
     // Delivered and bound: the issuer signs this preview in now, so it may mint for the
     // preview's MCP endpoints too. A repeat (a retry below, every later push) writes nothing.
-    const mcp = await mcpResources()
-      .then(async (resources) => {
-        await registerMcp(resources);
-        return ` MCP: ${resources.join(', ')} registered there too, and un-registered by the same reap.`;
+    const mcp = await activeHosts(input.previewId)
+      .then(async (hosts) => {
+        registeredHosts = hosts;
+        await registerMcp(input.previewId, hosts);
+        return hosts.length > 0
+          ? ` MCP: ${hosts.map((h) => mcpResourceOf(`https://${h}`)).join(', ')} registered there too, and un-registered by the same reap.`
+          : ` MCP: the preview answers on no active hostname yet, so no endpoint of it is registered there.`;
       })
       .catch(
         (e: unknown) =>
@@ -366,6 +403,8 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
     if ((await bound()) === 'gone') return reapedMeanwhile();
     return wired(claim.scope.id, issuer, minted.clientId, callbackUrl, `${mcp}${older}`);
   }
+  // The last attempt's `continue` lands here, after its writes: the same look, before giving up.
+  if ((await bound()) === 'gone') return reapedMeanwhile();
   throw noLogin(`its client kept disappearing at the auth server ${claim.scope.id} (${MAX_ATTEMPTS} attempts)`);
 }
 

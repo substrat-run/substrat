@@ -329,8 +329,8 @@ export async function reconcilePendingHostnames(deps: {
 }): Promise<ReconcileHostnamesResult> {
   const out: ReconcileHostnamesResult = { polled: 0, activated: 0, failed: 0, created: 0, healed: 0, orphaned: 0, errors: [] };
 
-  // Fork scopes stay `active` until deleted (and their delete removes their rows), so
-  // this set is exactly the retired primaries — never a live preview's hostname.
+  // A live fork is `active`; a preview's reap archives it only after unrouting it (#1704),
+  // and its delete removes its rows, so this set never holds a live preview's hostname.
   // `archived` is restorable (unarchiveScope), and unbinding here is still deliberate:
   // delete-app already unbinds at delete time, so a bound row on an archived scope is a
   // relic; a staff rescue that unarchives re-binds hostnames as part of the restore,
