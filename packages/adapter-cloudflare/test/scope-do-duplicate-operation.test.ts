@@ -25,6 +25,7 @@ const moduleOf = (id: string, operations: string[], withdraws: string[] = []): M
     permissions: [],
     events: { emits: [], consumes: [] },
     migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+    attachmentTargets: [],
     entitlementKey: id.replace('@test/', ''),
     ...(withdraws.length ? { withdraws } : {}),
   }),
