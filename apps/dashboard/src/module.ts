@@ -30,23 +30,31 @@ import { INVITES_PERM, sendInvite, acceptInvite, revokeInvite, readInvitation } 
 // records the result; the app layer effects it, narrowed to the caller's tenant.
 // ============================================================================
 
+/**
+ * A dashboard key typed as its own literal as well as a `PermissionKey`. The brand alone is the
+ * same type for every key, so a `defineOperations` allow-list built from branded keys admits any
+ * key at all (an invites key on a dashboard operation compiled); the literal is what tells the
+ * dashboard's six from a foreign one.
+ */
+const dashboardKey = <const K extends string>(key: K) => permissionKey.parse(key) as PermissionKey & K;
+
 export const DASHBOARD_PERM = {
   /** Create/track an app (a provisioned vertical instance) in this tenant. Held by the owner. */
-  provisionApp: permissionKey.parse('dashboard:provision-app'),
+  provisionApp: dashboardKey('dashboard:provision-app'),
   /** Read the account's apps. */
-  read: permissionKey.parse('dashboard:read'),
+  read: dashboardKey('dashboard:read'),
   /** Invite/remove members and see the roster — the tenant-admin membership surface. */
-  manageMembers: permissionKey.parse('dashboard:manage-members'),
+  manageMembers: dashboardKey('dashboard:manage-members'),
   /**
    * Connect/disconnect third-party providers (GitHub, Scrive, …) for this tenant.
    * The in-scope authorization for a self-serve connect (connections.md §3.5.1): the
    * host effects the sealed write, but the *right* to connect is checked here.
    */
-  manageIntegrations: permissionKey.parse('dashboard:manage-integrations'),
+  manageIntegrations: dashboardKey('dashboard:manage-integrations'),
   /** Read the tenant's findings and suppress rules (#1748) — the Findings inbox. */
-  readFindings: permissionKey.parse('dashboard:read-findings'),
+  readFindings: dashboardKey('dashboard:read-findings'),
   /** Acknowledge, resolve or reopen a finding, and create or revoke a suppress rule (#1748). */
-  manageFindings: permissionKey.parse('dashboard:manage-findings'),
+  manageFindings: dashboardKey('dashboard:manage-findings'),
 };
 
 /**
@@ -1565,10 +1573,29 @@ const listConnectLinksOp: OperationHandler<z.infer<typeof listConnectLinksInput>
  * emits no API document, so nothing reads the output schema at run time (the host parses an
  * input, never a return); what a declaration needs is the TYPE, for `operationsFor` to hold the
  * handler to.
+ *
+ * The outputs are deliberately opaque until they are typed, and an opaque `z.custom` is not a
+ * `ZodArray`, so `defineOperations`' #811 gate (`assertListsArePaged`) cannot see through it.
+ * Six reads return a bare array and stay unpaged exactly as they were before they were declared:
+ * `list-apps`, `list-members`, `app-events`, `install-steps`, `list-app-env` and
+ * `list-connect-links`. Typing the outputs and paging those six is #2426.
  */
 const returnsOf = <H extends (...args: never[]) => unknown>(_handler: H) => z.custom<Awaited<ReturnType<H>>>();
 
-const dashboardOperations = defineOperations({}, Object.values(DASHBOARD_PERM))({
+/**
+ * The keys these operations may declare. A literal tuple rather than `Object.values(DASHBOARD_PERM)`:
+ * that is typed as the brand, the same for every key, and would admit a foreign key.
+ */
+export const DASHBOARD_PERMISSIONS = [
+  DASHBOARD_PERM.provisionApp,
+  DASHBOARD_PERM.read,
+  DASHBOARD_PERM.manageMembers,
+  DASHBOARD_PERM.manageIntegrations,
+  DASHBOARD_PERM.readFindings,
+  DASHBOARD_PERM.manageFindings,
+] as const;
+
+const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
   'dashboard/provision-app': {
     summary: 'Record a new app in this team, before its scope is provisioned',
     permission: DASHBOARD_PERM.provisionApp,
@@ -1582,7 +1609,7 @@ const dashboardOperations = defineOperations({}, Object.values(DASHBOARD_PERM))(
     output: returnsOf(markAppActiveOp),
   },
   'dashboard/update-app': {
-    summary: 'Rename an app or change its details',
+    summary: 'Record that an app moved to a newer version',
     permission: DASHBOARD_PERM.provisionApp,
     input: updateAppInput,
     output: returnsOf(updateAppOp),
