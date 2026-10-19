@@ -63,8 +63,10 @@ At runtime, a host reads the reservations off the modules it registers and the m
   whoever asks. That covers a platform grant, a declared shape granted to a person, a
   connection's grant (a connection acts for the outside provider that holds its token), and
   `ctx.grant` from an operation, including one running as a system actor. A connection grant
-  the platform already recorded is skipped when a provision or reconcile delivers it, and
-  reported in that answer, so it never fails the provision.
+  the platform already recorded is skipped when a provision or reconcile delivers it, so it
+  never fails the provision. The skip is reported in that call's answer and as a warn line in
+  your deployment's log; the platform does not read the answer field yet, so the log is where
+  it shows.
 - **Reconciling declared shapes** is refused when a shape holds a reserved key, before anyone is
   topped up: the reconcile would give the key to every holder of the shape, and record it as what
   a binding link gives. A shape may still list a reserved key in `retired`, which takes it back.
@@ -78,8 +80,13 @@ Not covered yet:
 - a role or grant a host seats or composes itself;
 - a role definition widened after it was assigned;
 - a role or grant conferred on a host that registers no modules;
-- grants and shape bindings a scope recorded before these checks existed, and what reaches a
-  person through them later, such as an org membership or a binding link.
+- on a shared control plane, the directory record of a connection grant for a scope your
+  deployment serves, and of a tenant-wide one: the plane cannot see your deployment's
+  reservations, so it records the grant. The grant confers nothing, since your deployment
+  refuses it at delivery and skips it at every re-seat, but it stays listed until revoked;
+- grants and shape bindings recorded before these checks existed, or before the key was
+  reserved, and what reaches a person through them later (such as an org membership or a
+  binding link), including what an older build of your vertical seats again after a rollback.
 
 Push and the lint hold what a vertical declares there.
 

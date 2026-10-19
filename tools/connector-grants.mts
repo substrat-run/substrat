@@ -72,108 +72,125 @@ if (CONNECTORS.length === 0) {
   fail('connector wiring: no connector registrations to check — refusing to report green', 2);
 }
 
-const catalog = PROVIDERS as Record<string, { grants?: readonly string[]; sendsMail?: true } | undefined>;
-const problems: string[] = [];
+type Catalog = Record<string, { grants?: readonly string[]; sendsMail?: true } | undefined>;
+type Connector = Pick<(typeof CONNECTORS)[number], 'provider' | 'grants' | 'mail' | 'inspector'>;
+type EngineModule = { manifest: { id: string; permissions: readonly { key: string; description: string; holder?: 'system' }[] } };
 
-type ReservedKeys = ReturnType<typeof reservedKeysOf>;
-
-/** #2430: every grant a connector's registration or its door names that a module reserves to a system principal. */
-function reservedConnectorGrants(
-  connectors: readonly { provider: string; grants: readonly string[] }[],
-  doors: Record<string, { grants?: readonly string[] } | undefined>,
-  reserved: ReservedKeys,
-): string[] {
-  const line = (where: string, key: string) =>
+/**
+ * Everything this checkpoint refuses, for the registrations, the doors and the engine modules it is
+ * given. One function for the real run and the self-test below, so the self-test holds the path the
+ * real run takes and not only a piece of it.
+ */
+function wiringProblems(connectors: readonly Connector[], catalog: Catalog, engineModules: readonly EngineModule[]): string[] {
+  const problems: string[] = [];
+  // #2430: a key an engine reserves to a system principal, on a registration or on a door.
+  const reserved = reservedKeysOf(engineModules);
+  const reservedLine = (where: string, key: string) =>
     `${where} grants ${key}, which ${reserved.get(key)!.declaredBy.join(', ')} declares \`holder: 'system'\` — ` +
     `a connection acts for the external provider holding its token, and a key reserved to a system principal is never its`;
-  return [
-    ...connectors.flatMap((c) => c.grants.filter((g) => reserved.has(g)).map((g) => line(`${c.provider}: the connector registration`, g))),
-    ...Object.entries(doors).flatMap(([provider, door]) =>
-      (door?.grants ?? []).filter((g) => reserved.has(g)).map((g) => line(`${provider}: the dashboard door`, g)),
-    ),
-  ];
+  for (const c of connectors) {
+    for (const g of c.grants.filter((k) => reserved.has(k))) problems.push(reservedLine(`${c.provider}: the connector registration`, g));
+  }
+  for (const [provider, door] of Object.entries(catalog)) {
+    for (const g of (door?.grants ?? []).filter((k) => reserved.has(k))) problems.push(reservedLine(`${provider}: the dashboard door`, g));
+  }
+
+  for (const connector of connectors) {
+    const { provider } = connector;
+    const entry = catalog[provider];
+    if (!entry) {
+      problems.push(
+        `${provider}: the control plane operates this connector but the dashboard catalog has ` +
+          `no entry for it — no door can connect this provider at all`,
+      );
+      continue;
+    }
+    const carried = new Set(entry.grants ?? []);
+    const missing = connector.grants.filter((g) => !carried.has(g));
+    if (missing.length > 0) {
+      problems.push(
+        `${provider}: the connector requires ${missing.map((m) => `\`${m}\``).join(', ')}, which ` +
+          `the dashboard catalog cannot grant (it carries ${
+            entry.grants?.length ? entry.grants.map((g) => `\`${g}\``).join(', ') : 'nothing'
+          }). A tenant connecting through the dashboard would hold a credential that works ` +
+          `and a return path that cannot write.`,
+      );
+    }
+    // #2098: whether the connection sends mail as the tenant is said twice — on the door, where
+    // the tenant reads it, and on the registration, where the relay acts on it. Either alone is
+    // a door that hides what connecting authorizes, or one that promises mail nothing sends.
+    const registersMail = typeof connector.mail === 'function';
+    if (registersMail !== (entry.sendsMail === true)) {
+      problems.push(
+        registersMail
+          ? `${provider}: the connector registers a mail sender, but the dashboard door does not ` +
+              `say \`sendsMail: true\` — a tenant connecting it would not be told it sends mail as them`
+          : `${provider}: the dashboard door says \`sendsMail: true\`, but the connector registers ` +
+              `no mail sender — the relay would refuse every message sent as its addresses`,
+      );
+    }
+    // Belt to the type's braces — see the header.
+    const inspector = connector.inspector({});
+    for (const half of ['probe', 'probeCandidate'] as const) {
+      if (typeof inspector[half] !== 'function') {
+        problems.push(
+          `${provider}: the registration has no \`${half}\` — a connected tenant pressing ` +
+            `Test connection gets a 501 that reads as the provider being unreachable`,
+        );
+      }
+    }
+  }
+
+  const registered = new Set(connectors.map((c) => c.provider));
+  for (const provider of Object.keys(catalog)) {
+    if (registered.has(provider)) continue;
+    problems.push(
+      `${provider}: the dashboard offers a door for this provider but \`CONNECTORS\` in ` +
+        `apps/control-plane/src/connectors.ts has no registration behind it — a tenant can ` +
+        `paste a credential that is never probed, never swept and never dispatched`,
+    );
+  }
+  return problems;
 }
 
-// The predicate, held on every run before it judges anything (as `lint:host-permissions` does):
-// a reserved key on a registration and on a door is each reported, and an unreserved one is not.
+// #2430: the whole check, held on every run before it judges anything (as `lint:host-permissions`
+// holds its predicate): a registration and a door that grant a key a synthetic engine reserves are
+// each refused, through the same function the real run calls, and their unreserved twin is clean.
 {
-  const reserved: ReservedKeys = new Map([['x:run', { description: 'run', declaredBy: ['@t/x'] }]]);
-  const found = reservedConnectorGrants([{ provider: 'p', grants: ['x:use', 'x:run'] }], { p: { grants: ['x:run'] }, q: { grants: ['x:use'] } }, reserved);
-  if (found.length !== 2 || !found[0]!.startsWith('p: the connector registration grants x:run') || !found[1]!.startsWith('p: the dashboard door grants x:run')) {
-    fail(`connector wiring: the reserved-key check does not report what it must (self-test): ${JSON.stringify(found)}`, 2);
+  const engine: EngineModule = { manifest: { id: '@t/engine', permissions: [{ key: 'x:use', description: 'use' }, { key: 'x:run', description: 'run', holder: 'system' }] } };
+  const connector = (grants: string[]): Connector => ({ provider: 'p', grants, inspector: () => ({ probe: async () => ({ ok: true }), probeCandidate: async () => ({ ok: true }) }) }) as unknown as Connector;
+  const found = wiringProblems([connector(['x:run'])], { p: { grants: ['x:run'] } }, [engine]);
+  const twin = wiringProblems([connector(['x:use'])], { p: { grants: ['x:use'] } }, [engine]);
+  if (
+    found.length !== 2 ||
+    !found[0]!.startsWith('p: the connector registration grants x:run, which @t/engine declares') ||
+    !found[1]!.startsWith('p: the dashboard door grants x:run, which @t/engine declares') ||
+    twin.length !== 0
+  ) {
+    fail(`connector wiring: the reserved-key check does not report what it must (self-test): ${JSON.stringify({ found, twin })}`, 2);
   }
 }
 
 // Every engine's module registrations, read off its entry: an export carrying a manifest.
 const root = repoRoot(import.meta.url);
-const engineModules: { manifest: { id: string; permissions: readonly { key: string; description: string; holder?: 'system' }[] } }[] = [];
+const engineModules: EngineModule[] = [];
 for (const engine of readdirSync(join(root, 'engines'), { withFileTypes: true }).filter((d) => d.isDirectory())) {
   const entry = join(root, 'engines', engine.name, 'src', 'index.ts');
   const exported: Record<string, unknown> = await import(pathToFileURL(entry).href);
   const modules = Object.values(exported).filter(
-    (v): v is (typeof engineModules)[number] =>
+    (v): v is EngineModule =>
       typeof v === 'object' && v !== null && 'manifest' in v && Array.isArray((v as { manifest?: { permissions?: unknown } }).manifest?.permissions),
   );
   if (modules.length === 0) fail(`connector wiring: engines/${engine.name} exports no module registration to read reservations from`, 2);
   engineModules.push(...modules);
 }
-problems.push(...reservedConnectorGrants(CONNECTORS, catalog, reservedKeysOf(engineModules)));
-
-for (const connector of CONNECTORS) {
-  const { provider } = connector;
-  const entry = catalog[provider];
-  if (!entry) {
-    problems.push(
-      `${provider}: the control plane operates this connector but the dashboard catalog has ` +
-        `no entry for it — no door can connect this provider at all`,
-    );
-    continue;
-  }
-  const carried = new Set(entry.grants ?? []);
-  const missing = connector.grants.filter((g) => !carried.has(g));
-  if (missing.length > 0) {
-    problems.push(
-      `${provider}: the connector requires ${missing.map((m) => `\`${m}\``).join(', ')}, which ` +
-        `the dashboard catalog cannot grant (it carries ${
-          entry.grants?.length ? entry.grants.map((g) => `\`${g}\``).join(', ') : 'nothing'
-        }). A tenant connecting through the dashboard would hold a credential that works ` +
-        `and a return path that cannot write.`,
-    );
-  }
-  // #2098: whether the connection sends mail as the tenant is said twice — on the door, where
-  // the tenant reads it, and on the registration, where the relay acts on it. Either alone is
-  // a door that hides what connecting authorizes, or one that promises mail nothing sends.
-  const registersMail = typeof connector.mail === 'function';
-  if (registersMail !== (entry.sendsMail === true)) {
-    problems.push(
-      registersMail
-        ? `${provider}: the connector registers a mail sender, but the dashboard door does not ` +
-            `say \`sendsMail: true\` — a tenant connecting it would not be told it sends mail as them`
-        : `${provider}: the dashboard door says \`sendsMail: true\`, but the connector registers ` +
-            `no mail sender — the relay would refuse every message sent as its addresses`,
-    );
-  }
-  // Belt to the type's braces — see the header.
-  const inspector = connector.inspector({});
-  for (const half of ['probe', 'probeCandidate'] as const) {
-    if (typeof inspector[half] !== 'function') {
-      problems.push(
-        `${provider}: the registration has no \`${half}\` — a connected tenant pressing ` +
-          `Test connection gets a 501 that reads as the provider being unreachable`,
-      );
-    }
-  }
+// A read that finds no reservation at all checks nothing (engines mark keys today, assistant:run
+// among them), so it is the tool failing, never a green line.
+if (reservedKeysOf(engineModules).size === 0) {
+  fail('connector wiring: no engine manifest reserves a key to a system principal — the reservation read found nothing to check against', 2);
 }
 
-const registered = new Set(CONNECTORS.map((c) => c.provider));
-for (const provider of Object.keys(catalog)) {
-  if (registered.has(provider)) continue;
-  problems.push(
-    `${provider}: the dashboard offers a door for this provider but \`CONNECTORS\` in ` +
-      `apps/control-plane/src/connectors.ts has no registration behind it — a tenant can ` +
-      `paste a credential that is never probed, never swept and never dispatched`,
-  );
-}
+const problems = wiringProblems(CONNECTORS, PROVIDERS as Catalog, engineModules);
 
 if (problems.length > 0) {
   console.error('connector wiring: a door and the connector behind it disagree\n');

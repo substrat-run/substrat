@@ -483,6 +483,22 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
       expect(await assign(bare, 'cp-mixed')).toBeNull();
     });
 
+    it('judges every tenant its rows name, not only the first: a role mixed for the second tenant alone is refused', async () => {
+      const bare = scopeId.parse(ulid());
+      // Minted after `t`, so `t` sorts first and the mixed definition is the second tenant's.
+      const second = tenantId.parse(ulid());
+      await projector(bare).projectRole(t, { key: 'two', permissions: [MIXED[0]!], source: 'vertical' });
+      await projector(bare).projectRole(second, { key: 'two', permissions: MIXED, source: 'vertical' });
+      await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(bare)), (_instance, state) => {
+        state.storage.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('permission_source', 'local')`);
+      });
+      expect(await assign(bare, 'two')).toBe('forbidden');
+      // Its twin: a role both tenants define with person keys only.
+      await projector(bare).projectRole(second, { key: 'one', permissions: [MIXED[0]!], source: 'vertical' });
+      await projector(bare).projectRole(t, { key: 'one', permissions: [MIXED[0]!], source: 'vertical' });
+      expect(await assign(bare, 'one')).toBeNull();
+    });
+
     it('refuses when no role row names a tenant and its checks read the control plane; projecting one lets a person’s role through', async () => {
       const fresh = scopeId.parse(ulid());
       expect(await assign(fresh, 'cp-member')).toBe('forbidden');

@@ -2096,9 +2096,14 @@ export interface HostAdmin {
    * alternative and was rejected — two mechanisms for one gate is worse than
    * either, and only one of them would have shown up in a review.
    *
-   * Throws `forbidden` (#2430), before anything is recorded, for a key reserved to a system
-   * principal: a connection acts for the external provider that holds its token, and such a
-   * key is only ever a system principal's. A grant recorded before stays as it is.
+   * Throws `forbidden` (#2430) for a key reserved to a system principal: a connection acts for
+   * the external provider that holds its token, and such a key is only ever a system principal's.
+   * A host judges the reservations it can see — its own modules', and the scope's when that scope
+   * is served by the same deployment — and then refuses before anything is recorded. A shared
+   * control plane delivering to a scope another deployment serves cannot see that deployment's
+   * reservations: it records the directory row, and the serving deployment refuses the tuple at
+   * delivery and skips the row at every later re-seat. A tenant-wide grant there is judged only
+   * against the plane's own. A grant recorded before stays as it is.
    */
   grantToConnection(actor: PlatformActorId, grant: ConnectionGrant): Promise<void>;
   /**
