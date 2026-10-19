@@ -47,6 +47,13 @@ export interface PermissionsView {
   readonly roles: readonly { readonly role: string; readonly keys: readonly string[] }[];
   readonly entityGrants: readonly { readonly entityType: string; readonly keys: readonly string[] }[];
   readonly descriptions: ReadonlyMap<string, string>;
+  /** Keys the registry marks reserved to a system principal. Empty when it has no such column. */
+  readonly reserved: ReadonlySet<string>;
+  /**
+   * Set when the Registry table is not the emitter's — the same shapes the bump classifier ranks
+   * major ({@link readRegistryTable}). `descriptions` and `reserved` are then empty, never a guess.
+   */
+  readonly registryUnreadable?: string;
   /**
    * Operation → the keys it declares it checks and what the check narrows to (#2384). An
    * operation with no declared key has `keys: []` and `declared: false`. `undefined` when the
@@ -141,6 +148,46 @@ export function operationsTableProblem(section: string): string | undefined {
 }
 
 
+/**
+ * §1's two layouts. `lint:permissions` adds the last column only once some key is reserved to a
+ * system principal (`holder: 'system'` on its declaration), so a table without it, from a vertical
+ * with nothing reserved or from an emitter older than the column, reads as nothing reserved.
+ */
+export const REGISTRY_HEADER = ['Key', 'Description', 'Declared by'] as const;
+export const RESERVED_COLUMN = 'Reserved to a system principal';
+
+/** One row of `PERMISSIONS.md`'s Registry. */
+export interface RegistryRowView {
+  readonly key: string;
+  /** The description and the declaring modules, as written. */
+  readonly terms: readonly string[];
+  readonly reserved: boolean;
+}
+
+/**
+ * The Registry table (the text under its heading) read against its header: each row, or why it is
+ * not the table `lint:permissions` writes. The ONE judgement both readers make — this package's
+ * `parsePermissions` and the CLI's bump classifier — as {@link operationsTableProblem} is for
+ * Operations, so `substrat plan` never renders a registry the classifier ranks unreadable.
+ */
+export function readRegistryTable(section: string): { rows: RegistryRowView[] } | { unreadable: string } {
+  const lines = section.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('|'));
+  const [header = [], ...rest] = lines.map(cells);
+  const withColumn = header.join('|') === [...REGISTRY_HEADER, RESERVED_COLUMN].join('|');
+  if (!withColumn && header.join('|') !== REGISTRY_HEADER.join('|')) {
+    return { unreadable: `its header is not | ${REGISTRY_HEADER.join(' | ')} |, with or without | ${RESERVED_COLUMN} |` };
+  }
+  const rows: RegistryRowView[] = [];
+  for (const row of rest.filter((r) => !r.every((c) => /^:?-+:?$/.test(c)))) {
+    const key = unquote(row[0] ?? '');
+    // The reservation is the LAST cell, so a description's own pipe cannot move it.
+    const mark = withColumn ? row.at(-1) : '—';
+    if (mark !== 'yes' && mark !== '—') return { unreadable: `the reservation of ${key} is neither yes nor —` };
+    rows.push({ key, terms: row.slice(1, withColumn ? -1 : undefined), reserved: mark === 'yes' });
+  }
+  return { rows };
+}
+
 /** The text under the `## <n>. <title>` heading, up to the next `## `; `undefined` when absent. */
 function sectionUnder(md: string, title: string): string | undefined {
   const lines = md.split('\n');
@@ -163,17 +210,22 @@ const keysOf = (cell: string): string[] =>
  * running code, so reading it keeps this package free of the verticals it describes.
  */
 export function parsePermissions(md: string): PermissionsView {
-  const registry = tableUnder(md, 'Registry');
+  const registrySection = sectionUnder(md, 'Registry');
   const roleRows = tableUnder(md, 'Roles');
-  if ((registry === undefined || roleRows === undefined) && !/^## No permission surface/m.test(md)) {
+  if ((registrySection === undefined || roleRows === undefined) && !/^## No permission surface/m.test(md)) {
     throw new PermissionsFormatError(
-      `PERMISSIONS.md has no "${registry === undefined ? 'Registry' : 'Roles'}" section — regenerate it with \`pnpm lint:permissions\``,
+      `PERMISSIONS.md has no "${registrySection === undefined ? 'Registry' : 'Roles'}" section — regenerate it with \`pnpm lint:permissions\``,
     );
   }
+  const registry = registrySection === undefined ? { rows: [] } : readRegistryTable(registrySection);
   const descriptions = new Map<string, string>();
-  for (const [key, description] of registry ?? []) {
-    if (key && description) descriptions.set(unquote(key), description);
+  const reserved = new Set<string>();
+  for (const r of 'rows' in registry ? registry.rows : []) {
+    const description = r.terms[0];
+    if (r.key && description) descriptions.set(r.key, description);
+    if (r.reserved) reserved.add(r.key);
   }
+  const registryView = { descriptions, reserved, ...('unreadable' in registry ? { registryUnreadable: registry.unreadable } : {}) };
   const roles = (roleRows ?? [])
     .map(([role, keys]) => ({ role: unquote(role ?? ''), keys: keysOf(keys ?? '') }))
     .filter((r) => r.role !== '');
@@ -182,7 +234,7 @@ export function parsePermissions(md: string): PermissionsView {
     .filter((g) => g.entityType !== '');
   const opSection = sectionUnder(md, 'Operations');
   const operationsUnreadable = opSection === undefined ? undefined : operationsTableProblem(opSection);
-  if (operationsUnreadable !== undefined) return { roles, entityGrants, descriptions, operationsUnreadable };
+  if (operationsUnreadable !== undefined) return { roles, entityGrants, ...registryView, operationsUnreadable };
   const opRows = tableUnder(md, 'Operations');
   const operations =
     opRows === undefined
@@ -201,7 +253,7 @@ export function parsePermissions(md: string): PermissionsView {
   return {
     roles,
     entityGrants,
-    descriptions,
+    ...registryView,
     ...(operations === undefined ? {} : { operations, operationsUnknownFor: operationsUnknownFor(opSection ?? '') }),
   };
 }
@@ -226,6 +278,9 @@ function renderRoles({ permissionsMd }: ConceptInputs): string {
     return '_No `PERMISSIONS.md` beside `model.json`, so no roles are listed. A vertical in the Substrat repository gets one from `pnpm lint:permissions`; a scaffolded project has no such command yet, so describe its roles in prose until it has._';
   }
   const view = parsePermissions(permissionsMd);
+  if (view.registryUnreadable !== undefined) {
+    throw new PermissionsFormatError(`PERMISSIONS.md's Registry cannot be read: ${view.registryUnreadable} — regenerate it with \`pnpm lint:permissions\``);
+  }
   const out: string[] = [];
   if (view.roles.length === 0) {
     out.push('_No roles are defined._');

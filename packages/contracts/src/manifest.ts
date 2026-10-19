@@ -18,6 +18,11 @@ export const semverVersion = z
 export const permissionDeclaration = z.object({
   key: permissionKey,
   description: z.string().min(1), // fuel for the human-readable permission diff (§4.3)
+  // Who may hold this key. Absent means anyone, as every key before this field. `system` reserves
+  // it to a system principal, and `lint:permissions` refuses it in any role a person can hold and
+  // in any entity grant shape (tools/reserved-keys.mts). The module that owns the key says so where
+  // it declares it. There is no `person`: nothing would enforce "never a system principal's".
+  holder: z.literal('system').optional(),
 });
 export type PermissionDeclaration = z.infer<typeof permissionDeclaration>;
 

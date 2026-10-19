@@ -697,6 +697,62 @@ describe('PERMISSIONS.md', () => {
     expect(r.changes).toEqual([expect.objectContaining({ path: 'scheduled operation todo/purge', flagged: true })]);
   });
 
+  /** PERMS with §1 as the emitter writes it once some key is reserved: a fourth cell, `yes` or `—`, on every row. */
+  const withColumn = (t: string, cell: (key: string) => string) =>
+    t
+      .replace(
+        '| Key | Description | Declared by |\n| --- | --- | --- |',
+        '| Key | Description | Declared by | Reserved to a system principal |\n| --- | --- | --- | --- |',
+      )
+      .replace(/^(\| `(list:[a-z]+)` \| [^|\n]+ \| `@acme\/vertical` \|)$/gm, (_, row: string, key: string) => `${row} ${cell(key)} |`);
+  const reserving = (...keys: string[]) => (t: string) => withColumn(t, (k) => (keys.includes(k) ? 'yes' : '—'));
+  const reservationFlag = (key: string, kind: 'narrowing' | 'widening') =>
+    expect.objectContaining({ path: `key ${key}`, level: 'minor', flagged: true, detail: expect.stringMatching(kind) });
+
+  it('a key becoming reserved to a system principal is a flagged narrowing at minor, as a role losing a key is', () => {
+    const r = classifyPermissions(reserving('list:create')(PERMS), reserving('list:create', 'list:manage')(PERMS));
+    expect(r.bump).toBe('minor');
+    expect(r.changes).toEqual([reservationFlag('list:manage', 'narrowing')]);
+  });
+
+  it('a key no longer reserved is a flagged widening at minor, as a role gaining a key is', () => {
+    const r = classifyPermissions(reserving('list:create', 'list:manage')(PERMS), reserving('list:create')(PERMS));
+    expect(r.bump).toBe('minor');
+    expect(r.changes).toEqual([reservationFlag('list:manage', 'widening')]);
+    // The last reservation dropped takes the column with it: the same widening, read off a file with no column.
+    expect(classifyPermissions(reserving('list:manage')(PERMS), PERMS).changes).toEqual([reservationFlag('list:manage', 'widening')]);
+  });
+
+  it('a key added already reserved says so, beside the flag every added key gets', () => {
+    const added = perms((t) => reserving('list:share')(t.replace('| `list:read` | Read a list |', '| `list:share` | Share | `@acme/vertical` |\n| `list:read` | Read a list |')));
+    expect(added.changes).toEqual([
+      expect.objectContaining({ path: 'key list:share', flagged: true, detail: expect.stringMatching(/reserved to a system principal/) }),
+    ]);
+  });
+
+  it('no column is no reservation: a file older than it reads as nothing reserved, with no false flag', () => {
+    // The column appearing with nothing in it newly reserved is not a permission change.
+    const appeared = perms(reserving());
+    expect(appeared.bump).toBe('patch');
+    expect(appeared.changes.some((c) => c.flagged)).toBe(false);
+    // Against a legacy base, a key the head reserves is the one change.
+    expect(perms(reserving('list:read')).changes).toEqual([reservationFlag('list:read', 'narrowing')]);
+    // And a reserved key whose description is reworded is the reword alone: patch, unflagged.
+    const base = reserving('list:read')(PERMS);
+    const reworded = classifyPermissions(base, base.replace('| Read a list |', '| Read any list |'));
+    expect(reworded.changes).toEqual([expect.objectContaining({ path: 'key list:read', level: 'patch' })]);
+    expect(reworded.changes.some((c) => c.flagged)).toBe(false);
+  });
+
+  it('a registry the classifier cannot read is major and flagged, never read as nothing reserved', () => {
+    const cell = classifyPermissions(reserving('list:read')(PERMS), withColumn(PERMS, (k) => (k === 'list:read' ? 'maybe' : '—')));
+    expect(cell.bump).toBe('major');
+    expect(cell.changes).toEqual([expect.objectContaining({ path: 'registry', flagged: true, detail: expect.stringMatching(/list:read/) })]);
+    const header = perms((t) => t.replace('| Key | Description | Declared by |', '| Key | Description | Declared by | Holder |'));
+    expect(header.bump).toBe('major');
+    expect(header.changes).toEqual([expect.objectContaining({ path: 'registry', flagged: true, detail: expect.stringMatching(/header/) })]);
+  });
+
   /**
    * Against the producer: every PERMISSIONS.md the repo's emitter wrote parses, and the registry
    * this parser finds has exactly the count the emitter printed in its own header. A drift in the

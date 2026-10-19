@@ -268,6 +268,50 @@ describe('parsePermissions / decisionsLog', () => {
   });
 });
 
+describe('parsePermissions — the registry’s reservation column', () => {
+  /** PERMISSIONS with §1 as the emitter writes it once some key is reserved: a last cell, `yes` or `—`. */
+  const withColumn = (md: string, mark: (key: string) => string) =>
+    md
+      .replace(
+        '| Key | Description | Declared by |\n| --- | --- | --- |',
+        '| Key | Description | Declared by | Reserved to a system principal |\n| --- | --- | --- | --- |',
+      )
+      .replace(/^(\| `(list:[a-z]+)` \| [^\n]+ \| `x` \|)$/gm, (_, row: string, key: string) => `${row} ${mark(key)} |`);
+
+  it('reads which keys are reserved, and the descriptions as before', () => {
+    const v = parsePermissions(withColumn(PERMISSIONS, (k) => (k === 'list:manage' ? 'yes' : '—')));
+    expect([...v.reserved]).toEqual(['list:manage']);
+    expect(v.registryUnreadable).toBeUndefined();
+    expect(v.descriptions.get('list:manage')).toBe('Rename and share a list');
+  });
+
+  it('its twin: no column is nothing reserved, never unreadable', () => {
+    const v = parsePermissions(PERMISSIONS);
+    expect([...v.reserved]).toEqual([]);
+    expect(v.registryUnreadable).toBeUndefined();
+  });
+
+  it('takes the reservation from the last cell, so a pipe in a description cannot move it', () => {
+    const piped = withColumn(PERMISSIONS, (k) => (k === 'list:manage' ? 'yes' : '—')).replace('Rename and share a list', 'Rename \\| share a list');
+    const v = parsePermissions(piped);
+    expect([...v.reserved]).toEqual(['list:manage']);
+    expect(v.descriptions.get('list:manage')).toBe('Rename | share a list');
+  });
+
+  it('a header or a reservation cell it cannot read is unreadable, never nothing reserved, and concept.md refuses it', () => {
+    for (const md of [
+      withColumn(PERMISSIONS, (k) => (k === 'list:manage' ? 'maybe' : '—')),
+      PERMISSIONS.replace('| Key | Description | Declared by |', '| Key | Description | Declared by | Holder |'),
+    ]) {
+      const v = parsePermissions(md);
+      expect(v.registryUnreadable).toEqual(expect.any(String));
+      expect(v.descriptions.size).toBe(0);
+      expect(v.reserved.size).toBe(0);
+      expect(() => syncConcept(DOC, { model: MODEL, permissionsMd: md })).toThrow(PermissionsFormatError);
+    }
+  });
+});
+
 describe('parsePermissions — the Operations section (#2384)', () => {
   const OPS = [
     '## 5. Operations — which key each checks',
