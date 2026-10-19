@@ -7,6 +7,7 @@ import {
   moduleManifest,
   platformActorId,
   principalId,
+  reservedKeysOf,
   scopeId,
   tenantId,
   type DomainEventInput,
@@ -354,7 +355,13 @@ export async function engineHarness(opts: EngineHarnessOptions): Promise<EngineH
    * would then define and redefine ONE role, and every principal would hold the
    * last permission set written — a fixture that hands out more authority than
    * the test asked for, which is the exact bug a permission test cannot afford.
+   *
+   * A key a module reserves to a system principal (`holder: 'system'`, #2430) is held
+   * through a role of its own, made only of such keys — the system-held role K-55
+   * declares — because no role mixing them with a person's keys is assignable. The
+   * principal still holds exactly the set asked for.
    */
+  const reserved = reservedKeysOf(modules);
   const mintPrincipal = async (
     permissions: PermissionKey[] = [],
   ): Promise<{ principal: PrincipalId; stub: ScopeStub }> => {
@@ -363,11 +370,14 @@ export async function engineHarness(opts: EngineHarnessOptions): Promise<EngineH
     // so "holds nothing" cannot be expressed as an empty role. Assigning no role
     // is the truer model of it anyway: no tuples, so the checker denies by
     // default rather than by an empty list.
-    if (permissions.length === 0) return { principal, stub: await host.getScope(principal, t, s) };
-
-    const roleKey = `kit-role-${ulid().toLowerCase()}`;
-    await host.admin.defineRole(staff, t, { key: roleKey, permissions, source: 'vertical' });
-    await host.admin.assignRole(staff, { principalId: principal, roleKey, node: { tenantId: t, scopeId: s } });
+    const system = permissions.filter((p) => reserved.has(p));
+    const person = permissions.filter((p) => !reserved.has(p));
+    for (const [keys, holder] of [[person, 'person'], [system, 'system']] as const) {
+      if (keys.length === 0) continue;
+      const roleKey = `kit-role-${ulid().toLowerCase()}`;
+      await host.admin.defineRole(staff, t, { key: roleKey, permissions: keys, source: 'vertical', holder });
+      await host.admin.assignRole(staff, { principalId: principal, roleKey, node: { tenantId: t, scopeId: s } });
+    }
     return { principal, stub: await host.getScope(principal, t, s) };
   };
 

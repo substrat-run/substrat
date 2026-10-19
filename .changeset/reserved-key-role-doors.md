@@ -3,6 +3,7 @@
 "@substrat-run/adapter-sqlite": minor
 "@substrat-run/adapter-cloudflare": minor
 "@substrat-run/contract-tests": minor
+"@substrat-run/engine-test-kit": patch
 ---
 
 A scope host refuses to hand a person a key reserved to a system principal through a role, and can hold its registered modules to the vertical's declared permission surface (#2430).
@@ -13,3 +14,4 @@ A scope host refuses to hand a person a key reserved to a system principal throu
 - Nothing already held is revoked, and a provisioning seat or an owner hand-over is not checked.
 - New option `permissions` on `SqliteScopeHost` and `CloudflareScopeHost`, and a third argument `{ permissions }` to `defineScopeDO`: the vertical's `definePermissions(...)` value. Given, a module its `modules` leaves out is refused at registration (on the ScopeDO, when the class is defined). Omitted, nothing is compared.
 - Exported from the kernel: `reservedRoleRefusal`, `noteReservedKeys`, `assertModuleDeclared`. contract-tests: `reservedRoleContractSuite`, which both adapters run.
+- The engine test kit's `as(...)` / `mintPrincipal(...)` gives a principal its reserved keys through a role made only of them, declared `holder: 'system'`, and the rest through a person's role, so a test asking for both still gets exactly that set.
