@@ -174,23 +174,38 @@ upload, recorded in the control plane's directory.
 - **What the row records** *(proposed table `store_driver_approvals`)*: the driver, the sha256,
   an approval id, who approved and when, a required reason, the source references the approver
   says they read (§7), the isolation review (§6), the release's `schema`, and its class name and
-  operation catalog (§4.4). It also records who revoked it, when, and why. Rows are insert-only:
-  a revoke sets the revoke columns once, and approving the same release again writes a new row.
+  operation catalog (§4.4). It also records who revoked it, when, and why. Rows are
+  append-only, with the revoke columns written once: nothing else on a row ever changes, a row
+  is never deleted, and approving the same release again writes a new row.
+- **The directory records which release each script runs** *(proposed table
+  `store_driver_scripts`)*. One row per (driver, vertical) names the release the script was last
+  uploaded at. Today that fact lives only in each script's own settings (`STORE_RELEASE_VAR`, read
+  by the ensurer's `recorded()`), so answering "does any script run release X" means walking every
+  script. The ensurer writes the row under the hold it already takes: a shared hold for a push or
+  serve, the exclusive hold for a rollout or rollback. It marks the row `pending` with the target
+  before the upload and confirms it after, so an upload that lands without its confirmation still
+  leaves a row naming the release. The canary script has no row. The revoke guard and the freeze
+  below read this table.
 - **At most one live approval per (driver, sha256).** The table holds a unique index over
   (driver, sha256) for rows not revoked *(proposed)*, so a second approval of a release that is
   already approved is refused (409). Approving it again after a revoke writes a new row.
 - **A release's facts freeze once it has run.** `schema`, the class name and the catalog are
-  facts about one release. A re-approval may change them only while no rollout row has ever
-  named the release, which is the case when it was approved by mistake and never rolled out.
-  After that, a re-approval that differs from the release's latest approval row is refused
-  (409). So every row of a release that has run agrees on those three facts.
-- **The release being left is read from history.** Every check that looks up the release a
-  script runs now, rather than the one it moves to, reads that release's latest approval row
-  **whether or not it is revoked**. That covers `assertSchemaKept`'s `from`, the ensurer's
-  `running` lookup and `schemaOf` in `store-releases.ts`. Only the target of a move needs a live
-  approval. The freeze above is what makes the latest row the right one to read. Without it, a
-  revoked running release could never be left: today each of those lookups refuses (409) a
-  release it cannot find, and a rollback to a revoked release is refused by design (422).
+  facts about one release. A re-approval may change them only while no vertical's script has
+  ever been uploaded at the release, meaning no `store_driver_scripts` row, pending or confirmed,
+  has ever named it. A rollout whose canary failed moved nothing, so it does not freeze a wrong
+  class name the canary just caught. The canary script does not count. After that, a re-approval
+  that differs from the release's latest approval row is refused (409). So every approval row of
+  a release that a vertical has run agrees on those three facts.
+- **Each lookup is judged by its role, not by its function.** A lookup of the release a script
+  is **leaving** reads that release's latest approval row **whether or not it is revoked**. These
+  are `assertSchemaKept`'s `from`, the ensurer's `running` lookup, and in `restore()`
+  (`store-releases.ts`) the `leaving` side, `schemaOf(deps.sha256)`. A lookup of a release a
+  script is **moving to** needs a live approval. These are the rollout and rollback target, the
+  ensurer's target, and in `restore()` the `returning` side, `schemaOf(from)`. `schemaOf` serves
+  both roles today, so it becomes two reads. The freeze above is what makes the latest row the
+  right one to read for a release being left. Without that split, a revoked running release
+  could never be left: today each lookup refuses (409) a release it cannot find, and a rollback to
+  a revoked release is refused by design (422).
 - **Its own witness.** An audited verb writes its admin-log row after the mutation, in a separate
   write, and that gap is accepted (#1292, [control-plane.md](../architecture/control-plane.md)
   §4.4). So who approved, when and why are columns of the approval row, not only fields of the
@@ -207,7 +222,7 @@ it is checked today, and every check fails closed:
 |---|---|---|
 | uploaded | `pinOf` 404; ensurer 409 when `loadRelease` finds no bytes | unchanged |
 | approved | `pinOf` 422 when the sha256 is not in `registration.releases`; ensurer 422 the same way | the target of a move needs a live (unrevoked) approval for (driver, sha256). A read that fails refuses (503). It never counts as approved |
-| commit matches | `pinOf` 422 when the stored commit is not the pinned one. That is a control, because the pin comes from a reviewed change | no longer a control. `storeDriverRelease()` already refuses (409) a second commit for a stored sha256, and the release row is insert-only, so an approval granted against that row cannot disagree with it. The approval copies the upload's `sourceCommit` and asserts it is unchanged, as a consistency check only. §7's source references are a separate list and are not compared |
+| commit matches | `pinOf` 422 when the stored commit is not the pinned one. That is a control, because the pin comes from a reviewed change | no longer a control. `storeDriverRelease()` already refuses (409) a second commit for a stored sha256, and the release row is never rewritten, so an approval granted against that row cannot disagree with it. The approval copies the upload's `sourceCommit` and asserts it is unchanged, as a consistency check only. §7's source references are a separate list and are not compared |
 | schema | `assertSchemaKept`, and the ensurer's schema check, read `registration.releases[].schema` | the target's `schema` comes from its live approval. The release being left comes from its latest approval row, revoked or not (above) |
 | class name | the ensurer and the canary ensurer read `registration.className` | read from the target's approval. The loader returns the approval's facts with the bytes *(proposed)*, so `withPythonStoreEntry` builds from the class the release was approved with |
 | module rule | `decodeStoreDriverRelease` at upload and when the ensurer loads the bytes | unchanged. A release the current rule refuses does not run, approved or not, and `status` says why |
@@ -230,12 +245,27 @@ declares the driver. A fleet rebuild after a key change cannot rebuild those scr
 they keep the older key lists until they are rolled forward, and the rebuild reports them as
 pending.
 
-**Recommended mitigation: roll forward first, revoke second.** The revoke route refuses (409)
-a release that `storeDriverState` names as current, or that any script still runs, and names
-the rollout to do first *(proposed)*. A person can override that with an explicit emergency flag
-and a reason *(proposed)*, accepting that pushes and serves of every declaring vertical are
-refused until a rollout. That is the fail-closed answer when a release must not be uploaded
-again even once. See Q4.
+**Recommended mitigation: roll forward first, revoke second.** The revoke takes the driver's
+**exclusive** hold, the hold a rollout takes (`holdStoreDriver`, mode `exclusive`), so no push,
+serve, rebuild or rollout can upload a script while the check runs. Under that hold it reads
+`storeDriverState`'s `current` and the `store_driver_scripts` rows for the driver. It refuses
+(409) a release that is current, or that any row, pending or confirmed, names, and it names the
+rollout to do first *(proposed)*. The revoke is written while the hold is still held, and then
+the hold is released. A person can override the refusal with an explicit emergency flag and a
+reason *(proposed)*, accepting that pushes and serves of every vertical whose script runs the
+release are refused until a rollout. That is the fail-closed answer when a release must not be
+uploaded again even once. See Q4.
+
+**After an emergency revoke of the current release, the only way out is forward.** When a
+roll-forward from the revoked release fails part way, `restore()` would return the verticals it
+reached to `from`, the revoked release. That is a move to a release without a live approval, so
+it is refused. So the return is skipped: the request ends `diverged`, its detail names the
+verticals now on the new release and the ones still on the revoked one, and the rollback is
+refused (422) because its target is revoked. The recovery is another rollout to an approved
+release, the same one once its failure is fixed, or another. Every script still on the revoked
+release stays refused for pushes and serves until that rollout reaches it. `status` lists them
+from `store_driver_scripts`. This is the cost the emergency flag accepts, and the revoke
+response says so.
 
 **Rejected alternatives.**
 
@@ -307,9 +337,13 @@ If a pin has merged by the time this is built, there are three options:
   The release is already uploaded, so a person approves it through the approve route like any
   other release, with the full review of §6 and §7. The compiled `releases` list is removed in
   the same pull request that switches the readers (§8, step 5), so no control-plane release
-  reads both. While the older control plane still serves during that deploy, it runs the pinned
-  release whatever the data says. A revoke is therefore not relied on until the person attests
-  the deploy has finished (§8).
+  reads both. Under (c) the order matters, and §8 gives it its own line. The approve route and
+  the isolation basis field land in step 4. The approval of the pinned release is written
+  **before** the switch is deployed. Without it, the switched ensurer would find no approval for
+  the release every `graph` script runs (409), and every push and serve of a vertical that
+  declares `graph` would be refused. While the older control plane still serves during the
+  switch deploy, it runs the pinned release whatever the data says. A revoke is therefore not
+  relied on until the person attests that the deploy has finished (§8).
 
 ### 5.1 The D-63 sentences an amendment would change
 
@@ -319,8 +353,9 @@ sentences below are quoted from D-63 as ratified, each followed by proposed repl
 1. Lead paragraph. *"It is registered in this repo, and a release of it runs only once this repo
    pins it."*
    → *"It is registered in this repo. A release of it runs only once a person on the platform's
-   staff has approved that release for that driver in the control plane, and the approval has not
-   been revoked."*
+   staff has approved that release for that driver in the control plane, the approval has not
+   been revoked, and the driver's registration in this repo still carries an isolation basis
+   that admits it."*
 2. Lead paragraph. *"The registration names the kind, the script, the class and the operation
    catalog."*
    → *"The registration names the driver. The platform names each store script, as it does today
@@ -361,7 +396,9 @@ sentences below are quoted from D-63 as ratified, each followed by proposed repl
    where a reviewed change in this repo stood, while the isolation gate itself stays a reviewed
    change in this repo.
 10. Limits. *"What the platform checks is the bundle's sha256, at registration and at every
-    upload of the script."* → *"…, at approval and at every upload of the script."* The same
+    upload of the script."* → *"…, when the release is uploaded and at every upload of the
+    script."* (The approve route hashes nothing. It names a sha256 the platform computed at
+    upload.) The same
     bullet's *"…they re-hash the stored bytes they are about to send and compare them with the
     pin, rather than trusting a hash taken when the bytes arrived"* → *"…compare them with the
     approved sha256, rather than…"*.
@@ -416,10 +453,22 @@ makes no claim about whether any driver, the graph driver included, meets it.
   the reviewer found it met, with a reference to the evidence. It also records that the reviewer
   checked the release's envelope handling, its reserved operations and the absence of per-object
   state at module level, the review D-63 requires (§5.1, item 5). The route refuses an approval
-  with any condition missing. It never infers a condition from the bytes.
+  with any condition **missing**. It never infers a condition from the bytes.
+- **A condition recorded "not met" is recorded, and does not refuse.** Until the isolation
+  exists, every driver fails at least one of D-63's three conditions, including a driver written
+  in this repo. D-63 does not stop a driver written in this repo from running for that reason: it
+  makes the review the control instead. Refusing "not met" would block every approval of every
+  driver until the isolation exists. So the answer is stored and shown in `status`, and it
+  refuses nothing. Whether a driver written outside this repo may be approved at all is decided
+  by the isolation basis gate above, which is a reviewed change in this repo, and by nothing
+  else.
 
-**Rejected alternative:** *a free-text reason only.* That records that someone approved, not what
-they checked against.
+**Rejected alternatives.**
+
+- *A free-text reason only.* That records that someone approved, not what they checked against.
+- *Refuse any approval with a condition marked "not met".* This is the stricter predicate. It
+  would refuse every approval, of drivers written in this repo too, until the isolation exists,
+  which is a stronger rule than D-63's. Q14 asks whether the maintainer wants it anyway.
 
 ## 7. Reproducibility: what the digest and the commit mean
 
@@ -480,13 +529,16 @@ problem 1.
    `adminAction` is a closed `z.enum`. A control plane rolled back below the release that added a
    name would meet log rows it does not name. K-53's rename kept its old names readable as
    `HISTORIC_ADMIN_ACTIONS` for the same reason.
-3. **The directory.** `store_driver_approvals` *(proposed)* joins `STORE_DRIVER_RELEASES_DDL`, on
-   both adapters, under `lint:spine-ddl`. The `HostAdmin` verbs to approve, revoke and read
-   *(proposed)* are audited. Nothing reads approvals yet.
-4. **Routes and CLI.** Approve, revoke and the staff read of a stored release, all *(proposed)*.
-   `store-driver status` shows approvals. Released CLIs keep working. `upload` and `rollout` keep
+3. **The directory.** `store_driver_approvals` and `store_driver_scripts` *(both proposed)* join
+   `STORE_DRIVER_RELEASES_DDL`, on both adapters, under `lint:spine-ddl`. The `HostAdmin` verbs to
+   approve, revoke and read *(proposed)* are audited. The ensurer starts writing
+   `store_driver_scripts` rows. Nothing reads approvals yet.
+4. **Routes, CLI and the isolation basis.** Approve, revoke and the staff read of a stored
+   release, all *(proposed)*. The isolation basis joins `storeDriverRegistration` here as a field
+   (§6), so the approve route can read it from its first release. `store-driver status` shows
+   approvals. Released CLIs keep working. `upload` and `rollout` keep
    their routes and bodies. The upload response keeps `pinned`, which a released CLI reads
-   (`packages/cli/src/cli.ts`), and from this step it means "approved for this driver and not
+   (`packages/cli/src/cli.ts`), and from step 5 it means "approved for this driver and not
    revoked". A new `approved` field carries the same value, and a new CLI reads that. A released
    CLI then prints *"not pinned yet: it runs once a reviewed change pins this sha256 and commit"*
    until approval. That is safe, but it **misleads**: it sends the uploader to open a pin change
@@ -495,37 +547,51 @@ problem 1.
    keeps `pins` in its current shape, `{ sha256, sourceCommit, schema }`, holding the releases with
    a live approval. `sourceCommit` there is the upload's `sourceCommit`, and the approval's source
    references go in a new field beside it *(proposed)*, so a released reader is not handed a
-   shape it cannot parse.
-5. **The switch, with nothing registered.** Every reader of `registration.releases` and
-   `registration.className` moves to the approval in one pull request: `pinOf`, `assertSchemaKept`,
-   `GET /store-drivers/:driver` (`pins`), the upload's `pinned`, `scopeStoreUploadPlan`, the
-   ensurer and the canary ensurer (`createStoreCanaryEnsurer`), and `schemaOf` in
-   `store-releases.ts`. The class name reaches `withPythonStoreEntry` from the target's approval,
-   through the loader (§4.2). The approvals a plan or a walk needs are read once per rollout
-   request, push, serve or rebuild pass, and handed to the ensurer the way `releases` is handed to
-   it today, not read once per script *(proposed)*. A push or serve of a vertical that declares
-   no store reads nothing new. `releases` and `className` leave the registration schema in this
-   same pull request, so no control-plane release reads both pins and approvals. `STORE_DRIVERS`
-   is still empty, so nothing can run, and every gate behaves as it does today.
-6. **The registration.** `storeDriverRegistration` is now the driver id plus the isolation basis
-   (§4.4, §6), and `graph` is registered that way. That arms `mayHoldScopeStores` and the push
-   checks, with every reader already on approvals. A CLI release carries it, because the CLI's
-   push check is compiled in.
-7. **The first approval.** It is written only after step 6's control plane is the only version
-   serving (below).
+   shape it cannot parse. An approval written at this step makes nothing runnable: every reader
+   still reads compiled pins until step 5.
+5. **The switch.** Every reader of `registration.releases` and `registration.className` moves to
+   the approval in one pull request: `pinOf`, `assertSchemaKept`, `GET /store-drivers/:driver`
+   (`pins`), the upload's `pinned`, `scopeStoreUploadPlan`, the ensurer and the canary ensurer
+   (`createStoreCanaryEnsurer`), and both roles of `schemaOf` in `store-releases.ts` (§4.2). The
+   class name reaches `withPythonStoreEntry` from the target's approval, through the loader
+   (§4.2). The approvals a plan or a walk needs are read once per rollout request, push, serve or
+   rebuild pass, and handed to the ensurer the way `releases` is handed to it today, not read
+   once per script *(proposed)*. A push or serve of a vertical that declares no store reads
+   nothing new. `releases` and `className` leave the registration schema in this same pull
+   request, so no control-plane release reads both pins and approvals.
+   - **No pin has merged** (the recommended path, §5). `STORE_DRIVERS` is still empty, so nothing
+     can run, and every gate behaves as it does today.
+   - **A pin has merged** (§5, option c). Before this pull request is deployed, the pinned
+     release is approved through the step-4 route, with the full review of §6 and §7, and
+     `graph`'s registration carries its isolation basis from step 4. The deploy waits for that
+     approval. Without it, every push and serve of a vertical that declares `graph` is refused
+     (409) from the moment the switched control plane serves. `store_driver_scripts` is also
+     backfilled before the revoke guard trusts it: a walk like the fleet rebuild reads each
+     existing script's `STORE_RELEASE_VAR` and writes its row. Until that walk is done, a revoke
+     without the emergency flag is refused (409).
+6. **The registration** (when no pin had merged). `graph` is registered as its driver id plus its
+   isolation basis (§4.4, §6). That arms `mayHoldScopeStores` and the push checks, with every
+   reader already on approvals. A CLI release carries it, because the CLI's push check is
+   compiled in. Under option (c), `graph` is already registered, and this step does nothing.
+7. **The first approval and the first rollout.** An approval can be written at any point from
+   step 4, and under option (c) it must be written before step 5 deploys. Approving is never
+   gated on a deploy, because it makes nothing run by itself. The gate is on the **first rollout
+   after the switch deploy**, once. The rollout route refuses until a person attests that the
+   switch deploy has finished rolling out (below) *(proposed)*. Later control-plane deploys do
+   not re-arm the gate, because they do not change which releases a version admits. A deploy
+   that did change that would arm it again.
 
 **Released control planes and the sha256 gate.** The control plane deploys gradually, so for a
 while an older version serves beside the new one. `store-rebuild.ts` already allows for this with
 its settle window (`STORE_REBUILD_SETTLE_MS`) and the person's `--deploy-finished` attestation.
-An older version knows only compiled pins. With approvals in data and no compiled pins, that
-version's sha256 gate refuses an approved release (422, "not pinned in its registration"), and so
-does its `pinOf`. **That fails closed**: no release the older version has not seen runs through
-it. The cost is that a push or rebuild that the older version serves during the overlap fails.
-So the first rollout of an approved release waits until the deploy has finished. A person
-attests that, the same way the rebuild does, and the rollout route refuses until then
-*(proposed)*.
+A version from before the switch knows only compiled pins. With approvals in data and no
+compiled pins, that version's sha256 gate refuses an approved release (422, "not pinned in its
+registration"), and so does its `pinOf`. **That fails closed**: no release the older version has
+not seen runs through it. The cost is that a push or rebuild that the older version serves
+during the overlap fails. That is why step 7's gate holds the first rollout until the switch
+deploy has finished.
 
-Two consequences:
+Three consequences:
 
 - **No compiled pin may sit beside approvals.** An older version reads a compiled pin and no
   revocation. If the same sha256 were both pinned and revoked, an older version would still run
@@ -559,7 +625,10 @@ Two consequences:
   Because the ensurer checks before its no-op shortcut, **every push and serve of every vertical
   whose script runs the revoked release is refused** until a rollout moves it. The recommendation
   is to refuse revoking a release that any script still runs, unless a person passes an explicit
-  emergency flag with a reason. Is that the right default? Or should the ensurer let a push or
+  emergency flag with a reason. The check runs under the driver's exclusive hold and reads
+  `store_driver_scripts`. After an emergency revoke of the current release, a failed roll-forward
+  ends `diverged` with no rollback, and the only way out is another roll-forward (§4.2). Is that
+  the right default? Or should the ensurer let a push or
   serve keep an existing script unchanged on a revoked release, so that only a move to it is
   refused?
 - **Q5. The graph driver.** Is the graph driver "written outside this repo" in D-63's sense? If so,
@@ -580,10 +649,19 @@ Two consequences:
 - **Q11. Who may read a stored release.** Staff only (recommended), or also the people who
   maintain the driver, through some route other than the staff console?
 - **Q12. Correcting a release's facts.** §4.2 freezes `schema`, the class name and the catalog
-  once a rollout has named a release. A fact that turns out wrong after that can only be fixed by
+  once any vertical's script has been uploaded at a release. A fact that turns out wrong after that can only be fixed by
   uploading new bytes, so the release gets a new sha256. Is that acceptable, or should a person be
   able to correct a fact with a recorded reason?
 - **Q13. A directory read on the push path.** After the switch, a push or serve of a
   store-declaring vertical reads approvals and refuses on a failed read (503, §8). Is that cost
   acceptable, or should a control plane keep the last approvals it read and use them for a
   bounded time?
+- **Q14. "Not met".** §6 records a condition the reviewer found not met and does not refuse the
+  approval, so the isolation basis gate alone decides whether a driver written outside this repo
+  may run (recommended). Or should the approve route refuse any condition marked "not met", which
+  is stricter than D-63 and would block every driver until the isolation exists?
+- **Q15. A second record of which release each script runs.** §4.2 adds `store_driver_scripts`
+  beside each script's own `STORE_RELEASE_VAR`, so that the revoke guard and the freeze can read
+  one table under the driver's hold. Is a second record acceptable, given that a crash between
+  upload and confirmation leaves a `pending` row that the guard has to treat as running? Or
+  should the revoke walk every script's settings under the hold instead, paged as a rollout is?
