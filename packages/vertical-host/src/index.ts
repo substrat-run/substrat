@@ -141,6 +141,7 @@ import {
   type Visibility,
   type RoleDefinition,
   type ScopeDumpTable,
+  type ScopeDumpPage,
   type ScopeTable,
   type ScopeQueryResult,
   type EntitlementGrant,
@@ -317,6 +318,20 @@ export interface VerticalScopeHost {
   ): Promise<{ released: true } | { refused: 'changed' | 'not-kept' }>;
   projectRolesLocal(tenantId: TenantId, scopeId: ScopeId, roles: RoleDefinition[]): Promise<void>;
   exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]>;
+  /** #2450: one page of the stamped export, for a scope too large to cross in one call. Optional,
+   *  like `exportScopeStampedLocal`: the route answers 501 without it, and the platform then
+   *  carries the scope whole. */
+  exportScopePageLocal?(scopeId: ScopeId, cursor: string | null, opts?: { stamp?: boolean }): Promise<ScopeDumpPage>;
+  /** #2450: stage one page of a dump into this scope; page 0 starts (and replaces) a stage. */
+  stageScopePageLocal?(scopeId: ScopeId, stageId: string, seq: number, tables: ScopeDumpTable[]): Promise<{ staged: boolean }>;
+  /** #2450: `restoreScopeLocal` from the dump staged under `stageId`, with the same options. */
+  restoreStagedScopeLocal?(
+    scopeId: ScopeId,
+    stageId: string,
+    opts?: Parameters<VerticalScopeHost['restoreScopeLocal']>[2],
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }>;
+  /** #2450: drop the stage, if it is still `stageId`'s. */
+  discardStagedScopeLocal?(scopeId: ScopeId, stageId: string): Promise<{ discarded: boolean }>;
   /** #1722: the export and the store's load stamp, read together. Optional: a host built before
    *  it answers the export alone, and the platform then has no stamp to fence a wipe on. */
   exportScopeStampedLocal?(scopeId: ScopeId): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null }>;
@@ -789,7 +804,7 @@ const wipeCarriedBody = z.object({
   markCopy: scopeLineage.optional(),
 });
 
-const restoreBody = z.object({
+const restoreFields = z.object({
   /** #2016: the tenant the platform restores for, recorded as the scope's receipt in the load's own
    *  transaction. Required (#2035): a load that names none could land a store with no tenant record
    *  and no role rows (a dump from a world that keeps its roles elsewhere), which a CP-less door can
@@ -825,20 +840,33 @@ const restoreBody = z.object({
     notAfter: z.string().datetime(),
     erasureEpoch: z.number().int().nonnegative(),
   }).strict().optional(),
-  tables: z.array(
-    z.object({
-      name: z.string(),
-      ddl: z.string(),
-      columns: z.array(z.string()),
-      rows: z.array(z.array(z.unknown())),
-    }),
-  ),
-})
-  // #1869: `exact` vouches for a named source. Without one the host would silently fall back.
-  .refine((b) => !b.exact || b.sourceScopeId !== undefined, {
-    message: '`exact` needs `sourceScopeId`, the scope the dump came from',
-    path: ['exact'],
-  });
+});
+
+const dumpTables = z.array(
+  z.object({
+    name: z.string(),
+    ddl: z.string(),
+    columns: z.array(z.string()),
+    rows: z.array(z.array(z.unknown())),
+  }),
+);
+
+// #1869: `exact` vouches for a named source. Without one the host would silently fall back.
+const namesSource = (b: { exact?: boolean; sourceScopeId?: string }) => !b.exact || b.sourceScopeId !== undefined;
+const namesSourceRefusal = { message: '`exact` needs `sourceScopeId`, the scope the dump came from', path: ['exact'] };
+
+const restoreBody = restoreFields.extend({ tables: dumpTables }).refine(namesSource, namesSourceRefusal);
+
+/** #2450: `restoreBody` for a dump staged here page by page, named by its stage instead of carried. */
+const restoreStagedBody = restoreFields.extend({ stageId: z.string().min(1) }).refine(namesSource, namesSourceRefusal);
+
+/** #2450: one page of a dump to stage, numbered from 0. */
+const stagePageBody = z.object({
+  scopeId: scopeIdOf,
+  stageId: z.string().min(1),
+  seq: z.number().int().nonnegative(),
+  tables: dumpTables,
+});
 
 const configureBody = z.object({
   tenantId: tenantIdOf,
@@ -1207,6 +1235,55 @@ export function mountPlatformSurface<Env extends object>(
     });
     await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
     return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
+  });
+
+  // #2450: the same move in pages, for a scope too large to cross in one call. A page of the export,
+  // a page staged into the destination, and the restore from the stage, which runs exactly what
+  // `/internal/restore` runs. A host built before them answers 501, and the platform carries the
+  // scope whole.
+  app.get('/internal/export-page', async (c) => {
+    const scopeId = scopeIdOf.parse(c.req.query('scopeId'));
+    const host = deps.hostFor(c.env);
+    if (!host.exportScopePageLocal) return refuseStatus(c, 501, 'this deployment exports a scope only whole (#2450) — redeploy it');
+    const cursor = c.req.query('cursor');
+    // `stamp=1` is a carry's export, as on `/internal/export`: its first page mints the load stamp.
+    return c.json(await host.exportScopePageLocal(scopeId, cursor ? cursor : null, { stamp: c.req.query('stamp') === '1' }));
+  });
+
+  app.post('/internal/stage', async (c) => {
+    const host = deps.hostFor(c.env);
+    if (!host.stageScopePageLocal) return refuseStatus(c, 501, 'this deployment restores a scope only whole (#2450) — redeploy it');
+    const body = stagePageBody.parse(await c.req.json());
+    return c.json(await host.stageScopePageLocal(body.scopeId, body.stageId, body.seq, body.tables));
+  });
+
+  app.post('/internal/restore-staged', async (c) => {
+    const host = deps.hostFor(c.env);
+    if (!host.restoreStagedScopeLocal) return refuseStatus(c, 501, 'this deployment restores a scope only whole (#2450) — redeploy it');
+    const body = restoreStagedBody.parse(await c.req.json());
+    const result = await host.restoreStagedScopeLocal(body.scopeId, body.stageId, {
+      switchedOff: body.switchedOff,
+      tenantHeld: body.tenantHeld,
+      switchedOffPeers: body.switchedOffPeers,
+      tenantHeldPeers: body.tenantHeldPeers,
+      switchFences: body.switchFences,
+      sourceScopeId: body.sourceScopeId,
+      exact: body.exact,
+      loadStamp: body.loadStamp,
+      expect: body.expect,
+      markCopy: body.markCopy,
+      tenantId: body.tenantId,
+      fence: body.fence,
+    });
+    await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
+    return c.json({ tables: result.tables, ...switchedOffAnswer(result.switchedOff) });
+  });
+
+  app.post('/internal/stage/discard', async (c) => {
+    const host = deps.hostFor(c.env);
+    if (!host.discardStagedScopeLocal) return refuseStatus(c, 501, 'this deployment stages nothing (#2450) — redeploy it');
+    const body = z.object({ scopeId: scopeIdOf, stageId: z.string().min(1) }).parse(await c.req.json());
+    return c.json(await host.discardStagedScopeLocal(body.scopeId, body.stageId));
   });
 
   // #1722: what a carry's restore into this scope expects to find unchanged (the load stamp and

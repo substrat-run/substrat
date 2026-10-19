@@ -221,6 +221,7 @@ import {
   type ScopeDump,
   type ScopeDumpInput,
   type ScopeDumpTable,
+  type ScopeDumpPage,
   type ScopeLineage,
   subjectShredReceipt,
   type SubjectShredReceipt,
@@ -1877,6 +1878,18 @@ interface ScopeStubRpc {
   ): Promise<{ discarded: true } | { refused: 'changed' | 'not-kept' }>;
   /** #1722: `exportDump` and the store's load stamp, read in one call. */
   exportDumpStamped(): Promise<{ tables: ScopeDumpTable[]; loadStamp: string | null; revision: string | null }>;
+  /** #2450: one page of `exportDumpStamped`; the first (`cursor` null) mints the load stamp. */
+  exportDumpPage(cursor: string | null, opts?: { stamp?: boolean; maxBytes?: number }): Promise<DoReply<ScopeDumpPage>>;
+  /** #2450: stage one page for `commitStagedDumpChecked`; page 0 starts (and replaces) a stage. */
+  stageDumpPage(stageId: string, seq: number, tables: ScopeDumpTable[]): Promise<DoReply<{ staged: boolean }>>;
+  /** #2450: `importDumpChecked`, the rows read from the stage named. */
+  commitStagedDumpChecked(
+    stageId: string,
+    destScopeId: ScopeId,
+    opts: Parameters<ScopeStubRpc['importDumpChecked']>[2],
+  ): Promise<Awaited<ReturnType<ScopeStubRpc['importDumpChecked']>> & { tables?: number }>;
+  /** #2450: drop the stage, if it is still this one. */
+  discardStagedDump(stageId: string): Promise<{ discarded: boolean }>;
   /** #1722: wipe a carried copy if nothing was loaded since `expectLoadStamp`; false when refused. */
   wipeCarried(
     scopeId: ScopeId,
@@ -3676,6 +3689,65 @@ export class CloudflareScopeHost implements ScopeHost {
       fence?: CopyRestoreFence;
     },
   ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
+    const out = await this.loadLocal(scopeId, opts, (load) => this.scopeStub(scopeId).importDumpChecked(tables, scopeId, load));
+    return { ...out, tables: tables.length };
+  }
+
+  /**
+   * One page of this scope's dump from THIS deployment (#2450), behind the vertical's
+   * `/internal/export-page`: `exportScopeStampedLocal` a page at a time, for a scope too large to
+   * cross in one call. With `stamp`, the first page (`cursor` null) mints the load stamp.
+   */
+  async exportScopePageLocal(
+    scopeId: ScopeId,
+    cursor: string | null,
+    /** `maxBytes`: a smaller page than `SCOPE_DUMP_PAGE_MAX_BYTES`, for a test that wants many. */
+    opts?: { stamp?: boolean; maxBytes?: number },
+  ): Promise<ScopeDumpPage> {
+    return unwrapReply(
+      await this.scopeStub(scopeId).exportDumpPage(cursor, {
+        stamp: opts?.stamp === true,
+        ...(opts?.maxBytes !== undefined ? { maxBytes: opts.maxBytes } : {}),
+      }),
+    );
+  }
+
+  /** Stage one page of a dump into a scope in THIS deployment (#2450), for `restoreStagedScopeLocal`. */
+  async stageScopePageLocal(scopeId: ScopeId, stageId: string, seq: number, tables: ScopeDumpTable[]): Promise<{ staged: boolean }> {
+    return unwrapReply(await this.scopeStub(scopeId).stageDumpPage(stageId, seq, tables));
+  }
+
+  /** `restoreScopeLocal` from the dump staged under `stageId` (#2450), with the same fences and answers. */
+  async restoreStagedScopeLocal(
+    scopeId: ScopeId,
+    stageId: string,
+    opts?: SwitchCarryWire & {
+      sourceScopeId?: ScopeId;
+      exact?: boolean;
+      loadStamp?: string;
+      expect?: LoadMarker;
+      markCopy?: ScopeLineage;
+      tenantId?: TenantId;
+      /** #1722: the copy move's lease; the store refuses a load after `notAfter`. */
+      fence?: CopyRestoreFence;
+    },
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
+    return this.loadLocal(scopeId, opts, (load) => this.scopeStub(scopeId).commitStagedDumpChecked(stageId, scopeId, load));
+  }
+
+  /** Drop the dump staged under `stageId` (#2450), if it is still there. */
+  async discardStagedScopeLocal(scopeId: ScopeId, stageId: string): Promise<{ discarded: boolean }> {
+    return this.scopeStub(scopeId).discardStagedDump(stageId);
+  }
+
+  /** The restore both `restoreScopeLocal` and `restoreStagedScopeLocal` run around their load. */
+  private async loadLocal(
+    scopeId: ScopeId,
+    opts: Parameters<CloudflareScopeHost['restoreScopeLocal']>[2],
+    run: (
+      load: Parameters<ScopeStubRpc['importDumpChecked']>[2],
+    ) => Promise<Awaited<ReturnType<ScopeStubRpc['importDumpChecked']>> & { tables?: number }>,
+  ): Promise<{ tables: number; switchedOff?: SwitchedOff[] }> {
     if (opts?.markCopy) assertCopyLineage(opts.markCopy);
     // #2314: a load replaces the scope's rows, so the orphan sweep is fenced first, as for a rewind.
     await this.fenceOrphanSweep(scopeId, opts?.tenantId);
@@ -3690,13 +3762,13 @@ export class CloudflareScopeHost implements ScopeHost {
     };
     // The refusals come back as values (a throw over the RPC carries only its message) and are
     // thrown here, in the vertical's own isolate, so its route answers 409 or 412, not a fault.
-    const out = await this.scopeStub(scopeId).importDumpChecked(tables, scopeId, {
+    const out = await run({
       ...load,
       ...(opts?.expect ? { expect: opts.expect } : {}),
       ...(opts?.fence ? { fence: opts.fence } : {}),
     });
     if (out.refused === false) {
-      return { tables: tables.length, ...(carry ? { switchedOff: out.switchedOff } : {}) };
+      return { tables: out.tables ?? 0, ...(carry ? { switchedOff: out.switchedOff } : {}) };
     }
     if (out.refused === 'kept') throw substratError('conflict', KEPT_COPY_REFUSAL);
     if (out.refused === 'tenant') throw substratError('conflict', out.message);
@@ -3709,7 +3781,7 @@ export class CloudflareScopeHost implements ScopeHost {
     if (!opts?.loadStamp || now.loadStamp !== opts.loadStamp) {
       throw substratError('precondition_failed', 'scope store changed since the carry read it; nothing was loaded (#1722)');
     }
-    return { tables: tables.length };
+    return { tables: out.tables ?? 0 };
   }
 
   /** The kept-copy marker of this scope's store in THIS deployment (#1722), or null. */

@@ -57,7 +57,16 @@ export function capabilitiesForLoad<T extends { name: string; rows: readonly unk
   sourceScopeId: string | undefined,
 ): T[] {
   if (!isCopyLoad(destScopeId, sourceScopeId)) return tables;
-  return tables.map((t) => (CAPABILITY_TABLES.has(t.name.toLowerCase()) ? { ...t, rows: [] } : t));
+  return tables.map((t) => (loadDropsRowsOf(t.name, destScopeId, sourceScopeId) ? { ...t, rows: [] } : t));
+}
+
+/**
+ * `capabilitiesForLoad` for one table, by name (#2450): whether a load into `destScopeId` takes
+ * this table's rows at all. For a loader that reads its rows lazily, from a staged load, and
+ * never holds them as an array to empty.
+ */
+export function loadDropsRowsOf(name: string, destScopeId: string | undefined, sourceScopeId: string | undefined): boolean {
+  return isCopyLoad(destScopeId, sourceScopeId) && CAPABILITY_TABLES.has(name.toLowerCase());
 }
 
 /** The reason copied work is settled with. Names the source, so the journal says where it runs. */

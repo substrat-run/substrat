@@ -298,6 +298,50 @@ export const scopeDumpTable = z.object({
 export type ScopeDumpTable = z.infer<typeof scopeDumpTable>;
 
 /**
+ * A dump read in pages (#2450). A whole dump crosses a Durable Object RPC (32 MiB per message)
+ * and an isolate (128 MB) as one value, so a scope past either cannot be carried whole. A page is
+ * the same `ScopeDumpTable[]` shape, holding FRAGMENTS: a table's rows may be spread over several
+ * pages, each fragment naming the table, its DDL and its columns again, and every table appears in
+ * at least one page, empty or not, so its schema always travels. Concatenating the fragments of
+ * one table, in page order, gives that table as the whole dump holds it.
+ *
+ * `next` is opaque: hand it back for the following page, `null` after the last. `loadStamp` and
+ * `revision` are the store's as `exportDumpStamped` reads them. A reader compares `revision`
+ * across pages: the pages are one consistent read only while it stays the same.
+ */
+export const scopeDumpPage = z.object({
+  tables: z.array(scopeDumpTable),
+  next: z.string().min(1).nullable(),
+  loadStamp: z.string().min(1).nullable(),
+  revision: z.string().min(1).nullable(),
+});
+export type ScopeDumpPage = z.infer<typeof scopeDumpPage>;
+
+/**
+ * How many bytes of cells one page holds, as the exporter estimates them (#2450). Well under the
+ * 32 MiB RPC message, and small enough that its JSON over HTTP stays far inside an isolate's
+ * memory. A single row larger than this rides in a page of its own.
+ */
+export const SCOPE_DUMP_PAGE_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Merge dump pages back into one dump (#2450): each table's fragments joined in page order, the
+ * tables in the order they first appeared. For a destination that only takes a whole dump.
+ */
+export function mergeDumpPages(pages: readonly (readonly ScopeDumpTable[])[]): ScopeDumpTable[] {
+  const byName = new Map<string, ScopeDumpTable>();
+  for (const page of pages) {
+    for (const fragment of page) {
+      const held = byName.get(fragment.name);
+      // A loop, not `push(...rows)`: a spread of a large page overflows the stack.
+      if (held) for (const row of fragment.rows) held.rows.push(row);
+      else byName.set(fragment.name, { ...fragment, rows: [...fragment.rows] });
+    }
+  }
+  return [...byName.values()];
+}
+
+/**
  * One scope store inside a dump (#2211). Opaque tables: they are not sealed per subject.
  *
  * `driver` was `kind` until K-53's rename. No hosted store ever ran, so no dump carries one; a
