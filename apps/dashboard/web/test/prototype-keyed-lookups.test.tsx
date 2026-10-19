@@ -1,9 +1,13 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BoundScopesView, Deployment, DeploymentVersion } from '../src/lib/api';
+import type { BoundScopesView, Deployment, DeploymentVersion, Member, ObservabilityLogEvent } from '../src/lib/api';
 import { actorOf, entryVia } from '../src/lib/audit-activity';
+import { InstallSteps } from '../src/components/InstallSteps';
+import { LogList } from '../src/components/LogList';
+import { resolveTab } from '../src/views/AppDetail';
 import { BoundScopes } from '../src/views/BoundScopes';
+import { Team } from '../src/views/Team';
 import { VersionRow } from '../src/views/Verticals';
 
 const client = vi.hoisted(() => ({ listBoundScopes: vi.fn() }));
@@ -80,5 +84,39 @@ describe('plane-owned pill vocabularies (#2427)', () => {
       await new Promise((r) => setTimeout(r, 0));
     });
     expect(container.textContent).toContain(status);
+  });
+
+  it.each(PROTOTYPE_NAMES)('a team member whose status is %s shows as named', async (status) => {
+    const m = { id: 'm', principal: 'p1', email: 'rae@acme.test', role_key: 'member', status, invitation_id: null, invited_by: null, invited_at: null, joined_at: null } as unknown as Member;
+    await act(async () =>
+      root.render(<Team members={[m]} meEmail="owner@acme.test" canManage onInvite={async () => undefined} onResend={() => undefined} onRevoke={() => undefined} onRemove={() => undefined} />),
+    );
+    expect(container.textContent).toContain(status);
+  });
+
+  it.each(PROTOTYPE_NAMES)('an install step named %s shows as named', async (step) => {
+    const steps = [{ step, seq: 1, status: 'done', attempts: 1, last_error: null, started_at: '2026-10-01T00:00:00.000Z', settled_at: null }];
+    await act(async () => root.render(<InstallSteps status="active" load={async () => steps as never} />));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(container.textContent).toContain(step);
+  });
+
+  it.each(PROTOTYPE_NAMES)('a log line whose level is %s reads as an unknown level', async (level) => {
+    const e = { timestamp: 1, level, message: 'hello', service: null, outcome: null, trigger: null, invocation: null, entrypoint: null, requestId: null, invocationId: null } as unknown as ObservabilityLogEvent;
+    await act(async () => root.render(<LogList events={[e]} onFilter={() => {}} />));
+    expect(container.textContent).toContain('—');
+    expect(container.textContent).toContain('hello');
+  });
+});
+
+describe('tab paths (#2427)', () => {
+  it('resolves an old alias and leaves a current path alone', () => {
+    expect(resolveTab('model')).toBe('data/schema');
+    expect(resolveTab('settings/domains')).toBe('settings/domains');
+  });
+  it.each(PROTOTYPE_NAMES)('a path of %s is left as typed, so it can be split', (tab) => {
+    expect(resolveTab(tab)).toBe(tab);
   });
 });

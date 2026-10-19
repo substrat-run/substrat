@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import type { InstallStep } from '../lib/api';
 
 /** Human labels for the install sequence's step keys (#424). Unknown keys render as-is. */
-const STEP_LABELS: Record<string, string> = {
-  directory: 'Register in the directory',
-  provision: 'Provision the instance',
-  activate: 'Activate',
-  hostname: 'Assign a hostname',
-  identity: 'Wire identity',
-};
+const STEP_LABELS = new Map([
+  ['directory', 'Register in the directory'],
+  ['provision', 'Provision the instance'],
+  ['activate', 'Activate'],
+  ['hostname', 'Assign a hostname'],
+  ['identity', 'Wire identity'],
+]);
 
 /**
  * The live install progress (#424): the durable step record rendered as a compact
@@ -62,7 +62,7 @@ export function InstallSteps({
                 fontWeight: s.status === 'running' ? 500 : 400,
               }}
             >
-              {STEP_LABELS[s.step] ?? s.step}
+              {STEP_LABELS.get(s.step) ?? s.step}
             </span>
             {s.attempts > 1 && (
               <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>attempt {s.attempts}</span>
