@@ -48,9 +48,9 @@ describe('a ScopeDO refuses a duplicate operation name, as its coordinator does 
     );
   });
 
-  it('refuses the same registration listed twice', async () => {
+  it('refuses the same registration listed twice, on its id first (#2412)', async () => {
     const once = moduleOf('@test/dup-twice', ['dup/twice']);
-    await expect(construct([once, once])).rejects.toThrow('operation already defined: dup/twice');
+    await expect(construct([once, once])).rejects.toThrow('module already registered: @test/dup-twice');
   });
 
   it('refuses a bare operation that a module already binds', async () => {

@@ -110,6 +110,9 @@ describe('audit activity derivations (#1825)', () => {
 
   it('leaves an action it does not know untensed, and labelled', () => {
     expect(actionWords('frobnicateScope')).toBe('admin action: frobnicate scope');
+    // #2401: a verb named like an Object.prototype key is one it does not know, not Object's.
+    expect(actionWords('constructorScope')).toBe('admin action: constructor scope');
+    expect(actionWords('constructor')).toBe('admin action: constructor');
   });
 
   it('is the same wording the Overview uses, and the Overview links to the entry', () => {
