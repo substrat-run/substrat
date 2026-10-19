@@ -11,8 +11,13 @@
  */
 import {
   permissionKey,
+  problemForStatus,
+  PROBLEM_CONTENT_TYPE,
   substratError,
+  toProblem,
   type EntityRef,
+  type ErrorCode,
+  type Problem,
   type PrincipalId,
   type ScopeId,
   type TenantId,
@@ -158,6 +163,37 @@ export function decodeLiveWithin(header: string): LiveWithin | undefined {
  * one file.
  */
 export { LIVE_CLOSE, LIVE_MODE_HEADER, type LiveRefusal } from '@substrat-run/contracts';
+
+/**
+ * A refusal on this surface, answered as the problem document it is (#113).
+ *
+ * The door (`host.ts`) and the scope's `fetch` (`scope-do.ts`) both refuse with a
+ * `Response`, because a refusal here is a fact about the connection and not a throw, so the
+ * media type and the `LIVE_MODE_HEADER` pairing live in one place. `mode` is the value a
+ * client keys its fallback on; a refusal that is nobody's fallback (the DO's own 404, a 500
+ * that is this package's bug) carries none. Status, sentence and header values are the
+ * callers' own and are unchanged from the `text/plain` answers this replaces.
+ */
+function serveLiveRefusal(body: Problem, mode: LiveRefusal | undefined): Response {
+  return new Response(JSON.stringify(body), {
+    status: body.status,
+    headers: { 'content-type': PROBLEM_CONTENT_TYPE, ...(mode === undefined ? {} : { [LIVE_MODE_HEADER]: mode }) },
+  });
+}
+
+/** `liveRefusal` for a status the taxonomy has no code for (404, 426, 501): the `about:blank` form. */
+export function liveRefusalStatus(status: number, detail: string, mode?: LiveRefusal): Response {
+  return serveLiveRefusal(problemForStatus(status, detail), mode);
+}
+
+/**
+ * A refusal that is the taxonomy's own (`forbidden`, `internal`). `internal` never carries
+ * its `detail` on the wire: a 500 here is this package's bug, not the client's, and the
+ * sentence is for the code that raises it.
+ */
+export function liveRefusal(code: ErrorCode, detail: string, mode?: LiveRefusal): Response {
+  return serveLiveRefusal(toProblem(substratError(code, detail)), mode);
+}
 
 /**
  * How many live sockets one principal may hold on one scope (#938). A tab holds one per

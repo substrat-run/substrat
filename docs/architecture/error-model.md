@@ -338,8 +338,15 @@ already answer their expected refusal as a value.
      `x-substrat-live` header values are unchanged; the media type is served with `c.body`.
      `test/refusals-problem.test.ts` reaches every one of those routes and holds
      `index.ts` and `live.ts` to writing no bare `.json({ error` again.
-   - **Still open, surface by surface:** `adapter-cloudflare`'s live-read refusals (`host.ts`
-     and `scope-do.ts`), which still answer `text/plain`; the control-plane worker's own routes (`apps/control-plane`), CLI auth, the
+   - **`adapter-cloudflare` — built.** The live-read refusals answer `application/problem+json`
+     through `liveRefusal` / `liveRefusalStatus` (`live-reads.ts`, shared by the coordinator's door
+     in `host.ts` and the scope's `fetch` in `scope-do.ts`): `forbidden` for the 403, `about:blank`
+     for the 404, 426 and 501, `internal` for the three 500s a missing or unreadable assertion
+     raises, which carry no `detail` — that fault is this package's, and the sentence stays in the
+     source. Statuses, the `error` sentence and the `x-substrat-live` values are unchanged, and
+     the 101 upgrades are untouched. `test/live-reads.test.ts` holds the media type, status,
+     header and detail of each refusal, the DO's own ones by fetching the stub directly.
+   - **Still open, surface by surface:** the control-plane worker's own routes (`apps/control-plane`), CLI auth, the
      builder and the dashboard's 401s, `dev-issuer`; a `requestId` on the control plane's
      problems (#2192). A repo-wide source gate waits until a second surface is converted.
    - **Then, and only then:** the `error` duplicate can go, since every client reads
