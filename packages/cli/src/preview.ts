@@ -31,6 +31,25 @@ export interface PreviewCreated {
   notes?: string[];
 }
 
+/**
+ * A create whose data is still being copied (#2450 step 2): the control plane answered 202, and
+ * the same call, repeated, finishes the preview once the copy is done.
+ */
+interface PreviewCopying {
+  copying: true;
+  scopeId: string;
+  versionId: string;
+  progress: { pages: number; rows: number; attempt: number };
+  /** Seconds to wait before calling again. */
+  retryAfter: number;
+}
+
+const isCopying = (out: PreviewCreated | PreviewCopying): out is PreviewCopying =>
+  (out as PreviewCopying).copying === true;
+
+/** How long `preview create` waits for a copy before giving up, ms: the control plane's own job limit. */
+export const PREVIEW_COPY_WAIT_MS = 6 * 3_600_000;
+
 export interface PreviewRow {
   scopeId: string;
   tag: string | null;
@@ -191,6 +210,10 @@ const previewPlane = (opts: { controlPlaneUrl: string; header: Record<string, st
  * control plane copies the fork's data into that version's deployment first (#1710), so the
  * PR's successive pushes roll their migrations forward on the same data (§4). It says so in
  * a `notes` line. `refresh` forces a clean fork from prod instead.
+ *
+ * A scope too large to copy in one request is copied in the background (#2450): the control plane
+ * answers 202 with how far it got, and this calls again, printing that progress, until the
+ * preview is ready.
  */
 export async function createPreview(opts: {
   controlPlaneUrl: string;
@@ -203,29 +226,51 @@ export async function createPreview(opts: {
   ttlHours?: number | null;
   surface?: string;
   refresh?: boolean;
+  /** How long to wait for a copy that runs in the background (#2450), ms. */
+  waitMs?: number;
+  /** Default `setTimeout`; a test passes its own. */
+  sleep?: (ms: number) => Promise<void>;
 }): Promise<PreviewCreated> {
-  return request<PreviewCreated>(
-    'preview create failed',
-    previewPlane(opts),
-    `/verticals/${encodeURIComponent(opts.slug)}/previews`,
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        tag: opts.tag,
-        versionId: opts.versionId,
-        ...(opts.empty ? { empty: true } : {}),
-        ...(opts.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
-        // `null` (pinned) must reach the wire, so send whenever a value was given — not just truthy.
-        ...(opts.ttlHours !== undefined ? { ttlHours: opts.ttlHours } : {}),
-        ...(opts.surface ? { surface: opts.surface } : {}),
-        ...(opts.refresh ? { refresh: true } : {}),
-      }),
-    },
-    // Converges on the tag: a second call rebinds the same fork, and a create that died
-    // half-built is reaped and re-forked, never duplicated. One still being built answers
-    // 409 (#1920), so only retry once the first handler has ended.
-    { retry: 'after-handler-ended' },
-  );
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const giveUpAt = Date.now() + (opts.waitMs ?? PREVIEW_COPY_WAIT_MS);
+  for (let call = 1; ; call++) {
+    const out = await request<PreviewCreated | PreviewCopying>(
+      'preview create failed',
+      previewPlane(opts),
+      `/verticals/${encodeURIComponent(opts.slug)}/previews`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          tag: opts.tag,
+          versionId: opts.versionId,
+          ...(opts.empty ? { empty: true } : {}),
+          ...(opts.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
+          // `null` (pinned) must reach the wire, so send whenever a value was given — not just truthy.
+          ...(opts.ttlHours !== undefined ? { ttlHours: opts.ttlHours } : {}),
+          ...(opts.surface ? { surface: opts.surface } : {}),
+          // The first call only: on a later one it would stop the copy this call started.
+          ...(opts.refresh && call === 1 ? { refresh: true } : {}),
+          // #2450 step 2: this client takes a 202 and calls again, so a copy too large for one
+          // request runs in the background. A control plane that predates it ignores the field.
+          async: true,
+        }),
+      },
+      // Converges on the tag: a second call rebinds the same fork, and a create that died
+      // half-built is reaped and re-forked, never duplicated. One still being built answers
+      // 409 (#1920), so only retry once the first handler has ended.
+      { retry: 'after-handler-ended' },
+    );
+    if (!isCopying(out)) return out;
+    if (Date.now() >= giveUpAt) {
+      throw new Error(
+        `preview create failed: the preview's data was still being copied after ${Math.round((opts.waitMs ?? PREVIEW_COPY_WAIT_MS) / 60_000)} min ` +
+          `(${out.progress.pages} pages so far). The copy goes on; run the same command again to pick it up.`,
+      );
+    }
+    const attempt = out.progress.attempt > 1 ? `, attempt ${out.progress.attempt}: the source changed while it was read` : '';
+    console.warn(`preview create: copying the preview's data (${out.progress.pages} pages, ${out.progress.rows} rows so far${attempt})`);
+    await sleep(Math.max(1, out.retryAfter) * 1000);
+  }
 }
 
 /** Reap a preview by tag. Idempotent: an already-gone preview is a no-op success, so a

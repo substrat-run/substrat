@@ -109,8 +109,8 @@ describe('preview client', () => {
     expect(out.reused).toBe(false);
     expect(calls[0]!.url).toBe('https://cp.example/api/verticals/helpdesk/previews');
     expect(calls[0]!.method).toBe('POST');
-    // Absent optionals are omitted, not sent as undefined.
-    expect(calls[0]!.body).toEqual({ tag: 'pr-7', versionId: '01J', ttlHours: 72 });
+    // Absent optionals are omitted, not sent as undefined. `async`: this client takes a 202 (#2450).
+    expect(calls[0]!.body).toEqual({ tag: 'pr-7', versionId: '01J', ttlHours: 72, async: true });
   });
 
   it('sends empty:true for a clean-room preview (#509 (b))', async () => {
@@ -120,7 +120,44 @@ describe('preview client', () => {
     }));
     await createPreview({ ...base, tag: 'pr-1', versionId: '01J', empty: true });
     // No sourceScopeId when clean-room; `empty` rides as an explicit true.
-    expect(calls[0]!.body).toEqual({ tag: 'pr-1', versionId: '01J', empty: true });
+    expect(calls[0]!.body).toEqual({ tag: 'pr-1', versionId: '01J', empty: true, async: true });
+  });
+
+  describe('a copy that runs in the background (#2450 step 2)', () => {
+    const created = { scopeId: 'S1', hostname: 'h--pr-9.x', url: 'https://h--pr-9.x', versionId: '01J', reused: false };
+    const copying = (pages: number, attempt = 1) =>
+      ({ status: 202, body: { copying: true, scopeId: 'S1', versionId: '01J', progress: { pages, rows: pages * 10, attempt }, retryAfter: 5 } });
+
+    it('calls again on each 202, waiting as told and printing progress, until the preview is ready', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const answers = [copying(1), copying(4, 2), { status: 201, body: created }];
+      const { calls } = stub(() => answers.shift()!);
+      const waits: number[] = [];
+      const out = await createPreview({ ...base, tag: 'pr-9', versionId: '01J', sleep: async (ms) => void waits.push(ms) });
+      expect(out).toEqual(created);
+      expect(calls).toHaveLength(3);
+      expect(waits).toEqual([5_000, 5_000]);
+      expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([
+        expect.stringMatching(/copying the preview's data \(1 pages, 10 rows so far\)/),
+        expect.stringMatching(/4 pages, 40 rows so far, attempt 2: the source changed/),
+      ]);
+      warn.mockRestore();
+    });
+
+    it('sends refresh on the first call only: on a later one it would stop the copy', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const answers = [copying(1), { status: 201, body: created }];
+      const { calls } = stub(() => answers.shift()!);
+      await createPreview({ ...base, tag: 'pr-9', versionId: '01J', refresh: true, sleep: async () => {} });
+      expect(calls.map((c) => (c.body as { refresh?: boolean }).refresh)).toEqual([true, undefined]);
+    });
+
+    it('gives up after its wait, saying the copy goes on and how to pick it up', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      stub(() => copying(2));
+      await expect(createPreview({ ...base, tag: 'pr-9', versionId: '01J', waitMs: 0, sleep: async () => {} }))
+        .rejects.toThrow(/still being copied.*run the same command again/);
+    });
   });
 
   it('surfaces a server error body as the thrown message', async () => {
