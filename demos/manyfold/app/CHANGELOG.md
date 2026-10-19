@@ -1,5 +1,11 @@
 # @substrat-run/demo-manyfold-app
 
+## 0.3.30
+
+### Patch Changes
+
+- @substrat-run/contracts@0.153.0
+
 ## 0.3.29
 
 ### Patch Changes

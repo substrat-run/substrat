@@ -1,5 +1,13 @@
 # @substrat-run/social-relay
 
+## 0.1.37
+
+### Patch Changes
+
+- Updated dependencies [1a064a0]
+  - @substrat-run/kernel@0.153.0
+  - @substrat-run/contracts@0.153.0
+
 ## 0.1.36
 
 ### Patch Changes
