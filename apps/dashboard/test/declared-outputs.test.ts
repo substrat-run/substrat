@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { orgId, pageSchema, principalId, scopeId, tenantId, platformActorId, type Page } from '@substrat-run/contracts';
+import { LIST_PAGE_MAX, orgId, pageSchema, principalId, scopeId, tenantId, platformActorId, type Page } from '@substrat-run/contracts';
+import { WALK_PAGE_LIMIT } from '@substrat-run/control-plane-client';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { MODULES, provisionDashboard, type DashboardNode } from '../src/index.js';
@@ -176,7 +177,7 @@ describe('the dashboard’s declared outputs (#2426)', () => {
       cursor = page.nextCursor;
     } while (cursor !== null && pages.length < 10);
     const rows = pages.flatMap((p) => p.entries);
-    const whole = await own.invoke<Page<T>>(name, { ...input, limit: 200 });
+    const whole = await own.invoke<Page<T>>(name, { ...input, limit: LIST_PAGE_MAX });
     expect(rows, name).toEqual(whole.entries);
     expect(whole.nextCursor).toBeNull();
     expect(pages.map((p) => p.entries.length), name).toEqual([2, 2, 1]);
@@ -242,8 +243,9 @@ describe('the dashboard’s declared outputs (#2426)', () => {
 });
 
 describe('walkAll', () => {
-  it('follows the cursor at the ceiling page size until a page says it is the last', async () => {
-    const rows = Array.from({ length: 450 }, (_, i) => String(i).padStart(3, '0'));
+  it('sends the read its filters and the page, and no cursor at all on the first request', async () => {
+    // `walkPages` (control-plane-client) owns the loop; what is the dashboard's is the request.
+    const rows = Array.from({ length: WALK_PAGE_LIMIT + 1 }, (_, i) => String(i).padStart(3, '0'));
     const seen: Array<Record<string, unknown>> = [];
     const scope = {
       invoke: async <O>(_op: string, input?: unknown): Promise<O> => {
@@ -254,12 +256,11 @@ describe('walkAll', () => {
         return { entries, nextCursor: entries.length === page.limit ? entries.at(-1)! : null } as O;
       },
     };
-    expect(await walkAll<string>(scope, 'dashboard/list-apps', { appScopeId: 'x' })).toEqual(rows);
-    // The first request names no cursor at all (a `null` one is refused by the read's parse).
+    expect(await walkAll(scope, 'dashboard/app-events', { appScopeId: 'x' })).toEqual(rows);
+    // A `null` cursor would be refused by the read's parse, so the first request names none.
     expect(seen).toEqual([
-      { appScopeId: 'x', limit: 200 },
-      { appScopeId: 'x', limit: 200, cursor: '199' },
-      { appScopeId: 'x', limit: 200, cursor: '399' },
+      { appScopeId: 'x', limit: WALK_PAGE_LIMIT },
+      { appScopeId: 'x', limit: WALK_PAGE_LIMIT, cursor: rows[WALK_PAGE_LIMIT - 1] },
     ]);
   });
 });

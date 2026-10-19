@@ -26,6 +26,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  type SqlValue,
   operationsFor,
 } from '@substrat-run/kernel';
 import { INVITES_PERM, sendInvite, acceptInvite, revokeInvite, readInvitation } from '@substrat-run/engine-invites';
@@ -443,7 +444,7 @@ export const dashboardMigrations = [
 
 /** One app as the module records it: the Apps list's row, plus its soft-delete stamp. */
 const dashboardAppRow = appRow.extend({
-  /** The vertical's non-secret provision result as JSON (#426); null for a bare ack. */
+  /** Optional on the route; every stored row has the column. */
   provision_result: z.string().nullable(),
   /** Set when the app was deleted; `list-apps` returns only rows where it is null. */
   deleted_at: z.string().nullable(),
@@ -478,11 +479,7 @@ export type AppEnvValue = z.infer<typeof appEnvValue>;
 /** One row of the app's audit trail — a lifecycle transition. */
 export type DashboardAppEventRow = z.infer<typeof appEvent>;
 
-/**
- * One step of an app's install sequence (#424) — where the install is NOW, durably. `seq` is
- * the render order, stable even if steps settle out of order; `last_error` is the downstream
- * error VERBATIM.
- */
+/** One step of an app's install sequence (#424): routes.ts `installStep`, plus the app it belongs to. */
 const installStepRow = installStep.extend({ app_scope_id: z.string() });
 
 export type DashboardInstallStepRow = z.infer<typeof installStepRow>;
@@ -502,36 +499,40 @@ function recordAppEvent(
 }
 
 /**
- * The keyset half of a list read that composes its own SQL (#811, #2426): the clause that
- * resumes after a cursor, the ORDER BY and LIMIT, and the cursor each row hands on.
+ * One keyset page of a list read that composes its own SQL (#811, #2426). `where` is the read up
+ * to and including its WHERE clause, and `params` its parameters; this adds the clause that
+ * resumes after the cursor, the ORDER BY and the LIMIT, and hands each row's cursor on.
  *
  * `columns` are the walk's sort and together unique, so a page boundary never falls between two
  * rows that compare equal. Most reads here walk their ULID `id` alone: ids are minted at insert,
  * so `id DESC` is the created-at order those lists always showed, and unique, which a timestamp
  * is not. A cursor over several columns joins their values with `CURSOR_FIELD_SEPARATOR`.
  *
- * The cursor is exclusive. `order` is the caller's: the host's parse has already applied the
- * declaration's default, and `fallback` only answers a call that did not go through it. `limit`
- * resolves against the platform default and ceiling (`listLimitOf`), so an in-process call that
- * names no page gets the page an HTTP one would, never the whole table.
+ * The cursor is exclusive. The direction is the caller's `order`, which the host's parse has
+ * already defaulted to the one the read declares. `limit` resolves against the platform default and ceiling
+ * (`listLimitOf`), so an in-process call that names no page gets the page an HTTP one would,
+ * never the whole table.
  */
-function keyset<R>(columns: readonly (keyof R & string)[], page: PagedInput, fallback: 'asc' | 'desc') {
-  const ascending = (page.order ?? fallback) === 'asc';
+function keysetPage<R>(
+  ctx: OperationContext,
+  where: string,
+  params: readonly SqlValue[],
+  columns: readonly (keyof R & string)[],
+  page: PagedInput,
+): Page<R> {
+  const ascending = page.order !== 'desc';
   const after = page.cursor?.split(CURSOR_FIELD_SEPARATOR);
   if (after && (after.length !== columns.length || after.includes(''))) {
     throw substratError('validation_failed', 'invalid cursor: pass back the nextCursor a page answered');
   }
   const tuple = (parts: readonly string[]) => (parts.length === 1 ? parts[0]! : `(${parts.join(', ')})`);
-  return {
-    limit: listLimitOf(page.limit),
-    /** ` AND …` past the cursor, or nothing on a first page: appended to the read's own WHERE. */
-    where: after ? ` AND ${tuple(columns)} ${ascending ? '>' : '<'} ${tuple(columns.map(() => '?'))}` : '',
-    /** The cursor's values, bound after the read's own WHERE parameters. */
-    params: after ?? [],
-    /** ORDER BY and LIMIT; the limit is bound last. */
-    tail: ` ORDER BY ${columns.map((c) => `${c} ${ascending ? 'ASC' : 'DESC'}`).join(', ')} LIMIT ?`,
-    cursorOf: (row: R) => columns.map((c) => String(row[c])).join(CURSOR_FIELD_SEPARATOR),
-  };
+  const limit = listLimitOf(page.limit);
+  const rows = ctx.sql.query<R>(
+    `${where}${after ? ` AND ${tuple(columns)} ${ascending ? '>' : '<'} ${tuple(columns.map(() => '?'))}` : ''}` +
+      ` ORDER BY ${columns.map((c) => `${c} ${ascending ? 'ASC' : 'DESC'}`).join(', ')} LIMIT ?`,
+    [...params, ...(after ?? []), limit],
+  );
+  return pageOf(rows, limit, (row) => columns.map((c) => String(row[c])).join(CURSOR_FIELD_SEPARATOR));
 }
 
 // -- operations --------------------------------------------------------------
@@ -838,12 +839,13 @@ const installStepsOp: OperationHandler<
   Page<DashboardInstallStepRow>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
-  const page = keyset<DashboardInstallStepRow>(['seq', 'step'], input, 'asc');
-  const rows = ctx.sql.query<DashboardInstallStepRow>(
-    `SELECT * FROM dashboard_install_steps WHERE app_scope_id = ?${page.where}${page.tail}`,
-    [input.appScopeId, ...page.params, page.limit],
+  return keysetPage<DashboardInstallStepRow>(
+    ctx,
+    'SELECT * FROM dashboard_install_steps WHERE app_scope_id = ?',
+    [input.appScopeId],
+    ['seq', 'step'],
+    input,
   );
-  return pageOf(rows, page.limit, page.cursorOf);
 };
 
 const markAppFailedInput = z.object({
@@ -876,12 +878,7 @@ const markAppFailedOp: OperationHandler<z.infer<typeof markAppFailedInput>, Dash
 /** The account's apps, newest first — a plain read, gated by `dashboard:read`. Deleted apps are hidden. */
 const listAppsOp: OperationHandler<PagedInput, Page<DashboardAppRow>> = async (ctx, input) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
-  const page = keyset<DashboardAppRow>(['id'], input, 'desc');
-  const rows = ctx.sql.query<DashboardAppRow>(
-    `SELECT * FROM dashboard_apps WHERE deleted_at IS NULL${page.where}${page.tail}`,
-    [...page.params, page.limit],
-  );
-  return pageOf(rows, page.limit, page.cursorOf);
+  return keysetPage<DashboardAppRow>(ctx, 'SELECT * FROM dashboard_apps WHERE deleted_at IS NULL', [], ['id'], input);
 };
 
 const deleteAppInput = z.object({ appScopeId: z.string().min(1) });
@@ -914,18 +911,19 @@ const deleteAppOp: OperationHandler<z.infer<typeof deleteAppInput>, DashboardApp
 
 const appEventsInput = z.object({ appScopeId: z.string().min(1) });
 
-/** The app's audit trail — newest first (id DESC ≡ created_at DESC; see `keyset`). Gated read. */
+/** The app's audit trail — newest first (id DESC ≡ created_at DESC; see `keysetPage`). Gated read. */
 const appEventsOp: OperationHandler<z.infer<typeof appEventsInput> & PagedInput, Page<DashboardAppEventRow>> = async (
   ctx,
   input,
 ) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
-  const page = keyset<DashboardAppEventRow>(['id'], input, 'desc');
-  const rows = ctx.sql.query<DashboardAppEventRow>(
-    `SELECT * FROM dashboard_app_events WHERE app_scope_id = ?${page.where}${page.tail}`,
-    [input.appScopeId, ...page.params, page.limit],
+  return keysetPage<DashboardAppEventRow>(
+    ctx,
+    'SELECT * FROM dashboard_app_events WHERE app_scope_id = ?',
+    [input.appScopeId],
+    ['id'],
+    input,
   );
-  return pageOf(rows, page.limit, page.cursorOf);
 };
 
 // -- app environment / config ------------------------------------------------
@@ -975,15 +973,17 @@ const listAppEnvOp: OperationHandler<z.infer<typeof listAppEnvInput> & PagedInpu
   input,
 ) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
-  const page = keyset<DashboardAppEnvRow>(['key'], input, 'asc');
   // The `substrat:*` namespace is reserved for platform-managed entries (the app's
   // Identity choice lives at `substrat:auth`) — those have their own ops with
   // field-wise redaction, so they never appear as an opaque blob in the Env tab.
-  const rows = ctx.sql.query<DashboardAppEnvRow>(
-    `SELECT * FROM dashboard_app_env WHERE app_scope_id = ? AND key NOT LIKE 'substrat:%'${page.where}${page.tail}`,
-    [input.appScopeId, ...page.params, page.limit],
+  const page = keysetPage<DashboardAppEnvRow>(
+    ctx,
+    "SELECT * FROM dashboard_app_env WHERE app_scope_id = ? AND key NOT LIKE 'substrat:%'",
+    [input.appScopeId],
+    ['key'],
+    input,
   );
-  return mapPage(pageOf(rows, page.limit, page.cursorOf), (r) => ({
+  return mapPage(page, (r) => ({
     key: r.key,
     isSecret: r.is_secret === 1,
     hasValue: r.value !== '',
@@ -1317,12 +1317,14 @@ const revokeInviteOp: OperationHandler<z.infer<typeof revokeInviteInput>, void> 
 /** The team roster — active members + outstanding invites, newest first (id DESC ≡ invited_at DESC). Gated read. */
 const listMembersOp: OperationHandler<PagedInput, Page<DashboardMemberRow>> = async (ctx, input) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
-  const page = keyset<DashboardMemberRow>(['id'], input, 'desc');
-  const rows = ctx.sql.query<DashboardMemberRow>(
-    `SELECT * FROM dashboard_members WHERE status IN ('active','invited','joining')${page.where}${page.tail}`,
-    [...page.params, page.limit],
+  const page = keysetPage<DashboardMemberRow>(
+    ctx,
+    "SELECT * FROM dashboard_members WHERE status IN ('active','invited','joining')",
+    [],
+    ['id'],
+    input,
   );
-  return mapPage(pageOf(rows, page.limit, page.cursorOf), (row) => joinedAs(ctx, row));
+  return mapPage(page, (row) => joinedAs(ctx, row));
 };
 
 /**
@@ -1584,24 +1586,22 @@ const listConnectLinksInput = z.object({
 
 /**
  * Outstanding links only — a used or revoked row is history, not something to revoke. Newest
- * first by id, which is the created-at order (see `keyset`).
+ * first by id, which is the created-at order (see `keysetPage`).
  */
 const listConnectLinksOp: OperationHandler<z.infer<typeof listConnectLinksInput> & PagedInput, Page<ConnectLinkRow>> = async (
   ctx,
   input,
 ) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.manageIntegrations));
-  const page = keyset<ConnectLinkRow>(['id'], input, 'desc');
-  const rows = ctx.sql.query<ConnectLinkRow>(
+  return keysetPage<ConnectLinkRow>(
+    ctx,
     `SELECT * FROM dashboard_connect_links
      WHERE status = 'outstanding' AND expires_at > ?
-       AND (? IS NULL OR app_scope_id = ?) AND (? IS NULL OR provider = ?)${page.where}${page.tail}`,
-    [
-      ctx.now(), input.appScopeId ?? null, input.appScopeId ?? null, input.provider ?? null, input.provider ?? null,
-      ...page.params, page.limit,
-    ],
+       AND (? IS NULL OR app_scope_id = ?) AND (? IS NULL OR provider = ?)`,
+    [ctx.now(), input.appScopeId ?? null, input.appScopeId ?? null, input.provider ?? null, input.provider ?? null],
+    ['id'],
+    input,
   );
-  return pageOf(rows, page.limit, page.cursorOf);
 };
 
 /** What an operation that only authorizes, or only records, answers. */
@@ -1719,7 +1719,7 @@ export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
     // Bounded in practice, not by construction: the install flow writes one row per step of
     // `INSTALL_STEPS` (five), but `record-install-step` takes any step name. So it pages like
     // the rest rather than being exempt from #811; the steps route walks every page.
-    paged: { sortKey: 'seq' },
+    paged: { sortKey: 'seq', order: 'asc' },
   },
   'dashboard/resume-app': {
     summary: 'Authorize and record a resume of an install stuck at provisioning',
@@ -1765,7 +1765,7 @@ export const dashboardOperations = defineOperations({}, DASHBOARD_PERMISSIONS)({
     output: appEnvValue,
     // Not bounded by construction: `set-app-env` takes any UPPER_SNAKE_CASE key, not only the
     // ones the vertical's env-spec declares. Walked in key order; the Env route reads every page.
-    paged: { sortKey: 'key' },
+    paged: { sortKey: 'key', order: 'asc' },
   },
   'dashboard/delete-app-env': {
     summary: 'Delete one of an app’s environment values',

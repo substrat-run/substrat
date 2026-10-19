@@ -29,10 +29,10 @@ import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
-import { dashboardRoutes, type appEvent, type domainRow, type installAppInput, type installStep, type memberRow } from './routes.js';
+import { dashboardRoutes, type appEvent, type domainRow, type installAppInput, type memberRow } from './routes.js';
 import { mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardRequestId, withRequestIdOf } from './request-id.js';
-import { dashboardModule, type AppEnvValue, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
+import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
 import { allApps, walkAll } from './walk-all.js';
 import { MODULES, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wiring.js';
@@ -1071,7 +1071,8 @@ app.post('/api/teams/delete', async (c) => {
 /**
  * Every GET list below shares the platform-wide pagination convention (contracts
  * pagination.ts): `?limit&cursor` in (default 20), `{ entries, nextCursor }` out,
- * keyset on the list's own sort key. The module ops stay unbounded when unpaged.
+ * keyset on the list's own sort key. The module's list reads page the same way (#2426); a caller
+ * that needs every row walks them (`walkAll`).
  */
 const pageParams = (c: { req: { query(key: string): string | undefined } }) =>
   listPageQuery.parse({ limit: c.req.query('limit'), cursor: c.req.query('cursor') });
@@ -1342,7 +1343,7 @@ async function listAppsPage(c: Context<{ Bindings: Env }>, host: CloudflareScope
   // existing installs take, since nothing registered them when they were made. Once per
   // isolate per TEAM, whoever loads the list, and retried by the next load until a pass
   // converges (`McpReconcileGate` says why a viewer may trigger it). After the response:
-  // the team's apps are walked UNPAGED, because an app's issuer can be on another page, and
+  // every page of the team's apps is walked, because an app's issuer can be on another page, and
   // a pass is several deliveries per app, which the Apps list must not wait on.
   const pass = mcpReconcile.run(node.tenantId, async () => {
     const all = await allApps(dash);
@@ -1367,7 +1368,7 @@ async function listAppsPage(c: Context<{ Bindings: Env }>, host: CloudflareScope
   // Register the team's apps as PLACES at the team auth-servers they sign in with (#1670,
   // `places.ts`), so a login's places page on that issuer can list them. Its own gate: once per
   // isolate per team, again when this first page changed (a fresh install is at its top), and
-  // every few minutes otherwise. After the response, over the unpaged list, like the pass above.
+  // every few minutes otherwise. After the response, over every page, like the pass above.
   const placesPass = placesReconcile.run(node.tenantId, apps, async (sent) => {
     const all = await allApps(dash);
     const slugs = await oidcProviderSlugsFor(host, cp);
@@ -1416,7 +1417,7 @@ app.get('/api/apps/:scopeId/steps', async (c) => {
 
 async function installStepsOf(host: CloudflareScopeHost, node: DashboardNode, appScopeId: string) {
   // Every page: the route answers the whole record, which is a handful of steps.
-  return walkAll<z.infer<typeof installStep>>(await host.getScope(node.principal, node.tenantId, node.scopeId), 'dashboard/install-steps', { appScopeId });
+  return walkAll(await host.getScope(node.principal, node.tenantId, node.scopeId), 'dashboard/install-steps', { appScopeId });
 }
 
 /**
@@ -1430,7 +1431,7 @@ async function installStepsOf(host: CloudflareScopeHost, node: DashboardNode, ap
 async function listDomainsIn({ c, host, node }: TeamContext, page: ListPageQuery) {
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  // Unpaged: names + default hostnames must cover EVERY app, whatever page of domains this is.
+  // Every page: names + default hostnames must cover EVERY app, whatever page of domains this is.
   const apps = await allApps(dash);
   const appName = new Map(apps.map((a) => [a.app_scope_id, a.name]));
   // Each app's auto-managed default hostname — subtracted so the list shows only the
@@ -3086,7 +3087,7 @@ app.get('/api/apps/:scopeId/env', async (c) => {
     const remote = (await cp.listCatalog()).find((v) => v.slug === appRow.vertical_slug);
     spec = (remote?.envSpec as typeof spec) ?? [];
   }
-  const values = await walkAll<AppEnvValue>(dash, 'dashboard/list-app-env', { appScopeId: appRow.app_scope_id });
+  const values = await walkAll(dash, 'dashboard/list-app-env', { appScopeId: appRow.app_scope_id });
   return c.json({ spec, values });
 });
 
@@ -3668,7 +3669,7 @@ function roundLinkRow(env: Env, round: ConnectRound): RoundLinkRow | null {
     ));
   return {
     check: async () => {
-      const rows = await walkAll<ConnectLinkRow>(await dash(), 'dashboard/list-connect-links', {
+      const rows = await walkAll(await dash(), 'dashboard/list-connect-links', {
         appScopeId: claim.appScopeId,
         provider: claim.provider,
       });
@@ -3746,7 +3747,7 @@ app.get('/api/apps/:scopeId/integrations/:provider/connect-links', async (c) => 
   const spec = PROVIDERS[c.req.param('provider')];
   if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
   await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
-  const rows = await walkAll<ConnectLinkRow>(dash, 'dashboard/list-connect-links', {
+  const rows = await walkAll(dash, 'dashboard/list-connect-links', {
     appScopeId: appRow.app_scope_id,
     provider: spec.provider,
   });

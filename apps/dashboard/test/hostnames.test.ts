@@ -7,7 +7,6 @@ import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { MODULES, provisionDashboard, type DashboardNode } from '../src/index.js';
 import { listAppHostnames, addAppHostname, removeAppHostname, resolveDefaultHostname, reconcileSurfaceHostnames } from '../src/provision.js';
-import type { DashboardAppEventRow } from '../src/module.js';
 import { walkAll } from '../src/walk-all.js';
 
 /**
@@ -85,7 +84,7 @@ describe('Dashboard surface hostnames — mint, custom domain, unbind', () => {
     expect(await host.admin.resolveHostname(appHostname)).toMatchObject({ scopeId: appScope, surface: 'app' });
     // The activity trail names the act.
     const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-    const events = await walkAll<DashboardAppEventRow>(dash, 'dashboard/app-events', { appScopeId: appScope });
+    const events = await walkAll(dash, 'dashboard/app-events', { appScopeId: appScope });
     const boundEvent = events.find((e) => e.kind === 'hostname-bound');
     expect(boundEvent?.detail).toContain('crm-acme-eka.global.substrat.run');
   });
@@ -158,7 +157,7 @@ describe('Dashboard surface hostnames — mint, custom domain, unbind', () => {
     });
     expect(await host.admin.resolveHostname('crm-acme-eka.global.substrat.run')).toBeUndefined();
     const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-    const events = await walkAll<DashboardAppEventRow>(dash, 'dashboard/app-events', { appScopeId: appScope });
+    const events = await walkAll(dash, 'dashboard/app-events', { appScopeId: appScope });
     expect(events.some((e) => e.kind === 'hostname-unbound')).toBe(true);
 
     // The default hostname is the URL provisioning promised — retiring it is app

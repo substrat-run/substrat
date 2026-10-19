@@ -198,8 +198,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     expect(saved.saved).toBe(2);
 
     // The read masks the secret's value but reports it as set; the non-secret is returned.
-    type EnvVal = { key: string; isSecret: boolean; hasValue: boolean; value: string | null };
-    const values = await walkAll<EnvVal>(dash, 'dashboard/list-app-env', { appScopeId });
+    const values = await walkAll(dash, 'dashboard/list-app-env', { appScopeId });
     expect(values.find((v) => v.key === 'PUBLIC_ORIGIN')?.value).toBe('https://hr.acme.com');
     const secret = values.find((v) => v.key === 'ADMIN_PASSWORD')!;
     expect(secret.value).toBeNull(); // never echoed
@@ -208,16 +207,16 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
 
     // An empty value leaves the secret unchanged (the form submits blank to keep it).
     await dash.invoke('dashboard/set-app-env', { appScopeId, entries: [{ key: 'ADMIN_PASSWORD', value: '', secret: true }] });
-    const still = await walkAll<EnvVal>(dash, 'dashboard/list-app-env', { appScopeId });
+    const still = await walkAll(dash, 'dashboard/list-app-env', { appScopeId });
     expect(still.find((v) => v.key === 'ADMIN_PASSWORD')?.hasValue).toBe(true);
 
     // Delete removes just that key.
     await dash.invoke('dashboard/delete-app-env', { appScopeId, key: 'ADMIN_PASSWORD' });
-    const after = await walkAll<EnvVal>(dash, 'dashboard/list-app-env', { appScopeId });
+    const after = await walkAll(dash, 'dashboard/list-app-env', { appScopeId });
     expect(after.map((v) => v.key)).toEqual(['PUBLIC_ORIGIN']);
 
     // Setting env recorded an Activity entry (the keys that moved, never the values).
-    const events = await walkAll<{ kind: string; detail: string | null }>(dash, 'dashboard/app-events', { appScopeId });
+    const events = await walkAll(dash, 'dashboard/app-events', { appScopeId });
     expect(events.some((e) => e.kind === 'updated' && /env: /.test(e.detail ?? ''))).toBe(true);
   });
 
@@ -438,7 +437,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
     const rows = await allApps(dash);
     expect(rows.find((a) => a.app_scope_id === failScope)?.status).toBe('failed');
-    const events = await walkAll<{ kind: string; detail: string | null }>(dash, 'dashboard/app-events', { appScopeId: failScope });
+    const events = await walkAll(dash, 'dashboard/app-events', { appScopeId: failScope });
     expect(events.find((e) => e.kind === 'failed')?.detail).toContain('client registration');
   });
 
@@ -606,8 +605,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     // AUTHORED: the same values are on the Env tab afterward, the secret masked-but-set —
     // what the user typed outlives the install request.
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    type EnvVal = { key: string; isSecret: boolean; hasValue: boolean; value: string | null };
-    const values = await walkAll<EnvVal>(dash, 'dashboard/list-app-env', { appScopeId: appScope });
+    const values = await walkAll(dash, 'dashboard/list-app-env', { appScopeId: appScope });
     expect(values.find((v) => v.key === 'ADMIN_EMAIL')?.value).toBe('ops@acme.com');
     const pw = values.find((v) => v.key === 'ADMIN_PASSWORD')!;
     expect(pw.value).toBeNull();
@@ -631,7 +629,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       }),
     ).rejects.toThrow('boom');
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    const values = await walkAll<{ key: string; value: string | null }>(dash, 'dashboard/list-app-env', { appScopeId: appScope });
+    const values = await walkAll(dash, 'dashboard/list-app-env', { appScopeId: appScope });
     expect(values.find((v) => v.key === 'ADMIN_EMAIL')?.value).toBe('ops@acme.com');
   });
 
@@ -833,7 +831,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       }),
     ).rejects.toThrow(/identity setup failed/);
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    const events = await walkAll<{ kind: string; detail: string | null }>(dash, 'dashboard/app-events', { appScopeId: failScope });
+    const events = await walkAll(dash, 'dashboard/app-events', { appScopeId: failScope });
     const detail = events.find((e) => e.kind === 'failed')?.detail ?? '';
     // The Activity trail carries what happened AND what to do next.
     expect(detail).toContain('no live-config support');
@@ -901,8 +899,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       appOwnerGrants: [PROTOCOL_PERM.read] as PermissionKey[],
     });
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    type Step = { step: string; status: string; attempts: number; last_error: string | null };
-    const steps = await walkAll<Step>(dash, 'dashboard/install-steps', { appScopeId });
+    const steps = await walkAll(dash, 'dashboard/install-steps', { appScopeId });
     // Embedded mode has no vertical round-trip ('provision') and no issuer choice
     // ('identity') — those steps never ran, so they honestly have no row.
     expect(steps.map((s) => s.step)).toEqual(['directory', 'activate', 'hostname']);
@@ -919,17 +916,16 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       dash.invoke('dashboard/record-install-step', { appScopeId, step: 'provision', seq: 1, status, ...(error ? { error } : {}) });
     await record('running');
     await record('failed', 'vertical refused provisioning: 503 no tenant store attached');
-    type Step = { status: string; attempts: number; last_error: string | null };
-    let [row] = await walkAll<Step>(dash, 'dashboard/install-steps', { appScopeId });
+    let [row] = await walkAll(dash, 'dashboard/install-steps', { appScopeId });
     // The downstream error survives VERBATIM — the diagnosis the toast used to swallow.
     expect(row).toMatchObject({ status: 'failed', attempts: 1, last_error: 'vertical refused provisioning: 503 no tenant store attached' });
 
     // Resume re-enters the same step: back to running (attempts 2, error cleared), then done.
     await record('running');
-    [row] = await walkAll<Step>(dash, 'dashboard/install-steps', { appScopeId });
+    [row] = await walkAll(dash, 'dashboard/install-steps', { appScopeId });
     expect(row).toMatchObject({ status: 'running', attempts: 2, last_error: null });
     await record('done');
-    [row] = await walkAll<Step>(dash, 'dashboard/install-steps', { appScopeId });
+    [row] = await walkAll(dash, 'dashboard/install-steps', { appScopeId });
     expect(row).toMatchObject({ status: 'done', attempts: 2, last_error: null });
   });
 
@@ -967,11 +963,11 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     });
 
     // ...and the Activity trail shows the resume between created and active.
-    const events = await walkAll<{ kind: string }>(dash, 'dashboard/app-events', { appScopeId });
+    const events = await walkAll(dash, 'dashboard/app-events', { appScopeId });
     expect(events.map((e) => e.kind)).toEqual(expect.arrayContaining(['created', 'resumed', 'active']));
 
     // The durable step record (#424) converged with it — every step the resume ran is done.
-    const steps = await walkAll<{ step: string; status: string }>(dash, 'dashboard/install-steps', { appScopeId });
+    const steps = await walkAll(dash, 'dashboard/install-steps', { appScopeId });
     expect(steps.map((s) => s.step)).toEqual(['directory', 'activate', 'hostname']);
     expect(steps.every((s) => s.status === 'done')).toBe(true);
 
@@ -997,12 +993,11 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
 
     const row = (await allApps(dash)).find((a) => a.app_scope_id === appScopeId);
     expect(row?.status).toBe('failed');
-    const events = await walkAll<{ kind: string; detail: string | null }>(dash, 'dashboard/app-events', { appScopeId });
+    const events = await walkAll(dash, 'dashboard/app-events', { appScopeId });
     expect(events.some((e) => e.kind === 'failed' && e.detail === 'plane down')).toBe(true);
 
     // The step record names WHERE it died, with the downstream error verbatim (#424).
-    type Step = { step: string; status: string; last_error: string | null };
-    const steps = await walkAll<Step>(dash, 'dashboard/install-steps', { appScopeId });
+    const steps = await walkAll(dash, 'dashboard/install-steps', { appScopeId });
     expect(steps).toHaveLength(1);
     expect(steps[0]).toMatchObject({ step: 'directory', status: 'failed', last_error: 'plane down' });
   });
@@ -1219,7 +1214,6 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
   it('records a per-app audit trail — created + active on success, created + failed(reason) on failure', async () => {
     const acme = await bootstrap('acme-audit');
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    type Ev = { kind: string; detail: string | null };
 
     // Success: a `created` then an `active` event.
     const okScope = scopeId.parse(ulid());
@@ -1227,7 +1221,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       node: acme, appScopeId: okScope, verticalSlug: 'protocol', name: 'Docs',
       appEntitlements: ['protocol'], appOwnerGrants: [PROTOCOL_PERM.read] as PermissionKey[],
     });
-    const okEvents = await walkAll<Ev>(dash, 'dashboard/app-events', { appScopeId: okScope });
+    const okEvents = await walkAll(dash, 'dashboard/app-events', { appScopeId: okScope });
     expect(okEvents).toHaveLength(2);
     expect(okEvents.map((e) => e.kind).sort()).toEqual(['active', 'created']);
 
@@ -1244,7 +1238,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
         controlPlane: failingCp,
       }),
     ).rejects.toThrow('no deployment is bound');
-    const failEvents = await walkAll<Ev>(dash, 'dashboard/app-events', { appScopeId: failScope });
+    const failEvents = await walkAll(dash, 'dashboard/app-events', { appScopeId: failScope });
     expect(failEvents).toHaveLength(2);
     expect(failEvents.map((e) => e.kind).sort()).toEqual(['created', 'failed']);
     expect(failEvents.find((e) => e.kind === 'failed')?.detail).toContain('no deployment is bound');
@@ -1253,7 +1247,6 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
   it('updates an installed app to the vertical’s new prod version — rebinds the scope + records it', async () => {
     const acme = await bootstrap('acme-update');
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    type Ev = { kind: string; detail: string | null };
 
     // The vertical has two admitted versions; prod is promoted to the NEWER one (0.0.10).
     const v9 = ulid();
@@ -1282,13 +1275,13 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     const r1 = await updateApp(host, { node: acme, appScopeId, verticalSlug: 'meridian' });
     expect(r1).toEqual({ updated: true, version: '0.0.10', previousVersion: '0.0.9' });
     expect((await host.admin.getScopeRecord(staff, acme.tenantId, appScopeId))?.verticalVersionId).toBe(v10);
-    const updated = (await walkAll<Ev>(dash, 'dashboard/app-events', { appScopeId })).find((e) => e.kind === 'updated');
+    const updated = (await walkAll(dash, 'dashboard/app-events', { appScopeId })).find((e) => e.kind === 'updated');
     expect(updated?.detail).toBe('0.0.9 → 0.0.10');
 
     // Idempotent: running it again is a no-op (already current) — no rebind, no new event.
     const r2 = await updateApp(host, { node: acme, appScopeId, verticalSlug: 'meridian' });
     expect(r2.updated).toBe(false);
-    expect((await walkAll<Ev>(dash, 'dashboard/app-events', { appScopeId })).filter((e) => e.kind === 'updated')).toHaveLength(1);
+    expect((await walkAll(dash, 'dashboard/app-events', { appScopeId })).filter((e) => e.kind === 'updated')).toHaveLength(1);
   });
 
   it('an Update that drops an export another app here imports is refused, and acknowledged it updates (#1756)', async () => {
@@ -1327,10 +1320,9 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     // acknowledged here; it does not move this app, which a listed vertical's Update does.
     await host.admin.promoteVersion(staff, 'meridian', 'prod', dropping, { exportBreak: true });
 
-    type Ev = { kind: string; detail: string | null };
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
     const updatedLines = async () =>
-      (await walkAll<Ev>(dash, 'dashboard/app-events', { appScopeId })).filter((e) => e.kind === 'updated');
+      (await walkAll(dash, 'dashboard/app-events', { appScopeId })).filter((e) => e.kind === 'updated');
 
     // Refused, and answered No: nothing moved, and nothing on the Activity trail says it did.
     const refused = await updateApp(host, { node: acme, appScopeId, verticalSlug: 'meridian' }).then(
@@ -1361,7 +1353,6 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       appEntitlements: ['protocol'], appOwnerGrants: [PROTOCOL_PERM.read] as PermissionKey[],
     });
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    type Ev = { kind: string; detail: string | null };
 
     // The write half of the read-path reconcile: the directory says the scope now runs
     // the tenant-owned lineage while the row still names the builtin it was installed as.
@@ -1373,12 +1364,12 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     expect(apps.find((a) => a.app_scope_id === appScopeId)?.vertical_slug).toBe('acme/protocol');
 
     // The move is on the Activity trail, naming both lineages...
-    const events = await walkAll<Ev>(dash, 'dashboard/app-events', { appScopeId });
+    const events = await walkAll(dash, 'dashboard/app-events', { appScopeId });
     expect(events.some((e) => e.kind === 'updated' && e.detail === 'rebound protocol → acme/protocol')).toBe(true);
 
     // ...and a row already naming the directory's slug is left alone (no second event).
     await dash.invoke('dashboard/reconcile-app-vertical', { appScopeId, verticalSlug: 'acme/protocol' });
-    expect((await walkAll<Ev>(dash, 'dashboard/app-events', { appScopeId })).filter((e) => e.kind === 'updated')).toHaveLength(1);
+    expect((await walkAll(dash, 'dashboard/app-events', { appScopeId })).filter((e) => e.kind === 'updated')).toHaveLength(1);
   });
 
   it('a principal without dashboard:provision-app is refused — before anything is provisioned', async () => {

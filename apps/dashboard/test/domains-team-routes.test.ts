@@ -88,7 +88,7 @@ describe('the Domains routes take their team from the path (#2170)', () => {
   let env: Record<string, unknown>;
 
   const subs = { owner: 'sub-owner', member: 'sub-member', viewer: 'sub-viewer' } as const;
-  const appsOf = async (t: string): Promise<Row[]> => allApps(handle[t]!);
+  const appsOf = (t: string) => allApps(handle[t]!);
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-domains-team-'));

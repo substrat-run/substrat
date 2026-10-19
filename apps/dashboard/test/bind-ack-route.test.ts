@@ -6,7 +6,6 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { platformActorId, principalId, scopeId, tenantId, type ScopeId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
-import type { DashboardAppEventRow } from '../src/module.js';
 import { walkAll } from '../src/walk-all.js';
 import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 import { REQUEST_ID_HEADER, problemDetail } from '@substrat-run/contracts';
@@ -152,7 +151,7 @@ describe('an Update or a Bind refused for what it would break (#1756)', () => {
   const boundTo = async () => (await host.admin.getScopeRecord(staff, tenant, appScope))?.verticalVersionId;
   // The Activity trail's "a → b" lines for the app.
   const updatedLines = async () =>
-    (await walkAll<DashboardAppEventRow>(await host.getScope(owner, tenant, dashScope), 'dashboard/app-events', { appScopeId: appScope }))
+    (await walkAll(await host.getScope(owner, tenant, dashScope), 'dashboard/app-events', { appScopeId: appScope }))
       .filter((e) => e.kind === 'updated').length;
 
   it('an Update refused names the apps it would break, and moves nothing', async () => {

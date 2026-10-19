@@ -1,9 +1,10 @@
 /**
- * Every kind a row of `dashboard_app_events` can hold — the ONE list behind the row's type
- * (`DashboardAppEventRow` in `module.ts`) and the declared route's output (`appEvent` in
- * `routes.ts`). The table's CHECK is the third copy: migrations are append-only, so it cannot
- * import this, and `test/apps-team-routes.test.ts` holds the latest one to it. A kind added
- * here without a migration widening the CHECK fails that test; the reverse fails it too.
+ * Every kind a row of `dashboard_app_events` can hold — the ONE list behind `appEvent` in
+ * `routes.ts`, which is both the declared route's output and the module's row
+ * (`DashboardAppEventRow`, #2426). The table's CHECK is the second copy: migrations are
+ * append-only, so it cannot import this, and `test/apps-team-routes.test.ts` holds the latest
+ * one to it. A kind added here without a migration widening the CHECK fails that test; the
+ * reverse fails it too.
  */
 export const APP_EVENT_KINDS = [
   'created',
@@ -19,5 +20,3 @@ export const APP_EVENT_KINDS = [
   'hostname-unbound',
   'resumed',
 ] as const;
-
-export type AppEventKind = (typeof APP_EVENT_KINDS)[number];

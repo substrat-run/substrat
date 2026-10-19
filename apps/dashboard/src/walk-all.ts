@@ -1,7 +1,19 @@
-import type { Page } from '@substrat-run/contracts';
+import type { z } from 'zod';
+import type { HandlerInput, Page, PagedInput } from '@substrat-run/contracts';
 import { walkPages } from '@substrat-run/control-plane-client';
 import type { ScopeStub } from '@substrat-run/kernel';
-import type { DashboardAppRow } from './module.js';
+import type { dashboardOperations } from './module.js';
+
+type Operations = typeof dashboardOperations;
+
+/** The dashboard's paged list reads, by name. */
+type PagedRead = { [N in keyof Operations]: Operations[N] extends { paged: object } ? N : never }[keyof Operations];
+
+/** What a paged read is narrowed by, beside the page itself. */
+type FiltersOf<N extends PagedRead> = Omit<HandlerInput<Operations[N]>, keyof PagedInput>;
+
+/** One row of a paged read, as its declared output types it. */
+type EntryOf<N extends PagedRead> = z.infer<Operations[N]['output']>;
 
 /**
  * Every row of one of the dashboard's paged list reads (#2426), for a caller that needs the whole
@@ -9,16 +21,15 @@ import type { DashboardAppRow } from './module.js';
  * unpaged. Each read answers one page, a default-sized one when the call names none, so a caller
  * that wants all of it follows the cursor, at the ceiling page size, until it runs out.
  */
-export function walkAll<T>(
+export function walkAll<N extends PagedRead>(
   scope: Pick<ScopeStub, 'invoke'>,
-  operation: string,
-  input: Record<string, unknown> = {},
-): Promise<T[]> {
+  operation: N,
+  ...[filters]: {} extends FiltersOf<N> ? [filters?: FiltersOf<N>] : [filters: FiltersOf<N>]
+): Promise<EntryOf<N>[]> {
   return walkPages(({ limit, cursor }) =>
-    scope.invoke<Page<T>>(operation, { ...input, limit, ...(cursor === null ? {} : { cursor }) }),
+    scope.invoke<Page<EntryOf<N>>>(operation, { ...filters, limit, ...(cursor === null ? {} : { cursor }) }),
   );
 }
 
 /** Every one of the team's apps. */
-export const allApps = (scope: Pick<ScopeStub, 'invoke'>): Promise<DashboardAppRow[]> =>
-  walkAll<DashboardAppRow>(scope, 'dashboard/list-apps');
+export const allApps = (scope: Pick<ScopeStub, 'invoke'>) => walkAll(scope, 'dashboard/list-apps');

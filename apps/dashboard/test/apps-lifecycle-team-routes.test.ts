@@ -87,7 +87,7 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
 
   const subs = { owner: 'sub-owner', member: 'sub-member', viewer: 'sub-viewer' } as const;
 
-  const appsOf = async (t: string): Promise<Row[]> => allApps(handle[t]!);
+  const appsOf = (t: string) => allApps(handle[t]!);
   const byScope = async (t: string, s: string) => (await appsOf(t)).find((a) => a.app_scope_id === s);
 
   beforeEach(async () => {

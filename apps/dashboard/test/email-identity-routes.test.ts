@@ -7,7 +7,6 @@ import { orgId, platformActorId, principalId, scopeId, tenantId } from '@substra
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { registerDashboardMembership } from '../src/membership.js';
-import type { DashboardMemberRow } from '../src/module.js';
 import { walkAll } from '../src/walk-all.js';
 
 /**
@@ -115,7 +114,7 @@ async function team(tenant = tenantId.parse(ulid()), seedRoster = true) {
 }
 
 const membersOf = async (node: { tenant: string; dashScope: string; owner: string }) =>
-  walkAll<DashboardMemberRow>(
+  walkAll(
     await host.getScope(principalId.parse(node.owner), tenantId.parse(node.tenant), scopeId.parse(node.dashScope)),
     'dashboard/list-members',
   );
