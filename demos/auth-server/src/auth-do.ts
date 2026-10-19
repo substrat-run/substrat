@@ -38,6 +38,7 @@ import { isResourcesEntry, parseResourcesEntry, syncPlatformResources } from './
 import { isPlacesEntry, parsePlacesEntry, syncPlaceRegistrations } from './places.js';
 import { authenticateClient, servePlaces, serveReport } from './places-http.js';
 import { isDelegationsEntry, parseDelegationsEntry, syncDelegations } from './delegations.js';
+import { isSocialRelayEntry, parseSocialRelayEntry, syncSocialRelay } from './social-relay.js';
 import { exchangeToken } from './token-exchange.js';
 import {
   PreviewClientRefusal,
@@ -391,7 +392,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
    * delivering `ADMIN_EMAIL`/`ADMIN_PASSWORD` is exactly how a hosted instance gets its
    * deterministic first admin (the seed itself stays guarded on a zero-user store).
    */
-  async setInstanceConfig(entries: ConfigEntry[]): Promise<void> {
+  async setInstanceConfig(entries: ConfigEntry[]): Promise<{ socialRelaySecretNeeded: boolean }> {
     // `substrat:resources:<scope>` is not config but the platform's registration of a
     // vertical's MCP endpoint (#1619, `resources.ts`). It becomes rows in `oauth_resource`,
     // which is the registry the plugin reads, and is NOT also kept as a `cfg:` row: one
@@ -408,7 +409,13 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
     const delegations = entries
       .filter((e) => isDelegationsEntry(e.key))
       .map((e) => parseDelegationsEntry(e.key, e.value));
-    const config = entries.filter((e) => !isResourcesEntry(e.key) && !isPlacesEntry(e.key) && !isDelegationsEntry(e.key));
+    // `substrat:social-relay` likewise (#1544, `social-relay.ts`): this install's client at the
+    // platform's social relay, which becomes `<upstream>-relay` rows in `identity_provider`.
+    // It carries a client secret, which is one more reason it is never a `cfg:` row.
+    const socialRelay = entries.filter((e) => isSocialRelayEntry(e.key)).map((e) => parseSocialRelayEntry(e.value));
+    const config = entries.filter(
+      (e) => !isResourcesEntry(e.key) && !isPlacesEntry(e.key) && !isDelegationsEntry(e.key) && !isSocialRelayEntry(e.key),
+    );
     // ONE transaction for the whole delivery. DO SQLite commits each `exec` on its own
     // unless it is wrapped, so a statement that fails halfway through a multi-host
     // un-registration would leave part of the set removed, and a deleted app has no later
@@ -428,8 +435,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
         host: delivery.hostAppScopeId,
         ...syncDelegations(this.ctx.storage.sql, delivery, now),
       }));
+      const socialRelayResults = socialRelay.map((delivery) => syncSocialRelay(this.ctx.storage.sql, delivery));
       if (config.length) putDeliveredConfig(this.ctx.storage.sql, config);
-      return { results, placeResults, delegationResults };
+      return { results, placeResults, delegationResults, socialRelayResults };
     });
     // Logged only once committed, so a line never describes writes that rolled back.
     for (const sync of synced.results) {
@@ -447,7 +455,13 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
         console.log('auth-server: delegation grants synced', JSON.stringify(sync));
       }
     }
+    for (const sync of synced.socialRelayResults) {
+      if (sync.secretNeeded || sync.created.length || sync.switchedOff.length || sync.operatorOwned.length) {
+        console.log('auth-server: social relay providers synced', JSON.stringify(sync));
+      }
+    }
     await this.seedEnvAdmin();
+    return { socialRelaySecretNeeded: synced.socialRelayResults.some((sync) => sync.secretNeeded) };
   }
 
   /**

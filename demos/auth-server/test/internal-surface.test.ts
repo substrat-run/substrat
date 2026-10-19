@@ -61,6 +61,7 @@ function fakeAuth() {
         },
         setInstanceConfig: async (entries) => {
           configured.push({ doName, entries });
+          return { socialRelaySecretNeeded: false };
         },
         introspectTables: async () => {
           introspected.push({ doName, verb: 'tables' });

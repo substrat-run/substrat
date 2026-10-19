@@ -351,7 +351,16 @@ export async function reconcilePendingHostnames(deps: {
   provisioner: CustomHostnameProvisioner;
   /** True for a hostname the platform issues certs for (a custom domain), false for a platform mint. */
   isCustom: (hostname: string) => boolean;
+  /**
+   * Told about each custom domain this pass moved to `active`, after the row is written — the
+   * social relay's trigger for a domain an Auth Server install bound (#1544). Its failure is
+   * the callback's own business: it is caught here and never sinks the sweep.
+   */
+  onActivated?: (row: { hostname: string; tenantId: string; scopeId: string; verticalSlug: string | null }) => Promise<void>;
 }): Promise<ReconcileHostnamesResult> {
+  const activated = async (h: { hostname: string; tenantId: string; scopeId: string; verticalSlug: string | null }) => {
+    if (deps.onActivated) await deps.onActivated(h).catch(() => {});
+  };
   const out: ReconcileHostnamesResult = { polled: 0, activated: 0, failed: 0, created: 0, healed: 0, orphaned: 0, errors: [] };
 
   // A live fork is `active`; a preview's reap archives it only after unrouting it (#1704),
@@ -414,8 +423,10 @@ export async function reconcilePendingHostnames(deps: {
         note: r.note,
         validationRecords: r.records,
       });
-      if (r.status === 'active') out.activated++;
-      else if (r.status === 'failed') out.failed++;
+      if (r.status === 'active') {
+        out.activated++;
+        await activated(h);
+      } else if (r.status === 'failed') out.failed++;
     } catch (err) {
       out.errors.push({ hostname: h.hostname, error: err instanceof Error ? err.message : String(err) });
     }
@@ -437,6 +448,7 @@ export async function reconcilePendingHostnames(deps: {
         validationRecords: r.records,
       });
       out.created++;
+      if (r.status === 'active') await activated(h);
     } catch (err) {
       out.errors.push({ hostname: h.hostname, error: err instanceof Error ? err.message : String(err) });
     }

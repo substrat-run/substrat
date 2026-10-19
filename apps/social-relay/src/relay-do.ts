@@ -14,7 +14,7 @@
  * one — the same argument the auth-server makes for its per-issuer Better Auth secret.
  */
 import { DurableObject } from 'cloudflare:workers';
-import type { ClientRecord, FlowRecord, CodeRecord, RegisterClientInput, RelayStore } from './do-contract.js';
+import type { ClientRecord, EnsuredClient, FlowRecord, CodeRecord, RegisterClientInput, RelayStore } from './do-contract.js';
 import { generateSigningKey, randomToken, sha256b64url, timingSafeEqual, type SigningKey } from './jwt.js';
 import {
   applySchema,
@@ -30,6 +30,8 @@ import {
   sweepExpired,
   takeEphemeral,
   updateClientDisabled,
+  ensureClientRow,
+  rotateClientSecretRow,
   type SqlExec,
 } from './store.js';
 
@@ -100,6 +102,14 @@ export class RelayDO extends DurableObject implements RelayStore {
 
   async setClientDisabled(clientId: string, disabled: boolean): Promise<boolean> {
     return updateClientDisabled(this.sql, clientId, disabled);
+  }
+
+  async ensureClient(ref: string, input: RegisterClientInput, now: number): Promise<EnsuredClient> {
+    return ensureClientRow(this.sql, ref, input, now);
+  }
+
+  async rotateClientSecret(clientId: string): Promise<string | null> {
+    return rotateClientSecretRow(this.sql, clientId);
   }
 
   async deleteClient(clientId: string): Promise<boolean> {

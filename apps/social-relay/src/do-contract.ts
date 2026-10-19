@@ -20,6 +20,16 @@ export interface ClientRecord {
   /** The per-install kill switch: one abusive install must not cost everyone sign-in. */
   disabled: boolean;
   createdAt: number;
+  /** The platform's key for the install (`ensureClient`); null for a client registered by hand. */
+  ref: string | null;
+}
+
+/** What `ensureClient` did. The secret exists only when the client was just created. */
+export interface EnsuredClient {
+  clientId: string;
+  clientSecret: string | null;
+  created: boolean;
+  disabled: boolean;
 }
 
 /** An authorization round in flight: minted at `/authorize`, consumed at the callback. */
@@ -65,6 +75,15 @@ export interface RelayStore {
   /** Compares inside the DO so the stored hash never crosses this seam. */
   verifyClientSecret(clientId: string, secret: string): Promise<boolean>;
   setClientDisabled(clientId: string, disabled: boolean): Promise<boolean>;
+  /**
+   * The client registered under `ref`, created if there is none, with its name and redirect
+   * URIs REPLACED by these. Re-running it with the same input changes nothing, which is what
+   * lets the platform reconcile every install whenever a provider or a hostname changes.
+   * A disabled client stays disabled: the kill switch is not the reconciler's to lift.
+   */
+  ensureClient(ref: string, input: RegisterClientInput, now: number): Promise<EnsuredClient>;
+  /** A fresh secret for an existing client; the old one stops working at once. Null if no such client. */
+  rotateClientSecret(clientId: string): Promise<string | null>;
   deleteClient(clientId: string): Promise<boolean>;
   listClients(): Promise<ClientRecord[]>;
   putFlow(id: string, flow: FlowRecord, expiresAt: number): Promise<void>;

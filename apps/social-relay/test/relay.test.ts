@@ -101,6 +101,43 @@ describe('discovery', () => {
   });
 });
 
+describe('the provider list', () => {
+  it('lists only the providers this deployment holds a credential for, with their issuers', async () => {
+    const app = createApp({ now: () => NOW });
+    const res = await app.request('https://id.substrat.net/providers', {}, envWith({ GOOGLE_CLIENT_ID: undefined }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      providers: [
+        {
+          id: 'github',
+          label: 'GitHub',
+          issuer: 'https://id.substrat.net/github',
+          endpoints: {
+            issuer: 'https://id.substrat.net/github',
+            authorization_endpoint: 'https://id.substrat.net/github/authorize',
+            token_endpoint: 'https://id.substrat.net/github/token',
+            userinfo_endpoint: 'https://id.substrat.net/github/userinfo',
+          },
+        },
+      ],
+    });
+  });
+
+  it('states the same endpoints as each provider’s own discovery document', async () => {
+    const app = createApp({ now: () => NOW });
+    const { providers } = (await (await app.request('https://id.substrat.net/providers', {}, envWith())).json()) as {
+      providers: { id: string; endpoints: Record<string, string> }[];
+    };
+    expect(providers.map((p) => p.id)).toEqual(['google', 'github']);
+    for (const p of providers) {
+      const doc = (await (
+        await app.request(`https://id.substrat.net/${p.id}/.well-known/openid-configuration`, {}, envWith())
+      ).json()) as Record<string, string>;
+      for (const [key, value] of Object.entries(p.endpoints)) expect(doc[key]).toBe(value);
+    }
+  });
+});
+
 describe('authorize', () => {
   it('sends the person to the upstream with the PLATFORM client and the relay callback', async () => {
     const app = createApp({ now: () => NOW });
@@ -554,6 +591,86 @@ describe('the platform surface', () => {
       );
       expect(res.status).toBe(400);
     }
+  });
+
+  const platformHeaders = { 'content-type': 'application/json', 'x-substrat-platform': 'platform-secret' };
+  const ensure = (app: ReturnType<typeof createApp>, ref: string, body: unknown, headers = platformHeaders) =>
+    app.request(
+      `https://id.substrat.net/internal/clients/by-ref/${ref}`,
+      { method: 'PUT', headers, body: JSON.stringify(body) },
+      envWith(),
+    );
+
+  it('ensures one client per install ref: 201 with the secret, then 200 without it', async () => {
+    const app = createApp({ now: () => NOW });
+    const first = await ensure(app, 'scope:01ABC', {
+      name: 'An install',
+      redirectUris: ['https://acme.global.substrat.run/api/auth/callback/github-relay'],
+    });
+    expect(first.status).toBe(201);
+    const created = (await first.json()) as { clientId: string; clientSecret: string; created: boolean };
+    expect(created.created).toBe(true);
+    expect(await store.verifyClientSecret(created.clientId, created.clientSecret)).toBe(true);
+
+    const again = await ensure(app, 'scope:01ABC', {
+      name: 'An install',
+      redirectUris: [
+        'https://acme.global.substrat.run/api/auth/callback/github-relay',
+        'https://login.acme.example/api/auth/callback/github-relay',
+      ],
+    });
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({
+      clientId: created.clientId,
+      clientSecret: null,
+      created: false,
+      disabled: false,
+    });
+    expect((await store.getClient(created.clientId))?.redirectUris).toHaveLength(2);
+    expect(await store.verifyClientSecret(created.clientId, created.clientSecret)).toBe(true);
+  });
+
+  it('ensures only for the platform, and refuses a bad ref or redirect URI', async () => {
+    const app = createApp({ now: () => NOW });
+    const body = { name: 'An install', redirectUris: ['https://acme.example/cb'] };
+    expect((await ensure(app, 'scope:01', body, { 'content-type': 'application/json' } as never)).status).toBe(403);
+    expect((await ensure(app, encodeURIComponent('has space'), body)).status).toBe(400);
+    expect((await ensure(app, 'scope:01', { name: 'x', redirectUris: ['http://acme.example/cb'] })).status).toBe(400);
+    expect(await store.listClients()).toEqual([]);
+  });
+
+  it('takes a callback per provider per hostname, past the old cap of ten', async () => {
+    const app = createApp({ now: () => NOW });
+    const redirectUris = ['a', 'b', 'c', 'd'].flatMap((host) =>
+      ['google', 'github', 'apple'].map((p) => `https://${host}.example/api/auth/callback/${p}-relay`),
+    );
+    expect((await ensure(app, 'scope:01', { name: 'An install', redirectUris })).status).toBe(201);
+  });
+
+  it('rotates a client secret for the platform only', async () => {
+    const app = createApp({ now: () => NOW });
+    const { clientId, clientSecret } = await registerInstall();
+    const anonymous = await app.request(
+      `https://id.substrat.net/internal/clients/${clientId}/secret`,
+      { method: 'POST' },
+      envWith(),
+    );
+    expect(anonymous.status).toBe(403);
+    const res = await app.request(
+      `https://id.substrat.net/internal/clients/${clientId}/secret`,
+      { method: 'POST', headers: platformHeaders },
+      envWith(),
+    );
+    expect(res.status).toBe(200);
+    const { clientSecret: rotated } = (await res.json()) as { clientSecret: string };
+    expect(await store.verifyClientSecret(clientId, rotated)).toBe(true);
+    expect(await store.verifyClientSecret(clientId, clientSecret)).toBe(false);
+    const unknown = await app.request(
+      'https://id.substrat.net/internal/clients/nobody/secret',
+      { method: 'POST', headers: platformHeaders },
+      envWith(),
+    );
+    expect(unknown.status).toBe(404);
   });
 
   it('answers an unknown /internal path with JSON, never a page', async () => {

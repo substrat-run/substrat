@@ -123,6 +123,7 @@ import {
   type ScopeStoreNeed,
   type StoreErasure,
   type StoreDriverRegistration,
+  SOCIAL_RELAY_VERTICALS,
 } from '@substrat-run/contracts';
 import type {
   BindAcknowledgement,
@@ -288,6 +289,13 @@ import {
   validateBindableHostname,
   type CustomHostnameProvisioner,
 } from './custom-hostnames.js';
+import {
+  isSocialRelayVertical,
+  reconcileScopeSocialRelay,
+  relayHostnames,
+  type SocialRelayOptions,
+  type SocialRelayOutcome,
+} from './social-relay.js';
 
 /**
  * What one provider can answer about a live connection (#605) — the seam behind
@@ -641,6 +649,13 @@ export interface ControlPlaneApiOptions {
    * self-host / dev shape, where there is no CF-for-SaaS zone).
    */
   provisionHostname?: CustomHostnameProvisioner;
+  /**
+   * The platform's social relay (#1544, `social-relay.ts`): how an Auth Server install is given
+   * its own client there. When present, a hostname of such an install becoming active
+   * reconciles that install, and the two staff routes under `social-relay` can reconcile one
+   * install or all of them. Absent ⇒ nothing here ever calls the relay.
+   */
+  socialRelay?: SocialRelayOptions;
   /**
    * The platform's base domains — the wildcard-covered zones a PLATFORM hostname is
    * minted under (`substrat.run`, `global.substrat.run`, …). A bind AT or UNDER one of
@@ -3068,6 +3083,55 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     c: ReqCtx,
     scope: { tenantId?: TenantId; vertical: string | null; verticalVersionId: string | null; servingRef?: string | null },
   ): Promise<VerticalClient | undefined> => (await deploymentForScope(c, scope))?.client;
+
+  /**
+   * Reconcile one install's client at the social relay (#1544). Skips — never throws for — an
+   * install the relay is not for: not configured here, not an Auth Server, or no deployment to
+   * deliver to. A relay or delivery failure DOES throw, so a staff route can report it.
+   */
+  const reconcileRelayFor = async (c: ReqCtx, tenantId: TenantId, scopeId: ScopeId): Promise<SocialRelayOutcome> => {
+    if (!options.socialRelay) return { status: 'skipped', reason: 'no social relay is configured on this control plane' };
+    const actor = c.get('actor');
+    return reconcileScopeSocialRelay(
+      {
+        relay: options.socialRelay,
+        getScope: (t, s) => c.var.admin.getScopeRecord(actor, tenantIdSchema.parse(t), scopeIdSchema.parse(s)),
+        activeHostnames: async (s) =>
+          relayHostnames(await c.var.admin.listHostnames(actor, { scopeId: scopeIdSchema.parse(s), status: 'active' }), {
+            isCustom: custom,
+            provisioner: options.provisionHostname,
+          }),
+        deploymentOf: (scope) => verticalForScope(c, scope),
+      },
+      tenantId,
+      scopeId,
+    );
+  };
+
+  /**
+   * After a hostname of an Auth Server install became active: register it at the relay. Best
+   * effort, and awaited rather than deferred — the route that activated the hostname has done its
+   * job either way, and a failure here is logged and repaired by the next trigger or a staff run.
+   * Awaited so two activations of one install never reconcile concurrently.
+   */
+  const relayAfterActivation = async (
+    c: ReqCtx,
+    before: { status: string } | undefined,
+    after: { tenantId: TenantId; scopeId: ScopeId; verticalSlug: string | null; status: string } | undefined,
+  ): Promise<void> => {
+    if (!options.socialRelay || !after || after.status !== 'active' || before?.status === 'active') return;
+    if (!isSocialRelayVertical(after.verticalSlug)) return;
+    try {
+      const outcome = await reconcileRelayFor(c, after.tenantId, after.scopeId);
+      console.log('social-relay.reconciled', { scopeId: after.scopeId, trigger: 'hostname-active', ...outcome });
+    } catch (e) {
+      console.error('social-relay.reconcile.failed', {
+        scopeId: after.scopeId,
+        trigger: 'hostname-active',
+        detail: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
 
   /**
    * `verticalForScope`, saying WHICH rung of the ladder chose the client (#1653).
@@ -9344,7 +9408,50 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const out = (await c.var.admin.listHostnames(c.get('actor'), { scopeId: input.scopeId })).find(
       (h) => h.hostname === input.hostname,
     );
+    // An install's platform hostname binds active here, which is what makes this the
+    // install-time trigger for an Auth Server's relay client (#1544).
+    await relayAfterActivation(c, undefined, out);
     return c.json(out ?? bound, 201);
+  });
+
+  // -- platform-provided social sign-in (#1544) --------------------------------
+  // Staff only: on neither BUILDER_ROUTES nor TENANT_ROUTES, so both default-deny them. The
+  // automatic trigger is a hostname becoming active (`relayAfterActivation`); these are the
+  // levers for everything else — one install, or every Auth Server install after the relay
+  // gained or lost a provider.
+  app.post('/tenants/:tenantId/scopes/:scopeId/social-relay', async (c) => {
+    if (!options.socialRelay) return refuseStatus(c, 501, 'no social relay is configured on this control plane');
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    return c.json(await reconcileRelayFor(c, tenantId, scopeId));
+  });
+
+  app.post('/social-relay/reconcile', async (c) => {
+    if (!options.socialRelay) return refuseStatus(c, 501, 'no social relay is configured on this control plane');
+    const results: ({ tenantId: string; scopeId: string } & (SocialRelayOutcome | { status: 'failed'; reason: string }))[] = [];
+    for (const vertical of SOCIAL_RELAY_VERTICALS) {
+      const scopes = await c.var.admin.listScopes(c.get('actor'), { vertical, status: ['active'] });
+      // One install at a time: each is a relay call and a delivery, and a fleet in parallel
+      // would be a burst at the relay's single Durable Object for no gain.
+      for (const scope of scopes) {
+        try {
+          results.push({ tenantId: scope.tenantId, scopeId: scope.id, ...(await reconcileRelayFor(c, scope.tenantId, scope.id)) });
+        } catch (e) {
+          results.push({
+            tenantId: scope.tenantId,
+            scopeId: scope.id,
+            status: 'failed',
+            reason: e instanceof Error ? e.message : String(e),
+          });
+        }
+      }
+    }
+    return c.json({
+      delivered: results.filter((r) => r.status === 'delivered').length,
+      skipped: results.filter((r) => r.status === 'skipped').length,
+      failed: results.filter((r) => r.status === 'failed').length,
+      results,
+    });
   });
 
   // Re-poll a custom hostname's issuance ("check again" in the dashboard). Tenant-narrowed
@@ -9358,7 +9465,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const row = await hostnameRow(c, name);
     if (!row) return refuse(c, 'not_found', `unknown hostname: ${name.toLowerCase()}`);
     await runIssuance(c.var.admin, c.get('actor'), row);
-    return c.json(await hostnameRow(c, name));
+    const after = await hostnameRow(c, name);
+    await relayAfterActivation(c, row, after);
+    return c.json(after);
   });
 
   app.patch('/hostnames/:hostname/status', async (c) => {
@@ -9369,10 +9478,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (confinedTenant(c.get('principal')) !== null && !(await tenantHostname(c, name))) {
       return refuse(c, 'not_found', `unknown hostname: ${name.toLowerCase()}`);
     }
+    const before = await hostnameRow(c, name);
     await c.var.admin.setHostnameStatus(c.get('actor'), name, status, note);
     const row = (await c.var.admin.listHostnames(c.get('actor'), {})).find(
       (h) => h.hostname === name.toLowerCase(),
     );
+    await relayAfterActivation(c, before, row);
     return c.json(row);
   });
 

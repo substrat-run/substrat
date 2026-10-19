@@ -17,6 +17,8 @@
  *     is housekeeping, not enforcement.
  */
 
+import { randomToken, sha256b64url } from './jwt.js';
+
 /** The `ctx.storage.sql` surface, as much of it as this store uses. */
 export interface SqlExec {
   exec(
@@ -34,6 +36,10 @@ export interface SqlExec {
  * registry table and two caches of things that expire within minutes, so there is no
  * history to preserve and nothing a re-create could lose. The moment that stops being
  * true — the first column anyone must not drop — it wants real migrations instead.
+ *
+ * `ref` arrived after the first clients were registered, so it is ALTERed in by
+ * `applySchema` when an older table lacks it. That is the one exception, and a nullable
+ * column added in place is the only kind this file takes without becoming migrations.
  */
 export const SCHEMA: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS relay_client (
@@ -42,7 +48,8 @@ export const SCHEMA: readonly string[] = [
      secret_hash TEXT NOT NULL,
      redirect_uris TEXT NOT NULL,
      disabled INTEGER NOT NULL DEFAULT 0,
-     created_at INTEGER NOT NULL
+     created_at INTEGER NOT NULL,
+     ref TEXT
    )`,
   `CREATE TABLE IF NOT EXISTS relay_ephemeral (
      kind TEXT NOT NULL,
@@ -68,6 +75,11 @@ export const SCHEMA: readonly string[] = [
 
 export function applySchema(sql: SqlExec): void {
   for (const statement of SCHEMA) sql.exec(statement);
+  const columns = sql.exec('PRAGMA table_info(relay_client)').toArray().map((row) => row.name);
+  if (!columns.includes('ref')) sql.exec('ALTER TABLE relay_client ADD COLUMN ref TEXT');
+  // One client per install: the reconciler finds it again by this key rather than minting
+  // a second one on every run. NULLs do not collide, so hand-registered clients are fine.
+  sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS relay_client_ref ON relay_client (ref)');
 }
 
 /* ---- the client registry ---- */
@@ -78,6 +90,8 @@ export interface StoredClient {
   redirectUris: string[];
   disabled: boolean;
   createdAt: number;
+  /** The platform's key for the install this client belongs to; null for one registered by hand. */
+  ref: string | null;
 }
 
 interface ClientRow {
@@ -87,6 +101,7 @@ interface ClientRow {
   redirect_uris: string;
   disabled: number;
   created_at: number;
+  ref: string | null;
 }
 
 function toClient(row: ClientRow): StoredClient {
@@ -96,21 +111,97 @@ function toClient(row: ClientRow): StoredClient {
     redirectUris: JSON.parse(row.redirect_uris) as string[],
     disabled: Boolean(row.disabled),
     createdAt: row.created_at,
+    ref: row.ref ?? null,
   };
 }
 
 export function insertClient(
   sql: SqlExec,
-  input: { clientId: string; name: string; secretHash: string; redirectUris: string[]; createdAt: number },
+  input: {
+    clientId: string;
+    name: string;
+    secretHash: string;
+    redirectUris: string[];
+    createdAt: number;
+    ref?: string | null;
+  },
 ): void {
   sql.exec(
-    `INSERT INTO relay_client (client_id, name, secret_hash, redirect_uris, disabled, created_at)
-     VALUES (?, ?, ?, ?, 0, ?)`,
+    `INSERT INTO relay_client (client_id, name, secret_hash, redirect_uris, disabled, created_at, ref)
+     VALUES (?, ?, ?, ?, 0, ?, ?)`,
     input.clientId,
     input.name,
     input.secretHash,
     JSON.stringify(input.redirectUris),
     input.createdAt,
+    input.ref ?? null,
+  );
+}
+
+export function selectClientByRef(sql: SqlExec, ref: string): StoredClient | null {
+  const row = sql.exec('SELECT * FROM relay_client WHERE ref = ?', ref).toArray()[0] as ClientRow | undefined;
+  return row ? toClient(row) : null;
+}
+
+/** Replaces the whole list and the display name; `disabled` is deliberately not touched. */
+export function updateClientRegistration(
+  sql: SqlExec,
+  clientId: string,
+  input: { name: string; redirectUris: string[] },
+): boolean {
+  return (
+    sql
+      .exec(
+        'UPDATE relay_client SET name = ?, redirect_uris = ? WHERE client_id = ? RETURNING client_id',
+        input.name,
+        JSON.stringify(input.redirectUris),
+        clientId,
+      )
+      .toArray().length > 0
+  );
+}
+
+/**
+ * The client registered under `ref`, created if there is none, its name and redirect URIs
+ * replaced otherwise. Read-then-write is safe: a Durable Object runs one request at a time
+ * between awaits, and the unique index on `ref` is the backstop if that ever stops being true.
+ * The secret is returned only on create — it is stored hashed and cannot be read back.
+ */
+export async function ensureClientRow(
+  sql: SqlExec,
+  ref: string,
+  input: { name: string; redirectUris: string[] },
+  now: number,
+): Promise<{ clientId: string; clientSecret: string | null; created: boolean; disabled: boolean }> {
+  const existing = selectClientByRef(sql, ref);
+  if (existing) {
+    updateClientRegistration(sql, existing.clientId, input);
+    return { clientId: existing.clientId, clientSecret: null, created: false, disabled: existing.disabled };
+  }
+  const clientId = randomToken(16);
+  const clientSecret = randomToken(32);
+  insertClient(sql, {
+    clientId,
+    name: input.name,
+    secretHash: await sha256b64url(clientSecret),
+    redirectUris: input.redirectUris,
+    createdAt: now,
+    ref,
+  });
+  return { clientId, clientSecret, created: true, disabled: false };
+}
+
+/** A fresh secret for an existing client, or null if there is no such client. */
+export async function rotateClientSecretRow(sql: SqlExec, clientId: string): Promise<string | null> {
+  const clientSecret = randomToken(32);
+  return updateClientSecretHash(sql, clientId, await sha256b64url(clientSecret)) ? clientSecret : null;
+}
+
+export function updateClientSecretHash(sql: SqlExec, clientId: string, secretHash: string): boolean {
+  return (
+    sql
+      .exec('UPDATE relay_client SET secret_hash = ? WHERE client_id = ? RETURNING client_id', secretHash, clientId)
+      .toArray().length > 0
   );
 }
 

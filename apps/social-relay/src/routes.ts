@@ -28,7 +28,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { assertPlatformCall, PlatformCallError } from '@substrat-run/contracts/wire-auth';
 import type { ClientRecord, RelayStore } from './do-contract.js';
-import { providerOf, type UpstreamCredentials, type UpstreamProvider } from './providers.js';
+import { PROVIDERS, providerOf, type UpstreamCredentials, type UpstreamProvider } from './providers.js';
 import { publicJwkOf, randomToken, sha256b64url, signJwt, verifyJwt } from './jwt.js';
 
 export interface Env {
@@ -82,6 +82,20 @@ function storeOf(env: Env): RelayStore {
 function issuerOf(env: Env, request: Request, provider: string): string {
   const origin = env.PUBLIC_ORIGIN?.replace(/\/+$/, '') ?? new URL(request.url).origin;
   return `${origin}/${provider}`;
+}
+
+/**
+ * A provider's OIDC endpoints. One function for discovery and for the platform's provider
+ * list, because an install stores what the list says and later sends people to it — so the
+ * two must never describe different addresses.
+ */
+function endpointsOf(issuer: string) {
+  return {
+    issuer,
+    authorization_endpoint: `${issuer}/authorize`,
+    token_endpoint: `${issuer}/token`,
+    userinfo_endpoint: `${issuer}/userinfo`,
+  };
 }
 
 /**
@@ -141,10 +155,20 @@ because the request did not identify it in a way that could be trusted.</p>`;
   return new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8' } });
 }
 
+/**
+ * One install registers a callback per provider per hostname it answers on, so the list
+ * grows with both: three providers on a platform hostname and a few custom domains is
+ * already past ten. Still bounded, because every authorize scans it.
+ */
+const MAX_REDIRECT_URIS = 64;
+
 const registerInput = z.object({
   name: z.string().min(1).max(200),
-  redirectUris: z.array(z.string().url()).min(1).max(10),
+  redirectUris: z.array(z.string().url()).min(1).max(MAX_REDIRECT_URIS),
 });
+
+/** The platform's key for an install: opaque here, but kept to a shape that is safe in a path. */
+const CLIENT_REF = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
 
 /**
  * A redirect URI the relay will register: HTTPS, or HTTP on a loopback host so a local
@@ -186,15 +210,26 @@ export function createApp(options: AppOptions = {}) {
     ),
   );
 
+  /**
+   * The providers this deployment can actually serve — the ones with a credential behind
+   * them. What the platform reads to decide which callbacks an install needs and which
+   * switches its Auth Server shows; public, because discovery already answers the same
+   * question one provider at a time.
+   */
+  app.get('/providers', (c) => {
+    const live = PROVIDERS.filter((p) => credentialsFor(c.env, p.id)).map((p) => {
+      const endpoints = endpointsOf(issuerOf(c.env, c.req.raw, p.id));
+      return { id: p.id, label: p.label, issuer: endpoints.issuer, endpoints };
+    });
+    return c.json({ providers: live });
+  });
+
   app.get('/:provider/.well-known/openid-configuration', (c) => {
     const live = liveProvider(c.env, c.req.param('provider'));
     if (!live) return c.json({ error: 'unknown or unconfigured provider' }, 404);
     const issuer = issuerOf(c.env, c.req.raw, live.provider.id);
     return c.json({
-      issuer,
-      authorization_endpoint: `${issuer}/authorize`,
-      token_endpoint: `${issuer}/token`,
-      userinfo_endpoint: `${issuer}/userinfo`,
+      ...endpointsOf(issuer),
       jwks_uri: `${issuer}/jwks.json`,
       response_types_supported: ['code'],
       grant_types_supported: ['authorization_code'],
@@ -531,6 +566,31 @@ export function createApp(options: AppOptions = {}) {
     }
     const created = await storeOf(c.env).registerClient(parsed.data, now());
     return c.json(created, 201);
+  });
+
+  /**
+   * Idempotent registration for one install, keyed by the platform's own `ref` for it.
+   * Creates the client the first time (201, with the only copy of its secret) and replaces
+   * its name and redirect URIs on every later call (200, no secret). This is what the
+   * platform's reconciler calls whenever a provider or one of the install's hostnames changes.
+   */
+  platform.put('/clients/by-ref/:ref', async (c) => {
+    const ref = c.req.param('ref');
+    if (!CLIENT_REF.test(ref)) return c.json({ error: 'ref must be 1-128 characters of [A-Za-z0-9:._-]' }, 400);
+    const parsed = registerInput.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: 'name and redirectUris are required' }, 400);
+    const bad = parsed.data.redirectUris.filter((uri) => !acceptableRedirectUri(uri));
+    if (bad.length) {
+      return c.json({ error: `redirect URIs must be https (or http on loopback) and carry no fragment: ${bad.join(', ')}` }, 400);
+    }
+    const ensured = await storeOf(c.env).ensureClient(ref, parsed.data, now());
+    return c.json(ensured, ensured.created ? 201 : 200);
+  });
+
+  /** A new secret for a client whose holder lost it; the previous one stops working at once. */
+  platform.post('/clients/:clientId/secret', async (c) => {
+    const clientSecret = await storeOf(c.env).rotateClientSecret(c.req.param('clientId'));
+    return clientSecret ? c.json({ clientSecret }) : c.json({ error: 'no such client' }, 404);
   });
 
   platform.get('/clients', async (c) => c.json({ clients: await storeOf(c.env).listClients() }));
