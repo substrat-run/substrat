@@ -216,6 +216,28 @@ describe('the dashboard’s declared outputs (#2426)', () => {
     expect(rows.map((r) => r.step)).toEqual(['e', 'c', 'd', 'b', 'a']);
   });
 
+  it('record-install-step refuses a step name its own cursor could not carry', async () => {
+    const app = ulid();
+    const record = (step: string) =>
+      own.invoke('dashboard/record-install-step', { appScopeId: app, step, seq: 0, status: 'done' });
+    // NUL joins the cursor's halves; any control character is refused with it.
+    for (const step of ['a\u0000b', 'line\nbreak', 'tab\there', 'del\u007f']) {
+      await expect(record(step), JSON.stringify(step)).rejects.toThrow(/control characters/);
+    }
+    // Anything else is a name, and walks like one.
+    await record('identité step');
+    await record('a');
+    const rows = await walkAll(own, 'dashboard/install-steps', { appScopeId: app });
+    expect(rows.map((r) => r.step)).toEqual(['a', 'identité step']);
+    const first = await own.invoke<Page<{ step: string }>>('dashboard/install-steps', { appScopeId: app, limit: 1 });
+    const second = await own.invoke<Page<{ step: string }>>('dashboard/install-steps', {
+      appScopeId: app,
+      limit: 1,
+      cursor: first.nextCursor,
+    });
+    expect(second.entries.map((r) => r.step)).toEqual(['identité step']);
+  });
+
   it('list-app-env pages in key order', async () => {
     const app = ulid();
     await own.invoke('dashboard/set-app-env', {

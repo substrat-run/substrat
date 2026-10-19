@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { appEvent, appRow, installStep, memberRow } from './routes.js';
+import { appEvent, appRow, installStep, memberRow } from './rows.js';
 import {
   CURSOR_FIELD_SEPARATOR,
   defineOperations,
@@ -438,8 +438,9 @@ export const dashboardMigrations = [
 
 /*
  * The rows the operations below return, declared once as schemas (#2426) so each operation's
- * `output` and its handler's type are the same object. Where the HTTP surface already declares a
- * row (routes.ts), the module's is that row plus the columns the route leaves out.
+ * `output` and its handler's type are the same object. Where the HTTP surface answers the same
+ * row (`rows.ts`, which routes.ts shares), the module's is that row plus the columns the route
+ * leaves out.
  */
 
 /** One app as the module records it: the Apps list's row, plus its soft-delete stamp. */
@@ -479,7 +480,7 @@ export type AppEnvValue = z.infer<typeof appEnvValue>;
 /** One row of the app's audit trail — a lifecycle transition. */
 export type DashboardAppEventRow = z.infer<typeof appEvent>;
 
-/** One step of an app's install sequence (#424): routes.ts `installStep`, plus the app it belongs to. */
+/** One step of an app's install sequence (#424): `installStep`, plus the app it belongs to. */
 const installStepRow = installStep.extend({ app_scope_id: z.string() });
 
 export type DashboardInstallStepRow = z.infer<typeof installStepRow>;
@@ -776,8 +777,12 @@ const resumeAppOp: OperationHandler<z.infer<typeof resumeAppInput>, DashboardApp
 
 const recordInstallStepInput = z.object({
   appScopeId: z.string().min(1),
-  /** The step's stable key — 'directory', 'provision', 'activate', 'hostname', 'identity'. */
-  step: z.string().min(1),
+  /**
+   * The step's stable key — 'directory', 'provision', 'activate', 'hostname', 'identity'. No
+   * control characters: the step is half of `install-steps`' cursor, joined by NUL
+   * (`CURSOR_FIELD_SEPARATOR`), and a name holding one would make the read refuse its own cursor.
+   */
+  step: z.string().regex(/^[^\u0000-\u001f\u007f]+$/, 'a step name holds no control characters'),
   /** Position in the install sequence (render order). */
   seq: z.number().int().min(0),
   status: z.enum(['running', 'done', 'failed']),
@@ -1104,7 +1109,7 @@ function readAppAuth(
 // -- team + members ----------------------------------------------------------
 
 /**
- * One roster row (routes.ts `memberRow`). Stored, its status is 'active' | 'invited' | 'revoked'
+ * One roster row (`memberRow`). Stored, its status is 'active' | 'invited' | 'revoked'
  * | 'joining'. As `list-members` returns it, a 'joining' row is resolved against the membership
  * executor's journal (#1184): 'active' once it joined, 'refused' (with `refusal`) once it never
  * will, 'joining' while it is pending.
