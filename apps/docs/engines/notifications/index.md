@@ -12,7 +12,7 @@ one delivery per occasion, topic and person.
 | **Entitlement key** | `notifications` |
 | **Composed** | by call: `notify(ctx, …)` inside your own transaction |
 | **Owns** | the topics a scope has used, where each person's notifications go, which topics they muted or take as a digest, what is held for each digest, and what became of every delivery |
-| **Emits** | `notifications.delivery-recorded`, `delivery-settled`, `preference-set`, `recipient-updated`, `topic-recorded`, `digest-sent`, `digest-failed`, `digest-quarantined` |
+| **Emits** | `notifications.delivery-recorded`, `delivery-settled`, `preference-set`, `recipient-updated`, `topic-recorded`, `digest-sent`, `digest-failed`, `digest-quarantined`, `digest-released` |
 | **Consumes** | `email.sent`, `email.refused`, `email.dead-lettered`, which settle its deliveries |
 | **Schedules** | `notifications/send-digests`, every 15 minutes, sending each person whose digest is due |
 | **Permissions** | 3 (`notifications:self`, `notifications:read`, and `notifications:send-digests`, which only the digest schedule holds) |
