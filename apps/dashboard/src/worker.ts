@@ -26,13 +26,14 @@ import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
 import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, promoteReviewReasonIn, substratError, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery, type Page, type PromotionReviewBinding } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
-import { globalFetch, ulid, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type ScopeStub, type SecretBox } from '@substrat-run/kernel';
+import { globalFetch, ulid, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
 import { dashboardRoutes, type appEvent, type domainRow, type installAppInput, type memberRow } from './routes.js';
 import { mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardRequestId, withRequestIdOf } from './request-id.js';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
+import { resolveBrowsableScope } from './browsable-scope.js';
 import { allApps, appByScopeId, walkAll } from './walk-all.js';
 import { MODULES, permissions, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wiring.js';
@@ -1707,7 +1708,7 @@ app.get('/api/apps/:scopeId/model', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const { appRow, scope } = await resolveBrowsableScope(host, c.env, node, dash, c.req.param('scopeId'));
+  const { appRow, scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
   const slug = appRow.vertical_slug;
   const [deployment, boundVersionId] = await Promise.all([verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scope)]);
   const { runningId, runningLabel, updateId, updateLabel } = versionPair(deployment, boundVersionId);
@@ -1742,7 +1743,7 @@ app.get('/api/apps/:scopeId/processes', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  const { appRow, scope } = await resolveBrowsableScope(host, c.env, node, dash, c.req.param('scopeId'));
+  const { appRow, scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
   const periodParam = c.req.query('period') ?? '7d';
   if (!isProcessPeriod(periodParam)) throw new HTTPException(400, { message: `unknown period: ${periodParam}` });
   const period = periodParam;
@@ -2110,37 +2111,6 @@ app.get('/api/apps/:scopeId/scopes', async (c) => {
 });
 
 /**
- * Resolve the scope a Data-tab request addresses, authorized against the caller's own apps.
- * The scope switcher (multi-scope-manyfold M4) browses ANY scope of an app's vertical —
- * Manyfold's per-site scopes among them — so the addressed scope is either an app's own
- * default scope (the common case, matched directly against `list-apps`) OR a secondary scope
- * of a vertical the tenant owns an app of. Only a direct-match miss pays for the walk of every
- * app and the per-vertical `listScopes` walk after it. A scope in neither is a 404, and tenant isolation holds because both
- * `list-apps` and `listScopes` are tenant-pinned below the seam (K-3).
- */
-async function resolveBrowsableScope(
-  host: ScopeHost,
-  env: Env,
-  node: DashboardNode,
-  dash: Pick<ScopeStub, 'invoke'>,
-  requested: string,
-): Promise<{ appRow: DashboardAppRow; scope: ReturnType<typeof scopeId.parse> }> {
-  const direct = await appByScopeId(dash, requested);
-  if (direct) return { appRow: direct, scope: scopeId.parse(direct.app_scope_id) };
-  const apps = await allApps(dash);
-  const cp = controlPlaneFor(env, node.tenantId, node.principal);
-  const seen = new Set<string>();
-  for (const app of apps) {
-    if (seen.has(app.vertical_slug)) continue;
-    seen.add(app.vertical_slug);
-    const scopes = await cp.listScopes(app.vertical_slug);
-    const hit = (scopes ?? []).find((s) => s.id === requested && (s.status === 'active' || s.status === 'provisioning'));
-    if (hit) return { appRow: app, scope: scopeId.parse(hit.id) };
-  }
-  throw new HTTPException(404, { message: 'app not found' });
-}
-
-/**
  * One app's Data tab — a read-only window into the app's OWN database (kernel-design
  * §5.4's admin-query RPC). Two reads: the table list, and a bounded page of one table.
  *
@@ -2155,7 +2125,7 @@ app.get('/api/apps/:scopeId/tables', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(host, c.env, node, dash, c.req.param('scopeId'));
+  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const tables = await cp.listScopeTables(scope);
   // Never emit an empty 200: an undefined here means the control plane answered with a
@@ -2300,7 +2270,7 @@ app.get('/api/apps/:scopeId/facets', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(host, c.env, node, dash, c.req.param('scopeId'));
+  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(
     await cp.facetEvents(scope, {
@@ -2319,7 +2289,7 @@ app.get('/api/apps/:scopeId/history', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(host, c.env, node, dash, c.req.param('scopeId'));
+  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(
     await cp.entityHistory(scope, {
@@ -2344,7 +2314,7 @@ app.get('/api/apps/:scopeId/cause', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(host, c.env, node, dash, c.req.param('scopeId'));
+  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(
     await cp.eventCause(scope, {
@@ -2367,7 +2337,7 @@ app.get('/api/apps/:scopeId/effects', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(host, c.env, node, dash, c.req.param('scopeId'));
+  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(
     await cp.eventEffects(scope, {
@@ -2386,7 +2356,7 @@ app.get('/api/apps/:scopeId/invocation', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(host, c.env, node, dash, c.req.param('scopeId'));
+  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(
     await cp.invocationEvents(scope, {
@@ -2413,7 +2383,7 @@ app.get('/api/apps/:scopeId/denials', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(host, c.env, node, dash, c.req.param('scopeId'));
+  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
   // The log compares `at` and `until` as ISO text, so only an ISO 8601 instant with a zone
   // is accepted, and it is forwarded in the log's own spelling (UTC, milliseconds): a
   // `Date.parse`-able "September 29, 2026" would otherwise compare as text and let later
@@ -2438,7 +2408,7 @@ app.get('/api/apps/:scopeId/dead-letters', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(host, c.env, node, dash, c.req.param('scopeId'));
+  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(
     await cp.deadLetters(scope, {
@@ -2455,7 +2425,7 @@ app.get('/api/apps/:scopeId/tables/:table', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(host, c.env, node, dash, c.req.param('scopeId'));
+  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
   const input = readScopeTableInput.parse({
     table: c.req.param('table'),
     limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
@@ -2476,7 +2446,7 @@ app.post('/api/apps/:scopeId/query', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(host, c.env, node, dash, c.req.param('scopeId'));
+  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
   const input = queryScopeInput.parse(await c.req.json());
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   // The gate's refusal arrives as the plane's own 400 (`validation_failed`), which `onError`
@@ -4095,7 +4065,7 @@ app.get('/api/apps/:scopeId/owner-seat', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(host, c.env, node, dash, c.req.param('scopeId'));
+  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(await cp.ownerSeat(scope));
 });
@@ -4110,7 +4080,7 @@ app.post('/api/apps/:scopeId/owner-claim', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(host, c.env, node, dash, c.req.param('scopeId'));
+  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(await cp.mintOwnerClaim(scope), 201);
 });
@@ -4128,7 +4098,7 @@ async function appMembersTarget(c: Context<{ Bindings: Env }>) {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const { scope } = await resolveBrowsableScope(host, c.env, node, dash, c.req.param('scopeId') ?? '');
+  const { scope } = await resolveBrowsableScope(dash, controlPlaneFor(c.env, node.tenantId, node.principal), c.req.param('scopeId') ?? '');
   return { scope, cp: controlPlaneFor(c.env, node.tenantId, node.principal) };
 }
 
@@ -4186,13 +4156,14 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+  // The choice may name another of the team's apps as the issuer, and the MCP registration below
+  // is moved between the team's auth-servers: both read every app, so the addressed one comes
+  // out of the same walk rather than a second read.
+  const apps = await allApps(dash);
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const providerSlugs = await oidcProviderSlugsFor(host, cp);
-  // The choice may name another of the team's apps as the issuer, and the MCP registration below
-  // is moved between the team's auth-servers: both read every app, not the one addressed.
-  const apps = await allApps(dash);
   const choice = resolveAuthChoice(appAuthChoiceBody.parse(await c.req.json()), apps, providerSlugs);
   // Prefer the stored column, but fall back to the live router bindings: an app can be
   // fully reachable while its dashboard column is null (a bind whose activation step threw
