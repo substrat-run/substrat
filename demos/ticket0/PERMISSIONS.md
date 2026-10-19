@@ -120,7 +120,133 @@ A purge horizon's grant is scope-wide, and narrower than it reads: a key the sys
 principal holds only for a purge is refused to it everywhere except the purge sweep's own
 call of that operation, one entity at a time, on an entity still in the bin past its horizon.
 
-## 6. Not covered by this artifact
+## 6. Operations — which key each checks
+
+The check each registered operation DECLARES it opens with, and what it narrows to. A
+proof walk lists this module's keys only; a composed engine's key it reaches is declared by
+the engine. "Checked in code, not declared" is an operation whose handler makes its own check
+with nothing declared, so no artifact can name its key. Who holds a key is §3 and the grant
+shapes.
+
+| Operation | Key | Checked on | Declared by |
+| --- | --- | --- | --- |
+| `metering/close-period` | `metering:close` | the scope | `@substrat-run/engine-metering` |
+| `metering/configure-meter` | `metering:configure` | the scope | `@substrat-run/engine-metering` |
+| `metering/list-entries` | `metering:read` | the scope | `@substrat-run/engine-metering` |
+| `metering/list-meters` | `metering:read` | the scope | `@substrat-run/engine-metering` |
+| `metering/list-periods` | `metering:read` | the scope | `@substrat-run/engine-metering` |
+| `metering/period-lines` | `metering:read` | the scope | `@substrat-run/engine-metering` |
+| `metering/record` | `metering:record` | the scope | `@substrat-run/engine-metering` |
+| `metering/total` | `metering:read` | the scope | `@substrat-run/engine-metering` |
+| `ticket0/add-block-rule` | `desk:configure` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/add-kb-source` | `kb:manage` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/add-participant` | `conversation:forward` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/apply-saved-reply` | `conversation:draft` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/assign` | `conversation:assign` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/assign-round-robin` | `conversation:assign` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/assistant-health` | `desk:configure` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/assistant-mode` | `conversation:widget` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/auto-close` | `conversation:resolve` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/auto-tag` | `conversation:assign` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/breaching-soon` | `conversation:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/close` | `conversation:resolve` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/close-usage-period` | `usage:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/configure-desk` | `desk:configure` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/confirm-signup` | `signup:submit` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/create-saved-reply` | `conversation:draft` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/create-saved-reply-folder` | `saved-reply:manage` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/delete-saved-reply` | `conversation:draft` | one `savedReply`, id from `savedReplyId` | `@substrat-run/demo-ticket0` |
+| `ticket0/delete-saved-reply-folder` | `saved-reply:manage` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/desk-metrics` | `usage:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/discard` | `conversation:discard` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/discard-suspended` | `conversation:discard` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/escalate-sla-breaches` | `conversation:escalate` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/follow-conversation` | `conversation:assign` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/forward-message` | `conversation:forward` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/get-contact` | `contact:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/get-conversation` | `conversation:read` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/get-csat` | `conversation:read` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/get-desk` | `desk:configure` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/get-saved-reply` | `conversation:draft` | one `savedReply`, id from `savedReplyId` | `@substrat-run/demo-ticket0` |
+| `ticket0/ingest-kb-source` | `kb:refresh` | one `kbSource`, id from `sourceId` | `@substrat-run/demo-ticket0` |
+| `ticket0/ingest-message` | `conversation:relay` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/list-agents` | `conversation:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/list-behaviour-runs` | `desk:configure` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/list-block-rules` | `desk:configure` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/list-contacts` | `contact:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/list-conversation-tags` | `conversation:read` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/list-conversations` | `conversation:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/list-conversations-by-tag` | `conversation:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/list-kb-sources` | `kb:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/list-messages` | `conversation:read` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/list-participants` | `conversation:read` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/list-pending-outbound` | `conversation:relay` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/list-saved-replies` | `conversation:draft` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/list-saved-reply-folders` | `conversation:draft` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/list-signups` | `signup:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/list-suspended` | `conversation:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/list-tags` | `conversation:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/list-turns` | `conversation:read` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/mark-notification-read` | `notification:read-own` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/merge` | `conversation:merge` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/mint-kb-refresh-token` | `kb:manage` | one `kbSource`, id from `sourceId` | `@substrat-run/demo-ticket0` |
+| `ticket0/my-conversations` | `conversation:read-own` | each row, by a proof walk: Returns only conversations belonging to the calling contact, or that it is copied in on | `@substrat-run/demo-ticket0` |
+| `ticket0/my-messages` | `conversation:read-own` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/my-notifications` | `notification:read-own` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/notify-no-reply` | `conversation:escalate` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/post-note` | `conversation:draft` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/post-public-reply` | `conversation:reply-public` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/purge-saved-reply` | `saved-reply:purge` | one `savedReply`, id from `savedReplyId` | `@substrat-run/demo-ticket0` |
+| `ticket0/read-outbound` | `conversation:relay` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/reap-abandoned` | `conversation:resolve` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/record-answer` | `conversation:draft` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/record-assistant-failure` | `conversation:widget` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/record-delivery` | `conversation:relay` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/record-kb-articles` | `kb:refresh` | one `kbSource`, id from `sourceId` | `@substrat-run/demo-ticket0` |
+| `ticket0/record-kb-ingest-failure` | `kb:refresh` | one `kbSource`, id from `sourceId` | `@substrat-run/demo-ticket0` |
+| `ticket0/redeem-kb-refresh-token` | `kb:refresh` | one `kbSource`, id from `sourceId` | `@substrat-run/demo-ticket0` |
+| `ticket0/remove-block-rule` | `desk:configure` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/remove-participant` | `conversation:forward` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/rename-saved-reply-folder` | `saved-reply:manage` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/render-saved-reply` | `conversation:draft` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/request-human` | `conversation:widget` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/resolve` | `conversation:resolve` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/restore` | `conversation:assign` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/restore-saved-reply` | `conversation:draft` | one `savedReply`, id from `savedReplyId` | `@substrat-run/demo-ticket0` |
+| `ticket0/revoke-kb-refresh-token` | `kb:manage` | one `kbSource`, id from `sourceId` | `@substrat-run/demo-ticket0` |
+| `ticket0/rotate-verification-secret` | `desk:configure` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/search-contacts` | `contact:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/search-conversations` | `conversation:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/search-kb` | `kb:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/set-agent-offboarded` | `desk:configure` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/set-agent-profile` | `conversation:draft` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/set-priority` | `conversation:assign` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/set-usage-rate` | `usage:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/share-saved-reply` | `saved-reply:manage` | one `savedReply`, id from `savedReplyId` | `@substrat-run/demo-ticket0` |
+| `ticket0/signup-counts` | `signup:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/signup-origins` | `signup:submit` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/snooze` | `conversation:assign` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/submit-csat` | `conversation:read-own` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/submit-signup` | `signup:submit` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/suspend` | `conversation:assign` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/tag-conversation` | `conversation:assign` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/trash-saved-reply` | `conversation:draft` | one `savedReply`, id from `savedReplyId` | `@substrat-run/demo-ticket0` |
+| `ticket0/trashed-saved-replies` | `conversation:draft` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/unfollow-conversation` | `conversation:assign` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/unsubscribe-signup` | `signup:submit` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/untag-conversation` | `conversation:assign` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/update-saved-reply` | `conversation:draft` | one `savedReply`, id from `savedReplyId` | `@substrat-run/demo-ticket0` |
+| `ticket0/usage-summary` | `usage:read` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/wake` | `conversation:assign` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/wake-snoozed` | `conversation:assign` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/widget-origins` | `conversation:widget` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/widget-post` | `conversation:widget` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/widget-session` | `conversation:read` | one `conversation`, id from `conversationId` | `@substrat-run/demo-ticket0` |
+| `ticket0/widget-start` | `conversation:widget` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/widget-thread` | `conversation:widget` | the scope | `@substrat-run/demo-ticket0` |
+| `ticket0/widget-watch` | `conversation:widget` | the scope | `@substrat-run/demo-ticket0` |
+
+## 7. Not covered by this artifact
 
 - **The grants themselves** — per-principal, per-entity, minted at runtime with
   random ULIDs. Only their shapes above are representable deterministically.

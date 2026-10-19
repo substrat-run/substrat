@@ -60,6 +60,8 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+// The gates a scaffolded project ships with — every one runs, even after a failure.
+import { GATES } from './scaffold-gates.mjs';
 
 const args = process.argv.slice(2);
 const KEEP = args.includes('--keep');
@@ -81,12 +83,6 @@ const VERSION = JSON.parse(readFileSync(join(PKG_DIR, 'package.json'), 'utf8')).
 const PUBLISH_WAIT_TRIES = 12;
 const PUBLISH_WAIT_MS = 15_000;
 
-/** The gates a scaffolded project ships with — every one runs, even after a failure. */
-const GATES = [
-  { name: 'npm test', argv: ['test'] },
-  { name: 'npm run typecheck', argv: ['run', 'typecheck'] },
-  { name: 'npm run lint:boundaries', argv: ['run', 'lint:boundaries'] },
-];
 
 function run(cmd, argv, cwd) {
   const r = spawnSync(cmd, argv, { cwd, encoding: 'utf8', env: { ...process.env, CI: '1' } });

@@ -2097,6 +2097,65 @@ export function operationConcurrencyOf(
 }
 
 /**
+ * What an operation declares it checks, copied as plain data (#2384): its leading `permission`
+ * (a scope-wide key, or `{ key, … }` saying what it narrows to) or its `narrows` walk —
+ * `unchecked: true` with its reason for an operation that checks nothing by declaration.
+ *
+ * A read contract, not an internal: the permission checkpoint and other tools read it off
+ * `BoundOperations.checks`, so it evolves additively only — a field may be added, never renamed,
+ * retyped or removed.
+ */
+export type OperationCheck =
+  | {
+      readonly permission:
+        | string
+        | {
+            readonly key: string;
+            readonly entity?: string;
+            readonly entityFrom?: string;
+            readonly idFrom?: string;
+            readonly resolved?: string;
+            readonly refFrom?: string;
+          };
+    }
+  | { readonly narrows: { readonly reason: string; readonly checks: readonly string[]; readonly unchecked?: true } };
+
+/**
+ * name → the check each operation declares, for the permission checkpoint (#2384).
+ *
+ * The binder carries it beside the handlers so `PERMISSIONS.md` can say which key each operation
+ * checks from the same declaration the host parses with. Only strings are copied, so the map is
+ * data a tool can read without the schemas. An operation declaring neither shape is absent: what
+ * it checks is not declared, and the reader must say so rather than guess.
+ */
+export function operationChecksOf(operations: Readonly<Record<string, object>>): Record<string, OperationCheck> {
+  const str = (v: unknown): v is string => typeof v === 'string';
+  const out: Record<string, OperationCheck> = {};
+  for (const [name, op] of Object.entries(operations)) {
+    const decl = op as { permission?: unknown; narrows?: { reason?: unknown; checks?: unknown; unchecked?: unknown } };
+    const p = decl.permission;
+    if (str(p)) {
+      out[name] = { permission: p };
+    } else if (typeof p === 'object' && p !== null && str((p as { key?: unknown }).key)) {
+      const q = p as Record<string, unknown>;
+      const fields = ['entity', 'entityFrom', 'idFrom', 'resolved', 'refFrom'] as const;
+      out[name] = {
+        permission: {
+          key: q.key as string,
+          ...Object.fromEntries(fields.filter((f) => str(q[f])).map((f) => [f, q[f] as string])),
+        },
+      };
+    } else if (decl.narrows && str(decl.narrows.reason)) {
+      const checks = Array.isArray(decl.narrows.checks) ? decl.narrows.checks.filter(str) : [];
+      out[name] = {
+        narrows: { reason: decl.narrows.reason, checks, ...(decl.narrows.unchecked === true ? { unchecked: true as const } : {}) },
+      };
+    }
+  }
+  return out;
+}
+
+/**
  * The entity an operation addresses by id, as the host reads it (#119).
  *
  * `key` is the operation's DECLARED leading check, which the host evaluates itself before it

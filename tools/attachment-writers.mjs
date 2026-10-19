@@ -125,10 +125,12 @@ function opensFunction(t, k) {
   for (; j >= 0; j -= 1) {
     const x = t[j];
     if (x.kind !== 'punct') continue;
-    if (x.text === '>' || x.text === ']') depth += 1;
-    else if (x.text === '<' || x.text === '[') depth -= 1;
+    // An object-literal return type (`): { a: T } {`) is walked over like a generic: its `}` opens
+    // a nesting and its `{` closes it. Whatever it is, only a `:` may then sit after the `)`.
+    if (x.text === '>' || x.text === ']' || x.text === '}') depth += 1;
+    else if (depth > 0 && (x.text === '<' || x.text === '[' || x.text === '{')) depth -= 1;
     else if (depth === 0 && x.text === ')') break;
-    else if (depth === 0 && (x.text === ';' || x.text === '{' || x.text === '}' || x.text === '=' || x.text === ',')) return false;
+    else if (depth === 0 && (x.text === ';' || x.text === '{' || x.text === '=' || x.text === ',')) return false;
   }
   if (j < 0) return false;
   // Only a type annotation may sit between the `)` and the `{`.
@@ -146,7 +148,7 @@ function opensFunction(t, k) {
  * Each token's chain of enclosing functions, innermost last, as ids. A token inside no function
  * has the empty chain (the module).
  */
-function functionChains(t) {
+export function functionChains(t) {
   const chains = new Array(t.length);
   const stack = []; // { fn: number | null }
   let nextFn = 1;
@@ -169,7 +171,7 @@ function functionChains(t) {
 }
 
 /** The index of the token at or before line `line` that is a string starting on or before it. */
-function stringTokenAt(t, line) {
+export function stringTokenAt(t, line) {
   let found = -1;
   for (let k = 0; k < t.length; k += 1) {
     if (t[k].line > line) break;
@@ -178,11 +180,11 @@ function stringTokenAt(t, line) {
   return found;
 }
 
-const callsOf = (t, name) =>
+export const callsOf = (t, name) =>
   t.flatMap((tok, k) => (tok.kind === 'word' && tok.text === name && t[k + 1]?.text === '(' ? [k] : []));
 
 /** Does a guard at `g` cover a writer at `w`: before it, in its function or one enclosing it? */
-const covers = (chains, g, w) => {
+export const covers = (chains, g, w) => {
   if (g >= w) return false;
   const gChain = chains[g];
   const inner = gChain[gChain.length - 1] ?? 0;
@@ -202,7 +204,7 @@ function replayerNames(files) {
   return names;
 }
 
-const lineOf = (text, index) => text.slice(0, index).split('\n').length;
+export const lineOf = (text, index) => text.slice(0, index).split('\n').length;
 
 /**
  * The source with its JS comments blanked (newlines kept, so lines and offsets hold): prose that

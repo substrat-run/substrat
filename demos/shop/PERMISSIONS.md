@@ -57,7 +57,42 @@ no role in §3 but listed here is deliberate, not a gap.
 | --- | --- | --- |
 | `customer` | `order:read` | yes — live holders of current or retired keys here; direct grants cannot give these keys |
 
-## 5. Not covered by this artifact
+## 5. Operations — which key each checks
+
+The check each registered operation DECLARES it opens with, and what it narrows to. A
+proof walk lists this module's keys only; a composed engine's key it reaches is declared by
+the engine. "Checked in code, not declared" is an operation whose handler makes its own check
+with nothing declared, so no artifact can name its key. Who holds a key is §3 and the grant
+shapes.
+
+| Operation | Key | Checked on | Declared by |
+| --- | --- | --- | --- |
+| `invoicing/export` | `invoicing:export` | the scope | `@substrat-run/engine-invoicing` |
+| `invoicing/get` | `invoicing:read` | the scope | `@substrat-run/engine-invoicing` |
+| `invoicing/list` | `invoicing:read` | the scope | `@substrat-run/engine-invoicing` |
+| `shop/add-to-cart` | `cart:checkout` | the scope | `@substrat-run/demo-shop` |
+| `shop/add-variant` | `catalog:manage` | the scope | `@substrat-run/demo-shop` |
+| `shop/cart` | `cart:checkout` | the scope | `@substrat-run/demo-shop` |
+| `shop/catalog` | `shop:browse` | the scope | `@substrat-run/demo-shop` |
+| `shop/checkout` | `cart:checkout` | the scope | `@substrat-run/demo-shop` |
+| `shop/close-order` | `order:fulfil` | the scope | `@substrat-run/demo-shop` |
+| `shop/create-cart` | `cart:checkout` | the scope | `@substrat-run/demo-shop` |
+| `shop/create-customer` | `customer:manage` | the scope | `@substrat-run/demo-shop` |
+| `shop/create-discount` | `discount:manage` | the scope | `@substrat-run/demo-shop` |
+| `shop/create-product` | `catalog:manage` | the scope | `@substrat-run/demo-shop` |
+| `shop/fulfil-order` | `order:fulfil` | the scope | `@substrat-run/demo-shop` |
+| `shop/my-customer` | `order:read` | each row, by a proof walk: reads checked customer grant ids and returns the first existing customer | `@substrat-run/demo-shop` |
+| `shop/order` | `order:read` | one `order`, id from `orderId` | `@substrat-run/demo-shop` |
+| `shop/orders` | `order:read` | the scope | `@substrat-run/demo-shop` |
+| `shop/portal-orders` | `order:read` | each row, by a proof walk: narrows to a complete checked grant set when possible, then checks each order | `@substrat-run/demo-shop` |
+| `shop/publish-product` | `catalog:manage` | the scope | `@substrat-run/demo-shop` |
+| `shop/quote` | `cart:checkout` | the scope | `@substrat-run/demo-shop` |
+| `shop/remove-line` | `cart:checkout` | the scope | `@substrat-run/demo-shop` |
+| `shop/set-line-qty` | `cart:checkout` | the scope | `@substrat-run/demo-shop` |
+| `shop/set-stock` | `stock:manage` | the scope | `@substrat-run/demo-shop` |
+| `shop/stock-overview` | `stock:manage` | the scope | `@substrat-run/demo-shop` |
+
+## 6. Not covered by this artifact
 
 - **The grants themselves** — per-principal, per-entity, minted at runtime with
   random ULIDs. Only their shapes above are representable deterministically.

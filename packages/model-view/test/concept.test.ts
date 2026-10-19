@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { EmittedModel } from '@substrat-run/contracts';
 import {
   ConceptMarkerError,
@@ -86,6 +88,17 @@ stale
 `;
 
 const inputs = { model: MODEL, permissionsMd: PERMISSIONS };
+
+const FIXTURE_PATH = join(__dirname, 'fixtures', 'operations-tables.json');
+/** The shared Operations-table fixture (#2384), read from disk so both packages' tests load one file. */
+const OPERATIONS_FIXTURE = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8')) as {
+  readable: Record<string, { body: string; operations: number; unknownFor: string[] }>;
+  malformed: Record<string, string>;
+};
+const READABLE_OPERATIONS = OPERATIONS_FIXTURE.readable;
+const MALFORMED_OPERATIONS = OPERATIONS_FIXTURE.malformed;
+const withOperations = (permissionsMd: string, body: string): string =>
+  `${permissionsMd.trimEnd()}\n\n## 9. Operations — which key each checks\n${body}`;
 
 describe('syncConcept', () => {
   it('renders the three regions from the model and the permissions', () => {
@@ -253,6 +266,55 @@ describe('parsePermissions / decisionsLog', () => {
     expect(decisionsLog('# x\n\n## Decisions log\nA\n## Next\nB')).toBe('A');
     expect(decisionsLog('# x')).toBeUndefined();
   });
+});
+
+describe('parsePermissions — the Operations section (#2384)', () => {
+  const OPS = [
+    '## 5. Operations — which key each checks',
+    '',
+    '| Operation | Key | Checked on | Declared by |',
+    '| --- | --- | --- | --- |',
+    '| `todo/rename` | `list:manage` | one `list`, id from `listId` | `@acme/todo` |',
+    '| `todo/mine` | `list:read`, `list:manage` | each row, by a proof walk | `@acme/todo` |',
+    '| `todo/raw` | — checked in code, not declared — | — | `@acme/todo` |',
+    '| `todo/accept` | — none — | nothing: the invite is the authority | `@acme/todo` |',
+    '| `todo/old` | — not readable: bound by a kernel that does not carry declarations — | — | `@acme/todo` |',
+    '',
+  ].join('\n');
+
+  it('reads each operation’s declared keys and what they narrow to', () => {
+    const v = parsePermissions(`${PERMISSIONS}\n${OPS}`);
+    expect(Object.fromEntries(v.operations ?? [])).toEqual({
+      'todo/rename': { keys: ['list:manage'], checkedOn: 'one `list`, id from `listId`', declared: true },
+      'todo/mine': { keys: ['list:read', 'list:manage'], checkedOn: 'each row, by a proof walk', declared: true },
+      // The cell is prose: its comma is not a list, and it names no key.
+      'todo/raw': { keys: [], checkedOn: '—', declared: false },
+      'todo/accept': { keys: [], checkedOn: 'nothing: the invite is the authority', declared: true },
+      // `todo/old` is absent: "not readable" says nothing about what it checks, so it is not "not declared".
+    });
+  });
+
+  it('its twin: a file with no Operations section has no `operations` — absent, never "none"', () => {
+    expect(parsePermissions(PERMISSIONS).operations).toBeUndefined();
+  });
+});
+
+describe('parsePermissions — the Operations table, judged as the classifier judges it (#2384)', () => {
+  for (const [shape, { body, operations, unknownFor }] of Object.entries(READABLE_OPERATIONS)) {
+    it(`readable: ${shape}`, () => {
+      const v = parsePermissions(withOperations(PERMISSIONS, body));
+      expect(v.operationsUnreadable).toBeUndefined();
+      expect(v.operations?.size).toBe(operations);
+      expect(v.operationsUnknownFor).toEqual(unknownFor);
+    });
+  }
+  for (const [shape, body] of Object.entries(MALFORMED_OPERATIONS)) {
+    it(`unreadable, and says so: ${shape}`, () => {
+      const v = parsePermissions(withOperations(PERMISSIONS, body));
+      expect(v.operationsUnreadable).toEqual(expect.any(String));
+      expect(v.operations).toBeUndefined();
+    });
+  }
 });
 
 describe('entityDiagram / lifecycleDiagram', () => {

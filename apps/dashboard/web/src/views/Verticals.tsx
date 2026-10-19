@@ -3,7 +3,7 @@ import { Button, Input, Select } from '@substrat-run/ui';
 import {
   api,
   connectGithub,
-  ApiError,
+  teamApi,
   type ChannelHistoryEntry,
   type DeployFailureRow,
   type FailureGroupRow,
@@ -15,6 +15,7 @@ import {
   type VerticalPreview,
   type WorkflowPreview,
 } from '../lib/api';
+import { ApiError as TeamApiError } from '../lib/api.generated';
 import { Ic } from '../lib/icons';
 import { DEV_MOCK, MOCK_FAILURES, MOCK_FAILURE_GROUPS, MOCK_RELEASES, MOCK_PREVIEWS, MOCK_TRAFFIC } from '../lib/mock';
 import { Page, GridTable, Row } from '../components/layout';
@@ -138,10 +139,12 @@ function VersionRow({
  * would rewind to, which is why it is kept here and not reconstructed later.
  */
 function ProdHistory({
+  teamId,
   d,
   busy,
   onPromote,
 }: {
+  teamId: string;
   d: Deployment;
   busy: boolean;
   onPromote: (versionId: string, channel: 'prod') => void;
@@ -155,15 +158,15 @@ function ProdHistory({
     if (!open || DEV_MOCK) return;
     let live = true;
     setFailed(false);
-    api
-      .channelHistory(d.slug, 'prod')
+    teamApi(teamId)
+      .listChannelHistory({ slug: d.slug, channel: 'prod' })
       .then((h) => live && setEntries(h))
       .catch(() => live && setFailed(true));
     return () => {
       live = false;
     };
     // Re-fetch when the pointer moves (a promote just happened).
-  }, [open, d.slug, prod?.versionId]);
+  }, [open, teamId, d.slug, prod?.versionId]);
 
   if (!prod) return null; // never went live — nothing to roll back to
   const label = (id: string) => d.versions.find((v) => v.id === id)?.version ?? id;
@@ -323,7 +326,7 @@ function VerticalCard({
  * `empty` scope); pin it and give it a custom domain to make a long-lived test environment
  * (crm-test.…). Available for a vertical you own whether private or listed (#513).
  */
-function PreviewsPanel({ d, busy }: { d: Deployment; busy: boolean }) {
+function PreviewsPanel({ teamId, d, busy }: { teamId: string; d: Deployment; busy: boolean }) {
   const [previews, setPreviews] = useState<VerticalPreview[] | null>(DEV_MOCK ? MOCK_PREVIEWS : null);
   const [err, setErr] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
@@ -340,23 +343,23 @@ function PreviewsPanel({ d, busy }: { d: Deployment; busy: boolean }) {
 
   const reload = () => {
     if (DEV_MOCK) return;
-    void api
-      .listPreviews(d.slug)
+    void teamApi(teamId)
+      .listPreviews({ slug: d.slug })
       .then((p) => {
         setPreviews(p);
         setErr(null);
       })
       // 501 = no shared control plane (embedded/self-host) — the surface simply isn't available.
-      .catch((e) => setErr(e instanceof ApiError && e.status === 501 ? null : e instanceof Error ? e.message : 'failed to load'));
+      .catch((e) => setErr(e instanceof TeamApiError && e.status === 501 ? null : e instanceof Error ? e.message : 'failed to load'));
   };
-  useEffect(reload, [d.slug]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(reload, [teamId, d.slug]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const create = async () => {
     if (!tag || !versionId) return;
     setWorking(true);
     setErr(null);
     try {
-      await api.createPreview(d.slug, { tag, versionId, ...(pin ? { ttlHours: null } : {}), ...(empty ? { empty: true } : {}) });
+      await teamApi(teamId).createPreview({ slug: d.slug, tag, versionId, ...(pin ? { ttlHours: null } : {}), ...(empty ? { empty: true } : {}) });
       setTag('');
       setVersionId('');
       setPin(false);
@@ -372,7 +375,7 @@ function PreviewsPanel({ d, busy }: { d: Deployment; busy: boolean }) {
   const remove = async (t: string) => {
     setWorking(true);
     try {
-      await api.deletePreview(d.slug, t);
+      await teamApi(teamId).deletePreview({ slug: d.slug, tag: t });
       reload();
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'could not delete preview');
@@ -386,7 +389,7 @@ function PreviewsPanel({ d, busy }: { d: Deployment; busy: boolean }) {
     setWorking(true);
     setErr(null);
     try {
-      await api.addPreviewDomain(d.slug, t, { domain });
+      await teamApi(teamId).bindPreviewDomain({ slug: d.slug, tag: t, domain });
       setDomain('');
       setDomainFor(null);
       reload();
@@ -516,7 +519,7 @@ function PreviewsPanel({ d, busy }: { d: Deployment; busy: boolean }) {
  * the misreading. A failed fetch is the one silent case: an older worker has no
  * route to answer, which costs the chart and should not annotate the panel.
  */
-function TrafficPanel({ slug }: { slug: string }) {
+function TrafficPanel({ teamId, slug }: { teamId: string; slug: string }) {
   const [series, setSeries] = useState<TrafficSeries | null>(DEV_MOCK ? MOCK_TRAFFIC : null);
 
   useEffect(() => {
@@ -526,15 +529,15 @@ function TrafficPanel({ slug }: { slug: string }) {
     // reruns the effect with the previous one's chart still on screen — a traffic shape
     // attributed to the wrong vertical is the misreading this whole view exists to stop.
     setSeries(null);
-    api
-      .deploymentTraffic(slug, 24)
+    teamApi(teamId)
+      .getDeploymentTraffic({ slug, hours: 24 })
       .then((s) => live && setSeries(s))
       // Tolerated to nothing: a worker or plane predating the route costs the chart, not the panel.
       .catch(() => live && setSeries(null));
     return () => {
       live = false;
     };
-  }, [slug]);
+  }, [teamId, slug]);
 
   if (!series) return null;
   if (!series.available) {
@@ -557,7 +560,7 @@ function TrafficPanel({ slug }: { slug: string }) {
  * quiet" is exactly the misreading that would invite. Newest eight versions —
  * the ledger is a health view, not the archive (the Versions table above is).
  */
-function ReleasesPanel({ d, revision }: { d: Deployment; revision: number }) {
+function ReleasesPanel({ teamId, d, revision }: { teamId: string; d: Deployment; revision: number }) {
   const [view, setView] = useState<ReleasesView | null>(DEV_MOCK ? MOCK_RELEASES : null);
   // The vertical the panel last showed: a refetch for the SAME vertical (installs were moved or
   // retired, so adoption changed) keeps the current view until the fresh one lands, where a
@@ -572,15 +575,15 @@ function ReleasesPanel({ d, revision }: { d: Deployment; revision: number }) {
       shown.current = d.slug;
       setView(null);
     }
-    api
-      .listReleases(d.slug)
+    teamApi(teamId)
+      .getDeploymentReleases({ slug: d.slug })
       .then((r) => live && setView(r))
       // Tolerated to nothing: a worker or plane predating the route costs the panel, not the page.
       .catch(() => live && setView(null));
     return () => {
       live = false;
     };
-  }, [d.slug, revision]);
+  }, [teamId, d.slug, revision]);
 
   if (!view || view.releases.length === 0) return null;
   const rows = view.releases.slice(0, 8);
@@ -594,7 +597,7 @@ function ReleasesPanel({ d, revision }: { d: Deployment; revision: number }) {
           traffic from the last 24 hours{view.metricsAvailable ? '' : ' (metrics unavailable on this plane)'}.
         </p>
       </div>
-      <TrafficPanel slug={d.slug} />
+      <TrafficPanel teamId={teamId} slug={d.slug} />
       <GridTable columns="1fr 1.1fr 1.1fr 1.3fr 0.8fr 1.1fr" header={['Version', 'Pushed', 'Went live', 'Where it runs', 'Failures', 'Traffic (24h)']}>
         {rows.map((r, i) => (
           <Row key={r.versionId} columns="1fr 1.1fr 1.1fr 1.3fr 0.8fr 1.1fr" last={i === rows.length - 1}>
@@ -654,21 +657,21 @@ function ReleasesPanel({ d, revision }: { d: Deployment; revision: number }) {
   );
 }
 
-function IssuesPanel({ d }: { d: Deployment }) {
+function IssuesPanel({ teamId, d }: { teamId: string; d: Deployment }) {
   const [rows, setRows] = useState<FailureGroupRow[] | null>(DEV_MOCK ? MOCK_FAILURE_GROUPS : null);
 
   useEffect(() => {
     if (DEV_MOCK) return;
     let live = true;
-    api
-      .listFailureGroups(d.slug)
+    teamApi(teamId)
+      .listDeploymentIssues({ slug: d.slug })
       .then((r) => live && setRows(r))
       // Tolerated to nothing: a worker or plane predating the route costs the panel, not the page.
       .catch(() => live && setRows(null));
     return () => {
       live = false;
     };
-  }, [d.slug]);
+  }, [teamId, d.slug]);
 
   // Rendered only when grouping actually compresses — a recurred shape. A list
   // of singletons is already its own best summary, and the flat panel below has it.
@@ -712,21 +715,21 @@ function IssuesPanel({ d }: { d: Deployment }) {
   );
 }
 
-function FailuresPanel({ d }: { d: Deployment }) {
+function FailuresPanel({ teamId, d }: { teamId: string; d: Deployment }) {
   const [rows, setRows] = useState<DeployFailureRow[] | null>(DEV_MOCK ? MOCK_FAILURES : null);
 
   useEffect(() => {
     if (DEV_MOCK) return;
     let live = true;
-    api
-      .listFailures(d.slug)
+    teamApi(teamId)
+      .listDeploymentFailures({ slug: d.slug })
       .then((r) => live && setRows(r))
       // Tolerated to nothing: a worker or plane predating the route costs the panel, not the page.
       .catch(() => live && setRows(null));
     return () => {
       live = false;
     };
-  }, [d.slug]);
+  }, [teamId, d.slug]);
 
   if (!rows || rows.length === 0) return null;
 
@@ -776,6 +779,7 @@ function FailuresPanel({ d }: { d: Deployment }) {
 }
 
 export function VerticalDetail({
+  teamId,
   d,
   deployments,
   busy,
@@ -783,6 +787,8 @@ export function VerticalDetail({
   onRemove,
   onBack,
 }: {
+  /** The team the tab is on: every call below names it in its own URL (#2170). */
+  teamId: string;
   d: Deployment;
   /** Every vertical this team owns — where a Move can land, and what a rename left behind. */
   deployments: readonly Deployment[];
@@ -845,7 +851,7 @@ export function VerticalDetail({
             vertical with no versions can still back installs (the rename case). */}
         {/* Keyed by vertical: the section holds a selection, an open dialog and typed text, and
             a request still in flight must not land on the NEXT vertical's page. */}
-        <BoundScopes key={d.slug} d={d} all={deployments} onChanged={() => setInstallsRevision((n) => n + 1)} />
+        <BoundScopes key={d.slug} teamId={teamId} d={d} all={deployments} onChanged={() => setInstallsRevision((n) => n + 1)} />
         {d.versions.length === 0 ? (
           <div style={{ padding: 16, color: 'var(--text-tertiary)', fontSize: 13 }}>
             No versions yet — <code>substrat push</code> one.
@@ -867,11 +873,11 @@ export function VerticalDetail({
                 ))}
               </GridTable>
             </div>
-            <ProdHistory d={d} busy={busy} onPromote={onPromote} />
-            <ReleasesPanel d={d} revision={installsRevision} />
-            <PreviewsPanel d={d} busy={busy} />
-            <IssuesPanel d={d} />
-            <FailuresPanel d={d} />
+            <ProdHistory teamId={teamId} d={d} busy={busy} onPromote={onPromote} />
+            <ReleasesPanel teamId={teamId} d={d} revision={installsRevision} />
+            <PreviewsPanel teamId={teamId} d={d} busy={busy} />
+            <IssuesPanel teamId={teamId} d={d} />
+            <FailuresPanel teamId={teamId} d={d} />
           </>
         )}
       </div>

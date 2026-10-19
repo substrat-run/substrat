@@ -101,7 +101,7 @@ function main(argv) {
         });
 
   const preloads = {
-    NODE_OPTIONS: [process.env.NODE_OPTIONS, `--require=${process.cwd()}/tools/vitest/like-pattern-limit.cjs`, `--require=${process.cwd()}/tools/vitest/sql-limits.cjs`]
+    NODE_OPTIONS: [process.env.NODE_OPTIONS, `--require=${process.cwd()}/tools/vitest/like-pattern-limit.cjs`, `--require=${process.cwd()}/tools/vitest/sql-limits.cjs`, `--require=${process.cwd()}/tools/vitest/unchecked-operations.cjs`]
       .filter(Boolean)
       .join(' '),
   };

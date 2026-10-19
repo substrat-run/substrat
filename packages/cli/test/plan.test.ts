@@ -100,9 +100,93 @@ describe('conceptDelta — each section, and its twin when nothing changed', () 
     );
     expect(d.lifecycles.after).toHaveLength(1);
     const text = renderDelta(d, OPTS);
-    expect(text).toContain('| `item` | `open` | `acme/cancel` | `cancelled` | added |');
-    expect(text).toContain('not in the artifacts yet (https://github.com/substrat-run/substrat/issues/2384)');
+    // This PERMISSIONS.md has no Operations section, so no key is named — and none is guessed.
+    expect(text).toContain('| `item` | `open` | `acme/cancel` | `cancelled` | added | — not in PERMISSIONS.md — |');
+    expect(text).toContain('that file predates its Operations section');
     expect(text).toContain('stateDiagram-v2');
+  });
+
+  // #2384: the key each transition's operation checks, and who holds it, from the Operations section.
+  const withOps = (md: string, rows: string[]) =>
+    [
+      md,
+      '## 4. Entity-narrowed grant shapes',
+      '',
+      '| Entity type | Permissions granted per entity |',
+      '| --- | --- |',
+      '| `list` | `list:manage` |',
+      '',
+      '## 5. Operations — which key each checks',
+      '',
+      '| Operation | Key | Checked on | Declared by |',
+      '| --- | --- | --- | --- |',
+      ...rows,
+      '',
+    ].join('\n');
+  const cancelled = () => {
+    const head = clone();
+    head.entities.item.fields.properties.state.enum = ['open', 'done', 'cancelled'];
+    head.lifecycles.item.states.open.on['acme/cancel'] = 'cancelled';
+    head.lifecycles.item.states.cancelled = { terminal: true };
+    return head;
+  };
+
+  it('lifecycles: each transition names the key its operation declares, and the roles and grant shapes holding it', () => {
+    const md = withOps(PERMS, [`| \`acme/cancel\` | \`list:manage\` | one \`list\`, resolved in the handler | \`${PKG}\` |`]);
+    const d = conceptDelta(PKG, art(MODEL, md), art(cancelled(), md));
+    expect(d.lifecycles.transitions[0]!.check).toEqual({
+      declared: true,
+      keys: ['list:manage'],
+      checkedOn: 'one `list`, resolved in the handler',
+      roles: ['owner'],
+      grantShapes: ['list'],
+    });
+    const text = renderDelta(d, OPTS);
+    expect(text).toContain('| added | `list:manage` on one `list`, resolved in the handler — roles `owner`; per record on `list` |');
+    expect(text).not.toContain('predates its Operations section');
+    expect(text).not.toContain('not in the artifacts');
+  });
+
+  it('its twin: an operation that declares nothing is said to be checked in code — no key is guessed', () => {
+    const md = withOps(PERMS, [`| \`acme/cancel\` | — checked in code, not declared — | — | \`${PKG}\` |`]);
+    const d = conceptDelta(PKG, art(MODEL, md), art(cancelled(), md));
+    expect(d.lifecycles.transitions[0]!.check).toMatchObject({ declared: false, keys: [] });
+    const text = renderDelta(d, OPTS);
+    expect(text).toContain('| added | checked in code, not declared |');
+    expect(text).toContain('declares none, so no artifact names its key');
+  });
+
+  it('an Operations table the classifier cannot read is shown as unreadable — never as "not listed"', () => {
+    const md = withOps(PERMS, ['| `acme/cancel` | `list:manage` | `@acme/vertical` |']);
+    const d = conceptDelta(PKG, art(MODEL, md), art(cancelled(), md));
+    expect(d.lifecycles.transitions[0]).toMatchObject({ checkUnreadable: expect.stringMatching(/cells/) });
+    expect(d.lifecycles.transitions[0]!.check).toBeUndefined();
+    const text = renderDelta(d, OPTS);
+    expect(text).toContain('| added | — unreadable: the Operations table is not the emitter’s — |');
+    expect(text).toContain('The Operations section of PERMISSIONS.md cannot be read');
+    expect(text).not.toContain('predates its Operations section');
+  });
+
+  it('a bare module\'s operations are named as unknown — the cause, not the file\'s age', () => {
+    const md = withOps(PERMS, [`| \`acme/other\` | \`list:create\` | the scope | \`${PKG}\` |`]).replace(
+      /\n$/,
+      '\nOperations not readable for `@acme/bare`: registered as a bare manifest, so its operations are not known here.\n',
+    );
+    const d = conceptDelta(PKG, art(MODEL, md), art(cancelled(), md));
+    expect(d.lifecycles.transitions[0]).toMatchObject({ operationsUnknownFor: ['@acme/bare'] });
+    const text = renderDelta(d, OPTS);
+    expect(text).toContain('| added | — not listed: operations unknown for `@acme/bare` — |');
+    expect(text).toContain('Operations unknown for `@acme/bare`: registered as a bare manifest');
+    expect(text).not.toContain('predates its Operations section');
+  });
+
+  it('a removed transition reads its check at the base, where the operation still existed', () => {
+    const base = withOps(PERMS, [`| \`acme/finish\` | \`list:create\` | the scope | \`${PKG}\` |`]);
+    const head = withOps(PERMS, []);
+    const gone = clone();
+    gone.lifecycles.item.states.open = {};
+    const d = conceptDelta(PKG, art(MODEL, base), art(gone, head));
+    expect(d.lifecycles.transitions[0]).toMatchObject({ change: 'removed', check: { keys: ['list:create'], roles: ['member', 'owner'] } });
   });
 
   it('lifecycles: a retargeted and a removed transition are told apart', () => {

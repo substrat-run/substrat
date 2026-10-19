@@ -32,6 +32,7 @@ import { membershipFixtureMod } from './membership-module.js';
 import { rebuildMod, stateMod } from './entity-state-module.js';
 import { trashFloorMod, trashMod } from './entity-trash-module.js';
 import { derivedMod } from './derived-module.js';
+import { checkTallyMod, undeclaredTallyMod } from './check-tally-module.js';
 import { stampsMod } from './stamps-module.js';
 import { erasureMod, erasureOtherMod } from './erasure-module.js';
 import { bindMod } from './bind-module.js';
@@ -3027,7 +3028,6 @@ export const contractTestModules: ModuleRegistration[] = [
   // read. It consumes `perm.acted` and writes one row per delivery; nothing else
   // in the kit reads `imp_echo`, so it is inert for every other suite.
   impersonationEchoMod,
-  connectorMod,
   // #1184: the invite events the membership executor consumes. Inert for every other suite —
   // only `membershipExecutorContractSuite` grants its entitlement or mounts the executor.
   membershipFixtureMod,
@@ -3109,6 +3109,10 @@ export const contractTestModules: ModuleRegistration[] = [
   // #1901: the async-log suite's module. Its consumer reacts only to its own
   // `asynclog.acted`, and its schedules run only on a host that registers it.
   asyncLogMod,
+  // #2387: the check-tally suite's modules. Inert for every other suite — nothing else reads
+  // `tally_rows` or invokes a `tally/*` operation.
+  checkTallyMod,
+  undeclaredTallyMod,
 ];
 
 // -- live reads (#938) -------------------------------------------------------

@@ -1,0 +1,38 @@
+{
+  "$comment": "The Operations-section shapes both readers of PERMISSIONS.md must judge alike (#2384): model-view parsePermissions (test/concept.test.ts) and the CLI bump classifier (packages/cli/test/bump.test.ts). Each body is the text under the Operations heading; unknownFor is the modules whose operations it says are not known. readable: the emitter writes it; malformed: it never does, so the classifier ranks it major and model-view says it is unreadable.",
+  "readable": {
+    "a table with rows": {
+      "body": "\n| Operation | Key | Checked on | Declared by |\n| --- | --- | --- | --- |\n| `todo/create-list` | `list:create` | the scope | `@acme/vertical` |\n",
+      "operations": 1,
+      "unknownFor": []
+    },
+    "known-empty: the \"no operations\" line": {
+      "body": "\n_No module here registers an operation._\n",
+      "operations": 0,
+      "unknownFor": []
+    },
+    "all bare: no table, no module's operations known": {
+      "body": "\nOperations not readable for `@acme/bare`: registered as a bare manifest, so its operations are not known here.\n",
+      "operations": 0,
+      "unknownFor": [
+        "@acme/bare"
+      ]
+    },
+    "mixed: a table, and the bare modules named under it": {
+      "body": "\n| Operation | Key | Checked on | Declared by |\n| --- | --- | --- | --- |\n| `todo/create-list` | `list:create` | the scope | `@acme/vertical` |\n\nOperations not readable for `@acme/b`, `@acme/a`: registered as a bare manifest, so its operations are not known here.\n",
+      "operations": 1,
+      "unknownFor": [
+        "@acme/a",
+        "@acme/b"
+      ]
+    }
+  },
+  "malformed": {
+    "no table, and no \"no operations\" line": "\nSomething else entirely.\n",
+    "the header lost": "\n| --- | --- | --- | --- |\n| `todo/create-list` | `list:create` | the scope | `@acme/vertical` |\n",
+    "the header changed": "\n| Operation | Key | Declared by |\n| --- | --- | --- |\n| `todo/create-list` | `list:create` | `@acme/vertical` |\n",
+    "no separator row": "\n| Operation | Key | Checked on | Declared by |\n| `todo/create-list` | `list:create` | the scope | `@acme/vertical` |\n",
+    "header only, no rows": "\n| Operation | Key | Checked on | Declared by |\n| --- | --- | --- | --- |\n",
+    "a row with the wrong number of cells": "\n| Operation | Key | Checked on | Declared by |\n| --- | --- | --- | --- |\n| `todo/create-list` | `list:create` | `@acme/vertical` |\n"
+  }
+}

@@ -407,6 +407,10 @@ describe('problemForStatus — the about:blank form', () => {
     expect(problemForStatus(404, 'member not found: 01J').error).toBe('member not found: 01J');
   });
 
+  it('titles 426 as itself — the live-read refusal (#1853) is a status the platform answers', () => {
+    expect(problemForStatus(426, 'live reads are a WebSocket surface').title).toBe('Upgrade required');
+  });
+
   it('is a valid problem document — an absent `code` is legal, not a parse failure', () => {
     expect(() => problem.parse(problemForStatus(502, 'durable object reset'))).not.toThrow();
   });

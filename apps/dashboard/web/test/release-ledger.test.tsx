@@ -8,6 +8,17 @@ import { diffRegistries } from '../src/lib/registry-diff';
 import { instant, ledgerRows, migrationDiffItems, permissionDiffItems, registryLedgerRows, schemaDiffItems } from '../src/lib/release-ledger';
 import { liveCell, ReleaseComparisonCard, ReleasesCard, type Ledger } from '../src/views/ReleaseCards';
 
+// The team client the cards reach through `teamApi(teamId)` (#2170); the wire is `deployments-client.test.ts`.
+const client = vi.hoisted(() => ({
+  getDeploymentReleases: vi.fn(),
+  listChannelHistory: vi.fn(),
+  getPromotionReview: vi.fn(),
+}));
+vi.mock('../src/lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/lib/api')>()),
+  teamApi: () => client,
+}));
+
 const byVersion = (rows: ReturnType<typeof ledgerRows>, v: string) => rows.find((r) => r.version === v)!;
 
 describe('ledgerRows (#1767)', () => {
@@ -80,6 +91,7 @@ describe('comparison diffs (#1767)', () => {
 describe('Deployments cards', () => {
   let container: HTMLDivElement, root: Root;
   beforeEach(() => {
+    for (const fn of Object.values(client)) fn.mockReset();
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     container = document.createElement('div');
     document.body.append(container);
@@ -102,7 +114,7 @@ describe('Deployments cards', () => {
     vi.spyOn(api, 'appModel').mockResolvedValue(MOCK_APP_MODEL_UPDATE);
     const ledger: Ledger = { rows: ledgerRows(MOCK_APP_RELEASES, MOCK_PROD_HISTORY), source: 'ledger', failed: false };
     await act(async () =>
-      root.render(<ReleaseComparisonCard app={app} dep={dep} running={v('0.2.0')} target={{ version: v('0.3.0'), state: 'update' }} ledger={ledger} actions={<button>Update this app</button>} />),
+      root.render(<ReleaseComparisonCard teamId="T1" app={app} dep={dep} running={v('0.2.0')} target={{ version: v('0.3.0'), state: 'update' }} ledger={ledger} actions={<button>Update this app</button>} />),
     );
     expect(container.textContent).toContain('went live 20 Jul');
     expect(container.textContent).toContain('in prod, not on this app');
@@ -115,9 +127,9 @@ describe('Deployments cards', () => {
 
   it('shows an unpromoted push of another team as theirs to review, without asking the promote review', async () => {
     vi.spyOn(api, 'releaseComparison').mockResolvedValue({ running: null, update: null, metricsAvailable: false, owned: false });
-    const review = vi.spyOn(api, 'promoteReview');
+    const review = client.getPromotionReview;
     const theirs: AppDeployments = { ...dep, owned: false };
-    await act(async () => root.render(<ReleaseComparisonCard app={app} dep={theirs} running={v('0.3.0')} target={{ version: v('0.4.0-beta.7'), state: 'unpromoted' }} ledger={null} />));
+    await act(async () => root.render(<ReleaseComparisonCard teamId="T1" app={app} dep={theirs} running={v('0.3.0')} target={{ version: v('0.4.0-beta.7'), state: 'unpromoted' }} ledger={null} />));
     expect(review).not.toHaveBeenCalled();
     expect(column('Permissions')).toContain('the review is theirs to read');
     expect(container.textContent).toContain('not live');
@@ -126,7 +138,7 @@ describe('Deployments cards', () => {
 
   it('says the app is current rather than hiding', async () => {
     vi.spyOn(api, 'releaseComparison').mockResolvedValue({ running: null, update: null, metricsAvailable: false, owned: true });
-    await act(async () => root.render(<ReleaseComparisonCard app={app} dep={dep} running={v('0.3.0')} target={null} ledger={null} />));
+    await act(async () => root.render(<ReleaseComparisonCard teamId="T1" app={app} dep={dep} running={v('0.3.0')} target={null} ledger={null} />));
     expect(container.textContent).toContain('Running the latest version — nothing to update to.');
   });
 

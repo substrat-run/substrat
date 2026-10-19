@@ -1,4 +1,5 @@
 import type { AppFreshnessRow, AppScheduleRow as WireAppScheduleRow, FailureGroupRow as WireFailureGroupRow, ReleaseRow as WireReleaseRow, ReleasesView as WireReleasesView, ReleaseComparison as WireReleaseComparison, ReleaseSide as WireReleaseSide, TrafficSeries as WireTrafficSeries, TeamTrafficLine as WireTeamTrafficLine, TeamTrafficSeries as WireTeamTrafficSeries, FieldCoverageView as WireFieldCoverageView, FlowFindingsView as WireFlowFindingsView, FlowFinding as WireFlowFinding, FlowGraph as WireFlowGraph, FlowNode as WireFlowNode, FlowEdge as WireFlowEdge, OperationHealthView as WireOperationHealthView, OperationHealthRow as WireOperationHealthRow, ConnectionSweepView as WireConnectionSweepView, ConnectionSweepRow as WireConnectionSweepRow, AppHealthRow as WireAppHealthRow, AppMetricsRow as WireAppMetricsRow, AppMetricsView as WireAppMetricsView, EntityCoverage as WireEntityCoverage, FieldCoverageRow as WireFieldCoverageRow, TrafficBucket as WireTrafficBucket, ReleaseMarker as WireReleaseMarker, OverlayMarker as WireOverlayMarker, OverlaySpan as WireOverlaySpan, AppOverlays as WireAppOverlays, SweepRunView, BoundScopeRow as WireBoundScopeRow, BoundScopesView as WireBoundScopesView, MoveScopesResult as WireMoveScopesResult, MoveReviewRow as WireMoveReviewRow, RetireScopesResult as WireRetireScopesResult } from './api';
+import type { DeploymentRow as WireDeploymentRow, PreviewRow as WirePreviewRow } from './api.generated';
 // Type-only reach into the worker: schedules.ts is environment-free (contracts types
 // only), so it compiles under the DOM tsconfig, where the worker program could never
 // swallow this file's DOM-typed sibling. Never imported at runtime — the two bundles
@@ -15,6 +16,8 @@ import type {
   MoveReview as WorkerMoveReview,
   RetireOutcome as WorkerRetireOutcome,
 } from '../../../src/bound-scopes';
+import type { Deployment as WorkerDeployment } from '../../../src/deployments';
+import type { PreviewRecord as WorkerPreviewRecord } from '../../../src/authority';
 import type { FailureGroupRow as WorkerFailureGroupRow } from '../../../src/failure-groups';
 import type {
   FieldCoverageView as WorkerFieldCoverageView,
@@ -86,3 +89,5 @@ export const BOUND_SCOPES_VIEW_PARITY: Equal<WireBoundScopesView, WorkerBoundSco
 export const MOVE_SCOPES_RESULT_PARITY: Equal<WireMoveScopesResult, WorkerMoveOutcome> = true;
 export const MOVE_REVIEW_ROW_PARITY: Equal<WireMoveReviewRow, WorkerMoveReview> = true;
 export const RETIRE_SCOPES_RESULT_PARITY: Equal<WireRetireScopesResult, WorkerRetireOutcome> = true;
+export const DEPLOYMENT_ROW_PARITY: Equal<WireDeploymentRow, WorkerDeployment> = true;
+export const PREVIEW_ROW_PARITY: Equal<WirePreviewRow, WorkerPreviewRecord> = true;

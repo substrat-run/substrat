@@ -60,6 +60,8 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
   let dir: string;
   let host: SqliteScopeHost;
   let env: Record<string, unknown>;
+  /** The team the owner belongs to: the declared routes name it in their path. */
+  let team: string;
   /** When set, the plane answers every call but the credential mint with a 500. */
   let planeDown: boolean;
 
@@ -69,6 +71,7 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
     shared.host = host;
     for (const m of MODULES) host.registerModule(m);
     const tenant = tenantId.parse(ulid());
+    team = tenant;
     const dashScope = scopeId.parse(ulid());
     const owner = principalId.parse(ulid());
     await provisionDashboard(host, { tenantId: tenant, scopeId: dashScope, owner, slug: 'request-id', name: 'Request id' });
@@ -119,7 +122,7 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
   });
 
   it('a success carries the header', async () => {
-    const res = await get('/deployments', { sub: OWNER_SUB });
+    const res = await get(`/teams/${team}/deployments`, { sub: OWNER_SUB });
     expect(res.status).toBe(200);
     expect(res.headers.get(REQUEST_ID_HEADER)).toMatch(ULID);
   });
@@ -132,7 +135,7 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
   });
 
   it('a thrown 401 rendered by onError carries the id in the problem body, equal to the header', async () => {
-    const res = await get('/deployments');
+    const res = await get(`/teams/${team}/deployments`);
     const body = (await res.json()) as Record<string, unknown>;
     expect(res.status).toBe(401);
     expect(body.detail).toBe('unauthorized');
@@ -144,7 +147,7 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
     const logged: string[] = [];
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => void logged.push(String(args[0])));
     planeDown = true;
-    const res = await get('/deployments', { sub: OWNER_SUB });
+    const res = await get(`/teams/${team}/deployments`, { sub: OWNER_SUB });
     const id = res.headers.get(REQUEST_ID_HEADER);
     const body = (await res.json()) as Record<string, unknown>;
     // Whichever 5xx the plane's failure is relayed as; the id is what is asserted.
@@ -159,7 +162,7 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
       event: 'dashboard.request-failed',
       requestId: id,
       method: 'GET',
-      path: '/api/deployments',
+      path: `/api/teams/${team}/deployments`,
       status: res.status,
       errorName: 'ControlPlaneError',
       errorCode: 'internal',
@@ -171,8 +174,8 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
 
   it('two requests get two ids, and an id the caller sends is never echoed', async () => {
     const claimed = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
-    const a = (await get('/deployments', { sub: OWNER_SUB, headers: { [REQUEST_ID_HEADER]: claimed } })).headers.get(REQUEST_ID_HEADER);
-    const b = (await get('/deployments', { sub: OWNER_SUB, headers: { [REQUEST_ID_HEADER]: claimed } })).headers.get(REQUEST_ID_HEADER);
+    const a = (await get(`/teams/${team}/deployments`, { sub: OWNER_SUB, headers: { [REQUEST_ID_HEADER]: claimed } })).headers.get(REQUEST_ID_HEADER);
+    const b = (await get(`/teams/${team}/deployments`, { sub: OWNER_SUB, headers: { [REQUEST_ID_HEADER]: claimed } })).headers.get(REQUEST_ID_HEADER);
     expect(a).toMatch(ULID);
     expect(b).toMatch(ULID);
     expect(a).not.toBe(b);

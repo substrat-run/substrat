@@ -90,7 +90,70 @@ schedule can do exactly this and no more.
 | --- | --- | --- | --- |
 | `absence/expire-stale` | every 1440 min | `system:@substrat-run/engine-absence` | `absence:approve` |
 
-## 6. Not covered by this artifact
+## 6. Operations — which key each checks
+
+The check each registered operation DECLARES it opens with, and what it narrows to. A
+proof walk lists this module's keys only; a composed engine's key it reaches is declared by
+the engine. "Checked in code, not declared" is an operation whose handler makes its own check
+with nothing declared, so no artifact can name its key. Who holds a key is §3 and the grant
+shapes.
+
+| Operation | Key | Checked on | Declared by |
+| --- | --- | --- | --- |
+| `absence/availability` | `absence:read` | one entity, whole ref from `subject` | `@substrat-run/engine-absence` |
+| `absence/balance` | `absence:read` | one entity, whole ref from `subject` | `@substrat-run/engine-absence` |
+| `absence/cancel` | `absence:approve` | the scope | `@substrat-run/engine-absence` |
+| `absence/configure-leave-type` | `absence:configure` | the scope | `@substrat-run/engine-absence` |
+| `absence/decide` | `absence:approve` | the scope | `@substrat-run/engine-absence` |
+| `absence/expire-stale` | `absence:approve` | the scope | `@substrat-run/engine-absence` |
+| `absence/list-entries` | `absence:read` | one entity, whole ref from `subject` | `@substrat-run/engine-absence` |
+| `absence/list-leave-types` | `absence:read` | the scope | `@substrat-run/engine-absence` |
+| `absence/list-requests` | `absence:read` | the scope | `@substrat-run/engine-absence` |
+| `absence/record-entry` | `absence:configure` | the scope | `@substrat-run/engine-absence` |
+| `absence/request` | `absence:request` | one entity, whole ref from `subject.ref` | `@substrat-run/engine-absence` |
+| `hr/accrue` | `absence:configure` | the scope | `@substrat-run/demo-meridian` |
+| `hr/balance` | `absence:read` | one `employee`, id from `employeeId` | `@substrat-run/demo-meridian` |
+| `hr/create-employee` | `employee:manage` | the scope | `@substrat-run/demo-meridian` |
+| `hr/create-project` | `project:manage` | the scope | `@substrat-run/demo-meridian` |
+| `hr/decide-expense` | `expense:approve` | the scope | `@substrat-run/demo-meridian` |
+| `hr/decide-leave` | `absence:approve` | the scope | `@substrat-run/demo-meridian` |
+| `hr/define-leave-type` | `absence:configure` | the scope | `@substrat-run/demo-meridian` |
+| `hr/employment-terms` | `employee:manage` | the scope | `@substrat-run/demo-meridian` |
+| `hr/issue-employment-contract` | `employee:manage` | the scope | `@substrat-run/demo-meridian` |
+| `hr/list-employees` | `employee:manage` | the scope | `@substrat-run/demo-meridian` |
+| `hr/list-expenses` | `expense:read` | the scope | `@substrat-run/demo-meridian` |
+| `hr/list-leave-types` | `absence:read` | the scope | `@substrat-run/demo-meridian` |
+| `hr/list-projects` | `time:read` | the scope | `@substrat-run/demo-meridian` |
+| `hr/list-requests` | `absence:read` | the scope | `@substrat-run/demo-meridian` |
+| `hr/log-time` | `time:report` | one `employee`, id from `employeeId` | `@substrat-run/demo-meridian` |
+| `hr/my-expenses` | `expense:read` | one `employee`, id from `employeeId` | `@substrat-run/demo-meridian` |
+| `hr/my-requests` | `absence:read` | one `employee`, id from `employeeId` | `@substrat-run/demo-meridian` |
+| `hr/payroll-export` | `payroll:export` | the scope | `@substrat-run/demo-meridian` |
+| `hr/request-leave` | `absence:request` | one `employee`, id from `employeeId` | `@substrat-run/demo-meridian` |
+| `hr/roster` | `time:read` | the scope | `@substrat-run/demo-meridian` |
+| `hr/set-employment-terms` | `employee:manage` | the scope | `@substrat-run/demo-meridian` |
+| `hr/start-onboarding` | `employee:manage` | the scope | `@substrat-run/demo-meridian` |
+| `hr/submit-expense` | `expense:submit` | one `employee`, id from `employeeId` | `@substrat-run/demo-meridian` |
+| `hr/timeline` | `absence:read` | one `employee`, id from `entityId` | `@substrat-run/demo-meridian` |
+| `hr/timesheet` | `time:read` | one `employee`, id from `employeeId` | `@substrat-run/demo-meridian` |
+| `hr/verify-contract` | `protocol:read` | one `protocol`, id from `instanceId` | `@substrat-run/demo-meridian` |
+| `hr/whoami` | `time:read` | the scope | `@substrat-run/demo-meridian` |
+| `protocol/bind-document` | `protocol:bind` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
+| `protocol/cancel-signatures` | `protocol:request-signature` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
+| `protocol/countersign` | `protocol:countersign` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
+| `protocol/decline-signature` | `protocol:record-signature` | the scope | `@substrat-run/engine-protocol` |
+| `protocol/define-template` | `protocol:create` | the scope | `@substrat-run/engine-protocol` |
+| `protocol/fill` | `protocol:fill` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
+| `protocol/get` | `protocol:read` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
+| `protocol/instantiate` | `protocol:create` | the scope | `@substrat-run/engine-protocol` |
+| `protocol/list-for-entity` | `protocol:read` | one entity, type from `entityType`, id from `entityId` | `@substrat-run/engine-protocol` |
+| `protocol/list-templates` | `protocol:read` | the scope | `@substrat-run/engine-protocol` |
+| `protocol/record-signature` | `protocol:record-signature` | the scope | `@substrat-run/engine-protocol` |
+| `protocol/request-signatures` | `protocol:request-signature` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
+| `protocol/sign` | `protocol:sign` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
+| `protocol/void` | `protocol:void` | one `protocol`, id from `instanceId` | `@substrat-run/engine-protocol` |
+
+## 7. Not covered by this artifact
 
 - **The grants themselves** — per-principal, per-entity, minted at runtime with
   random ULIDs. Only their shapes above are representable deterministically.

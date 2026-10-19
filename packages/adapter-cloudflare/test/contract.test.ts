@@ -79,6 +79,7 @@ import {
   concurrencyContractSuite,
   emittedReportContractSuite,
   moduleLogContractSuite,
+  checkTallyContractSuite,
   asyncLogContractSuite,
   idempotencyContractSuite,
   listContractSuite,
@@ -5945,6 +5946,35 @@ emittedReportContractSuite('adapter-cloudflare', async () => {
 // #1746/#1747: ctx.log inside the DO. There is no sink option to reach — workerd builds the
 // DO — so the lines are read where a deployment's log platform reads them: the console.
 moduleLogContractSuite('adapter-cloudflare', async () => {
+  const lines: ModuleLogLine[] = [];
+  const capture = (text: unknown) => {
+    if (typeof text !== 'string' || !text.startsWith('{"substrat":"log"')) return false;
+    lines.push(JSON.parse(text) as ModuleLogLine);
+    return true;
+  };
+  const spies = (['log', 'warn', 'error', 'debug'] as const).map((m) => {
+    const original = console[m].bind(console);
+    return vi.spyOn(console, m).mockImplementation((...args: unknown[]) => {
+      if (!capture(args[0])) original(...args);
+    });
+  });
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    logs: () => lines,
+    cleanup: async () => {
+      for (const s of spies) s.mockRestore();
+      await host.close();
+    },
+  };
+});
+
+// #2387: the record is written inside the DO, to the console, where it is read here.
+checkTallyContractSuite('adapter-cloudflare', async () => {
   const lines: ModuleLogLine[] = [];
   const capture = (text: unknown) => {
     if (typeof text !== 'string' || !text.startsWith('{"substrat":"log"')) return false;

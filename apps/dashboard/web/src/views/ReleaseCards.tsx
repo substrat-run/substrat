@@ -1,7 +1,8 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
-import { api, type AppDeployments, type AppMigrationsView, type AppRow, type DeploymentVersion, type ReleaseComparison, type ReleaseSide } from '../lib/api';
+import { api, teamApi, type AppDeployments, type AppMigrationsView, type AppRow, type DeploymentVersion, type ReleaseComparison, type ReleaseSide } from '../lib/api';
 import { DEV_MOCK, MOCK_APP_MIGRATIONS, MOCK_APP_PERMISSIONS } from '../lib/mock';
 import { MOCK_APP_MODEL_UPDATE, MOCK_APP_RELEASES, MOCK_APP_RELEASE_COMPARISON, MOCK_PROD_HISTORY } from '../lib/mock-deployments';
+import { promoteReviewOf } from '../lib/promote-review';
 import { diffRegistries } from '../lib/registry-diff';
 import {
   DIFF_TAG,
@@ -56,7 +57,7 @@ export interface Ledger {
  * joined to prod's move history; one installed from another team gets only the registry's
  * version list, because the go-live record is the publisher's (the worker refuses it).
  */
-export function useLedger(dep: AppDeployments | null): Ledger | null {
+export function useLedger(teamId: string, dep: AppDeployments | null): Ledger | null {
   const [ledger, setLedger] = useState<Ledger | null>(null);
   const prodId = dep?.channels.find((c) => c.channel === 'prod')?.versionId ?? null;
   useEffect(() => {
@@ -72,7 +73,7 @@ export function useLedger(dep: AppDeployments | null): Ledger | null {
     }
     let live = true;
     setLedger(null);
-    Promise.all([api.listReleases(dep.slug), api.channelHistory(dep.slug, 'prod').catch(() => null)])
+    Promise.all([teamApi(teamId).getDeploymentReleases({ slug: dep.slug }), teamApi(teamId).listChannelHistory({ slug: dep.slug, channel: 'prod' }).catch(() => null)])
       .then(([view, history]) => live && setLedger({ rows: ledgerRows(view, history), source: 'ledger', failed: false }))
       .catch(() => live && setLedger(registry(true)));
     return () => {
@@ -80,7 +81,7 @@ export function useLedger(dep: AppDeployments | null): Ledger | null {
     };
     // The versions list only matters for the registry fallback; a refetch after Update
     // hands a new `dep` whose prod pointer or version count is what actually moved.
-  }, [dep?.slug, dep?.owned, prodId, dep?.versions.length]);
+  }, [teamId, dep?.slug, dep?.owned, prodId, dep?.versions.length]);
   return ledger;
 }
 
@@ -119,6 +120,7 @@ function tagStyle(kind: DiffKind): CSSProperties {
  * absent rather than zero (`owned: false`), because the registry is not telemetry.
  */
 export function ReleaseComparisonCard({
+  teamId,
   app,
   dep,
   running,
@@ -127,6 +129,7 @@ export function ReleaseComparisonCard({
   ledger,
   actions,
 }: {
+  teamId: string;
   app: AppRow;
   dep: AppDeployments;
   running: DeploymentVersion | undefined;
@@ -198,10 +201,11 @@ export function ReleaseComparisonCard({
     } else {
       // Not in prod yet: the promote review is the one read that compares it with what
       // prod serves — and prod IS what this app runs, or an update would be on offer.
-      api
-        .promoteReview(dep.slug, targetId)
-        .then((r) => {
+      teamApi(teamId)
+        .getPromotionReview({ slug: dep.slug, versionId: targetId })
+        .then((row) => {
           if (!live) return;
+          const r = promoteReviewOf(row);
           const from = r.servingRegistry;
           const to = r.incomingRegistry;
           setPerms(from && to ? { items: permissionDiffItems(diffRegistries(from, to), from, to) } : unreadRegistry);
@@ -220,7 +224,7 @@ export function ReleaseComparisonCard({
     return () => {
       live = false;
     };
-  }, [app.app_scope_id, dep.slug, dep.owned, targetId, targetState, targetMigrates]);
+  }, [teamId, app.app_scope_id, dep.slug, dep.owned, targetId, targetState, targetMigrates]);
 
   if (!running && !target && !unknown) return null;
   const wentLive = (id: string) => ledger?.rows.find((r) => r.versionId === id)?.wentLiveAt ?? null;

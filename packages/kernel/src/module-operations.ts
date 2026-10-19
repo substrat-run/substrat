@@ -28,9 +28,11 @@
 import {
   derivationPlanOf,
   operationConcurrencyOf,
+  operationChecksOf,
   operationIdempotencyOptOutsOf,
   operationInputsOf,
   type DerivedKeys,
+  type OperationCheck,
   type OperationImpl,
 } from '@substrat-run/contracts';
 import { derivedHandler } from './derived-handlers.js';
@@ -44,6 +46,9 @@ interface DerivedMaps {
   readonly inputs?: Readonly<Record<string, { parse(value: unknown): unknown }>>;
   readonly concurrency?: Readonly<Record<string, { entity: string; idFrom: string }>>;
   readonly idempotencyOptOuts?: readonly string[];
+  /** #2387: the operations the host holds to a `ctx.check` — see {@link checkHeldOperationsOf}. */
+  readonly checkHeld?: readonly string[];
+  readonly checks?: Readonly<Record<string, OperationCheck>>;
 }
 
 /**
@@ -60,6 +65,13 @@ export const MINT: unique symbol = Symbol('BoundOperations.mint');
  * structured clone leaves it behind, exactly as they leave the `#bound` field behind at compile time.
  */
 const BRAND = Symbol.for('substrat.kernel.boundOperations');
+
+/**
+ * #2387: where a bound value keeps the operations the host holds to a check. Registered and
+ * non-enumerable for the reasons `BRAND` is: a second copy of the kernel reads it, and a copy of
+ * the value leaves it behind (and is refused at registration anyway).
+ */
+const CHECK_HELD = Symbol.for('substrat.kernel.checkHeld');
 
 /**
  * Everything a module hands the host about its operations, in one value only `operationsFor` and
@@ -92,12 +104,21 @@ export class BoundOperations<H = HandlerMap> {
   readonly concurrency?: Readonly<Record<string, { entity: string; idFrom: string }>>;
   /** The operations that declared `idempotency: false`, and so refuse an `Idempotency-Key` (#116). */
   readonly idempotencyOptOuts?: readonly string[];
+  /**
+   * name → the check each operation declares (#2384), read by the permission checkpoint so
+   * `PERMISSIONS.md` names the key each operation checks. Empty for `undeclaredOperations`, whose
+   * handlers check in code with nothing declared; absent only on a value an older kernel bound.
+   * The host does not read it: each handler still makes its own check. Tools read it as a
+   * contract — its shape is `OperationCheck`, and like an engine's event payload it only grows.
+   */
+  readonly checks?: Readonly<Record<string, OperationCheck>>;
 
   constructor(mint: typeof MINT, handlers: H & HandlerMap, derived: DerivedMaps = {}) {
     if (mint !== MINT) {
       throw new Error('BoundOperations: made by operationsFor or undeclaredOperations, never constructed directly');
     }
     Object.defineProperty(this, BRAND, { value: true });
+    Object.defineProperty(this, CHECK_HELD, { value: Object.freeze([...(derived.checkHeld ?? [])]) });
     // Frozen, all the way to what the adapters read (#2155 review): `readonly` does not stop
     // `Object.assign(bound, { inputs: undefined })`, and an edit in place keeps the brand, so the
     // value would register with its schemas gone or a handler added that nothing parses for.
@@ -112,6 +133,7 @@ export class BoundOperations<H = HandlerMap> {
       );
     }
     if (derived.idempotencyOptOuts !== undefined) this.idempotencyOptOuts = Object.freeze([...derived.idempotencyOptOuts]);
+    if (derived.checks !== undefined) this.checks = deepFreeze(derived.checks);
     Object.freeze(this);
   }
 
@@ -119,6 +141,14 @@ export class BoundOperations<H = HandlerMap> {
   static is(value: unknown): value is BoundOperations {
     return typeof value === 'object' && value !== null && Object.prototype.hasOwnProperty.call(value, BRAND);
   }
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value === 'object' && value !== null) {
+    for (const v of Object.values(value)) deepFreeze(v);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 /**
@@ -193,8 +223,43 @@ export function operationsFor<const Ops extends Record<string, object>>(declarat
       inputs: operationInputsOf(declaration),
       concurrency: operationConcurrencyOf(declaration),
       idempotencyOptOuts: operationIdempotencyOptOutsOf(declaration),
+      checkHeld: checkHeldOf(declaration),
+      checks: operationChecksOf(declaration),
     }),
   });
+}
+
+/**
+ * #2387: the operations a declaration holds to a `ctx.check` — those that DECLARE a `permission`
+ * and whose handler is authored. A declared key is a promise that the handler asks for it.
+ *
+ * Everything else is left out, and each for a reason the declaration states:
+ *
+ * - `derive` — the kernel wrote the handler, its check included.
+ * - `narrows` — a walk that checks row by row, so an empty result asks nothing and is right to.
+ *   `narrows.unchecked` is the one way to declare an operation that checks nothing at all, and it
+ *   is a `narrows`, so it is left out here too.
+ */
+function checkHeldOf(declaration: Readonly<Record<string, object>>): string[] {
+  return Object.entries(declaration)
+    .filter(([, op]) => {
+      const decl = op as { derive?: unknown; permission?: unknown };
+      return decl.permission !== undefined && decl.derive === undefined;
+    })
+    .map(([name]) => name);
+}
+
+/**
+ * The operations of a bound value the host holds to a check (#2387). Empty for
+ * `undeclaredOperations` and the test seam: with no declaration, there is no key it promised.
+ *
+ * Fails CLOSED: a bound value that does not say — one a copy of the kernel from before #2387 made
+ * — holds every operation it binds, so not knowing records a line rather than hiding one.
+ */
+export function checkHeldOperationsOf(operations: BoundOperations | undefined): ReadonlySet<string> {
+  if (operations === undefined) return new Set();
+  const held = (operations as unknown as Record<symbol, unknown>)[CHECK_HELD];
+  return new Set(Array.isArray(held) ? (held as string[]) : Object.keys(operations.handlers));
 }
 
 /**
@@ -234,5 +299,5 @@ function withDerivedHandlers<H>(declaration: Readonly<Record<string, object>>, h
  */
 export function undeclaredOperations(reason: string, handlers: HandlerMap): { operations: BoundOperations } {
   if (reason.trim() === '') throw new Error('undeclaredOperations: give the reason this module declares no operations');
-  return { operations: new BoundOperations(MINT, handlers) };
+  return { operations: new BoundOperations(MINT, handlers, { checks: {} }) };
 }

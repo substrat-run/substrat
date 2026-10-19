@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
+import { ApiError as TeamApiError } from '../lib/api.generated';
 import { api, teamApi, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type EmittedLifecycle, type AppMembersView, type MemberInviteView, type AuditedAnswerView } from '../lib/api';
 import { diffRegistries, grantShapeHolderNotes, hasRegistryChange } from '../lib/registry-diff';
 import { timelineTargets, type TimelineTarget } from '../lib/history';
@@ -234,7 +235,7 @@ export function AppDetail({
           onSection={(s) => onTab(s === 'tables' ? 'data' : `data/${s}`)}
         />
       )}
-      {main === 'deployments' && <Deployments app={app} />}
+      {main === 'deployments' && <Deployments teamId={teamId} app={app} />}
       {main === 'settings' && (
         <Settings
           teamId={teamId}
@@ -744,7 +745,7 @@ function Timeline({ items }: { items: Array<{ dot: TimelineDot; body: React.Reac
 /** Versions read while looking for the newest admitted push, before the look is given up. */
 const ADMITTED_SEARCH_CAP = 200;
 
-export function Deployments({ app }: { app: AppRow }) {
+export function Deployments({ teamId, app }: { teamId: string; app: AppRow }) {
   const [dep, setDep] = useState<AppDeployments | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -786,7 +787,7 @@ export function Deployments({ app }: { app: AppRow }) {
     };
   }, [app.app_scope_id, nonce]);
 
-  const ledger = useLedger(dep);
+  const ledger = useLedger(teamId, dep);
 
   // Append the next (older) page of versions below the loaded ones.
   const loadOlderVersions = async () => {
@@ -993,6 +994,7 @@ export function Deployments({ app }: { app: AppRow }) {
       {/* Directly under "Running": the last question before pressing Update, with the
           button that answers it in its own header. */}
       <ReleaseComparisonCard
+        teamId={teamId}
         app={app}
         dep={dep}
         running={running}
@@ -1663,8 +1665,8 @@ function TestEnvironment({ teamId, app }: { teamId: string; app: AppRow }) {
   useEffect(() => {
     if (DEV_MOCK || !slug) return;
     let live = true;
-    api
-      .listPreviews(slug)
+    teamApi(teamId)
+      .listPreviews({ slug })
       .then((p) => {
         if (!live) return;
         setEnvs(p);
@@ -1673,14 +1675,14 @@ function TestEnvironment({ teamId, app }: { teamId: string; app: AppRow }) {
       .catch((e) => {
         if (!live) return;
         // 501 = no shared control plane (embedded / self-host): the surface isn't available.
-        if (e instanceof ApiError && e.status === 501) setUnavailable(true);
+        if (e instanceof TeamApiError && e.status === 501) setUnavailable(true);
         else setNote(e instanceof Error ? e.message : String(e));
         setEnvs([]);
       });
     return () => {
       live = false;
     };
-  }, [slug, nonce]);
+  }, [teamId, slug, nonce]);
 
   // The env's custom-domain bindings — status + the DNS records still to publish.
   useEffect(() => {
@@ -1719,7 +1721,7 @@ function TestEnvironment({ teamId, app }: { teamId: string; app: AppRow }) {
     try {
       // Clean-room + no expiry: starts at the chosen version and keeps its binding
       // until an explicit preview push or scope bind.
-      await api.createPreview(dep.slug, { tag: 'test', versionId: seedVersion, empty: true, ttlHours: null });
+      await teamApi(teamId).createPreview({ slug: dep.slug, tag: 'test', versionId: seedVersion, empty: true, ttlHours: null });
       setNote('Test environment created at the chosen version. Push or bind explicitly to update it. Attach a custom domain below.');
       setNonce((n) => n + 1);
     } catch (e) {
@@ -1734,7 +1736,9 @@ function TestEnvironment({ teamId, app }: { teamId: string; app: AppRow }) {
     setBusy(true);
     setNote(null);
     try {
-      const bound = await api.addPreviewDomain(dep.slug, env.tag, {
+      const bound = await teamApi(teamId).bindPreviewDomain({
+        slug: dep.slug,
+        tag: env.tag,
         domain: domain.trim().toLowerCase(),
         surface: 'app',
         canonical: true,
@@ -1786,7 +1790,7 @@ function TestEnvironment({ teamId, app }: { teamId: string; app: AppRow }) {
     setBusy(true);
     setConfirmDelete(false);
     try {
-      await api.deletePreview(dep.slug, env.tag);
+      await teamApi(teamId).deletePreview({ slug: dep.slug, tag: env.tag });
       setNote('Test environment deleted.');
       setNonce((n) => n + 1);
     } catch (e) {

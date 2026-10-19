@@ -192,6 +192,17 @@ const perms = (edit: (t: string) => string): Classification => {
 const createList = (d: Json) => d.paths['/api/lists'].post;
 const createBody = (d: Json) => createList(d).requestBody.content['application/json'].schema;
 
+const FIXTURE_PATH = join(__dirname, '..', '..', 'model-view', 'test', 'fixtures', 'operations-tables.json');
+/** The shared Operations-table fixture (#2384), read from disk so both packages' tests load one file. */
+const OPERATIONS_FIXTURE = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8')) as {
+  readable: Record<string, { body: string; operations: number; unknownFor: string[] }>;
+  malformed: Record<string, string>;
+};
+const READABLE_OPERATIONS = OPERATIONS_FIXTURE.readable;
+const MALFORMED_OPERATIONS = OPERATIONS_FIXTURE.malformed;
+const withOperations = (permissionsMd: string, body: string): string =>
+  `${permissionsMd.trimEnd()}\n\n## 9. Operations — which key each checks\n${body}`;
+
 describe('identity', () => {
   it('unchanged artifacts are no bump, whatever their formatting', () => {
     expect(classifyModel(JSON.stringify(MODEL), JSON.stringify(MODEL, null, 2)).bump).toBe('none');
@@ -705,9 +716,138 @@ describe('PERMISSIONS.md', () => {
       expect(Object.keys(snap.roles).length, file).toBe(Number(header[2]));
       expect(snap.unread, file).toEqual({});
       expect(classifyPermissions(text, text).bump, file).toBe('none');
+      // #2384: the Operations section is read, one entry per row the emitter wrote.
+      const opsSection = /^## \d+\. Operations\b[\s\S]*?(?=^## )/m.exec(text)?.[0] ?? '';
+      // An explicitly empty surface has no operations to list, and no section saying so.
+      if (header[1] === '0') expect(snap.operations, file).toBeUndefined();
+      else expect(snap.operations, file).toBeDefined();
+      expect(Object.keys(snap.operations ?? {}).length, file).toBe((opsSection.match(/^\| `/gm) ?? []).length);
       counted += 1;
     }
     expect(counted).toBeGreaterThan(3);
+  });
+});
+
+describe('PERMISSIONS.md — which key each operation checks (#2384)', () => {
+  const OPS = `
+## 6. Operations — which key each checks
+
+| Operation | Key | Checked on | Declared by |
+| --- | --- | --- | --- |
+| \`todo/create-list\` | \`list:create\` | the scope | \`@acme/vertical\` |
+| \`todo/rename-list\` | \`list:manage\` | one \`list\`, id from \`listId\` | \`@acme/vertical\` |
+| \`todo/raw\` | — checked in code, not declared — | — | \`@acme/vertical\` |
+`;
+  const WITH = PERMS + OPS;
+  const ops = (edit: (t: string) => string): Classification => {
+    const head = edit(WITH);
+    expect(head, 'the edit must change the fixture').not.toBe(WITH);
+    return classifyPermissions(WITH, head);
+  };
+
+  it('an unchanged section ranks none', () => {
+    expect(classifyPermissions(WITH, WITH).bump).toBe('none');
+    expect(parsePermissions(WITH).unread).toEqual({});
+  });
+
+  it('an operation moved to a different key is a flagged permission change at minor — not an unread section at major', () => {
+    const r = ops((t) => t.replace('| `todo/rename-list` | `list:manage` |', '| `todo/rename-list` | `list:read` |'));
+    expect(r.bump).toBe('minor');
+    expect(r.changes).toEqual([
+      expect.objectContaining({ path: 'operation todo/rename-list', flagged: true, detail: 'now checks list:read (was list:manage)' }),
+    ]);
+  });
+
+  it('the same key checked on something else is flagged too: narrowed to the scope is a widening', () => {
+    const r = ops((t) => t.replace('one `list`, id from `listId`', 'the scope'));
+    expect(r.changes).toEqual([expect.objectContaining({ path: 'operation todo/rename-list', flagged: true, level: 'minor' })]);
+  });
+
+  it('an operation removed, or added, is flagged minor', () => {
+    const removed = ops((t) => t.replace(/\| `todo\/create-list`.*\n/, ''));
+    expect(removed.changes).toEqual([
+      expect.objectContaining({ path: 'operation todo/create-list', flagged: true, level: 'minor', detail: 'removed (checked: list:create)' }),
+    ]);
+    const added = ops((t) => `${t}| \`todo/share\` | \`list:manage\` | the scope | \`@acme/vertical\` |\n`);
+    expect(added.changes).toEqual([expect.objectContaining({ path: 'operation todo/share', flagged: true, level: 'minor' })]);
+  });
+
+  it('an operation with no declared key is read as having none — and gaining a declaration is flagged', () => {
+    expect(parsePermissions(WITH).operations?.['todo/raw']?.keys).toEqual([]);
+    const declared = ops((t) => t.replace('| `todo/raw` | — checked in code, not declared — | — |', '| `todo/raw` | `list:read` | the scope |'));
+    expect(declared.changes).toEqual([
+      expect.objectContaining({ path: 'operation todo/raw', flagged: true, detail: 'now checks list:read (was no declared key)' }),
+    ]);
+  });
+
+  it('an Operations table that cannot be read is MAJOR — never every operation "removed" at minor', () => {
+    const header = '| Operation | Key | Checked on | Declared by |';
+    for (const [why, edit] of [
+      ['truncated: the table gone', (t: string) => t.replace(/\| Operation \| Key \|[\s\S]*$/, '\n')],
+      ['the header row lost', (t: string) => t.replace(`${header}\n`, '')],
+      ['a column dropped from the header', (t: string) => t.replace(header, '| Operation | Key | Declared by |')],
+      ['a row with the wrong number of cells', (t: string) => t.replace('| the scope | `@acme/vertical` |', '| `@acme/vertical` |')],
+    ] as const) {
+      const r = ops(edit);
+      expect(r.bump, why).toBe('major');
+      expect(r.changes, why).toEqual([expect.objectContaining({ path: 'operations', level: 'major', flagged: true })]);
+      // Unreadable at the base reads the same way.
+      expect(classifyPermissions(edit(WITH), WITH).bump, why).toBe('major');
+    }
+  });
+
+  // The shared fixture: the shapes model-view's reader judges, judged here the same way.
+  for (const [shape, body] of Object.entries(MALFORMED_OPERATIONS)) {
+    it(`shared fixture, unreadable → major at head and at base: ${shape}`, () => {
+      const bad = withOperations(PERMS, body);
+      const good = withOperations(PERMS, READABLE_OPERATIONS['a table with rows']!.body);
+      expect(classifyPermissions(good, bad).changes).toEqual([expect.objectContaining({ path: 'operations', level: 'major', flagged: true })]);
+      expect(classifyPermissions(bad, good).bump).toBe('major');
+    });
+  }
+  for (const [shape, { body, operations, unknownFor }] of Object.entries(READABLE_OPERATIONS)) {
+    it(`shared fixture, readable: ${shape}`, () => {
+      const snap = parsePermissions(withOperations(PERMS, body));
+      expect(snap.operationsUnreadable).toBeUndefined();
+      expect(Object.keys(snap.operations ?? {})).toHaveLength(operations);
+      expect(snap.operationsUnknownFor).toEqual(unknownFor);
+    });
+  }
+
+  it('a module moving between "operations unknown" and known is a flagged minor change, both ways', () => {
+    const bare = withOperations(PERMS, READABLE_OPERATIONS["all bare: no table, no module's operations known"]!.body);
+    const known = withOperations(PERMS, READABLE_OPERATIONS['known-empty: the "no operations" line']!.body);
+    expect(classifyPermissions(bare, known).changes).toEqual([
+      expect.objectContaining({ path: 'operations of @acme/bare', level: 'minor', flagged: true, detail: expect.stringMatching(/now known/) }),
+    ]);
+    expect(classifyPermissions(known, bare).changes).toEqual([
+      expect.objectContaining({ path: 'operations of @acme/bare', level: 'minor', flagged: true, detail: expect.stringMatching(/no longer known/) }),
+    ]);
+    // Twin: still unknown on both sides is no change.
+    expect(classifyPermissions(bare, bare).bump).toBe('none');
+  });
+
+  it('its twin: a section saying there are no operations is readable, and empty', () => {
+    const none = WITH.replace(/\| Operation \| Key \|[\s\S]*$/, '_No module here registers an operation._\n');
+    expect(parsePermissions(none).operations).toEqual({});
+    expect(parsePermissions(none).operationsUnreadable).toBeUndefined();
+    expect(classifyPermissions(none, none).bump).toBe('none');
+  });
+
+  it('a reason with an escaped pipe is one cell, as model-view reads it', () => {
+    const t = `${WITH}| \`todo/accept\` | — none — | nothing: a \\| b | \`@acme/vertical\` |\n`;
+    expect(parsePermissions(t).operations?.['todo/accept']?.terms).toEqual(['— none —', 'nothing: a | b', '`@acme/vertical`']);
+    expect(parsePermissions(t).operationsUnreadable).toBeUndefined();
+  });
+
+  it('the section first appearing is patch, unflagged: the base had nothing to compare; its removal is major', () => {
+    const introduced = classifyPermissions(PERMS, WITH);
+    expect(introduced.bump).toBe('patch');
+    expect(introduced.changes).toEqual([expect.objectContaining({ path: 'operations', level: 'patch' })]);
+    expect(introduced.changes.some((c) => c.flagged)).toBe(false);
+    const dropped = classifyPermissions(WITH, PERMS);
+    expect(dropped.bump).toBe('major');
+    expect(dropped.changes[0]?.flagged).toBe(true);
   });
 });
 

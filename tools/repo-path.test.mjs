@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, win32 } from 'node:path';
-import { repoRoot, toPosix } from './repo-path.mjs';
+import { pathToFileURL } from 'node:url';
+import { isMainModule, repoRoot, toPosix } from './repo-path.mjs';
 
 test('repoRoot is the checkout, where URL.pathname is not', () => {
   const broken = new URL('..', import.meta.url).pathname;
@@ -29,4 +31,20 @@ test('toPosix turns a Windows relative path into the spelling source uses', () =
   // A backslash relative path never matches, so the header would drift.
   assert.equal(/^(demos|apps)\/[^/]+$/.test('demos\\todo'), false);
   assert.equal(/^(demos|apps)\/[^/]+$/.test(toPosix('demos\\todo')), true);
+});
+
+test('isMainModule sees the script through a symlinked path, and not another file', () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'is-main-')));
+  try {
+    writeFileSync(join(dir, 'tool.mjs'), '');
+    writeFileSync(join(dir, 'other.mjs'), '');
+    symlinkSync(dir, join(dir, 'linked'));
+    const url = pathToFileURL(join(dir, 'tool.mjs')).href;
+    assert.equal(isMainModule(url, join(dir, 'linked', 'tool.mjs')), true);
+    assert.equal(isMainModule(url, join(dir, 'tool.mjs')), true);
+    assert.equal(isMainModule(url, join(dir, 'other.mjs')), false);
+    assert.equal(isMainModule(url, undefined), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

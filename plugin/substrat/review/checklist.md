@@ -29,6 +29,12 @@ Substrat's rules can see.
   mechanical check, where there is one. Run it, and report its failure instead of
   re-deriving it. Spend your reading on the part no gate can see, which the item's *Look
   for* lines say.
+- **Each item ends with a `gates:` line**, the machine-read list of the commands that refuse
+  it: monorepo commands (`pnpm …`, `node tools/…`) and the scaffold's (`npm …`). `judgement`
+  in that list marks what no script can decide, which is the part to read; an item that is
+  `gates: judgement` alone has no mechanical half. `pnpm lint:review-checklist` holds every
+  command named there to one that exists and that CI runs, so a gate listed here is a gate
+  that bites. `<ref>` stands for the base branch (`origin/main`).
 - Severity is per item. **blocking**: the change is unsafe to merge as written.
   **advisory**: worth a comment, never a stop.
 - No finding is a valid result. Say which items you checked and found clean. Do not invent
@@ -51,6 +57,8 @@ Tenant data is reached through `ctx.sql`, inside an operation, and nowhere else.
 - *Reader:* spellings a linter cannot see: another module's table named in SQL, a binding or
   stub that reaches a different scope, `fetch` in module code.
 
+gates: `node tools/boundary-lint.mjs` · `npm run lint:boundaries` · judgement
+
 ### S2 · Every operation checks a permission: blocking
 
 The first line of a handler is `assertAllowed(await ctx.check(PERM))`, and `PERM` exists in
@@ -58,12 +66,17 @@ the permissions source.
 
 - *Gate:* `pnpm lint:permissions --check` goes red when the surface changed and
   `PERMISSIONS.md` was not re-emitted. Name every widened role in the report. This is the
-  **permission-diff checkpoint**: present it, and stop there.
+  **permission-diff checkpoint**: present it, and stop there. An operation declaring a check
+  on one entity (`{ key, entity, idFrom }`) is held to it by `entityCheckConformanceSuite`,
+  which the package's tests run (`pnpm lint:entity-check-adoption` refuses a package with such
+  operations that never calls it).
 - *Reader:* an operation with no check; a check on a key that grants less than the operation
   does; a scope-wide key where the operation addresses one entity. No gate sees a handler
   that checks a weaker key than the model declares, because the declaration did not change:
   for every operation the change touches, open `spec/model.ts` and compare the key it
   declares with the key the handler checks.
+
+gates: `pnpm lint:permissions --check` · `pnpm lint:entity-check-adoption` · `pnpm test` · judgement
 
 ### S3 · Generated files and kernel packages are not edited by hand: blocking
 
@@ -73,13 +86,21 @@ the permissions source.
 - *Reader:* a diff to a `*.generated.*` file, `model.json`, `openapi.json`, an emitted
   migration or `@substrat-run/*` code, with no change to the source it comes from.
 
+gates: `pnpm lint:model --check` · `pnpm lint:api --check` · `pnpm lint:client --check` · `pnpm lint:permissions --check` · `pnpm lint:migrations --check` · `pnpm lint:generated-marks` · judgement
+
 ### S4 · Migrations are append-only and declare what they lose: blocking
 
 - *Gate:* `pnpm lint:migration-fence` replays every authored migration against populated
-  data and refuses an undeclared loss.
-- *Reader:* a shipped migration edited; a declared `discards` whose reason does not match
+  data and refuses an undeclared loss. `pnpm lint:migration-ledger --base origin/main`
+  refuses a migration the base branch shipped that is now edited, removed or renumbered
+  (each package's `MIGRATIONS.md` records the digest a scope checks).
+- *Reader:* a shipped migration edited, removed or renumbered, wherever `lint:migration-ledger`
+  is not available (a scaffolded project has no ledger, so read the diff of every migration
+  file against the base branch); a declared `discards` whose reason does not match
   what the SQL does (a declaration is not a pass). This is the **migration-diff
   checkpoint**: present the diff plainly, and stop there.
+
+gates: `pnpm lint:migration-fence` · `pnpm lint:migration-ledger --base <ref>` · `pnpm lint:migration-ledger --check` · `pnpm lint:migrations --check` · judgement
 
 ### S5 · Personal data is classified and erasable: blocking
 
@@ -89,25 +110,41 @@ the permissions source.
   name, email, phone, address or free text they wrote must be in `erasable`; list each field
   you judged and why.
 
+gates: `pnpm typecheck` · `npm run typecheck` · `pnpm lint:model --check` · judgement
+
 ### S6 · State changes go through declared lifecycles: blocking
 
 - *Gate:* the compiler checks the joins between a lifecycle and its operations.
-- *Reader:* a raw `UPDATE … SET status = …`; a transition coded but not declared; a guard
-  rewritten inline beside a lifecycle that already draws that edge.
+  `pnpm lint:lifecycle-writes` refuses a write of a declared lifecycle's state with no
+  `assertTransition` / `transitionFor` (or a local wrapper of one) before it.
+- *Reader:* a state field that should have a declared lifecycle and has none (the gate reads
+  only declared ones); a transition coded but not declared; a guard asked in another file, or
+  rewritten inline beside the lifecycle call.
+
+gates: `pnpm typecheck` · `npm run typecheck` · `pnpm lint:lifecycle-writes` · judgement
 
 ### S7 · Secrets stay out of source and logs: blocking
 
-- *Gate:* none that is complete.
-- *Reader:* a literal token, key or connection string; a secret reaching a log line, an
+- *Gate:* `pnpm lint:secret-literals` refuses a credential whose issuer gives it a shape (a
+  PEM, PGP or JWK private key, a provider token prefix, a chat webhook URL, a URL with
+  `user:password@`). It does not see a secret with no shape, nor a shaped one that is encoded
+  (base64, hex) or assembled from parts.
+- *Reader:* a literal secret with no recognisable shape (an HMAC key, a password, an API
+  token without a prefix), or one encoded or split so no shape shows; a secret reaching a log line, an
   error, an event payload or a response; a secret name in public text (a PR description, a
   comment).
+
+gates: `pnpm lint:secret-literals` · judgement
 
 ### S8 · A new operation has an acceptance test: advisory
 
 - *Gate:* `pnpm lint:tests` refuses a test that reads the emitted model to decide what to
-  assert.
+  assert. `pnpm lint:operation-tests --base origin/main` warns (never fails) on an operation
+  new since the base that no test in its package names.
 - *Reader:* an operation added with no scenario calling it, or only a happy path where it
   has a permission failure and a not-found.
+
+gates: `pnpm lint:tests` · `pnpm lint:operation-tests --base <ref>` · judgement
 
 ## Not listed here
 

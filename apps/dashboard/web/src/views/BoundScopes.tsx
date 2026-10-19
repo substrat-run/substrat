@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Checkbox, Dialog, Input, Select } from '@substrat-run/ui';
-import { api, type BoundScopeRow, type BoundScopesView, type Deployment, type MoveReviewRow } from '../lib/api';
+import { teamApi, type BoundScopeRow, type BoundScopesView, type Deployment, type MoveReviewRow } from '../lib/api';
 import { hasBoundScopes, isRetireArmed, looksStrandedByRename, moveBindings, moveTargets, reviewMoved, reviewsToShow } from '../lib/bound-scopes';
 import { PromoteMigrations } from '../components/PromoteMigrations';
 import { DEV_MOCK, MOCK_BOUND_SCOPES } from '../lib/mock';
@@ -37,7 +37,7 @@ const COLUMNS = '2.2fr 0.9fr 1.1fr 2fr';
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-export function BoundScopes({ d, all, onChanged }: { d: Deployment; all: readonly Deployment[]; onChanged: () => void }) {
+export function BoundScopes({ teamId, d, all, onChanged }: { teamId: string; d: Deployment; all: readonly Deployment[]; onChanged: () => void }) {
   const [view, setView] = useState<BoundScopesView | null>(DEV_MOCK ? mockView(d.slug) : null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
@@ -61,12 +61,12 @@ export function BoundScopes({ d, all, onChanged }: { d: Deployment; all: readonl
   const load = useCallback(async () => {
     if (DEV_MOCK) return;
     try {
-      setView(await api.listBoundScopes(d.slug));
+      setView(await teamApi(teamId).listBoundScopes({ slug: d.slug }));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [d.slug]);
+  }, [teamId, d.slug]);
 
   useEffect(() => {
     void load();
@@ -115,14 +115,15 @@ export function BoundScopes({ d, all, onChanged }: { d: Deployment; all: readonl
       const ids = movable.map((s) => s.id);
       // #2347: the review comes first. Where the lineages' migrations differ, it is shown and the
       // dialog asks; the move then sends each install's binding with the acknowledgement.
-      const read = DEV_MOCK ? [] : (review ?? (await api.readMoveReview(d.slug, { scopeIds: ids, target })).scopes);
+      const read = DEV_MOCK ? [] : (review ?? (await teamApi(teamId).reviewScopeMove({ slug: d.slug, scopeIds: ids, target })).scopes);
       if (review === null && !DEV_MOCK) {
         setReview(read);
         if (reviewsToShow(read).length > 0) return;
       }
       const result = DEV_MOCK
         ? { moved: ids, refusal: null }
-        : await api.moveBoundScopes(d.slug, {
+        : await teamApi(teamId).moveScopes({
+            slug: d.slug,
             scopeIds: ids,
             target,
             ...(reviewsToShow(read).length > 0 && ack ? { ackMigrations: true } : {}),
@@ -139,7 +140,7 @@ export function BoundScopes({ d, all, onChanged }: { d: Deployment; all: readonl
         // What the move would apply changed under the acknowledgement: show it as it stands now,
         // for what is left, and ask again from scratch.
         const left = ids.filter((id) => !result.moved.includes(id));
-        setReview((await api.readMoveReview(d.slug, { scopeIds: left, target })).scopes);
+        setReview((await teamApi(teamId).reviewScopeMove({ slug: d.slug, scopeIds: left, target })).scopes);
         setReviewChanged(true);
         setAck(false);
         if (result.moved.length > 0) setNotice(`${plural(result.moved.length, 'install')} moved to ${targetName(target, all)}.`);
@@ -164,7 +165,7 @@ export function BoundScopes({ d, all, onChanged }: { d: Deployment; all: readonl
       const ids = chosen.map((s) => s.id);
       const result = DEV_MOCK
         ? { retired: ids, failure: null }
-        : await api.retireBoundScopes(d.slug, { scopeIds: ids, confirm: typed });
+        : await teamApi(teamId).retireScopes({ slug: d.slug, scopeIds: ids, confirm: typed });
       if (DEV_MOCK) setView((v) => dropScopes(v, result.retired));
       else await load();
       if (result.retired.length > 0) onChanged();

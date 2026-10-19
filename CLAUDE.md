@@ -137,9 +137,10 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   `tools/vitest/like-pattern-limit.cjs` overrides `like()`/`glob()` on each connection —
   `--require`d by the root `pnpm test` and by the CI test step through `NODE_OPTIONS`, which
   is why a bare `pnpm --filter … test` does **not** have it: run the suite as
-  `NODE_OPTIONS="--require=$PWD/tools/vitest/like-pattern-limit.cjs" pnpm --filter … test` to
-  see what CI sees. A test whose oracle is a longer pattern lifts it on ONE connection with
-  `liftLimit(db)` and says why. `pnpm lint:like-pattern` is the source half: a `LIKE`/`GLOB`
+  `NODE_OPTIONS="$(node tools/vitest/node-options.mjs)" pnpm --filter … test` to see what CI
+  sees: it prints every preload in `tools/vitest`, so the command cannot fall one behind. A
+  test whose oracle is a longer pattern lifts it on ONE connection with `liftLimit(db)` and
+  says why. `pnpm lint:like-pattern` is the source half: a `LIKE`/`GLOB`
   literal over 50 bytes, or a `const` of three or more `[0-9]`-style classes over it, is
   refused — the run-time limit is what catches a pattern built from input.
 - **The same preload chain judges ALL node adapter SQL against the DO's other limits** (#1786):
@@ -149,6 +150,15 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   instead of a deployed scope (#1776). Wired beside the LIKE preload in the root `pnpm test`
   and CI's test step; it reads the kernel's built `dist`. No opt-out exists yet: add one, with the
   reason at its call, when a node-only path legitimately exceeds a limit.
+- **An operation that declares a `permission` and never calls `ctx.check` fails every node
+  suite** (#2387). Both scope hosts count each invocation's checks (a refused, caught or
+  throwing check counts, and so does one made in a helper), and on zero they write a `warn`
+  line through `ctx.log`. In production that line is all that happens. `tools/vitest/unchecked-operations.cjs`,
+  wired with the two preloads above, makes the operation throw `UncheckedOperation` and roll
+  back. Not held: derived handlers, `narrows` walks (an empty walk asks nothing, and is right
+  to), and `undeclaredOperations` modules. An operation that deliberately checks nothing
+  declares `narrows: { reason, checks: [], unchecked: true }`. `pnpm test:preloads` refuses a
+  preload missing from the root `test`, CI's test step or `test:affected`.
 - **`overrides:` in `pnpm-workspace.yaml` are checked at every severity** (#1601).
   Dependabot reads package.json ranges and the catalog blocks, never `overrides`, so a
   pin there has no updater. An override that only needs a version says `'catalog:'`
@@ -526,7 +536,12 @@ generated while nothing re-emits it. So a generated file has all three of:
    in the repo.
 
 The re-emit gates today: `lint:permissions`, `lint:model`, `lint:api`, `lint:client`,
-`lint:conformance`, `lint:migrations`, plus `lint:decisions`, `lint:playbook`, `lint:docs`,
+`lint:conformance`, `lint:migrations`, `lint:migration-ledger` (`tools/migration-ledger.mts`, #2365:
+each package's `MIGRATIONS.md`, the digest of every migration its own modules author as the
+kernel's `migrationSteps` computes it; its `--base <ref>` half refuses a row the base branch
+shipped that is now changed, missing or renumbered, since a scope that applied it fails closed on
+the edit at its next migration pass, #2066, and a new one placed or numbered before what the base
+shipped, which an existing scope would run out of order), plus `lint:decisions`, `lint:playbook`, `lint:docs`,
 `lint:llms`, `lint:agent-rules`, `lint:launch`, `lint:plugin`, `lint:pins`,
 `lint:platform-entry` (`tools/platform-entry-emit.mts`: the entry module the uploader puts
 in front of every vertical's bundle, #1893, bundled from vertical-host's `withInvocationLog` —
@@ -707,7 +722,24 @@ awaited RPC rejection does not — and it refuses
 `expect(() => stub.method()).rejects`), `lint:connector-grants` (`tools/connector-grants.mts`: a dashboard door and
 the `CONNECTORS` registration behind it are the two ends of one connector — this checks
 both directions and the standing grants the door must carry, see the connector rule
-below), and `lint:changelog --check` — which asserts a hand-written digest accounts
+below), the review checklist's mechanical half (#2365: `plugin/substrat/review/checklist.md`
+gives each item a machine-read `gates:` line, and a review runner trusts what it names) —
+`lint:review-checklist` (`tools/review-checklist.mjs`: every command a `gates:` line names is a
+root script or file that exists AND that this workflow runs with those arguments, or a gate the
+scaffold ships; `judgement` marks what no script decides), `lint:secret-literals`
+(`tools/secret-literals.mjs`: no credential-shaped literal — a PEM, PGP or JWK private key, a
+provider token prefix, a chat webhook URL, a URL with `user:password@` — in any tracked file;
+prints `file:line` and the shape, never the value; an intended literal is an `ACCEPTED` entry
+with its reason and the sha256 of each accepted match, so a different value of the same shape
+is refused; a shapeless secret, or a shaped one encoded or split, gets past it), `lint:entity-check-adoption` (`tools/entity-check-adoption.mts`: a package whose operations
+declare `{ key, entity, idFrom }` calls `entityCheckConformanceSuite` for each module that does, the only thing
+that holds a handler to that declaration), `lint:lifecycle-writes` (`tools/lifecycle-writes.mjs`:
+every write of a declared lifecycle's state field — an `UPDATE`, an upsert's `DO UPDATE`, a
+`REPLACE INTO` — has `assertTransition`/`transitionFor`, or a
+local wrapper of one, before it — in its function or in every caller of the one helper that
+writes), and `lint:operation-tests --base <ref>`, which is advisory and never fails (a
+`::warning` for an operation new since the base that no test in its package names) — and
+`lint:changelog --check` — which asserts a hand-written digest accounts
 for every merge in its range and could not re-emit prose if it wanted to. `lint:scaffold`
 is the exception that runs **off** the PR — post-release and weekly, for the reason its
 bullet above gives.
