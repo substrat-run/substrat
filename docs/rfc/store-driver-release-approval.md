@@ -118,10 +118,13 @@ them:
 2. *"The sha256 … records what arrived and is no provenance."* That is still true here, and the
    RFC does not claim otherwise (§7). Provenance is the approver's statement of what they
    reviewed, recorded on the approval and not verified by the platform.
-3. *"Without a pin, no reviewed change in this repo stands behind a release."* This is the
-   reason the proposal overturns, and it does so on purpose: a recorded review in the control
-   plane replaces a reviewed change in this repo. Whether that is acceptable is the maintainer's
-   call (§9, Q1).
+3. *"And without a pin, no reviewed change in this repo stands behind a release, while that
+   review is the only control until the isolation above exists."* The proposal keeps the second
+   half. Until isolation exists, the review of a release stays the only control, and it is still
+   a person's review of the exact bytes. What it overturns, on purpose, is the first half: where
+   that review is recorded. A recorded review in the control plane replaces a reviewed change in
+   this repo. The gate on isolation itself stays a reviewed change in this repo (§6). Whether
+   that is acceptable is the maintainer's call (§9, Q1).
 
 ## 4. The proposal
 
@@ -169,10 +172,25 @@ upload, recorded in the control plane's directory.
 - **Made by a person.** The approve and revoke routes *(proposed)* run `byAPerson`, exactly as
   the upload does: a human staff sign-in, JSON only, same origin, and the service token refused.
 - **What the row records** *(proposed table `store_driver_approvals`)*: the driver, the sha256,
-  an approval id, who approved and when, a required reason, the commit or commits the approver
+  an approval id, who approved and when, a required reason, the source references the approver
   says they read (§7), the isolation review (§6), the release's `schema`, and its class name and
   operation catalog (§4.4). It also records who revoked it, when, and why. Rows are insert-only:
   a revoke sets the revoke columns once, and approving the same release again writes a new row.
+- **At most one live approval per (driver, sha256).** The table holds a unique index over
+  (driver, sha256) for rows not revoked *(proposed)*, so a second approval of a release that is
+  already approved is refused (409). Approving it again after a revoke writes a new row.
+- **A release's facts freeze once it has run.** `schema`, the class name and the catalog are
+  facts about one release. A re-approval may change them only while no rollout row has ever
+  named the release, which is the case when it was approved by mistake and never rolled out.
+  After that, a re-approval that differs from the release's latest approval row is refused
+  (409). So every row of a release that has run agrees on those three facts.
+- **The release being left is read from history.** Every check that looks up the release a
+  script runs now, rather than the one it moves to, reads that release's latest approval row
+  **whether or not it is revoked**. That covers `assertSchemaKept`'s `from`, the ensurer's
+  `running` lookup and `schemaOf` in `store-releases.ts`. Only the target of a move needs a live
+  approval. The freeze above is what makes the latest row the right one to read. Without it, a
+  revoked running release could never be left: today each of those lookups refuses (409) a
+  release it cannot find, and a rollback to a revoked release is refused by design (422).
 - **Its own witness.** An audited verb writes its admin-log row after the mutation, in a separate
   write, and that gap is accepted (#1292, [control-plane.md](../architecture/control-plane.md)
   §4.4). So who approved, when and why are columns of the approval row, not only fields of the
@@ -188,9 +206,10 @@ it is checked today, and every check fails closed:
 | check | today | proposed |
 |---|---|---|
 | uploaded | `pinOf` 404; ensurer 409 when `loadRelease` finds no bytes | unchanged |
-| approved | `pinOf` 422 when the sha256 is not in `registration.releases`; ensurer 422 the same way | a live (unrevoked) approval for (driver, sha256), read from the directory. A read that fails refuses (503). It never counts as approved |
-| commit matches | `pinOf` 422 when the stored commit is not the pinned one | the approval records the stored commit it was granted against, and the check compares the two |
-| schema | `assertSchemaKept`, and the ensurer's schema check, read `registration.releases[].schema` | both read the approval's `schema` |
+| approved | `pinOf` 422 when the sha256 is not in `registration.releases`; ensurer 422 the same way | the target of a move needs a live (unrevoked) approval for (driver, sha256). A read that fails refuses (503). It never counts as approved |
+| commit matches | `pinOf` 422 when the stored commit is not the pinned one. That is a control, because the pin comes from a reviewed change | no longer a control. `storeDriverRelease()` already refuses (409) a second commit for a stored sha256, and the release row is insert-only, so an approval granted against that row cannot disagree with it. The approval copies the upload's `sourceCommit` and asserts it is unchanged, as a consistency check only. §7's source references are a separate list and are not compared |
+| schema | `assertSchemaKept`, and the ensurer's schema check, read `registration.releases[].schema` | the target's `schema` comes from its live approval. The release being left comes from its latest approval row, revoked or not (above) |
+| class name | the ensurer and the canary ensurer read `registration.className` | read from the target's approval. The loader returns the approval's facts with the bytes *(proposed)*, so `withPythonStoreEntry` builds from the class the release was approved with |
 | module rule | `decodeStoreDriverRelease` at upload and when the ensurer loads the bytes | unchanged. A release the current rule refuses does not run, approved or not, and `status` says why |
 | rolled out | a rollout or rollback moves a script; a push or serve never moves one | unchanged |
 
@@ -200,10 +219,23 @@ rebuild. It does not stop a script that already runs the release, because an upl
 lever the platform has over a running script. `status` names every script that still runs a
 revoked release, and the revoke response names the way out, a rollout to an approved release. A
 revoked release is never a rollback target. The rollback answers 422, as an unpinned target does
-today (control-plane.md §4.4). The cost of this choice is that a fleet rebuild after a key change
-cannot rebuild a script that runs a revoked release. That script keeps the older key lists until
-it is rolled forward, and the rebuild reports it as pending, as it reports any script it cannot
-rebuild. See Q4.
+today (control-plane.md §4.4).
+
+**What a revoke of a running release costs.** The cost reaches further than new scripts. The
+ensurer checks the pin before its no-op shortcut (`current.release === sha256 && current.build
+=== build` in `scriptEnsurer`), and `ensureScopeStoresOf` in `api.ts` rethrows, failing the push
+or serve. So while a vertical's script runs a revoked release, **every push and every serve of
+that vertical is refused**, until a rollout moves its script. That holds for every vertical that
+declares the driver. A fleet rebuild after a key change cannot rebuild those scripts either, so
+they keep the older key lists until they are rolled forward, and the rebuild reports them as
+pending.
+
+**Recommended mitigation: roll forward first, revoke second.** The revoke route refuses (409)
+a release that `storeDriverState` names as current, or that any script still runs, and names
+the rollout to do first *(proposed)*. A person can override that with an explicit emergency flag
+and a reason *(proposed)*, accepting that pushes and serves of every declaring vertical are
+refused until a rollout. That is the fail-closed answer when a release must not be uploaded
+again even once. See Q4.
 
 **Rejected alternatives.**
 
@@ -260,17 +292,24 @@ problem 1). Nothing has to be migrated if this lands first.
 (§4.4), and the graph driver's first release goes through upload and approval. Whether the
 graph driver may be approved at all is a separate question (§6, Q5).
 
-If a pin has merged by the time this is built, there are two options:
+If a pin has merged by the time this is built, there are three options:
 
-- **(a) Import it once** *(recommended for that case)*. On its first start, the approval-reading
-  control plane writes an approval row for each compiled pin. The approver is recorded as the
-  reviewed change that added the pin, and the reason as that change's number. A later change then
-  removes `releases` from the registration. Only an import is ever written. Nothing reads the
-  compiled list as an approval after that.
+- **(a) Import it as an approval row.** *Rejected.* An imported row carries no per-condition
+  isolation review (§6) and no source references (§7), and its approver would be a change number
+  where §4.2 requires a person. The approve route would refuse it, so an import would be the one
+  approval that skips the rules every other approval follows. It would also leave the compiled
+  pin beside the imported approval until a later change removes it, which §8 forbids.
 - **(b) Keep compiled pins as a bootstrap floor, counted as approved beside the data.**
   *Rejected.* That gives two sources of truth. It also keeps "pins are never removed" true for
   those releases, because a revocation in data would have to override a compiled pin, and an
   older control plane, which reads only the pin, would still run the release (§8).
+- **(c) Approve it afresh, and remove the pin in the switch** *(recommended for that case)*.
+  The release is already uploaded, so a person approves it through the approve route like any
+  other release, with the full review of §6 and §7. The compiled `releases` list is removed in
+  the same pull request that switches the readers (§8, step 5), so no control-plane release
+  reads both. While the older control plane still serves during that deploy, it runs the pinned
+  release whatever the data says. A revoke is therefore not relied on until the person attests
+  the deploy has finished (§8).
 
 ### 5.1 The D-63 sentences an amendment would change
 
@@ -282,46 +321,58 @@ sentences below are quoted from D-63 as ratified, each followed by proposed repl
    → *"It is registered in this repo. A release of it runs only once a person on the platform's
    staff has approved that release for that driver in the control plane, and the approval has not
    been revoked."*
-2. *"A release is identified by two values: the sha256 of the release bundle, and the source commit
+2. Lead paragraph. *"The registration names the kind, the script, the class and the operation
+   catalog."*
+   → *"The registration names the driver. The platform names each store script, as it does today
+   (`scopeStoreScriptName`). The approval of a release names the class and the operation catalog
+   of that release."*
+3. *"A release is identified by two values: the sha256 of the release bundle, and the source commit
    the bundle was built from. Both are recorded in the registration, or in an allowlist file the
    registration names."*
    → *"A release is identified by the sha256 of its bundle, which the platform computes when the
-   bundle is uploaded. The approval records the source commit or commits the approver reviewed;
-   the platform does not check them against the bytes."*
-3. *"The bytes do not have to live in this repo, and they may be published to the platform before
+   bundle is uploaded. The approval records the source references (repository and commit) the
+   approver reviewed; the platform does not check them against the bytes."*
+4. *"The bytes do not have to live in this repo, and they may be published to the platform before
    the pin lands. The platform runs a release only once its sha256 and its source commit are
    pinned here by a reviewed change. A review of that change is the review of what the platform
    will run for every tenant."*
    → *"The bytes are uploaded to the platform, which stores them by their sha256. An upload does
    not make a release runnable. The platform runs a release only once it is approved, and the
    review behind the approval is the review of what the platform will run for every tenant."*
-4. *"It has to show the envelope, the reserved operations (including `substrat.erase`), and no
+5. *"It has to show the envelope, the reserved operations (including `substrat.erase`), and no
    per-object state at module level."* Unchanged, except that "It" now means the review behind
    the approval.
-5. Python paragraph. *"The two values of the pin vouch for different bytes. The source commit
+6. Python paragraph. *"The two values of the pin vouch for different bytes. The source commit
    vouches for the driver package and for the pyproject/lock its dependencies were installed
-   from."* → *"The sha256 vouches for every byte. The commit an approval records names the driver
-   package and the pyproject/lock a reviewer read."* The same paragraph's *"The upload says so for
+   from."* → *"The sha256 vouches for every byte. The source references an approval records name
+   the driver package and the pyproject/lock a reviewer read."* The same paragraph's *"The upload says so for
    every release that carries one, pinned or not"* → *"…, approved or not"*.
-6. Why. *"A person publishing, a canary over every reserved operation, and a rollback to the last
+7. Why. *"The source commit names the code a reviewer reads."* → *"The source references an
+   approval records name the code the reviewer read."*
+8. Why. *"A person publishing, a canary over every reserved operation, and a rollback to the last
    good release keep a reviewed release from reaching tenants by any other path."* → *"A person
    approving, separately from the upload, a canary over every reserved operation, and a rollback
    to the last good release keep a reviewed release from reaching tenants by any other path."*
-7. Why, *"Considered: unpinned releases"*. Unchanged, followed by one added paragraph: the
+9. Why, *"Considered: unpinned releases"*. Unchanged, followed by one added paragraph: the
    amendment answers the first reason (a person approves, as a separate write) and the second
-   (provenance is the approver's recorded review, not the digest), and overturns the third on
-   purpose (a recorded review in the control plane stands where a reviewed change in this repo
-   stood).
-8. Limits. *"What the platform checks is the bundle's sha256, at registration and at every upload
-   of the script."* → *"…, at approval and at every upload of the script."*
-9. Limits. **"Pins are never removed."** The whole bullet (*"A superseded release, including one
+   (provenance is the approver's recorded review, not the digest). It keeps the second half of
+   the third: the review of each release stays the only control until the isolation above
+   exists. It overturns the first half on purpose: a recorded review in the control plane stands
+   where a reviewed change in this repo stood, while the isolation gate itself stays a reviewed
+   change in this repo.
+10. Limits. *"What the platform checks is the bundle's sha256, at registration and at every
+    upload of the script."* → *"…, at approval and at every upload of the script."* The same
+    bullet's *"…they re-hash the stored bytes they are about to send and compare them with the
+    pin, rather than trusting a hash taken when the bytes arrived"* → *"…compare them with the
+    approved sha256, rather than…"*.
+11. Limits. **"Pins are never removed."** The whole bullet (*"A superseded release, including one
    superseded for a defect, stays pinned, so a holder of the publishing credential can publish it
    again. An explicit way to revoke or withdraw a pinned release, after which it does not run, is
    a follow-up."*) → **"An approval can be revoked."** *"Revoking an approval stops every later
    upload of that release, a rollback to it included. It does not stop a script that already runs
    the release; a rollout or a rollback moves that script. Approvals and their revocations are
    kept and never deleted."*
-10. Limits. **"The allowlist takes effect at control-plane deploy."** The whole bullet → **"An
+12. Limits. **"The allowlist takes effect at control-plane deploy."** The whole bullet → **"An
     approval takes effect when it is written."** *"The driver's registration, its id, is compiled
     into the control plane and takes effect at control-plane deploy. An approval is data and
     takes effect at once. The staff sign-in that writes it is part of what this decision trusts."*
@@ -352,11 +403,19 @@ makes no claim about whether any driver, the graph driver included, meets it.
   route refuses a driver written outside this repo whose registration names no such record.
   Lifting the requirement therefore stays a reviewed change in this repo, with a decision record
   behind it, as D-63 has it. Only the per-release approval moves to data.
+- **The basis is checked wherever an approval is read, not only when it is written.** The
+  rollout, the rollback, the ensurer and the fleet rebuild treat an approval as live only while
+  the compiled registration still carries an isolation basis that admits it. So if a later
+  reviewed change removes a driver's basis, its approvals stop counting at the next control-plane
+  deploy, without a revoke. That keeps "lifting the requirement is a reviewed change in this repo"
+  true in both directions. The cost is §4.2's: every push and serve of a vertical whose script runs
+  such a release is refused until the basis returns. Removing a basis is therefore a deliberate
+  stop, the same as an emergency revoke of every release of the driver.
 - **Each approval records the review against the requirement.** The approve request carries a
   required isolation review *(proposed)*. For each of D-63's three conditions it records whether
   the reviewer found it met, with a reference to the evidence. It also records that the reviewer
   checked the release's envelope handling, its reserved operations and the absence of per-object
-  state at module level, the review D-63 requires (§5.1, item 4). The route refuses an approval
+  state at module level, the review D-63 requires (§5.1, item 5). The route refuses an approval
   with any condition missing. It never infers a condition from the bytes.
 
 **Rejected alternative:** *a free-text reason only.* That records that someone approved, not what
@@ -371,8 +430,11 @@ is that limit seen in practice.
 
 **`sourceCommit` is the uploader's claim and the approver's reference.** On the upload, the CLI's
 `sourceCommitOf` checks that the driver package is clean and tracked at `HEAD` of the checkout
-`--dir` is in. It does not check `python_modules/`, and the platform checks nothing about the
-commit. On the approval, the commit is what the approver says they read. It is not a build input
+`--dir` is in. It does not check `python_modules/`. When the uploader passes `--commit`, the CLI
+skips `sourceCommitOf` altogether (`flag('commit') ?? sourceCommitOf(dir, files)` in
+`packages/cli/src/cli.ts`), so the stored commit is whatever was typed, with no check that the
+package is clean or tracked. The platform checks nothing about the commit either way. An approver
+reading the stored commit is reading the uploader's claim. On the approval, the commit is what the approver says they read. It is not a build input
 the platform can replay. **Recommended:** the approval records a list of source references
 (repository and commit) instead of one commit *(proposed)*. A bundle like #2394's, with a
 dependency built from a second repository, then names both. The platform stores the list and
@@ -425,14 +487,30 @@ problem 1.
    `store-driver status` shows approvals. Released CLIs keep working. `upload` and `rollout` keep
    their routes and bodies. The upload response keeps `pinned`, which a released CLI reads
    (`packages/cli/src/cli.ts`), and from this step it means "approved for this driver and not
-   revoked". A released CLI then prints "not pinned yet" until approval, which is out of date but
-   safe. `GET /store-drivers/:driver` keeps `pins` in its current shape, holding the approved
-   releases.
-5. **The registration.** `storeDriverRegistration` becomes the driver id plus the isolation basis
+   revoked". A new `approved` field carries the same value, and a new CLI reads that. A released
+   CLI then prints *"not pinned yet: it runs once a reviewed change pins this sha256 and commit"*
+   until approval. That is safe, but it **misleads**: it sends the uploader to open a pin change
+   in this repo, the step this model removes. The CLI release that adds `approve` changes that
+   line, and the upload route's documentation says to upgrade the CLI. `GET /store-drivers/:driver`
+   keeps `pins` in its current shape, `{ sha256, sourceCommit, schema }`, holding the releases with
+   a live approval. `sourceCommit` there is the upload's `sourceCommit`, and the approval's source
+   references go in a new field beside it *(proposed)*, so a released reader is not handed a
+   shape it cannot parse.
+5. **The switch, with nothing registered.** Every reader of `registration.releases` and
+   `registration.className` moves to the approval in one pull request: `pinOf`, `assertSchemaKept`,
+   `GET /store-drivers/:driver` (`pins`), the upload's `pinned`, `scopeStoreUploadPlan`, the
+   ensurer and the canary ensurer (`createStoreCanaryEnsurer`), and `schemaOf` in
+   `store-releases.ts`. The class name reaches `withPythonStoreEntry` from the target's approval,
+   through the loader (§4.2). The approvals a plan or a walk needs are read once per rollout
+   request, push, serve or rebuild pass, and handed to the ensurer the way `releases` is handed to
+   it today, not read once per script *(proposed)*. A push or serve of a vertical that declares
+   no store reads nothing new. `releases` and `className` leave the registration schema in this
+   same pull request, so no control-plane release reads both pins and approvals. `STORE_DRIVERS`
+   is still empty, so nothing can run, and every gate behaves as it does today.
+6. **The registration.** `storeDriverRegistration` is now the driver id plus the isolation basis
    (§4.4, §6), and `graph` is registered that way. That arms `mayHoldScopeStores` and the push
-   checks. A CLI release carries it, because the CLI's push check is compiled in.
-6. **The switch.** `pinOf`, `assertSchemaKept` and the ensurer read the approval instead of
-   `registration.releases`. From this step on, an approval is what makes a release runnable.
+   checks, with every reader already on approvals. A CLI release carries it, because the CLI's
+   push check is compiled in.
 7. **The first approval.** It is written only after step 6's control plane is the only version
    serving (below).
 
@@ -451,7 +529,12 @@ Two consequences:
 
 - **No compiled pin may sit beside approvals.** An older version reads a compiled pin and no
   revocation. If the same sha256 were both pinned and revoked, an older version would still run
-  it. This is why §5 rejects the bootstrap floor.
+  it. This is why §5 rejects the bootstrap floor and the import, and why step 5 removes
+  `releases` in the same pull request that switches the readers.
+- **The directory read is new on the push path.** Today the pin check is an in-memory lookup.
+  After step 5, a push or serve of a vertical that declares a store reads the approvals once, and
+  a read that fails refuses the push (503) rather than guessing. That is the fail-closed answer,
+  and its cost is that a directory outage now also stops pushes of store-declaring verticals.
 - **The registration is a floor for control-plane rollback.** A control plane rolled back below
   the release that registered the driver sees `STORE_DRIVERS` empty. There, `mayHoldScopeStores`
   answers that no scope holds a store, and backup, wipe and erasure skip stores that do hold data.
@@ -473,7 +556,12 @@ Two consequences:
   both and do not require it for now, and decide again when a second person holds a staff sign-in.
 - **Q4. Revocation.** Is §4.2's rule right? A revoke stops every later upload, a rebuild after a
   key change included, and leaves running scripts where they are until they are rolled forward.
-  Or should revoking the current release be refused until a rollout has moved every script off it?
+  Because the ensurer checks before its no-op shortcut, **every push and serve of every vertical
+  whose script runs the revoked release is refused** until a rollout moves it. The recommendation
+  is to refuse revoking a release that any script still runs, unless a person passes an explicit
+  emergency flag with a reason. Is that the right default? Or should the ensurer let a push or
+  serve keep an existing script unchanged on a revoked release, so that only a move to it is
+  refused?
 - **Q5. The graph driver.** Is the graph driver "written outside this repo" in D-63's sense? If so,
   its first approval waits for the decision record of §6 that lifts the isolation sentence for it.
   This RFC makes no claim that the requirement is met.
@@ -482,7 +570,7 @@ Two consequences:
 - **Q7. `*.dist-info`.** Defer the exclusion until the probe has measured what the runtime reads
   (recommended, §7), or drop and refuse the installer-written files now?
 - **Q8. #2394.** Land the graph registration as the driver id only and close its pin (recommended,
-  §5), or merge the pin and import it once?
+  §5)? If the pin merges first, approve it afresh and remove the pin in the switch (§5, option c)?
 - **Q9. Expiry.** Should an approval lapse when something it was reviewed against changes, such as
   the module rule, the entry, or the envelope version? Or does it stand until revoked, with the
   module rule's refusal as the only automatic stop?
@@ -491,3 +579,11 @@ Two consequences:
   the canary at rollout enough?
 - **Q11. Who may read a stored release.** Staff only (recommended), or also the people who
   maintain the driver, through some route other than the staff console?
+- **Q12. Correcting a release's facts.** §4.2 freezes `schema`, the class name and the catalog
+  once a rollout has named a release. A fact that turns out wrong after that can only be fixed by
+  uploading new bytes, so the release gets a new sha256. Is that acceptable, or should a person be
+  able to correct a fact with a recorded reason?
+- **Q13. A directory read on the push path.** After the switch, a push or serve of a
+  store-declaring vertical reads approvals and refuses on a failed read (503, §8). Is that cost
+  acceptable, or should a control plane keep the last approvals it read and use them for a
+  bounded time?
