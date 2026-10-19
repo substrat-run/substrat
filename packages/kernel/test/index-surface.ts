@@ -553,6 +553,8 @@ export const INDEX_VALUE_EXPORTS = [
   'reservedGrantRefusal',
   // #2430: the one refusal both adapters' role doors (and the ControlPlaneDO's membership unit) answer.
   'reservedRoleRefusal',
+  // #2430: the refusal both adapters' reconcile of declared entity-grant shapes answers.
+  'reservedShapeRefusal',
   'resolveAttachmentTextBounds',
   'resolveCapabilitySession',
   'resolvePeerInstanceFrom',

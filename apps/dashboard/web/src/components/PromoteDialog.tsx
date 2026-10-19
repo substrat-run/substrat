@@ -205,8 +205,8 @@ function PermissionBody({ section, servingLabel, incomingLabel }: { section: Per
                 added={r.added}
                 removed={r.removed}
                 notes={held ? [held] : []}
-                status={r.isNew ? 'new role' : r.isGone ? 'role removed' : r.added.length > 0 ? 'role widened' : held ? 'role holder changed' : 'role narrowed'}
-                kind={r.isGone ? 'neutral' : r.added.length > 0 || r.isNew || held ? 'warning' : 'neutral'}
+                status={r.isNew ? 'new role' : r.isGone ? 'role removed' : r.added.length > 0 ? 'role widened' : r.holder ? 'role holder changed' : 'role narrowed'}
+                kind={r.isGone ? 'neutral' : r.added.length > 0 || r.isNew || r.holder ? 'warning' : 'neutral'}
               />
             );
           })}

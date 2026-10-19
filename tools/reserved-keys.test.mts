@@ -93,12 +93,12 @@ test('one module marking a key reserves it, whatever another module declaring it
 });
 
 // End to end: the tool itself, on a fixture vertical, so the wiring is held and not only the function.
-const fixtureWith = (modules: string, roles: unknown, ownerGrants?: string[]) => {
+const fixtureWith = (modules: string, roles: unknown, ownerGrants?: unknown) => {
   const dir = mkdtempSync(join(tmpdir(), 'reserved-keys-'));
   mkdirSync(join(dir, 'src'));
   writeFileSync(
     join(dir, 'package.json'),
-    JSON.stringify({ name: 'fixture', type: 'module', substrat: { permissions: 'src/p.mjs', ...(ownerGrants ? { ownerGrants } : {}) } }),
+    JSON.stringify({ name: 'fixture', type: 'module', substrat: { permissions: 'src/p.mjs', ...(ownerGrants !== undefined ? { ownerGrants } : {}) } }),
   );
   writeFileSync(
     join(dir, 'src/p.mjs'),
@@ -150,6 +150,15 @@ test('a reserved key in substrat.ownerGrants exits 2, naming the owner grant; it
   assert.equal(r.status, 2);
   assert.match(r.stderr, /owner grants \(substrat\.ownerGrants\) → assistant:run: declared `holder: 'system'`/);
   assert.equal(run(fixtureWith(modulesOf([assistant.manifest]), roles, ['assistant:use'])).status, 0);
+});
+
+test('a substrat.ownerGrants that is not a list of keys exits 2, naming the field, as substrat push does (#2430)', () => {
+  const roles = [{ key: 'staff', permissions: ['assistant:use'] }];
+  for (const ownerGrants of ['assistant:run', ['assistant:use', 7], null]) {
+    const r = run(fixtureWith(modulesOf([assistant.manifest]), roles, ownerGrants));
+    assert.equal(r.status, 2, JSON.stringify(ownerGrants));
+    assert.match(r.stderr, /package\.json declares `substrat\.ownerGrants` as .+, not an array of permission keys\. List the keys/);
+  }
 });
 
 test('…and refuses a system-held role holding a person-grade key', () => {

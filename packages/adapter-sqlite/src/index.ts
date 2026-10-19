@@ -450,6 +450,7 @@ import {
   noteReservedKeys,
   reservedGrantRefusal,
   reservedRoleRefusal,
+  reservedShapeRefusal,
   type DeclaredPermissions,
   admitPeer,
   boundToPeerDeclarations,
@@ -8781,6 +8782,9 @@ export class SqliteScopeHost implements ScopeHost {
         const limit = shapeTopUpBatch(opts?.batch);
         const { tenantId, scopeId } = node;
         this.assertScope(tenantId, scopeId);
+        // #2430: before any pass, so a refused registry tops nobody up and records no binding.
+        const reserved = reservedShapeRefusal(shapes, this.reservedKeys);
+        if (reserved) throw substratError('forbidden', reserved);
         const rt = this.runtime(tenantId, scopeId);
         let toppedUp = 0;
         let retired = 0;

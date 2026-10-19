@@ -506,6 +506,7 @@ import {
   noteReservedKeys,
   reservedGrantRefusal,
   reservedRoleRefusal,
+  reservedShapeRefusal,
   type DeclaredPermissions,
   type PurgePass,
   type AsyncLinePass,
@@ -1508,10 +1509,12 @@ interface ScopeStubRpc {
   ): Promise<Coverage | 'not-held' | 'unknown-to' | { refused: string }>;
   /** #2430: why a role may not be conferred through a door here, or null — see `scope-do.ts`. */
   reservedRoleRefusalFor(tenantId: TenantId, roleKey: string, door: 'person' | 'platform'): Promise<string | null>;
-  /** #2430: the same, against the tenant the scope's provisioning receipt names. */
+  /** #2430: the same for `assignScopeRole`, which names no tenant — see `scope-do.ts`. */
   reservedRoleRefusalHere(roleKey: string, door: 'person' | 'platform'): Promise<string | null>;
   /** #2430: why a raw grant of these keys is refused against the scope class's reservations, or null. */
   reservedGrantRefusalFor(permissions: string[]): Promise<string | null>;
+  /** #2430: why a reconcile of these declared shapes is refused against the scope class's reservations, or null. */
+  reservedShapeRefusalFor(shapes: { entityType: string; permissions: string[] }[]): Promise<string | null>;
   revokeScopeRolesBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
   ): Promise<{ coverage: Coverage; revoked: string[] }>;
@@ -11562,6 +11565,8 @@ export class CloudflareScopeHost implements ScopeHost {
     boundShapeTypes?: string[];
   }> {
     const carry = recordedOffFromWire(input);
+    // #2430: refused before anything is written, rather than at the top-up after the projection.
+    if (input.entityGrants) await this.refuseReservedShapes(input.entityGrants, input.scopeId);
     const services = await this.servicePrincipals?.(input.tenantId, input.scopeId);
     const stub = this.scopeStub(input.scopeId);
     await this.migrateAndRecord(input.scopeId); // create the module tables (setMigrationState no-ops on a null CP)
@@ -11731,7 +11736,8 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async assignScopeRole(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<void> {
     // #2430: a platform door, as `HostAdmin.assignRole` is — a role mixing reserved and other keys
-    // is refused, against the scope class's own reservations and the tenant its receipt names.
+    // is refused, against the scope class's own reservations and the role as the checker reads it
+    // for the tenant the scope's receipt names (`reservedRoleRefusalHere` says what happens without one).
     const refusal = await this.scopeStub(scopeId).reservedRoleRefusalHere(roleKey, 'platform');
     if (refusal) throw substratError('forbidden', refusal);
     unwrapReply(await this.scopeStub(scopeId).writeTuple(`principal:${principal}`, `role:${roleKey}`, `scope:${scopeId}`, null));
@@ -11845,6 +11851,17 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
+   * #2430: refuse a reconcile of declared shapes when one holds a reserved key in `permissions`
+   * (`reservedShapeRefusal`): against this host's reservations, then the scope class's own.
+   */
+  private async refuseReservedShapes(shapes: readonly EntityGrantShape[], scopeId: ScopeId): Promise<void> {
+    const refusal =
+      reservedShapeRefusal(shapes, this.reservedKeys) ??
+      (await this.scopeStub(scopeId).reservedShapeRefusalFor(shapes.map((s) => ({ entityType: s.entityType, permissions: [...s.permissions] }))));
+    if (refusal) throw substratError('forbidden', refusal);
+  }
+
+  /**
    * Top every holder of each declared shape up to the shape as it is now (#2071), in bounded
    * passes — at most `batch` rows of work per scope transaction (default 500, at most 5000;
    * anything else is `validation_failed`), repeated until a pass finishes. Never re-grants a revoked
@@ -11860,6 +11877,7 @@ export class CloudflareScopeHost implements ScopeHost {
     batch?: number,
   ): Promise<{ toppedUp: number; retired: number; retirementsLeftOpen?: number; boundEver?: string[] }> {
     const limit = shapeTopUpBatch(batch);
+    await this.refuseReservedShapes(shapes, scopeId); // #2430
     let toppedUp = 0;
     let retired = 0;
     let retirementsLeftOpen = 0;

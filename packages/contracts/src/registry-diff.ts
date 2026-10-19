@@ -44,7 +44,10 @@ export interface RegistryDiff {
   reservedAddedKeys: string[];
   /**
    * Only roles that actually changed: gained/lost permissions, or appeared/vanished. #2430: `holder`
-   * is set when a role both versions declare moved between a person's and a system principal's.
+   * is set when a role both versions declare moved between a person's and a system principal's, and
+   * `systemHeld` when it did not move and is held by a system principal — a new role as the incoming
+   * version declares it, a dropped one as the outgoing did — so a reader never shows a system-held
+   * role holding a reserved key as if it were a person's.
    */
   roleChanges: Array<{
     key: string;
@@ -53,6 +56,7 @@ export interface RegistryDiff {
     isNew: boolean;
     isGone: boolean;
     holder?: { from: RoleHolder; to: RoleHolder };
+    systemHeld?: true;
   }>;
   /**
    * Entity-narrowed grant SHAPES that changed — which keys a per-entity grant may carry. #2082:
@@ -128,7 +132,11 @@ export function diffRegistries(from: RegistryLike, to: RegistryLike): RegistryDi
         removed,
         isNew,
         isGone,
-        ...(holderMoved ? { holder: { from: holderOf(before!), to: holderOf(after!) } } : {}),
+        ...(holderMoved
+          ? { holder: { from: holderOf(before!), to: holderOf(after!) } }
+          : holderOf((after ?? before)!) === 'system'
+            ? { systemHeld: true as const }
+            : {}),
       });
     }
   }
@@ -191,12 +199,17 @@ export function reservationNote(c: RegistryDiff['reservationChanges'][number]): 
 /** #2430: how a reader marks an added key that arrives reserved (`reservedAddedKeys`). */
 export const RESERVED_KEY_MARK = 'reserved to a system principal';
 
-/** The sentence for a role whose holder moved, or null when it did not. */
-export function roleHolderNote(r: Pick<RegistryDiff['roleChanges'][number], 'holder'>): string | null {
-  if (!r.holder) return null;
-  return r.holder.to === 'system'
-    ? 'now held by a system principal (holder: system), no longer a role a person can hold'
-    : 'now a role a person can hold, no longer held by a system principal';
+/**
+ * The sentence for a role whose holder moved, or for a system-held role that changed without moving
+ * (`systemHeld`), or null for a person's role whose holder stayed.
+ */
+export function roleHolderNote(r: Pick<RegistryDiff['roleChanges'][number], 'holder' | 'systemHeld'>): string | null {
+  if (r.holder) {
+    return r.holder.to === 'system'
+      ? 'now held by a system principal (holder: system), no longer a role a person can hold'
+      : 'now a role a person can hold, no longer held by a system principal';
+  }
+  return r.systemHeld ? 'held by a system principal (holder: system), not a role a person can hold' : null;
 }
 
 /**

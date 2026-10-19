@@ -10,7 +10,9 @@ import { RSV_RUN, RSV_USE, reservedRoleMod, unmarkedReservedRoleMod } from './re
  * handed to a person through a role or a raw grant, on either adapter.
  *
  * - A person's doors (`assignScopeRoleBounded`, `changeScopeRoleBounded`'s target, a membership
- *   add) refuse any role carrying one, and `canAssign` answers as they do.
+ *   add) refuse any role carrying one, and `canAssign` and `ctx.canAssign` answer as they do.
+ * - A reconcile of declared entity-grant shapes refuses a shape whose keys hold one, before it
+ *   tops any holder up; a shape that only retires one reconciles.
  * - The platform's door (`HostAdmin.assignRole`) refuses a role mixing reserved and other keys,
  *   at either node, and admits a role made only of reserved keys (K-55's system-held shape).
  * - A raw grant (`HostAdmin.grant`, `grantToOrg`, `grantEntityShape`, `ctx.grant`) of a reserved
@@ -36,6 +38,8 @@ export function reservedRoleContractSuite(
     const person = () => principalId.parse(ulid());
     const entity = () => ({ entityType: 'rsvdoc', entityId: ulid() });
     const RSV = moduleId.parse('@test/reserved-role');
+    /** How a person's door refuses: worded for `canAssign`'s removal bound as well as for an assignment. */
+    const NO_BOUND = "no person's bound covers it, to give the role or to take it back";
 
     const holds = async (who: PrincipalId, permission: PermissionKey, on?: { entityType: string; entityId: string }) => {
       const stub = await host.getScope(who, t1, s1);
@@ -106,7 +110,7 @@ export function reservedRoleContractSuite(
           await expectRefusal(
             host.assignScopeRoleBounded(t1, s1, alice, who, roleKey),
             'forbidden',
-            new RegExp(`role '${roleKey}' cannot be given to a person: it holds rsv:run`),
+            new RegExp(`role '${roleKey}' holds rsv:run, reserved to a system principal: ${NO_BOUND}`),
           );
           expect(await host.listScopeRoleHolders(t1, s1, who)).toEqual([]);
           expect(await holds(who, RSV_RUN)).toBe(false);
@@ -124,14 +128,21 @@ export function reservedRoleContractSuite(
         async (roleKey) => {
           const who = person();
           await host.assignScopeRoleBounded(t1, s1, alice, who, 'member');
-          await expectRefusal(host.changeScopeRoleBounded(t1, s1, alice, who, 'member', roleKey), 'forbidden', new RegExp(`role '${roleKey}' cannot be given`));
+          await expectRefusal(host.changeScopeRoleBounded(t1, s1, alice, who, 'member', roleKey), 'forbidden', new RegExp(`role '${roleKey}' holds rsv:run.*${NO_BOUND}`));
           expect(await host.listScopeRoleHolders(t1, s1, who)).toEqual([{ principal: who, roleKey: 'member' }]);
         },
       );
 
       it('canAssign answers as the door does: a reserved role is refused, a person’s role is covered', async () => {
-        await expectRefusal(host.canAssign(t1, s1, alice, 'mixed'), 'forbidden', /role 'mixed' cannot be given to a person/);
+        await expectRefusal(host.canAssign(t1, s1, alice, 'mixed'), 'forbidden', new RegExp(`role 'mixed' holds rsv:run.*${NO_BOUND}`));
         expect(await host.canAssign(t1, s1, alice, 'member')).toEqual({ covered: true, missing: [] });
+      });
+
+      it('…and so does ctx.canAssign, inside an operation, for a caller who holds every key of the role', async () => {
+        const as = await host.getScope(alice, t1, s1);
+        await expectRefusal(as.invoke('perm/can-assign', { roleKey: 'mixed' }), 'forbidden', new RegExp(`role 'mixed' holds rsv:run.*${NO_BOUND}`));
+        await expectRefusal(as.invoke('perm/can-assign', { roleKey: 'runner' }), 'forbidden', new RegExp(`role 'runner' holds rsv:run.*${NO_BOUND}`));
+        expect(await as.invoke('perm/can-assign', { roleKey: 'member' })).toEqual({ covered: true, missing: [] });
       });
 
       it('a membership add of a reserved role applies nothing, and says why; its twin applies', async () => {
@@ -145,7 +156,7 @@ export function reservedRoleContractSuite(
             boundedBy: alice,
             unlessRemovedSince: instant.parse(new Date(Date.now() - 60_000).toISOString()),
           });
-        expect(await add('mixed')).toEqual({ applied: false, reserved: expect.stringMatching(/role 'mixed' cannot be given to a person/) });
+        expect(await add('mixed')).toEqual({ applied: false, reserved: expect.stringMatching(new RegExp(`role 'mixed' holds rsv:run.*${NO_BOUND}`)) });
         expect(await holds(who, RSV_USE)).toBe(false);
         expect(await add('member')).toEqual({ applied: true });
         expect(await holds(who, RSV_USE)).toBe(true);
@@ -183,6 +194,22 @@ export function reservedRoleContractSuite(
         await expectRefusal(shape([RSV_USE, RSV_RUN]), 'forbidden', /rsv:run cannot be granted/);
         expect(await holds(who, RSV_USE, on)).toBe(false);
         await shape([RSV_USE]);
+        expect(await holds(who, RSV_USE, on)).toBe(true);
+      });
+
+      it('reconcileEntityGrantShapes refuses a shape holding a reserved key before topping anyone up; one only retiring it reconciles', async () => {
+        const who = person();
+        const on = entity();
+        const node = { tenantId: t1, scopeId: s1 };
+        await host.admin.grantEntityShape(staff, { principalId: who, node, entity: on, permissions: [RSV_USE], grantedBy: alice });
+        await expectRefusal(
+          host.admin.reconcileEntityGrantShapes(staff, node, [{ entityType: 'rsvdoc', permissions: [RSV_USE, RSV_RUN], bootstrap: true }]),
+          'forbidden',
+          /the entity grant shape on rsvdoc: rsv:run cannot be granted to a principal or an org/,
+        );
+        expect(await holds(who, RSV_RUN, on)).toBe(false);
+        const twin = await host.admin.reconcileEntityGrantShapes(staff, node, [{ entityType: 'rsvdoc', permissions: [RSV_USE], retired: [RSV_RUN], bootstrap: true }]);
+        expect(twin).toMatchObject({ toppedUp: 0, retired: 0 });
         expect(await holds(who, RSV_USE, on)).toBe(true);
       });
 

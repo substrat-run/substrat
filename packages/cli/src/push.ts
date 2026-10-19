@@ -13,6 +13,7 @@ import {
   assetsNeed,
   ATTACHMENT_BLOB_BINDING,
   buildPermissionRegistry,
+  declaredOwnerGrants,
   ownerGrantSets,
   reservedKeyMessage,
   reservedKeyOffences,
@@ -387,7 +388,7 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
     );
   }
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
-    substrat?: { permissions?: string; ownerGrants?: unknown[] };
+    substrat?: { permissions?: string; ownerGrants?: unknown };
   };
   const entry = pkg.substrat?.permissions;
   if (!entry) {
@@ -396,6 +397,10 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
         `to package.json, pointing at the module that exports \`definePermissions(...)\`.`,
     );
   }
+  // #2430: an install grants these to its owner, a person; a list that cannot be read is refused in
+  // `lint:permissions`' words rather than judged as none.
+  const ownerGrants = declaredOwnerGrants(pkg.substrat?.ownerGrants);
+  if ('problem' in ownerGrants) throw new Error(`${basename(resolve(dir))}/package.json ${ownerGrants.problem}.`);
   const entryPath = join(dir, entry);
   if (!existsSync(entryPath)) {
     throw new Error(`substrat.permissions points at "${entry}", which does not exist under ${dir}.`);
@@ -482,12 +487,11 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
     // grants its owner), refused before anything uploads, in `lint:permissions`' own words. The
     // registry build below refuses most of it too; this is the message that names the remedy.
     const reserved = reservedKeysOf(mod.permissions.modules);
-    const ownerGrants = (pkg.substrat?.ownerGrants ?? []).filter((k): k is string => typeof k === 'string');
     const offences = reservedKeyOffences(
       {
         roles: mod.permissions.roles,
         grants: mod.permissions.entityGrants ?? [],
-        personGrants: ownerGrantSets(mod.permissions.modules, ownerGrants),
+        personGrants: ownerGrantSets(mod.permissions.modules, ownerGrants.grants),
       },
       reserved,
     );

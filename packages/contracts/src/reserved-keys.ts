@@ -94,6 +94,21 @@ export function ownerGrantSets(
   ];
 }
 
+/**
+ * #2430: package.json `substrat.ownerGrants` as the owner-grant list `ownerGrantSets` takes, or why
+ * it is not one. Absent is no owner grant; anything but an array of keys is a broken declaration,
+ * refused rather than read as none, since what it means to grant is exactly what cannot be judged.
+ */
+export function declaredOwnerGrants(value: unknown): { grants: string[] } | { problem: string } {
+  if (value === undefined) return { grants: [] };
+  if (Array.isArray(value) && value.every((k): k is string => typeof k === 'string')) return { grants: value };
+  return {
+    problem:
+      `declares \`substrat.ownerGrants\` as ${JSON.stringify(value)}, not an array of permission keys. List the keys a ` +
+      'fresh install\'s owner is granted (`"ownerGrants": ["todo:list-create"]`), or leave the field out',
+  };
+}
+
 /** Every person-facing grant of a reserved key, and every malformed system-held role, in surface order. */
 export function reservedKeyOffences(surface: ReservedKeySurface, reserved: { has(key: string): boolean }): ReservedKeyOffence[] {
   const out: ReservedKeyOffence[] = [];

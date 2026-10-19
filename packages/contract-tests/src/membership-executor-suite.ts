@@ -283,7 +283,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
     it('refuses an invite for a role carrying a key reserved to a system principal, for good, and says why (#2430)', async () => {
       const joe = principalId.parse(ulid());
       const outcomes = await asJoiner(w, joe, 'invitefix/accept', await send(w, w.alice, 'reserved'));
-      await expectRefused(w, outcomes, joe, /role 'reserved' cannot be given to a person: it holds rsv:run/);
+      await expectRefused(w, outcomes, joe, /role 'reserved' holds rsv:run, reserved to a system principal: no person's bound covers it/);
       expect((await w.host.drainDue(w.t, w.s)).attempted).toBe(0);
     });
 

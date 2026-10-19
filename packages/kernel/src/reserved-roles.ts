@@ -5,10 +5,12 @@ import { reservedKeysOf, type ReservedKeySource } from '@substrat-run/contracts'
  * so they cannot refuse differently: the doors that confer a role refuse one that would hand a
  * person such a key.
  *
- * The reservation is read off the modules REGISTERED on the host (`holder: 'system'` on a manifest
- * permission entry, the union rule of `reservedKeysOf`), not off a list a push carried. It judges
- * the composition that actually runs, needs nothing delivered, and has no version skew: a key no
- * registered module marks is a person's key, so nothing an older engine declared is refused.
+ * The reservation is read off the modules REGISTERED on the host, and those its declared
+ * `permissions` lists (`holder: 'system'` on a manifest permission entry, the union rule of
+ * `reservedKeysOf`), not off a list a push carried. At a Cloudflare scope node the scope class's own
+ * modules count too. It judges the composition that actually runs, needs nothing delivered, and has
+ * no version skew: a key none of them marks is a person's key, so nothing an older engine declared
+ * is refused.
  *
  * - **A person's door** (`'person'`): `assignScopeRoleBounded`, `changeScopeRoleBounded` (the role
  *   moved to) and a membership add, where one person confers a role on another. No role carrying
@@ -22,6 +24,9 @@ import { reservedKeysOf, type ReservedKeySource } from '@substrat-run/contracts'
  *
  * Never asked on a provisioning seat or the owner hand-over, and nothing already held is revoked:
  * a seat that exists keeps working whatever a later engine declares.
+ *
+ * The person's refusal is also `canAssign`'s, which is the bound on taking a role away as well as
+ * on giving it, so it is worded for both: no person's bound covers such a role.
  */
 export function reservedRoleRefusal(
   role: { key: string; permissions: readonly string[] },
@@ -33,8 +38,8 @@ export function reservedRoleRefusal(
   const keys = held.join(', ');
   if (door === 'person') {
     return (
-      `role '${role.key}' cannot be given to a person: it holds ${keys}, reserved to a system principal ` +
-      `(a module this host registers declares it \`holder: 'system'\`)`
+      `role '${role.key}' holds ${keys}, reserved to a system principal: no person's bound covers it, to give ` +
+      `the role or to take it back (${RESERVED_BY})`
     );
   }
   const others = role.permissions.filter((p) => !reserved.has(p));
@@ -55,11 +60,33 @@ export function reservedRoleRefusal(
 export function reservedGrantRefusal(permissions: readonly string[], reserved: ReadonlySet<string>): string | null {
   const held = permissions.filter((p) => reserved.has(p));
   if (held.length === 0) return null;
-  return (
-    `${held.join(', ')} cannot be granted to a principal or an org: reserved to a system principal ` +
-    `(a module this host registers declares it \`holder: 'system'\`)`
-  );
+  return `${held.join(', ')} cannot be granted to a principal or an org: reserved to a system principal (${RESERVED_BY})`;
 }
+
+/**
+ * Why a reconcile of declared entity-grant shapes is refused, or null (#2430): a shape whose
+ * `permissions` hold a reserved key. Every holder of a shape is a person given it on a record, and
+ * the reconcile tops each holder up to the shape's keys and records what a binding link grants, so
+ * such a shape would hand the key to people with no door asked. A key the shape only `retired` is
+ * taken back, never given, and passes.
+ */
+export function reservedShapeRefusal(
+  shapes: readonly { entityType: string; permissions: readonly string[] }[],
+  reserved: ReadonlySet<string>,
+): string | null {
+  for (const shape of shapes) {
+    const refusal = reservedGrantRefusal(shape.permissions, reserved);
+    if (refusal) return `the entity grant shape on ${shape.entityType}: ${refusal}`;
+  }
+  return null;
+}
+
+/**
+ * Where a host's reservations come from, as every refusal names it: the modules it registers, the
+ * modules its declared `permissions` lists, and, at a Cloudflare scope node, the modules the scope's
+ * own class registers.
+ */
+const RESERVED_BY = "a module this host registers or lists in its `permissions`, or one registered at the scope node, declares it `holder: 'system'`";
 
 /**
  * Add what `manifest` reserves to a host's set — a union over every module it registers, and every

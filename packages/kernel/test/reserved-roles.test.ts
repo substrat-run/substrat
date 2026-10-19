@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { moduleManifest } from '@substrat-run/contracts';
-import { assertModuleDeclared, noteReservedKeys, reservedGrantRefusal, reservedRoleRefusal } from '../src/reserved-roles.js';
+import { assertModuleDeclared, noteReservedKeys, reservedGrantRefusal, reservedRoleRefusal, reservedShapeRefusal } from '../src/reserved-roles.js';
 
 const manifest = (id: string, permissions: { key: string; description: string; holder?: 'system' }[]) =>
   moduleManifest.parse({
@@ -21,8 +21,16 @@ const role = (permissions: string[]) => ({ key: 'r', permissions });
 
 describe('reservedRoleRefusal', () => {
   it('a person’s door refuses any role carrying a reserved key, all-reserved included', () => {
-    expect(reservedRoleRefusal(role(['a:use', 'a:run']), reserved, 'person')).toMatch(/role 'r' cannot be given to a person: it holds a:run/);
-    expect(reservedRoleRefusal(role(['a:run']), reserved, 'person')).toMatch(/cannot be given to a person/);
+    expect(reservedRoleRefusal(role(['a:use', 'a:run']), reserved, 'person')).toMatch(
+      /^role 'r' holds a:run, reserved to a system principal: no person's bound covers it, to give the role or to take it back/,
+    );
+    expect(reservedRoleRefusal(role(['a:run']), reserved, 'person')).toMatch(/no person's bound covers it/);
+  });
+
+  it('names where the reservation is read from: the registered and listed modules, and the scope node’s', () => {
+    for (const refusal of [reservedRoleRefusal(role(['a:run']), reserved, 'person'), reservedGrantRefusal(['a:run'], reserved)]) {
+      expect(refusal).toMatch(/\(a module this host registers or lists in its `permissions`, or one registered at the scope node, declares it `holder: 'system'`\)$/);
+    }
   });
 
   it('the platform’s door refuses a mix and admits a role made only of reserved keys (K-55)', () => {
@@ -40,6 +48,22 @@ describe('reservedGrantRefusal', () => {
     expect(reservedGrantRefusal(['a:use', 'a:run'], reserved)).toMatch(/^a:run cannot be granted to a principal or an org: reserved to a system principal/);
     expect(reservedGrantRefusal(['a:use'], reserved)).toBeNull();
     expect(reservedGrantRefusal(['a:run'], new Set())).toBeNull();
+  });
+});
+
+describe('reservedShapeRefusal', () => {
+  it('refuses a shape whose keys hold a reserved key, naming the shape', () => {
+    const shapes = [
+      { entityType: 'doc', permissions: ['a:use'] },
+      { entityType: 'run', permissions: ['a:use', 'a:run'] },
+    ];
+    expect(reservedShapeRefusal(shapes, reserved)).toMatch(/^the entity grant shape on run: a:run cannot be granted to a principal or an org/);
+  });
+
+  it('passes shapes holding none, and a reserved key a shape only retires (it is taken back, never given)', () => {
+    const retiring = { entityType: 'doc', permissions: ['a:use'], retired: ['a:run'] };
+    expect(reservedShapeRefusal([retiring], reserved)).toBeNull();
+    expect(reservedShapeRefusal([], reserved)).toBeNull();
   });
 });
 

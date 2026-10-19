@@ -118,6 +118,7 @@ import {
   noteReservedKeys,
   reservedGrantRefusal,
   reservedRoleRefusal,
+  reservedShapeRefusal,
   type DeclaredPermissions,
   effectiveRoleGrantQuery,
   switchRecordedOff,
@@ -4893,21 +4894,34 @@ export function defineScopeDO(
 
     /**
      * #2430: `reservedRoleRefusalFor` for a caller that names no tenant — `assignScopeRole` — read
-     * against the tenant this scope's provisioning receipt names. A scope from before receipts
-     * (#1738) can still hold projected roles, so without a receipt every projected row of the role
-     * is judged, whichever tenant it was projected for, and the first refusal answers.
+     * against the tenant this scope's provisioning receipt names.
+     *
+     * A scope from before receipts (#1738) names its tenants only through the role rows it was
+     * projected (`tenantVerdict`'s inference), and each of those tenants is judged through the
+     * same reader the checker expands the role with (`controlPlaneReader`): the scope's own rows
+     * once it reads locally, the control plane's definition otherwise. So a stale or partial
+     * projection is never what decides for a checker that does not read it. A scope with no role
+     * row names no tenant: reading locally it expands nothing, so nothing is refused, but a checker
+     * reading the control plane would expand whichever tenant's role a later call names, which this
+     * door cannot know, so it refuses.
      */
     async reservedRoleRefusalHere(roleKey: string, door: 'person' | 'platform'): Promise<string | null> {
       if (this.reservedKeys.size === 0) return null;
       const tenantId = this.provisionedFor();
       if (tenantId) return this.reservedRoleRefusalFor(tenantId as TenantId, roleKey, door);
-      if (!this.hasTable('_substrat_roles')) return null;
-      const rows = this.sql
-        .exec('SELECT permissions FROM _substrat_roles WHERE role_key = ? AND revoked_at IS NULL', roleKey)
-        .toArray() as { permissions: string }[];
-      for (const row of rows) {
-        const refusal = reservedRoleRefusal({ key: roleKey, permissions: JSON.parse(row.permissions) as string[] }, this.reservedKeys, door);
+      const tenants = this.hasTable('_substrat_roles')
+        ? (this.sql.exec('SELECT DISTINCT tenant_id FROM _substrat_roles').toArray() as { tenant_id: string }[]).map((r) => r.tenant_id as TenantId)
+        : [];
+      for (const projected of tenants) {
+        const refusal = await this.reservedRoleRefusalFor(projected, roleKey, door);
         if (refusal) return refusal;
+      }
+      if (tenants.length === 0 && this.permissionSourceIsRemote()) {
+        return (
+          `role '${roleKey}' cannot be judged here: this scope has no provisioning receipt and no projected role, and its ` +
+          "checks read roles from the control plane, so which tenant's definition a check expands is unknown and a key " +
+          'reserved to a system principal cannot be ruled out. Provision the scope first.'
+        );
       }
       return null;
     }
@@ -4915,6 +4929,11 @@ export function defineScopeDO(
     /** #2430: why a raw grant of `permissions` is refused against this class's reservations, or null. */
     async reservedGrantRefusalFor(permissions: string[]): Promise<string | null> {
       return reservedGrantRefusal(permissions, this.reservedKeys);
+    }
+
+    /** #2430: why a reconcile of declared `shapes` is refused against this class's reservations, or null. */
+    async reservedShapeRefusalFor(shapes: { entityType: string; permissions: string[] }[]): Promise<string | null> {
+      return reservedShapeRefusal(shapes, this.reservedKeys);
     }
 
     /** The kernel's `revokeScopeRoles` in one serialized scope task (#1150). */

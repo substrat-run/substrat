@@ -706,6 +706,11 @@ export interface OperationContext {
    *
    * Transactional with the operation: a grant made by an operation that then
    * throws never happened, the same as its rows and its events.
+   *
+   * Throws `forbidden` for a key reserved to a system principal (#2430: `holder: 'system'` on
+   * its declaration in a module this host registers or lists in its `permissions`), whoever
+   * the caller is, a system actor included: a system principal holds such a key through a
+   * schedule's or a peer's `permissions`, never through a grant to a person.
    */
   grant(principal: PrincipalId, permission: PermissionKey, entity: EntityRef): Promise<void>;
   /** Withdraw a grant this caller could have made. Same guardrails. */
@@ -741,6 +746,10 @@ export interface OperationContext {
    * Throws when `roleKey` names no role in this tenant: an unknown key is a bug in the
    * caller, not a denial, and returning "not covered" would let a typo read as a
    * permission problem.
+   *
+   * Throws `forbidden` for a role carrying a key reserved to a system principal (#2430), as
+   * the person-facing role doors refuse one: no person's bound covers such a role, whether
+   * the operation means to give it or to take it away.
    */
   canAssign(roleKey: string): Promise<Coverage>;
   /**
@@ -1983,6 +1992,13 @@ export interface HostAdmin {
    */
   listRoles(actor: PlatformActorId, filter?: RoleFilter): Promise<TenantRole[]>;
   // ^ pages over (tenant_id, role_key); the cursor is `${tenantId}|${roleKey}`.
+  /**
+   * Assign a role at a node — the platform's door. Throws `forbidden` (#2430) for a role that
+   * mixes a key reserved to a system principal with other keys. A role made only of reserved
+   * keys is admitted: that is the shape a role declared `holder: 'system'` has (K-55), and a
+   * stored role does not record its holder, so this door cannot tell it from a person's role
+   * made the same way.
+   */
   assignRole(actor: PlatformActorId, assignment: RoleAssignment): Promise<void>;
   /**
    * Revoke a role assignment — the inverse of `assignRole`, same `RoleAssignment`
@@ -1998,6 +2014,12 @@ export interface HostAdmin {
    * still on its way for them is refused. The no-op stays unaudited.
    */
   unassignRole(actor: PlatformActorId, assignment: RoleAssignment): Promise<void>;
+  /**
+   * Grant a principal one permission at a node, optionally narrowed to an entity. Throws
+   * `forbidden` (#2430) for a key reserved to a system principal: a raw grant names a person,
+   * and a system principal holds such a key through a schedule's or a peer's `permissions`, or
+   * a role declared `holder: 'system'`.
+   */
   grant(actor: PlatformActorId, grant: CapabilityGrant): Promise<void>;
   /**
    * Give a person a vertical's declared entity-grant SHAPE on one entity (#2071): every key in
@@ -2005,7 +2027,8 @@ export interface HostAdmin {
    * gains later reaches them at the next {@link reconcileEntityGrantShapes}. What a vertical
    * calls where it used to `grant` its `ENTITY_GRANTS` keys one at a time. It brings back a key
    * or marker a revoke tombstoned, as `grant` does, and leaves a live row as it is, expiry
-   * included, as `ctx.grant` does. Audited as `grantEntityShape`.
+   * included, as `ctx.grant` does. Audited as `grantEntityShape`. Throws `forbidden` (#2430)
+   * when `permissions` hold a key reserved to a system principal, writing nothing.
    */
   grantEntityShape(
     actor: PlatformActorId,
@@ -2051,6 +2074,10 @@ export interface HostAdmin {
    * plus, only when nonzero, `retirementsLeftOpen`: shapes whose retirement kept meeting new
    * grants of a retired key (`SHAPE_RETIRE_CONFIRMS_MAX` confirming walks that took keys) and was
    * left for the next reconcile to run again, unrecorded.
+   *
+   * Throws `forbidden` (#2430), before any pass, when a shape's `permissions` hold a key reserved
+   * to a system principal: the reconcile would give it to every holder, and record it as what a
+   * binding link grants. A reserved key a shape only `retired` is taken back, and passes.
    */
   reconcileEntityGrantShapes(
     actor: PlatformActorId,
@@ -2306,6 +2333,11 @@ export interface HostAdmin {
     capabilityId: CapabilityId,
   ): Promise<void>;
 
+  /**
+   * Grant an organization one permission at a node; its members reach it through membership.
+   * Throws `forbidden` (#2430) for a key reserved to a system principal, since an org's members
+   * are people.
+   */
   grantToOrg(
     actor: PlatformActorId,
     orgId: OrgId,
@@ -5988,7 +6020,8 @@ export interface ScopeHost {
    * second copy: the tenant's projected role, then the checker's own `covers` at the scope node.
    * So it is narrowing-aware (an entity-narrowed grant does not satisfy it), membership expands,
    * and an expired grant confers nothing. Throws `not_found` when `roleKey` names no role in
-   * this tenant, as `ctx.canAssign` does.
+   * this tenant, as `ctx.canAssign` does, and `forbidden` (#2430) for a role carrying a key
+   * reserved to a system principal, which no person's bound covers, to give or to take back.
    *
    * It is a READ and records nothing — neither a denial nor an admin-log row. The caller that
    * refuses on it is the one that knows what was refused.
@@ -5999,7 +6032,8 @@ export interface ScopeHost {
    * Check the caller's assignment bound and grant `assignee` the scope role in one scope
    * task. A refused bound writes nothing and returns its missing permissions. The role
    * definition and permission tuples used by the check are the same ones used by
-   * `canAssign`; an unknown role throws `not_found`.
+   * `canAssign`; an unknown role throws `not_found`, and a role carrying a key reserved to a
+   * system principal throws `forbidden` (#2430), whatever the caller holds, writing nothing.
    */
   assignScopeRoleBounded(
     tenantId: TenantId,
@@ -6022,7 +6056,8 @@ export interface ScopeHost {
    * bound is asked over both roles (taking `from` away is bounded like granting it, §5.1
    * consequence 1), then `from` is tombstoned and `to` granted together. Nothing is written
    * on a refusal, so nobody is left holding both roles or neither. Throws `not_found` for a
-   * `to` this tenant does not define, and `conflict` when `principal` does not hold `from`.
+   * `to` this tenant does not define, `conflict` when `principal` does not hold `from`, and
+   * `forbidden` (#2430) for a `to` carrying a key reserved to a system principal.
    */
   changeScopeRoleBounded(
     tenantId: TenantId,

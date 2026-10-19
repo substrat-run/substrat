@@ -37,9 +37,11 @@ export function permissionDiffItems(diff: RegistryDiff, from: RegistryLike, to: 
   for (const k of diff.removedKeys) items.push({ kind: 'removed', name: k, note: describe(from, k) || 'no longer declared' });
   for (const c of diff.reservationChanges) items.push({ kind: 'changed', name: c.key, note: reservationNote(c) });
   for (const r of diff.roleChanges) {
-    if (r.isNew) items.push({ kind: 'added', name: `role ${r.key}`, note: r.added.length ? `holds ${r.added.join(', ')}` : 'new role' });
-    else if (r.isGone) items.push({ kind: 'removed', name: `role ${r.key}`, note: 'no longer declared' });
-    else items.push({ kind: 'changed', name: `role ${r.key}`, note: [signed(r.added, r.removed), roleHolderNote(r)].filter(Boolean).join('; ') });
+    const held = roleHolderNote(r);
+    const note = (...parts: (string | null)[]) => [...parts, held].filter(Boolean).join('; ');
+    if (r.isNew) items.push({ kind: 'added', name: `role ${r.key}`, note: note(r.added.length ? `holds ${r.added.join(', ')}` : 'new role') });
+    else if (r.isGone) items.push({ kind: 'removed', name: `role ${r.key}`, note: note('no longer declared') });
+    else items.push({ kind: 'changed', name: `role ${r.key}`, note: note(signed(r.added, r.removed)) });
   }
   for (const g of diff.grantChanges) {
     if (g.isNew) items.push({ kind: 'added', name: `grant on ${g.entityType}`, note: g.added.join(', ') || 'new grant shape' });

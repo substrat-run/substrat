@@ -295,22 +295,135 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
     expect(errorCodeOf(grant)).toBe('forbidden');
   });
 
-  it('assignScopeRole judges a scope with no provisioning receipt by its projected role rows; its twin assigns', async () => {
-    const bare = scopeId.parse(ulid());
-    const stub = env.SCOPE.get(env.SCOPE.idFromName(bare)) as unknown as {
-      projectRole(tenantId: string, role: { key: string; permissions: string[]; source: string }): Promise<void>;
-    };
-    // `projectRole` writes a role row and no receipt: the shape of a scope from before receipts.
-    await stub.projectRole(t, { key: 'mixed', permissions: MIXED, source: 'vertical' });
-    await stub.projectRole(t, { key: 'member', permissions: [MIXED[0]!], source: 'vertical' });
-    const refused = await host.assignScopeRole(bare, principalId.parse(ulid()), 'mixed').then(() => undefined, (e: unknown) => e);
+  it('grantEntityLocal refuses the reserved key at a scope node and writes nothing; its twin grants a person’s key', async () => {
+    const who = principalId.parse(ulid());
+    const entity = { entityType: 'rsvdoc', entityId: ulid() };
+    const refused = await host.grantEntityLocal(s, who, MIXED[1]!, entity).then(() => undefined, (e: unknown) => e);
     expect(errorCodeOf(refused)).toBe('forbidden');
-    await host.assignScopeRole(bare, principalId.parse(ulid()), 'member');
+    expect((refused as Error).message).toMatch(/rsv:run cannot be granted to a principal or an org: reserved to a system principal/);
+    expect(await grantedTo(s, who)).toEqual([]);
+    await host.grantEntityLocal(s, who, MIXED[0]!, entity);
+    expect(await grantedTo(s, who)).toEqual([`granted:${MIXED[0]}`]);
+  });
+
+  it('a reconcile of declared shapes refuses one holding the reserved key at a scope node; its twin reconciles', async () => {
+    const node = { tenantId: t, scopeId: s };
+    const refused = await host.admin
+      .reconcileEntityGrantShapes(staff, node, [{ entityType: 'rsvdoc', permissions: MIXED, bootstrap: true }])
+      .then(() => undefined, (e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('forbidden');
+    expect((refused as Error).message).toMatch(/the entity grant shape on rsvdoc: rsv:run cannot be granted/);
+    expect(await host.admin.reconcileEntityGrantShapes(staff, node, [{ entityType: 'rsvdoc', permissions: [MIXED[0]!], bootstrap: true }])).toMatchObject({ retired: 0 });
+  });
+
+  it('provisionScopeLocal refuses declared shapes holding the reserved key before it writes anything; its twin provisions', async () => {
+    const local = new CloudflareScopeHost({ scope: env.SCOPE });
+    const provision = (scope: ScopeId, permissions: typeof MIXED) =>
+      local.provisionScopeLocal({
+        tenantId: tenantId.parse(ulid()),
+        scopeId: scope,
+        owner: principalId.parse(ulid()),
+        roles: [{ key: 'member', permissions: [MIXED[0]!], source: 'vertical' }],
+        ownerRoleKey: 'member',
+        entityGrants: [{ entityType: 'rsvdoc', permissions, bootstrap: true }],
+      });
+    const receiptOf = (scope: ScopeId) =>
+      runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+        state.storage.sql.exec(`SELECT value FROM _substrat_meta WHERE key = 'provisioned_for'`).toArray(),
+      );
+    try {
+      const refusedScope = scopeId.parse(ulid());
+      const refused = await provision(refusedScope, MIXED).then(() => undefined, (e: unknown) => e);
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      expect(await receiptOf(refusedScope)).toEqual([]);
+      const twin = scopeId.parse(ulid());
+      await provision(twin, [MIXED[0]!]);
+      expect(await receiptOf(twin)).toHaveLength(1);
+    } finally {
+      await local.close();
+    }
+  });
+
+  it('assignScopeRole on a provisioned scope judges the role its receipt’s tenant defines; its twin assigns', async () => {
+    // A CP-less host, as a deployed vertical's is: `provisionScopeLocal` writes the receipt and the roles.
+    const local = new CloudflareScopeHost({ scope: env.SCOPE });
+    const owned = scopeId.parse(ulid());
+    try {
+      await local.provisionScopeLocal({
+        tenantId: tenantId.parse(ulid()),
+        scopeId: owned,
+        owner: principalId.parse(ulid()),
+        roles: [
+          { key: 'mixed', permissions: MIXED, source: 'vertical' },
+          { key: 'member', permissions: [MIXED[0]!], source: 'vertical' },
+        ],
+        ownerRoleKey: 'member',
+      });
+      const refused = await local.assignScopeRole(owned, principalId.parse(ulid()), 'mixed').then(() => undefined, (e: unknown) => e);
+      expect(errorCodeOf(refused)).toBe('forbidden');
+      await local.assignScopeRole(owned, principalId.parse(ulid()), 'member');
+    } finally {
+      await local.close();
+    }
+  });
+
+  // A scope with no receipt names its tenants only through its role rows, and the role is judged as
+  // the checker reads it. These rows say the opposite of the control plane's definitions — a stale
+  // projection — so which source decided is what each answer shows.
+  describe('assignScopeRole on a scope with no provisioning receipt', () => {
+    beforeAll(async () => {
+      await host.admin.defineRole(staff, t, { key: 'cp-mixed', permissions: MIXED, source: 'vertical' });
+      await host.admin.defineRole(staff, t, { key: 'cp-member', permissions: [MIXED[0]!], source: 'vertical' });
+    });
+    /** A scope from before receipts: role rows projected for `t`, no receipt. */
+    const stale = async () => {
+      const bare = scopeId.parse(ulid());
+      await projector(bare).projectRole(t, { key: 'cp-mixed', permissions: [MIXED[0]!], source: 'vertical' });
+      await projector(bare).projectRole(t, { key: 'cp-member', permissions: MIXED, source: 'vertical' });
+      return bare;
+    };
+    const assign = (scope: ScopeId, roleKey: string) =>
+      host.assignScopeRole(scope, principalId.parse(ulid()), roleKey).then(() => null, (e: unknown) => errorCodeOf(e));
+
+    it('reads the control plane’s definition while its checks do', async () => {
+      const bare = await stale();
+      expect(await assign(bare, 'cp-mixed')).toBe('forbidden');
+      expect(await assign(bare, 'cp-member')).toBeNull();
+    });
+
+    it('…and its own rows once it reads locally', async () => {
+      const bare = await stale();
+      await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(bare)), (_instance, state) => {
+        state.storage.sql.exec(`INSERT OR REPLACE INTO _substrat_meta (key, value) VALUES ('permission_source', 'local')`);
+      });
+      expect(await assign(bare, 'cp-member')).toBe('forbidden');
+      expect(await assign(bare, 'cp-mixed')).toBeNull();
+    });
+
+    it('refuses when no role row names a tenant and its checks read the control plane; projecting one lets a person’s role through', async () => {
+      const fresh = scopeId.parse(ulid());
+      expect(await assign(fresh, 'cp-member')).toBe('forbidden');
+      await projector(fresh).projectRole(t, { key: 'other', permissions: [MIXED[0]!], source: 'vertical' });
+      expect(await assign(fresh, 'cp-member')).toBeNull();
+    });
   });
 
   it('its twin: at the tenant node it reads its own reservations, which are none, so it assigns (a stated residual)', async () => {
     await host.admin.assignRole(staff, { principalId: principalId.parse(ulid()), roleKey: 'mixed', node: { tenantId: t, scopeId: null } });
   });
+
+  /** The ScopeDO's role projection, called directly: it writes a role row and no receipt. */
+  function projector(scope: ScopeId) {
+    return env.SCOPE.get(env.SCOPE.idFromName(scope)) as unknown as {
+      projectRole(tenantId: string, role: { key: string; permissions: string[]; source: string }): Promise<void>;
+    };
+  }
+  /** The `granted:` relations a principal holds in a scope, read off its tuples. */
+  function grantedTo(scope: ScopeId, who: string) {
+    return runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+      (state.storage.sql.exec(`SELECT relation FROM _substrat_tuples WHERE subject = ? AND revoked_at IS NULL ORDER BY relation`, `principal:${who}`).toArray() as { relation: string }[]).map((r) => r.relation),
+    );
+  }
 });
 
 // The permission suite runs against the DO's default tuple checker (scope tuples

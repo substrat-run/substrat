@@ -906,6 +906,18 @@ export const permissions = {
     expect(passed.status, passed.stderr).toBe(0);
   });
 
+  it.runIf(built)('…and refuses a `substrat.ownerGrants` that is not a list of keys, naming the field; a list passes', () => {
+    const roles = [{ key: 'member', permissions: ['run:use'], source: 'vertical' }];
+    for (const ownerGrants of ['run:use', { run: 'use' }, ['run:use', 7], null]) {
+      const r = runCheck(verticalWith(reservedSurface(roles), { substrat: { permissions: 'perms.mjs', ownerGrants } }));
+      expect(r.status, JSON.stringify(ownerGrants)).not.toBe(0);
+      expect(r.stderr).toMatch(/package\.json declares `substrat\.ownerGrants` as .+, not an array of permission keys\. List the keys/);
+      expect(r.stderr).not.toMatch(/is not a function|TypeError/);
+    }
+    const listed = runCheck(verticalWith(reservedSurface(roles), { substrat: { permissions: 'perms.mjs', ownerGrants: ['run:use'] } }));
+    expect(listed.status, listed.stderr).toBe(0);
+  });
+
   it.runIf(built)('…and refuses a system-held role holding a person’s key (K-55)', () => {
     const r = runCheck(verticalWith(reservedSurface([{ key: 'driver', holder: 'system', permissions: ['run:drive', 'run:use'], source: 'vertical' }])));
     expect(r.status).not.toBe(0);

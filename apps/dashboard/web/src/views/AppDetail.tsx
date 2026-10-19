@@ -1385,7 +1385,7 @@ function Model({ app }: { app: AppRow }) {
  * checkpoint exists to surface. It only DISPLAYS: approving a widened role stays a human
  * decision (the update itself is confirmed on the Deployments tab).
  */
-function Permissions({ app }: { app: AppRow }) {
+export function AppPermissions({ app }: { app: AppRow }) {
   const [view, setView] = useState<AppPermissionsView | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
@@ -1465,8 +1465,8 @@ function Permissions({ app }: { app: AppRow }) {
               const held = roleHolderNote(rc);
               return (
                 <div key={rc.key} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <Pill kind={rc.isGone ? 'neutral' : rc.added.length > 0 || held ? 'warning' : rc.isNew ? 'info' : 'neutral'}>
-                    {rc.isNew ? 'new role' : rc.isGone ? 'role removed' : rc.added.length > 0 ? 'role widened' : held ? 'role holder changed' : 'role narrowed'}
+                  <Pill kind={rc.isGone ? 'neutral' : rc.added.length > 0 || rc.holder ? 'warning' : rc.isNew ? 'info' : 'neutral'}>
+                    {rc.isNew ? 'new role' : rc.isGone ? 'role removed' : rc.added.length > 0 ? 'role widened' : rc.holder ? 'role holder changed' : 'role narrowed'}
                   </Pill>
                   <MonoTag>{rc.key}</MonoTag>
                   <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -3150,7 +3150,7 @@ function Settings({ teamId, app, section, onSection, onDeleted, authServers }: {
       {section === 'domains' && <AppDomains teamId={teamId} app={app} />}
       {section === 'integrations' && <AppIntegrations app={app} />}
       {section === 'members' && <AppMembers app={app} />}
-      {section === 'permissions' && <Permissions app={app} />}
+      {section === 'permissions' && <AppPermissions app={app} />}
     </div>
   );
 }

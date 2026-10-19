@@ -53,14 +53,18 @@ The registry a push ships marks each reserved key, and each system-held role, wi
 shape or the owner grants hold. A registry from a CLI too old to write the marks carries none,
 and the platform refuses it nothing.
 
-At runtime, a host reads the reservations off the modules it registers, and refuses at these
-doors:
+At runtime, a host reads the reservations off the modules it registers and the modules its
+`permissions` lists, and refuses at these doors:
 
 - **Inviting someone into a role that carries a reserved key** is refused. So is moving them
-  into one, and so is a membership request for one. `canAssign` gives the same answer.
+  into one, and so is a membership request for one. `canAssign` gives the same answer, and since
+  it is also the bound on taking a role away, a person cannot remove such a role either.
 - **Granting a reserved key directly** to a principal or an org is refused, whoever asks. That
   covers a platform grant, a declared shape granted to a person, and `ctx.grant` from an
   operation, including one running as a system actor.
+- **Reconciling declared shapes** is refused when a shape holds a reserved key, before anyone is
+  topped up: the reconcile would give the key to every holder of the shape, and record it as what
+  a binding link gives. A shape may still list a reserved key in `retired`, which takes it back.
 - **The platform's own role assignment** refuses a role that mixes a reserved key with keys a
   person may hold. It admits a role made only of reserved keys, because that is the shape a
   system-held role has. A stored role does not record its holder, so this door cannot tell such
@@ -70,7 +74,9 @@ Not covered yet:
 
 - a role or grant a host seats or composes itself;
 - a role definition widened after it was assigned;
-- a role or grant conferred on a host that registers no modules.
+- a role or grant conferred on a host that registers no modules;
+- grants and shape bindings a scope recorded before these checks existed, and what reaches a
+  person through them later, such as an org membership or a binding link.
 
 Push and the lint hold what a vertical declares there.
 

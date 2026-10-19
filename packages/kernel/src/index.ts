@@ -576,7 +576,7 @@ export { SHAPE_MARKER_INDEX_DDL, SHAPE_MARKER_READS_PER_ROW, grantEntityShapeIn,
 export type { ShapeCursor, ShapePass } from './entity-grant-shape.js';
 export { ENTITY_UNBIND_OPERATION, unbindEntityHolderBounded } from './entity-binding.js';
 export { applyScopeRoleChange, changeScopeRole, revokeScopeRoles, scopeRoleHolders, type Atomically, type RoleBound, type ScopeRoleHolder } from './scope-role-admin.js';
-export { assertModuleDeclared, noteReservedKeys, reservedGrantRefusal, reservedRoleRefusal, type DeclaredPermissions } from './reserved-roles.js';
+export { assertModuleDeclared, noteReservedKeys, reservedGrantRefusal, reservedRoleRefusal, reservedShapeRefusal, type DeclaredPermissions } from './reserved-roles.js';
 export { repointScopeGrants, type RepointSource } from './scope-repoint.js';
 export { COPY_ORIGIN_DDL, capabilitiesForLoad, clearCopyMarker, emittedHere, isCopyLoad, IS_COPY_SQL, markCopyOrigin, settleCopiedWork } from './scope-copy.js';
 export { isLifecycleWrite, lifecycleReceipt, lifecycleRefusal, readLifecycle, settleLifecycleAfterLoad, writeLifecycle } from './scope-lifecycle.js';

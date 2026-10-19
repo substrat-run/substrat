@@ -4640,6 +4640,41 @@ describe('control-plane API — vertical registry', () => {
       expect((await post(ok, withGrant(ok, 'scopeItem'))).status).toBe(201);
     });
 
+    // #2430: the owner grants an install hands its owner are a person's, held to the registry's marks.
+    it('refuses ownerGrants holding a key the registry reserves, naming the field; its twins are accepted', async () => {
+      const withOwnerGrants = (id: string, ownerGrants: string[] | undefined, marked = true) =>
+        JSON.stringify({
+          version: id.toLowerCase(),
+          entry: 'index.js',
+          compatibilityDate: '2026-07-01',
+          registry: {
+            permissions: [
+              { key: 'fsm:job-read', description: 'Read a job', declaredBy: ['fsm'] },
+              { key: 'fsm:job-run', description: 'Run a job', declaredBy: ['fsm'], ...(marked ? { holder: 'system' } : {}) },
+            ],
+            roles: [],
+            entityGrants: [],
+          },
+          ...(ownerGrants ? { ownerGrants } : {}),
+          digests: { manifest: 'm', permission: 'p', migration: 'g' },
+        });
+      const refused = ulid();
+      const res = await post(refused, withOwnerGrants(refused, ['fsm:job-read', 'fsm:job-run']));
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({
+        code: 'validation_failed',
+        error:
+          'manifestJson is not a deploy manifest: ownerGrants: owner grants (substrat.ownerGrants) → fsm:job-run: ' +
+          "reserved to a system principal (`holder: 'system'` on its registry row)",
+      });
+      expect((await get(`/verticals/fsm/versions/${refused}/registry`)).status).toBe(404);
+      // Owner grants of person keys only; a manifest from a CLI that sends none; a registry whose rows mark nothing.
+      for (const [ownerGrants, marked] of [[['fsm:job-read'], true], [undefined, true], [['fsm:job-run'], false]] as const) {
+        const id = ulid();
+        expect((await post(id, withOwnerGrants(id, ownerGrants ? [...ownerGrants] : undefined, marked))).status, String(ownerGrants)).toBe(201);
+      }
+    });
+
     it('still accepts a pre-#286 version with no manifest, and one with no registry', async () => {
       expect((await post(ulid(), null)).status).toBe(201);
       expect((await post(ulid(), undefined)).status).toBe(201);

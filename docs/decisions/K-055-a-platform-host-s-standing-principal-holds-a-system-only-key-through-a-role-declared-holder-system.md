@@ -26,10 +26,12 @@ tracking: ["#2283"]
 ## Evidence and limits
 
 - **Held by** `tools/reserved-keys.test.mts`: the function, and the tool on fixture verticals (a system role passes and renders; a system role with `assistant:use` exits 2; `holder: 'person'` is the same as none).
-- **Enforced at runtime, by keys alone (#2430).** A host reads the reserved keys off the modules it registers and refuses them at its doors:
-  - The person-facing role doors (an invite's scope role, a role change, a membership add) refuse any role carrying a reserved key, and `canAssign` answers the same.
+- **Enforced at runtime, by keys alone (#2430).** A host reads the reserved keys off the modules it registers and the modules its declared `permissions` lists, and refuses them at its doors:
+  - The person-facing role doors (an invite's scope role, a role change, a membership add) refuse any role carrying a reserved key, and `canAssign` answers the same, for taking such a role away as for giving it.
   - A raw grant of one to a principal or an org is refused, `ctx.grant` included, whoever the caller is.
+  - A reconcile of declared entity-grant shapes refuses a shape holding one, before it tops up any holder or records what a binding link grants.
   - The platform's role assignment refuses a role that mixes reserved keys with others, and admits a role made only of reserved keys, since that is this record's shape.
+- **Not checked yet.** Roles and grants a host seats or composes itself, a role definition widened after it was assigned, roles and grants conferred on a host that registers no modules, and grants and shape bindings a scope recorded before these checks existed, with what reaches a person through them later.
 - **What that door cannot tell.** A stored role does not record its holder, and the door does not know whether the assignee is a person or a host principal. So a role made only of reserved keys is admitted for any principal. One principal given two roles at that door can hold reserved keys and person keys together, which the engine test kit does, deliberately, to build a test principal. Persisting the role holder (#2444) would let the door refuse a person's role carrying a reserved key and admit only a system-held one. Telling a person from the host principal it is meant for needs a record of what kind of principal each one is, which nothing keeps yet.
 - **Not decided here:** the host principal's lifecycle per team, and the actor and ceiling model that replaces it.
 

@@ -16,7 +16,7 @@ import {
   unitemisedRegistryChanges,
   type RegistryLike,
 } from '../src/registry-diff.js';
-import { ownerGrantSets, reservedKeyOffences, reservedKeysOf } from '../src/reserved-keys.js';
+import { declaredOwnerGrants, ownerGrantSets, reservedKeyOffences, reservedKeysOf } from '../src/reserved-keys.js';
 
 const manifest = (id: string, permissions: { key: string; description: string; holder?: 'system' }[]) =>
   moduleManifest.parse({
@@ -180,6 +180,16 @@ describe('owner grants are a person’s grant (#2430)', () => {
     ]);
     expect(ownerGrantSets([engine])).toEqual([]);
   });
+
+  it('declaredOwnerGrants reads package.json’s list, absent as none, and refuses anything else rather than reading it as none', () => {
+    expect(declaredOwnerGrants(undefined)).toEqual({ grants: [] });
+    expect(declaredOwnerGrants(['a:b', 'c:d'])).toEqual({ grants: ['a:b', 'c:d'] });
+    for (const value of ['a:b', { a: 'b' }, ['a:b', 7], null, 3]) {
+      expect(declaredOwnerGrants(value)).toEqual({
+        problem: expect.stringMatching(/^declares `substrat\.ownerGrants` as .+, not an array of permission keys\. List the keys/),
+      });
+    }
+  });
 });
 
 describe('the promotion diff itemises a moved reservation and a moved role holder (#2430)', () => {
@@ -220,6 +230,28 @@ describe('the promotion diff itemises a moved reservation and a moved role holde
     expect(host).toEqual({ key: 'host', added: [], removed: [], isNew: false, isGone: false, holder: { from: 'system', to: 'person' } });
     expect(roleHolderNote(host!)).toMatch(/now a role a person can hold/);
     expect(diff.roleChanges.find((r) => r.key === 'm')).not.toHaveProperty('holder');
+  });
+
+  it('a role that arrives system-held is marked so, never shown as a person’s role holding a reserved key', () => {
+    const from = reg([key('a:use')], [{ key: 'm', permissions: ['a:use'] }]);
+    const to = reg([key('a:use'), key('a:run', 'system')], [{ key: 'm', permissions: ['a:use'] }, { key: 'host', permissions: ['a:run'], holder: 'system' }]);
+    const diff = diffRegistries(from, to);
+    const host = diff.roleChanges.find((r) => r.key === 'host');
+    expect(host).toEqual({ key: 'host', added: ['a:run'], removed: [], isNew: true, isGone: false, systemHeld: true });
+    expect(roleHolderNote(host!)).toBe('held by a system principal (holder: system), not a role a person can hold');
+    // A new role holds no holder move, so the direction stays what the keys say.
+    expect(registryDirection(diff)).toBe('adds');
+  });
+
+  it('…and so does one that stays system-held while it changes, or is dropped; a person’s role is not marked', () => {
+    const host = (permissions: string[]) => ({ key: 'host', permissions, holder: 'system' as const });
+    const keys = [key('a:use'), key('a:run', 'system'), key('a:go', 'system')];
+    const widened = diffRegistries(reg(keys, [host(['a:run'])]), reg(keys, [host(['a:run', 'a:go'])])).roleChanges[0]!;
+    expect(widened).toMatchObject({ key: 'host', added: ['a:go'], systemHeld: true });
+    expect(diffRegistries(reg(keys, [host(['a:run'])]), reg(keys, [])).roleChanges[0]).toMatchObject({ isGone: true, systemHeld: true });
+    const person = diffRegistries(reg(keys, []), reg(keys, [{ key: 'm', permissions: ['a:use'] }])).roleChanges[0]!;
+    expect(person).not.toHaveProperty('systemHeld');
+    expect(roleHolderNote(person)).toBeNull();
   });
 
   it('a registry that moves nothing reports nothing, holder: person and absent alike', () => {

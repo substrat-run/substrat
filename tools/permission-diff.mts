@@ -34,7 +34,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from '
 import { join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { repoRoot, toPosix } from './repo-path.mjs';
-import { ownerGrantSets, reservedKeyMessage, reservedKeyOffences, reservedKeysOf } from './reserved-keys.mts';
+import { declaredOwnerGrants, ownerGrantSets, reservedKeyMessage, reservedKeyOffences, reservedKeysOf } from './reserved-keys.mts';
 
 // Structural shapes — deliberately not imported from the kernel. The tool needs
 // four fields, and depending on the packages it inspects would be a cycle.
@@ -705,10 +705,10 @@ function declaredEntry(dir: string, rel: string): Vertical | undefined {
         `  \`"substrat": { "permissions": "src/provision.ts" }\`. See demos/todo.`,
     );
   }
-  const ownerGrants = Array.isArray(pkgJson.substrat?.ownerGrants)
-    ? pkgJson.substrat.ownerGrants.filter((k): k is string => typeof k === 'string')
-    : [];
-  return { rel, dir, entry, pkg: pkgJson.name ?? rel, ownerGrants };
+  // #2430: an owner grant is a person's grant, so a list this cannot read is refused, never read as none.
+  const ownerGrants = declaredOwnerGrants(pkgJson.substrat?.ownerGrants);
+  if ('problem' in ownerGrants) cannot(`${rel}/package.json ${ownerGrants.problem}.`);
+  return { rel, dir, entry, pkg: pkgJson.name ?? rel, ownerGrants: ownerGrants.grants };
 }
 
 const verticals: Vertical[] = [];
