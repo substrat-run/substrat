@@ -315,7 +315,7 @@ export const handlebarInvoicingRoutes = defineEngineRoutes(invoicingOperations)(
 /**
  * The notifications engine's operations, at Handlebar's URLs: the three under `/me` act on the
  * caller only, and the delivery log is the workshop lead's. `notifications/send-digests` has no
- * URL: it is the engine's daily schedule, run by its system principal, and no person holds its key.
+ * URL: it is the engine's digest schedule, run by its system principal, and no person holds its key.
  */
 export const handlebarNotificationsRoutes = defineEngineRoutes(notificationsOperations)({
   'notifications/my-preferences': { method: 'GET', path: '/me/notifications' },

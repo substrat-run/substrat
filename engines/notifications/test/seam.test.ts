@@ -4,14 +4,14 @@
  * table under a running engine, which is what a version skew looks like from inside.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { isPlatformRequest } from '@substrat-run/contracts';
+import { isPlatformRequest, type Page } from '@substrat-run/contracts';
 import { manualClock } from '@substrat-run/kernel';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
   NOTIFICATIONS_PERM as PERM,
   notificationsModule,
   notify,
-  type NotificationsDigestFailedPayload,
+  type NotificationsDigestQuarantinedPayload,
 } from '../src/index.js';
 
 const DAY = 24 * 60 * 60_000;
@@ -79,7 +79,7 @@ describe('engine-notifications — the seam is parsed, not asserted', () => {
     await expect(me.stub.invoke('notifications/my-preferences', {})).rejects.toMatchObject({ code: 'internal' });
   });
 
-  it("a held item that stopped being text throws for its person only: theirs stays held, everyone else's goes out, and it is said", async () => {
+  it("a held row that stopped reading is set aside on its own: the rest of that person's digest and everyone else's go out, and it is said", async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const me = await someone();
@@ -87,36 +87,71 @@ describe('engine-notifications — the seam is parsed, not asserted', () => {
       for (const p of [me, other]) {
         await p.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: true, cadence: 'daily-digest' });
       }
-      await assign([me.principal, other.principal], 'held');
-      await drift(`UPDATE notifications_digest_items SET subject = X'00' WHERE principal = '${me.principal}'`);
+      const [bad] = await assign([me.principal], 'bad');
+      clock.advance(1_000);
+      await assign([me.principal, other.principal], 'good');
+      await drift(`UPDATE notifications_digest_items SET subject = X'00' WHERE id = '${bad!.deliveryId}'`);
       clock.advance(DAY);
       const schedule = await h.as([PERM.sendDigests]);
 
-      // The pass succeeds: the other person's digest is written, mine is not, and nothing of mine was let go.
-      expect(await schedule.invoke('notifications/send-digests', {})).toEqual({ digests: 1, items: 1, failed: 1, deferred: 0 });
+      expect(await schedule.invoke('notifications/send-digests', {})).toEqual({
+        digests: 2,
+        items: 2,
+        failed: 0,
+        deferred: 0,
+        quarantined: 1,
+      });
+      // My readable message went out on its own, not behind the bad one.
       const intents = (await h.host.listPlatformRequestHistory(h.tenant, h.scope)).filter(isPlatformRequest);
-      expect(intents).toHaveLength(1);
-      expect(intents[0]!.payload).toMatchObject({ subjectId: other.principal });
-      const heldNow = () =>
-        h.run((ctx) => ctx.sql.query<{ principal: string; failed_at: string | null }>('SELECT principal, failed_at FROM notifications_digest_items'));
-      expect(await heldNow()).toEqual([{ principal: me.principal, failed_at: clock.now() }]);
+      expect(intents.map((i) => (i.payload as { subjectId: string }).subjectId).sort()).toEqual([me.principal, other.principal].sort());
+      expect(intents.find((i) => (i.payload as { subjectId: string }).subjectId === me.principal)!.payload).toMatchObject({ subject: 'Assigned' });
 
-      // Said on the spine, naming the person and what waits, and on an error line with the cause.
-      const failed = () => h.eventsOfType('notifications.digest-failed').map((e) => e.payload as NotificationsDigestFailedPayload);
-      const retryAt = new Date(Date.parse(clock.now()) + DAY).toISOString();
-      expect(failed()).toEqual([{ principal: me.principal, channel: 'email', cadence: 'daily-digest', items: 1, code: 'internal', retryAt }]);
-      const lines = error.mock.calls.map(([l]) => JSON.parse(String(l)) as { fields: Record<string, unknown>; message: string });
+      // The bad row stays, marked, for repair; its occasion's delivery says what happened.
+      const rows = () =>
+        h.run((ctx) =>
+          ctx.sql.query<{ id: string; quarantined_at: string | null }>('SELECT id, quarantined_at FROM notifications_digest_items'),
+        );
+      expect(await rows()).toEqual([{ id: bad!.deliveryId, quarantined_at: clock.now() }]);
+      const admin = await h.as([PERM.read]);
+      const log = (await admin.invoke<Page<Record<string, unknown>>>('notifications/list-deliveries', {})).entries;
+      expect(log.find((d) => d.id === bad!.deliveryId)).toMatchObject({ status: 'skipped', reason: 'quarantined', settled_at: clock.now() });
+
+      // Said on the spine and on an error line, by occasion id — never by what the row held.
+      const quarantined = () =>
+        h.eventsOfType('notifications.digest-quarantined').map((e) => e.payload as NotificationsDigestQuarantinedPayload);
+      expect(quarantined()).toEqual([{ principal: me.principal, channel: 'email', occasions: [bad!.deliveryId], unidentified: 0 }]);
+      const lines = error.mock.calls.map(([l]) => JSON.parse(String(l)) as { fields: Record<string, unknown> });
       expect(lines).toEqual([
-        expect.objectContaining({ fields: expect.objectContaining({ principal: me.principal, items: 1 }), message: expect.stringContaining('does not match the shape') }),
+        expect.objectContaining({ fields: expect.objectContaining({ principal: me.principal, occasions: bad!.deliveryId, count: 1 }) }),
       ]);
 
-      // Not retried on every tick: a window passes first, then it is tried — and said — again.
-      clock.advance(DAY - 60_000);
-      expect(await schedule.invoke('notifications/send-digests', {})).toEqual({ digests: 0, items: 0, failed: 0, deferred: 0 });
-      expect(failed()).toHaveLength(1);
-      clock.advance(60_000);
-      expect(await schedule.invoke('notifications/send-digests', {})).toMatchObject({ failed: 1 });
-      expect(failed()).toHaveLength(2);
+      // Never tried again, and never in the way: my next message goes out a day after it is held.
+      await assign([me.principal], 'later');
+      clock.advance(DAY);
+      expect(await schedule.invoke('notifications/send-digests', {})).toMatchObject({ digests: 1, items: 1, quarantined: 0 });
+      expect(quarantined()).toHaveLength(1);
+      expect(await rows()).toEqual([{ id: bad!.deliveryId, quarantined_at: expect.any(String) }]);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('a row whose very id stopped reading is still set aside, and counted as unidentified', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const me = await someone();
+      await me.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: true, cadence: 'daily-digest' });
+      await assign([me.principal], 'held');
+      await drift(`UPDATE notifications_digest_items SET id = X'00'`);
+      clock.advance(DAY);
+      expect(await (await h.as([PERM.sendDigests])).invoke('notifications/send-digests', {})).toMatchObject({
+        digests: 0,
+        quarantined: 1,
+      });
+      expect(h.eventsOfType('notifications.digest-quarantined').map((e) => e.payload)).toEqual([
+        { principal: me.principal, channel: 'email', occasions: [], unidentified: 1 },
+      ]);
+      expect(await h.host.listPlatformRequestHistory(h.tenant, h.scope)).toEqual([]);
     } finally {
       error.mockRestore();
     }

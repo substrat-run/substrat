@@ -121,7 +121,7 @@ describe('engine-notifications on workerd', () => {
     expect(row!.settled_at).not.toBeNull();
   });
 
-  it('a digest topic is held, and once a day old the schedule sends one mail of everything held', async () => {
+  it('a digest topic is held, and once a day old a pass sends what reads and sets aside what does not', async () => {
     await tech.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: true, cadence: 'daily-digest' });
     const before = (await intents()).length;
     await assign('WO-D1');
@@ -135,15 +135,17 @@ describe('engine-notifications on workerd', () => {
     expect(await intents()).toHaveLength(before);
 
     await admin.invoke('probe/age-held', {});
+    await admin.invoke('probe/poison-newest-held', {});
     const pass = await (await host.getScope(systemId, t, s)).invoke('notifications/send-digests', {});
-    expect(pass).toEqual({ digests: 1, items: 2, failed: 0, deferred: 0 });
-    const digest = (await intents()).find((i) => (i.payload as { subject: string }).subject === 'Assigned: WO-D1 (+1)');
+    expect(pass).toEqual({ digests: 1, items: 1, failed: 0, deferred: 0, quarantined: 1 });
+    const digest = (await intents()).find((i) => (i.payload as { subject: string }).subject === 'Assigned: WO-D1');
     expect(digest).toBeDefined();
     expect(await intents()).toHaveLength(before + 1);
     expect(await deliveries({ topic: DIGEST_TOPIC })).toMatchObject([{ status: 'requested', request_id: digest!.id, principal: techId }]);
-    // The occasions it carried are settled into it.
-    const carried = (await deliveries({ status: 'skipped' })).filter((d) => d.reason === 'digest');
-    expect(carried.every((d) => d.settled_at !== null)).toBe(true);
+    // The occasion it carried is settled into it; the unreadable one is set aside, and says so.
+    const occasions = await deliveries({ status: 'skipped' });
+    expect(occasions.filter((d) => d.reason === 'digest').every((d) => d.settled_at !== null)).toBe(true);
+    expect(occasions.filter((d) => d.reason === 'quarantined')).toHaveLength(1);
   });
 
   it('a switch-off withdraws what is held, and its deliveries read as muted', async () => {
@@ -159,8 +161,9 @@ describe('engine-notifications on workerd', () => {
     // The digest's own send, still pending.
     const held = (await intents()).find((i) => i.status === 'pending')!;
     const receipt = await host.admin.shredSubject(staff, t, s, dataSubjectId.parse(techId));
+    // WO-3, held, and WO-D2, set aside: an erasure takes the quarantined row too.
     expect(receipt.verticalRows).toMatchObject([
-      { entityType: 'notification-digest-item', mode: 'delete', rows: 1 },
+      { entityType: 'notification-digest-item', mode: 'delete', rows: 2 },
       { entityType: 'notification-recipient', mode: 'delete', rows: 1 },
     ]);
     expect(await tech.invoke('notifications/my-preferences', {})).toMatchObject({ email: null });

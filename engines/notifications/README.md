@@ -75,10 +75,20 @@ host.registerModule(notificationsModule);
   next pass, oldest first, so a backlog drains over a few passes. The pass never meets the
   cap's refusal.
 
-  **Contained failures.** Each person's digest is its own `ctx.atomic`. If one cannot be
-  composed (a held row that no longer reads, say), their messages stay held and everyone
-  else's digest still goes out. `notifications.digest-failed` and an error line say so, and
-  their next attempt waits a day.
+  **Item limit.** One digest carries at most 50 occasions (`DIGEST_MAX_ITEMS`), oldest first.
+  The rest stay held and are due again on the next pass. That is the one case where a person
+  gets more than one digest a day.
+
+  **Contained failures.** Each person's digest is its own `ctx.atomic`. If writing it fails (a
+  send or a write that throws), nothing of it happened for that person. Their messages stay held
+  and everyone else's digest still goes out. `notifications.digest-failed` and an error line say
+  so, and their next attempt waits a day.
+
+  **Unreadable rows.** A held row that no longer reads, because it left the published shape, is
+  set aside rather than allowed to block the rest. It is marked `quarantined_at`, never sent and
+  never tried again, and kept for whoever repairs the data. Its occasion's delivery settles
+  `skipped`/`quarantined`. `notifications.digest-quarantined` and an error line name the
+  occasions, never their content. The person's readable messages go out as usual.
 
   **Mutes and required topics.** A mute still wins: switching a topic off withdraws what is
   held for it, and those occasions' deliveries then read `skipped`/`muted`. A required topic
@@ -92,9 +102,17 @@ host.registerModule(notificationsModule);
   **Something must run the schedule.** On the hosted platform the scope sweeper does, once a
   scope's provision has granted the schedule's key: an install provisioned before this engine
   declared the schedule gets it from the reconcile that follows a promote. A self-hosted server
-  must run `runDueSchedules` or `startPlatformSweeper`, as Handlebar's dev server does. Where
-  nothing runs it, messages are held and nothing fails. A hold that finds a person's oldest
-  message two days old writes a warning line asking whether the schedule is running.
+  must run `runDueSchedules` or `startPlatformSweeper`, as Handlebar's dev server does.
+
+  **Something must drain the sends.** Room only comes back as the platform drains the scope's
+  pending sends. On the hosted platform the control plane's sweep does this every 15 minutes. A
+  scheduled pass gets no immediate drain kick, unlike an operation a request ran. A server that
+  drains nothing, as Handlebar's dev server does not, fills its backlog: from then on every
+  pass defers everyone and logs that it did.
+
+  Wherever the schedule does not run or the sends do not drain, messages are held and nothing
+  fails. A hold that finds a person's oldest message (set-aside rows aside) two days old writes
+  a warning line, whatever the cause.
 
 **One topic, one declaration.** A topic's `description` and `required` are recorded from the call that uses it, and follow the latest caller, so a deploy that changes them updates the scope. Every call site for a topic must pass the same pair: two that disagree make the topic flip with whichever ran last, and a mute be refused or allowed accordingly. Keep each topic in one constant that its call sites spread, and change it there.
 

@@ -3,13 +3,15 @@ import { z } from 'zod';
 import {
   dataSubjectId,
   MAX_PENDING_PLATFORM_REQUESTS,
+  type DomainEventInput,
   moduleId,
   platformActorId,
   type PrincipalId,
 } from '@substrat-run/contracts';
-import { manualClock, ulid, type ScopeStub } from '@substrat-run/kernel';
+import { manualClock, ulid, type OperationContext, type ScopeStub } from '@substrat-run/kernel';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
+  DIGEST_MAX_ITEMS,
   DIGEST_RESERVE,
   DIGEST_TICK_MINUTES,
   DIGEST_TOPIC,
@@ -19,6 +21,7 @@ import {
   notify,
   sendDigests,
   type NotificationsDeliveryRecordedPayload,
+  type NotificationsDigestFailedPayload,
   type NotificationsDigestSentPayload,
   type NotifyInput,
 } from '../src/index.js';
@@ -240,7 +243,7 @@ describe('engine-notifications — digests', () => {
 
       clock.advance(DAY);
       const result = await (await h.as([PERM.sendDigests])).invoke('notifications/send-digests', {});
-      expect(result).toEqual({ digests: 2, items: 4, failed: 0, deferred: 0 });
+      expect(result).toEqual({ digests: 2, items: 4, failed: 0, deferred: 0, quarantined: 0 });
 
       const mails = await intents();
       expect(mails).toHaveLength(2);
@@ -331,7 +334,7 @@ describe('engine-notifications — digests', () => {
     });
 
     it('nothing held sends nothing', async () => {
-      expect(await pass()).toEqual({ digests: 0, items: 0, failed: 0, deferred: 0 });
+      expect(await pass()).toEqual({ digests: 0, items: 0, failed: 0, deferred: 0, quarantined: 0 });
       expect(digestsSent()).toEqual([]);
     });
 
@@ -423,7 +426,7 @@ describe('engine-notifications — digests', () => {
       const people = await crowd(MAX_PENDING_PLATFORM_REQUESTS + 8);
       clock.advance(DAY);
       const first = await (await h.as([PERM.sendDigests])).invoke('notifications/send-digests', {});
-      expect(first).toEqual({ digests: room, items: room, failed: 0, deferred: people.length - room });
+      expect(first).toEqual({ digests: room, items: room, failed: 0, deferred: people.length - room, quarantined: 0 });
       expect(await intents()).toHaveLength(room);
 
       // Nothing drained yet: the next tick finds no room, defers everyone, and still succeeds.
@@ -445,7 +448,7 @@ describe('engine-notifications — digests', () => {
       // Ten immediate mails nobody has drained yet.
       for (let i = 0; i < 10; i += 1) await send(assigned([tech.principal], watched));
       clock.advance(DAY);
-      expect(await pass()).toEqual({ digests: room - 10, items: room - 10, failed: 0, deferred: 20 - (room - 10) });
+      expect(await pass()).toMatchObject({ digests: room - 10, items: room - 10, failed: 0, deferred: 20 - (room - 10) });
     });
 
     it('a full digest pass leaves room for mail that must not wait', async () => {
@@ -454,6 +457,132 @@ describe('engine-notifications — digests', () => {
       expect(await pass()).toMatchObject({ digests: room, deferred: 4 });
       const [outcome] = await send(assigned([tech.principal], locked));
       expect(outcome).toMatchObject({ status: 'requested' });
+    });
+  });
+
+  describe('one digest is bounded', () => {
+    it(`it carries at most ${DIGEST_MAX_ITEMS}, oldest first; the rest follow on the next pass`, async () => {
+      await chooseDigest(tech);
+      for (let i = 1; i <= DIGEST_MAX_ITEMS + 10; i += 1) {
+        await send(assigned([tech.principal], { vars: { orderId: `WO-${i}` } }));
+        clock.advance(1_000);
+      }
+      clock.advance(DAY);
+      expect(await pass()).toMatchObject({ digests: 1, items: DIGEST_MAX_ITEMS });
+      expect((await intents())[0]!.payload).toMatchObject({ subject: `Assigned: WO-1 (+${DIGEST_MAX_ITEMS - 1})` });
+      expect(await held()).toHaveLength(10);
+      // Still as old, so due on the very next pass.
+      clock.advance(TICK);
+      expect(await pass()).toMatchObject({ digests: 1, items: 10 });
+      const [latest] = await intents();
+      expect(latest!.payload).toMatchObject({ subject: `Assigned: WO-${DIGEST_MAX_ITEMS + 1} (+9)` });
+      expect(await held()).toEqual([]);
+    });
+  });
+
+  describe('one person at a time', () => {
+    /**
+     * `ctx` with the `digest-sent` emit failing for one person — a failure AFTER that person's
+     * send, delivery, settle and delete were written, which is what the per-person
+     * sub-transaction exists to undo.
+     */
+    const failingFor =
+      (victim: string) =>
+      (ctx: OperationContext): OperationContext =>
+        new Proxy(ctx, {
+          get(target, prop) {
+            if (prop === 'emit') {
+              return (event: DomainEventInput) => {
+                if (event.type === 'notifications.digest-sent' && (event.payload as { principal: string }).principal === victim) {
+                  throw new Error('the digest-sent write failed');
+                }
+                target.emit(event);
+              };
+            }
+            const value: unknown = Reflect.get(target, prop, target);
+            return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+          },
+        });
+    const quiet = () => vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    it("a failure after a person's writes undoes all of them — no mail, no digest delivery, everything still held — and nobody else's", async () => {
+      const error = quiet();
+      try {
+        const other = await person('other@example.test');
+        await chooseDigest(tech);
+        await chooseDigest(other);
+        const [mine, theirs] = await send(assigned([tech.principal, other.principal]));
+        clock.advance(DAY);
+        expect(await h.run((ctx) => sendDigests(failingFor(tech.principal)(ctx)))).toEqual({
+          digests: 1,
+          items: 1,
+          failed: 1,
+          deferred: 0,
+          quarantined: 0,
+        });
+
+        expect((await intents()).map((i) => (i.payload as { to: string }).to)).toEqual(['other@example.test']);
+        expect((await deliveries({ topic: DIGEST_TOPIC })).map((d) => d.principal)).toEqual([other.principal]);
+        expect(await held()).toEqual([{ id: mine!.deliveryId, principal: tech.principal, topic: 'order-assigned' }]);
+        const occasions = await deliveries({ status: 'skipped' });
+        expect(occasions.find((d) => d.id === mine!.deliveryId)).toMatchObject({ reason: 'digest', settled_at: null });
+        expect(occasions.find((d) => d.id === theirs!.deliveryId)).toMatchObject({ reason: 'digest', settled_at: clock.now() });
+        expect(digestsSent().map((d) => d.principal)).toEqual([other.principal]);
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('a failed person is said, waits a day rather than failing every pass, and is tried again', async () => {
+      const error = quiet();
+      try {
+        await chooseDigest(tech);
+        await send(assigned([tech.principal]));
+        clock.advance(DAY);
+        const failing = () => h.run((ctx) => sendDigests(failingFor(tech.principal)(ctx)));
+        expect(await failing()).toMatchObject({ failed: 1 });
+        const failed = () =>
+          h.eventsOfType('notifications.digest-failed').map((e) => e.payload as NotificationsDigestFailedPayload);
+        const retryAt = new Date(Date.parse(clock.now()) + DAY).toISOString();
+        expect(failed()).toEqual([
+          { principal: tech.principal, channel: 'email', cadence: 'daily-digest', items: 1, code: 'internal', retryAt },
+        ]);
+        const lines = error.mock.calls.map(([l]) => JSON.parse(String(l)) as { fields: Record<string, unknown>; message: string });
+        expect(lines).toEqual([
+          expect.objectContaining({
+            fields: expect.objectContaining({ principal: tech.principal, items: 1 }),
+            message: expect.stringContaining('the digest-sent write failed'),
+          }),
+        ]);
+
+        clock.advance(DAY - TICK);
+        expect(await failing()).toMatchObject({ failed: 0, digests: 0 });
+        expect(failed()).toHaveLength(1);
+        clock.advance(TICK);
+        // The cause is gone: the retry sends it.
+        expect(await pass()).toMatchObject({ digests: 1, failed: 0 });
+        expect(await held()).toEqual([]);
+      } finally {
+        error.mockRestore();
+      }
+    });
+
+    it('a person stuck behind failures is not masked from the two-day warning', async () => {
+      const error = quiet();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await chooseDigest(tech);
+        await send(assigned([tech.principal]));
+        clock.advance(DAY);
+        await h.run((ctx) => sendDigests(failingFor(tech.principal)(ctx)));
+        clock.advance(DAY + 1);
+        await send(assigned([tech.principal]));
+        const warnings = warn.mock.calls.map(([l]) => String(l)).filter((l) => l.includes('are sends being drained'));
+        expect(warnings).toHaveLength(1);
+      } finally {
+        error.mockRestore();
+        warn.mockRestore();
+      }
     });
   });
 

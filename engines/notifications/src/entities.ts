@@ -34,8 +34,10 @@ export const digestCadence = z.enum(['daily-digest']);
  *   message as `notify` rendered it, keyed by the occasion's own delivery row (`id`). Only
  *   pending items are here — sending the digest deletes them, and so does switching the topic
  *   off. `failed_at` marks a person whose digest could not be composed, so the next attempt
- *   waits. The rendered text is about the occasion and addressed to the person, so it is
- *   erasable, and an erasure of the person deletes their items with their address.
+ *   waits; `quarantined_at` marks one row that no longer reads, set aside so it is never sent
+ *   and never holds up the rest. The rendered text is about the occasion and addressed to the
+ *   person, so it is erasable, and an erasure of the person deletes their items with their
+ *   address.
  */
 export const notificationsEntities = defineEntities({
   'notification-topic': {
@@ -115,6 +117,8 @@ export const notificationsEntities = defineEntities({
       queued_at: z.string(),
       /** When the last attempt to send this person's digest failed; the next waits a window. */
       failed_at: z.string().nullable(),
+      /** When this row was found unreadable and set aside: never sent, kept for repair. */
+      quarantined_at: z.string().nullable(),
     }),
     erasable: ['subject', 'text', 'html'],
     // Mail addressed to the person: nothing about a pending item survives them.

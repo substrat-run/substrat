@@ -153,5 +153,7 @@ _No lifecycle is declared: nothing here moves through stages._
   The engine's system principal holds that key, and no person may: no Handlebar role holds it,
   and the operation has no URL here. A mechanic can now take `repair-assigned` as a daily
   digest from their own preferences. The dev server now starts a schedule sweeper
-  (`src/server.ts`, `SWEEP_MS`), because nothing else would run the digest. No Handlebar role,
-  table or operation of its own changed.
+  (`src/server.ts`, `SWEEP_MS`), because nothing else would run the digest. It drains no
+  platform intents, so a digest is written as a pending send, like every notification here.
+  Once 24 are pending, every pass defers everyone. No Handlebar role, table or operation of its
+  own changed.

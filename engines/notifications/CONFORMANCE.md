@@ -27,7 +27,7 @@ inherits them by running on the platform; nothing in the app's own code can opt 
 
 ## 2. This app's entity checks — none, and that is the assessment
 
-Five operations, five node checks. Three act on the CALLER's own preferences under `notifications:self` and take no principal as input, so there is no other record a grant could narrow them to; the fourth reads the scope's delivery log under `notifications:read`, which is an administrator's view of the scope rather than of any one entity; the fifth sends every person's digest under `notifications:send-digests`, the daily schedule's key, which acts on the whole scope by design. The case that would change this is a delivery log narrowed to the entity a mail was about, which would be a per-entity walk over `about` and is not offered.
+Five operations, five node checks. Three act on the CALLER's own preferences under `notifications:self` and take no principal as input, so there is no other record a grant could narrow them to; the fourth reads the scope's delivery log under `notifications:read`, which is an administrator's view of the scope rather than of any one entity; the fifth sends the digests that are due under `notifications:send-digests`, the digest schedule's key, which acts on the whole scope by design. The case that would change this is a delivery log narrowed to the entity a mail was about, which would be a per-entity walk over `about` and is not offered.
 
 **How this is established.** This package declares its operation surface, so the claim is
 read off the declaration by the same `planEntityCheckCoverage` the conformance kit uses:

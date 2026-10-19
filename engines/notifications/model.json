@@ -208,6 +208,16 @@
                 "type": "null"
               }
             ]
+          },
+          "quarantined_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -222,7 +232,8 @@
           "about_type",
           "about_id",
           "queued_at",
-          "failed_at"
+          "failed_at",
+          "quarantined_at"
         ],
         "additionalProperties": false
       },

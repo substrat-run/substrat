@@ -12,7 +12,7 @@ one delivery per occasion, topic and person.
 | **Entitlement key** | `notifications` |
 | **Composed** | by call: `notify(ctx, …)` inside your own transaction |
 | **Owns** | the topics a scope has used, where each person's notifications go, which topics they muted or take as a digest, what is held for each digest, and what became of every delivery |
-| **Emits** | `notifications.delivery-recorded`, `delivery-settled`, `preference-set`, `recipient-updated`, `topic-recorded`, `digest-sent`, `digest-failed` |
+| **Emits** | `notifications.delivery-recorded`, `delivery-settled`, `preference-set`, `recipient-updated`, `topic-recorded`, `digest-sent`, `digest-failed`, `digest-quarantined` |
 | **Consumes** | `email.sent`, `email.refused`, `email.dead-lettered`, which settle its deliveries |
 | **Schedules** | `notifications/send-digests`, every 15 minutes, sending each person whose digest is due |
 | **Permissions** | 3 (`notifications:self`, `notifications:read`, and `notifications:send-digests`, which only the digest schedule holds) |
@@ -68,8 +68,11 @@ consumer, pass the event's id. The engine registers as one frozen constant, like
   one's subject with `(+N)`, each under its own subject, as one document.
 - **A digest never crowds out mail that must not wait.** A scope holds a limited number of
   sends waiting for the platform. A digest pass takes at most the room left, less a reserve for
-  immediate mail, and the rest goes out on the next passes. One person's digest that cannot be
-  composed stays held and is reported. It never stops anyone else's.
+  immediate mail, and the rest goes out on the next passes.
+- **A digest is bounded.** It carries at most 50 messages; any more follow in the next one.
+- **One person's trouble stays theirs.** A digest that cannot be written stays held and is
+  reported, and never stops anyone else's. A held message that no longer reads is set aside
+  and reported, so it never holds up the rest of that person's digest.
 - **An address never rides an event.** It lives on the engine's recipient row, which a subject
   erasure deletes. The same erasure cancels a send that is still held.
 
@@ -79,7 +82,8 @@ consumer, pass the event's id. The engine registers as one frozen constant, like
   delivers it.
 - It has no channels other than email yet. Digests are daily only. When one goes out depends
   on when that person's oldest message arrived, not on a chosen time of day.
-- It sends no digest where nothing runs schedules. On the hosted platform the scope sweeper
-  runs them. A self-hosted server must run `startPlatformSweeper` (or `runDueSchedules`), or
-  held messages wait.
+- It sends no digest where nothing runs schedules, or where nothing drains the sends. On the
+  hosted platform the scope sweeper runs the schedule and the control plane drains the sends.
+  A self-hosted server must run `startPlatformSweeper` (or `runDueSchedules`) and drain its
+  platform intents, or held messages wait.
 - A topic appears on a person's preferences screen only once it has been used.

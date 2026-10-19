@@ -17,7 +17,7 @@
 | `invoicing:read` | Read invoice bases | `@substrat-run/engine-invoicing` |
 | `notifications:read` | Read what became of every notification in the scope | `@substrat-run/engine-notifications` |
 | `notifications:self` | Set where your own notifications go and which topics reach you | `@substrat-run/engine-notifications` |
-| `notifications:send-digests` | Send everyone their digest now — the digest schedule's key, held by the engine's system principal and never by a person | `@substrat-run/engine-notifications` |
+| `notifications:send-digests` | Send the digests that are due now — the digest schedule's key, held by the engine's system principal and never by a person | `@substrat-run/engine-notifications` |
 | `protocol:attach` | Attach a document to a protocol instance — the sealed signed PDF a signing connector lands on completion, or a human-uploaded document (the attachmentTargets write gate) | `@substrat-run/engine-protocol` |
 | `protocol:bind` | Bind vertical-owned document content (ref + hash) to an open document protocol | `@substrat-run/engine-protocol` |
 | `protocol:countersign` | Counter-sign an already-signed protocol — a second signature on the same frozen content (customer at pickup) | `@substrat-run/engine-protocol` |

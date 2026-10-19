@@ -194,6 +194,7 @@ export interface NotificationDigestItem {
   about_id: string | null;
   queued_at: string;
   failed_at: string | null;
+  quarantined_at: string | null;
 }
 
 /** `money` — a published schema, not a stored row. */

@@ -45,6 +45,7 @@ import {
   permissionKey,
   subjectErasureOf,
   substratError,
+  inList,
   isSubstratError,
   MAX_PENDING_PLATFORM_REQUESTS,
   type EmailOutcomeType,
@@ -97,6 +98,7 @@ export {
   type NotificationsDeliverySettledPayload,
   type NotificationsDigestFailedPayload,
   type NotificationsDigestItem,
+  type NotificationsDigestQuarantinedPayload,
   type NotificationsDigestSentPayload,
   type NotificationsPreferenceSetPayload,
   type NotificationsRecipientUpdatedPayload,
@@ -144,6 +146,13 @@ const DIGEST_WINDOW_MS = 24 * 60 * 60_000;
  */
 export const DIGEST_RESERVE = 8;
 
+/**
+ * The most held occasions one digest carries, oldest first. The rest wait for the next pass, so
+ * a person with more held than this gets several digests a pass apart rather than one unbounded
+ * mail, and a pass reads a bounded number of rows for each person.
+ */
+export const DIGEST_MAX_ITEMS = 50;
+
 // ============================================================================
 // Manifest and migrations
 // ============================================================================
@@ -158,7 +167,7 @@ export const notificationsManifest = moduleManifest.parse({
     { key: 'notifications:read', description: 'Read what became of every notification in the scope' },
     {
       key: 'notifications:send-digests',
-      description: "Send everyone their digest now — the digest schedule's key, held by the engine's system principal and never by a person",
+      description: "Send the digests that are due now — the digest schedule's key, held by the engine's system principal and never by a person",
     },
   ],
   events: {
@@ -249,7 +258,8 @@ export const notificationsMigrations = [
         about_type TEXT,
         about_id   TEXT,
         queued_at  TEXT NOT NULL,
-        failed_at  TEXT
+        failed_at  TEXT,
+        quarantined_at TEXT
       );
       CREATE INDEX notifications_digest_items_by_person
         ON notifications_digest_items (principal, channel, queued_at);
@@ -392,11 +402,13 @@ const storedCadenceOf = (ctx: OperationContext, principal: string, topic: string
 /**
  * Hold one rendered occasion for the person's next digest, under its own delivery's id.
  *
- * Holding is only half of a digest; the schedule is the other, and where it cannot run — a scope
- * provisioned before this engine declared it holds no grant for it until its provision runs
- * again, and a self-hosted server must run schedules at all — messages wait and nothing fails.
- * So a hold that finds this person's oldest message twice a window old, with no failed attempt
- * to explain it, says so in a warning line.
+ * Holding is only half of a digest; sending is the other, and where it does not happen,
+ * messages wait and nothing fails. The schedule may not run: a scope provisioned before this
+ * engine declared it holds no grant for it until its provision runs again, and a self-hosted
+ * server must run schedules at all. Or it runs and cannot send: the scope's sends are not being
+ * drained, so every pass finds no room, or this person's digest keeps failing. So a hold that
+ * finds this person's oldest message (set-aside rows aside) twice a window old says so in a
+ * warning line, whatever the reason.
  */
 function holdForDigest(
   ctx: OperationContext,
@@ -404,17 +416,17 @@ function holdForDigest(
   occasion: { principal: string; topic: string; dedupeKey: string; about: EntityRef | null },
   message: RenderedMessage,
 ): void {
-  const [waiting] = ctx.sql.query<{ oldest: string | null; failed: string | null }>(
-    `SELECT MIN(queued_at) AS oldest, MAX(failed_at) AS failed FROM notifications_digest_items
-      WHERE principal = ? AND channel = ?`,
+  const [waiting] = ctx.sql.query<{ oldest: string | null }>(
+    `SELECT MIN(queued_at) AS oldest FROM notifications_digest_items
+      WHERE principal = ? AND channel = ? AND quarantined_at IS NULL`,
     [occasion.principal, CHANNEL],
   );
   const stale = new Date(Date.parse(ctx.now()) - 2 * DIGEST_WINDOW_MS).toISOString();
-  if (waiting?.oldest && waiting.oldest < stale && waiting.failed === null) {
-    ctx.log.warn('digest messages for {principal} have waited since {oldest}: is the digest schedule running here?', {
-      principal: occasion.principal,
-      oldest: waiting.oldest,
-    });
+  if (waiting?.oldest && waiting.oldest < stale) {
+    ctx.log.warn(
+      'digest messages for {principal} have waited since {oldest}: is the digest schedule running, and are sends being drained?',
+      { principal: occasion.principal, oldest: waiting.oldest },
+    );
   }
   ctx.sql.exec(
     `INSERT INTO notifications_digest_items
@@ -613,13 +625,17 @@ export function setMyPreference(
     withdrawn = ctx.sql
       .query<{ id: string }>(
         `UPDATE notifications_deliveries SET reason = 'muted', settled_at = ?
-          WHERE id IN (SELECT id FROM notifications_digest_items WHERE principal = ? AND topic = ? AND channel = ?)
+          WHERE id IN (SELECT id FROM notifications_digest_items
+                        WHERE principal = ? AND topic = ? AND channel = ? AND quarantined_at IS NULL)
           RETURNING id`,
         [ctx.now(), ...mine],
       )
       .map((r) => r.id)
       .sort();
-    ctx.sql.exec('DELETE FROM notifications_digest_items WHERE principal = ? AND topic = ? AND channel = ?', mine);
+    ctx.sql.exec(
+      'DELETE FROM notifications_digest_items WHERE principal = ? AND topic = ? AND channel = ? AND quarantined_at IS NULL',
+      mine,
+    );
   }
   if (input.cadence === 'immediate') {
     ctx.sql.exec('DELETE FROM notifications_cadences WHERE principal = ? AND topic = ? AND channel = ?', mine);
@@ -671,40 +687,51 @@ export interface DigestPass {
   failed: number;
   /** People who were due but left for a later pass, because the scope had no room for more sends. */
   deferred: number;
+  /** Held occasions that no longer read, set aside this pass and never sent. */
+  quarantined: number;
 }
 
+/** One held row as stored, with the `rowid` that still names it when nothing else reads. */
+type HeldRow = Record<string, unknown> & { row_id: number };
+
 /**
- * Send each person whose digest is due one mail of everything held for them.
+ * Send each person whose digest is due one mail of what is held for them.
  *
  * **Who is due.** A person is due once their oldest held message is a whole window old (a day,
- * for `daily-digest`). So nothing waits much longer than a day, and nobody gets more than one
- * digest a day: everything held after a digest is younger than it. Oldest first, so a backlog
- * drains in the order it built up. A person whose last attempt failed waits a window before
- * the next.
+ * for `daily-digest`). So nothing waits much longer than a day, and a person gets one digest a
+ * day: everything held after it is younger. Oldest first, so a backlog drains in the order it
+ * built up. A person whose last attempt failed waits a window before the next.
  *
- * **How many.** Each mail is a platform send intent, and a scope may hold only
+ * **How many people.** Each mail is a platform send intent, and a scope may hold only
  * `MAX_PENDING_PLATFORM_REQUESTS` of those waiting for the drain — this transaction's own
  * included. A pass therefore sends to at most the room that is left, less `DIGEST_RESERVE`
  * slots kept for mail that must not wait, and leaves everyone else held for the next pass. It
  * never asks for more room than there is, so it never meets the cap's refusal.
  *
- * **One person at a time.** Each person's digest is its own `ctx.atomic`: their held messages
- * are read through the seam, become one mail (`digestOf`) written with `requestEmail` and one
- * delivery under `DIGEST_TOPIC`, the occasions it carried are settled, and they are no longer
- * held. If any of that throws — a held row that no longer reads, say — none of it happened for
- * that person: their messages stay held, `notifications.digest-failed` and an error line say so,
- * and everyone else's digest still goes out. A person who cleared their address since gets a
- * `skipped` (`no_address`) digest, as an immediate notification would have.
+ * **How much each.** One digest carries at most `DIGEST_MAX_ITEMS` occasions, oldest first. The
+ * rest stay held and, being as old, are due again on the next pass — the one case where a person
+ * gets more than one digest a day.
+ *
+ * **What does not read.** A held row that no longer matches the published shape is set aside
+ * (`quarantine`) rather than mailed or allowed to block the rest: the person's readable messages
+ * go out, and the bad row is never tried again.
+ *
+ * **One person at a time.** Each person's digest is its own `ctx.atomic`: one mail written with
+ * `requestEmail`, one delivery under `DIGEST_TOPIC`, the carried occasions settled and no longer
+ * held. If any of that throws, none of it happened for that person — their messages stay held,
+ * `notifications.digest-failed` and an error line say so — and everyone else's digest still goes
+ * out. A person who cleared their address since gets a `skipped` (`no_address`) digest, as an
+ * immediate notification would have.
  *
  * The engine's schedule runs it through `notifications/send-digests` every
  * `DIGEST_TICK_MINUTES`; a vertical may also call it, after its own permission check, like every
- * by-call function here.
+ * by-call function here. Either way it is one pass, and it sends only the people who are due.
  */
 export async function sendDigests(ctx: OperationContext): Promise<DigestPass> {
   const now = ctx.now();
   const cutoff = new Date(Date.parse(now) - DIGEST_WINDOW_MS).toISOString();
   const due = ctx.sql.query<{ principal: string }>(
-    `SELECT principal FROM notifications_digest_items WHERE channel = ?
+    `SELECT principal FROM notifications_digest_items WHERE channel = ? AND quarantined_at IS NULL
       GROUP BY principal
      HAVING MIN(queued_at) <= ? AND COALESCE(MAX(failed_at), '') <= ?
       ORDER BY MIN(queued_at), principal`,
@@ -712,17 +739,40 @@ export async function sendDigests(ctx: OperationContext): Promise<DigestPass> {
   );
   const pending = ctx.platformRequests({ status: 'pending', limit: MAX_PENDING_PLATFORM_REQUESTS }).length;
   let room = MAX_PENDING_PLATFORM_REQUESTS - DIGEST_RESERVE - pending;
-  const pass: DigestPass = { digests: 0, items: 0, failed: 0, deferred: 0 };
+  const pass: DigestPass = { digests: 0, items: 0, failed: 0, deferred: 0, quarantined: 0 };
   for (const [i, { principal }] of due.entries()) {
     if (room <= 0) {
       pass.deferred = due.length - i;
+      ctx.log.info('{deferred} due digest(s) wait for room: {pending} send(s) are waiting on the platform drain', {
+        deferred: pass.deferred,
+        pending: MAX_PENDING_PLATFORM_REQUESTS - DIGEST_RESERVE - room,
+      });
       break;
     }
     try {
-      const sent = await ctx.atomic(() => sendDigestOf(ctx, principal, now));
+      const rows = ctx.sql.query<HeldRow>(
+        `SELECT rowid AS row_id, ${DIGEST_ITEM_COLUMNS} FROM notifications_digest_items
+          WHERE principal = ? AND channel = ? AND quarantined_at IS NULL ORDER BY queued_at, id LIMIT ?`,
+        [principal, CHANNEL, DIGEST_MAX_ITEMS],
+      );
+      const held: z.infer<typeof digestItemRow>[] = [];
+      const unreadable: { rowId: number; id: unknown; error: string }[] = [];
+      for (const { row_id: rowId, ...row } of rows) {
+        try {
+          held.push(returns(digestItemRow, 'notifications/send-digests', row));
+        } catch (err) {
+          unreadable.push({ rowId, id: row.id, error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+      if (unreadable.length > 0) {
+        await ctx.atomic(() => quarantine(ctx, principal, unreadable, now));
+        pass.quarantined += unreadable.length;
+      }
+      if (held.length === 0) continue;
+      const requested = await ctx.atomic(() => sendDigestOf(ctx, principal, held, now));
       pass.digests += 1;
-      pass.items += sent.items;
-      if (sent.requested) room -= 1;
+      pass.items += held.length;
+      if (requested) room -= 1;
     } catch (err) {
       pass.failed += 1;
       recordDigestFailure(ctx, principal, now, err);
@@ -731,15 +781,8 @@ export async function sendDigests(ctx: OperationContext): Promise<DigestPass> {
   return pass;
 }
 
-/** One person's digest: everything held for them, as one mail and one delivery. */
-function sendDigestOf(ctx: OperationContext, principal: string, now: string): { items: number; requested: boolean } {
-  const held = ctx.sql
-    .query(
-      `SELECT ${DIGEST_ITEM_COLUMNS} FROM notifications_digest_items
-        WHERE principal = ? AND channel = ? ORDER BY queued_at, id`,
-      [principal, CHANNEL],
-    )
-    .map((row) => returns(digestItemRow, 'notifications/send-digests', row));
+/** One person's digest: the held messages given, as one mail and one delivery. Whether a send was written. */
+function sendDigestOf(ctx: OperationContext, principal: string, held: z.infer<typeof digestItemRow>[], now: string): boolean {
   const to = addressOf(ctx, principal);
   const request =
     to === null ? null : requestEmail(ctx, { to, ...digestOf(held), subjectId: dataSubjectId.parse(principal) });
@@ -753,12 +796,9 @@ function sendDigestOf(ctx: OperationContext, principal: string, now: string): { 
     request,
   });
   // The occasions are settled into this digest: still `skipped`/`digest`, now with a time.
-  ctx.sql.exec(
-    `UPDATE notifications_deliveries SET settled_at = ?
-      WHERE id IN (SELECT id FROM notifications_digest_items WHERE principal = ? AND channel = ?)`,
-    [now, principal, CHANNEL],
-  );
-  ctx.sql.exec('DELETE FROM notifications_digest_items WHERE principal = ? AND channel = ?', [principal, CHANNEL]);
+  const ids = inList(held.map((h) => h.id));
+  ctx.sql.exec(`UPDATE notifications_deliveries SET settled_at = ? WHERE id IN ${ids.sql}`, [now, ...ids.params]);
+  ctx.sql.exec(`DELETE FROM notifications_digest_items WHERE id IN ${ids.sql}`, [...ids.params]);
   emitNotificationsEvent(ctx, {
     type: 'notifications.digest-sent',
     entity: { entityType: 'notification-delivery', entityId: outcome.deliveryId },
@@ -780,7 +820,46 @@ function sendDigestOf(ctx: OperationContext, principal: string, now: string): { 
       })),
     },
   });
-  return { items: held.length, requested: request !== null };
+  return request !== null;
+}
+
+/**
+ * Set aside held rows that no longer read. Each is marked `quarantined_at` — never sent, never
+ * tried again, and no longer counted when deciding who is due — and kept, for whoever repairs
+ * the scope's data, until an erasure of the person deletes it. Each occasion whose id still
+ * reads has its delivery settled `skipped` with reason `quarantined`, which is what the delivery
+ * log shows. `notifications.digest-quarantined` and an error line name the occasions, never
+ * what the rows held.
+ */
+function quarantine(
+  ctx: OperationContext,
+  principal: string,
+  rows: { rowId: number; id: unknown; error: string }[],
+  now: string,
+): void {
+  const occasions: string[] = [];
+  for (const row of rows) {
+    ctx.sql.exec('UPDATE notifications_digest_items SET quarantined_at = ? WHERE rowid = ?', [now, row.rowId]);
+    if (typeof row.id !== 'string') continue;
+    occasions.push(row.id);
+    ctx.sql.exec(
+      `UPDATE notifications_deliveries SET reason = 'quarantined', settled_at = ?
+        WHERE id = ? AND status = 'skipped' AND reason = 'digest'`,
+      [now, row.id],
+    );
+  }
+  ctx.log.error('{count} message(s) held for the digest of {principal} no longer read and are set aside: {occasions} ({error})', {
+    count: rows.length,
+    principal,
+    occasions: occasions.join(', '),
+    error: rows[0]!.error,
+  });
+  emitNotificationsEvent(ctx, {
+    type: 'notifications.digest-quarantined',
+    entity: { entityType: 'notification-recipient', entityId: principal },
+    ...aboutPrincipal(principal),
+    payload: { principal, channel: CHANNEL, occasions, unidentified: rows.length - occasions.length },
+  });
 }
 
 /**
@@ -791,14 +870,14 @@ function sendDigestOf(ctx: OperationContext, principal: string, now: string): { 
  */
 function recordDigestFailure(ctx: OperationContext, principal: string, now: string, err: unknown): void {
   const [held] = ctx.sql.query<{ n: number }>(
-    'SELECT COUNT(*) AS n FROM notifications_digest_items WHERE principal = ? AND channel = ?',
+    `SELECT COUNT(*) AS n FROM notifications_digest_items
+      WHERE principal = ? AND channel = ? AND quarantined_at IS NULL`,
     [principal, CHANNEL],
   );
-  ctx.sql.exec('UPDATE notifications_digest_items SET failed_at = ? WHERE principal = ? AND channel = ?', [
-    now,
-    principal,
-    CHANNEL,
-  ]);
+  ctx.sql.exec(
+    'UPDATE notifications_digest_items SET failed_at = ? WHERE principal = ? AND channel = ? AND quarantined_at IS NULL',
+    [now, principal, CHANNEL],
+  );
   const code = isSubstratError(err) ? err.code : 'internal';
   const retryAt = new Date(Date.parse(now) + DIGEST_WINDOW_MS).toISOString();
   ctx.log.error('the digest for {principal} could not be sent; {items} message(s) stay held until {retryAt}: {error}', {

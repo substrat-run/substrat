@@ -165,8 +165,15 @@ mountOperations(
 // The scheduler's call site. Handlebar declares no schedule of its own, but the notifications
 // engine it composes does: `notifications/send-digests`, which sends a mechanic who takes
 // `repair-assigned` as a daily digest one mail of what was held. Without a sweeper nothing ever
-// runs it and the held messages wait for good. Schedules only: no drain is configured, so the
-// send intents it writes stay pending here, as every notification's does in this demo.
+// runs it and the held messages wait for good.
+//
+// The kernel's default pass also retries consumer deliveries, reconciles migrations and collects
+// expired snapshot forks; the reapers stay off. It drains no platform intents (no
+// `drainPlatformRequestsFn`): every send intent here, a notification's or a digest's, stays
+// pending, and nothing is mailed. So once 24 are pending a digest pass finds no room — the
+// engine keeps 8 of the scope's 32 for mail that must not wait — and defers everyone, saying so
+// in an info line; two days on, a new hold for that person warns that sends are not being
+// drained. That is this demo telling the truth about a drain it does not run.
 {
   const sweepMs = Number(process.env.SWEEP_MS ?? 60_000);
   startPlatformSweeper(host, {

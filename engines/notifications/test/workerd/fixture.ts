@@ -55,6 +55,15 @@ export const vertical: ModuleRegistration = {
       ctx.sql.exec(`UPDATE notifications_digest_items SET queued_at = '2000-01-01T00:00:00.000Z'`);
       return { aged: true };
     },
+    // Test-only drift: the newest held row stops reading, as a version skew would leave it.
+    'probe/poison-newest-held': async (ctx) => {
+      assertAllowed(await ctx.check(PROBE_EMIT));
+      ctx.sql.exec(
+        `UPDATE notifications_digest_items SET subject = X'00'
+          WHERE rowid = (SELECT MAX(rowid) FROM notifications_digest_items)`,
+      );
+      return { poisoned: true };
+    },
   }),
 };
 

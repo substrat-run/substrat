@@ -25,8 +25,10 @@ import type { OperationContext } from '@substrat-run/kernel';
  * sent on its own, by preference (`reason: 'muted'`), for want of an address (`'no_address'`),
  * or because the person takes this topic in a digest (`'digest'`): the occasion is held for
  * their next one. What becomes of a held occasion is told later, naming this `deliveryId`: the
- * `notifications.digest-sent` that carried it, or the `notifications.preference-set` whose
- * switch-off withdrew it (its delivery then reads `skipped`/`muted`). An erasure of the person
+ * `notifications.digest-sent` that carried it, the `notifications.preference-set` whose
+ * switch-off withdrew it (its delivery then reads `skipped`/`muted`), or the
+ * `notifications.digest-quarantined` that set it aside unreadable (`skipped`/`quarantined`). An
+ * erasure of the person
  * deletes it with no event, like a held send it cancels, and its delivery stays as it was.
  * `dedupeKey` is the occasion as the caller named it — from a consumer, the triggering event's id.
  *
@@ -122,12 +124,28 @@ export interface NotificationsDigestSentPayload {
 }
 
 /**
- * A person's digest was due and could not be composed — a held message that no longer reads,
- * say. Nothing was sent for them and nothing of theirs was let go: their `items` stay held, and
+ * A person's digest was due and could not be composed or written — a send or a write that
+ * failed. (A held message that no longer reads is set aside instead; see
+ * `notifications.digest-quarantined`.) Nothing was sent for them and nothing of theirs was let go: their `items` stay held, and
  * the next attempt is at `retryAt`, a window later. Everyone else's digest in the same pass went
  * out regardless. `code` is the platform's error code; the cause itself is on the error line the
  * pass writes, not here.
  */
+/**
+ * Held occasions of one person's digest no longer read — a stored row that left the shape this
+ * engine publishes — and were set aside rather than mailed or allowed to block the rest: each is
+ * marked and kept for repair, never tried again, and its delivery reads `skipped` with reason
+ * `quarantined`. The person's readable messages went out as usual. `occasions` names the
+ * deliveries whose id still read; `unidentified` counts the rows whose id did not. Never what a
+ * row held.
+ */
+export interface NotificationsDigestQuarantinedPayload {
+  principal: string;
+  channel: string;
+  occasions: string[];
+  unidentified: number;
+}
+
 export interface NotificationsDigestFailedPayload {
   principal: string;
   channel: string;
@@ -146,6 +164,7 @@ export type NotificationsEvents = {
     'notifications.topic-recorded': NotificationsTopicRecordedPayload;
     'notifications.digest-sent': NotificationsDigestSentPayload;
     'notifications.digest-failed': NotificationsDigestFailedPayload;
+    'notifications.digest-quarantined': NotificationsDigestQuarantinedPayload;
   };
 };
 
@@ -161,6 +180,7 @@ export const notificationsEventVersions = {
   'notifications.topic-recorded': 1,
   'notifications.digest-sent': 1,
   'notifications.digest-failed': 1,
+  'notifications.digest-quarantined': 1,
 } as const satisfies Record<NotificationsEventType, number>;
 
 /** The manifest's `events.emits`, read off {@link notificationsEventVersions}. */
