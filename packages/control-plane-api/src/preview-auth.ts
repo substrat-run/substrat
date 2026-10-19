@@ -1,5 +1,7 @@
 import {
+  MCP_RESOURCES_CONFIG_PREFIX,
   SHARED_ISSUER_CONFIG_KEY,
+  mcpResourceOf,
   oidcCallbackUrl,
   type HostnameBinding,
   type MintedPreviewClient,
@@ -49,6 +51,16 @@ import type { VerticalClient } from './vertical-client.js';
  *      exists) means stop: the push that minted it owns what happens next. Only `kept: false`
  *      — its own client vanished while its version is still bound — is retried, three
  *      attempts in all; running out is a failure, never a success.
+ *
+ * ## Its MCP endpoint
+ *
+ * The issuer that now signs the preview in is also told to mint for the preview's MCP
+ * endpoint, or an MCP client pointed at the preview meets `invalid_target` before any login
+ * page (#1619). It is the dashboard's own delivery, `substrat:resources:<scope id>` through
+ * the issuer's `/internal/configure`, keyed by the PREVIEW's scope: the issuer touches only
+ * rows marked for that key, so prod's registration is never read or written. The value is
+ * the whole set, so every push re-asserts it at no cost, and the reap clears it. Like the
+ * dashboard's registration it is best-effort: a login that works is not failed for it.
  */
 
 /** The capability a vertical declares to be a team issuer (manifest `provides`, #427). */
@@ -86,6 +98,11 @@ function issuerHostname(bound: readonly HostnameBinding[]): string | undefined {
 }
 
 const reasonOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** The issuer's registration of a preview's MCP endpoints (#1619's entry): `[]` clears them. */
+function previewResourcesEntry(previewScopeId: ScopeId, resources: readonly string[]): { key: string; value: string } {
+  return { key: `${MCP_RESOURCES_CONFIG_PREFIX}${previewScopeId}`, value: resources.length > 0 ? JSON.stringify(resources) : '' };
+}
 
 /** Re-exported for the preview routes, which name a preview's callback on every row. */
 export { oidcCallbackUrl };
@@ -209,6 +226,12 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
       () => null,
       (e: unknown) => reasonOf(e),
     );
+  const registerMcp = (resources: readonly string[]) =>
+    claim.client.configureInstance({
+      tenantId: input.tenantId,
+      scopeId: claim.scope.id,
+      entries: [previewResourcesEntry(input.previewId, resources)],
+    });
   const bound = async (): Promise<'ours' | 'moved' | 'gone'> => {
     const rec = await deps.admin.getScopeRecord(deps.actor, input.tenantId, input.previewId);
     if (!rec || rec.status !== 'active') return 'gone';
@@ -217,7 +240,17 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
   const reapedMeanwhile = async (): Promise<PreviewAuth> => {
     // The preview was reaped while this push ran: nothing may outlive it at the issuer.
     await claim.client.retirePreviewClients(address).catch(() => undefined);
+    await registerMcp([]).catch(() => undefined);
     return superseded(callbackUrl, 'the preview was reaped while this push ran');
+  };
+  // The preview's endpoints by the dashboard's rule (`mcpResourcesFor`): one per hostname it
+  // actively answers on — and always the one its login is wired for. The delivery is the whole
+  // set, so a hostname left out here would be un-registered.
+  const mcpResources = async (): Promise<string[]> => {
+    const live = (await deps.admin.listHostnames(deps.actor, { scopeId: input.previewId }))
+      .filter((h) => h.status === 'active')
+      .map((h) => h.hostname);
+    return [...new Set([input.previewHostname, ...live].map((h) => mcpResourceOf(`https://${h}`)))].sort();
   };
   const noLogin = (why: string): ControlPlaneError =>
     new ControlPlaneError(
@@ -268,22 +301,36 @@ export async function wirePreviewAuth(deps: PreviewAuthDeps, input: WirePreviewA
       return after === 'gone' ? reapedMeanwhile() : superseded(callbackUrl, 'another push re-bound the preview');
     }
 
+    // Delivered and bound: the issuer signs this preview in now, so it may mint for the
+    // preview's MCP endpoints too. A repeat (a retry below, every later push) writes nothing.
+    const mcp = await mcpResources()
+      .then(async (resources) => {
+        await registerMcp(resources);
+        return ` MCP: ${resources.join(', ')} registered there too, and un-registered by the same reap.`;
+      })
+      .catch(
+        (e: unknown) =>
+          ` MCP: the preview's endpoint could not be registered there (${reasonOf(e)}), so an MCP client ` +
+          `pointed at the preview gets invalid_target until the next push registers it.`,
+      );
+    const wiredNow = (extra = '') => wired(claim.scope.id, issuer, minted.clientId, callbackUrl, `${mcp}${extra}`);
+
     let retired;
     try {
       retired = await claim.client.retirePreviewClients({ ...address, keep: minted.clientId });
     } catch (e) {
       // Delivered and bound: the login works. What is left is older clients, which the next
       // push or the reap removes — said, not hidden.
-      return wired(claim.scope.id, issuer, minted.clientId, callbackUrl, ` Older clients of this preview could not be removed yet (${reasonOf(e)}); the next push or the reap removes them.`);
+      return wiredNow(` Older clients of this preview could not be removed yet (${reasonOf(e)}); the next push or the reap removes them.`);
     }
     if (retired.kept === false) continue; // our own client vanished while our version is bound
     if ((await bound()) === 'gone') return reapedMeanwhile();
-    return wired(claim.scope.id, issuer, minted.clientId, callbackUrl);
+    return wiredNow();
   }
   throw noLogin(`its client kept disappearing at the auth server ${claim.scope.id} (${MAX_ATTEMPTS} attempts)`);
 }
 
-function wired(issuerScopeId: ScopeId, issuer: string, clientId: string, callbackUrl: string, extra = ''): PreviewAuth {
+function wired(issuerScopeId: ScopeId, issuer: string, clientId: string, callbackUrl: string, extra: string): PreviewAuth {
   return {
     status: 'wired',
     callbackUrl,
@@ -295,10 +342,11 @@ function wired(issuerScopeId: ScopeId, issuer: string, clientId: string, callbac
 }
 
 /**
- * Delete every client minted for a preview, at every auth-server of its tenant — the reap's
- * half, run BEFORE the preview's storage and row go, so a failure leaves a preview a retry can
- * still find. An auth-server that predates preview clients cannot have minted one and is
- * skipped; any other failure throws.
+ * Delete every client minted for a preview, and un-register its MCP endpoint, at every
+ * auth-server of its tenant — the reap's half, run BEFORE the preview's storage and row go,
+ * so a failure leaves a preview a retry can still find. An auth-server that predates preview
+ * clients cannot have minted one, nor registered an endpoint for it (that follows a mint),
+ * and is skipped; any other failure throws.
  */
 export async function retireAllPreviewClients(
   deps: PreviewAuthDeps,
@@ -315,6 +363,7 @@ export async function retireAllPreviewClients(
       if (e instanceof ControlPlaneError && e.status === 501) continue;
       throw e;
     }
+    await client.configureInstance({ tenantId, scopeId: scope.id, entries: [previewResourcesEntry(previewScopeId, [])] });
   }
   return deleted;
 }

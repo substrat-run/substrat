@@ -5,8 +5,10 @@ import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { runPlatformSweep, ulid } from '@substrat-run/kernel';
 import {
+  MCP_RESOURCES_CONFIG_PREFIX,
   PREVIEW_CLIENT_PATH,
   SHARED_ISSUER_CONFIG_KEY,
+  mcpResourceOf,
   oidcCallbackUrl,
   platformActorId,
   previewClientCheck,
@@ -43,6 +45,8 @@ import {
  *     ITS OWN client, delivered into the PR version's own config store;
  *   - prod's client is never read, written or taught the preview's callback;
  *   - the reap deletes the preview's client, and a failed or partial create leaks none;
+ *   - the issuer that signs the preview in mints for the preview's MCP endpoint too, from
+ *     create until the reap, and prod's registration is never touched;
  *   - nothing is minted on a callback match alone, at another tenant's issuer, at a fork of an
  *     issuer, or where two issuers claim the app;
  *   - an issuer that predates the routes reads as "redeploy", never as "external";
@@ -52,7 +56,8 @@ import {
  *   - the secret appears in no output, admin-log row or ops-failure row;
  *   - only whoever may create the preview triggers any of it.
  *
- * The issuer is a faithful fake of `demos/auth-server`'s three routes, speaking through the
+ * The issuer is a faithful fake of `demos/auth-server`'s three routes and its resources
+ * delivery, speaking through the
  * REAL `VerticalClient` (so the skew handling under test is the shipped one) and parsing every
  * request with the contract's own schemas. The issuer's real implementation is proven against
  * the same schemas in its own package, on node and on workerd.
@@ -65,6 +70,8 @@ const BUILDER_HEADER = 'x-test-builder';
 const APP = 'acme/desk';
 const PARENT_HOST = 'desk-acme.global.substrat.run';
 const PREVIEW_HOST = (tag: string) => `desk-acme--${tag}.global.substrat.run`;
+const PARENT_MCP = mcpResourceOf(`https://${PARENT_HOST}`);
+const PREVIEW_MCP = (tag: string) => mcpResourceOf(`https://${PREVIEW_HOST(tag)}`);
 
 // ── the fake issuer deployment: one per auth-server vertical, every install one instance ──
 
@@ -83,6 +90,8 @@ interface FakeInstance {
   /** Apps the PLATFORM bound here (#1619 / #1670). */
   bindings: Set<string>;
   clients: Map<string, FakeClient>;
+  /** The resource registry (#1619): identifier → the scope whose delivery owns it. */
+  resources: Map<string, string>;
 }
 
 class FakeIssuers {
@@ -101,12 +110,38 @@ class FakeIssuers {
   private gen = 0;
   private n = 0;
 
-  install(scope: string, tenant: string, opts: { bind?: string[]; clients?: Record<string, string[]> } = {}): void {
+  install(
+    scope: string,
+    tenant: string,
+    opts: { bind?: string[]; clients?: Record<string, string[]>; resources?: Record<string, string> } = {},
+  ): void {
     const clients = new Map<string, FakeClient>();
     for (const [id, uris] of Object.entries(opts.clients ?? {})) {
       clients.set(id, { redirectUris: uris, postLogout: [], secretHash: `hash-${id}`, disabled: false });
     }
-    this.instances.set(scope, { tenantId: tenant, bindings: new Set(opts.bind ?? []), clients });
+    const resources = new Map(Object.entries(opts.resources ?? {}));
+    this.instances.set(scope, { tenantId: tenant, bindings: new Set(opts.bind ?? []), clients, resources });
+  }
+
+  /** The identifiers registered for `owner` at `scope` — what this issuer would mint for. */
+  registered(scope: string, owner: string): string[] {
+    return [...(this.instances.get(scope)?.resources ?? new Map<string, string>())]
+      .filter(([, o]) => o === owner)
+      .map(([identifier]) => identifier);
+  }
+
+  /**
+   * The platform's `/internal/configure`, as `demos/auth-server/src/resources.ts` applies a
+   * resources entry: the owner's whole set. Operator-owned rows are not modelled.
+   */
+  private configure(inst: FakeInstance, entries: Array<{ key: string; value: string }>): void {
+    for (const { key, value } of entries) {
+      if (!key.startsWith(MCP_RESOURCES_CONFIG_PREFIX)) continue;
+      const owner = key.slice(MCP_RESOURCES_CONFIG_PREFIX.length);
+      const wanted = new Set(value === '' ? [] : (JSON.parse(value) as string[]));
+      for (const [identifier, o] of [...inst.resources]) if (o === owner && !wanted.has(identifier)) inst.resources.delete(identifier);
+      for (const identifier of wanted) inst.resources.set(identifier, owner);
+    }
   }
 
   tagged(scope: string, preview: string): string[] {
@@ -122,7 +157,10 @@ class FakeIssuers {
     this.calls.push({ method, path: url.pathname, body });
     const json = (status: number, value: unknown) =>
       new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
-    if (!url.pathname.startsWith(PREVIEW_CLIENT_PATH) || this.predates) {
+    // `/internal/configure` predates the preview-client routes (#1619), so even a deployment
+    // built before those takes it.
+    const configures = url.pathname === '/internal/configure';
+    if (!configures && (!url.pathname.startsWith(PREVIEW_CLIENT_PATH) || this.predates)) {
       return json(501, { error: `auth-server does not implement ${method} ${url.pathname}` });
     }
     const fail = this.failNext.get(`${method} ${url.pathname}`);
@@ -132,6 +170,10 @@ class FakeIssuers {
     }
     const inst = this.instances.get(String(body.scopeId));
     if (!inst || inst.tenantId !== body.tenantId) return json(403, { error: 'not an issuer of that tenant' });
+    if (configures) {
+      this.configure(inst, body.entries as Array<{ key: string; value: string }>);
+      return json(200, { applied: (body.entries as unknown[]).length });
+    }
     const claims = (b: { parentScopeId: string; parentRedirectUris: string[] }) =>
       inst.bindings.has(b.parentScopeId) &&
       [...inst.clients.values()].some((c) => !c.disabled && c.redirectUris.some((u) => b.parentRedirectUris.includes(u)));
@@ -259,13 +301,21 @@ async function world(): Promise<void> {
   await host.admin.bindHostname(staff, { hostname: PARENT_HOST, tenantId: tenant, scopeId: prod, surface: 'app', region: null, canonical: true });
 
   // The team's auth server: an install of a vertical that provides `oidc-issuer`, holding
-  // prod's client and the platform's binding for prod.
+  // prod's client, the platform's binding for prod, and prod's MCP endpoint as the dashboard
+  // registered it at install.
   if (!(await host.admin.listVerticals(staff)).some((v) => v.slug === 'auth-server')) {
     await host.admin.registerVertical(staff, { slug: 'auth-server', name: 'Auth Server', source: 'builtin', ownerTenant: null, provides: ['oidc-issuer'] });
   }
   issuerScope = await issuerInstall(tenant, 'auth-acme.global.substrat.run');
-  issuers.install(issuerScope, tenant, { bind: [prod], clients: { [PROD_CLIENT]: [oidcCallbackUrl(PARENT_HOST)] } });
+  issuers.install(issuerScope, tenant, {
+    bind: [prod],
+    clients: { [PROD_CLIENT]: [oidcCallbackUrl(PARENT_HOST)] },
+    resources: { [PARENT_MCP]: prod },
+  });
 }
+
+/** Every configure delivery the platform made to any issuer. */
+const configures = () => issuers.calls.filter((c) => c.path === '/internal/configure');
 
 async function issuerInstall(t: TenantId, hostname: string): Promise<ScopeId> {
   const s = scopeId.parse(ulid());
@@ -443,6 +493,117 @@ describe('the expiry sweep retires an expired preview’s client too (#1704)', (
   });
 });
 
+describe('a preview’s MCP endpoint is registered where its login is (#1704)', () => {
+  it('create registers it at the issuer that signs the preview in, keyed by the preview — prod’s registration untouched', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    expect(out.auth.status).toBe('wired');
+    // What the issuer will now mint for: the preview's endpoint, owned by the PREVIEW's key.
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+    // One delivery, to the issuer's own (tenant, scope), naming no other app's key.
+    expect(configures()).toEqual([
+      {
+        method: 'POST',
+        path: '/internal/configure',
+        body: {
+          tenantId: tenant,
+          scopeId: issuerScope,
+          entries: [{ key: `${MCP_RESOURCES_CONFIG_PREFIX}${out.scopeId}`, value: JSON.stringify([PREVIEW_MCP('pr-7')]) }],
+        },
+      },
+    ]);
+    expect(out.auth.note).toContain(`MCP: ${PREVIEW_MCP('pr-7')} registered there`);
+  });
+
+  it('registers every hostname the preview actively answers on, as the dashboard counts them — never a pending one', async () => {
+    const first = await created({ tag: 'pr-7', versionId: versions[1] });
+    const bind = (hostname: string) =>
+      host.admin.bindHostname(staff, { hostname, tenantId: tenant, scopeId: first.scopeId, surface: 'app', region: null, canonical: false });
+    await bind('desk-acme--pr-7.alt.example');
+    await host.admin.setHostnameStatus(staff, 'desk-acme--pr-7.alt.example', 'active');
+    await bind('desk-acme--pr-7.pending.example');
+    await created({ tag: 'pr-7', versionId: versions[2] });
+    expect(issuers.registered(issuerScope, first.scopeId).sort()).toEqual(
+      [PREVIEW_MCP('pr-7'), mcpResourceOf('https://desk-acme--pr-7.alt.example')].sort(),
+    );
+  });
+
+  it('every push re-asserts the same set, and --refresh moves it to the fresh preview', async () => {
+    const first = await created({ tag: 'pr-7', versionId: versions[1] });
+    const again = await created({ tag: 'pr-7', versionId: versions[2] });
+    expect(again.reused).toBe(true);
+    expect(configures()).toHaveLength(2);
+    expect(issuers.registered(issuerScope, first.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+
+    const fresh = await created({ tag: 'pr-7', versionId: versions[3], refresh: true });
+    expect(issuers.registered(issuerScope, first.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, fresh.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+  });
+
+  it('the reap un-registers it, and prod’s stays', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    const del = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
+    expect(del.status).toBe(200);
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+  });
+
+  it('a reap whose un-registration fails keeps the preview, so the retry still finds it', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    issuers.failNext.set('POST /internal/configure', 503);
+    const failed = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
+    expect(failed.ok).toBe(false);
+    expect(await host.admin.getScopeRecord(staff, tenant, out.scopeId)).toBeDefined();
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+    const retried = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
+    expect(retried.status).toBe(200);
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+  });
+
+  it('the expiry sweep, as apps/control-plane composes it, un-registers it too', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1], ttlHours: 1 });
+    await host.admin.setScopeExpiresAt(staff, tenant, out.scopeId, new Date(Date.now() - 1000).toISOString());
+    const issuerClient = new VerticalClient({ fetch: issuers.fetch, platformSecret: 'test' });
+    await runPlatformSweep(host, {
+      actor: staff,
+      drainRetries: false,
+      deleteSnapshotFn: async (t, s) => {
+        await retireClientsOfReapedScope({ admin: host.admin, actor: staff, issuerClient: async () => issuerClient }, await host.admin.getScopeRecord(staff, t, s));
+        await host.deleteSnapshot(staff, t, s);
+      },
+    });
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+  });
+
+  it('a registration that fails does not fail the login — the note says so, and the next push registers it', async () => {
+    issuers.failNext.set('POST /internal/configure', 503);
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    expect(out.auth.status).toBe('wired');
+    expect(deployments.auth(versions[1]!, out.scopeId)!.clientId).toBe(out.auth.clientId);
+    expect(out.auth.note).toContain("the preview's endpoint could not be registered there");
+    expect(out.auth.note).toContain('invalid_target');
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+
+    await created({ tag: 'pr-7', versionId: versions[2] });
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+  });
+
+  it('a preview reaped while its push runs keeps no registration at the issuer', async () => {
+    const base = await created({ tag: 'pr-7', versionId: versions[1] });
+    // The reap lands between this push's registration and its last look at the binding.
+    issuers.beforeRetire = async (body) => {
+      if (body.keep) await host.admin.suspendScope(staff, tenant, base.scopeId);
+    };
+    const out = await created({ tag: 'pr-7', versionId: versions[2] });
+    expect(out.auth.status).toBe('superseded');
+    expect(issuers.registered(issuerScope, base.scopeId)).toEqual([]);
+    expect(issuers.tagged(issuerScope, base.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+  });
+});
+
 describe('a failed or partial create leaks no client (#1704)', () => {
   it('a delivery that fails deletes the client it minted and answers 502 — never success', async () => {
     deployments.failDelivery.add(versions[1]!);
@@ -477,6 +638,9 @@ describe('nothing is minted where the platform cannot vouch for the issuer (#170
     expect(out.notes.join(' ')).toContain('Env tab');
     expect([...issuers.instances.get(issuerScope)!.clients.keys()]).toEqual([PROD_CLIENT]);
     expect(deployments.auth(versions[1]!, out.scopeId)).toBeUndefined();
+    // Nor is its MCP endpoint registered at a team issuer that does not sign it in.
+    expect(configures()).toEqual([]);
+    expect(out.auth.note).not.toContain('MCP');
   });
 
   it('a callback match alone (anybody can DCR one) is no claim — the binding is the positive twin', async () => {
@@ -520,6 +684,7 @@ describe('nothing is minted where the platform cannot vouch for the issuer (#170
     expect(issuers.tagged(issuerScope, out.scopeId)).toEqual([]);
     expect(issuers.tagged(second, out.scopeId)).toEqual([]);
     expect(deployments.auth(versions[1]!, out.scopeId)).toBeUndefined();
+    expect(configures()).toEqual([]);
   });
 
   it('a clean-room preview has no parent: nothing asked, nothing minted', async () => {
@@ -537,6 +702,7 @@ describe('version skew and transients read as what they are (#1704)', () => {
     expect(out.auth.note).toContain('redeploy');
     expect(out.auth.issuers).toEqual([{ issuerScopeId: issuerScope, problem: expect.stringContaining('predates preview clients') }]);
     expect(deployments.deliveries).toEqual([]);
+    expect(configures()).toEqual([]);
   });
 
   it('an auth server that does not answer is "could not be asked", never "external"', async () => {
@@ -546,11 +712,13 @@ describe('version skew and transients read as what they are (#1704)', () => {
     expect(out.auth.note).not.toContain('EXTERNAL');
   });
 
-  it('the reap skips an auth server that predates the routes — it cannot have minted', async () => {
+  it('the reap skips an auth server that predates the routes — it cannot have minted, nor registered', async () => {
     await created({ tag: 'pr-7', versionId: versions[1] });
     issuers.predates = true;
+    const from = issuers.calls.length;
     const del = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
     expect(del.status).toBe(200);
+    expect(issuers.calls.slice(from).filter((c) => c.path === '/internal/configure')).toEqual([]);
   });
 });
 
@@ -585,6 +753,8 @@ describe('concurrent pushes to one preview (#1704)', () => {
     // A never retired with keep — only its own client, which lived in its own unserved store.
     const aRetires = issuers.calls.filter((c) => c.method === 'DELETE' && c.body.keep === aClient);
     expect(aRetires).toEqual([]);
+    // Nor did it take the preview's MCP endpoint away from the push that owns its login.
+    expect(issuers.registered(issuerScope, base.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
   });
 
   it('a push whose version was re-bound mid-flight never retires the others', async () => {

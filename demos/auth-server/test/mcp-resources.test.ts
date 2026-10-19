@@ -555,3 +555,57 @@ describe("a vertical on a team auth-server accepts only its own bearers on REST 
     expect((await get(rest, `${DESK_B}/api/me`, forB.access_token)).status).toBe(200);
   });
 });
+
+// ── a per-PR preview's endpoint (#1704) ──────────────────────────────────────
+
+/**
+ * A preview of vertical A answers at its own `--<tag>` hostname, under its own scope id, and
+ * the platform registers that endpoint under the PREVIEW's key, beside A's own
+ * (control-plane-api's `preview-auth.ts`), then clears it on the reap. What has to hold here
+ * is that the two keys never reach each other's rows: the dashboard re-asserts A's set on
+ * every Apps load, and the preview comes and goes on every PR.
+ */
+describe("a preview's MCP endpoint, registered under the preview's own key (#1704)", () => {
+  const PREVIEW_ORIGIN = 'https://desk-a--pr-7.example';
+  const PREVIEW = scopeId.parse(ulid());
+  const PREVIEW_RESOURCE = mcpResourceOf(PREVIEW_ORIGIN);
+  const prodRow = () => resourceRows().find((r) => r['identifier'] === RESOURCE_A);
+
+  it('is invalid_target until registered, then mints a token the preview accepts and prod refuses', async () => {
+    register(APP_A, [RESOURCE_A]);
+    const prodBefore = prodRow();
+    const clientId = await registerMcpClient();
+    // Before: what #1704 reported — the preview's endpoint is one the issuer will not mint for.
+    expect((await authorize(clientId, (await pkce()).challenge, PREVIEW_RESOURCE)).error).toBe('invalid_target');
+
+    expect(register(PREVIEW, [PREVIEW_RESOURCE])).toEqual({ added: [PREVIEW_RESOURCE], removed: [], operatorOwned: [] });
+    expect(prodRow()).toEqual(prodBefore);
+    const tokens = await tokensFor(clientId, PREVIEW_RESOURCE);
+    const vertical = await verticalAt();
+    expect((await callTool(vertical, PREVIEW_ORIGIN, tokens.access_token)).status).toBe(200);
+    // The preview's token is the preview's: prod's endpoint refuses it.
+    const atProd = await callTool(vertical, DESK_A, tokens.access_token);
+    expect(atProd.status).toBe(401);
+    expect(atProd.challenge).toContain('error="invalid_token"');
+  });
+
+  it("the reap's clear un-registers the preview's endpoint and nothing of prod's", async () => {
+    register(APP_A, [RESOURCE_A]);
+    register(PREVIEW, [PREVIEW_RESOURCE]);
+    const prodBefore = prodRow();
+    const clientId = await registerMcpClient();
+    expect(register(PREVIEW, [])).toEqual({ added: [], removed: [PREVIEW_RESOURCE], operatorOwned: [] });
+    expect(prodRow()).toEqual(prodBefore);
+    expect((await authorize(clientId, (await pkce()).challenge, PREVIEW_RESOURCE)).error).toBe('invalid_target');
+    expect((await authorize(clientId, (await pkce()).challenge, RESOURCE_A)).error).toBeNull();
+  });
+
+  it("prod's own deliveries, re-asserted or cleared, leave the preview's row alone", async () => {
+    register(PREVIEW, [PREVIEW_RESOURCE]);
+    const previewBefore = resourceRows();
+    register(APP_A, [RESOURCE_A]);
+    register(APP_A, [RESOURCE_A]);
+    register(APP_A, []);
+    expect(resourceRows()).toEqual(previewBefore);
+  });
+});

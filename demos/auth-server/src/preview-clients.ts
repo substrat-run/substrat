@@ -31,7 +31,8 @@ import { platformOwnerOf } from './resources.js';
  * requires a binding for the parent scope that only the PLATFORM writes here — a
  * `place_app` row for it in the calling tenant (#1670), or an `oauth_resource` row whose
  * marker names it (#1619) — and, beside it, an enabled client that redirects to one of the
- * parent's callbacks. Neither half is something a DCR caller can produce.
+ * parent's callbacks. Neither half is something a DCR caller can produce. A preview of
+ * this issuer's own minting is never a parent, though its MCP registration carries the marker.
  *
  * ## Why a delete cannot reach prod's client
  *
@@ -83,9 +84,23 @@ function clientRedirectsTo(sql: SqlExec, uris: readonly string[]): boolean {
   return rows.length > 0;
 }
 
+/**
+ * Is this scope a preview this issuer minted clients for? A preview is never a parent: the
+ * platform forks only an app's own scope, and a preview's own MCP registration carries the
+ * same platform marker an app's does, so without this its client and that row would read as
+ * a binding for it.
+ */
+function isPreview(sql: SqlExec, scopeId: string): boolean {
+  return sql.exec('SELECT 1 AS hit FROM preview_client WHERE preview_scope_id = ? LIMIT 1', scopeId).toArray().length > 0;
+}
+
 /** The check: this issuer holds the platform's binding for the parent, AND a live client for it. */
 export function claimsParent(sql: SqlExec, input: PreviewClientCheck): boolean {
-  return platformBinds(sql, input.tenantId, input.parentScopeId) && clientRedirectsTo(sql, input.parentRedirectUris);
+  return (
+    !isPreview(sql, input.parentScopeId) &&
+    platformBinds(sql, input.tenantId, input.parentScopeId) &&
+    clientRedirectsTo(sql, input.parentRedirectUris)
+  );
 }
 
 /**

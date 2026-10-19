@@ -115,7 +115,10 @@ an app to a team Auth Server (at install, or when you change its Identity), it r
 one resource per hostname the app answers on: `https://<hostname>/api/mcp`. Deleting the
 app, or moving it to another issuer, un-registers them, and from the next request on the
 old issuer refuses to mint for them. Apps installed before this existed are registered
-the next time anyone on the team opens the dashboard.
+the next time anyone on the team opens the dashboard. A per-PR
+[preview](../guide/environments-and-previews.md) of such an app has its own endpoint,
+`https://<app>--<tag>.<base>/api/mcp`, registered at the same Auth Server on every push and
+un-registered when the preview is deleted or expires.
 
 Two cases fall outside this:
 
