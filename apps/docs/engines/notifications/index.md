@@ -12,7 +12,7 @@ one delivery per occasion, topic and person.
 | **Entitlement key** | `notifications` |
 | **Composed** | by call: `notify(ctx, …)` inside your own transaction |
 | **Owns** | the topics a scope has used, where each person's notifications go, which topics they muted or take as a digest, what is held for each digest, and what became of every delivery |
-| **Emits** | `notifications.delivery-recorded`, `delivery-settled`, `preference-set`, `recipient-updated`, `topic-recorded`, `digest-sent`, `digest-failed`, `digest-quarantined`, `digest-released` |
+| **Emits** | `notifications.delivery-recorded`, `delivery-settled`, `preference-set`, `recipient-updated`, `topic-recorded`, `digest-sent`, `digest-failed`, `digest-quarantined`, `digest-released`, `digest-withdrawn` |
 | **Consumes** | `email.sent`, `email.refused`, `email.dead-lettered`, which settle its deliveries |
 | **Schedules** | `notifications/send-digests`, every 15 minutes, sending each person whose digest is due |
 | **Permissions** | 3 (`notifications:self`, `notifications:read`, and `notifications:send-digests`, which only the digest schedule holds) |
@@ -75,7 +75,9 @@ consumer, pass the event's id. The engine registers as one frozen constant, like
 - **One person's trouble stays theirs.** A digest that cannot be written stays held and is
   reported, and never stops anyone else's. A held message that no longer reads is set aside
   and reported, so it never holds up the rest of that person's digest. It is read again daily
-  and goes out once it reads.
+  and goes out once it reads, unless its topic has been switched off since.
+- **A mute is checked again at send time.** A held message whose topic is switched off is
+  withdrawn, never mailed, however it came to be held.
 - **An address never rides an event.** It lives on the engine's recipient row, which a subject
   erasure deletes. The same erasure cancels a send that is still held.
 

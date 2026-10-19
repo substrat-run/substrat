@@ -3,12 +3,11 @@ import { z } from 'zod';
 import {
   dataSubjectId,
   MAX_PENDING_PLATFORM_REQUESTS,
-  type DomainEventInput,
   moduleId,
   platformActorId,
   type PrincipalId,
 } from '@substrat-run/contracts';
-import { manualClock, ulid, type OperationContext, type ScopeStub } from '@substrat-run/kernel';
+import { manualClock, ulid, type ScopeStub } from '@substrat-run/kernel';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
   DIGEST_MAX_ITEMS,
@@ -25,7 +24,7 @@ import {
   type NotificationsDigestSentPayload,
   type NotifyInput,
 } from '../src/index.js';
-import { deliveriesOf, intentsOf, settleEmail } from './kit.js';
+import { deliveriesOf, failingFor, intentsOf, settleEmail } from './kit.js';
 
 /**
  * Digests (#118): a topic a person takes as `daily-digest` is held rather than mailed, and the
@@ -244,7 +243,7 @@ describe('engine-notifications — digests', () => {
 
       clock.advance(DAY);
       const result = await (await h.as([PERM.sendDigests])).invoke('notifications/send-digests', {});
-      expect(result).toEqual({ digests: 2, items: 4, failed: 0, deferred: 0, quarantined: 0, released: 0 });
+      expect(result).toEqual({ digests: 2, items: 4, failed: 0, deferred: 0, quarantined: 0, released: 0, withdrawn: 0 });
 
       const mails = await intents();
       expect(mails).toHaveLength(2);
@@ -335,7 +334,7 @@ describe('engine-notifications — digests', () => {
     });
 
     it('nothing held sends nothing', async () => {
-      expect(await pass()).toEqual({ digests: 0, items: 0, failed: 0, deferred: 0, quarantined: 0, released: 0 });
+      expect(await pass()).toEqual({ digests: 0, items: 0, failed: 0, deferred: 0, quarantined: 0, released: 0, withdrawn: 0 });
       expect(digestsSent()).toEqual([]);
     });
 
@@ -427,7 +426,7 @@ describe('engine-notifications — digests', () => {
       const people = await crowd(MAX_PENDING_PLATFORM_REQUESTS + 8);
       clock.advance(DAY);
       const first = await (await h.as([PERM.sendDigests])).invoke('notifications/send-digests', {});
-      expect(first).toEqual({ digests: room, items: room, failed: 0, deferred: people.length - room, quarantined: 0, released: 0 });
+      expect(first).toEqual({ digests: room, items: room, failed: 0, deferred: people.length - room, quarantined: 0, released: 0, withdrawn: 0 });
       expect(await intents()).toHaveLength(room);
 
       // Nothing drained yet: the next tick finds no room, defers everyone, and still succeeds.
@@ -495,28 +494,6 @@ describe('engine-notifications — digests', () => {
   });
 
   describe('one person at a time', () => {
-    /**
-     * `ctx` with the `digest-sent` emit failing for one person — a failure AFTER that person's
-     * send, delivery, settle and delete were written, which is what the per-person
-     * sub-transaction exists to undo.
-     */
-    const failingFor =
-      (victim: string) =>
-      (ctx: OperationContext): OperationContext =>
-        new Proxy(ctx, {
-          get(target, prop) {
-            if (prop === 'emit') {
-              return (event: DomainEventInput) => {
-                if (event.type === 'notifications.digest-sent' && (event.payload as { principal: string }).principal === victim) {
-                  throw new Error('the digest-sent write failed');
-                }
-                target.emit(event);
-              };
-            }
-            const value: unknown = Reflect.get(target, prop, target);
-            return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
-          },
-        });
     const quiet = () => vi.spyOn(console, 'error').mockImplementation(() => {});
 
     it("a failure after a person's writes undoes all of them — no mail, no digest delivery, everything still held — and nobody else's", async () => {
@@ -534,6 +511,7 @@ describe('engine-notifications — digests', () => {
           deferred: 0,
           quarantined: 0,
           released: 0,
+          withdrawn: 0,
         });
 
         expect((await intents()).map((i) => (i.payload as { to: string }).to)).toEqual(['other@example.test']);

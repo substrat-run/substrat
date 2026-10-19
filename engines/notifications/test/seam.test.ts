@@ -12,8 +12,10 @@ import {
   NOTIFICATIONS_PERM as PERM,
   notificationsModule,
   notify,
+  sendDigests,
   type NotificationsDigestQuarantinedPayload,
 } from '../src/index.js';
+import { failingFor } from './kit.js';
 
 const DAY = 24 * 60 * 60_000;
 const TICK = DIGEST_TICK_MINUTES * 60_000;
@@ -103,6 +105,7 @@ describe('engine-notifications — the seam is parsed, not asserted', () => {
         deferred: 0,
         quarantined: 1,
         released: 0,
+        withdrawn: 0,
       });
       // My readable message went out on its own, not behind the bad one.
       const intents = (await h.host.listPlatformRequestHistory(h.tenant, h.scope)).filter(isPlatformRequest);
@@ -154,6 +157,7 @@ describe('engine-notifications — the seam is parsed, not asserted', () => {
         digests: 0,
         quarantined: 1,
         released: 0,
+        withdrawn: 0,
       });
       expect(h.eventsOfType('notifications.digest-quarantined').map((e) => e.payload)).toEqual([
         { principal: me.principal, channel: 'email', occasions: [], unidentified: 1 },
@@ -183,7 +187,7 @@ describe('engine-notifications — the seam is parsed, not asserted', () => {
       (await (await h.as([PERM.read])).invoke<Page<Record<string, unknown>>>('notifications/list-deliveries', {})).entries.find(
         (d) => d.id === bad!.deliveryId,
       );
-    return { me, bad: bad!, schedule, row, delivery };
+    return { me, bad: { deliveryId: bad!.deliveryId! }, schedule, row, delivery };
   };
 
   it('a switch-off leaves a set-aside row alone: still there, still quarantined, and not counted as withdrawn', async () => {
@@ -254,6 +258,114 @@ describe('engine-notifications — the seam is parsed, not asserted', () => {
       expect(h.eventsOfType('notifications.digest-quarantined')).toHaveLength(1);
       expect(h.eventsOfType('notifications.digest-released')).toEqual([]);
       expect(error).toHaveBeenCalledTimes(1);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  describe('a mute wins over a release, and over a send', () => {
+    const repair = (id: string) => drift(`UPDATE notifications_digest_items SET subject = 'Assigned' WHERE id = '${id}'`);
+    const intents = async () => (await h.host.listPlatformRequestHistory(h.tenant, h.scope)).filter(isPlatformRequest);
+    const quietly = async (fn: () => Promise<void>) => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        await fn();
+      } finally {
+        error.mockRestore();
+      }
+    };
+
+    it('a set-aside row whose topic was switched off since is withdrawn when it reads again — never released, never mailed', () =>
+      quietly(async () => {
+        const { me, bad, schedule, row, delivery } = await setAside();
+        await me.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: false });
+        await repair(bad.deliveryId);
+        clock.advance(DAY);
+        expect(await schedule.invoke('notifications/send-digests', {})).toMatchObject({ released: 0, withdrawn: 1, digests: 0 });
+        expect(await intents()).toEqual([]);
+        expect(await row()).toEqual([]);
+        expect(await delivery()).toMatchObject({ status: 'skipped', reason: 'muted', settled_at: clock.now() });
+        expect(h.eventsOfType('notifications.digest-withdrawn').map((e) => e.payload)).toEqual([
+          { principal: me.principal, channel: 'email', occasions: [bad.deliveryId] },
+        ]);
+        expect(h.eventsOfType('notifications.digest-released')).toEqual([]);
+      }));
+
+    it('switched off and on again, it is released and sent as before', () =>
+      quietly(async () => {
+        const { me, bad, schedule, delivery } = await setAside();
+        await me.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: false });
+        await me.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: true });
+        await repair(bad.deliveryId);
+        clock.advance(DAY);
+        expect(await schedule.invoke('notifications/send-digests', {})).toMatchObject({ released: 1, withdrawn: 0, digests: 1 });
+        expect(await intents()).toHaveLength(1);
+        expect(await delivery()).toMatchObject({ reason: 'digest' });
+      }));
+
+    it('a mute from before the topic became required does not withdraw it: required wins over the mute, as at notify', () =>
+      quietly(async () => {
+        const { me, bad, schedule } = await setAside();
+        await me.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: false });
+        await h.run((ctx) =>
+          notify(ctx, {
+            topic: 'order-assigned',
+            description: 'A work order was assigned to you',
+            dedupeKey: 'now-required',
+            recipients: [],
+            required: true,
+            template: { subject: 'Assigned', text: 'You have a work order.' },
+          }),
+        );
+        await repair(bad.deliveryId);
+        clock.advance(DAY);
+        expect(await schedule.invoke('notifications/send-digests', {})).toMatchObject({ released: 1, withdrawn: 0, digests: 1 });
+      }));
+
+    it('a held row whose topic is muted with no withdrawal behind it is withdrawn at send time, not mailed', () =>
+      quietly(async () => {
+        const me = await someone();
+        const other = await someone();
+        for (const p of [me, other]) {
+          await p.stub.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: true, cadence: 'daily-digest' });
+        }
+        const [mine] = await assign([me.principal, other.principal], 'held');
+        // A mute that reached the table by some path that withdrew nothing.
+        await drift(
+          `INSERT INTO notifications_mutes (principal, topic, channel, created_at)
+           VALUES ('${me.principal}', 'order-assigned', 'email', '2026-03-02T07:00:00.000Z')`,
+        );
+        clock.advance(DAY);
+        expect(await (await h.as([PERM.sendDigests])).invoke('notifications/send-digests', {})).toMatchObject({
+          digests: 1,
+          withdrawn: 1,
+        });
+        expect((await intents()).map((i) => (i.payload as { subjectId: string }).subjectId)).toEqual([other.principal]);
+        expect(h.eventsOfType('notifications.digest-withdrawn').map((e) => e.payload)).toEqual([
+          { principal: me.principal, channel: 'email', occasions: [mine!.deliveryId] },
+        ]);
+        const log = (await (await h.as([PERM.read])).invoke<Page<Record<string, unknown>>>('notifications/list-deliveries', {})).entries;
+        expect(log.find((d) => d.id === mine!.deliveryId)).toMatchObject({ reason: 'muted' });
+      }));
+  });
+
+  it("a failed digest's report and backoff leave a set-aside row out: it neither counts as waiting nor is held back", async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { me, bad } = await setAside();
+      const [held] = await assign([me.principal], 'held');
+      clock.advance(DAY);
+      expect(await h.run((ctx) => sendDigests(failingFor(me.principal)(ctx)))).toMatchObject({ failed: 1 });
+      expect(h.eventsOfType('notifications.digest-failed').map((e) => e.payload)).toEqual([
+        expect.objectContaining({ principal: me.principal, items: 1 }),
+      ]);
+      const rows = await h.run((ctx) =>
+        ctx.sql.query<{ id: string; failed_at: string | null }>('SELECT id, failed_at FROM notifications_digest_items ORDER BY id'),
+      );
+      expect(Object.fromEntries(rows.map((r) => [r.id, r.failed_at]))).toEqual({
+        [bad.deliveryId]: null,
+        [held!.deliveryId!]: clock.now(),
+      });
     } finally {
       error.mockRestore();
     }

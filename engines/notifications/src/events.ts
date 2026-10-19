@@ -28,7 +28,8 @@ import type { OperationContext } from '@substrat-run/kernel';
  * `notifications.digest-sent` that carried it, the `notifications.preference-set` whose
  * switch-off withdrew it (its delivery then reads `skipped`/`muted`), or the
  * `notifications.digest-quarantined` that set it aside unreadable (`skipped`/`quarantined`, until
- * a `notifications.digest-released` holds it again). An erasure of the person
+ * a `notifications.digest-released` holds it again), or the `notifications.digest-withdrawn` that
+ * withdrew it because the topic was switched off since (`skipped`/`muted`). An erasure of the person
  * deletes it with no event, like a held send it cancels, and its delivery stays as it was.
  * `dedupeKey` is the occasion as the caller named it — from a consumer, the triggering event's id.
  *
@@ -160,8 +161,22 @@ export interface NotificationsDigestQuarantinedPayload {
  * Set-aside occasions of one person read again — whatever left them unreadable, a version that
  * stored a shape this one rejects, say, is gone — and are held for the digest once more: each
  * delivery reads `skipped`/`digest` again, unsettled, and goes out in the person's next digest.
+ * One whose topic the person has switched off since is not released but withdrawn
+ * (`notifications.digest-withdrawn`).
  */
 export interface NotificationsDigestReleasedPayload {
+  principal: string;
+  channel: string;
+  occasions: string[];
+}
+
+/**
+ * Held occasions of one person were withdrawn, unsent, because the person has switched their
+ * topic off since they were held, found when a set-aside row read again or when the digest was
+ * composed. Each delivery reads `skipped`/`muted`. (A switch-off's own withdrawal is named on
+ * `notifications.preference-set`.) A mute always wins over a digest.
+ */
+export interface NotificationsDigestWithdrawnPayload {
   principal: string;
   channel: string;
   occasions: string[];
@@ -178,6 +193,7 @@ export type NotificationsEvents = {
     'notifications.digest-failed': NotificationsDigestFailedPayload;
     'notifications.digest-quarantined': NotificationsDigestQuarantinedPayload;
     'notifications.digest-released': NotificationsDigestReleasedPayload;
+    'notifications.digest-withdrawn': NotificationsDigestWithdrawnPayload;
   };
 };
 
@@ -195,6 +211,7 @@ export const notificationsEventVersions = {
   'notifications.digest-failed': 1,
   'notifications.digest-quarantined': 1,
   'notifications.digest-released': 1,
+  'notifications.digest-withdrawn': 1,
 } as const satisfies Record<NotificationsEventType, number>;
 
 /** The manifest's `events.emits`, read off {@link notificationsEventVersions}. */

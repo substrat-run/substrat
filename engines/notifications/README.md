@@ -97,13 +97,18 @@ host.registerModule(notificationsModule);
   The cause may pass, for instance a rollback to a version that rejects what a newer one
   stored. So a set-aside row is read again once a day. When it reads, it is released: held
   again, its delivery back to `skipped`/`digest`, and `notifications.digest-released` names it.
-  It then goes out in the person's next digest. A row that still does not read waits another
-  day, and nothing is said again. An erasure of the person deletes set-aside rows with the
+  It then goes out in the person's next digest. If its person has switched the topic off in the
+  meantime, it is withdrawn instead: deleted unsent, its delivery settled `skipped`/`muted`, and
+  `notifications.digest-withdrawn` names it. A row that still does not read waits another day,
+  and nothing is said again. An erasure of the person deletes set-aside rows with the
   rest.
 
   **Mutes and required topics.** A mute still wins: switching a topic off withdraws what is
-  held for it, and those occasions' deliveries then read `skipped`/`muted`. A required topic
-  always goes out at once.
+  held for it, and those occasions' deliveries then read `skipped`/`muted`. The digest checks
+  again as it composes: a held message whose topic is switched off is withdrawn, never mailed,
+  whatever path brought it there. A required topic always goes out at once, and overrides a
+  mute written before it became required. Mutes are per topic and channel; there is no mute
+  for a whole channel.
 
   A digest adds no words of its own. A digest of one message is that message. A digest of
   several uses the first one's subject with `(+N)` and puts each message under its own subject,

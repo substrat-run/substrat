@@ -101,6 +101,7 @@ export {
   type NotificationsDigestItem,
   type NotificationsDigestQuarantinedPayload,
   type NotificationsDigestReleasedPayload,
+  type NotificationsDigestWithdrawnPayload,
   type NotificationsDigestSentPayload,
   type NotificationsPreferenceSetPayload,
   type NotificationsRecipientUpdatedPayload,
@@ -699,10 +700,29 @@ export interface DigestPass {
   quarantined: number;
   /** Set-aside occasions that read again this pass and are held for the digest once more. */
   released: number;
+  /** Held occasions withdrawn this pass, unsent, because their person has switched the topic off since. */
+  withdrawn: number;
 }
 
-/** One held row as stored, with the `rowid` that still names it when nothing else reads. */
-type HeldRow = Record<string, unknown> & { row_id: number };
+/**
+ * One held row as stored, with the `rowid` that still names it when nothing else reads, and
+ * whether its person has switched its topic off (`MUTED`).
+ */
+type HeldRow = Record<string, unknown> & { row_id: number; muted: number };
+
+/**
+ * Whether a held row's topic is switched off for its person: a mute on a topic that is not
+ * required, the rule `notify` holds by. A column of the query that reads the row, so the check
+ * costs no read of its own, and whatever path brought a muted row here — a set-aside row muted
+ * since, or one no switch-off reached — it is withdrawn, never mailed.
+ */
+const MUTED = `EXISTS (
+    SELECT 1 FROM notifications_mutes m
+     WHERE m.principal = notifications_digest_items.principal
+       AND m.topic = notifications_digest_items.topic
+       AND m.channel = notifications_digest_items.channel
+       AND NOT EXISTS (SELECT 1 FROM notifications_topics t WHERE t.topic = m.topic AND t.required = 1)
+  ) AS muted`;
 
 /**
  * Send each person whose digest is due one mail of what is held for them.
@@ -729,7 +749,12 @@ type HeldRow = Record<string, unknown> & { row_id: number };
  * go out, and the set-aside row counts toward nothing — not who is due, not a switch-off's
  * withdrawal, not the stale-hold warning. Its cause may pass (a version that stored a shape this
  * one rejects is rolled forward again), so each set-aside row is read again once a window
- * (`releaseReadable`, at the start of a pass) and held once more when it reads.
+ * (`releaseReadable`, at the start of a pass) and held once more when it reads — unless its topic
+ * was switched off meanwhile, when it is withdrawn instead.
+ *
+ * **A mute wins, last of all.** The read that composes a digest carries each row's mute
+ * (`MUTED`), and a held message whose topic is switched off is withdrawn (`withdrawMuted`), never
+ * mailed, whatever path brought it there.
  *
  * **One person at a time.** Each person's digest is its own `ctx.atomic`: one mail written with
  * `requestEmail`, one delivery under `DIGEST_TOPIC`, the carried occasions settled and no longer
@@ -746,7 +771,7 @@ export async function sendDigests(ctx: OperationContext): Promise<DigestPass> {
   const now = ctx.now();
   const cutoff = new Date(Date.parse(now) - DIGEST_WINDOW_MS).toISOString();
   // First, so a row released now is sent in this very pass if its person is due.
-  const released = releaseReadable(ctx, now, cutoff);
+  const { released, withdrawn } = releaseReadable(ctx, now, cutoff);
   const due = ctx.sql.query<{ principal: string }>(
     `SELECT principal FROM notifications_digest_items WHERE channel = ? AND quarantined_at IS NULL
       GROUP BY principal
@@ -756,7 +781,7 @@ export async function sendDigests(ctx: OperationContext): Promise<DigestPass> {
   );
   const pending = ctx.platformRequests({ status: 'pending', limit: MAX_PENDING_PLATFORM_REQUESTS }).length;
   let room = MAX_PENDING_PLATFORM_REQUESTS - DIGEST_RESERVE - pending;
-  const pass: DigestPass = { digests: 0, items: 0, failed: 0, deferred: 0, quarantined: 0, released };
+  const pass: DigestPass = { digests: 0, items: 0, failed: 0, deferred: 0, quarantined: 0, released, withdrawn };
   for (const [i, { principal }] of due.entries()) {
     if (room <= 0) {
       pass.deferred = due.length - i;
@@ -768,15 +793,18 @@ export async function sendDigests(ctx: OperationContext): Promise<DigestPass> {
     }
     try {
       const rows = ctx.sql.query<HeldRow>(
-        `SELECT rowid AS row_id, ${DIGEST_ITEM_COLUMNS} FROM notifications_digest_items
+        `SELECT rowid AS row_id, ${MUTED}, ${DIGEST_ITEM_COLUMNS} FROM notifications_digest_items
           WHERE principal = ? AND channel = ? AND quarantined_at IS NULL ORDER BY queued_at, id LIMIT ?`,
         [principal, CHANNEL, DIGEST_MAX_ITEMS],
       );
       const held: z.infer<typeof digestItemRow>[] = [];
+      const muted: string[] = [];
       const unreadable: { rowId: number; id: unknown; error: string }[] = [];
-      for (const { row_id: rowId, ...row } of rows) {
+      for (const { row_id: rowId, muted: isMuted, ...row } of rows) {
         try {
-          held.push(returns(digestItemRow, 'notifications/send-digests', row));
+          const item = returns(digestItemRow, 'notifications/send-digests', row);
+          if (isMuted) muted.push(item.id);
+          else held.push(item);
         } catch (err) {
           unreadable.push({ rowId, id: row.id, error: err instanceof Error ? err.message : String(err) });
         }
@@ -784,6 +812,11 @@ export async function sendDigests(ctx: OperationContext): Promise<DigestPass> {
       if (unreadable.length > 0) {
         await ctx.atomic(() => quarantine(ctx, principal, unreadable, now));
         pass.quarantined += unreadable.length;
+      }
+      // A mute wins at the last moment too: whatever brought a switched-off topic here, it is not mailed.
+      if (muted.length > 0) {
+        await ctx.atomic(() => withdrawMuted(ctx, principal, muted, now));
+        pass.withdrawn += muted.length;
       }
       if (held.length === 0) continue;
       const requested = await ctx.atomic(() => sendDigestOf(ctx, principal, held, now));
@@ -802,23 +835,30 @@ export async function sendDigests(ctx: OperationContext): Promise<DigestPass> {
  * Read again the set-aside rows whose last reading is a window old, at most `RELEASE_BATCH` a
  * pass, oldest reading first. Each that reads now is held once more — `quarantined_at` cleared,
  * its delivery back to `skipped`/`digest` and unsettled — and announced per person by
- * `notifications.digest-released`. Each that still does not read is marked read now, so it waits
+ * `notifications.digest-released`. One whose person has switched its topic off since is not
+ * released but withdrawn (`withdrawMuted`): a switch-off leaves set-aside rows alone, so this is
+ * where its mute is honoured. Each that still does not read is marked read now, so it waits
  * another window, and is not announced again. Never throws over a row.
  */
-function releaseReadable(ctx: OperationContext, now: string, cutoff: string): number {
+function releaseReadable(ctx: OperationContext, now: string, cutoff: string): { released: number; withdrawn: number } {
   const rows = ctx.sql.query<HeldRow>(
-    `SELECT rowid AS row_id, ${DIGEST_ITEM_COLUMNS} FROM notifications_digest_items
+    `SELECT rowid AS row_id, ${MUTED}, ${DIGEST_ITEM_COLUMNS} FROM notifications_digest_items
       WHERE channel = ? AND quarantined_at IS NOT NULL AND quarantined_at <= ?
       ORDER BY quarantined_at, rowid LIMIT ?`,
     [CHANNEL, cutoff, RELEASE_BATCH],
   );
   const released = new Map<string, string[]>();
-  for (const { row_id: rowId, ...row } of rows) {
+  const muted = new Map<string, string[]>();
+  for (const { row_id: rowId, muted: isMuted, ...row } of rows) {
     let item: z.infer<typeof digestItemRow>;
     try {
       item = returns(digestItemRow, 'notifications/send-digests', row);
     } catch {
       ctx.sql.exec('UPDATE notifications_digest_items SET quarantined_at = ? WHERE rowid = ?', [now, rowId]);
+      continue;
+    }
+    if (isMuted) {
+      muted.set(item.principal, [...(muted.get(item.principal) ?? []), item.id]);
       continue;
     }
     ctx.sql.exec('UPDATE notifications_digest_items SET quarantined_at = NULL WHERE rowid = ?', [rowId]);
@@ -837,7 +877,31 @@ function releaseReadable(ctx: OperationContext, now: string, cutoff: string): nu
       payload: { principal, channel: CHANNEL, occasions },
     });
   }
-  return [...released.values()].reduce((n, o) => n + o.length, 0);
+  for (const [principal, occasions] of muted) withdrawMuted(ctx, principal, occasions, now);
+  const count = (m: Map<string, string[]>) => [...m.values()].reduce((n, o) => n + o.length, 0);
+  return { released: count(released), withdrawn: count(muted) };
+}
+
+/**
+ * Withdraw held occasions whose person has switched their topic off since they were held, as a
+ * switch-off withdraws what it finds: the rows go, unsent, and each delivery settles
+ * `skipped`/`muted`. Announced by `notifications.digest-withdrawn`, since no switch-off happened
+ * now to announce it.
+ */
+function withdrawMuted(ctx: OperationContext, principal: string, occasions: string[], now: string): void {
+  const ids = inList(occasions);
+  ctx.sql.exec(
+    `UPDATE notifications_deliveries SET reason = 'muted', settled_at = ?
+      WHERE id IN ${ids.sql} AND status = 'skipped' AND (reason = 'digest' OR reason = 'quarantined')`,
+    [now, ...ids.params],
+  );
+  ctx.sql.exec(`DELETE FROM notifications_digest_items WHERE id IN ${ids.sql}`, [...ids.params]);
+  emitNotificationsEvent(ctx, {
+    type: 'notifications.digest-withdrawn',
+    entity: { entityType: 'notification-recipient', entityId: principal },
+    ...aboutPrincipal(principal),
+    payload: { principal, channel: CHANNEL, occasions },
+  });
 }
 
 /** One person's digest: the held messages given, as one mail and one delivery. Whether a send was written. */

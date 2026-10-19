@@ -137,7 +137,7 @@ describe('engine-notifications on workerd', () => {
     await admin.invoke('probe/age-held', {});
     await admin.invoke('probe/poison-newest-held', {});
     const pass = await (await host.getScope(systemId, t, s)).invoke('notifications/send-digests', {});
-    expect(pass).toEqual({ digests: 1, items: 1, failed: 0, deferred: 0, quarantined: 1, released: 0 });
+    expect(pass).toEqual({ digests: 1, items: 1, failed: 0, deferred: 0, quarantined: 1, released: 0, withdrawn: 0 });
     const digest = (await intents()).find((i) => (i.payload as { subject: string }).subject === 'Assigned: WO-D1');
     expect(digest).toBeDefined();
     expect(await intents()).toHaveLength(before + 1);

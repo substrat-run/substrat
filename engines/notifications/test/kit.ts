@@ -1,15 +1,18 @@
 /**
  * What the node suites share: the platform's settle of one send, played the way its drain plays
- * it, and the two reads every suite asserts on. Nothing here sends mail.
+ * it, the two reads every suite asserts on, and a `ctx` whose digest write fails for one person.
+ * Nothing here sends mail.
  */
 import {
   isPlatformRequest,
   platformRequestId,
   PLATFORM_REQUEST_ENTITY_TYPE,
+  type DomainEventInput,
   type EntityRef,
   type Page,
   type PlatformRequest,
 } from '@substrat-run/contracts';
+import type { OperationContext } from '@substrat-run/kernel';
 import type { EngineHarness } from '@substrat-run/engine-test-kit';
 import { NOTIFICATIONS_PERM } from '../src/index.js';
 
@@ -49,3 +52,26 @@ export const settleEmail = (
       },
     },
   });
+
+/**
+ * `ctx` with the `digest-sent` emit failing for one person — a failure AFTER that person's send,
+ * delivery, settle and delete were written, which is what the per-person sub-transaction exists
+ * to undo.
+ */
+export const failingFor =
+  (victim: string) =>
+  (ctx: OperationContext): OperationContext =>
+    new Proxy(ctx, {
+      get(target, prop) {
+        if (prop === 'emit') {
+          return (event: DomainEventInput) => {
+            if (event.type === 'notifications.digest-sent' && (event.payload as { principal: string }).principal === victim) {
+              throw new Error('the digest-sent write failed');
+            }
+            target.emit(event);
+          };
+        }
+        const value: unknown = Reflect.get(target, prop, target);
+        return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });

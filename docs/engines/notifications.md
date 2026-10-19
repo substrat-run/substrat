@@ -53,10 +53,12 @@ no longer reads is set aside (`quarantined_at`): it is not sent, its delivery se
 nothing: not who is due, not a withdrawal, not the stale-hold warning. The rest of that person's
 messages go out. A set-aside row is read again once a day. One that reads again is released
 (`notifications.digest-released`) and held as before, so a transient cause, such as a rolled-back
-version, does not lose it.
+version, does not lose it. If its person switched the topic off in the meantime, it is withdrawn
+instead (`notifications.digest-withdrawn`, `skipped`/`muted`).
 
 A mute still wins: switching a topic off withdraws what is held for it and settles those
-occasions `skipped`/`muted`. The digest adds no wording of its own: one held message goes out as
+occasions `skipped`/`muted`. Composing a digest checks the mute again and withdraws, never
+mails, a held message whose topic is switched off. The digest adds no wording of its own: one held message goes out as
 it is, and several go out under the first one's subject with `(+N)`, as one document.
 
 Held messages wait, and nothing fails, wherever the schedule cannot run or the sends do not

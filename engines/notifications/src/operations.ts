@@ -120,6 +120,8 @@ export const notificationsOperations = defineOperations(notificationsEntities, N
       quarantined: z.number().int(),
       /** Set-aside occasions that read again this pass and are held for the digest once more. */
       released: z.number().int(),
+      /** Held occasions withdrawn this pass, unsent, because their person has switched the topic off since. */
+      withdrawn: z.number().int(),
     }),
   },
 });
