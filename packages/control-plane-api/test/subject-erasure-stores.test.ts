@@ -487,7 +487,7 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         expect(await keyKept()).toBe(false);
       });
 
-      // The registry a hosted control plane runs: `STORE_DRIVERS`, which pins the graph driver.
+      // The registry a hosted control plane runs: `STORE_DRIVERS`, which registers no driver yet.
       it('with the default registry, a version that declares no store is not asked, and the key is destroyed', async () => {
         const { s, subject, keyKept, api, asked } = await bound(undefined, platformStores(), 'default');
         const res = await shred(api, s, subject);
@@ -496,11 +496,12 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
         expect(await keyKept()).toBe(false);
       });
 
-      it('with the default registry, a version that declares a graph store is asked before the key goes', async () => {
+      it('with the default registry, a version that declares a graph store is not asked, and the key is destroyed', async () => {
+        // No driver is registered, so no store can exist to hold the subject's data.
         const { s, subject, keyKept, api, asked } = await bound([{ binding: 'GRAPH', driver: 'graph' }], platformStores(), 'default');
         const res = await shred(api, s, subject);
         expect(res.status).toBe(200);
-        expect(asked).toEqual([`${s}/${subject}`]);
+        expect(asked).toEqual([]);
         expect(await keyKept()).toBe(false);
       });
     });

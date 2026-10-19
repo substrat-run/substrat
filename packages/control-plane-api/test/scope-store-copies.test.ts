@@ -218,7 +218,7 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
   });
 
   // The registry a hosted control plane runs (#2394): no `storeDrivers`, so `STORE_DRIVERS`, which
-  // pins the graph driver. Every case above injects one; these hold the default itself.
+  // registers no driver yet. Every case above injects one; these hold the default itself.
   describe('with the default registry', () => {
     it('a version that declares no store is not asked: every copy proceeds', async () => {
       const { caller, asked } = platform();
@@ -226,12 +226,12 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
       expect(asked).toEqual([]);
     });
 
-    it('a version that declares a graph store is asked, and with no route to its script the copy refuses (503)', async () => {
+    it('a version that declares a graph store is not asked either: with no driver registered no store can exist', async () => {
       const { caller, asked } = platform();
       const s = await docsScope({ scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] });
       const backup = await appWith(caller).request(`/tenants/${t}/scopes/${s}/backups`, { method: 'POST', headers: auth });
-      expect(backup.status).toBe(503);
-      expect(asked).toEqual(['export']);
+      expect(backup.status, await backup.clone().text()).toBeLessThan(300);
+      expect(asked).toEqual([]);
     });
   });
 });

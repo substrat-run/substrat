@@ -1,30 +1,49 @@
 ---
 status: proposed
 layer: kernel
-description: The graph driver is registered with its first pinned release. Whether D-63's isolation sentence allows that is open for the reviewer.
+description: The graph driver is not registered yet. It is written outside this repo, so its id is registered at step 5 of the release-approval RFC, once a decision record lifts D-63's isolation sentence for it. No release is pinned in source.
 ---
 
 # Graph store registration
 
-PR #2301 originally registered graph under the unpinned-release proposal D-64.
-The later ratification of [D-63](../decisions/D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md)
-in #2306 explicitly rejected that proposal. The registration that landed follows D-63:
-one pinned release in `STORE_DRIVERS`, class `Store`, every reserved operation, and
-the catalog below. A hosted push that declares `driver: 'graph'` is no longer refused
-for an unregistered driver. Running the release still needs its bytes uploaded and a
-control-plane deploy that contains the pin. Neither is done here.
+`graph` is a store driver written outside this repo. It is **not registered**:
+`STORE_DRIVERS` stays empty, and a hosted push that declares `driver: 'graph'` is
+refused with "declares driver 'graph', which is not registered".
 
-D-63 also says no driver written outside this repo is registered until a driver cannot
-affect data outside the object it serves. That sentence and this registration are in
-conflict. The registration is here for review; it does not claim the isolation exists.
+PR #2301 first registered graph under the unpinned-release proposal D-64, which the
+ratification of [D-63](../decisions/D-063-a-store-kind-is-platform-code-registered-and-pinned-like-a-connector.md)
+in #2306 rejected. #2394 then proposed a D-63 pin of one release. That pin is
+dropped: [store driver releases are uploaded and approved](./store-driver-release-approval.md)
+(Q8) decided that #2394 lands the graph driver id only, without a pin, because
+releases become uploads a person approves in the control plane, and a pin beside
+approvals would let an older control plane ignore a revocation.
 
-## Identity and catalog
+## When graph is registered
 
-The driver id is `graph`, implemented in Python by class `Store`. The class and
-catalog are what the registration pins. Administration operations are excluded from
-the vertical catalog.
-The platform's `RESERVED_STORE_OPERATIONS`, including `substrat.erase`, are required
-separately.
+[The approval RFC's §5](./store-driver-release-approval.md#5-2394-and-the-rollout-order)
+sets the order. The graph driver's id and its isolation basis are registered at
+step 5, after:
+
+1. the decision record amending D-63 (§7 of that RFC);
+2. the approval vocabulary and directory tables;
+3. the approve, revoke and status routes, the CLI, and the isolation basis field;
+4. the switch, which moves every reader to approvals and removes `releases` and
+   `className` from `storeDriverRegistration`. Before it, an id-only registration
+   does not parse.
+
+Graph is third-party (Q5), so its registration also waits for a decision record
+that lifts D-63's isolation sentence for it. Nothing here claims that a driver
+cannot affect data outside the object it serves. Until that record exists, the
+graph driver is not registered and no release of it is approved.
+
+## What the first approval will record
+
+The class and the operation catalog are facts about one release, so they move to
+the approval (Q2), not to the registration. For the release reviewed so far they
+are class `Store` and the catalog below. Administration operations are excluded
+from the vertical catalog. The platform's `RESERVED_STORE_OPERATIONS`, including
+`substrat.erase`, are required separately: the canary asserts each of them on the
+bytes at every rollout.
 
 ```text
 createHistoryTag
@@ -64,29 +83,23 @@ resolveHistoryRevision
 searchDataInstances
 ```
 
-## Before the release runs
+The approval also records the source references the approver read (Q6): the
+driver package and every dependency built from a repository (Q16).
 
-- The pin is the registration in `packages/contracts/src/deploy.ts`. Review the
-  packed release against it. The schema is 0.
-- Review the class and the catalog, the envelope, and every reserved operation.
-  D-63 defers registering a driver written outside this repo until a driver
-  cannot affect data outside the object it serves. That requirement is not
-  claimed to be met.
-- The release is one `driver_` package plus `python_modules/<path>` for its
-  dependencies. It does not ship `workers`, `js`, `pyodide` or the workers
-  runtime SDK. The current rule also refuses a vendored path that takes the
-  driver's or the entry's name, a standard-library name or the rest of the
-  runtime's glue. Three files in the pin are refused since #2391's deny table:
-  `python_modules/asgi.py`, `python_modules/_cloudflare_compat_flags.pyi` and
-  `python_modules/_pyodide_entrypoint_helper.pyi`. The release must be repacked
-  without them, and the new digest pinned, before this registration merges.
-- A dispatch upload, the reserved-operation canary, and a rollout have not
-  been run. Local packing does not establish that a production upload of this
-  size succeeds.
+## What lands now
 
-Use the existing `substrat store-driver upload`, `rollout`, `rollback` and `status`
-flow, with a human staff sign-in for writes. Uploading bytes can precede the pin;
-running them requires the reviewed pin and a control-plane deployment containing
-it. The former `store-driver publish --entry <file.py>` proposal is not the current
-interface. See [the CLI implementation](../../packages/cli/src/store-driver.ts)
-and [scope stores](../../apps/docs/concepts/scope-stores.md).
+What #2394 keeps holds with no driver registered, and is what the registration
+will need:
+
+- The push check, the sandbox contract and both uploads' plans judge a vertical's
+  scope stores against the registry the control plane is configured with
+  (`storeDrivers`), which is `STORE_DRIVERS` on a hosted control plane.
+- Once a driver is registered, a scope whose running version cannot be named or read
+  refuses with 503 only where some version of its vertical has declared a store. A
+  store exists only under a binding a version declared, so a vertical that never
+  declared one proceeds as before stores. See [scope stores](./scope-stores.md).
+
+Release bytes go up with `substrat store-driver upload` and are run with `rollout`,
+`rollback` and `status`, with a human staff sign-in for writes. See
+[the CLI implementation](../../packages/cli/src/store-driver.ts) and
+[scope stores](../../apps/docs/concepts/scope-stores.md).

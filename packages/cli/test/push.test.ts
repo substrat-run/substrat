@@ -177,7 +177,7 @@ describe('readRuntimeNeeds', () => {
     ).not.toThrow();
   });
 
-  it('reads a scope store, and admits graph once it is registered', () => {
+  it('reads a scope store, and refuses it while the driver has no registration', () => {
     const dir = scratch({
       substrat: {
         runtimeNeeds: { entry: 'src/worker.ts', scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] },
@@ -185,7 +185,10 @@ describe('readRuntimeNeeds', () => {
     });
     const needs = readRuntimeNeeds(dir);
     expect(needs?.scopeStores).toEqual([{ binding: 'GRAPH', driver: 'graph' }]);
-    expect(() => assertDeclaredScopeStores({ scopeStores: needs?.scopeStores })).not.toThrow();
+    // The refusal names the real reason: no driver is registered yet (#2394), not a bad declaration.
+    expect(() => assertDeclaredScopeStores({ scopeStores: needs?.scopeStores })).toThrow(
+      "deploy refused: scope store 'GRAPH' declares driver 'graph', which is not registered.",
+    );
   });
 
   // K-53's rename is a clean break, so the push says what moved rather than "driver: required".

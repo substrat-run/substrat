@@ -1,5 +1,5 @@
 ---
-description: "A platform-run object per scope, declared by a binding and a driver and called through getScopeStore. The graph driver is registered and its release is not uploaded, so nothing is live yet."
+description: "A platform-run object per scope. The vertical declares a binding and a driver and calls it through getScopeStore. No driver is registered yet, so nothing is live for a vertical today."
 ---
 
 # Scope stores
@@ -10,7 +10,7 @@ This sits below the [per-tenant stores](./tenancy.md). A tenant store is one dat
 
 ## What you can use today
 
-Nothing here is live for a vertical yet. The graph driver is registered, and a push that declares it is no longer refused for an unregistered driver. The release bytes are not uploaded, and no control plane containing the pin is deployed, so no vertical is served by it. Everything below is what the platform does once that script is deployed.
+Nothing here is live for a vertical yet. No store driver is registered, and a push that declares a scope store is refused. Everything below is what the platform does once a driver is registered and its store script is deployed.
 
 Today a vertical author can:
 
@@ -19,7 +19,7 @@ Today a vertical author can:
 
 A vertical author cannot yet:
 
-- finish a hosted push that declares `scopeStores`, because the release bytes are not uploaded;
+- push a vertical that declares `scopeStores`;
 - reach a store from a hosted deploy.
 
 ## Declaring it
@@ -34,8 +34,7 @@ A hosted vertical's upload carries no store binding. The vertical is given neith
 
 A driver is registered before a push that names it can succeed. There is one store script per
 driver and vertical; its objects keep their identities when the script changes. The upload and
-release machinery is implemented. The graph driver is registered, and its release is not uploaded,
-so a hosted push that names it still cannot finish the store script.
+release machinery is implemented, but the empty driver registry still prevents hosted use.
 
 ### Store releases and vertical deploys are separate
 

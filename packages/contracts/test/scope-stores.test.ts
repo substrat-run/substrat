@@ -153,17 +153,27 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
     );
   });
 
-  it('admits graph, the registered driver', () => {
+  it('refuses graph while no driver is registered, naming the reason', () => {
     const stores = [{ binding: 'GRAPH', driver: 'graph' as const }];
-    expect(() => assertScopeStoresRegistered(stores)).not.toThrow();
-    expect(() => assertDeclaredScopeStores({ scopeStores: stores })).not.toThrow();
-    // The registry is the caller's to pass: against one holding no driver, the same declaration is refused.
-    expect(() => assertScopeStoresRegistered(stores, [])).toThrow(/not registered/);
+    expect(STORE_DRIVERS).toEqual([]);
+    const reason = "deploy refused: scope store 'GRAPH' declares driver 'graph', which is not registered.";
+    expect(() => assertScopeStoresRegistered(stores)).toThrow(reason);
+    expect(() => assertDeclaredScopeStores({ scopeStores: stores })).toThrow(reason);
+  });
+
+  it('judges against the registry a caller passes: a test fixture holding graph admits it', () => {
+    const stores = [{ binding: 'GRAPH', driver: 'graph' as const }];
+    // A test fixture, not a release: the digest and commit are placeholders.
+    const fixture: StoreDriverRegistration = {
+      driver: 'graph',
+      releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
+      className: 'Store',
+      operations: [],
+      platformOperations: [...RESERVED_STORE_OPERATIONS],
+    };
+    expect(() => assertScopeStoresRegistered(stores, [fixture])).not.toThrow();
+    expect(() => assertDeclaredScopeStores({ scopeStores: stores, drivers: [fixture] })).not.toThrow();
     expect(() => assertDeclaredScopeStores({ scopeStores: stores, drivers: [] })).toThrow(/not registered/);
-    // The pin's values are not restated here: the release bytes are not in this repo, so a copy of
-    // the digest would only hold the constant to itself. Its shape is held where every registered
-    // driver is parsed, below; the digest is checked against the bytes at every upload.
-    expect(STORE_DRIVERS.map((driver) => driver.driver)).toEqual(['graph']);
   });
 
   it('refuses a registration that does not answer substrat.erase', () => {
@@ -365,18 +375,11 @@ describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
   });
 
   it('with no driver registered nothing may hold a store, whatever the manifest says', () => {
+    expect(STORE_DRIVERS).toEqual([]);
     for (const json of [declaring, manifest(), null, undefined, '{not json']) {
+      expect(mayHoldScopeStores(json)).toBe(false);
       expect(mayHoldScopeStores(json, [])).toBe(false);
     }
-  });
-
-  it('the registered graph driver may hold a store a manifest declares, and not one that declares none', () => {
-    expect(STORE_DRIVERS.map((driver) => driver.driver)).toEqual(['graph']);
-    expect(mayHoldScopeStores(declaring)).toBe(true);
-    expect(mayHoldScopeStores(undefined)).toBe(true);
-    expect(mayHoldScopeStores('{not json')).toBe(true);
-    expect(mayHoldScopeStores(manifest())).toBe(false);
-    expect(mayHoldScopeStores(null)).toBe(false);
   });
 
   it('with a driver registered, unknown and unreadable count as may, and only a known "none" does not', () => {
