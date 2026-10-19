@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair } from 'jose';
 import { DELEGATION_ASSERTION_AUDIENCE, SHARED_ISSUER_CONFIG_KEY, mcpResourceOf } from '@substrat-run/contracts';
 import { oidcRpAuthProvider, type OidcRpConfig } from '../src/oidc-rp-provider.js';
@@ -454,6 +454,115 @@ describe('delegation.actors read from the delivered wiring', () => {
   it('takes a static list the same way', async () => {
     expect((await (await providerWith({}, { actors: [ACTOR] })).resolve(bearer(await delegated()), MCP_A, AT_MCP))?.sub).toBe('user-1');
     expect(await (await providerWith({}, { actors: ['', ACTOR] })).resolve(bearer(await delegated()), MCP_A, AT_MCP)).toBeNull();
+  });
+});
+
+/**
+ * A delivered `audience` holds every bearer to it, a delegated one included, and a delegated
+ * token's one `aud` is the MCP endpoint's resource. So an audience other than that resource
+ * turns the opt-in off (closed), and the verifier says so at the endpoint, once, instead of
+ * leaving it silent.
+ */
+describe('a delivered audience is checked on a delegated token too', () => {
+  /** Desk A on the team issuer, opted in for the helpdesk, with `audience` delivered. */
+  const withAudience = async (audience: string) =>
+    (
+      await instanceAuthFor({
+        directory: {
+          authWiring: async () => ({
+            config: {
+              [AUTH_CONFIG_KEY]: JSON.stringify({ mode: 'oidc', issuer: ISSUER, clientId: 'desk-a', clientSecret: 'cs', audience }),
+              [SHARED_ISSUER_CONFIG_KEY]: 'true',
+            },
+            sessionSecret: 'session-secret-000000000000000000000001',
+          }),
+        },
+        scopeId: 'scope-1',
+        envSpec: [],
+        env: {},
+        delegation: { actors: [ACTOR] },
+      })
+    ).provider();
+  /**
+   * The verifier the relying party builds on a shared issuer, at `issuer`. Each warning case
+   * takes a fresh issuer, since a warning is once per issuer and audience in an isolate: its
+   * keys are never fetched (the token is refused), but the warning comes first.
+   */
+  let issuers = 0;
+  const freshIssuer = () => `https://issuer-${++issuers}.test`;
+  const verifier = (issuer: string, audience: string | undefined, { optedIn = true, shared = true } = {}) =>
+    oidcAuthProvider({
+      issuer,
+      ...(audience ? { audience } : {}),
+      ...(shared ? { clientId: 'desk-a', resourceOf: (origin: string) => mcpResourceOf(origin) } : {}),
+      ...(optedIn ? { delegation: { actors: [ACTOR] } } : {}),
+    });
+  const at = (resource: string) => ({ delegated: { resource } });
+  const quietly = async <T>(run: (warn: MockInstance<typeof console.warn>) => Promise<T>): Promise<T> => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      return await run(warn);
+    } finally {
+      warn.mockRestore();
+    }
+  };
+
+  it('admits a delegated token only when the delivered audience is the endpoint\'s own resource', async () => {
+    await quietly(async () => {
+      const t = await delegated();
+      expect((await (await withAudience(RESOURCE_A)).resolve(bearer(t), MCP_A, AT_MCP))?.delegation?.actor).toBe(ACTOR);
+      // The audience the REST routes are held to: the same token resolves to nobody.
+      expect(await (await withAudience(`${APP_A}/api`)).resolve(bearer(t), MCP_A, AT_MCP)).toBeNull();
+      // Nor is one minted for that audience a delegation through the endpoint's channel.
+      expect(await (await withAudience(`${APP_A}/api`)).resolve(bearer(await delegated({ aud: `${APP_A}/api` })), MCP_A, AT_MCP)).toBeNull();
+      // Another origin's MCP resource is not this endpoint's.
+      expect(await (await withAudience(RESOURCE_B)).resolve(bearer(t), MCP_A, AT_MCP)).toBeNull();
+      // An endpoint mountOperations' basePath moved admits through its own resource.
+      const moved = `${APP_A}/v1/mcp`;
+      expect((await (await withAudience(moved)).resolve(bearer(await delegated({ aud: moved })), moved, at(moved)))?.delegation?.actor).toBe(ACTOR);
+    });
+  });
+
+  it('warns once per issuer and audience at an endpoint whose resource is not the audience, naming the field only', async () => {
+    await quietly(async (warn) => {
+      const t = await delegated();
+      const issuer = freshIssuer();
+      const audience = `${APP_A}/api/v1`;
+      await verifier(issuer, audience).resolve(bearer(t), MCP_A, AT_MCP);
+      await verifier(issuer, audience).resolve(bearer(t), MCP_A, AT_MCP);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/no delegated bearer is admitted here/), { field: 'audience' });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(APP_A);
+      // Keyed by the pair: the same audience at another issuer, and another audience at this one.
+      await verifier(freshIssuer(), audience).resolve(bearer(t), MCP_A, AT_MCP);
+      await verifier(issuer, `${APP_A}/api/v2`).resolve(bearer(t), MCP_A, AT_MCP);
+      expect(warn).toHaveBeenCalledTimes(3);
+      // Another origin's MCP resource is a mismatch too.
+      await verifier(freshIssuer(), RESOURCE_B).resolve(bearer(t), MCP_A, AT_MCP);
+      expect(warn).toHaveBeenCalledTimes(4);
+      // And through the relying party an instance builds.
+      await (await withAudience(`${APP_A}/api/v3`)).resolve(bearer(t), MCP_A, AT_MCP);
+      expect(warn).toHaveBeenCalledTimes(5);
+    });
+  });
+
+  it('does not warn for any twin', async () => {
+    await quietly(async (warn) => {
+      const t = await delegated();
+      const moved = `${APP_A}/v1/mcp`;
+      const mismatched = `${APP_A}/api/v1`;
+      // The audience is the endpoint's resource, at /api/mcp and where mountOperations' basePath moved it.
+      await verifier(freshIssuer(), RESOURCE_A).resolve(bearer(t), MCP_A, AT_MCP);
+      await verifier(freshIssuer(), moved).resolve(bearer(t), moved, at(moved));
+      // Not opted in; not a shared issuer (no delegation is admitted there whatever the audience); no audience.
+      await verifier(freshIssuer(), mismatched, { optedIn: false }).resolve(bearer(t), MCP_A, AT_MCP);
+      await verifier(freshIssuer(), mismatched, { shared: false }).resolve(bearer(t), MCP_A, AT_MCP);
+      await verifier(freshIssuer(), undefined).resolve(bearer(t), MCP_A, AT_MCP);
+      // No channel: a REST route, or the endpoint's channel absent.
+      await verifier(freshIssuer(), mismatched).resolve(bearer(t), REST_A);
+      await verifier(freshIssuer(), mismatched).resolve(bearer(t), MCP_A, { delegated: null });
+      expect(warn).not.toHaveBeenCalled();
+    });
   });
 });
 

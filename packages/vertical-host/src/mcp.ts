@@ -87,7 +87,7 @@ import { PermissionDenied, type ScopeStub } from '@substrat-run/kernel';
 import { fieldCoverageArmed, INVOCATION_RECORD_KEY, invocationStampOf, requestIdOf, type InvocationRecord } from './invocation-log.js';
 import { classifyError, messageOf, problemResponse } from './errors.js';
 import { observeOutputFields, outputWalkOf, type OutputWalk } from './field-coverage.js';
-import { bearerClaims, carriesAct, routeAnsweringAt } from './mcp-guard.js';
+import { assertDistinctToolNames, assertMcpPathFree, bearerClaims, carriesAct } from './mcp-guard.js';
 
 /** What `invocationLog` handed this request (#1746, #1237). Both absent without the middleware. */
 interface McpInvocation {
@@ -307,7 +307,7 @@ function project(value: unknown, walk: OutputWalk | undefined, fields: readonly 
  */
 export function mcpToolsOf(operations: Readonly<Record<string, object>>): McpTool[] {
   const tools: McpTool[] = [];
-  const byName = new Map<string, string>();
+  assertDistinctToolNames(operations, mcpToolName, 'mcpToolsOf');
 
   for (const operation of Object.keys(operations).sort()) {
     const op = operations[operation] as McpDecl | undefined;
@@ -315,15 +315,6 @@ export function mcpToolsOf(operations: Readonly<Record<string, object>>): McpToo
     if (!op?.http || op.mcp === false) continue;
 
     const name = mcpToolName(operation);
-    const clash = byName.get(name);
-    if (clash) {
-      throw new Error(
-        `mcpToolsOf: '${operation}' and '${clash}' both render as the tool name '${name}' — ` +
-          'operation names must stay distinct once non-alphanumerics collapse to `_`',
-      );
-    }
-    byName.set(name, operation);
-
     const declared = op.input ? jsonSchemaOf(op.input) : { type: 'object', properties: {} };
     const shape = declared as { properties?: Record<string, unknown>; required?: string[] };
     const inputSchema: Record<string, unknown> = {
@@ -643,11 +634,20 @@ function statusOf(err: unknown): number | undefined {
  * request to the MCP endpoint, because this mount is what holds it to its scope. So a route
  * registered BEFORE it that would answer here instead — an operation at `/mcp`, a
  * hand-written `app.post('/api/mcp', …)`, a `/:slug` parameter route — refuses the mount,
- * loudly, at boot, judged by Hono's own router (`routeAnsweringAt`). A route registered AFTER
- * it never runs here: every method but `OPTIONS` is answered by this mount. Not judged:
- * `app.use`, `app.all` and `app.mount` (Hono records all three alike), `OPTIONS` routes, and
- * `*` catch-alls — they meet every path and are not handlers written for this one. The
- * channel (`mcpChannelOf`) is what keeps a delegated token away from them all the same.
+ * loudly, at boot and before this mount registers anything (`assertMcpPathFree`), judged by
+ * Hono's `TrieRouter` against the path the endpoint really answers at, a Hono `basePath()`
+ * included. A `*` is judged as `TrieRouter` reads it, so `/api/*`, `/api/mcp/*`, a `GET *`
+ * fallback and `/api/mc*` all refuse the mount. A route registered AFTER it never runs here:
+ * every method but `OPTIONS` is answered by this mount. Not judged:
+ *  - `app.use`, `app.all` and `app.mount` (Hono records all three alike), and `OPTIONS` routes;
+ *  - a prefix added after the mount by `app.route()`: the routes of the app it is mounted
+ *    into are not seen here;
+ *  - the `*` forms that the default router dispatches here and `TrieRouter` does not match:
+ *    a `*` inside a segment, such as `/api/*cp`, and a pattern ending in two or more `*`
+ *    segments that reaches the path only if its last `*` matches nothing, such as `/api`
+ *    followed by two of them. These are not refused.
+ * The channel (`mcpChannelOf`) is what keeps a delegated token away from every one of these
+ * all the same.
  */
 export function mountMcp(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -656,15 +656,11 @@ export function mountMcp(
   resolveStub: (c: Context) => Promise<ScopeStub>,
   options: MountMcpOptions & { readonly basePath?: string } = {},
 ): { path: string; tools: number } {
+  // Both refusals come before anything is registered, named for this mount.
+  assertDistinctToolNames(operations, mcpToolName, 'mountMcp');
   const tools = mcpToolsOf(operations);
   const path = options.path ?? mcpEndpointPath(options.basePath);
-  const shadow = routeAnsweringAt(app.routes, path);
-  if (shadow) {
-    throw new Error(
-      `mountMcp: ${shadow.method} ${shadow.path} is registered before the MCP endpoint and would answer at ${path} ` +
-        'in its place — move that route off the path',
-    );
-  }
+  assertMcpPathFree(app, path, 'mountMcp');
   const wellKnown = `/.well-known/oauth-protected-resource${path}`;
   const byName = new Map(tools.map((t) => [t.name, t]));
   const serverInfo = {
@@ -1039,14 +1035,16 @@ export function mountMcp(
     return c.json(Array.isArray(body) ? replies : (replies[0] as object));
   });
 
+  // A 405 names the methods that are served (RFC 9110 §15.5.6): `POST` is the only one.
+  const allow = { Allow: 'POST' };
   // No server-initiated stream, so no SSE to open. The transport allows saying so.
-  app.get(path, (c) => c.json(rpcError(null, -32601, 'This server opens no event stream'), 405));
+  app.get(path, (c) => c.json(rpcError(null, -32601, 'This server opens no event stream'), 405, allow));
   // #1824: and every other method is this mount's too — any verb a client sends, standard or
   // not — so a route registered after it can never answer here (see the header). `OPTIONS`
   // passes on, to a CORS middleware.
   app.all(path, async (c, next) => {
     if (c.req.method === 'OPTIONS') return next();
-    return c.json(rpcError(null, -32601, 'Only POST is served here'), 405);
+    return c.json(rpcError(null, -32601, 'Only POST is served here'), 405, allow);
   });
 
   return { path, tools: tools.length };

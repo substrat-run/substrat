@@ -170,7 +170,7 @@ const instance = await instanceAuthFor({ directory, scopeId, envSpec, env, deleg
 
 async function stub(c: Context) {
   // mcpChannelOf and setMcpDelegation are from @substrat-run/vertical-host
-  const subject = await providerOf(instance).resolve(c.req.raw.headers, c.req.url, { delegated: mcpChannelOf(c) });
+  const subject = await instance.provider().resolve(c.req.raw.headers, c.req.url, { delegated: mcpChannelOf(c) });
   if (!subject) throw new HTTPException(401, { message: 'unauthorized' });
   setMcpDelegation(c, subject.delegation);
   // … map subject.sub to a principal and return the scope stub, as before
@@ -187,23 +187,42 @@ An actor's client id differs from one team auth server to the next, so `actors` 
 function of the install's delivered wiring, `(wiring) => readonly string[]`. One that throws, or
 returns nothing usable, admits no delegated token.
 
+A delivered `audience` (on `substrat:auth`) applies to a delegated token too, and that token's
+one `aud` is the endpoint's resource. So unless the audience is exactly that resource, no
+delegated token is admitted: the opt-in is off, and it fails closed. The verifier logs a
+warning when the endpoint's channel names a resource other than the delivered audience,
+once per isolate for each issuer and audience. It names the field, not its value.
+
 What each half does:
 
 - **It is admitted only through the endpoint's channel.** The verifier refuses a token
   carrying `act` unless `actors` names the acting app, the caller passed the channel, the
   token's `aud` is exactly the channel's resource, and that resource is on the request's own
   origin. A call without the channel — `resolve(headers)`, a REST route, a stray handler —
-  refuses it. Because the resource is the channel's, an endpoint mounted under another
-  `basePath` or `mcp.path` is judged by its own. Every route `mountOperations` mounts also
-  refuses a bearer carrying `act`, with a `401`, before resolving anyone.
-- **The endpoint is the only route at its path.** A route registered before it that Hono
-  would dispatch a request for that path to, by any method but `OPTIONS` (`/mcp`, `/:slug`,
-  `/:slug?`, a regex parameter), stops the vertical from mounting; so does a second
-  `mountOperations` on the same base path. A route registered after it never runs there,
-  since the endpoint answers every method but `OPTIONS` itself, with a `405` for all but
-  `POST`. Not judged: `app.use`, `app.all` and `app.mount`, which Hono records alike as
-  middleware, `OPTIONS` routes, and `*` catch-alls. None of them is handed the channel, so
-  none admits a delegated token.
+  refuses it. Because the resource is the channel's, an endpoint moved by `mountOperations`'
+  own `basePath` or `mcp.path` option is judged by its own. A prefix Hono adds
+  (`app.basePath()`, `app.route()`) does not move the resource: it still names the unprefixed
+  path, as the endpoint's metadata does. Every route `mountOperations` mounts also refuses a
+  bearer carrying `act`, with a `401`, before resolving anyone.
+- **The endpoint is the only route at its path.** A route registered before it that Hono's
+  `TrieRouter` would dispatch a request for that path to, by any method but `OPTIONS` (`/mcp`,
+  `/:slug`, `/:slug?`, a regex parameter), stops the vertical from mounting; so does a second
+  `mountOperations` on the same base path. The path judged is the one the endpoint really
+  answers at, an `app.basePath()` prefix included. A `*` is judged as `TrieRouter` reads it,
+  so `/api/*`, `/api/mcp/*`, `/*/mcp`, a `GET *` fallback, `/api/mc*` and `/ap*` all stop it
+  too; register such a route after the mount, or make it middleware that answers only once
+  `await next()` has found nothing. A route registered after the endpoint never runs there,
+  since the endpoint answers every method but `OPTIONS` itself, with a `405` and
+  `Allow: POST` for all but `POST`. Not judged:
+  - `app.use`, `app.all` and `app.mount`, which Hono records alike as middleware, and
+    `OPTIONS` routes;
+  - the routes of an app this one is mounted into later with `app.route()`;
+  - the `*` forms that the default router dispatches there and `TrieRouter` does not match:
+    a `*` inside a segment, such as `/api/*cp`, and a pattern ending in two or more `*`
+    segments that reaches the path only if its last `*` matches nothing, such as `/api/*/*`
+    or `/*/*/*`. These are not refused.
+
+  None of these routes is handed the channel, so none admits a delegated token.
 - **A hand-written MCP surface owns its ceiling.** A vertical that serves its own MCP
   endpoint and passes `delegated` to the verifier itself takes on what the derived endpoint
   does: holding every call to `subject.delegation.scope`. Nothing checks that it does.
