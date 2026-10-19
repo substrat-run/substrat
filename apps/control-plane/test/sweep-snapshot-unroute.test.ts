@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { unreachablePlatformScopeStores, type PlatformScopeStores, type VerticalClient } from '@substrat-run/control-plane-api';
-import { RESERVED_STORE_OPERATIONS, platformActorId, scopeId, tenantId, type StoreDriverRegistration } from '@substrat-run/contracts';
+import { MCP_RESOURCES_CONFIG_PREFIX, RESERVED_STORE_OPERATIONS, platformActorId, scopeId, tenantId, type StoreDriverRegistration } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { reapExpiredSnapshot } from '../src/worker.js';
 
@@ -80,7 +80,7 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     expect(await host.admin.getScopeRecord(staff, t, fork)).toBeUndefined();
   });
 
-  it('an unroute that fails keeps an expired preview signing in: its clients are retired only after (#1704)', async () => {
+  it('an unroute that fails keeps an expired preview signing in: its clients and MCP registration go only after (#1704)', async () => {
     const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
     const { t, fork: source } = await routedFork(host);
     const record = (await host.admin.getScopeRecord(staff, t, source))!;
@@ -100,10 +100,14 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     await host.admin.bindHostname(staff, { hostname, tenantId: t, scopeId: pr, surface: 'app', region: null, canonical: true });
     await host.admin.setHostnameStatus(staff, hostname, 'active');
     const retired: string[] = [];
+    const cleared: string[] = [];
     const issuerClient = async () => ({
       retirePreviewClients: async ({ previewScopeId }: { previewScopeId: string }) => {
         retired.push(previewScopeId);
         return { deleted: [] };
+      },
+      configureInstance: async ({ entries }: { entries: Array<{ key: string; value: string }> }) => {
+        cleared.push(...entries.filter((e) => e.value === '').map((e) => e.key));
       },
     }) as unknown as VerticalClient;
     const failingUnbind = new Proxy(host.admin, {
@@ -118,10 +122,12 @@ describe('the sweep unroutes an expired snapshot before its wipe, and only then 
     }, t, pr).then(() => undefined, (e: unknown) => e);
     expect(failed).toBeInstanceOf(Error);
     expect(retired).toEqual([]);
+    expect(cleared).toEqual([]);
     expect((await host.admin.resolveHostname(hostname))?.scopeId).toBe(pr);
-    // The twin: once the unroute succeeds, the clients go, and so does the preview.
+    // The twin: once the unroute succeeds, the clients and the registration go, and so does the preview.
     await reapExpiredSnapshot({ host, stores, issuerClient, drivers: [] }, t, pr);
     expect(retired).toEqual([pr]);
+    expect(cleared).toEqual([`${MCP_RESOURCES_CONFIG_PREFIX}${pr}`]);
     expect(await host.admin.resolveHostname(hostname)).toBeUndefined();
   });
 

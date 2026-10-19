@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid, webCryptoSecretBox, type HostAdmin } from '@substrat-run/kernel';
 import {
+  MCP_RESOURCES_CONFIG_PREFIX,
   RESERVED_STORE_OPERATIONS,
   platformActorId,
   scopeId,
@@ -213,7 +214,7 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
       expect(await host.admin.resolveHostname(pr.hostname)).toBeUndefined();
     });
 
-    it('an unroute that fails keeps the preview signing in: its clients are retired only after (#1704)', async () => {
+    it('an unroute that fails keeps the preview signing in: its clients and MCP registration go only after (#1704)', async () => {
       // Its own tenant and vertical, with an auth server the preview's clients live at.
       const t2 = tenantId.parse(ulid());
       const slug = `desk-${t2.slice(-6).toLowerCase()}`;
@@ -238,10 +239,14 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
       await host.admin.bindHostname(staff, { hostname, tenantId: t2, scopeId: pr, surface: 'app', region: null, canonical: true });
       await host.admin.setHostnameStatus(staff, hostname, 'active');
       const retired: string[] = [];
+      const cleared: string[] = [];
       const issuerClient = {
         retirePreviewClients: async ({ previewScopeId }: { previewScopeId: string }) => {
           retired.push(previewScopeId);
           return { deleted: [] };
+        },
+        configureInstance: async ({ entries }: { entries: Array<{ key: string; value: string }> }) => {
+          cleared.push(...entries.filter((e) => e.value === '').map((e) => e.key));
         },
       } as unknown as VerticalClient;
       const api = createControlPlaneApi({
@@ -260,11 +265,13 @@ describe('a snapshot or a preview is unrouted before its stores are wiped, and o
         host.admin.unbindHostname = unbind;
       }
       expect(retired).toEqual([]);
+      expect(cleared).toEqual([]);
       expect((await host.admin.resolveHostname(hostname))?.scopeId).toBe(pr);
-      // The twin: once the unroute succeeds, the clients go, and so does the preview.
+      // The twin: once the unroute succeeds, the clients and the registration go, and so does the preview.
       const res = await api.request(`/verticals/${slug}/previews/pr-9`, { method: 'DELETE', headers: auth });
       expect(res.status).toBe(200);
       expect(retired).toEqual([pr]);
+      expect(cleared).toEqual([`${MCP_RESOURCES_CONFIG_PREFIX}${pr}`]);
       expect(await host.admin.resolveHostname(hostname)).toBeUndefined();
     });
 
