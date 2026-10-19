@@ -56,13 +56,16 @@ import {
   RouterAssertionError,
   invocationLog,
 } from '@substrat-run/vertical-host';
-import { MODULES, OWNER_ROLE_KEY, ROLES } from './provision.js';
+import { MODULES, OWNER_ROLE_KEY, ROLES, permissions } from './provision.js';
 import { SHOP_ENV } from './manifest.js';
 import { mountApi } from './routes.js';
 import { AUTH_CONFIG_KEY, ConfigDO, type ConfigDo } from './config-do.js';
 
-/** The scope-DO class = the app binary: kernel + engines + this vertical, bundled. */
-export const ScopeDO = defineScopeDO(MODULES, {});
+/**
+ * The scope-DO class = the app binary: kernel + engines + this vertical, bundled. Given the same
+ * `permissions` `substrat push` reads, it refuses a module that surface leaves out.
+ */
+export const ScopeDO = defineScopeDO(MODULES, {}, { permissions });
 
 /**
  * The per-instance config store (`config-do.ts`) — one per tenant, rows keyed by scope.
@@ -147,7 +150,7 @@ function nodeFor(req: Request, env: Env): Node {
 }
 
 function hostFor(env: Env): CloudflareScopeHost {
-  const host = new CloudflareScopeHost({ scope: env.SCOPE, attachmentExtractors: defaultAttachmentExtractors() });
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, attachmentExtractors: defaultAttachmentExtractors(), permissions });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }

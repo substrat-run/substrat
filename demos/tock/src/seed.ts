@@ -20,7 +20,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid, type Clock, type ScopeHost } from '@substrat-run/kernel';
 import { tockManifest } from './manifest.js';
-import { MODULES, ROLES } from './provision.js';
+import { MODULES, ROLES, permissions } from './provision.js';
 import { DEV_PROVIDER, PERSONAS } from './personas.js';
 
 export { MODULES, ROLES };
@@ -55,7 +55,7 @@ export interface World {
  * them. Defaulted to the wall clock, so every other caller is unaffected.
  */
 export function buildHost(dir: string, clock?: Clock): ScopeHost {
-  const host = new SqliteScopeHost({ dir, ...(clock ? { clock } : {}) });
+  const host = new SqliteScopeHost({ dir, permissions, ...(clock ? { clock } : {}) });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }

@@ -93,6 +93,7 @@ import {
   ROLES,
   SERVICE_ROLES,
   STAFF_ROLES,
+  permissions,
   type ServiceRole,
 } from './provision.js';
 import { mountApi } from './routes.js';
@@ -122,7 +123,7 @@ import {
 } from '@substrat-run/adapter-email';
 
 /** The scope-DO class = the app binary: kernel + metering + ticket0, bundled. */
-export const ScopeDO = defineScopeDO(MODULES, {});
+export const ScopeDO = defineScopeDO(MODULES, {}, { permissions });
 /** The per-tenant identity DO (shared @substrat-run/vertical-auth) — bound as AUTH. */
 export { IdentityDO };
 
@@ -258,6 +259,7 @@ function nodeFor(req: Request, env: Env): DeskNode {
 function hostFor(env: Env): CloudflareScopeHost {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
+    permissions,
     servicePrincipals: async (tenantId, scopeId) => {
       const services = await servicesOf(env, { tenantId, scopeId });
       return Object.values(services ?? {}).filter((id): id is PrincipalId => id !== undefined);

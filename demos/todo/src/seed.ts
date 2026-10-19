@@ -18,17 +18,12 @@ import {
   platformActorId,
   scopeId,
   tenantId,
-  type RoleDefinition,
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
-import { ENTITY_GRANTS, OWNER_GRANTS, TODO_PERM, todoManifest } from './manifest.js';
-import { todoModule } from './module.js';
+import { ENTITY_GRANTS, OWNER_GRANTS, todoManifest } from './manifest.js';
+import { MODULES, ROLES, permissions } from './provision.js';
 
-export const MODULES = [todoModule];
-
-export const ROLES: RoleDefinition[] = [
-  { key: 'member', permissions: [TODO_PERM.listCreate], source: 'vertical' },
-];
+export { MODULES, ROLES };
 
 export interface Person {
   readonly name: string;
@@ -48,7 +43,7 @@ export interface World {
 }
 
 export function buildHost(dir: string): ScopeHost {
-  const host = new SqliteScopeHost({ dir });
+  const host = new SqliteScopeHost({ dir, permissions });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }

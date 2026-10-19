@@ -17,6 +17,7 @@ import {
   EMPLOYEE_SELF,
   ENTITY_GRANTS,
   MODULES,
+  permissions,
   provisionMeridian,
   VERTICAL,
   type MeridianInstance,
@@ -101,6 +102,7 @@ export function buildDemoHost(dir: string, scrive?: ScriveConfig): SqliteScopeHo
     // egress (the testbed, or a mock), and only matters when one is registered.
     secretBox: webCryptoSecretBox('meridian-dev', DEV_SECRET_KEY),
     ...(scrive ? { fetch: scrive.fetch } : {}),
+    permissions, // #2430: a module registered here that the surface push reads leaves out is refused
   });
   for (const m of MODULES) host.registerModule(m);
   // The connector is host code registered on the scope host, exactly like an

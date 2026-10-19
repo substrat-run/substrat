@@ -33,7 +33,7 @@ import { dashboardRoutes, type appEvent, type domainRow, type installAppInput, t
 import { mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardRequestId, withRequestIdOf } from './request-id.js';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
-import { MODULES, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
+import { MODULES, permissions, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wiring.js';
 import { appAuthChoiceBody } from './app-auth-body.js';
 import { McpReconcileGate, clearAppMcpResources, isSharedIssuer, issuerFor, logUnsettled, reconcileConverged, reconcileMcpResources, registerAppMcpResources, teamIssuers, type TeamIssuer } from './mcp-resources.js';
@@ -104,8 +104,9 @@ const teamCookieOpts = (origin: string) => ({
 // is `provision.ts`'s — the same list the permission artifact is rendered from — so
 // what this DO runs and what `PERMISSIONS.md` documents can no longer drift. A
 // customer's app is its own deployment reached through the control plane; the
-// verticals an app can run are never bundled here (#978, D-33).
-export const ScopeDO = defineScopeDO(MODULES, {});
+// verticals an app can run are never bundled here (#978, D-33). Given that artifact's own
+// `permissions`, a module added beside the list is refused when the class is defined (#2430).
+export const ScopeDO = defineScopeDO(MODULES, {}, { permissions });
 export { ControlPlaneDO };
 
 const STAFF = platformActorId.parse('01JZ000000000000000000DAS1');
@@ -546,6 +547,7 @@ function hostFor(env: Env, opts: { membership?: boolean } = {}): CloudflareScope
     // projected. New scopes project at provision; existing ones convert on their
     // tenant's next tenant-level write, or on a deliberate back-fill.
     scopeLocalPermissions: env.SCOPE_LOCAL_PERMISSIONS === '1',
+    permissions,
   });
   for (const m of MODULES) host.registerModule(m);
   if (opts.membership) registerDashboardMembership(host);

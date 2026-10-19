@@ -40,7 +40,7 @@ import {
 import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import { declareScriveConnector } from '@substrat-run/connector-scrive';
-import { EMPLOYEE_SELF, MODULES, ROLES } from './provision.js';
+import { EMPLOYEE_SELF, MODULES, ROLES, permissions } from './provision.js';
 import { MERIDIAN_ENV } from './manifest.js';
 import { API, API_DOCUMENT } from './api.js';
 import { DOCS_HTML } from './docs.js';
@@ -58,7 +58,7 @@ import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes'
 import { membersHook, mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
 
 /** The scope-DO class = the app binary: kernel + protocol + Meridian, bundled. */
-export const ScopeDO = defineScopeDO(MODULES, {});
+export const ScopeDO = defineScopeDO(MODULES, {}, { permissions });
 /** The per-tenant identity DO (shared @substrat-run/vertical-auth) — bound as AUTH; wrangler needs the export. */
 export { IdentityDO };
 
@@ -178,6 +178,7 @@ export function hostFor(env: Env): CloudflareScopeHost {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     attachmentExtractors: defaultAttachmentExtractors(),
+    permissions,
   });
   for (const m of MODULES) host.registerModule(m);
   // #574 phase 3: the SAME registration the node self-host makes (seed.ts) — but on

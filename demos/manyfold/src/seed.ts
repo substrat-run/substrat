@@ -3,14 +3,14 @@ import { join } from 'node:path';
 import { platformActorId, principalId, scopeId, tenantId, type PrincipalId, type ScopeId, type TenantId } from '@substrat-run/contracts';
 import { ulid, type Clock } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { MODULES, provisionManyfold, type ManyfoldInstance } from './provision.js';
+import { MODULES, permissions, provisionManyfold, type ManyfoldInstance } from './provision.js';
 import { DEV_PROVIDER, PERSONAS } from './personas.js';
 
 /** `clock` defaults to the wall clock (the host's own default); a scenario passes a
  *  `manualClock`/`frozenClock` (#812) to test something a function of elapsed time —
  *  or, for #1833's cursor test, of TWO entries sharing exactly one instant. */
 export function buildDemoHost(dir: string, clock?: Clock): SqliteScopeHost {
-  const host = new SqliteScopeHost({ dir, ...(clock ? { clock } : {}) });
+  const host = new SqliteScopeHost({ dir, permissions, ...(clock ? { clock } : {}) });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }

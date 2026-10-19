@@ -40,7 +40,7 @@ import {
 } from '@substrat-run/vertical-auth';
 import { mountOwnerClaim } from '@substrat-run/vertical-auth/owner-claim-routes';
 import { membersHook, mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
-import { MODULES, ROLES } from './provision.js';
+import { MODULES, ROLES, permissions } from './provision.js';
 import { MANYFOLD_ENV } from './manifest.js';
 import { serveAsset } from './assets.js';
 import { mountApi } from './routes.js';
@@ -48,7 +48,7 @@ import { API_DOCUMENT } from './api.js';
 import { DOCS_HTML } from './docs.js';
 
 /** The scope-DO class = the app binary: kernel + the Manyfold module, bundled. */
-export const ScopeDO = defineScopeDO(MODULES, {});
+export const ScopeDO = defineScopeDO(MODULES, {}, { permissions });
 /** The per-tenant identity DO (shared @substrat-run/vertical-auth) — bound as AUTH. */
 export { IdentityDO };
 
@@ -128,7 +128,7 @@ async function nodeFor(req: Request, env: Env): Promise<SiteNode> {
 }
 
 function hostFor(env: Env): CloudflareScopeHost {
-  const host = new CloudflareScopeHost({ scope: env.SCOPE });
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, permissions });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }

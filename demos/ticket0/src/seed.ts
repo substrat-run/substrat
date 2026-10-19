@@ -22,7 +22,7 @@ import { ticket0Manifest } from './manifest.js';
 import { ASSISTANT_NAME } from './module.js';
 // The module set and the role table live in `provision.ts` — the ONE place both this
 // node host and the deployed worker read them from. See the note at its head.
-import { ENTITY_GRANTS, MODULES, ROLES } from './provision.js';
+import { ENTITY_GRANTS, MODULES, ROLES, permissions } from './provision.js';
 import { DEV_PROVIDER, PERSONAS } from './personas.js';
 
 export { MODULES, ROLES };
@@ -98,7 +98,7 @@ export interface World {
 export function buildHost(dir: string, clock?: Clock, logSink?: ModuleLogSink): SqliteScopeHost {
   // `logSink` is where the module's `ctx.log` lines go (#1747): the console by default, as
   // in production, and a collector in a suite that asserts what they say.
-  const host = new SqliteScopeHost({ dir, ...(clock ? { clock } : {}), ...(logSink ? { logSink } : {}) });
+  const host = new SqliteScopeHost({ dir, permissions, ...(clock ? { clock } : {}), ...(logSink ? { logSink } : {}) });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }
