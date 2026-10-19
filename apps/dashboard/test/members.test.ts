@@ -60,6 +60,13 @@ describe('Dashboard teams — invite + accept', () => {
     return scope.invoke<DashboardMemberRow[]>('dashboard/list-members', {});
   };
 
+  it('the list reads answer a call with no input at all, as they did before their inputs were declared', async () => {
+    const acme = await makeTeam('acme', 'owner@acme.com');
+    const scope = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
+    await expect(scope.invoke<DashboardMemberRow[]>('dashboard/list-members')).resolves.toHaveLength(1);
+    await expect(scope.invoke<unknown[]>('dashboard/list-apps')).resolves.toEqual([]);
+  });
+
   it('delete-team is owner-only: revokes the roster and returns the members to unlink', async () => {
     const acme = await makeTeam('acme', 'owner@acme.com');
     const ownerScope = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
