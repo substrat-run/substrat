@@ -1,9 +1,10 @@
 /**
  * #2403: `contractTestModules` is the list the Durable Object test worker hands `defineScopeDO`,
  * and the DO refuses an operation bound twice, as the coordinator does. `connectorMod` once
- * appeared in it twice (once through `contractTestInitialModules`) and nothing noticed, because
- * it binds no operation. The list is held to what the hosts need of it, so the next repeat is
- * red here and not in a worker that fails to start.
+ * appeared in it twice (once through `contractTestInitialModules`); it binds six operations, so the
+ * repeat would have stopped the worker from starting once the DO refused a name bound twice. The
+ * list is held to what the hosts need of it, so the next repeat is red here and not in a worker
+ * that fails to start.
  */
 import { describe, expect, it } from 'vitest';
 import { contractTestInitialModules, contractTestModules } from '../src/modules.js';
