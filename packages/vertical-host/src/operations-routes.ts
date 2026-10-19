@@ -671,11 +671,18 @@ type SafeParse = (
 ) => { success: true; data: unknown } | { success: false; error: { message: string; issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey> }> } };
 
 /**
+ * A parse failure as an operator's log line may name it: the distinct issue PATHS, at most ten,
+ * never a value or a message, because what failed to parse may be anybody's data.
+ */
+export function issuePathsOf(issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey> }>): string[] {
+  return [...new Set(issues.map((i) => i.path.map(String).join('.')))].slice(0, 10);
+}
+
+/**
  * A declared route answered outside its declared output (#2401). That is the host's fault (the
  * handler, or an upstream it relayed, disagrees with the declaration), never the caller's, so it
  * is `internal`: a 500 with no `detail`, since the issues describe the schema's internals and are
- * no use to the caller. They ride here instead, for the app's own log: the route and the issue
- * PATHS, at most ten, never a value, because what failed to parse may be anybody's data.
+ * no use to the caller. They ride here instead, for the app's own log, as `issuePathsOf` names them.
  */
 export class RouteOutputMismatch extends SubstratError {
   readonly route: string;
@@ -684,7 +691,7 @@ export class RouteOutputMismatch extends SubstratError {
   constructor(route: string, issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey> }>) {
     super('internal', `mountRoutes: '${route}' answered outside its declared output`);
     this.route = route;
-    this.issuePaths = [...new Set(issues.map((i) => i.path.map(String).join('.')))].slice(0, 10);
+    this.issuePaths = issuePathsOf(issues);
   }
 }
 

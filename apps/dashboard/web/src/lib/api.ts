@@ -1413,15 +1413,6 @@ export interface DomainRow {
   validationRecords: DnsRecord[];
 }
 
-/** The raw binding a bind/verify returns (`POST /api/teams/:teamId/domains`, `/verify`). */
-export interface HostnameBinding {
-  hostname: string;
-  /** As on `DomainRow`. */
-  status: string;
-  statusNote?: string | null;
-  validationRecords?: DnsRecord[];
-}
-
 export class ApiError extends Error {
   constructor(
     readonly status: number,

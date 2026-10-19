@@ -73,6 +73,9 @@ const pageOutput = <T extends z.ZodTypeAny>(entry: T) =>
  * - a block whose absence would mean "nothing to worry about" (`exportBreaks`: whom the promotion
  *   breaks) is never nulled; it is declared loosely (plain strings, no enums or id formats) so it
  *   always reaches the dialog as the plane named it.
+ *
+ * `test/route-output-vocabulary.test.ts` holds every output to the first point: each enum or
+ * literal left in one must be the dashboard's own, listed there with why.
  */
 
 /**
@@ -85,7 +88,7 @@ const orNull = <T extends z.ZodType>(schema: T, field: string) =>
     return null;
   });
 
-/** Where a custom domain's issuance stands. The plane owns the set (known: pending, verifying, active, failed — contracts `hostnameStatus`). */
+/** Where a hostname's issuance stands. The plane owns the set (known: pending, verifying, active, failed — contracts `hostnameStatus`). */
 const hostnameStatusOut = z.string();
 
 /** A DNS record to publish (contracts `dnsRecord`). Its `type` is the plane's (known: hostname, txt). */
@@ -199,7 +202,7 @@ const domainBinding = z.object({
 export const appHostnameRow = z.object({
   hostname: z.string(),
   surface: z.string(),
-  status: z.string(),
+  status: hostnameStatusOut,
   /** Why a row is `failed` (or mid-flight detail) — rendered under the status pill. */
   statusNote: z.string().nullable(),
   canonical: z.boolean(),

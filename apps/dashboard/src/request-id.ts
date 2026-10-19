@@ -78,8 +78,7 @@ function failureOf(err: unknown): {
     errorName,
     ...(errorCode ? { errorCode } : {}),
     ...(plane ? { upstreamStatus: plane.status } : {}),
-    // #2401: a declared route answered outside its output. The caller got a bare 500; the route and
-    // the issue paths (field names, never a value) are what an operator needs to find the drift.
+    // #2401: the caller got a bare 500, so this line is where the drift can be found.
     ...(err instanceof RouteOutputMismatch ? { route: err.route, outputPaths: err.issuePaths } : {}),
   };
 }

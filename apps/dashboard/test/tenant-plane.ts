@@ -41,3 +41,16 @@ export function rewrittenPlane(svc: unknown, match: (path: string) => boolean, r
     },
   };
 }
+
+type Row = Record<string, unknown>;
+
+/** A `rewrite` that patches every object in an answer, at any depth: `patch` returns its replacement, or `undefined` to keep it. */
+export function patchRows(patch: (row: Row) => Row | undefined): (body: unknown) => unknown {
+  const walk = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(walk);
+    if (v === null || typeof v !== 'object') return v;
+    const row = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    return patch(row) ?? row;
+  };
+  return walk;
+}

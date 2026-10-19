@@ -1449,8 +1449,6 @@ async function listDomainsIn({ c, host, node }: TeamContext, page: ListPageQuery
         appScopeId: h.scopeId,
         app: appName.get(h.scopeId) ?? h.scopeId,
         surface: h.surface,
-        // The plane's own word for it, as the route's output declares (#2401): a status this
-        // dashboard does not know is listed as it is, not refused.
         status: h.status,
         statusNote: h.statusNote ?? null,
         primary: h.canonical,

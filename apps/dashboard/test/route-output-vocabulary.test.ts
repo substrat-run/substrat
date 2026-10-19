@@ -1,0 +1,94 @@
+import { describe, expect, it } from 'vitest';
+import { dashboardRoutes } from '../src/routes.js';
+
+/**
+ * #2401: the rule every declared route's output follows (`routes.ts`, VERSION SKEW): an enum the
+ * control plane owns is a `string` there, because the plane ships separately and may answer a value
+ * this dashboard's contracts do not know. `.extend` widens only what it names, so an enum that
+ * contracts later adds to a row the dashboard builds on would arrive closed, and the plane's next
+ * value would fail the route again, after the write for a write.
+ *
+ * So this walks every declared output and names each closed vocabulary (an enum or a literal) left
+ * in it. Each must be listed below with why it is not the plane's. A block that falls back to `null`
+ * (`orNull`) is not walked: a value it cannot parse already reads as "cannot show".
+ */
+const OWN_APP_ROW = 'an app row of the dashboard scope’s own table';
+const ACK = 'a literal the handler writes itself';
+const NOT_THE_PLANES: Record<string, string> = {
+  'dashboard/list-apps entries[].status': OWN_APP_ROW,
+  'dashboard/install-app status': OWN_APP_ROW,
+  'dashboard/retry-app status': OWN_APP_ROW,
+  'dashboard/resume-app status': OWN_APP_ROW,
+  'dashboard/get-app-install-steps [].status': 'an install step the dashboard scope records itself',
+  'dashboard/list-app-events entries[].kind': 'the dashboard scope’s own event kinds (`APP_EVENT_KINDS`, held to its CHECK)',
+  'dashboard/list-members entries[].status': 'the dashboard module’s own roster projection',
+  'dashboard/remove-app removed': ACK,
+  'dashboard/revoke-invite revoked': ACK,
+  'dashboard/leave-team left': ACK,
+  'dashboard/promote-deployment promoted': ACK,
+  'dashboard/delete-deployment removed': ACK,
+  'dashboard/get-deployment-traffic markers[].kind': 'derived in this worker from the push and go-live instants',
+  'dashboard/move-scopes refusal.reason': 'read from the plane’s refusal by `rebindReviewReasonIn`, which drops a reason it does not know',
+};
+
+interface Def {
+  type?: string;
+  shape?: Record<string, unknown>;
+  element?: unknown;
+  innerType?: unknown;
+  in?: unknown;
+  options?: unknown[];
+  valueType?: unknown;
+}
+const defOf = (schema: unknown) => (schema as { _zod: { def: Def } })._zod.def;
+
+/** Every closed vocabulary reachable in `schema`, by path (`[]` an array element). */
+function closedIn(schema: unknown, path: string, found: string[]): string[] {
+  const def = defOf(schema);
+  switch (def.type) {
+    case 'enum':
+    case 'literal':
+      found.push(path);
+      break;
+    case 'object':
+      for (const [key, field] of Object.entries(def.shape ?? {})) closedIn(field, path ? `${path}.${key}` : key, found);
+      break;
+    case 'array':
+      closedIn(def.element, `${path}[]`, found);
+      break;
+    case 'record':
+      closedIn(def.valueType, `${path}{}`, found);
+      break;
+    case 'union':
+      for (const option of def.options ?? []) closedIn(option, path, found);
+      break;
+    case 'pipe':
+      closedIn(def.in, path, found);
+      break;
+    case 'optional':
+    case 'nullable':
+    case 'default':
+    case 'readonly':
+    case 'nonoptional':
+      closedIn(def.innerType, path, found);
+      break;
+    case 'catch':
+      // `orNull`: what it cannot parse reads as null, so its vocabulary may stay closed.
+      break;
+  }
+  return found;
+}
+
+describe('the declared routes’ outputs (#2401)', () => {
+  const closed = Object.entries(dashboardRoutes).flatMap(([name, route]) =>
+    'output' in route && route.output !== undefined ? [...new Set(closedIn(route.output, '', []))].map((p) => `${name} ${p}`) : [],
+  );
+
+  it('hold no closed vocabulary but the dashboard’s own', () => {
+    expect(closed.filter((c) => !(c in NOT_THE_PLANES))).toEqual([]);
+  });
+
+  it('list nothing that is no longer there', () => {
+    expect(Object.keys(NOT_THE_PLANES).filter((c) => !closed.includes(c))).toEqual([]);
+  });
+});

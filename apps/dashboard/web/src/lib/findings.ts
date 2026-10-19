@@ -13,10 +13,11 @@ import type { DashboardClient, FindingEntry, FindingRuleEntry } from './api.gene
  */
 export type FindingStatus = 'open' | 'acked' | 'resolved' | 'suppressed';
 
+/**
+ * What a rule may name. A finding's own kind or code is the plane's word; one this dashboard's
+ * input does not accept is refused (400), and the dialog says so.
+ */
 type RuleInput = Parameters<DashboardClient['createFindingRule']>[0];
-/** What a rule may name. A finding's own kind or code is the plane's word; one this dashboard's input does not accept is refused (400) and the dialog says so. */
-type RuleKind = NonNullable<RuleInput['kind']>;
-export type FindingCode = NonNullable<RuleInput['code']>;
 
 /** The inbox's tabs, in the order the design gives them. A tab is a status. */
 export const FINDING_TABS: { value: FindingStatus; label: string }[] = [
@@ -26,9 +27,13 @@ export const FINDING_TABS: { value: FindingStatus; label: string }[] = [
   { value: 'suppressed', label: 'Suppressed' },
 ];
 
+function isTab(status: string | undefined): status is FindingStatus {
+  return FINDING_TABS.some((t) => t.value === status);
+}
+
 /** The tab a URL value names; anything else is the inbox's front door, Open. */
 export function tabOf(value: string | undefined): FindingStatus {
-  return FINDING_TABS.find((t) => t.value === value)?.value ?? 'open';
+  return isTab(value) ? value : 'open';
 }
 
 /**
@@ -67,10 +72,6 @@ export function countByStatus(entries: readonly FindingEntry[]): Record<FindingS
   const counts: Record<FindingStatus, number> = { open: 0, acked: 0, resolved: 0, suppressed: 0 };
   for (const e of entries) if (isTab(e.status)) counts[e.status] += 1;
   return counts;
-}
-
-function isTab(status: string): status is FindingStatus {
-  return FINDING_TABS.some((t) => t.value === status);
 }
 
 /** The tab's findings, most recently seen first (the plane's own order, `id` breaking a tie as it does). */
@@ -141,9 +142,9 @@ export function draftReady(d: SuppressDraft): boolean {
 export function ruleInput(d: SuppressDraft, now: number) {
   const days = EXPIRY_CHOICES.find((c) => c.value === d.days)?.days ?? 7;
   return {
-    ...(d.kind ? { kind: d.kind as RuleKind } : {}),
+    ...(d.kind ? { kind: d.kind as RuleInput['kind'] } : {}),
     ...(d.operation ? { operation: d.operation } : {}),
-    ...(d.code ? { code: d.code as FindingCode } : {}),
+    ...(d.code ? { code: d.code as RuleInput['code'] } : {}),
     ...(d.subject ? { subject: d.subject } : {}),
     expiresAt: new Date(now + days * 86_400_000).toISOString(),
     reason: d.reason.trim(),

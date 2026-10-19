@@ -6,7 +6,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { REQUEST_ID_HEADER, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
-import { rewrittenPlane, SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
+import { patchRows, rewrittenPlane, SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 
 /**
  * #2192: the dashboard worker itself stamps its answers — driven the way a request reaches
@@ -177,10 +177,11 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => void logged.push(String(args[0])));
     await host.admin.recordOpsFailure({ actor: staff, operation: 'deploy.mine', tenantId: tenantId.parse(team), message: 'x' });
     // Not a value from a newer vocabulary but a broken one: no reading of the declaration admits it.
-    env.CONTROL_PLANE_SVC = rewrittenPlane(env.CONTROL_PLANE_SVC, (p) => p.endsWith('/findings'), (body) => {
-      const page = body as { entries: Array<Record<string, unknown>> };
-      return { ...page, entries: page.entries.map((f) => ({ ...f, firstSeen: 'a-broken-instant' })) };
-    });
+    env.CONTROL_PLANE_SVC = rewrittenPlane(
+      env.CONTROL_PLANE_SVC,
+      (p) => p.endsWith('/findings'),
+      patchRows((f) => ('firstSeen' in f ? { ...f, firstSeen: 'a-broken-instant' } : undefined)),
+    );
     const res = await get(`/teams/${team}/findings`, { sub: OWNER_SUB });
     const id = res.headers.get(REQUEST_ID_HEADER);
     const text = await res.text();

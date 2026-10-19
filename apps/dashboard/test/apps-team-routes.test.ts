@@ -9,7 +9,7 @@ import { MODULES, provisionDashboard } from '../src/index.js';
 import { APP_EVENT_KINDS } from '../src/app-event-kinds.js';
 import { dashboardMigrations } from '../src/module.js';
 import { dashboardRoutes } from '../src/routes.js';
-import { rewrittenPlane, SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
+import { patchRows, rewrittenPlane, SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 
 /**
  * The Apps read routes, declared under `/api/teams/:teamId` (#2170).
@@ -266,10 +266,7 @@ describe('the Apps read routes take their team from the path (#2170)', () => {
     env.CONTROL_PLANE_SVC = rewrittenPlane(
       env.CONTROL_PLANE_SVC,
       (p) => p.endsWith('/admin-log'),
-      (body) => {
-        const page = body as { entries: Array<Record<string, unknown>> };
-        return { ...page, entries: page.entries.map((e) => ({ ...e, action: 'frobnicateScope', audited: { operationId: 'op-1', outcome: 'reconsidered', superseded: false } })) };
-      },
+      patchRows((e) => ('action' in e ? { ...e, action: 'frobnicateScope', audited: { operationId: 'op-1', outcome: 'reconsidered', superseded: false } } : undefined)),
     );
     const [a] = apps;
     // One admin action against the app, so its own log has a row to answer.

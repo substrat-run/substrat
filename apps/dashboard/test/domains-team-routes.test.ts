@@ -7,7 +7,7 @@ import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/c
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { dashboardRoutes } from '../src/routes.js';
-import { rewrittenPlane, SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
+import { patchRows, rewrittenPlane, SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 
 /**
  * The Domains area — the team's custom domains and each app's hostnames — declared under
@@ -346,15 +346,13 @@ describe('the Domains routes take their team from the path (#2170)', () => {
    */
   describe('a plane newer than this dashboard', () => {
     const FUTURE_RECORD = { type: 'cname-flattened', name: '_x.acme.example', value: 'edge.example', status: null };
-    /** Every hostname row the plane answers, in a status and with a record type this dashboard does not know. */
-    const fromTheFuture = (v: unknown): unknown => {
-      if (Array.isArray(v)) return v.map(fromTheFuture);
-      if (v === null || typeof v !== 'object') return v;
-      const o = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fromTheFuture(x)]));
-      return 'hostname' in o && 'status' in o ? { ...o, status: 'quarantined', validationRecords: [FUTURE_RECORD] } : o;
-    };
     beforeEach(() => {
-      env.CONTROL_PLANE_SVC = rewrittenPlane(env.CONTROL_PLANE_SVC, (p) => p.includes('/hostnames'), fromTheFuture);
+      // Every hostname row the plane answers, in a status and with a record type this dashboard does not know.
+      env.CONTROL_PLANE_SVC = rewrittenPlane(
+        env.CONTROL_PLANE_SVC,
+        (p) => p.includes('/hostnames'),
+        patchRows((o) => ('hostname' in o && 'status' in o ? { ...o, status: 'quarantined', validationRecords: [FUTURE_RECORD] } : undefined)),
+      );
     });
 
     it('add-domain answers 201 for the bind that committed; list and verify answer 200; each as the plane named it', async () => {

@@ -5,7 +5,7 @@ import { ApiError } from '../lib/api.generated';
 import { DEV_MOCK } from '../lib/mock';
 import { Ic } from '../lib/icons';
 import { Page } from '../components/layout';
-import { card, CopyButton, MonoTag, PageTitle, Pill } from '../components/ui';
+import { card, CopyButton, MonoTag, PageTitle, Pill, type PillKind } from '../components/ui';
 import { relativeTime } from '../lib/format';
 
 const COLS = '2.2fr 1.4fr 1.6fr 1fr 40px';
@@ -32,17 +32,13 @@ const MOCK_DOMAINS: DomainRow[] = [
   },
 ];
 
-type StatusPill = { kind: 'success' | 'warning' | 'danger' | 'neutral'; label: string; pulse?: boolean };
-
-const STATUS: Record<string, StatusPill | undefined> = {
+// The plane owns the set (#2401): a status this page does not know is shown as the plane named it.
+const STATUS: Record<string, { kind: PillKind; label: string; pulse?: boolean } | undefined> = {
   active: { kind: 'success', label: 'Active' },
   verifying: { kind: 'warning', label: 'Verifying', pulse: true },
   pending: { kind: 'warning', label: 'Pending verification', pulse: true },
   failed: { kind: 'danger', label: 'Verification failed' },
 };
-
-/** The plane owns the set (#2401): a status this page does not know is shown as the plane named it. */
-const statusPill = (status: string): StatusPill => STATUS[status] ?? { kind: 'neutral', label: status };
 
 /** Domains — account level (screens 1o, 1p). Custom hostnames across the team's apps. */
 export function Domains({ teamId }: { teamId: string }) {
@@ -201,7 +197,7 @@ function DomainRowView({
   onRemove: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const s = statusPill(d.status);
+  const s = STATUS[d.status] ?? { kind: 'neutral', label: d.status };
   const hasRecords = d.validationRecords.length > 0 && d.status !== 'active';
   return (
     <div style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}>

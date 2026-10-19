@@ -6,7 +6,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
-import { rewrittenPlane, SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
+import { patchRows, rewrittenPlane, SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 
 /**
  * The Findings routes ask WHO inside the team is calling (#1748).
@@ -211,15 +211,7 @@ describe('the findings routes ask the caller’s permission (#1748)', () => {
     });
 
     it('a plane that predates paging answers entries alone: no cursor is followed, and a full page is marked cut', async () => {
-      const plain = env.CONTROL_PLANE_SVC as { fetch: (u: string | URL | Request, i?: RequestInit) => Promise<Response> };
-      env.CONTROL_PLANE_SVC = {
-        fetch: async (u: string | URL | Request, i?: RequestInit) => {
-          const res = await plain.fetch(u, i);
-          if (!new URL(String(u)).pathname.endsWith('/findings')) return res;
-          const { entries } = (await res.json()) as { entries: unknown[] };
-          return Response.json({ entries });
-        },
-      };
+      env.CONTROL_PLANE_SVC = rewrittenPlane(env.CONTROL_PLANE_SVC, (p) => p.endsWith('/findings'), (body) => ({ entries: (body as { entries: unknown[] }).entries }));
       const body = await page('owner', '?limit=2');
       expect(body.available).toBe(true);
       expect(body.nextCursor).toBeNull();
@@ -276,14 +268,11 @@ describe('the findings routes ask the caller’s permission (#1748)', () => {
     const FUTURE = { kind: 'anomaly', status: 'snoozed', severity: 'urgent', resolution: 'merged', codes: ['teapot'], likelyCause: { kind: 'config', version: 'v9', reason: 'a setting changed' } };
     const FUTURE_RULE = { kind: 'anomaly', code: 'teapot' };
     /** Every finding and rule the plane answers, in a vocabulary from a newer plane. */
-    const fromTheFuture = (v: unknown): unknown => {
-      if (Array.isArray(v)) return v.map(fromTheFuture);
-      if (v === null || typeof v !== 'object') return v;
-      const o = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fromTheFuture(x)]));
+    const fromTheFuture = patchRows((o) => {
       if ('severity' in o && 'subject' in o) return { ...o, ...FUTURE, evidence: { source: 'traces', traceId: 'trace-from-the-future' } };
       if ('expiresAt' in o && 'createdBy' in o) return { ...o, ...FUTURE_RULE };
-      return o;
-    };
+      return undefined;
+    });
     let warned: string[];
 
     beforeEach(() => {
@@ -293,12 +282,20 @@ describe('the findings routes ask the caller’s permission (#1748)', () => {
     });
     afterEach(() => vi.restoreAllMocks());
 
-    it('the inbox lists them as the plane named them; evidence it cannot follow reads as null, said once in the log', async () => {
+    it('the inbox lists them as the plane named them; evidence it cannot follow reads as null, said once per read in the log', async () => {
+      await host.admin.recordOpsFailure({ actor: staff, operation: 'deploy.again', tenantId: tenant, message: 'x' });
       const res = await asRole('viewer', 'GET', `/api/teams/${tenant}/findings`);
       expect(res.status, await res.clone().text()).toBe(200);
       const body = (await res.json()) as { entries: unknown[] };
-      expect(body.entries).toEqual([expect.objectContaining({ ...FUTURE, operation: 'deploy.mine', evidence: null })]);
-      expect(warned.map((l) => JSON.parse(l) as unknown)).toEqual([{ event: 'dashboard.output-drift', field: 'findings.evidence', paths: [expect.any(String)] }]);
+      expect(body.entries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ ...FUTURE, operation: 'deploy.mine', evidence: null }),
+          expect.objectContaining({ ...FUTURE, operation: 'deploy.again', evidence: null }),
+        ]),
+      );
+      expect(body.entries).toHaveLength(2);
+      // Two rows failed the same field: one line, counting both.
+      expect(warned.map((l) => JSON.parse(l) as unknown)).toEqual([{ event: 'dashboard.output-drift', field: 'findings.evidence', paths: [expect.any(String)], count: 2 }]);
       expect(warned.join('\n')).not.toMatch(/traces|trace-from-the-future/);
     });
 
