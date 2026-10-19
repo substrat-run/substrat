@@ -4,12 +4,16 @@ import { findTruncatedVersions } from './version-label.mjs';
 
 const flagged = (src) => findTruncatedVersions(src).map((f) => f.line);
 
+// The samples are assembled so that no line of THIS file reads as the thing it describes:
+// `lint:tests` runs the detector over every tracked script file, this one included.
+const cut = (n) => `.slice(-${n})`;
+
 test('flags a version label built from a slice of an id, in every spelling the repo had', () => {
-  assert.deepEqual(flagged('publish({ id, version: `1.0.${id.slice(-4).toLowerCase()}`, x: 1 })'), [1]);
-  assert.deepEqual(flagged('  version: `3.0.${versionId.slice(-6)}`,'), [1]);
-  assert.deepEqual(flagged('  version: id.slice(-6),'), [1]);
-  assert.deepEqual(flagged('x\n  version: v4.slice( -6 ),\ny'), [2]);
-  assert.deepEqual(flagged('  version: `0.1.${row.id.slice(-4).toLowerCase()}`'), [1]);
+  assert.deepEqual(flagged(`publish({ id, version: \`1.0.\${id${cut(4)}.toLowerCase()}\`, x: 1 })`), [1]);
+  assert.deepEqual(flagged(`  version: \`3.0.\${versionId${cut(6)}}\`,`), [1]);
+  assert.deepEqual(flagged(`  version: id${cut(6)},`), [1]);
+  assert.deepEqual(flagged(`x\n  version: v4${'.slice( -6 )'},\ny`), [2]);
+  assert.deepEqual(flagged(`  version: \`0.1.\${row.id${cut(4)}.toLowerCase()}\``), [1]);
 });
 
 test('accepts the whole id, a counter and a fixed label', () => {
