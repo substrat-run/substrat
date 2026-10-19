@@ -158,3 +158,9 @@ _No lifecycle is declared: nothing here moves through stages._
   platform intents, so a digest is written as a pending send, like every notification here.
   Once 24 are pending, every pass defers everyone. No Handlebar role, table or operation of its
   own changed.
+- 2026-10-20: engine-notifications gained `notifications/my-deliveries` (part of #118): a person pages
+  what became of the notifications sent to them, newest first, under the key `notifications:self`
+  they already hold, at `GET /me/notifications/deliveries`. No key and no role changed. The
+  description of `notifications:self` now includes reading your own history, so `mechanic` and
+  `workshop-admin` gain that one read of their own rows; it takes no principal, and its row leaves
+  out the idempotency key, the send-intent id and the platform's outcome code.
