@@ -235,8 +235,9 @@ describe('subject erasure reaches scope stores, failing closed (#2242)', () => {
     // Stricter than asking the vertical (#2207): with no version to read, the control plane
     // cannot say which bindings to erase, so it refuses rather than guess an empty list, where a
     // version of the scope's vertical declared a store. Where none ever did, no store can hold the
-    // subject, and the erasure proceeds (#2394). Against an injected registry and the default one.
-    for (const [registry, drivers] of [['an injected', [graph]], ['the default', undefined]] as const) {
+    // subject, and the erasure proceeds (#2394). Against an injected registry: the default one
+    // registers no driver yet, so nothing may hold a store there (below).
+    for (const [registry, drivers] of [['an injected', [graph]]] as const) {
       it(`with ${registry} registry, a scope with no bound version and no pin, beside a declared store, is a version unknown: 503, and the key is kept`, async () => {
         const { s, subject, keyKept } = await sealedScope(await declaringVertical());
         const { caller, asked } = platformStores();

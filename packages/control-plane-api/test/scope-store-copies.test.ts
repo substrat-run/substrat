@@ -180,8 +180,9 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
     return docsScope(undefined, 'files');
   };
 
-  // A version that cannot be named, judged against an injected registry and against the default one.
-  for (const [registry, drivers] of [['an injected', [graph]], ['the default', undefined]] as const) {
+  // A version that cannot be named, judged against an injected registry. The default one registers
+  // no driver yet, so nothing is asked there (below).
+  for (const [registry, drivers] of [['an injected', [graph]]] as const) {
     it(`with ${registry} registry, a version that cannot be named refuses the copy where a version of its vertical declared a store`, async () => {
       const { caller, asked } = platform();
       const api = appWith(caller, drivers);
