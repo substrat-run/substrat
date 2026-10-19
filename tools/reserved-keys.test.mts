@@ -250,11 +250,48 @@ test('the emitted registry round-trips through both readers, a multi-line descri
   assert.ok(classifyPermissions(unreserved, marked).changes.some((c) => c.flagged && /narrowing/.test(c.detail)));
 });
 
+/** A fixture's `modules`: one engine's own built manifest, not a copy of it. */
+const realEngine = (dir: string, manifest: string) =>
+  `import { ${manifest} } from ${JSON.stringify(
+    pathToFileURL(join(repoRoot(import.meta.url), `engines/${dir}/dist/index.js`)).href,
+  )};\nconst modules = [{ manifest: ${manifest} }];`;
+
+// §2a, emitted and read back (#2429): both readers read the system-held role apart from the person
+// roles, and §2a's own header is never a role named `Role`. engine-notifications' built manifest, so
+// the reserved key is the producer's.
+test('a system-held role round-trips through both readers apart from the person roles', () => {
+  const dir = fixtureWith(realEngine('notifications', 'notificationsManifest'), [
+    { key: 'member', permissions: ['notifications:self'] },
+    { key: 'digest-host', holder: 'system', permissions: ['notifications:send-digests'] },
+  ]);
+  const r = run(dir);
+  assert.equal(r.status, 0, r.stderr);
+  const md = rendered(dir);
+  assert.match(md, /^### 2a\. System-held roles/m);
+  const view = permissionsView(md);
+  assert.deepEqual(view.roles, [{ role: 'member', keys: ['notifications:self'] }]);
+  assert.deepEqual(view.systemRoles, [{ role: 'digest-host', keys: ['notifications:send-digests'] }]);
+  assert.deepEqual([...view.reserved], ['notifications:send-digests']);
+  const snap = snapshotOf(md);
+  assert.deepEqual(snap.roles, { member: ['notifications:self'] });
+  assert.deepEqual(snap.systemRoles, { 'digest-host': ['notifications:send-digests'] });
+  assert.deepEqual(snap.unread, {});
+  assert.equal(classifyPermissions(md, md).bump, 'none');
+  // The same file without §2a, as one with no system-held role reads, has the same person roles;
+  // and the system-held role arriving is that one flagged widening, never "role Role added".
+  const before = md.replace(/^### 2a\.[\s\S]*?(?=^## )/m, '');
+  assert.deepEqual(permissionsView(before).systemRoles, []);
+  assert.deepEqual(permissionsView(before).roles, view.roles);
+  const arrived = classifyPermissions(before, md);
+  assert.deepEqual(
+    arrived.changes.map((c) => [c.path, c.flagged, c.detail]),
+    [['system-held role digest-host', true, 'added (holds: notifications:send-digests) — widening']],
+  );
+});
+
 // Against the producer: engine-assistant's own built manifest, not a copy of it. If the engine
 // stops declaring the run key reserved, this goes red here as well as in its own suite.
-const realAssistant = `import { assistantManifest } from ${JSON.stringify(
-  pathToFileURL(join(repoRoot(import.meta.url), 'engines/assistant/dist/index.js')).href,
-)};\nconst modules = [{ manifest: assistantManifest }];`;
+const realAssistant = realEngine('assistant', 'assistantManifest');
 
 test('the real engine-assistant manifest reserves assistant:run: a role granting it exits 2', () => {
   const r = run(fixtureWith(realAssistant, [{ key: 'member', permissions: ['assistant:use', 'assistant:run'] }]));

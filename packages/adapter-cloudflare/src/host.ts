@@ -6272,6 +6272,11 @@ export class CloudflareScopeHost implements ScopeHost {
     const now = Date.now();
     const lines = asyncLinePass();
     let door: SubjectDoor | undefined;
+    // #2431: what the fires below report through `onPlatformRequests` — the callback an HTTP
+    // harness uses to flag the router kick (#458) — so the sweep that ran this pass can drain the
+    // scope at once. `ScheduleRunReport.platformRequests` says what that does and does not count.
+    let platformRequests = 0;
+    const counted: ScopeStubOptions = { onPlatformRequests: (n) => (platformRequests += n) };
     for (const schedule of schedules) {
       const last = await stub.scheduleLastRun(schedule.operation);
       const lastRun = last ? Date.parse(last) : null;
@@ -6299,12 +6304,13 @@ export class CloudflareScopeHost implements ScopeHost {
         // so a suspension after an earlier fire would otherwise not stop this one (#1713).
         if (door) await this.assertLive(tenantId, scopeId);
         door ??= await this.openSystemDoor(moduleId, tenantId, scopeId, gate);
-        const scope = this.buildStub(tenantId, scopeId, undefined, undefined, door);
+        const scope = this.buildStub(tenantId, scopeId, undefined, undefined, door, counted);
         if (schedule.purge) {
           // #119: a purge horizon's schedule runs its operation once per due entity, each its own
           // call and transaction — and the SCOPE decides which are due and runs them, so purge
           // authority is never an argument any stub can pass (`runPurgeSweep`).
           // #2192: under the run's own id, so the purges and their deliveries join this run's line.
+          // #2431: what the purges enqueue is not counted (`ScheduleRunReport.platformRequests`).
           const pass = await door.through((instance) =>
             stub.runPurgeSweep(schedule.operation, tenantId, scopeId, instance, invocationId),
           );
@@ -6363,6 +6369,7 @@ export class CloudflareScopeHost implements ScopeHost {
       );
     }
     lines.end();
+    if (platformRequests > 0) report.platformRequests = platformRequests;
     return report;
   }
 

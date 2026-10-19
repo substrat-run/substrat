@@ -48,7 +48,11 @@ export interface ScopeSweepReport {
   scopes: number;
   /** Executor-drain outcomes summed across the roster (the retry driver). */
   drainTotals: ExecutorDrainReport;
-  /** The recurring-schedule outcomes summed across the roster (#383/#461). */
+  /**
+   * The recurring-schedule outcomes summed across the roster (#383/#461). Its `platformRequests`
+   * (#2431) are requests the schedules enqueued that wait for the platform's next drain sweep:
+   * the router kicks a drain for a request it routed, and nothing routes this alarm.
+   */
   schedules: ScheduleSweepReport;
   /** Present when this deployment opted into driving resumable jobs. */
   jobs?: Pick<JobDriveReport, 'attempted' | 'advanced' | 'completed' | 'retrying' | 'failed'>;
@@ -374,6 +378,11 @@ export function defineScopeSweeperDO<Env>(
               report.schedules.fired += r.fired;
               report.schedules.skipped += r.skipped;
               report.schedules.failed += r.failed;
+              // #2431: this sweeper has no channel to the platform's drain (D-40), so what the
+              // schedules enqueued waits for the drain's next sweep. Counted, so the wait shows.
+              if (r.platformRequests) {
+                report.schedules.platformRequests = (report.schedules.platformRequests ?? 0) + r.platformRequests;
+              }
               for (const e of r.errors) {
                 report.errors.push({
                   kind: 'schedule',

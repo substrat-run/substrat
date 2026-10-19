@@ -22,7 +22,7 @@
  *
  * --file <path>   override the env file (defaults: secrets/platform.<env>.env, and
  *                 secrets/platform.dev.env for `dev`)
- * --only <worker> restrict to one worker: control-plane | builder | dashboard | router
+ * --only <worker> restrict to one worker: control-plane | builder | dashboard | router | social-relay
  * --dry-run       print what WOULD be set (secret NAMES only — never values)
  * --allow-incomplete  let `push` proceed with a REQUIRED key blank (it refuses by default;
  *                 `check` exits non-zero on the same condition, so it gates a deploy).
@@ -256,6 +256,25 @@ const MANIFEST = {
       STORE_CALLER_KEY: 'STORE_CALLER_KEY',
     },
   },
+  // id.substrat.net (#1544): the platform's own OAuth client per upstream. A provider whose
+  // keys are blank stays dark — its whole surface, discovery included, answers 404 — so each
+  // provider is optional and goes live by filling its keys and pushing. RELAY_-prefixed so
+  // the GitHub OAuth App never reads as the GitHub App the dashboard holds.
+  'social-relay': {
+    dir: 'apps/social-relay',
+    required: ['PLATFORM_SECRET'],
+    secrets: {
+      PLATFORM_SECRET: 'PLATFORM_SECRET',
+      GOOGLE_CLIENT_ID: 'RELAY_GOOGLE_CLIENT_ID',
+      GOOGLE_CLIENT_SECRET: 'RELAY_GOOGLE_CLIENT_SECRET',
+      GITHUB_CLIENT_ID: 'RELAY_GITHUB_CLIENT_ID',
+      GITHUB_CLIENT_SECRET: 'RELAY_GITHUB_CLIENT_SECRET',
+      APPLE_CLIENT_ID: 'RELAY_APPLE_CLIENT_ID',
+      APPLE_TEAM_ID: 'RELAY_APPLE_TEAM_ID',
+      APPLE_KEY_ID: 'RELAY_APPLE_KEY_ID',
+      APPLE_PRIVATE_KEY: 'RELAY_APPLE_PRIVATE_KEY',
+    },
+  },
 };
 
 /**
@@ -340,7 +359,7 @@ const dryRun = has('dry-run');
 // working dev setup, not a broken deploy, so dev reports the gaps without failing.
 const enforcingRequired = env !== 'dev';
 const workers = Object.entries(MANIFEST).filter(([name]) => !only || name === only);
-if (only && workers.length === 0) fail(`unknown --only worker '${only}' (control-plane | builder | dashboard | router)`);
+if (only && workers.length === 0) fail(`unknown --only worker '${only}' (control-plane | builder | dashboard | router | social-relay)`);
 
 function fail(msg) {
   console.error(`✗ ${msg}`);

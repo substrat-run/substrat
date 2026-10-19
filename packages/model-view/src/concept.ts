@@ -44,7 +44,13 @@ export interface ConceptInputs {
 
 /** The parts of a `PERMISSIONS.md` a concept document shows. */
 export interface PermissionsView {
-  readonly roles: readonly { readonly role: string; readonly keys: readonly string[] }[];
+  /** The roles a person can be given. */
+  readonly roles: readonly RoleRowView[];
+  /**
+   * The roles declared `holder: 'system'` (K-55): a platform host's standing principal, never a
+   * person. Empty when the file has none, including one emitted before they existed.
+   */
+  readonly systemRoles: readonly RoleRowView[];
   readonly entityGrants: readonly { readonly entityType: string; readonly keys: readonly string[] }[];
   readonly descriptions: ReadonlyMap<string, string>;
   /** Keys the registry marks reserved to a system principal. Empty when it has no such column. */
@@ -92,22 +98,53 @@ function cells(line: string): string[] {
  */
 export class PermissionsFormatError extends Error {}
 
+/** The rows of the one table in `text`, header and rule dropped. */
+const tableRows = (text: string): string[][] =>
+  text
+    .split('\n')
+    .filter((l) => l.trim().startsWith('|'))
+    .map(cells)
+    .slice(2);
+
+/** A `## ` section of a `PERMISSIONS.md`, or a `### ` sub-section of one. */
+export interface PermissionsSection {
+  /** The heading with its hashes and its number dropped: `Roles — as defined by…`. */
+  readonly title: string;
+  /** The text under the heading, up to the next heading of either level. */
+  readonly body: string;
+}
+
+/** A `## ` section with its `### ` sub-sections. */
+export interface PermissionsSectionTree extends PermissionsSection {
+  readonly subsections: readonly PermissionsSection[];
+}
+
+/** `text` split at each line that opens with `marker`: the text before the first, and each part. */
+function splitAt(text: string, marker: '## ' | '### '): { lead: string; parts: PermissionsSection[] } {
+  // Splitting on the marker itself, so a text that opens with a heading still has a lead ('').
+  const [lead = '', ...rest] = text.split(new RegExp(`^${marker}`, 'm'));
+  const parts = rest.map((part) => {
+    const nl = part.indexOf('\n');
+    const heading = nl < 0 ? part : part.slice(0, nl);
+    return { title: heading.replace(/^\d+[a-z]?\.\s*/, '').trim(), body: nl < 0 ? '' : part.slice(nl + 1) };
+  });
+  return { lead, parts };
+}
+
 /**
- * The table rows under the `## <n>. <title>` heading whose title starts with `title`, header and
- * rule dropped; `undefined` when no such section exists. Found by TITLE, never by number:
- * `permission-diff` numbers everything after §3 by which sections a vertical has, so §4 is the
- * grant shapes in one file and the schedules in the next.
+ * Every `## ` section of a `PERMISSIONS.md`, each with its `### ` sub-sections. A reader finds a
+ * section by its TITLE, never its number: `permission-diff` numbers everything after §3 by which
+ * sections a vertical has, so §4 is the grant shapes in one file and the schedules in the next. A
+ * section's `body` stops at its first sub-heading, so a sub-section's table (§2's `### 2a.
+ * System-held roles`) is never read as more rows of the section's own. The ONE split both readers
+ * make — this package's `parsePermissions` and the CLI's bump classifier — so they never disagree
+ * about which table a row belongs to.
  */
-function tableUnder(md: string, title: string): string[][] | undefined {
-  const lines = md.split('\n');
-  const at = lines.findIndex((l) => new RegExp(`^## \\d+\\.\\s+${title}\\b`).test(l));
-  if (at < 0) return undefined;
-  const rows: string[][] = [];
-  for (const line of lines.slice(at + 1)) {
-    if (line.startsWith('## ')) break;
-    if (line.trim().startsWith('|')) rows.push(cells(line));
-  }
-  return rows.slice(2);
+export function permissionsSections(md: string): PermissionsSectionTree[] {
+  return splitAt(md, '## ').parts.map(({ title, body }) => {
+    const { lead, parts } = splitAt(body, '### ');
+    return { title, body: lead, subsections: parts };
+  });
 }
 
 const OPERATIONS_HEADER = ['Operation', 'Key', 'Checked on', 'Declared by'];
@@ -188,15 +225,6 @@ export function readRegistryTable(section: string): { rows: RegistryRowView[] } 
   return { rows };
 }
 
-/** The text under the `## <n>. <title>` heading, up to the next `## `; `undefined` when absent. */
-function sectionUnder(md: string, title: string): string | undefined {
-  const lines = md.split('\n');
-  const at = lines.findIndex((l) => new RegExp(`^## \\d+\\.\\s+${title}\\b`).test(l));
-  if (at < 0) return undefined;
-  const end = lines.findIndex((l, i) => i > at && l.startsWith('## '));
-  return lines.slice(at + 1, end < 0 ? undefined : end).join('\n');
-}
-
 const unquote = (s: string): string => s.replace(/`/g, '');
 const keysOf = (cell: string): string[] =>
   cell
@@ -204,20 +232,58 @@ const keysOf = (cell: string): string[] =>
     .map((k) => unquote(k).trim())
     .filter((k) => k !== '' && !k.startsWith('—'));
 
+/** One row of `PERMISSIONS.md`'s §2: a role and the keys it holds. */
+export interface RoleRowView {
+  readonly role: string;
+  readonly keys: readonly string[];
+}
+
+/** A table whose first cell names the row and whose second lists its keys, as §2 and §4 are. */
+const keyedRows = (text: string): { name: string; keys: string[] }[] =>
+  tableRows(text)
+    .map(([name, keys]) => ({ name: unquote(name ?? ''), keys: keysOf(keys ?? '') }))
+    .filter((r) => r.name !== '');
+
+const roleRows = (text: string): RoleRowView[] => keyedRows(text).map(({ name, keys }) => ({ role: name, keys }));
+
 /**
- * Read the registry (§1), roles (§2) and entity-narrowed grant shapes (§4) out of a
- * `PERMISSIONS.md`. That file is `lint:permissions`' artifact of record, CI-gated against the
- * running code, so reading it keeps this package free of the verticals it describes.
+ * The Roles section as `lint:permissions` writes it: the table of the roles a person can be given,
+ * then, once some role is declared `holder: 'system'` (K-55), a `### 2a. System-held roles`
+ * sub-section with a table of the same shape. Each table is read under its own heading, so a
+ * system-held role is never a person's role and the second table's header is never a role named
+ * `Role`. A sub-section this does not know is returned in `unknown`: the bump classifier judges it,
+ * a view leaves it out. The ONE judgement both readers make, as {@link readRegistryTable} is for the
+ * Registry.
+ */
+export function readRolesSection(section: PermissionsSectionTree): {
+  roles: RoleRowView[];
+  systemRoles: RoleRowView[];
+  unknown: PermissionsSection[];
+} {
+  const system = section.subsections.filter((s) => /^System-held roles\b/.test(s.title));
+  return {
+    roles: roleRows(section.body),
+    systemRoles: system.flatMap((s) => roleRows(s.body)),
+    unknown: section.subsections.filter((s) => !system.includes(s)),
+  };
+}
+
+/**
+ * Read the registry (§1), roles (§2, system-held ones apart) and entity-narrowed grant shapes (§4)
+ * out of a `PERMISSIONS.md`. That file is `lint:permissions`' artifact of record, CI-gated against
+ * the running code, so reading it keeps this package free of the verticals it describes.
  */
 export function parsePermissions(md: string): PermissionsView {
-  const registrySection = sectionUnder(md, 'Registry');
-  const roleRows = tableUnder(md, 'Roles');
-  if ((registrySection === undefined || roleRows === undefined) && !/^## No permission surface/m.test(md)) {
+  const sections = permissionsSections(md);
+  const section = (title: string) => sections.find((s) => new RegExp(`^${title}\\b`).test(s.title));
+  const registrySection = section('Registry');
+  const rolesSection = section('Roles');
+  if ((registrySection === undefined || rolesSection === undefined) && section('No permission surface') === undefined) {
     throw new PermissionsFormatError(
       `PERMISSIONS.md has no "${registrySection === undefined ? 'Registry' : 'Roles'}" section — regenerate it with \`pnpm lint:permissions\``,
     );
   }
-  const registry = registrySection === undefined ? { rows: [] } : readRegistryTable(registrySection);
+  const registry = registrySection === undefined ? { rows: [] } : readRegistryTable(registrySection.body);
   const descriptions = new Map<string, string>();
   const reserved = new Set<string>();
   for (const r of 'rows' in registry ? registry.rows : []) {
@@ -226,36 +292,25 @@ export function parsePermissions(md: string): PermissionsView {
     if (r.reserved) reserved.add(r.key);
   }
   const registryView = { descriptions, reserved, ...('unreadable' in registry ? { registryUnreadable: registry.unreadable } : {}) };
-  const roles = (roleRows ?? [])
-    .map(([role, keys]) => ({ role: unquote(role ?? ''), keys: keysOf(keys ?? '') }))
-    .filter((r) => r.role !== '');
-  const entityGrants = (tableUnder(md, 'Entity-narrowed grant shapes') ?? [])
-    .map(([entityType, keys]) => ({ entityType: unquote(entityType ?? ''), keys: keysOf(keys ?? '') }))
-    .filter((g) => g.entityType !== '');
-  const opSection = sectionUnder(md, 'Operations');
-  const operationsUnreadable = opSection === undefined ? undefined : operationsTableProblem(opSection);
-  if (operationsUnreadable !== undefined) return { roles, entityGrants, ...registryView, operationsUnreadable };
-  const opRows = tableUnder(md, 'Operations');
-  const operations =
-    opRows === undefined
-      ? undefined
-      : new Map(
-          opRows
-            // A row an older kernel's binder left "not readable" says nothing about the operation:
-            // left out, as if unlisted, rather than read as "not declared".
-            .filter(([op, keys = '']) => op !== undefined && op.startsWith('`') && !/not readable/.test(keys))
-            .map(([op, keys = '', checkedOn = '']): [string, OperationCheckView] => {
-              // A cell of prose ("— checked in code, not declared —") names no key; its commas are not a list.
-              const prose = keys.trim().startsWith('—');
-              return [unquote(op ?? ''), { keys: prose ? [] : keysOf(keys), checkedOn, declared: !/not declared/.test(keys) }];
-            }),
-        );
-  return {
-    roles,
-    entityGrants,
-    ...registryView,
-    ...(operations === undefined ? {} : { operations, operationsUnknownFor: operationsUnknownFor(opSection ?? '') }),
-  };
+  const { roles, systemRoles } = rolesSection === undefined ? { roles: [], systemRoles: [] } : readRolesSection(rolesSection);
+  const entityGrants = keyedRows(section('Entity-narrowed grant shapes')?.body ?? '').map(({ name, keys }) => ({ entityType: name, keys }));
+  const view = { roles, systemRoles, entityGrants, ...registryView };
+  const opSection = section('Operations');
+  if (opSection === undefined) return view;
+  const operationsUnreadable = operationsTableProblem(opSection.body);
+  if (operationsUnreadable !== undefined) return { ...view, operationsUnreadable };
+  const operations = new Map(
+    tableRows(opSection.body)
+      // A row an older kernel's binder left "not readable" says nothing about the operation:
+      // left out, as if unlisted, rather than read as "not declared".
+      .filter(([op, keys = '']) => op !== undefined && op.startsWith('`') && !/not readable/.test(keys))
+      .map(([op, keys = '', checkedOn = '']): [string, OperationCheckView] => {
+        // A cell of prose ("— checked in code, not declared —") names no key; its commas are not a list.
+        const prose = keys.trim().startsWith('—');
+        return [unquote(op ?? ''), { keys: prose ? [] : keysOf(keys), checkedOn, declared: !/not declared/.test(keys) }];
+      }),
+  );
+  return { ...view, operations, operationsUnknownFor: operationsUnknownFor(opSection.body) };
 }
 
 const bySort = <T>(xs: Iterable<T>, by: (x: T) => string): T[] =>
@@ -281,26 +336,32 @@ function renderRoles({ permissionsMd }: ConceptInputs): string {
   if (view.registryUnreadable !== undefined) {
     throw new PermissionsFormatError(`PERMISSIONS.md's Registry cannot be read: ${view.registryUnreadable} — regenerate it with \`pnpm lint:permissions\``);
   }
-  const out: string[] = [];
-  if (view.roles.length === 0) {
-    out.push('_No roles are defined._');
-  } else {
-    out.push('| Role | What they can do |', '| --- | --- |');
-    for (const r of bySort(view.roles, (x) => x.role)) {
-      out.push(`| \`${r.role}\` | ${renderKeys(r.keys, view.descriptions)} |`);
-    }
+  /** A two-column table, one row per name, sorted, with its keys and their descriptions. */
+  const table = (header: string, rows: readonly { name: string; keys: readonly string[] }[]) => [
+    header,
+    '| --- | --- |',
+    ...bySort(rows, (r) => r.name).map((r) => `| \`${r.name}\` | ${renderKeys(r.keys, view.descriptions)} |`),
+  ];
+  const out: string[] =
+    view.roles.length > 0
+      ? table('| Role | What they can do |', view.roles.map((r) => ({ name: r.role, keys: r.keys })))
+      : // With only system-held roles there ARE roles, just none a person can be given.
+        [view.systemRoles.length > 0 ? '_No role a person can be given is defined._' : '_No roles are defined._'];
+  if (view.systemRoles.length > 0) {
+    out.push(
+      '',
+      'Held by a platform host, never given to a person:',
+      '',
+      ...table('| Role | What it can do |', view.systemRoles.map((r) => ({ name: r.role, keys: r.keys }))),
+    );
   }
   if (view.entityGrants.length > 0) {
     out.push(
       '',
       'Shared one record at a time, without a role:',
       '',
-      '| Record | What the person it is shared with can do |',
-      '| --- | --- |',
+      ...table('| Record | What the person it is shared with can do |', view.entityGrants.map((g) => ({ name: g.entityType, keys: g.keys }))),
     );
-    for (const g of bySort(view.entityGrants, (x) => x.entityType)) {
-      out.push(`| \`${g.entityType}\` | ${renderKeys(g.keys, view.descriptions)} |`);
-    }
   }
   return out.join('\n');
 }

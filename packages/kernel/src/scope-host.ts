@@ -1395,6 +1395,22 @@ export interface ScheduleRunReport {
    * adapters' drivers always fill it.
    */
   runs?: { operation: string; outcome: 'ok' | 'failed' | 'skipped' }[];
+  /**
+   * Platform requests this pass's runs enqueued (#2431): exactly what
+   * `ScopeStubOptions.onPlatformRequests` reports for each fire's invoke. That is the
+   * `ctx.requestPlatform` calls the operation itself committed, plus, on Cloudflare, the
+   * connector deliveries its tail routed to the platform. It is not a consumer's requests from
+   * that tail, and not those of a fire whose invoke threw after the operation committed.
+   *
+   * When this is set, a `runPlatformSweep` given `drainPlatformRequestsFn` drains the scope
+   * again right after its schedules, if its drain phase reached the scope, so a scheduled
+   * write waits seconds rather than one sweep interval. A hosted vertical's scope sweeper has
+   * no such drain (D-40): there the count is reported, and the requests wait for the control
+   * plane's sweep. Whatever is not counted waits for the next drain, as it always did. Absent
+   * when the count is zero, and from a host that predates the field. A purge horizon's runs
+   * are not counted: the purges run inside the scope, which reports no count for them.
+   */
+  platformRequests?: number;
 }
 
 /**

@@ -33,6 +33,7 @@ import {
   reservedRoleContractSuite,
   scheduleContractSuite,
   scheduleEntitlementContractSuite,
+  schedulePlatformRequestsContractSuite,
   jobRunContractSuite,
   systemSwitchContractSuite,
   adminRowFaultSql,
@@ -292,6 +293,23 @@ scheduleContractSuite('adapter-sqlite', async () => {
 // the exception could reach does. The DEFAULT checker, so the user-door case's role is real.
 scheduleEntitlementContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-sched-sku-'));
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #2431: a scheduled pass reports the platform requests it enqueued. The DEFAULT checker, so
+// the schedules act on the system grant they were seated.
+schedulePlatformRequestsContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-sched-request-'));
   const host = new SqliteScopeHost({
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
