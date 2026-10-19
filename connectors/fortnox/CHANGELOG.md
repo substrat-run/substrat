@@ -1,5 +1,17 @@
 # @substrat-run/connector-fortnox
 
+## 0.4.53
+
+### Patch Changes
+
+- Updated dependencies [8273013]
+- Updated dependencies [4efc88d]
+- Updated dependencies [a667881]
+- Updated dependencies [f614b00]
+- Updated dependencies [a00c87a]
+  - @substrat-run/contracts@0.151.0
+  - @substrat-run/kernel@0.151.0
+
 ## 0.4.52
 
 ### Patch Changes

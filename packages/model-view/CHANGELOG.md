@@ -1,5 +1,20 @@
 # @substrat-run/model-view
 
+## 0.4.0
+
+### Minor Changes
+
+- 4efc88d: `PERMISSIONS.md` names the key each operation checks. A new Operations section lists every registered operation with the key it declares, and what that check narrows to: the scope, one record (id from an input field, or resolved in the handler), a whole ref, or a walk over rows. An operation whose handler checks a key with nothing declared is listed as "checked in code, not declared", never given a guessed key. To make this readable, the bound operations a module registers now carry the check each operation declares (`operationChecksOf` in `@substrat-run/contracts`, read the same way as the concurrency map), and the host itself ignores it. `substrat changeset` and `lint:changeset-bump` read the section: an operation moved to another key, narrowed differently, added or removed is a permission change, at least minor and listed for review. `substrat plan` shows each lifecycle transition with the key its operation checks and the roles and per-record grant shapes holding it. `@substrat-run/model-view`'s `parsePermissions` returns the section as `operations`.
+- 55c961b: `substrat plan [dir]` shows the concept delta a design gate approves, computed from `model.json`, `openapi.json` and `PERMISSIONS.md` against the merge-base: the entities added, changed and removed with the model as a Mermaid diagram before and after, lifecycle changes with the operation that triggers each transition, the permission-diff table (key, description, roles before and after), the spec-version impact from the same classifier `substrat changeset` uses, and the decisions-log entry approving it would write. `--json` prints the delta for an agent. Nothing is written until a person approves: `substrat plan --approve <digest> --by <name> --why <reason>` appends the entry to the Decisions log of `spec/concept.md` and re-syncs it, and refuses a digest that no longer matches the delta, so an approval records what was shown. `@substrat-run/model-view` exports `entityDiagram` and `lifecycleDiagram`, the renderers behind the concept document's generated regions. The scaffold's playbook shows the concept delta at its design gate for a change to an existing model.
+
+### Patch Changes
+
+- Updated dependencies [8273013]
+- Updated dependencies [4efc88d]
+- Updated dependencies [a667881]
+- Updated dependencies [f614b00]
+  - @substrat-run/contracts@0.151.0
+
 ## 0.3.0
 
 ### Minor Changes
