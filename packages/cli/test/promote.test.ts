@@ -189,6 +189,9 @@ describe('the diff formatters', () => {
       'role host:',
       '  now a role a person can hold, no longer held by a system principal',
     ]);
+    // A key that arrives reserved is marked where it is added.
+    const without = { ...reg(), permissions: [{ key: 'desk:read', description: 'Read tickets', declaredBy: ['desk'] }] } as unknown as PermissionRegistry;
+    expect(formatRegistryDiff(without, at(true), true)[0]).toBe('+ desk:run  Run  (reserved to a system principal)');
   });
 
   it('formatRegistryDiff: a retired shape key says who loses it, a direct grant on the entity included (#2082)', () => {

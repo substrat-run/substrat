@@ -6,7 +6,7 @@
 "@substrat-run/engine-test-kit": patch
 ---
 
-A scope host refuses to hand a person a key reserved to a system principal, through a role or a raw grant, and can hold its registered modules to the vertical's declared permission surface (#2430).
+A scope host's person-facing role doors and its raw grant doors refuse a key reserved to a system principal, and its platform role doors refuse a role mixing one with other keys (#2430). The platform doors do not yet tell a person from a host principal: they admit a role made only of reserved keys for any principal. A host can also hold its registered modules to the vertical's declared permission surface.
 
 **Which keys.** The reservations are read off the modules the host registers (`holder: 'system'` on a manifest permission entry), and off the modules its declared `permissions` lists. A key none of them marks is a person's key, so nothing an older engine declared is refused.
 
@@ -22,7 +22,7 @@ A scope host refuses to hand a person a key reserved to a system principal, thro
 - Not checked yet:
   - a role or grant a host seats or composes itself;
   - a role definition widened after it was assigned;
-  - a role conferred on a host that registers no modules.
+  - a role or grant conferred on a host that registers no modules.
 
 **Declaring the surface.**
 - `SqliteScopeHost` and `CloudflareScopeHost` take a new option, `permissions`. `defineScopeDO` takes it as a third argument, `{ permissions }`.

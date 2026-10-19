@@ -198,6 +198,13 @@ describe('the promotion diff itemises a moved reservation and a moved role holde
     expect(registryDirection(diff)).toBe('adds');
   });
 
+  it('a key that arrives reserved is an added key marked so, and one that arrives unmarked is not', () => {
+    const diff = diffRegistries(reg([key('a:use')]), reg([key('a:use'), key('a:run', 'system'), key('a:new')]));
+    expect(diff.addedKeys).toEqual(['a:run', 'a:new']);
+    expect(diff.reservedAddedKeys).toEqual(['a:run']);
+    expect(diff.reservationChanges).toEqual([]);
+  });
+
   it('a new reservation narrows, alone', () => {
     const diff = diffRegistries(reg([key('a:run')]), reg([key('a:run', 'system')]));
     expect(diff.reservationChanges).toEqual([{ key: 'a:run', reserved: true }]);

@@ -7,6 +7,7 @@ export {
   grantShapeHolderNotes,
   hasRegistryChange,
   registryDirection,
+  RESERVED_KEY_MARK,
   reservationNote,
   roleHolderNote,
   type RegistryDiff,

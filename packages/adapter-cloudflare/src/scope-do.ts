@@ -4893,12 +4893,23 @@ export function defineScopeDO(
 
     /**
      * #2430: `reservedRoleRefusalFor` for a caller that names no tenant — `assignScopeRole` — read
-     * against the tenant this scope's provisioning receipt names. A scope with no receipt holds no
-     * projected role, so nothing is refused.
+     * against the tenant this scope's provisioning receipt names. A scope from before receipts
+     * (#1738) can still hold projected roles, so without a receipt every projected row of the role
+     * is judged, whichever tenant it was projected for, and the first refusal answers.
      */
     async reservedRoleRefusalHere(roleKey: string, door: 'person' | 'platform'): Promise<string | null> {
+      if (this.reservedKeys.size === 0) return null;
       const tenantId = this.provisionedFor();
-      return tenantId ? this.reservedRoleRefusalFor(tenantId as TenantId, roleKey, door) : null;
+      if (tenantId) return this.reservedRoleRefusalFor(tenantId as TenantId, roleKey, door);
+      if (!this.hasTable('_substrat_roles')) return null;
+      const rows = this.sql
+        .exec('SELECT permissions FROM _substrat_roles WHERE role_key = ? AND revoked_at IS NULL', roleKey)
+        .toArray() as { permissions: string }[];
+      for (const row of rows) {
+        const refusal = reservedRoleRefusal({ key: roleKey, permissions: JSON.parse(row.permissions) as string[] }, this.reservedKeys, door);
+        if (refusal) return refusal;
+      }
+      return null;
     }
 
     /** #2430: why a raw grant of `permissions` is refused against this class's reservations, or null. */

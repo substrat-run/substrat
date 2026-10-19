@@ -40,6 +40,8 @@ export interface RegistryDiff {
    * is what the incoming version says. A lifted reservation lets a person's role hold the key.
    */
   reservationChanges: Array<{ key: string; reserved: boolean }>;
+  /** #2430: the `addedKeys` that arrive reserved to a system principal, which a reader marks. */
+  reservedAddedKeys: string[];
   /**
    * Only roles that actually changed: gained/lost permissions, or appeared/vanished. #2430: `holder`
    * is set when a role both versions declare moved between a person's and a system principal's.
@@ -164,11 +166,13 @@ export function diffRegistries(from: RegistryLike, to: RegistryLike): RegistryDi
       });
     }
   }
+  const addedKeys = [...toKeys.keys()].filter((k) => !fromKeys.has(k));
   return {
-    addedKeys: [...toKeys.keys()].filter((k) => !fromKeys.has(k)),
+    addedKeys,
     removedKeys: [...fromKeys.keys()].filter((k) => !toKeys.has(k)),
     changedKeys: [...toKeys.entries()].filter(([k, d]) => fromKeys.has(k) && fromKeys.get(k) !== d).map(([k]) => k),
     reservationChanges,
+    reservedAddedKeys: addedKeys.filter((k) => toReserved.has(k)),
     roleChanges,
     grantChanges,
   };
@@ -183,6 +187,9 @@ export function reservationNote(c: RegistryDiff['reservationChanges'][number]): 
     ? `${c.key} is now reserved to a system principal: no person's role or grant shape may hold it`
     : `${c.key} is no longer reserved to a system principal: a person's role may now hold it`;
 }
+
+/** #2430: how a reader marks an added key that arrives reserved (`reservedAddedKeys`). */
+export const RESERVED_KEY_MARK = 'reserved to a system principal';
 
 /** The sentence for a role whose holder moved, or null when it did not. */
 export function roleHolderNote(r: Pick<RegistryDiff['roleChanges'][number], 'holder'>): string | null {

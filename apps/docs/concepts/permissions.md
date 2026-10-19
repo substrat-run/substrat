@@ -70,7 +70,7 @@ Not covered yet:
 
 - a role or grant a host seats or composes itself;
 - a role definition widened after it was assigned;
-- a role conferred on a host that registers no modules.
+- a role or grant conferred on a host that registers no modules.
 
 Push and the lint hold what a vertical declares there.
 

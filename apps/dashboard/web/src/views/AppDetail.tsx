@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
 import { ApiError as TeamApiError } from '../lib/api.generated';
 import { api, teamApi, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type EmittedLifecycle, type AppMembersView, type MemberInviteView, type AuditedAnswerView } from '../lib/api';
-import { diffRegistries, grantShapeHolderNotes, hasRegistryChange, reservationNote, roleHolderNote } from '../lib/registry-diff';
+import { diffRegistries, grantShapeHolderNotes, hasRegistryChange, RESERVED_KEY_MARK, reservationNote, roleHolderNote } from '../lib/registry-diff';
 import { timelineTargets, type TimelineTarget } from '../lib/history';
 import { readOwnerSeat } from '../lib/owner-seat';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
@@ -1438,7 +1438,16 @@ function Permissions({ app }: { app: AppRow }) {
                 <MonoTag>{view.running.version}</MonoTag> → <MonoTag>{update.version}</MonoTag> — review before updating on the <a href={teamPath(`/apps/${app.app_scope_id}/deployments`)} onClick={(e) => { e.preventDefault(); navigate(`/apps/${app.app_scope_id}/deployments`); }} style={{ color: 'var(--text-brand)' }}>Deployments tab</a>
               </span>
             </div>
-            {diff!.addedKeys.length > 0 && <DiffRow label="New permissions" kind="info">{diff!.addedKeys.map((k) => <MonoTag key={k}>{k}</MonoTag>)}</DiffRow>}
+            {diff!.addedKeys.length > 0 && (
+              <DiffRow label="New permissions" kind="info">
+                {diff!.addedKeys.map((k) => (
+                  <span key={k} style={{ display: 'inline-flex', gap: 6, alignItems: 'baseline' }}>
+                    <MonoTag>{k}</MonoTag>
+                    {diff!.reservedAddedKeys.includes(k) && <span style={{ color: 'var(--text-secondary)' }}>{RESERVED_KEY_MARK}</span>}
+                  </span>
+                ))}
+              </DiffRow>
+            )}
             {diff!.removedKeys.length > 0 && <DiffRow label="Removed" kind="danger">{diff!.removedKeys.map((k) => <MonoTag key={k}>{k}</MonoTag>)}</DiffRow>}
             {diff!.changedKeys.length > 0 && <DiffRow label="Description changed" kind="warning">{diff!.changedKeys.map((k) => <MonoTag key={k}>{k}</MonoTag>)}</DiffRow>}
             {diff!.reservationChanges.map((c) => (

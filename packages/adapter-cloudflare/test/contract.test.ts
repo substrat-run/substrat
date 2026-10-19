@@ -294,6 +294,19 @@ describe('a coordinator that reserves nothing, in front of a ScopeDO class that 
     expect(errorCodeOf(grant)).toBe('forbidden');
   });
 
+  it('assignScopeRole judges a scope with no provisioning receipt by its projected role rows; its twin assigns', async () => {
+    const bare = scopeId.parse(ulid());
+    const stub = env.SCOPE.get(env.SCOPE.idFromName(bare)) as unknown as {
+      projectRole(tenantId: string, role: { key: string; permissions: string[]; source: string }): Promise<void>;
+    };
+    // `projectRole` writes a role row and no receipt: the shape of a scope from before receipts.
+    await stub.projectRole(t, { key: 'mixed', permissions: MIXED, source: 'vertical' });
+    await stub.projectRole(t, { key: 'member', permissions: [MIXED[0]!], source: 'vertical' });
+    const refused = await host.assignScopeRole(bare, principalId.parse(ulid()), 'mixed').then(() => undefined, (e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('forbidden');
+    await host.assignScopeRole(bare, principalId.parse(ulid()), 'member');
+  });
+
   it('its twin: at the tenant node it reads its own reservations, which are none, so it assigns (a stated residual)', async () => {
     await host.admin.assignRole(staff, { principalId: principalId.parse(ulid()), roleKey: 'mixed', node: { tenantId: t, scopeId: null } });
   });

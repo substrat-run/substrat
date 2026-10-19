@@ -19,4 +19,6 @@ A key reserved to a system principal (`holder: 'system'` on its declaration) is 
 - The diff a promote shows (the dashboard's promote dialog, Permissions tab and Deployments ledger, the console, `substrat promote`) itemises two changes it used to leave out:
   - a reservation moving on a key both versions declare (`reservationChanges`);
   - a role moving between a person's and a system principal's (`roleChanges[].holder`).
+
+  A key that arrives already reserved is marked where it is added (`reservedAddedKeys`).
 - The rule itself is exported from `@substrat-run/contracts` (`reservedKeysOf`, `reservedKeyOffences`, `reservedKeyMessage`, `ownerGrantSets`), which `lint:permissions` now reads too.

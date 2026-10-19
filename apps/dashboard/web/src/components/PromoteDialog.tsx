@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Checkbox, Dialog } from '@substrat-run/ui';
-import { grantShapeHolderNotes, registryDirection, reservationNote, roleHolderNote, type RegistryDirection, type RegistryLike } from '../lib/registry-diff';
+import { grantShapeHolderNotes, registryDirection, RESERVED_KEY_MARK, reservationNote, roleHolderNote, type RegistryDirection, type RegistryLike } from '../lib/registry-diff';
 import { outstanding, readyToPromote, type Acks, type Checkpoint, type PermissionSection, type Unverifiable } from '../lib/promote-review';
 import { ExportBreakAck } from './ExportBreakAck';
 import { PromoteMigrations } from './PromoteMigrations';
@@ -165,7 +165,11 @@ function PermissionBody({ section, servingLabel, incomingLabel }: { section: Per
       {diff.addedKeys.length > 0 && (
         <Group label="New permissions" kind="info">
           {diff.addedKeys.map((k) => (
-            <KeyLine key={k} k={k} note={describe(to, k)} />
+            <KeyLine
+              key={k}
+              k={k}
+              note={diff.reservedAddedKeys.includes(k) ? `${describe(to, k) ?? ''} (${RESERVED_KEY_MARK})`.trim() : describe(to, k)}
+            />
           ))}
         </Group>
       )}

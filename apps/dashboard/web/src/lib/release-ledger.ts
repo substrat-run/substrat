@@ -1,6 +1,6 @@
 import { reviewLine, type EmittedModel, type MigrationDiff } from '@substrat-run/contracts';
 import type { ChannelHistoryEntry, DeploymentVersion, ReleaseRow } from './api';
-import { grantShapeHolderNotes, reservationNote, roleHolderNote, type RegistryDiff, type RegistryLike } from './registry-diff';
+import { grantShapeHolderNotes, RESERVED_KEY_MARK, reservationNote, roleHolderNote, type RegistryDiff, type RegistryLike } from './registry-diff';
 
 /**
  * The Deployments tab's derivations (#1767): the running → available comparison as
@@ -29,7 +29,10 @@ export const DIFF_TAG: Record<DiffKind, string> = { added: '+ added', changed: '
 export function permissionDiffItems(diff: RegistryDiff, from: RegistryLike, to: RegistryLike): DiffItem[] {
   const describe = (reg: RegistryLike, key: string) => reg.permissions.find((p) => p.key === key)?.description ?? '';
   const items: DiffItem[] = [];
-  for (const k of diff.addedKeys) items.push({ kind: 'added', name: k, note: describe(to, k) || 'new permission' });
+  for (const k of diff.addedKeys) {
+    const note = describe(to, k) || 'new permission';
+    items.push({ kind: 'added', name: k, note: diff.reservedAddedKeys.includes(k) ? `${note} (${RESERVED_KEY_MARK})` : note });
+  }
   for (const k of diff.changedKeys) items.push({ kind: 'changed', name: k, note: `description now: ${describe(to, k)}` });
   for (const k of diff.removedKeys) items.push({ kind: 'removed', name: k, note: describe(from, k) || 'no longer declared' });
   for (const c of diff.reservationChanges) items.push({ kind: 'changed', name: c.key, note: reservationNote(c) });

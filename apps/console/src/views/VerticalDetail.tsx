@@ -9,7 +9,7 @@ import type {
   VerticalChannel,
   VerticalVersion,
 } from '@substrat-run/contracts';
-import { clipReviewText, discardTally, grantShapeHolderNotes, promoteReviewReasonIn, reservationNote, reviewLine, reviewSql, roleHolderNote, type MigrationEntry } from '@substrat-run/contracts';
+import { clipReviewText, discardTally, grantShapeHolderNotes, promoteReviewReasonIn, RESERVED_KEY_MARK, reservationNote, reviewLine, reviewSql, roleHolderNote, type MigrationEntry } from '@substrat-run/contracts';
 import { Badge, Button, Card, Checkbox, Dialog, Input, Select, SelectBox, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
@@ -1311,7 +1311,7 @@ export function PermissionDiffView({ review }: { review: PermissionReview }) {
   }
   const { diff, unitemised } = review;
   const lines: string[] = [
-    ...diff.addedKeys.map((k) => `+ permission ${k}`),
+    ...diff.addedKeys.map((k) => `+ permission ${k}${diff.reservedAddedKeys.includes(k) ? ` (${RESERVED_KEY_MARK})` : ''}`),
     ...diff.removedKeys.map((k) => `− permission ${k}`),
     ...diff.changedKeys.map((k) => `~ permission ${k} (description)`),
     ...diff.reservationChanges.map((c) => `! ${reservationNote(c)}`),
