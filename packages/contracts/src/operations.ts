@@ -890,24 +890,88 @@ export function defineOperations<
  * **A nested array is untouched.** `output: z.object({ ids: z.array(…) })` is an
  * object with a list inside it — a shape whose size the operation controls — not a
  * table read. Only a TOP-LEVEL array output is a list by this rule.
+ *
+ * **"Top-level" looks through wrappers** (#2436). `.optional()`, `.nullable()`, `.default()`,
+ * `.readonly()`, `z.lazy()` and `.pipe()`/`.transform()` change what a handler may return,
+ * not that it answers with a whole table, so an array under any of them is read as the
+ * array it is. And an output the gate cannot read at all — `z.custom()` — is refused
+ * outright: it could be an array, and a gate that waves through what it cannot see is
+ * one declaration away from not existing.
  */
 function assertListsArePaged(operations: Record<string, unknown>): void {
   for (const [name, op] of Object.entries(operations)) {
     const decl = op as { output?: unknown; paged?: unknown };
     if (decl.paged !== undefined) continue;
-    if (!(decl.output instanceof z.ZodArray)) continue;
-    throw new Error(
-      `model: '${name}' returns a bare array and does not declare \`paged\` — a list read ` +
-        'that answers with the whole table is unbounded by construction.\n' +
-        '  Remedy: declare the ENTRY as `output` and add `paged`. Either the kernel ' +
-        'composes the walk —\n' +
-        "    paged: { over: { entity: 'thing', sortable: ['created_at'], filterable: ['status'] } }\n" +
-        '  — or, where it cannot (a kernel table, a correlated subquery, a per-row ' +
-        'permission walk),\n' +
-        '  the handler composes its own and names the entry field the cursor walks:\n' +
-        "    paged: { sortKey: 'article' }",
-    );
+    const shape = outputListShape(decl.output);
+    if (shape === 'array') {
+      throw new Error(
+        `model: '${name}' returns a bare array and does not declare \`paged\` — a list read ` +
+          'that answers with the whole table is unbounded by construction.\n' +
+          '  Remedy: declare the ENTRY as `output` and add `paged`. Either the kernel ' +
+          'composes the walk —\n' +
+          "    paged: { over: { entity: 'thing', sortable: ['created_at'], filterable: ['status'] } }\n" +
+          '  — or, where it cannot (a kernel table, a correlated subquery, a per-row ' +
+          'permission walk),\n' +
+          '  the handler composes its own and names the entry field the cursor walks:\n' +
+          "    paged: { sortKey: 'article' }",
+      );
+    }
+    if (shape === 'opaque') {
+      throw new Error(
+        `model: '${name}' declares an opaque \`z.custom\` output and does not declare \`paged\` — ` +
+          'the list gate cannot tell whether it is a whole-table array.\n' +
+          '  Remedy: declare the real schema as `output` (the entry schema plus `paged` for a list, ' +
+          'an object for anything else), or add `paged` if the handler composes its own page.',
+      );
+    }
   }
+}
+
+/** The schema types that wrap one inner schema and only change what a caller may send or get back. */
+const WRAPPER_TYPES = new Set([
+  'optional',
+  'nullable',
+  'nullish',
+  'default',
+  'prefault',
+  'nonoptional',
+  'catch',
+  'readonly',
+]);
+
+/**
+ * What a declared output is, as far as "is this a list read" goes: an `array` somewhere under the
+ * wrappers, an `opaque` custom schema the gate cannot see into, or `other`. An array wins over opaque
+ * when both are reachable (a pipe's two ends).
+ *
+ * Read structurally by `def.type`, as every other Zod read in this package is, and walked with a
+ * visited set: a lazy schema that refers to itself must not loop the declaration.
+ */
+function outputListShape(schema: unknown): 'array' | 'opaque' | 'other' {
+  const pending = [schema];
+  const seen = new Set<unknown>();
+  let opaque = false;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === undefined || current === null || seen.has(current)) continue;
+    seen.add(current);
+    const def = (current as { _zod?: { def?: unknown } })._zod?.def as
+      | { type?: string; innerType?: unknown; in?: unknown; out?: unknown; getter?: () => unknown }
+      | undefined;
+    if (def?.type === undefined) continue;
+    if (def.type === 'array') return 'array';
+    if (def.type === 'custom') opaque = true;
+    else if (WRAPPER_TYPES.has(def.type)) pending.push(def.innerType);
+    else if (def.type === 'pipe') pending.push(def.in, def.out);
+    else if (def.type === 'lazy') {
+      try {
+        pending.push(def.getter?.());
+      } catch {
+        opaque = true; // a getter that cannot be read at declaration is a schema the gate cannot see
+      }
+    }
+  }
+  return opaque ? 'opaque' : 'other';
 }
 
 /**
