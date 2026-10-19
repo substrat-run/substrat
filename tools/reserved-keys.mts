@@ -1,136 +1,18 @@
 /**
  * Keys no person may hold — the half of `lint:permissions` that refuses a role granting one.
  *
- * A vertical's person-facing surface is its `ROLES` and its `ENTITY_GRANTS` shapes (what a
- * principal is handed per entity). A module's SYSTEM principal is a different declaration:
- * `manifest.schedules[].permissions` (`system:<module>`) and `manifest.peers[].permissions`
- * (`vertical:<slug>`). So "a system-only key" needs no new concept in the surface: it may appear
- * in the second place and never in the first.
- *
- * This is NOT the purge-only notion of K-45 (`entity-trash.ts`): that scopes a key a system
- * principal already holds to one schedule's call. It says where a system principal may USE a key,
- * not that a person may not be given it. Nothing else models "never a person's".
+ * The rule itself lives in `@substrat-run/contracts` (`packages/contracts/src/reserved-keys.ts`),
+ * because `buildPermissionRegistry` and so `substrat push`, the push boundary and a scope host's
+ * role doors apply the same one (#2430). This file is where the lint reads it from.
  *
  * Which keys are reserved is declared: a module marks one `holder: 'system'` on its manifest's
  * permission declaration, so an engine states it where it declares the key and the reservation
  * reaches every vertical that composes the engine.
  *
- * It reaches them through the vertical's `permissions.modules`, the list every other part of
- * `lint:permissions` reads, so that list has to be what the host registers. By convention both
- * read one `MODULES` constant, and nothing checks it: a vertical that registered an engine without
- * listing it, and declared the engine's key unmarked in a module of its own, would pass here. The
- * table this replaced matched by key name in every vertical and refused that.
+ * It reaches the lint through the vertical's `permissions.modules`, the list every other part of
+ * `lint:permissions` reads, so that list has to be what the host registers. A scope host given the
+ * same `permissions` (the host option of that name) refuses to register a module the list leaves
+ * out (#2430), and the template and every checked-in worker pass it. A host built without it is
+ * not checked here, but its role doors still read the reservation off the modules it registers.
  */
-
-/** What the manifests say about a key reserved to a system principal. */
-export interface ReservedKey {
-  description: string;
-  /** Every module that declares the key `holder: 'system'`, sorted. */
-  declaredBy: string[];
-}
-
-interface ManifestLike {
-  manifest: { id: string; permissions: { key: string; description: string; holder?: 'system' }[] };
-}
-
-/**
- * Every key a registered manifest declares `holder: 'system'`.
- *
- * A union, not a vote: one module declaring the key reserved reserves it, whatever another module
- * declaring the same key says. Otherwise a vertical could lift an engine's reservation by
- * re-declaring the key, unmarked, in a module of its own.
- */
-export function reservedKeysOf(modules: ManifestLike[]): Map<string, ReservedKey> {
-  const seen = new Map<string, { description: string; declaredBy: Set<string> }>();
-  for (const m of modules) {
-    for (const p of m.manifest.permissions) {
-      if (p.holder !== 'system') continue;
-      let key = seen.get(p.key);
-      if (!key) seen.set(p.key, (key = { description: p.description, declaredBy: new Set() }));
-      key.declaredBy.add(m.manifest.id);
-    }
-  }
-  return new Map([...seen].map(([k, v]) => [k, { description: v.description, declaredBy: [...v.declaredBy].sort() }]));
-}
-
-export interface ReservedKeyOffence {
-  /** Where it was granted: `role <key>`, `system-held role <key>` or `grant shape on <entityType>`. */
-  where: string;
-  key: string;
-  /** Set for a system-held role holding a key that is not reserved to a system principal. */
-  notReserved?: true;
-  /** Set for a system-held role that holds no reserved key at all. */
-  empty?: true;
-}
-
-/** Every person-facing grant of a reserved key, in the order the surface lists them. */
-export function reservedKeyOffences(
-  surface: {
-    roles: { key: string; permissions: string[]; holder?: 'person' | 'system' }[];
-    grants: { entityType: string; permissions: string[] }[];
-  },
-  reserved: ReadonlyMap<string, ReservedKey>,
-): ReservedKeyOffence[] {
-  const out: ReservedKeyOffence[] = [];
-  for (const r of surface.roles) {
-    // A system-held role that holds no reserved key is a standing principal granting nothing
-    // today and widenable by editing only the permission list: refuse it as vacuous.
-    if (r.holder === 'system' && !r.permissions.some((p) => reserved.has(p))) {
-      out.push({ where: `system-held role ${r.key}`, key: '(none)', notReserved: true, empty: true });
-    }
-    for (const p of r.permissions) {
-      // A system-held role (K-55) is the one role shape that may carry a reserved key. It may
-      // carry NOTHING ELSE: a standing host principal's authority is exactly the keys reserved
-      // to it, so a person-grade key slipped in beside them is an offence of its own.
-      if (r.holder === 'system') {
-        if (!reserved.has(p)) out.push({ where: `system-held role ${r.key}`, key: p, notReserved: true });
-      } else if (reserved.has(p)) out.push({ where: `role ${r.key}`, key: p });
-    }
-  }
-  for (const g of surface.grants) {
-    for (const p of g.permissions) {
-      if (reserved.has(p)) out.push({ where: `grant shape on ${g.entityType}`, key: p });
-    }
-  }
-  return out;
-}
-
-/** The refusal's text, naming the vertical, the file, each grant, who reserved the key and the remedy. */
-export function reservedKeyMessage(
-  rel: string,
-  entry: string,
-  offences: ReservedKeyOffence[],
-  reserved: ReadonlyMap<string, ReservedKey>,
-): string {
-  const person = offences.filter((o) => !o.notReserved);
-  const system = offences.filter((o) => o.notReserved);
-  const lines = (os: ReservedKeyOffence[], why: (o: ReservedKeyOffence) => string) =>
-    os.map((o) => `    ${o.where} → ${o.key}: ${why(o)}`).join('\n');
-  const reservedBy = (o: ReservedKeyOffence) => {
-    const r = reserved.get(o.key)!;
-    return `declared \`holder: 'system'\` by ${r.declaredBy.join(', ')} (${r.description})`;
-  };
-  const parts: string[] = [];
-  if (person.length) {
-    parts.push(
-      `${rel}/${entry} grants a key reserved to a system principal to a person's role or grant shape:\n` +
-        lines(person, reservedBy) +
-        `\n\n  Remedy: take the key out of the role or shape. A module's own system principal gets it\n` +
-        `  from a schedule's \`permissions\` (or a peer's); a platform host's standing principal gets it\n` +
-        `  from a role declared \`holder: 'system'\` (K-55). Never from a role a person can hold.`,
-    );
-  }
-  if (system.length) {
-    parts.push(
-      `${rel}/${entry} declares a system-held role that is not made of keys reserved to a system principal:\n` +
-        lines(system, (o) =>
-          o.empty
-            ? 'a system-held role must hold at least one key reserved to a system principal'
-            : "a system-held role holds only keys reserved to a system principal (a key its module declares `holder: 'system'`)",
-        ) +
-        `\n\n  Remedy: keep only reserved keys in a \`holder: 'system'\` role (and at least one), and move any\n` +
-        `  person-grade key to a role a person can hold.`,
-    );
-  }
-  return parts.join('\n\n');
-}
+export { declaredOwnerGrants, ownerGrantSets, reservedKeyMessage, reservedKeyOffences, reservedKeysOf } from '../packages/contracts/src/reserved-keys.ts';

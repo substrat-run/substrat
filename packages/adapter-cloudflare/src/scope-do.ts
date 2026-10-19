@@ -114,6 +114,12 @@ import {
   scopeRoleHolders,
   type RoleBound,
   type ScopeRoleHolder,
+  assertModuleDeclared,
+  noteReservedKeys,
+  reservedGrantRefusal,
+  reservedRoleRefusal,
+  reservedShapeRefusal,
+  type DeclaredPermissions,
   effectiveRoleGrantQuery,
   switchRecordedOff,
   switchSystemSchedules,
@@ -1247,7 +1253,19 @@ interface SystemDoorPass {
 export function defineScopeDO(
   modules: ModuleRegistration[],
   bareOps: Record<string, OperationHandler<never, unknown>>,
+  /**
+   * #2430: `permissions` is the vertical's `definePermissions(...)` value, the one `substrat push`
+   * and `lint:permissions` read. Given, a module in `modules` that its list leaves out is refused
+   * when the class is defined, as `registerModule` refuses one on either host.
+   */
+  options: { permissions?: DeclaredPermissions } = {},
 ): new (ctx: DurableObjectState, env: ScopeDoEnv) => DurableObject<ScopeDoEnv> {
+  // At definition, not at construction: a worker whose module list drifted fails at its first
+  // import, rather than at the first scope it wakes.
+  for (const registration of modules) assertModuleDeclared(options.permissions, registration.manifest.id);
+  // What the declared surface reserves holds in every instance too, whatever registers under its ids.
+  const declaredReserved = new Set<string>();
+  for (const m of options.permissions?.modules ?? []) noteReservedKeys(declaredReserved, m.manifest);
   return class ScopeDO extends DurableObject<ScopeDoEnv> {
     private readonly sql: SqlStorage;
     private continuationOrder = 0;
@@ -1303,6 +1321,11 @@ export function defineScopeDO(
     /** #2387: the operations held to a `ctx.check` — the pure adapter's set, from the same kernel read. */
     private readonly operationCheckHeld = new Set<string>();
     private readonly modules = new Map<string, RegisteredModule>();
+    /**
+     * #2430: what a registered module, or a module the class's declared `permissions` lists, declares
+     * `holder: 'system'` — the role and grant doors' refusals read it.
+     */
+    private readonly reservedKeys = new Set<string>(declaredReserved);
     /** #1705: what this deployment exports to other verticals and imports from them. */
     private readonly crossVertical = new CrossVerticalRegistry();
     /**
@@ -1502,6 +1525,7 @@ export function defineScopeDO(
           handler,
         })),
       });
+      noteReservedKeys(this.reservedKeys, manifest);
       if (erasure) this.erasurePlans.push(erasure);
       for (const [name, handler] of Object.entries(registration.predicates ?? {})) {
         this.predicates.set(name, { module: manifest.id, handler });
@@ -4808,16 +4832,22 @@ export function defineScopeDO(
       );
     }
 
-    /** Check and grant in one serialized scope task; a refusal never writes a tuple. */
+    /**
+     * Check and grant in one serialized scope task; a refusal never writes a tuple. `refused` (#2430)
+     * is a role carrying a key reserved to a system principal, answered as data so its text survives
+     * the hop and the coordinator types it.
+     */
     async assignScopeRoleBoundedFor(
       tenantId: TenantId,
       scopeId: ScopeId,
       caller: PrincipalId,
       assignee: PrincipalId,
       roleKey: string,
-    ): Promise<Coverage | null> {
+    ): Promise<Coverage | null | { refused: string }> {
       await this.ensureMigrations();
       return this.queue.enqueue(async () => {
+        const refused = await this.reservedRoleRefusalFor(tenantId, roleKey, 'person');
+        if (refused) return { refused };
         const bound = await this.assignmentBound({ kind: 'principal', id: caller }, tenantId, scopeId, roleKey);
         if (bound?.covered) {
           applyScopeRoleChange(this.switchSql(), scopeId, assignee, { revoke: [], grant: roleKey }, new Date().toISOString());
@@ -4838,14 +4868,77 @@ export function defineScopeDO(
      */
     async changeScopeRoleBoundedFor(
       tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId, from: string, to: string,
-    ): Promise<Coverage | 'not-held' | 'unknown-to'> {
+    ): Promise<Coverage | 'not-held' | 'unknown-to' | { refused: string }> {
       await this.ensureMigrations();
-      return this.queue.enqueue(() =>
-        changeScopeRole(
+      return this.queue.enqueue(async () => {
+        // #2430: the role moved TO is conferred by a person; the one moved from is only taken back.
+        const refused = await this.reservedRoleRefusalFor(tenantId, to, 'person');
+        if (refused) return { refused };
+        return changeScopeRole(
           this.switchSql(), scopeId, principal, from, to, new Date().toISOString(), this.roleBound(caller, tenantId, scopeId),
           (run) => this.revision.transactionSync(run),
-        ),
-      );
+        );
+      });
+    }
+
+    /**
+     * #2430: why `roleKey` may not be conferred through `door` here, or null — the tenant's role as
+     * the checker expands it (`controlPlaneReader`), against the keys this class's modules reserve.
+     * A role the tenant does not define is left to the door's own answer for it.
+     */
+    async reservedRoleRefusalFor(tenantId: TenantId, roleKey: string, door: 'person' | 'platform'): Promise<string | null> {
+      if (this.reservedKeys.size === 0) return null;
+      const role = await this.controlPlaneReader().getRole(tenantId, roleKey);
+      return role ? reservedRoleRefusal(role, this.reservedKeys, door) : null;
+    }
+
+    /**
+     * #2430: `reservedRoleRefusalFor` for a caller that names no tenant — `assignScopeRole` — read
+     * against the tenant this scope's provisioning receipt names.
+     *
+     * A scope from before receipts (#1738) names its tenants only through the role rows it was
+     * projected (`tenantVerdict`'s inference), and each of those tenants is judged through the
+     * same reader the checker expands the role with (`controlPlaneReader`): the scope's own rows
+     * once it reads locally, the control plane's definition otherwise. So a stale or partial
+     * projection is never what decides for a checker that does not read it. A scope with no role
+     * row names no tenant: reading locally it expands nothing, so nothing is refused, but a checker
+     * reading the control plane would expand whichever tenant's role a later call names, which this
+     * door cannot know, so it refuses.
+     */
+    async reservedRoleRefusalHere(roleKey: string, door: 'person' | 'platform'): Promise<string | null> {
+      if (this.reservedKeys.size === 0) return null;
+      const tenantId = this.provisionedFor();
+      if (tenantId) return this.reservedRoleRefusalFor(tenantId as TenantId, roleKey, door);
+      const tenants = this.hasTable('_substrat_roles')
+        ? (this.sql.exec('SELECT DISTINCT tenant_id FROM _substrat_roles').toArray() as { tenant_id: string }[]).map((r) => r.tenant_id as TenantId)
+        : [];
+      for (const projected of tenants) {
+        const refusal = await this.reservedRoleRefusalFor(projected, roleKey, door);
+        if (refusal) return refusal;
+      }
+      if (tenants.length === 0 && this.permissionSourceIsRemote()) {
+        return (
+          `role '${roleKey}' cannot be judged here: this scope has no provisioning receipt and no projected role, and its ` +
+          "checks read roles from the control plane, so which tenant's definition a check expands is unknown and a key " +
+          'reserved to a system principal cannot be ruled out. Provision the scope first.'
+        );
+      }
+      return null;
+    }
+
+    /** #2430: why a raw grant of `permissions` is refused against this class's reservations, or null. */
+    async reservedGrantRefusalFor(permissions: string[]): Promise<string | null> {
+      return reservedGrantRefusal(permissions, this.reservedKeys);
+    }
+
+    /** #2430: why a reconcile of declared `shapes` is refused against this class's reservations, or null. */
+    async reservedShapeRefusalFor(shapes: { entityType: string; permissions: string[] }[]): Promise<string | null> {
+      return reservedShapeRefusal(shapes, this.reservedKeys);
+    }
+
+    /** #2430: which of `permissions` this class's modules reserve to a system principal. */
+    async reservedAmong(permissions: string[]): Promise<string[]> {
+      return permissions.filter((p) => this.reservedKeys.has(p));
     }
 
     /** The kernel's `revokeScopeRoles` in one serialized scope task (#1150). */
@@ -7953,6 +8046,9 @@ export function defineScopeDO(
       const runCheck: OperationContext['check'] = checks ? countChecks(decideUncounted, checks) : decideUncounted;
 
       const runCanAssign = async (roleKey: string) => {
+        // #2430: the answer a person's door would give — a role carrying a reserved key is refused.
+        const refused = await this.reservedRoleRefusalFor(tenantId, roleKey, 'person');
+        if (refused) throw substratError('forbidden', refused);
         const bound = await this.assignmentBound(subject, tenantId, scopeId, roleKey);
         if (!bound) {
           throw unknownRoleError(roleKey);
@@ -8193,6 +8289,9 @@ export function defineScopeDO(
         grant: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
           assertImpersonationWrites(impersonation, 'ctx.grant');
           entityObjectRef(entity, 'ctx.grant'); // #1856: a tuple the walk can read back
+          // #2430: whoever the caller is — a system actor passes guardrail 2 by construction.
+          const reserved = reservedGrantRefusal([permission], this.reservedKeys);
+          if (reserved) throw substratError('forbidden', reserved);
           const held = await runCheck(permission, entity);
           if (!held.allowed) {
             throw new PermissionDenied(

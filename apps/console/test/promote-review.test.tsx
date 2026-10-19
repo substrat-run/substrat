@@ -80,6 +80,38 @@ describe('the console promote review (#1677)', () => {
     expect(html).not.toContain('No migration is new');
   });
 
+  it('marks a key that arrives reserved, a moved reservation, a moved role holder and a new system-held role (#2430)', () => {
+    const surface = (reserved: boolean) =>
+      wire(
+        buildPermissionRegistry({
+          modules: [
+            {
+              manifest: {
+                id: '@substrat-run/engine-a',
+                permissions: [
+                  { key: 'a:read', description: 'Read' },
+                  { key: 'a:run', description: 'Run', ...(reserved ? { holder: 'system' } : {}) },
+                  ...(reserved ? [{ key: 'a:new', description: 'New', holder: 'system' }] : []),
+                ],
+              },
+            },
+          ] as never,
+          roles: [
+            { key: 'staff', permissions: ['a:read'] as never, source: 'vertical' },
+            { key: 'driver', permissions: ['a:run'] as never, source: 'vertical', ...(reserved ? { holder: 'system' as const } : {}) },
+            ...(reserved ? [{ key: 'host', permissions: ['a:new'] as never, source: 'vertical', holder: 'system' as const }] : []),
+          ],
+        }),
+      );
+    const review = permissionReviewOf(surface(false), surface(true));
+    const text = renderToString(createElement(PermissionDiffView, { review })).replace(/&#x27;/g, "'");
+    expect(text).toContain('+ permission a:new (reserved to a system principal)');
+    expect(text).toContain("! a:run is now reserved to a system principal: no person's role or grant shape may hold it");
+    expect(text).toContain('now held by a system principal (holder: system), no longer a role a person can hold');
+    expect(text).toContain('role host: new +a:new');
+    expect(text).toContain('held by a system principal (holder: system), not a role a person can hold');
+  });
+
   it('an empty itemised diff beside a moved digest names the unitemised field', () => {
     const a = registry(['a:read']);
     const b = { ...a, exports: [{ type: 'x.y' }] } as unknown as PermissionRegistry;

@@ -236,6 +236,9 @@ export interface VerticalScopeHost {
      *  before it answers none, and the platform judges the scope as possibly having bound every
      *  table-held bootstrap shape of its version. */
     boundShapeTypes?: string[];
+    /** #2430: delivered connection grants not seated because they name a key reserved to a system
+     *  principal here, reported rather than failing the provision. A host built before it seats them. */
+    skippedConnectionGrants?: { connectionId: string; permission: string }[];
   }>;
   /**
    * #2263: the ownerless reconcile — seat what this deployment's code declares (schedule grants,
@@ -253,7 +256,7 @@ export interface VerticalScopeHost {
     switchedOffPeers?: string[];
     tenantHeldPeers?: string[];
     switchFences?: Record<string, string>;
-  }): Promise<void | { switchedOff?: SwitchedOff[] }>;
+  }): Promise<void | { switchedOff?: SwitchedOff[]; skippedConnectionGrants?: { connectionId: string; permission: string }[] }>;
   /** `opts.switchedOff` (#1742): as on `provisionScopeLocal`, applied in the restore's own event.
    *  `opts.sourceScopeId` (#1869): the scope the dump was captured from, whose grants move, and
    *  `opts.exact`: the platform exported the dump itself, so the re-point never falls back. */
@@ -757,6 +760,16 @@ const retirementsAnswer = (leftOpen: number | undefined) => {
 const boundShapesAnswer = (types: string[] | undefined) => {
   const parsed = types === undefined ? undefined : z.array(z.string().min(1)).safeParse(types);
   return parsed?.success ? { boundShapeTypes: parsed.data } : {};
+};
+
+/**
+ * #2430: the delivered connection grants a provision or reconcile skipped because they name a key
+ * reserved to a system principal, parsed on the way OUT like the others and left out when empty, so
+ * the platform reads the report where it reads the rest of the answer.
+ */
+const skippedConnectionGrantsAnswer = (skipped: { connectionId: string; permission: string }[] | undefined) => {
+  const parsed = skipped?.length ? z.array(z.object({ connectionId: z.string().min(1), permission: z.string().min(1) })).safeParse(skipped) : undefined;
+  return parsed?.success ? { skippedConnectionGrants: parsed.data } : {};
 };
 
 const discardKeptBody = z.object({
@@ -2058,6 +2071,7 @@ export function mountPlatformSurface<Env extends object>(
         scopeId: body.scopeId,
         owner,
         ...switchedOffAnswer(provisioned?.switchedOff),
+        ...skippedConnectionGrantsAnswer(provisioned?.skippedConnectionGrants),
       },
       201,
     );
@@ -2094,7 +2108,13 @@ export function mountPlatformSurface<Env extends object>(
           switchFences: body.switchFences,
         });
         await platformSweeperOf(c.env)?.noteScope(body.tenantId, body.scopeId);
-        return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner: null, ...switchedOffAnswer(seated?.switchedOff) });
+        return c.json({
+          tenantId: body.tenantId,
+          scopeId: body.scopeId,
+          owner: null,
+          ...switchedOffAnswer(seated?.switchedOff),
+          ...skippedConnectionGrantsAnswer(seated?.skippedConnectionGrants),
+        });
       }
       throw new HTTPException(501, { message: 'this vertical keeps no owner-of-record to reconcile from' });
     }
@@ -2162,6 +2182,8 @@ export function mountPlatformSurface<Env extends object>(
       ...retirementsAnswer(reconciled?.retirementsLeftOpen),
       // #2184: and which binding shapes the scope has ever bound, for the binding-shape gate.
       ...boundShapesAnswer(reconciled?.boundShapeTypes),
+      // #2430: and any delivered connection grant it did not seat, naming a reserved key.
+      ...skippedConnectionGrantsAnswer(reconciled?.skippedConnectionGrants),
     });
   });
 

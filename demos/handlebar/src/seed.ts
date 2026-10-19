@@ -137,7 +137,7 @@ export const permissions = definePermissions({
 });
 
 export function buildBikeShopHost(dir: string): SqliteScopeHost {
-  const host = new SqliteScopeHost({ dir, attachmentExtractors: defaultAttachmentExtractors() }); // default checker: the tuple engine
+  const host = new SqliteScopeHost({ dir, attachmentExtractors: defaultAttachmentExtractors(), permissions }); // default checker: the tuple engine
   for (const m of MODULES) host.registerModule(m);
   return host;
 }

@@ -30,6 +30,7 @@ import {
   capabilityExpiryContractSuite,
   connectorTestFetch,
   permissionContractSuite,
+  reservedRoleContractSuite,
   scheduleContractSuite,
   scheduleEntitlementContractSuite,
   schedulePlatformRequestsContractSuite,
@@ -207,6 +208,21 @@ membershipExecutorContractSuite('adapter-sqlite', async () => {
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #2430: the role doors and the declared module list, on the DEFAULT checker — the refusal must
+// hold for a caller the bound would let through.
+reservedRoleContractSuite('adapter-sqlite', async (options) => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-reserved-role-'));
+  // The box seals the secret of the connection the suite grants to.
+  const host = new SqliteScopeHost({ dir, secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)), ...options });
   return {
     host,
     cleanup: async () => {

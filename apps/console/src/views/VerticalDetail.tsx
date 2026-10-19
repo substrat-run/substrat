@@ -9,7 +9,7 @@ import type {
   VerticalChannel,
   VerticalVersion,
 } from '@substrat-run/contracts';
-import { clipReviewText, discardTally, grantShapeHolderNotes, promoteReviewReasonIn, reviewLine, reviewSql, type MigrationEntry } from '@substrat-run/contracts';
+import { clipReviewText, discardTally, grantShapeHolderNotes, promoteReviewReasonIn, RESERVED_KEY_MARK, reservationNote, reviewLine, reviewSql, roleHolderNote, type MigrationEntry } from '@substrat-run/contracts';
 import { Badge, Button, Card, Checkbox, Dialog, Input, Select, SelectBox, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { walkAll } from '../lib/api';
@@ -1311,13 +1311,17 @@ export function PermissionDiffView({ review }: { review: PermissionReview }) {
   }
   const { diff, unitemised } = review;
   const lines: string[] = [
-    ...diff.addedKeys.map((k) => `+ permission ${k}`),
+    ...diff.addedKeys.map((k) => `+ permission ${k}${diff.reservedAddedKeys.includes(k) ? ` (${RESERVED_KEY_MARK})` : ''}`),
     ...diff.removedKeys.map((k) => `− permission ${k}`),
     ...diff.changedKeys.map((k) => `~ permission ${k} (description)`),
-    ...diff.roleChanges.map(
-      (r) =>
+    ...diff.reservationChanges.map((c) => `! ${reservationNote(c)}`),
+    ...diff.roleChanges.flatMap((r) => {
+      const held = roleHolderNote(r);
+      return [
         `role ${r.key}: ${r.isNew ? 'new' : r.isGone ? 'removed' : ''} ${r.added.map((k) => `+${k}`).concat(r.removed.map((k) => `−${k}`)).join(' ')}`.trim(),
-    ),
+        ...(held ? [`  ${held}`] : []),
+      ];
+    }),
     ...diff.grantChanges.flatMap((g) => [
       `entity grant ${g.entityType}: ${g.isNew ? 'new' : g.isGone ? 'removed' : ''} ${g.added.map((k) => `+${k}`).concat(g.removed.map((k) => `−${k}`)).join(' ')}`.trim(),
       ...grantShapeHolderNotes(g).map((n) => `  ${n}`),

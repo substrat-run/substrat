@@ -40,6 +40,65 @@ engine inherits the reservation with the manifest, and the permission snapshot m
 so that removing `holder: 'system'` shows in the reviewed diff. Leave `holder` out and the
 key may be held by anyone it is granted to, which is what every key meant before the field.
 
+### Past the lint
+
+`substrat push` refuses the same things before anything is uploaded, and words the refusal the
+way the lint does:
+
+- a role or shape holding a reserved key;
+- an owner grant holding one: a module's `ownerGrants`, or your package's `substrat.ownerGrants`.
+
+The registry a push ships marks each reserved key, and each system-held role, with
+`holder: 'system'`. The platform refuses a push whose registry rows mark a key that a role, a
+shape or the owner grants hold. A registry from a CLI too old to write the marks carries none,
+and the platform refuses it nothing.
+
+At runtime, a host reads the reservations off the modules it registers and the modules its
+`permissions` lists, and refuses at these doors:
+
+- **Inviting someone into a role that carries a reserved key** is refused. So is moving them
+  into one, and so is a membership request for one. `canAssign` gives the same answer, and since
+  it is also the bound on taking a role away, a person cannot remove such a role either.
+- **Granting a reserved key directly** to a principal, an org or a connection is refused,
+  whoever asks. That covers a platform grant, a declared shape granted to a person, a
+  connection's grant (a connection acts for the outside provider that holds its token), and
+  `ctx.grant` from an operation, including one running as a system actor. A connection grant
+  the platform already recorded is skipped when a provision or reconcile delivers it, so it
+  never fails the provision. The skip is reported in that call's answer and as a warn line in
+  your deployment's log; the platform does not read the answer field yet, so the log is where
+  it shows.
+- **Reconciling declared shapes** is refused when a shape holds a reserved key, before anyone is
+  topped up: the reconcile would give the key to every holder of the shape, and record it as what
+  a binding link gives. A shape may still list a reserved key in `retired`, which takes it back.
+- **The platform's own role assignment** refuses a role that mixes a reserved key with keys a
+  person may hold. It admits a role made only of reserved keys, because that is the shape a
+  system-held role has. A stored role does not record its holder, so this door cannot tell such
+  a role from a person's role made the same way.
+
+Not covered yet:
+
+- a role or grant a host seats or composes itself;
+- a role definition widened after it was assigned;
+- a role or grant conferred on a host that registers no modules;
+- on a shared control plane, the directory record of a connection grant for a scope your
+  deployment serves, and of a tenant-wide one: the plane cannot see your deployment's
+  reservations, so it records the grant. The grant confers nothing, since your deployment
+  refuses it at delivery and skips it at every re-seat, but it stays listed until revoked;
+- grants and shape bindings recorded before these checks existed, or before the key was
+  reserved, and what reaches a person through them later (such as an org membership or a
+  binding link), including what an older build of your vertical seats again after a rollback.
+
+Push and the lint hold what a vertical declares there.
+
+Those modules have to be the ones the lint and the push read, which are your permission
+entry's `modules`. Give the host the same `permissions` and it refuses to register a module
+the list leaves out:
+
+```ts
+const host = new CloudflareScopeHost({ scope: env.SCOPE, permissions });
+export const ScopeDO = defineScopeDO(MODULES, {}, { permissions });
+```
+
 ### Roles @ nodes
 
 A role bundles permissions; an assignment binds a principal to a role **at a node of the
@@ -85,7 +144,9 @@ without pretending to be a person: `host.admin.grantToConnection(...)`, and a ch
 subject is polymorphic (`{ kind: 'principal' | 'connection' | 'system', id }`). A
 connection is keyed `(tenant, vertical, provider)`, so granting it one permission reaches
 only that tenant's scopes running that vertical — the blast radius of a leaked provider
-token is one permission on one vertical's data, readable in a diff.
+token is one permission on one vertical's data, readable in a diff. A key reserved to a
+system principal is never granted to a connection, and `lint:connector-grants` refuses a
+connector whose standing grants name one.
 
 A **module's system principal** is the third such subject — the caller behind
 [scheduled work](/concepts/modules#recurring-work-schedules). A schedule runs an operation

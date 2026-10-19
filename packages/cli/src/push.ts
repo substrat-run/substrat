@@ -13,6 +13,11 @@ import {
   assetsNeed,
   ATTACHMENT_BLOB_BINDING,
   buildPermissionRegistry,
+  declaredOwnerGrants,
+  ownerGrantSets,
+  reservedKeyMessage,
+  reservedKeyOffences,
+  reservedKeysOf,
   declaresAttachmentTargets,
   DECLARED_MIGRATIONS_MAX,
   DECLARED_MIGRATIONS_SQL_BYTES_MAX,
@@ -383,7 +388,7 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
     );
   }
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
-    substrat?: { permissions?: string };
+    substrat?: { permissions?: string; ownerGrants?: unknown };
   };
   const entry = pkg.substrat?.permissions;
   if (!entry) {
@@ -392,6 +397,10 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
         `to package.json, pointing at the module that exports \`definePermissions(...)\`.`,
     );
   }
+  // #2430: an install grants these to its owner, a person; a list that cannot be read is refused in
+  // `lint:permissions`' words rather than judged as none.
+  const ownerGrants = declaredOwnerGrants(pkg.substrat?.ownerGrants);
+  if ('problem' in ownerGrants) throw new Error(`${basename(resolve(dir))}/package.json ${ownerGrants.problem}.`);
   const entryPath = join(dir, entry);
   if (!existsSync(entryPath)) {
     throw new Error(`substrat.permissions points at "${entry}", which does not exist under ${dir}.`);
@@ -473,6 +482,20 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
         );
       }
     }
+    // #2430: a key a module declares `holder: 'system'` in a role a person can hold, an entity grant
+    // shape or an owner grant (a module's, or this package's `substrat.ownerGrants`, which an install
+    // grants its owner), refused before anything uploads, in `lint:permissions`' own words. The
+    // registry build below refuses most of it too; this is the message that names the remedy.
+    const reserved = reservedKeysOf(mod.permissions.modules);
+    const offences = reservedKeyOffences(
+      {
+        roles: mod.permissions.roles,
+        grants: mod.permissions.entityGrants ?? [],
+        personGrants: ownerGrantSets(mod.permissions.modules, ownerGrants.grants),
+      },
+      reserved,
+    );
+    if (offences.length > 0) throw new Error(reservedKeyMessage(basename(resolve(dir)), entry, offences, reserved));
     // #1234: the declared half of a declared-vs-observed finding — what the modules say
     // they emit and consume, which exists nowhere off their manifests.
     const declaredEvents = flattenDeclaredEvents(mod.permissions);
@@ -645,12 +668,13 @@ export function formatPermissionSurface(surface: PermissionSurface, label?: stri
   lines.push('', 'keys:');
   if (registry.permissions.length === 0) lines.push('  (none declared)');
   for (const p of registry.permissions) {
-    lines.push(`  ${p.key.padEnd(width)}  [${p.declaredBy.join(', ')}]  ${p.description}`);
+    const held = p.holder === 'system' ? '  (reserved to a system principal)' : '';
+    lines.push(`  ${p.key.padEnd(width)}  [${p.declaredBy.join(', ')}]  ${p.description}${held}`);
   }
   lines.push('', 'roles:');
   if (registry.roles.length === 0) lines.push('  (none declared)');
   for (const r of registry.roles) {
-    lines.push(`  ${r.key}  (${r.source}, ${r.permissions.length} key(s))`);
+    lines.push(`  ${r.key}  (${r.source}${r.holder === 'system' ? ', system-held' : ''}, ${r.permissions.length} key(s))`);
     for (const key of r.permissions) lines.push(`    ${key}`);
   }
   if (registry.entityGrants.length > 0) {

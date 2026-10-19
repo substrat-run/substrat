@@ -174,6 +174,32 @@ describe('the diff formatters', () => {
     expect(formatRegistryDiff(null, reg(), true)[0]).toMatch(/serving version carries no permission registry/);
   });
 
+  it('formatRegistryDiff: a lifted reservation and a role holder move are lines of their own, beside any other change (#2430)', () => {
+    const at = (reserved: boolean, holder?: 'system') =>
+      ({
+        ...reg(),
+        permissions: [
+          { key: 'desk:run', description: 'Run', declaredBy: ['desk'], ...(reserved ? { holder: 'system' } : {}) },
+          { key: 'desk:read', description: 'Read tickets', declaredBy: ['desk'] },
+        ],
+        roles: [{ key: 'host', permissions: ['desk:run'], source: 'vertical', ...(holder ? { holder } : {}) }],
+      }) as unknown as PermissionRegistry;
+    expect(formatRegistryDiff(at(true, 'system'), at(false), true)).toEqual([
+      '! desk:run is no longer reserved to a system principal: a person\'s role may now hold it',
+      'role host:',
+      '  now a role a person can hold, no longer held by a system principal',
+    ]);
+    // A key that arrives reserved is marked where it is added.
+    const without = { ...reg(), permissions: [{ key: 'desk:read', description: 'Read tickets', declaredBy: ['desk'] }] } as unknown as PermissionRegistry;
+    expect(formatRegistryDiff(without, at(true), true)[0]).toBe('+ desk:run  Run  (reserved to a system principal)');
+    // A role that arrives system-held is marked so, never read as a person's role holding a reserved key.
+    expect(formatRegistryDiff({ ...without, roles: [] } as PermissionRegistry, at(true, 'system'), true)).toEqual([
+      '+ desk:run  Run  (reserved to a system principal)',
+      'role host (new): +desk:run',
+      '  held by a system principal (holder: system), not a role a person can hold',
+    ]);
+  });
+
   it('formatRegistryDiff: a retired shape key says who loses it, a direct grant on the entity included (#2082)', () => {
     const shaped = (permissions: string[], retired?: string[]) =>
       ({ ...reg(), entityGrants: [{ entityType: 'ticket', permissions, bootstrap: true, ...(retired ? { retired } : {}) }] }) as unknown as PermissionRegistry;

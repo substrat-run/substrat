@@ -502,6 +502,12 @@ import {
   purgeStillDue,
   assertBoundOperations,
   registerTrashTargets,
+  assertModuleDeclared,
+  noteReservedKeys,
+  reservedGrantRefusal,
+  reservedRoleRefusal,
+  reservedShapeRefusal,
+  type DeclaredPermissions,
   type PurgePass,
   type AsyncLinePass,
   type EmittedReport,
@@ -808,6 +814,7 @@ interface ControlPlaneStub {
   >;
   defineRole(tenantId: string, role: RoleDefinition): Promise<RoleDefinition | null>;
   listRoles(filter: { tenantId?: string; source?: string } & ListPage): Promise<RoleRow[]>;
+  getRole(tenantId: string, key: string): Promise<RoleDefinition | undefined>;
   writeTenantTuple(
     tenantId: string,
     subject: string,
@@ -925,7 +932,7 @@ interface ControlPlaneStub {
   ): Promise<boolean>;
   listOrgs(tenantId: string): Promise<OrgRow[]>;
   /** #1184: a bounded, fenced tenant-role add, as one DO unit. */
-  applyMembership(change: MembershipChange, row: AdminEntry, orgRow?: AdminEntry): Promise<MembershipChangeResult>;
+  applyMembership(change: MembershipChange, row: AdminEntry, orgRow?: AdminEntry, reserved?: readonly string[]): Promise<MembershipChangeResult>;
   /**
    * #1184: a tenant-level removal — the K-21 tombstone, the removal fence and (only if it
    * changed anything) the audit row — as one DO unit. Returns whether anything changed.
@@ -1494,12 +1501,22 @@ interface ScopeStubRpc {
   canAssignFor(tenantId: TenantId, scopeId: ScopeId, principal: PrincipalId, roleKey: string, atTenant?: boolean): Promise<Coverage | null>;
   assignScopeRoleBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, assignee: PrincipalId, roleKey: string,
-  ): Promise<Coverage | null>;
+  ): Promise<Coverage | null | { refused: string }>;
   /** #1150: the scope's role roster, and the two bounded writes over it — see `scope-do.ts`. */
   scopeRoleHoldersFor(scopeId: ScopeId, principal?: PrincipalId): Promise<ScopeRoleHolder[]>;
   changeScopeRoleBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId, from: string, to: string,
-  ): Promise<Coverage | 'not-held' | 'unknown-to'>;
+  ): Promise<Coverage | 'not-held' | 'unknown-to' | { refused: string }>;
+  /** #2430: why a role may not be conferred through a door here, or null — see `scope-do.ts`. */
+  reservedRoleRefusalFor(tenantId: TenantId, roleKey: string, door: 'person' | 'platform'): Promise<string | null>;
+  /** #2430: the same for `assignScopeRole`, which names no tenant — see `scope-do.ts`. */
+  reservedRoleRefusalHere(roleKey: string, door: 'person' | 'platform'): Promise<string | null>;
+  /** #2430: why a raw grant of these keys is refused against the scope class's reservations, or null. */
+  reservedGrantRefusalFor(permissions: string[]): Promise<string | null>;
+  /** #2430: why a reconcile of these declared shapes is refused against the scope class's reservations, or null. */
+  reservedShapeRefusalFor(shapes: { entityType: string; permissions: string[] }[]): Promise<string | null>;
+  /** #2430: which of these keys the scope class's modules reserve to a system principal. */
+  reservedAmong(permissions: string[]): Promise<string[]>;
   revokeScopeRolesBoundedFor(
     tenantId: TenantId, scopeId: ScopeId, caller: PrincipalId, principal: PrincipalId,
   ): Promise<{ coverage: Coverage; revoked: string[] }>;
@@ -2402,6 +2419,13 @@ export interface CloudflareScopeHostOptions {
    */
   eventDrainDelegation?: EventDrainDelegation;
   /**
+   * The vertical's declared permission surface (#2430): its `definePermissions(...)` value, the one
+   * `substrat push` and `lint:permissions` read. Given, `registerModule` refuses a module its
+   * `modules` leaves out, as the pure host does. The ScopeDO takes the same through
+   * `defineScopeDO`'s third argument, since workerd constructs it and no option here reaches it.
+   */
+  permissions?: DeclaredPermissions;
+  /**
    * **There is deliberately no `clock` here** (#956), and the absence is the fact.
    *
    * The pure adapter takes one (`SqliteScopeHostOptions.clock`): it is what
@@ -2459,6 +2483,25 @@ export const tenantUnrecordedLine = (tenantId: string, scopeId: string) => ({
   tenantId,
   scopeId,
   message: 'admitted to a scope whose tenant is not recorded; a reconcile or lifecycle delivery records it',
+});
+
+/** #2430: a delivered connection grant a provision or reconcile did not seat, and why it is reported. */
+export interface SkippedConnectionGrant {
+  connectionId: string;
+  permission: string;
+}
+
+/**
+ * #2430: the line a host writes when a provision or reconcile skips delivered connection grants that
+ * name a key reserved to a system principal here. Ids and keys only.
+ */
+const connectionGrantsSkippedLine = (tenantId: string, scopeId: string, skipped: readonly SkippedConnectionGrant[]) => ({
+  substrat: 'connection-grants-skipped' as const,
+  level: 'warn' as const,
+  tenantId,
+  scopeId,
+  skipped,
+  message: 'delivered connection grants naming a key reserved to a system principal were not seated',
 });
 
 /**
@@ -2807,6 +2850,10 @@ export class CloudflareScopeHost implements ScopeHost {
   // Registration-mechanics bookkeeping (validation only — the DO executes).
   // Code-time, derived from the bundled modules, NOT durable directory state.
   private readonly moduleIds = new Set<string>();
+  /** #2430: what a registered module declares `holder: 'system'` — `assignRole`'s refusal reads it. */
+  private readonly reservedKeys = new Set<string>();
+  /** #2430: the declared permission surface `registerModule` holds each module to, when given. */
+  private readonly permissions: DeclaredPermissions | undefined;
   /**
    * #1705: this deployment's cross-vertical declarations. The DO holds the handlers and makes
    * every decision. The coordinator keeps its own copy for two reasons: registration refuses
@@ -2903,6 +2950,9 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   constructor(options: CloudflareScopeHostOptions) {
     this.servicePrincipals = options.servicePrincipals;
+    this.permissions = options.permissions;
+    // #2430: what the declared surface reserves holds here too, whatever is registered under its ids.
+    for (const m of options.permissions?.modules ?? []) noteReservedKeys(this.reservedKeys, m.manifest);
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
     this.tenantStores = options.tenantStores;
     this.blobStores = options.blobStores;
@@ -4216,6 +4266,7 @@ export class CloudflareScopeHost implements ScopeHost {
     if (this.moduleIds.has(manifest.id)) {
       throw new Error(`module already registered: ${manifest.id}`);
     }
+    assertModuleDeclared(this.permissions, manifest.id); // #2430
     // #2068: the same refusal the ScopeDO applies at code time, here at registration, so a
     // misdeclared erasure fails where it is registered on both hosts.
     moduleErasurePlan(registration);
@@ -4261,6 +4312,7 @@ export class CloudflareScopeHost implements ScopeHost {
     // #1705: after the checks above, so a refused module leaves nothing registered here.
     this.crossVertical.register(manifest, registration.imports);
     this.moduleIds.add(manifest.id);
+    noteReservedKeys(this.reservedKeys, manifest);
     if (manifest.schedules && manifest.schedules.length > 0) {
       this.moduleSchedules.set(manifest.id, manifest.schedules);
     }
@@ -5867,6 +5919,9 @@ export class CloudflareScopeHost implements ScopeHost {
       throw unknownScopeForTenant(tenantId, scopeId);
     }
     await this.peerScopeGate(tenantId, scopeId, 'canAssign');
+    // #2430: the answer a person's door would give — a role carrying a reserved key is refused.
+    const refused = await this.scopeStub(scopeId).reservedRoleRefusalFor(tenantId, roleKey, 'person');
+    if (refused) throw substratError('forbidden', refused);
     const bound = await this.scopeStub(scopeId).canAssignFor(tenantId, scopeId, principalId.parse(principal), roleKey);
     if (!bound) throw unknownRoleError(roleKey);
     return coverage.parse(bound);
@@ -5883,6 +5938,7 @@ export class CloudflareScopeHost implements ScopeHost {
       tenantId, scopeId, principalId.parse(caller), principalId.parse(assignee), roleKey,
     );
     if (!bound) throw unknownRoleError(roleKey);
+    if ('refused' in bound) throw substratError('forbidden', bound.refused);
     return coverage.parse(bound);
   }
 
@@ -5901,6 +5957,7 @@ export class CloudflareScopeHost implements ScopeHost {
     );
     if (bound === 'not-held') throw substratError('conflict', `${target} does not hold '${from}' at this scope`);
     if (bound === 'unknown-to') throw unknownRoleError(to);
+    if ('refused' in bound) throw substratError('forbidden', bound.refused);
     return coverage.parse(bound);
   }
 
@@ -7420,6 +7477,18 @@ export class CloudflareScopeHost implements ScopeHost {
         );
       },
       assignRole: async (actor, assignment: RoleAssignment) => {
+        // #2430: the platform's door — a role mixing reserved and other keys is refused (K-55).
+        // At a scope node, read where the checker reads the role, against the scope class's own
+        // reservations (it answers null when it has none). At the tenant node, against this host's.
+        {
+          const { tenantId, scopeId } = assignment.node;
+          const refusal = scopeId
+            ? await this.scopeStub(scopeId).reservedRoleRefusalFor(tenantId, assignment.roleKey, 'platform')
+            : this.reservedKeys.size > 0
+              ? await this.cp.getRole(tenantId, assignment.roleKey).then((role) => role && reservedRoleRefusal(role, this.reservedKeys, 'platform'))
+              : null;
+          if (refusal) throw substratError('forbidden', refusal);
+        }
         const subject = `principal:${assignment.principalId}`;
         if (assignment.node.scopeId) {
           await this.writeScopeTuple(
@@ -7482,6 +7551,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // trust: the parse is where an `expiresAt` carrying a UTC offset is normalised
         // to Z text (#963), and liveness here is a lexicographic `expires_at > ?`.
         const grant = capabilityGrant.parse(raw);
+        await this.refuseReservedGrant([grant.permission], grant.node.scopeId); // #2430
         await writeGrant(
           `principal:${grant.principalId}`,
           grant.permission,
@@ -7541,6 +7611,12 @@ export class CloudflareScopeHost implements ScopeHost {
             );
           }
         }
+        // #2430: a connection acts for the external provider holding its token, so it is never
+        // given a key reserved to a system principal — refused before the directory record, so a
+        // refused grant is gathered by no later provision. Against this host's reservations, and
+        // the scope class's when the scope is served here; a delegated scope's deployment judges
+        // its own at delivery (`connectorGrantLocal`). A grant recorded before stays.
+        await this.refuseReservedGrant([grant.permission], this.connectorDelegation ? null : (grant.node.scopeId ?? null));
         // #592: the directory-side record FIRST, so a grant whose tuple delivery
         // fails below is still gathered by the next provision/reconcile — the
         // repair channel — instead of vanishing. The tuple stays the only thing
@@ -7737,6 +7813,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // The org must exist in the node's tenant. A grant to a phantom org looks
         // applied, resolves for nobody, and still shows up in the permission diff.
         await requireOrg(node.tenantId, orgId);
+        await this.refuseReservedGrant([permission], node.scopeId); // #2430: an org's members are people
         await writeGrant(`org:${orgId}`, permission, node, entity);
         await this.recordAdmin(
           actor,
@@ -8601,6 +8678,8 @@ export class CloudflareScopeHost implements ScopeHost {
           // #2047: the org's own row, when the change joins or leaves one. The unit fills in its
           // `before`/`after` and writes it only for what it does — a join's carries the expiry.
           orgId ? this.adminEntry(actor, op === 'add' ? 'addMember' : 'removeMember', { tenantId }, null, null) : undefined,
+          // #2430: what this host's modules reserve, so the unit refuses an add of a role carrying it.
+          [...this.reservedKeys],
         );
         // The tenant-level tuple, or its tombstone, reaches the projections.
         if (result.applied && (op === 'add' || result.changed)) await this.fanOut(tenantId);
@@ -11511,8 +11590,13 @@ export class CloudflareScopeHost implements ScopeHost {
     /** #2184: when `entityGrants` were reconciled, every type this scope has ever bound
      *  (`shape-bound`, sticky), sorted. Absent when none ran, or from a ScopeDO that predates it. */
     boundShapeTypes?: string[];
+    /** #2430: delivered connection grants not seated because they name a reserved key; absent when none. */
+    skippedConnectionGrants?: SkippedConnectionGrant[];
   }> {
     const carry = recordedOffFromWire(input);
+    // #2430: refused before anything is written, rather than at the top-up after the projection.
+    if (input.entityGrants) await this.refuseReservedShapes(input.entityGrants, input.scopeId);
+    const connections = await this.seatableConnectionGrants(input.tenantId, input.scopeId, input.connectionGrants);
     const services = await this.servicePrincipals?.(input.tenantId, input.scopeId);
     const stub = this.scopeStub(input.scopeId);
     await this.migrateAndRecord(input.scopeId); // create the module tables (setMigrationState no-ops on a null CP)
@@ -11552,7 +11636,7 @@ export class CloudflareScopeHost implements ScopeHost {
           expires_at: null,
           lockout_reseat: true,
         },
-        ...this.declaredSeatsLocal(input.scopeId, input.connectionGrants),
+        ...this.declaredSeatsLocal(input.scopeId, connections.seat),
       ],
       // #406: identity links, delivered by the platform with provisioning exactly as
       // entitlements are (#310). Preserve-on-undefined, so an absent field never wipes
@@ -11589,7 +11673,33 @@ export class CloudflareScopeHost implements ScopeHost {
       ...(carry ? { switchedOff } : {}),
       ...(shapes ? { retirementsLeftOpen: shapes.retirementsLeftOpen ?? 0 } : {}),
       ...(shapes?.boundEver ? { boundShapeTypes: shapes.boundEver } : {}),
+      ...(connections.skipped.length ? { skippedConnectionGrants: connections.skipped } : {}),
     };
+  }
+
+  /**
+   * #2430: the delivered connection grants a provision or reconcile may seat, and those it skips. A
+   * connection acts for the external provider holding its token, so a grant naming a key reserved
+   * to a system principal here (this host's reservations, or the scope class's) is never seated.
+   * The directory may have recorded it before these checks existed, so it is skipped and reported
+   * (in the answer and as a warn line), never a failed provision: one such grant must not stop a
+   * promote or a reconcile seating everything else.
+   */
+  private async seatableConnectionGrants(
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    grants: readonly ProjectedConnectionGrant[] | undefined,
+  ): Promise<{ seat: readonly ProjectedConnectionGrant[] | undefined; skipped: SkippedConnectionGrant[] }> {
+    if (!grants?.length) return { seat: grants, skipped: [] };
+    const permissions = [...new Set(grants.map((g) => g.permission as string))];
+    const reserved = new Set([
+      ...permissions.filter((p) => this.reservedKeys.has(p)),
+      ...(await this.scopeStub(scopeId).reservedAmong(permissions)),
+    ]);
+    if (reserved.size === 0) return { seat: grants, skipped: [] };
+    const skipped = grants.filter((g) => reserved.has(g.permission)).map((g) => ({ connectionId: g.connectionId, permission: g.permission as string }));
+    console.warn(JSON.stringify(connectionGrantsSkippedLine(tenantId, scopeId, skipped)));
+    return { seat: grants.filter((g) => !reserved.has(g.permission)), skipped };
   }
 
   /**
@@ -11641,16 +11751,20 @@ export class CloudflareScopeHost implements ScopeHost {
     switchedOffPeers?: readonly string[];
     tenantHeldPeers?: readonly string[];
     switchFences?: Readonly<Record<string, string>>;
-  }): Promise<{ switchedOff?: SwitchedOff[] }> {
+  }): Promise<{ switchedOff?: SwitchedOff[]; skippedConnectionGrants?: SkippedConnectionGrant[] }> {
     const stub = this.scopeStub(input.scopeId);
     if (!(await stub.servesTenant(input.tenantId))) throw unknownScopeForTenant(input.tenantId, input.scopeId);
     const carry = recordedOffFromWire(input);
+    const connections = await this.seatableConnectionGrants(input.tenantId, input.scopeId, input.connectionGrants); // #2430
     await this.migrateAndRecord(input.scopeId);
     const switchedOff = await stub.seatTuples(
-      this.declaredSeatsLocal(input.scopeId, input.connectionGrants),
+      this.declaredSeatsLocal(input.scopeId, connections.seat),
       carry ? { scopeId: input.scopeId, at: new Date().toISOString(), ...carry } : undefined,
     );
-    return carry ? { switchedOff } : {};
+    return {
+      ...(carry ? { switchedOff } : {}),
+      ...(connections.skipped.length ? { skippedConnectionGrants: connections.skipped } : {}),
+    };
   }
 
   /**
@@ -11681,6 +11795,11 @@ export class CloudflareScopeHost implements ScopeHost {
    * already projected (via `provisionScopeLocal`), or the local checker expands it to nothing.
    */
   async assignScopeRole(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<void> {
+    // #2430: a platform door, as `HostAdmin.assignRole` is — a role mixing reserved and other keys
+    // is refused, against the scope class's own reservations and the role as the checker reads it
+    // for the tenant the scope's receipt names (`reservedRoleRefusalHere` says what happens without one).
+    const refusal = await this.scopeStub(scopeId).reservedRoleRefusalHere(roleKey, 'platform');
+    if (refusal) throw substratError('forbidden', refusal);
     unwrapReply(await this.scopeStub(scopeId).writeTuple(`principal:${principal}`, `role:${roleKey}`, `scope:${scopeId}`, null));
   }
 
@@ -11753,6 +11872,7 @@ export class CloudflareScopeHost implements ScopeHost {
     permission: PermissionKey,
     entity: EntityRef,
   ): Promise<void> {
+    await this.refuseReservedGrant([permission], scopeId); // #2430
     unwrapReply(await this.scopeStub(scopeId).writeTuple(
       `principal:${principal}`,
       `granted:${permission}`,
@@ -11775,7 +11895,30 @@ export class CloudflareScopeHost implements ScopeHost {
     entity: EntityRef,
     permissions: readonly PermissionKey[],
   ): Promise<void> {
+    await this.refuseReservedGrant(permissions, scopeId); // #2430
     await this.scopeStub(scopeId).grantEntityShape(principal, entity, permissions);
+  }
+
+  /**
+   * #2430: refuse a raw grant of a reserved key (`reservedGrantRefusal`): against this host's
+   * reservations, and at a scope node against the scope class's own, which may name more.
+   */
+  private async refuseReservedGrant(permissions: readonly PermissionKey[], scopeId: ScopeId | null): Promise<void> {
+    const refusal =
+      reservedGrantRefusal(permissions, this.reservedKeys) ??
+      (scopeId ? await this.scopeStub(scopeId).reservedGrantRefusalFor([...permissions]) : null);
+    if (refusal) throw substratError('forbidden', refusal);
+  }
+
+  /**
+   * #2430: refuse a reconcile of declared shapes when one holds a reserved key in `permissions`
+   * (`reservedShapeRefusal`): against this host's reservations, then the scope class's own.
+   */
+  private async refuseReservedShapes(shapes: readonly EntityGrantShape[], scopeId: ScopeId): Promise<void> {
+    const refusal =
+      reservedShapeRefusal(shapes, this.reservedKeys) ??
+      (await this.scopeStub(scopeId).reservedShapeRefusalFor(shapes.map((s) => ({ entityType: s.entityType, permissions: [...s.permissions] }))));
+    if (refusal) throw substratError('forbidden', refusal);
   }
 
   /**
@@ -11794,6 +11937,7 @@ export class CloudflareScopeHost implements ScopeHost {
     batch?: number,
   ): Promise<{ toppedUp: number; retired: number; retirementsLeftOpen?: number; boundEver?: string[] }> {
     const limit = shapeTopUpBatch(batch);
+    await this.refuseReservedShapes(shapes, scopeId); // #2430
     let toppedUp = 0;
     let retired = 0;
     let retirementsLeftOpen = 0;
@@ -11899,6 +12043,8 @@ export class CloudflareScopeHost implements ScopeHost {
     permission: PermissionKey,
     expiresAt?: string,
   ): Promise<void> {
+    // #2430: against the reservations of the scope served here, as `grantToConnection` asks.
+    await this.refuseReservedGrant([permission], scopeId);
     await this.writeScopeTuple(
       scopeId,
       subjectRef({ kind: 'connection', id: connectionId }),

@@ -18,6 +18,7 @@
     "lint:vite-proxy": "node tools/vite-proxy-host.mjs",
     "lint:like-pattern": "node tools/like-pattern-length.mjs",
     "lint:invocation-log": "node tools/invocation-log.mjs",
+    "lint:host-permissions": "node tools/host-permissions.mjs",
     "lint:skills": "node tools/skill-paths.mjs",
     "lint:permissions": "tsx tools/permission-diff.mts",
     "lint:schedule-sweeper": "tsx tools/schedule-sweeper.mts",

@@ -12,7 +12,7 @@ import {
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
-import { ENTITLEMENT_KEYS, ENTITY_GRANTS, MODULES, OWNER_ROLE_KEY, portalPerms, ROLES } from './provision.js';
+import { ENTITLEMENT_KEYS, ENTITY_GRANTS, MODULES, OWNER_ROLE_KEY, permissions, portalPerms, ROLES } from './provision.js';
 
 // The provisioning surface (modules, roles, grant shapes) lives in
 // provision.ts — node-free so the worker bundles it and `substrat push` reads
@@ -44,7 +44,7 @@ export interface BikeShopWorld {
 }
 
 export function buildBikeShopHost(dir: string): SqliteScopeHost {
-  const host = new SqliteScopeHost({ dir, attachmentExtractors: defaultAttachmentExtractors() });
+  const host = new SqliteScopeHost({ dir, attachmentExtractors: defaultAttachmentExtractors(), permissions });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }

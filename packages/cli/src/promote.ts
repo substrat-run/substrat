@@ -21,6 +21,9 @@
 import {
   diffRegistries,
   grantShapeHolderNotes,
+  RESERVED_KEY_MARK,
+  reservationNote,
+  roleHolderNote,
   promoteReviewReasonIn,
   clipReviewText,
   discardTally,
@@ -191,10 +194,14 @@ export function formatRegistryDiff(from: PermissionRegistry | null, to: Permissi
   const shape = (label: string, c: { added: string[]; removed: string[]; isNew: boolean; isGone: boolean }, name: string) =>
     `${label} ${name}${c.isNew ? ' (new)' : c.isGone ? ' (removed)' : ''}: ${[...c.added.map((k) => `+${k}`), ...c.removed.map((k) => `-${k}`)].join(' ')}`.trimEnd();
   const lines = [
-    ...diff.addedKeys.map((k) => `+ ${k}  ${describe(to, k)}`),
+    ...diff.addedKeys.map((k) => `+ ${k}  ${describe(to, k)}${diff.reservedAddedKeys.includes(k) ? `  (${RESERVED_KEY_MARK})` : ''}`),
     ...diff.changedKeys.map((k) => `~ ${k}  “${describe(from, k)}” → “${describe(to, k)}”`),
     ...diff.removedKeys.map((k) => `- ${k}  ${describe(from, k)}`),
-    ...diff.roleChanges.map((r) => shape('role', r, r.key)),
+    ...diff.reservationChanges.map((c) => `! ${reservationNote(c)}`),
+    ...diff.roleChanges.flatMap((r) => {
+      const held = roleHolderNote(r);
+      return [shape('role', r, r.key), ...(held ? [`  ${held}`] : [])];
+    }),
     ...diff.grantChanges.flatMap((g) => [
       shape('grant shape', g, g.entityType),
       ...grantShapeHolderNotes(g).map((n) => `  ${n}`),

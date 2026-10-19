@@ -134,7 +134,7 @@ export const permissions = definePermissions({
  * lapses after its real 15 minutes instead of being declared zero-length.
  */
 export function buildShopHost(dir: string, options?: { clock?: Clock }): SqliteScopeHost {
-  const host = new SqliteScopeHost({ dir, attachmentExtractors: defaultAttachmentExtractors(), ...(options?.clock ? { clock: options.clock } : {}) });
+  const host = new SqliteScopeHost({ dir, attachmentExtractors: defaultAttachmentExtractors(), permissions, ...(options?.clock ? { clock: options.clock } : {}) });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }

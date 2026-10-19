@@ -232,6 +232,7 @@ function refusalOf(
   if ('unknownRole' in result) return refuseDelivery(`no such role in this tenant: ${result.unknownRole}`);
   if ('unknownOrg' in result) return refuseDelivery(`no such org in this tenant: ${result.unknownOrg}`);
   if ('notMember' in result) return refuseDelivery(`the ${as} ${who} is not a member of org ${result.notMember}`);
+  if ('reserved' in result) return refuseDelivery(result.reserved);
   return refuseDelivery(`the ${as} ${who} no longer holds ${result.missing.join(', ')}, which '${request.roleKey}' confers`);
 }
 

@@ -7,8 +7,10 @@
  * The shapes are stated structurally: `PermissionRegistry` satisfies `RegistryLike`.
  */
 export interface RegistryLike {
-  permissions: ReadonlyArray<{ key: string; description: string }>;
-  roles: ReadonlyArray<{ key: string; permissions: readonly string[] }>;
+  /** #2430: `holder: 'system'` marks a key reserved to a system principal. */
+  permissions: ReadonlyArray<{ key: string; description: string; holder?: 'system' }>;
+  /** #2430: `holder: 'system'` marks a system-held role; `'person'` and absent are the same. */
+  roles: ReadonlyArray<{ key: string; permissions: readonly string[]; holder?: 'person' | 'system' }>;
   entityGrants: ReadonlyArray<{
     entityType: string;
     permissions: readonly string[];
@@ -22,6 +24,10 @@ export interface RegistryLike {
 /** One grant shape of a {@link RegistryLike}. */
 type EntityGrantShapeLike = RegistryLike['entityGrants'][number];
 
+/** #2430: who a role is for, with an absent holder read as a person's. */
+export type RoleHolder = 'person' | 'system';
+const holderOf = (r: { holder?: 'person' | 'system' }): RoleHolder => (r.holder === 'system' ? 'system' : 'person');
+
 /** How a bootstrap shape's holder is found from the data (`entityGrantShape.holder`), stated structurally. */
 export type EntityGrantHolder = 'self' | 'grantee' | { table: string; idColumn: string; principalColumn: string };
 
@@ -29,8 +35,29 @@ export interface RegistryDiff {
   addedKeys: string[];
   removedKeys: string[];
   changedKeys: string[];
-  /** Only roles that actually changed: gained/lost permissions, or appeared/vanished. */
-  roleChanges: Array<{ key: string; added: string[]; removed: string[]; isNew: boolean; isGone: boolean }>;
+  /**
+   * #2430: keys both versions declare whose reservation to a system principal moved — `reserved`
+   * is what the incoming version says. A lifted reservation lets a person's role hold the key.
+   */
+  reservationChanges: Array<{ key: string; reserved: boolean }>;
+  /** #2430: the `addedKeys` that arrive reserved to a system principal, which a reader marks. */
+  reservedAddedKeys: string[];
+  /**
+   * Only roles that actually changed: gained/lost permissions, or appeared/vanished. #2430: `holder`
+   * is set when a role both versions declare moved between a person's and a system principal's, and
+   * `systemHeld` when it did not move and is held by a system principal — a new role as the incoming
+   * version declares it, a dropped one as the outgoing did — so a reader never shows a system-held
+   * role holding a reserved key as if it were a person's.
+   */
+  roleChanges: Array<{
+    key: string;
+    added: string[];
+    removed: string[];
+    isNew: boolean;
+    isGone: boolean;
+    holder?: { from: RoleHolder; to: RoleHolder };
+    systemHeld?: true;
+  }>;
   /**
    * Entity-narrowed grant SHAPES that changed — which keys a per-entity grant may carry. #2082:
    * `retired` is the keys this version newly declares taken back from existing holders, and
@@ -79,17 +106,39 @@ export function holderLabel(h: EntityGrantHolder | undefined): string | null {
 export function diffRegistries(from: RegistryLike, to: RegistryLike): RegistryDiff {
   const fromKeys = new Map(from.permissions.map((p) => [p.key, p.description]));
   const toKeys = new Map(to.permissions.map((p) => [p.key, p.description]));
-  const fromRoles = new Map(from.roles.map((r) => [r.key, r.permissions]));
-  const toRoles = new Map(to.roles.map((r) => [r.key, r.permissions]));
+  // #2430: a reservation moving on a key both versions declare. A key arriving or leaving is
+  // already an added or removed key, and readers show its mark there.
+  const reservedIn = (reg: RegistryLike) => new Set(reg.permissions.filter((p) => p.holder === 'system').map((p) => p.key));
+  const fromReserved = reservedIn(from);
+  const toReserved = reservedIn(to);
+  const reservationChanges = [...toKeys.keys()]
+    .filter((k) => fromKeys.has(k) && fromReserved.has(k) !== toReserved.has(k))
+    .map((key) => ({ key, reserved: toReserved.has(key) }));
+  const fromRoles = new Map(from.roles.map((r) => [r.key, r]));
+  const toRoles = new Map(to.roles.map((r) => [r.key, r]));
   const roleChanges: RegistryDiff['roleChanges'] = [];
   for (const key of new Set([...fromRoles.keys(), ...toRoles.keys()])) {
     const before = fromRoles.get(key);
     const after = toRoles.get(key);
-    const added = gained(before, after);
-    const removed = gained(after, before);
+    const added = gained(before?.permissions, after?.permissions);
+    const removed = gained(after?.permissions, before?.permissions);
     const isNew = !before && !!after;
     const isGone = !!before && !after;
-    if (added.length || removed.length || isNew || isGone) roleChanges.push({ key, added, removed, isNew, isGone });
+    const holderMoved = !!before && !!after && holderOf(before) !== holderOf(after);
+    if (added.length || removed.length || isNew || isGone || holderMoved) {
+      roleChanges.push({
+        key,
+        added,
+        removed,
+        isNew,
+        isGone,
+        ...(holderMoved
+          ? { holder: { from: holderOf(before!), to: holderOf(after!) } }
+          : holderOf((after ?? before)!) === 'system'
+            ? { systemHeld: true as const }
+            : {}),
+      });
+    }
   }
   const fromGrants = new Map(from.entityGrants.map((g) => [g.entityType, g]));
   const toGrants = new Map(to.entityGrants.map((g) => [g.entityType, g]));
@@ -125,13 +174,42 @@ export function diffRegistries(from: RegistryLike, to: RegistryLike): RegistryDi
       });
     }
   }
+  const addedKeys = [...toKeys.keys()].filter((k) => !fromKeys.has(k));
   return {
-    addedKeys: [...toKeys.keys()].filter((k) => !fromKeys.has(k)),
+    addedKeys,
     removedKeys: [...fromKeys.keys()].filter((k) => !toKeys.has(k)),
     changedKeys: [...toKeys.entries()].filter(([k, d]) => fromKeys.has(k) && fromKeys.get(k) !== d).map(([k]) => k),
+    reservationChanges,
+    reservedAddedKeys: addedKeys.filter((k) => toReserved.has(k)),
     roleChanges,
     grantChanges,
   };
+}
+
+/**
+ * #2430: a moved reservation or role holder as one sentence each, for every reader of the diff to
+ * show as written, as {@link grantShapeHolderNotes} does for a grant shape.
+ */
+export function reservationNote(c: RegistryDiff['reservationChanges'][number]): string {
+  return c.reserved
+    ? `${c.key} is now reserved to a system principal: no person's role or grant shape may hold it`
+    : `${c.key} is no longer reserved to a system principal: a person's role may now hold it`;
+}
+
+/** #2430: how a reader marks an added key that arrives reserved (`reservedAddedKeys`). */
+export const RESERVED_KEY_MARK = 'reserved to a system principal';
+
+/**
+ * The sentence for a role whose holder moved, or for a system-held role that changed without moving
+ * (`systemHeld`), or null for a person's role whose holder stayed.
+ */
+export function roleHolderNote(r: Pick<RegistryDiff['roleChanges'][number], 'holder' | 'systemHeld'>): string | null {
+  if (r.holder) {
+    return r.holder.to === 'system'
+      ? 'now held by a system principal (holder: system), no longer a role a person can hold'
+      : 'now a role a person can hold, no longer held by a system principal';
+  }
+  return r.systemHeld ? 'held by a system principal (holder: system), not a role a person can hold' : null;
 }
 
 /**
@@ -253,6 +331,7 @@ export function hasRegistryChange(d: RegistryDiff): boolean {
     d.addedKeys.length > 0 ||
     d.removedKeys.length > 0 ||
     d.changedKeys.length > 0 ||
+    d.reservationChanges.length > 0 ||
     d.roleChanges.length > 0 ||
     d.grantChanges.length > 0
   );
@@ -266,17 +345,20 @@ export function hasRegistryChange(d: RegistryDiff): boolean {
 export type RegistryDirection = 'none' | 'adds' | 'removes' | 'mixed';
 
 export function registryDirection(d: RegistryDiff): RegistryDirection {
+  // #2430: a lifted reservation widens who may hold a key, and a new one narrows it.
   const adds =
     d.addedKeys.length > 0 ||
+    d.reservationChanges.some((c) => !c.reserved) ||
     d.roleChanges.some((r) => r.isNew || r.added.length > 0) ||
     d.grantChanges.some((g) => g.isNew || g.added.length > 0 || !!g.bind?.to);
   const removes =
     d.removedKeys.length > 0 ||
+    d.reservationChanges.some((c) => c.reserved) ||
     d.roleChanges.some((r) => r.isGone || r.removed.length > 0) ||
     d.grantChanges.some((g) => g.isGone || g.removed.length > 0 || g.retired.length > 0 || !!g.bind?.from);
-  // A description re-worded, or a holder moved, is a change that is neither: it keeps a diff
-  // from being "only".
-  const other = d.changedKeys.length > 0 || d.grantChanges.some((g) => !!g.holder);
+  // A description re-worded, or a holder moved (a grant shape's or a role's), is a change that is
+  // neither: it keeps a diff from being "only".
+  const other = d.changedKeys.length > 0 || d.grantChanges.some((g) => !!g.holder) || d.roleChanges.some((r) => !!r.holder);
   if (!hasRegistryChange(d)) return 'none';
   if (adds && !removes && !other) return 'adds';
   if (removes && !adds && !other) return 'removes';
@@ -310,7 +392,7 @@ export function unitemisedRegistryChanges(
   diff: RegistryDiff = diffRegistries(from, to),
 ): string[] {
   const itemised: Record<string, boolean> = {
-    permissions: diff.addedKeys.length + diff.removedKeys.length + diff.changedKeys.length > 0,
+    permissions: diff.addedKeys.length + diff.removedKeys.length + diff.changedKeys.length + diff.reservationChanges.length > 0,
     roles: diff.roleChanges.length > 0,
     entityGrants: diff.grantChanges.length > 0,
   };

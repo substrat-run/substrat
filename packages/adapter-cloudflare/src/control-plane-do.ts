@@ -8,6 +8,7 @@ import {
   RAISE_MEMBERSHIP_FENCE_SQL,
   memberAddedAudit,
   orgChangeBound,
+  reservedRoleRefusal,
   tenantCoverage,
   type MembershipChange,
   type MembershipChangeResult,
@@ -3811,11 +3812,14 @@ export class ControlPlaneDO extends DurableObject {
    * names one (#2047) — then the org is bounded here too (`boundedBy` a live member of it) and
    * joined or left in the same unit, a join expiring no later than `boundedBy`'s own membership.
    * The org row's `before`/`after` are written here, since only the unit knows the expiry.
+   * `reserved` (#2430) is what the coordinator's modules reserve to a system principal: an add of
+   * a role carrying one is a person conferring it, refused in the unit (`reservedRoleRefusal`).
    */
   applyMembership(
     change: MembershipChange,
     row: AdminEntryInput,
     orgRow?: AdminEntryInput,
+    reserved: readonly string[] = [],
   ): MembershipChangeResult {
     const { tenantId, principal, roleKey, boundedBy, orgId } = change;
     return this.ctx.storage.transactionSync((): MembershipChangeResult => {
@@ -3827,6 +3831,8 @@ export class ControlPlaneDO extends DurableObject {
       }
       const role = this.getRole(tenantId, roleKey);
       if (!role) return { applied: false, unknownRole: roleKey };
+      const refused = change.op === 'add' ? reservedRoleRefusal(role, new Set(reserved), 'person') : null;
+      if (refused) return { applied: false, reserved: refused };
       const bound = tenantCoverage(this.directoryReader, tenantId, boundedBy, role.permissions);
       if (!bound.covered) return { applied: false, missing: bound.missing };
       // #2047: the org, bounded by `boundedBy`'s own live membership of it.

@@ -873,6 +873,73 @@ export const permissions = {
     expect(out.digest).toBe(await permissionDigest(out.registry));
   });
 
+  /** #2430: an engine declaring `run:drive` reserved to a system principal, beside a person's key. */
+  const reservedSurface = (roles: unknown, schedules: unknown = []) => `
+export const permissions = {
+  modules: [
+    { manifest: { id: '@acme/engine-run', schedules: ${JSON.stringify(schedules)}, permissions: [
+      { key: 'run:use', description: 'Open a run' },
+      { key: 'run:drive', description: 'Drive a run', holder: 'system' },
+    ] } },
+  ],
+  roles: ${JSON.stringify(roles)},
+  entityGrants: [],
+};
+`;
+
+  it.runIf(built)('refuses a role holding a key a module reserves to a system principal, in lint:permissions’ words (#2430)', () => {
+    const r = runCheck(verticalWith(reservedSurface([{ key: 'member', permissions: ['run:use', 'run:drive'], source: 'vertical' }])));
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/perms\.mjs grants a key reserved to a system principal to a person's role, grant shape or owner grant/);
+    expect(r.stderr).toMatch(/role member → run:drive: declared `holder: 'system'` by @acme\/engine-run \(Drive a run\)/);
+    expect(r.stderr).toMatch(/Remedy: take the key out of the role, shape or owner grant/);
+    // Refused before anything was derived to ship.
+    expect(r.stdout).not.toMatch(/digest:/);
+  });
+
+  it.runIf(built)('…and refuses a reserved key in `substrat.ownerGrants`, which an install grants its owner; its twin passes', () => {
+    const roles = [{ key: 'member', permissions: ['run:use'], source: 'vertical' }];
+    const refused = runCheck(verticalWith(reservedSurface(roles), { substrat: { permissions: 'perms.mjs', ownerGrants: ['run:use', 'run:drive'] } }));
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toMatch(/owner grants \(substrat\.ownerGrants\) → run:drive: declared `holder: 'system'` by @acme\/engine-run/);
+    const passed = runCheck(verticalWith(reservedSurface(roles), { substrat: { permissions: 'perms.mjs', ownerGrants: ['run:use'] } }));
+    expect(passed.status, passed.stderr).toBe(0);
+  });
+
+  it.runIf(built)('…and refuses a `substrat.ownerGrants` that is not a list of keys, naming the field; a list passes', () => {
+    const roles = [{ key: 'member', permissions: ['run:use'], source: 'vertical' }];
+    for (const ownerGrants of ['run:use', { run: 'use' }, ['run:use', 7], null]) {
+      const r = runCheck(verticalWith(reservedSurface(roles), { substrat: { permissions: 'perms.mjs', ownerGrants } }));
+      expect(r.status, JSON.stringify(ownerGrants)).not.toBe(0);
+      expect(r.stderr).toMatch(/package\.json declares `substrat\.ownerGrants` as .+, not an array of permission keys\. List the keys/);
+      expect(r.stderr).not.toMatch(/is not a function|TypeError/);
+    }
+    const listed = runCheck(verticalWith(reservedSurface(roles), { substrat: { permissions: 'perms.mjs', ownerGrants: ['run:use'] } }));
+    expect(listed.status, listed.stderr).toBe(0);
+  });
+
+  it.runIf(built)('…and refuses a system-held role holding a person’s key (K-55)', () => {
+    const r = runCheck(verticalWith(reservedSurface([{ key: 'driver', holder: 'system', permissions: ['run:drive', 'run:use'], source: 'vertical' }])));
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/system-held role driver → run:use: a system-held role holds only keys reserved/);
+  });
+
+  it.runIf(built)('…its twin passes: the key held by a schedule and a system-held role, marked on the surface it would ship', () => {
+    const roles = [
+      { key: 'member', permissions: ['run:use'], source: 'vertical' },
+      { key: 'driver', holder: 'system', permissions: ['run:drive'], source: 'vertical' },
+    ];
+    const dir = verticalWith(reservedSurface(roles, [{ operation: 'run/sweep', cadence: { everyMinutes: 5 }, permissions: ['run:drive'] }]));
+    const r = runCheck(dir);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/run:drive\s+\[@acme\/engine-run]\s+Drive a run {2}\(reserved to a system principal\)/);
+    expect(r.stdout).toMatch(/driver {2}\(vertical, system-held, 1 key\(s\)\)/);
+    const json = JSON.parse(runCheck(dir, '--json').stdout) as { registry: PermissionRegistry };
+    expect(json.registry.permissions.find((p) => p.key === 'run:drive')?.holder).toBe('system');
+    expect(json.registry.permissions.find((p) => p.key === 'run:use')).not.toHaveProperty('holder');
+    expect(json.registry.roles.find((r) => r.key === 'driver')?.holder).toBe('system');
+  });
+
   it.runIf(built)('refuses an entry that stops exporting `permissions`', () => {
     const r = runCheck(verticalWith(`export const roles = [];\n`));
     expect(r.status).not.toBe(0);

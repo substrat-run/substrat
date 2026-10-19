@@ -8,14 +8,21 @@
  *
  * Kept out of `seed.ts` on purpose: that file imports `node:*` and a concrete
  * adapter, and anything importing provisioning from there would drag both into
- * environments that cannot load them.
+ * environments that cannot load them. So `MODULES` and `ROLES` live here too, and
+ * the seed imports them, with this `permissions` for its host (#2430).
  */
-import { definePermissions } from '@substrat-run/contracts';
+import { definePermissions, type RoleDefinition } from '@substrat-run/contracts';
 import { TODO_PERMISSIONS } from '../spec/model.js';
-import { ENTITY_GRANTS } from './manifest.js';
-import { MODULES, ROLES } from './seed.js';
+import { ENTITY_GRANTS, TODO_PERM } from './manifest.js';
+import { todoModule } from './module.js';
 
 export { ENTITY_GRANTS };
+
+export const MODULES = [todoModule];
+
+export const ROLES: RoleDefinition[] = [
+  { key: 'member', permissions: [TODO_PERM.listCreate], source: 'vertical' },
+];
 
 /**
  * `keys` is the SAME array `spec/model.ts` hands `defineOperations` (#1208).

@@ -254,6 +254,8 @@ export interface PermissionRegistryEntry {
   key: string;
   description: string;
   declaredBy: string[];
+  /** #2430: a key reserved to a system principal; absent for every other key. */
+  holder?: 'system';
 }
 /** A role template (D-39): a role key and the permission keys it holds. `source` is the
  *  declaring module id, or `'vertical'` for a role the vertical composes itself. */
@@ -261,6 +263,8 @@ export interface RoleDefinition {
   key: string;
   permissions: string[];
   source: string;
+  /** #2430: `'system'` for a role held by a system principal (K-55); absent is a person's. */
+  holder?: 'person' | 'system';
 }
 /** An entity-narrowed grant SHAPE (D-39): which keys a per-entity grant carries. The grants
  *  themselves are per-principal runtime tuples (control-plane §4.5) — only the shape is a code

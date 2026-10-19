@@ -8,7 +8,7 @@
 import { Hono } from 'hono';
 import { CloudflareScopeHost, defineScopeDO } from '../../src/index.js';
 import { invocationLog, mountPlatformSurface } from '@substrat-run/vertical-host';
-import { MODULES, OWNER_ROLE_KEY, ROLES } from './perms.js';
+import { MODULES, OWNER_ROLE_KEY, ROLES, permissions } from './perms.js';
 
 interface Env {
   SCOPE: DurableObjectNamespace;
@@ -16,10 +16,10 @@ interface Env {
   ROUTER_SECRET?: string;
 }
 
-export const ScopeDO = defineScopeDO(MODULES, {});
+export const ScopeDO = defineScopeDO(MODULES, {}, { permissions });
 
 function hostFor(env: Env): CloudflareScopeHost {
-  const host = new CloudflareScopeHost({ scope: env.SCOPE });
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, permissions });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }
