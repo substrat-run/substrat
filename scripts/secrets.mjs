@@ -211,6 +211,9 @@ const MANIFEST = {
       'GITHUB_APP_ID',
       'GITHUB_APP_SLUG',
       'GITHUB_APP_PRIVATE_KEY',
+      // Verifies the connect links a vertical mints (#2448). Without it every one
+      // lands as "not valid", while the dashboard's own links keep working.
+      'PLATFORM_SECRET',
     ],
     secrets: {
       OIDC_ISSUER: 'OIDC_ISSUER',
@@ -229,6 +232,7 @@ const MANIFEST = {
       OIDC_ALT_TOKEN_AUTH: 'OIDC_ALT_TOKEN_AUTH',
       // The control plane's SERVICE_TOKEN, under the dashboard's name for it.
       CP_SERVICE_TOKEN: 'SERVICE_TOKEN',
+      PLATFORM_SECRET: 'PLATFORM_SECRET',
       SECRET_BOX_KEY: 'SECRET_BOX_KEY',
       SECRET_BOX_KEY_ID: 'SECRET_BOX_KEY_ID',
       GITHUB_APP_ID: 'GITHUB_APP_ID',
