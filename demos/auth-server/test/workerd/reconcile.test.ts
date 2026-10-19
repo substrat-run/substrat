@@ -15,7 +15,7 @@
  */
 import { SELF, env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { scopeId, tenantId } from '@substrat-run/contracts';
+import { MCP_RESOURCES_CONFIG_PREFIX, mcpResourceOf, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from 'jose';
 
@@ -154,6 +154,51 @@ describe('the rest of /internal/* is still an honest 501 (#1660)', () => {
   });
 });
 
+const configure = (scope: string, entries: { key: string; value: string }[]) =>
+  platform('/internal/configure', { scopeId: scope, entries });
+
+/** Straight at the issuer DO, as the router would deliver it. */
+const atIssuer = (scope: string, path: string, init?: RequestInit) =>
+  stubOf(scope).fetch(`https://auth-server.test${path}`, init);
+
+const MCP_CLIENT_REDIRECT = 'https://mcp-client.test/callback';
+
+/** A self-registered public client, as every MCP client is. */
+async function mcpClient(scope: string): Promise<string> {
+  const res = await atIssuer(scope, '/api/auth/oauth2/register', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      client_name: 'Probe MCP Client',
+      redirect_uris: [MCP_CLIENT_REDIRECT],
+      token_endpoint_auth_method: 'none',
+    }),
+  });
+  expect(res.status).toBe(201);
+  return ((await res.json()) as { client_id: string }).client_id;
+}
+
+/** Where `/authorize` sends a signed-out browser asking for `resource`. */
+async function authorizeFor(scope: string, clientId: string, target: string): Promise<string> {
+  const q = new URLSearchParams({
+    response_type: 'code',
+    client_id: clientId,
+    redirect_uri: MCP_CLIENT_REDIRECT,
+    scope: 'openid',
+    state: 'st',
+    code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+    code_challenge_method: 'S256',
+    resource: target,
+  });
+  // `manual`: a stub's fetch otherwise FOLLOWS the 302, and the DO has no /login to land on.
+  const res = await atIssuer(scope, `/api/auth/oauth2/authorize?${q}`, {
+    headers: { 'sec-fetch-mode': 'navigate' },
+    redirect: 'manual',
+  });
+  expect(res.status).toBe(302);
+  return res.headers.get('location') ?? '';
+}
+
 /**
  * The platform's registration of a vertical's MCP endpoint (#1619), on the real worker and
  * the real `AuthServerDO`: `/internal/configure` carrying `substrat:resources:<scope>`
@@ -168,49 +213,6 @@ describe('auth-server registers the MCP resources the platform delivers (#1619)'
   const app = scopeId.parse(ulid());
   const key = `substrat:resources:${app}`;
   const resource = 'https://desk.acme.test/api/mcp';
-  const redirect = 'https://mcp-client.test/callback';
-
-  const configure = (scope: string, entries: { key: string; value: string }[]) =>
-    platform('/internal/configure', { scopeId: scope, entries });
-
-  /** Straight at the issuer DO, as the router would deliver it. */
-  const issuer = (scope: string, path: string, init?: RequestInit) =>
-    stubOf(scope).fetch(`https://auth-server.test${path}`, init);
-
-  async function mcpClient(scope: string): Promise<string> {
-    const res = await issuer(scope, '/api/auth/oauth2/register', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        client_name: 'Probe MCP Client',
-        redirect_uris: [redirect],
-        token_endpoint_auth_method: 'none',
-      }),
-    });
-    expect(res.status).toBe(201);
-    return ((await res.json()) as { client_id: string }).client_id;
-  }
-
-  /** Where `/authorize` sends a signed-out browser asking for `resource`. */
-  async function authorizeFor(scope: string, clientId: string, target: string): Promise<string> {
-    const q = new URLSearchParams({
-      response_type: 'code',
-      client_id: clientId,
-      redirect_uri: redirect,
-      scope: 'openid',
-      state: 'st',
-      code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
-      code_challenge_method: 'S256',
-      resource: target,
-    });
-    // `manual`: a stub's fetch otherwise FOLLOWS the 302, and the DO has no /login to land on.
-    const res = await issuer(scope, `/api/auth/oauth2/authorize?${q}`, {
-      headers: { 'sec-fetch-mode': 'navigate' },
-      redirect: 'manual',
-    });
-    expect(res.status).toBe(302);
-    return res.headers.get('location') ?? '';
-  }
 
   it('turns the delivery into a row the plugin mints for, and un-registers it on ""', async () => {
     const scope = scopeId.parse(ulid());
@@ -829,6 +831,42 @@ describe('auth-server mints and retires a preview’s own client (#1704)', () =>
     }
     expect(await clientRow(w.scope, w.prod)).toBe(prodBefore);
     expect(await clientRow(w.scope, b.clientId)).toBeNull();
+  });
+
+  it('mints for the preview’s MCP endpoint once registered under the preview’s key, not after the reap — prod’s row as it was', async () => {
+    const w = await issuerWithParent();
+    const prodMcp = mcpResourceOf(`https://${parentHost}`);
+    const previewMcp = mcpResourceOf('https://desk--pr-7.acme.test');
+    expect((await configure(w.scope, [{ key: `${MCP_RESOURCES_CONFIG_PREFIX}${w.parent}`, value: JSON.stringify([prodMcp]) }])).status).toBe(200);
+    const prodRow = async () => (await dumpOf(w.scope))['oauth_resource']!.find((r) => r.includes(prodMcp));
+    const prodBefore = await prodRow();
+    expect(prodBefore).toBeDefined();
+    const client = await mcpClient(w.scope);
+    expect(await authorizeFor(w.scope, client, previewMcp)).toContain('error=invalid_target');
+
+    // The plane's create: the preview's own client, then its endpoint under the preview's key.
+    const preview = scopeId.parse(ulid());
+    expect((await previewCall('POST', '/internal/preview-client', mintBody(w, preview))).status).toBe(201);
+    const key = `${MCP_RESOURCES_CONFIG_PREFIX}${preview}`;
+    expect((await configure(w.scope, [{ key, value: JSON.stringify([previewMcp]) }])).status).toBe(200);
+    expect((await authorizeFor(w.scope, client, previewMcp)).startsWith('/login?')).toBe(true);
+    expect(await prodRow()).toBe(prodBefore);
+    // Its row carries the platform's marker and its client redirects there, yet it is no parent.
+    const asParent = await previewCall('POST', '/internal/preview-client/check', {
+      tenantId: t,
+      scopeId: w.scope,
+      parentScopeId: preview,
+      parentRedirectUris: [mintBody(w, preview).redirectUri],
+    });
+    expect(await asParent.json()).toEqual({ claimed: false });
+
+    // The plane's reap: the preview's clients, then its registration.
+    const reaped = await previewCall('DELETE', '/internal/preview-client', { tenantId: t, scopeId: w.scope, previewScopeId: preview });
+    expect(reaped.status).toBe(200);
+    expect((await configure(w.scope, [{ key, value: '' }])).status).toBe(200);
+    expect(await authorizeFor(w.scope, client, previewMcp)).toContain('error=invalid_target');
+    expect(await prodRow()).toBe(prodBefore);
+    expect((await authorizeFor(w.scope, client, prodMcp)).startsWith('/login?')).toBe(true);
   });
 });
 

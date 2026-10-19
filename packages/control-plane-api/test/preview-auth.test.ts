@@ -5,8 +5,10 @@ import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { runPlatformSweep, ulid } from '@substrat-run/kernel';
 import {
+  MCP_RESOURCES_CONFIG_PREFIX,
   PREVIEW_CLIENT_PATH,
   SHARED_ISSUER_CONFIG_KEY,
+  mcpResourceOf,
   oidcCallbackUrl,
   platformActorId,
   previewClientCheck,
@@ -43,6 +45,8 @@ import {
  *     ITS OWN client, delivered into the PR version's own config store;
  *   - prod's client is never read, written or taught the preview's callback;
  *   - the reap deletes the preview's client, and a failed or partial create leaks none;
+ *   - the issuer that signs the preview in mints for the preview's MCP endpoint too, from
+ *     create until the reap, and prod's registration is never touched;
  *   - nothing is minted on a callback match alone, at another tenant's issuer, at a fork of an
  *     issuer, or where two issuers claim the app;
  *   - an issuer that predates the routes reads as "redeploy", never as "external";
@@ -52,10 +56,10 @@ import {
  *   - the secret appears in no output, admin-log row or ops-failure row;
  *   - only whoever may create the preview triggers any of it.
  *
- * The issuer is a faithful fake of `demos/auth-server`'s three routes, speaking through the
- * REAL `VerticalClient` (so the skew handling under test is the shipped one) and parsing every
- * request with the contract's own schemas. The issuer's real implementation is proven against
- * the same schemas in its own package, on node and on workerd.
+ * The issuer is a faithful fake of `demos/auth-server`'s three routes and its resources
+ * delivery, speaking through the REAL `VerticalClient` (so the skew handling under test is the
+ * shipped one) and parsing every request with the contract's own schemas. The issuer's real
+ * implementation is proven against the same schemas in its own package, on node and on workerd.
  */
 
 const staff = platformActorId.parse(ulid());
@@ -65,6 +69,8 @@ const BUILDER_HEADER = 'x-test-builder';
 const APP = 'acme/desk';
 const PARENT_HOST = 'desk-acme.global.substrat.run';
 const PREVIEW_HOST = (tag: string) => `desk-acme--${tag}.global.substrat.run`;
+const PARENT_MCP = mcpResourceOf(`https://${PARENT_HOST}`);
+const PREVIEW_MCP = (tag: string) => mcpResourceOf(`https://${PREVIEW_HOST(tag)}`);
 
 // ── the fake issuer deployment: one per auth-server vertical, every install one instance ──
 
@@ -83,6 +89,8 @@ interface FakeInstance {
   /** Apps the PLATFORM bound here (#1619 / #1670). */
   bindings: Set<string>;
   clients: Map<string, FakeClient>;
+  /** The resource registry (#1619): identifier → the scope whose delivery owns it. */
+  resources: Map<string, string>;
 }
 
 class FakeIssuers {
@@ -92,21 +100,51 @@ class FakeIssuers {
   predates = false;
   /** Fail the next call to `path` with this status. */
   failNext = new Map<string, number>();
+  /** Awaited when a mint arrives, before the client exists. */
+  beforeMint: (() => Promise<void>) | null = null;
   /** Awaited just after a mint lands, before it answers — to interleave pushes. */
   afterMint: ((clientId: string, body: Record<string, unknown>) => Promise<void>) | null = null;
   /** Awaited just before a retire runs. */
   beforeRetire: ((body: Record<string, unknown>) => Promise<void>) | null = null;
   /** Awaited after a check answers — before the caller can mint. */
   afterCheck: (() => Promise<void>) | null = null;
+  /** Awaited when a configure delivery arrives, before it applies. */
+  beforeConfigure: ((body: Record<string, unknown>) => Promise<void>) | null = null;
   private gen = 0;
   private n = 0;
 
-  install(scope: string, tenant: string, opts: { bind?: string[]; clients?: Record<string, string[]> } = {}): void {
+  install(
+    scope: string,
+    tenant: string,
+    opts: { bind?: string[]; clients?: Record<string, string[]>; resources?: Record<string, string> } = {},
+  ): void {
     const clients = new Map<string, FakeClient>();
     for (const [id, uris] of Object.entries(opts.clients ?? {})) {
       clients.set(id, { redirectUris: uris, postLogout: [], secretHash: `hash-${id}`, disabled: false });
     }
-    this.instances.set(scope, { tenantId: tenant, bindings: new Set(opts.bind ?? []), clients });
+    const resources = new Map(Object.entries(opts.resources ?? {}));
+    this.instances.set(scope, { tenantId: tenant, bindings: new Set(opts.bind ?? []), clients, resources });
+  }
+
+  /** The identifiers registered for `owner` at `scope` — what this issuer would mint for. */
+  registered(scope: string, owner: string): string[] {
+    return [...(this.instances.get(scope)?.resources ?? [])]
+      .filter(([, o]) => o === owner)
+      .map(([identifier]) => identifier);
+  }
+
+  /**
+   * The platform's `/internal/configure`, as `demos/auth-server/src/resources.ts` applies a
+   * resources entry: the owner's whole set. Operator-owned rows are not modelled.
+   */
+  private configure(inst: FakeInstance, entries: Array<{ key: string; value: string }>): void {
+    for (const { key, value } of entries) {
+      if (!key.startsWith(MCP_RESOURCES_CONFIG_PREFIX)) continue;
+      const owner = key.slice(MCP_RESOURCES_CONFIG_PREFIX.length);
+      const wanted = new Set(value === '' ? [] : (JSON.parse(value) as string[]));
+      for (const [identifier, o] of [...inst.resources]) if (o === owner && !wanted.has(identifier)) inst.resources.delete(identifier);
+      for (const identifier of wanted) inst.resources.set(identifier, owner);
+    }
   }
 
   tagged(scope: string, preview: string): string[] {
@@ -122,7 +160,10 @@ class FakeIssuers {
     this.calls.push({ method, path: url.pathname, body });
     const json = (status: number, value: unknown) =>
       new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
-    if (!url.pathname.startsWith(PREVIEW_CLIENT_PATH) || this.predates) {
+    // `/internal/configure` predates the preview-client routes (#1619), so even a deployment
+    // built before those takes it.
+    const isConfigure = url.pathname === '/internal/configure';
+    if (!isConfigure && (!url.pathname.startsWith(PREVIEW_CLIENT_PATH) || this.predates)) {
       return json(501, { error: `auth-server does not implement ${method} ${url.pathname}` });
     }
     const fail = this.failNext.get(`${method} ${url.pathname}`);
@@ -132,6 +173,11 @@ class FakeIssuers {
     }
     const inst = this.instances.get(String(body.scopeId));
     if (!inst || inst.tenantId !== body.tenantId) return json(403, { error: 'not an issuer of that tenant' });
+    if (isConfigure) {
+      if (this.beforeConfigure) await this.beforeConfigure(body);
+      this.configure(inst, body.entries as Array<{ key: string; value: string }>);
+      return json(200, { applied: (body.entries as unknown[]).length });
+    }
     const claims = (b: { parentScopeId: string; parentRedirectUris: string[] }) =>
       inst.bindings.has(b.parentScopeId) &&
       [...inst.clients.values()].some((c) => !c.disabled && c.redirectUris.some((u) => b.parentRedirectUris.includes(u)));
@@ -143,6 +189,7 @@ class FakeIssuers {
     }
     if (method === 'POST') {
       const b = previewClientMint.parse(body);
+      if (this.beforeMint) await this.beforeMint();
       if (!claims(b)) return json(409, { error: 'does not sign in that scope' });
       if (b.parentRedirectUris.includes(b.redirectUri) || b.parentRedirectUris.includes(b.postLogoutRedirectUri)) {
         return json(400, { error: 'never the parent' });
@@ -259,13 +306,21 @@ async function world(): Promise<void> {
   await host.admin.bindHostname(staff, { hostname: PARENT_HOST, tenantId: tenant, scopeId: prod, surface: 'app', region: null, canonical: true });
 
   // The team's auth server: an install of a vertical that provides `oidc-issuer`, holding
-  // prod's client and the platform's binding for prod.
+  // prod's client, the platform's binding for prod, and prod's MCP endpoint as the dashboard
+  // registered it at install.
   if (!(await host.admin.listVerticals(staff)).some((v) => v.slug === 'auth-server')) {
     await host.admin.registerVertical(staff, { slug: 'auth-server', name: 'Auth Server', source: 'builtin', ownerTenant: null, provides: ['oidc-issuer'] });
   }
   issuerScope = await issuerInstall(tenant, 'auth-acme.global.substrat.run');
-  issuers.install(issuerScope, tenant, { bind: [prod], clients: { [PROD_CLIENT]: [oidcCallbackUrl(PARENT_HOST)] } });
+  issuers.install(issuerScope, tenant, {
+    bind: [prod],
+    clients: { [PROD_CLIENT]: [oidcCallbackUrl(PARENT_HOST)] },
+    resources: { [PARENT_MCP]: prod },
+  });
 }
+
+/** Every configure delivery the platform made to any issuer. */
+const configures = () => issuers.calls.filter((c) => c.path === '/internal/configure');
 
 async function issuerInstall(t: TenantId, hostname: string): Promise<ScopeId> {
   const s = scopeId.parse(ulid());
@@ -396,13 +451,15 @@ describe('a preview of an app on a team auth server gets its own login (#1704)',
 });
 
 describe('the reap deletes the preview’s client (#1704)', () => {
-  it('DELETE removes the preview’s clients before the preview, and prod’s survives', async () => {
+  it('DELETE removes the preview’s clients and MCP registration before the preview, and prod’s survive', async () => {
     const out = await created({ tag: 'pr-7', versionId: versions[1] });
     expect(issuers.tagged(issuerScope, out.scopeId)).toHaveLength(1);
     const del = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
     expect(del.status).toBe(200);
     expect(issuers.tagged(issuerScope, out.scopeId)).toEqual([]);
     expect(issuers.instances.get(issuerScope)!.clients.has(PROD_CLIENT)).toBe(true);
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
   });
 
   it('a reap whose client delete fails keeps the preview, so the retry still finds it', async () => {
@@ -419,7 +476,7 @@ describe('the reap deletes the preview’s client (#1704)', () => {
 });
 
 describe('the expiry sweep retires an expired preview’s client too (#1704)', () => {
-  it('as apps/control-plane composes it: the preview’s client goes with it, a snapshot is left alone', async () => {
+  it('as apps/control-plane composes it: the preview’s client and MCP registration go with it, a snapshot is left alone', async () => {
     const out = await created({ tag: 'pr-7', versionId: versions[1], ttlHours: 1 });
     await host.admin.setScopeExpiresAt(staff, tenant, out.scopeId, new Date(Date.now() - 1000).toISOString());
     const issuerClient = new VerticalClient({ fetch: issuers.fetch, platformSecret: 'test' });
@@ -435,11 +492,639 @@ describe('the expiry sweep retires an expired preview’s client too (#1704)', (
     expect(report.snapshotsReaped).toBeGreaterThanOrEqual(1);
     expect(issuers.tagged(issuerScope, out.scopeId)).toEqual([]);
     expect(issuers.instances.get(issuerScope)!.clients.has(PROD_CLIENT)).toBe(true);
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
     // Anything that is not a preview fork has no client to retire, and is never asked about.
     const before = issuers.calls.length;
     expect(await retireClientsOfReapedScope(deps, (await host.admin.getScopeRecord(staff, tenant, prod))!)).toEqual([]);
     expect(await retireClientsOfReapedScope(deps, undefined)).toEqual([]);
     expect(issuers.calls.length).toBe(before);
+  });
+});
+
+describe('a preview’s MCP endpoint is registered where its login is (#1704)', () => {
+  it('create registers it at the issuer that signs the preview in, keyed by the preview — prod’s registration untouched', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    expect(out.auth.status).toBe('wired');
+    // What the issuer will now mint for: the preview's endpoint, owned by the PREVIEW's key.
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+    // One delivery, to the issuer's own (tenant, scope), naming no other app's key.
+    expect(configures()).toEqual([
+      {
+        method: 'POST',
+        path: '/internal/configure',
+        body: {
+          tenantId: tenant,
+          scopeId: issuerScope,
+          entries: [{ key: `${MCP_RESOURCES_CONFIG_PREFIX}${out.scopeId}`, value: JSON.stringify([PREVIEW_MCP('pr-7')]) }],
+        },
+      },
+    ]);
+    expect(out.auth.note).toContain(`MCP: ${PREVIEW_MCP('pr-7')} registered there`);
+  });
+
+  it('registers every hostname the preview actively answers on, as the dashboard counts them — never a pending one', async () => {
+    const first = await created({ tag: 'pr-7', versionId: versions[1] });
+    const bind = (hostname: string) =>
+      host.admin.bindHostname(staff, { hostname, tenantId: tenant, scopeId: first.scopeId, surface: 'app', region: null, canonical: false });
+    await bind('desk-acme--pr-7.alt.example');
+    await host.admin.setHostnameStatus(staff, 'desk-acme--pr-7.alt.example', 'active');
+    await bind('desk-acme--pr-7.pending.example');
+    await created({ tag: 'pr-7', versionId: versions[2] });
+    expect(issuers.registered(issuerScope, first.scopeId).sort()).toEqual(
+      [PREVIEW_MCP('pr-7'), mcpResourceOf('https://desk-acme--pr-7.alt.example')].sort(),
+    );
+  });
+
+  it('every push re-asserts the same set, and --refresh moves it to the fresh preview', async () => {
+    const first = await created({ tag: 'pr-7', versionId: versions[1] });
+    const again = await created({ tag: 'pr-7', versionId: versions[2] });
+    expect(again.reused).toBe(true);
+    expect(configures()).toHaveLength(2);
+    expect(issuers.registered(issuerScope, first.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+
+    const fresh = await created({ tag: 'pr-7', versionId: versions[3], refresh: true });
+    expect(issuers.registered(issuerScope, first.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, fresh.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+  });
+
+  it('a reap whose un-registration fails keeps the preview, and its clients, so the retry still finds both', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    issuers.failNext.set('POST /internal/configure', 503);
+    const failed = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
+    expect(failed.ok).toBe(false);
+    expect(await host.admin.getScopeRecord(staff, tenant, out.scopeId)).toBeDefined();
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+    // Cleared BEFORE retired: a registration never outlives the clients that make the issuer
+    // read the preview as one (`claimsParent`), even when the clear is what failed.
+    expect(issuers.tagged(issuerScope, out.scopeId)).toHaveLength(1);
+    const retried = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
+    expect(retried.status).toBe(200);
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.tagged(issuerScope, out.scopeId)).toEqual([]);
+  });
+
+  it('a registration that fails once is retried like the delivery beside it', async () => {
+    app = api({ provisionRetryDelaysMs: [0] });
+    issuers.failNext.set('POST /internal/configure', 503);
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+    expect(out.auth.note).toContain(`MCP: ${PREVIEW_MCP('pr-7')} registered there`);
+  });
+
+  it('a registration that fails does not fail the login — the note says so, and the next push registers it', async () => {
+    issuers.failNext.set('POST /internal/configure', 503);
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    expect(out.auth.status).toBe('wired');
+    expect(deployments.auth(versions[1]!, out.scopeId)!.clientId).toBe(out.auth.clientId);
+    expect(out.auth.note).toContain("the preview's endpoint could not be registered there");
+    expect(out.auth.note).toContain('invalid_target');
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+
+    await created({ tag: 'pr-7', versionId: versions[2] });
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+  });
+
+});
+
+/**
+ * The real reap racing a push (#1704): the DELETE route's own `reapPreview`, which keeps the
+ * preview's row until its last step, `deleteSnapshot`. Each test holds that last step until
+ * the push has answered, so the push meets the row still there — the case a row-only look
+ * cannot tell from a live preview.
+ */
+describe('a reap racing a push leaves nothing at the issuer (#1704)', () => {
+  const del = () => app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
+
+  /** Hold the reap's `deleteSnapshot` until released; `reached` resolves when the reap gets there. */
+  function holdRowDelete(): { reached: Promise<void>; release: () => void; restore: () => void } {
+    const reached = gate();
+    const release = gate();
+    const original = host.deleteSnapshot.bind(host);
+    host.deleteSnapshot = async (...args) => {
+      reached.open();
+      await release.wait;
+      return original(...args);
+    };
+    return { reached: reached.wait, release: release.open, restore: () => (host.deleteSnapshot = original) };
+  }
+
+  it('archives the preview before its first issuer call, and clears before it retires', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    let statusAtFirstCall: string | undefined;
+    issuers.beforeConfigure = async () => {
+      statusAtFirstCall ??= (await host.admin.getScopeRecord(staff, tenant, out.scopeId))?.status;
+    };
+    const from = issuers.calls.length;
+    expect((await del()).status).toBe(200);
+    expect(statusAtFirstCall).toBe('archived');
+    expect(issuers.calls.slice(from).map((c) => c.method)).toEqual(['POST', 'DELETE']);
+  });
+
+  it('a reap whose issuer step lands between a push’s mint and its next look: the push removes nothing it keeps', async () => {
+    const base = await created({ tag: 'pr-7', versionId: versions[1] });
+    const rowDelete = holdRowDelete();
+    const minted = gate();
+    const resume = gate();
+    let stalled = false;
+    issuers.afterMint = async () => {
+      if (stalled) return;
+      stalled = true;
+      minted.open();
+      await resume.wait;
+    };
+    try {
+      const push = create({ tag: 'pr-7', versionId: versions[2] });
+      await minted.wait;
+      const reap = del();
+      await rowDelete.reached; // the reap's issuer step is done; its row is still there
+      resume.open();
+      const pushed = (await (await push).json()) as Created;
+      expect(pushed.auth.status).toBe('superseded');
+      rowDelete.release();
+      expect((await reap).status).toBe(200);
+    } finally {
+      rowDelete.restore();
+    }
+    expect(await host.admin.getScopeRecord(staff, tenant, base.scopeId)).toBeUndefined();
+    expect(issuers.registered(issuerScope, base.scopeId)).toEqual([]);
+    expect(issuers.tagged(issuerScope, base.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+    expect(issuers.instances.get(issuerScope)!.clients.has(PROD_CLIENT)).toBe(true);
+  });
+
+  it('a push whose registration lands after the reap’s clear removes it itself, registration first', async () => {
+    const base = await created({ tag: 'pr-7', versionId: versions[1] });
+    const rowDelete = holdRowDelete();
+    const registering = gate();
+    const resume = gate();
+    let stalled = false;
+    issuers.beforeConfigure = async (body) => {
+      const [entry] = body.entries as Array<{ key: string; value: string }>;
+      if (stalled || entry?.value === '') return;
+      stalled = true;
+      registering.open();
+      await resume.wait;
+    };
+    let from = 0;
+    try {
+      const push = create({ tag: 'pr-7', versionId: versions[2] });
+      await registering.wait;
+      const reap = del();
+      await rowDelete.reached; // the reap cleared and retired; this push's registration is next
+      from = issuers.calls.length;
+      resume.open();
+      expect(((await (await push).json()) as Created).auth.status).toBe('superseded');
+      rowDelete.release();
+      expect((await reap).status).toBe(200);
+    } finally {
+      rowDelete.restore();
+    }
+    expect(issuers.registered(issuerScope, base.scopeId)).toEqual([]);
+    expect(issuers.tagged(issuerScope, base.scopeId)).toEqual([]);
+    // After its own late registration, the push cleared before it retired.
+    const own = issuers.calls.slice(from + 1);
+    const clear = own.findIndex((c) => c.path === '/internal/configure');
+    const retireAll = own.findIndex((c) => c.method === 'DELETE' && !c.body.keep && !c.body.only);
+    expect(clear).toBeGreaterThanOrEqual(0);
+    expect(clear).toBeLessThan(retireAll);
+  });
+
+  it('a push that registers and retires between the reap’s clear and its retire is caught by its last look', async () => {
+    const base = await created({ tag: 'pr-7', versionId: versions[1] });
+    const rowDelete = holdRowDelete();
+    const pushRegistering = gate();
+    const resumePush = gate();
+    const reapRetiring = gate();
+    const resumeReap = gate();
+    let pushStalled = false;
+    let reapStalled = false;
+    issuers.beforeConfigure = async (body) => {
+      const [entry] = body.entries as Array<{ key: string; value: string }>;
+      if (pushStalled || entry?.value === '') return;
+      pushStalled = true;
+      pushRegistering.open();
+      await resumePush.wait;
+    };
+    issuers.beforeRetire = async (body) => {
+      if (reapStalled || body.keep || body.only) return;
+      reapStalled = true; // the reap's own retire, after its clear
+      reapRetiring.open();
+      await resumeReap.wait;
+    };
+    try {
+      const push = create({ tag: 'pr-7', versionId: versions[2] });
+      await pushRegistering.wait; // past its look after the delivery
+      const reap = del();
+      await reapRetiring.wait; // archived and cleared; its retire is held
+      resumePush.open(); // registers after that clear, and keeps its own client
+      expect(((await (await push).json()) as Created).auth.status).toBe('superseded');
+      resumeReap.open();
+      await rowDelete.reached;
+      rowDelete.release();
+      expect((await reap).status).toBe(200);
+    } finally {
+      rowDelete.restore();
+    }
+    expect(issuers.registered(issuerScope, base.scopeId)).toEqual([]);
+    expect(issuers.tagged(issuerScope, base.scopeId)).toEqual([]);
+  });
+
+  it('a push’s LAST attempt that loses its client to a reap looks before it gives up, and removes what it left', async () => {
+    const base = await created({ tag: 'pr-7', versionId: versions[1] });
+    const rowDelete = holdRowDelete();
+    // Attempts 1 and 2 lose their kept client as to a same-version sibling; attempt 3 loses it to the reap.
+    let keeps = 0;
+    issuers.beforeRetire = async (body) => {
+      if (body.keep && ++keeps <= 2) issuers.instances.get(issuerScope)!.clients.delete(String(body.keep));
+    };
+    const registering = gate();
+    const resume = gate();
+    let registrations = 0;
+    issuers.beforeConfigure = async (body) => {
+      const [entry] = body.entries as Array<{ key: string; value: string }>;
+      if (entry?.value === '' || ++registrations !== 3) return;
+      registering.open();
+      await resume.wait;
+    };
+    try {
+      const push = create({ tag: 'pr-7', versionId: versions[2] });
+      await registering.wait; // the third attempt, past its looks, about to register
+      const reap = del();
+      await rowDelete.reached;
+      resume.open();
+      expect(((await (await push).json()) as Created).auth.status).toBe('superseded');
+      rowDelete.release();
+      expect((await reap).status).toBe(200);
+    } finally {
+      rowDelete.restore();
+    }
+    expect(issuers.registered(issuerScope, base.scopeId)).toEqual([]);
+    expect(issuers.tagged(issuerScope, base.scopeId)).toEqual([]);
+  });
+
+  it('a push whose own clear fails after the reap keeps its client, so the registration never outlives it', async () => {
+    const base = await created({ tag: 'pr-7', versionId: versions[1] });
+    const rowDelete = holdRowDelete();
+    const minting = gate();
+    const resume = gate();
+    let held = false;
+    issuers.beforeMint = async () => {
+      if (held) return;
+      held = true;
+      minting.open();
+      await resume.wait;
+    };
+    try {
+      const push = create({ tag: 'pr-7', versionId: versions[2] });
+      await minting.wait; // past its first look; its client does not exist yet
+      const reap = del();
+      await rowDelete.reached; // the reap archived, cleared and retired before the client existed
+      issuers.failNext.set('POST /internal/configure', 503); // the push's own clear
+      resume.open();
+      const res = await push;
+      expect(res.status).toBe(502);
+      expect(((await res.json()) as { error: string }).error).toContain('its client was kept');
+      rowDelete.release();
+      expect((await reap).status).toBe(200);
+    } finally {
+      rowDelete.restore();
+    }
+    expect(issuers.tagged(issuerScope, base.scopeId)).toHaveLength(1);
+  });
+
+  it('a push’s LAST attempt that a newer push re-bound past answers superseded, as the loop does — never "no login"', async () => {
+    const base = await created({ tag: 'pr-7', versionId: versions[1] });
+    let keeps = 0;
+    issuers.beforeRetire = async (body) => {
+      if (!body.keep) return;
+      keeps += 1;
+      // Every attempt loses its kept client; before the third, a newer push re-binds the preview.
+      if (keeps === 3) await host.admin.bindScopeVersion(staff, tenant, base.scopeId, versions[3]!);
+      if (keeps <= 3) issuers.instances.get(issuerScope)!.clients.delete(String(body.keep));
+    };
+    const out = await created({ tag: 'pr-7', versionId: versions[2] });
+    expect(keeps).toBe(3);
+    expect(out.auth.status).toBe('superseded');
+  });
+
+  /** A push to preview A held inside its registration — a set read while A still held its hostname. */
+  async function staleRegistration() {
+    const a = await created({ tag: 'pr-7', versionId: versions[1] });
+    const registering = gate();
+    const resume = gate();
+    let stalled = false;
+    issuers.beforeConfigure = async (body) => {
+      const [entry] = body.entries as Array<{ key: string; value: string }>;
+      if (stalled || entry?.value === '' || entry?.key !== `${MCP_RESOURCES_CONFIG_PREFIX}${a.scopeId}`) return;
+      stalled = true;
+      registering.open();
+      await resume.wait;
+    };
+    const push = create({ tag: 'pr-7', versionId: versions[2] });
+    await registering.wait;
+    return { a, push, release: resume.open };
+  }
+
+  /** Bind the preview's `--pr-7` hostname, active, to `scope`. */
+  const takeHostname = async (scope: ScopeId, hostname = PREVIEW_HOST('pr-7')) => {
+    await host.admin.bindHostname(staff, { hostname, tenantId: tenant, scopeId: scope, surface: 'app', region: null, canonical: false });
+    await host.admin.setHostnameStatus(staff, hostname, 'active');
+  };
+
+  /** Run `extra` on every configure, after the hook already installed. */
+  const alsoOnConfigure = (extra: (entry: { key: string; value: string } | undefined) => Promise<void> | void) => {
+    const first = issuers.beforeConfigure;
+    issuers.beforeConfigure = async (body) => {
+      await first?.(body);
+      await extra((body.entries as Array<{ key: string; value: string }>)[0]);
+    };
+  };
+
+  it('a push for a reaped preview hands back the row it moved off the NEWER preview of the same tag', async () => {
+    const a = await created({ tag: 'pr-7', versionId: versions[1] });
+    // A push to A registers its set, read while A still held the hostname; the delivery is held.
+    const registering = gate();
+    const resume = gate();
+    let stalled = false;
+    issuers.beforeConfigure = async (body) => {
+      const [entry] = body.entries as Array<{ key: string; value: string }>;
+      if (stalled || entry?.value === '' || entry?.key !== `${MCP_RESOURCES_CONFIG_PREFIX}${a.scopeId}`) return;
+      stalled = true;
+      registering.open();
+      await resume.wait;
+    };
+    const push = create({ tag: 'pr-7', versionId: versions[2] });
+    await registering.wait;
+    // A is reaped and B, a fresh preview of the same tag, takes the same hostname and registers it.
+    const b = await created({ tag: 'pr-7', versionId: versions[3], refresh: true });
+    expect(b.scopeId).not.toBe(a.scopeId);
+    expect(issuers.registered(issuerScope, b.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+    // A's held delivery lands last, so the issuer moves the row onto A's key...
+    resume.open();
+    expect(((await (await push).json()) as Created).auth.status).toBe('superseded');
+    // ...and A's own removal hands it back to B, the preview that holds the hostname.
+    expect(issuers.registered(issuerScope, a.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, b.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+    expect(issuers.tagged(issuerScope, b.scopeId)).toEqual([b.auth.clientId]);
+  });
+
+  it('hands back only to a preview of the same app: another holder of the hostname is never registered for', async () => {
+    const a = await created({ tag: 'pr-7', versionId: versions[1] });
+    const registering = gate();
+    const resume = gate();
+    let stalled = false;
+    issuers.beforeConfigure = async (body) => {
+      const [entry] = body.entries as Array<{ key: string; value: string }>;
+      if (stalled || entry?.value === '' || entry?.key !== `${MCP_RESOURCES_CONFIG_PREFIX}${a.scopeId}`) return;
+      stalled = true;
+      registering.open();
+      await resume.wait;
+    };
+    const push = create({ tag: 'pr-7', versionId: versions[2] });
+    await registering.wait;
+    expect((await del()).status).toBe(200);
+    // The freed hostname goes to a scope that is no preview at all.
+    await host.admin.bindHostname(staff, { hostname: PREVIEW_HOST('pr-7'), tenantId: tenant, scopeId: prod, surface: 'app', region: null, canonical: false });
+    await host.admin.setHostnameStatus(staff, PREVIEW_HOST('pr-7'), 'active');
+    resume.open();
+    expect(((await (await push).json()) as Created).auth.status).toBe('superseded');
+    expect(issuers.registered(issuerScope, a.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+  });
+
+  it('hands back to no fork of the same app that is not a preview', async () => {
+    const { a, push, release } = await staleRegistration();
+    expect((await del()).status).toBe(200);
+    const fork = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: tenant, scopeId: fork, vertical: APP, forkedFrom: prod, forkedAt: new Date().toISOString() });
+    await host.admin.activateScope(staff, tenant, fork);
+    await takeHostname(fork);
+    release();
+    expect(((await (await push).json()) as Created).auth.status).toBe('superseded');
+    expect(issuers.registered(issuerScope, a.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, fork)).toEqual([]);
+  });
+
+  it('hands back to no preview of another parent', async () => {
+    const { a, push, release } = await staleRegistration();
+    expect((await del()).status).toBe(200);
+    const stranger = scopeId.parse(ulid());
+    await host.provisionScope(staff, {
+      tenantId: tenant, scopeId: stranger, vertical: APP, kind: 'preview', slug: 'elsewhere--pr-8',
+      forkedFrom: issuerScope, forkedAt: new Date().toISOString(),
+    });
+    await host.admin.activateScope(staff, tenant, stranger);
+    await takeHostname(stranger);
+    release();
+    expect(((await (await push).json()) as Created).auth.status).toBe('superseded');
+    expect(issuers.registered(issuerScope, stranger)).toEqual([]);
+  });
+
+  it('hands back the HOLDER’s own whole set, not the set this push registered', async () => {
+    const { push, release } = await staleRegistration();
+    const b = await created({ tag: 'pr-7', versionId: versions[3], refresh: true });
+    await takeHostname(b.scopeId, 'desk-acme--pr-7.alt.example'); // B answers on a second hostname too
+    release();
+    expect(((await (await push).json()) as Created).auth.status).toBe('superseded');
+    expect([...issuers.registered(issuerScope, b.scopeId)].sort()).toEqual(
+      [PREVIEW_MCP('pr-7'), mcpResourceOf('https://desk-acme--pr-7.alt.example')].sort(),
+    );
+  });
+
+  it('a holder reaped while the hand-back is in flight keeps no registration: the hand-back looks after its write', async () => {
+    const { a, push, release } = await staleRegistration();
+    const b = await created({ tag: 'pr-7', versionId: versions[3], refresh: true });
+    const handingBack = gate();
+    const resumeHandBack = gate();
+    let held = false;
+    alsoOnConfigure(async (entry) => {
+      if (held || !entry || entry.value === '' || entry.key !== `${MCP_RESOURCES_CONFIG_PREFIX}${b.scopeId}`) return;
+      held = true;
+      handingBack.open();
+      await resumeHandBack.wait;
+    });
+    release();
+    await handingBack.wait;
+    expect((await del()).status).toBe(200); // B's whole reap, while A's hand-back to B is in flight
+    resumeHandBack.open();
+    expect(((await (await push).json()) as Created).auth.status).toBe('superseded');
+    expect(await host.admin.getScopeRecord(staff, tenant, b.scopeId)).toBeUndefined();
+    expect(issuers.registered(issuerScope, b.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, a.scopeId)).toEqual([]);
+  });
+
+  it('a retire that fails after the preview was reaped does not stop the hand-back, and says what failed', async () => {
+    const { a, push, release } = await staleRegistration();
+    const b = await created({ tag: 'pr-7', versionId: versions[3], refresh: true });
+    let armed = true;
+    alsoOnConfigure((entry) => {
+      // The push's own clear: the retire after it fails.
+      if (armed && entry?.key === `${MCP_RESOURCES_CONFIG_PREFIX}${a.scopeId}` && entry.value === '') {
+        armed = false;
+        issuers.failNext.set(`DELETE ${PREVIEW_CLIENT_PATH}`, 500);
+      }
+    });
+    release();
+    const res = await push;
+    expect(res.status).toBe(502);
+    const error = ((await res.json()) as { error: string }).error;
+    expect(error).toContain("deleting this push's client failed");
+    expect(error).not.toContain('clearing');
+    expect(error).not.toContain('handing back');
+    expect(issuers.registered(issuerScope, b.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+  });
+
+  it('a hand-back that fails is said as such, and the push’s client still goes', async () => {
+    const { a, push, release } = await staleRegistration();
+    await created({ tag: 'pr-7', versionId: versions[3], refresh: true });
+    let armed = true;
+    alsoOnConfigure((entry) => {
+      // The push's own clear: the configure after it (the hand-back) fails.
+      if (armed && entry?.key === `${MCP_RESOURCES_CONFIG_PREFIX}${a.scopeId}` && entry.value === '') {
+        armed = false;
+        issuers.failNext.set('POST /internal/configure', 503);
+      }
+    });
+    release();
+    const res = await push;
+    expect(res.status).toBe(502);
+    const error = ((await res.json()) as { error: string }).error;
+    expect(error).toContain('handing back the MCP registration');
+    expect(error).not.toContain('clearing');
+    expect(error).not.toContain('deleting');
+    expect(issuers.tagged(issuerScope, a.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, a.scopeId)).toEqual([]);
+  });
+
+  it('registers only what the directory says the preview holds — never the hostname it was made with, once that is gone', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
+    deployments.duringDelivery = async (version) => {
+      if (version === versions[2]) await host.admin.unbindHostname(staff, PREVIEW_HOST('pr-7'));
+    };
+    const again = await created({ tag: 'pr-7', versionId: versions[2] });
+    expect(again.auth.status).toBe('wired');
+    expect(again.auth.note).toContain('no active hostname');
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+  });
+
+  it('a removal that fails after the preview was reaped mid-push is said — a 502 and an ops-failure row', async () => {
+    await created({ tag: 'pr-7', versionId: versions[1] });
+    const rowDelete = holdRowDelete();
+    const minted = gate();
+    const resume = gate();
+    let stalled = false;
+    issuers.afterMint = async () => {
+      if (stalled) return;
+      stalled = true;
+      minted.open();
+      await resume.wait;
+    };
+    try {
+      const push = create({ tag: 'pr-7', versionId: versions[2] });
+      await minted.wait;
+      const reap = del();
+      await rowDelete.reached;
+      issuers.failNext.set('POST /internal/configure', 503);
+      resume.open();
+      const res = await push;
+      expect(res.status).toBe(502);
+      expect(((await res.json()) as { error: string }).error).toContain('reaped while this push ran');
+      rowDelete.release();
+      expect((await reap).status).toBe(200);
+    } finally {
+      rowDelete.restore();
+    }
+    expect(JSON.stringify(await host.admin.listOpsFailures(staff, { limit: 50 }))).toContain('reaped while this push ran');
+  });
+});
+
+describe('every door that reaps a preview fork runs its issuer step (#1704)', () => {
+  it('the generic fork DELETE (the console’s Prune/Retire, the dashboard’s Retire): archived, cleared, retired', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    let statusAtFirstCall: string | undefined;
+    issuers.beforeConfigure = async () => {
+      statusAtFirstCall ??= (await host.admin.getScopeRecord(staff, tenant, out.scopeId))?.status;
+    };
+    const from = issuers.calls.length;
+    const res = await app.request(`/tenants/${tenant}/scopes/${out.scopeId}`, { method: 'DELETE', headers: asStaff });
+    expect(res.status).toBe(200);
+    expect(statusAtFirstCall).toBe('archived');
+    expect(issuers.calls.slice(from).map((c) => `${c.method} ${c.path}`)).toEqual([
+      'POST /internal/configure',
+      `DELETE ${PREVIEW_CLIENT_PATH}`,
+    ]);
+    expect(await host.admin.getScopeRecord(staff, tenant, out.scopeId)).toBeUndefined();
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.tagged(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+    expect(issuers.instances.get(issuerScope)!.clients.has(PROD_CLIENT)).toBe(true);
+  });
+
+  it('the staff reap of an archived preview fork: cleared and retired', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    expect((await app.request(`/tenants/${tenant}/scopes/${out.scopeId}/archive`, { method: 'POST', headers: asStaff })).status).toBe(200);
+    for (const h of await host.admin.listHostnames(staff, { scopeId: out.scopeId })) await host.admin.unbindHostname(staff, h.hostname);
+    const res = await app.request(`/tenants/${tenant}/scopes/${out.scopeId}/reap`, { method: 'POST', headers: asStaff });
+    expect(res.status).toBe(200);
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.tagged(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+  });
+
+  it('a primary scope deleted or reaped through these doors asks no issuer', async () => {
+    const snapshot = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: tenant, scopeId: snapshot, vertical: APP, forkedFrom: prod, forkedAt: new Date().toISOString() });
+    await host.admin.activateScope(staff, tenant, snapshot);
+    const from = issuers.calls.length;
+    expect((await app.request(`/tenants/${tenant}/scopes/${snapshot}`, { method: 'DELETE', headers: asStaff })).status).toBe(200);
+    expect(issuers.calls.length).toBe(from);
+  });
+});
+
+describe('the reap’s archive tolerates a reaper that raced it there (#1704)', () => {
+  const issuerClient = () => new VerticalClient({ fetch: issuers.fetch, platformSecret: 'test' });
+
+  it('archived by another reaper between its read and its archive: it goes on to clear and retire', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    const racing = new Proxy(host.admin, {
+      get: (target, key, receiver) =>
+        key === 'archiveScope'
+          ? async (a: typeof staff, t: TenantId, s: ScopeId) => {
+              await target.archiveScope(a, t, s); // the other reaper's archive lands first
+              throw new Error('illegal scope transition for archiveScope: archived → archived');
+            }
+          : Reflect.get(target, key, receiver),
+    });
+    const client = issuerClient();
+    const rec = (await host.admin.getScopeRecord(staff, tenant, out.scopeId))!;
+    await retireClientsOfReapedScope({ admin: racing, actor: staff, issuerClient: async () => client }, rec);
+    expect((await host.admin.getScopeRecord(staff, tenant, out.scopeId))?.status).toBe('archived');
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.tagged(issuerScope, out.scopeId)).toEqual([]);
+  });
+
+  it('the twin: an archive that fails while the preview is still live stops the reap before any issuer call', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
+    const failing = new Proxy(host.admin, {
+      get: (target, key, receiver) =>
+        key === 'archiveScope'
+          ? async () => {
+              throw new Error('directory unavailable');
+            }
+          : Reflect.get(target, key, receiver),
+    });
+    const client = issuerClient();
+    const from = issuers.calls.length;
+    const rec = (await host.admin.getScopeRecord(staff, tenant, out.scopeId))!;
+    await expect(retireClientsOfReapedScope({ admin: failing, actor: staff, issuerClient: async () => client }, rec)).rejects.toThrow(
+      'directory unavailable',
+    );
+    expect(issuers.calls.length).toBe(from);
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
   });
 });
 
@@ -477,6 +1162,9 @@ describe('nothing is minted where the platform cannot vouch for the issuer (#170
     expect(out.notes.join(' ')).toContain('Env tab');
     expect([...issuers.instances.get(issuerScope)!.clients.keys()]).toEqual([PROD_CLIENT]);
     expect(deployments.auth(versions[1]!, out.scopeId)).toBeUndefined();
+    // Nor is its MCP endpoint registered at a team issuer that does not sign it in.
+    expect(configures()).toEqual([]);
+    expect(out.auth.note).not.toContain('MCP');
   });
 
   it('a callback match alone (anybody can DCR one) is no claim — the binding is the positive twin', async () => {
@@ -520,6 +1208,7 @@ describe('nothing is minted where the platform cannot vouch for the issuer (#170
     expect(issuers.tagged(issuerScope, out.scopeId)).toEqual([]);
     expect(issuers.tagged(second, out.scopeId)).toEqual([]);
     expect(deployments.auth(versions[1]!, out.scopeId)).toBeUndefined();
+    expect(configures()).toEqual([]);
   });
 
   it('a clean-room preview has no parent: nothing asked, nothing minted', async () => {
@@ -537,6 +1226,7 @@ describe('version skew and transients read as what they are (#1704)', () => {
     expect(out.auth.note).toContain('redeploy');
     expect(out.auth.issuers).toEqual([{ issuerScopeId: issuerScope, problem: expect.stringContaining('predates preview clients') }]);
     expect(deployments.deliveries).toEqual([]);
+    expect(configures()).toEqual([]);
   });
 
   it('an auth server that does not answer is "could not be asked", never "external"', async () => {
@@ -546,9 +1236,18 @@ describe('version skew and transients read as what they are (#1704)', () => {
     expect(out.auth.note).not.toContain('EXTERNAL');
   });
 
-  it('the reap skips an auth server that predates the routes — it cannot have minted', async () => {
-    await created({ tag: 'pr-7', versionId: versions[1] });
+  it('the reap at an auth server that predates the routes: its 501 retire is skipped, and the clear is a no-op', async () => {
+    const out = await created({ tag: 'pr-7', versionId: versions[1] });
     issuers.predates = true;
+    const del = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
+    expect(del.status).toBe(200);
+    expect(issuers.registered(issuerScope, out.scopeId)).toEqual([]);
+    expect(issuers.registered(issuerScope, prod)).toEqual([PARENT_MCP]);
+  });
+
+  it('the reap skips a deployment that takes no delivery — it cannot hold a registration', async () => {
+    await created({ tag: 'pr-7', versionId: versions[1] });
+    issuers.failNext.set('POST /internal/configure', 501);
     const del = await app.request(`/verticals/${encodeURIComponent(APP)}/previews/pr-7`, { method: 'DELETE', headers: asStaff });
     expect(del.status).toBe(200);
   });
@@ -585,6 +1284,8 @@ describe('concurrent pushes to one preview (#1704)', () => {
     // A never retired with keep — only its own client, which lived in its own unserved store.
     const aRetires = issuers.calls.filter((c) => c.method === 'DELETE' && c.body.keep === aClient);
     expect(aRetires).toEqual([]);
+    // Nor did it take the preview's MCP endpoint away from the push that owns its login.
+    expect(issuers.registered(issuerScope, base.scopeId)).toEqual([PREVIEW_MCP('pr-7')]);
   });
 
   it('a push whose version was re-bound mid-flight never retires the others', async () => {

@@ -93,13 +93,19 @@ function placeBinding(app: string, tenant: string, clientId: string): void {
   );
 }
 
-/** What the dashboard's MCP registration writes (#1619) — a platform-marked resource row. */
-function resourceBinding(app: string): void {
+const PARENT_MCP = mcpResourceOf(`https://${PARENT_HOST}`);
+
+/** The platform's resources delivery for one scope (#1619), as `/internal/configure` applies it. */
+const deliver = (app: string, identifiers: string[]) =>
   syncPlatformResources(
     sql,
-    parseResourcesEntry(`${RESOURCES_KEY_PREFIX}${app}`, JSON.stringify([mcpResourceOf(`https://${PARENT_HOST}`)])),
+    parseResourcesEntry(`${RESOURCES_KEY_PREFIX}${app}`, identifiers.length ? JSON.stringify(identifiers) : ''),
     Date.now(),
   );
+
+/** What the dashboard's MCP registration writes (#1619) — a platform-marked resource row. */
+function resourceBinding(app: string): void {
+  deliver(app, [PARENT_MCP]);
 }
 
 const check = (over: Partial<{ tenantId: string; parentScopeId: string; parentRedirectUris: string[] }> = {}) =>
@@ -335,5 +341,69 @@ describe('retiring preview clients (#1704) — by tag, and by generation', () =>
     retire(preview);
     expect(db.prepare('SELECT count(*) AS n FROM oauth_consent').get()).toEqual({ n: 0 });
     expect(clientRow(a.clientId)).toBeUndefined();
+  });
+});
+
+describe('a preview’s MCP registration beside its client (#1704)', () => {
+  const PREVIEW_MCP = mcpResourceOf('https://desk-acme--pr-7.global.substrat.run');
+  const resourceRow = (identifier: string) => db.prepare('SELECT * FROM oauth_resource WHERE identifier = ?').get(identifier);
+  const resourceRows = () => db.prepare('SELECT * FROM oauth_resource ORDER BY identifier').all();
+
+  it('leaves the parent’s binding — the proof the next push mints on — as it was, through its registration and its clear', async () => {
+    await dcr([PARENT_CALLBACK], 'Desk');
+    // Prod is bound here by its MCP registration alone, so that row IS the claim's proof.
+    resourceBinding(PARENT);
+    const prodBefore = resourceRow(PARENT_MCP);
+    const preview = scopeId.parse(ulid());
+    await mintPreviewClient(sql, register, mintInput(preview), transaction);
+
+    expect(deliver(preview, [PREVIEW_MCP]).added).toEqual([PREVIEW_MCP]);
+    expect(resourceRow(PARENT_MCP)).toEqual(prodBefore);
+    expect(check()).toBe(true);
+
+    expect(deliver(preview, []).removed).toEqual([PREVIEW_MCP]);
+    expect(resourceRow(PARENT_MCP)).toEqual(prodBefore);
+    expect(check()).toBe(true);
+    // The next push still mints.
+    await mintPreviewClient(sql, register, mintInput(preview), transaction);
+  });
+
+  it('makes no parent of the preview, though its row carries the platform’s marker and its client redirects there', async () => {
+    await dcr([PARENT_CALLBACK], 'Desk');
+    resourceBinding(PARENT);
+    const preview = scopeId.parse(ulid());
+    await mintPreviewClient(sql, register, mintInput(preview), transaction);
+    deliver(preview, [PREVIEW_MCP]);
+    const asParent = { parentScopeId: preview, parentRedirectUris: [mintInput(preview).redirectUri] };
+    expect(check(asParent)).toBe(false);
+    // The twin: the same marker and a redirecting client, for a scope that is not a preview here.
+    expect(check()).toBe(true);
+  });
+
+  it('stays no parent through the platform’s reap order — clear, then retire — even beside a stranger’s client', async () => {
+    await dcr([PARENT_CALLBACK], 'Desk');
+    resourceBinding(PARENT);
+    const preview = scopeId.parse(ulid());
+    await mintPreviewClient(sql, register, mintInput(preview), transaction);
+    deliver(preview, [PREVIEW_MCP]);
+    // Open DCR: anybody may register a client that redirects to the preview's callback.
+    await dcr([mintInput(preview).redirectUri], 'Not the platform');
+    const asParent = { parentScopeId: preview, parentRedirectUris: [mintInput(preview).redirectUri] };
+    expect(check(asParent)).toBe(false);
+    deliver(preview, []); // the registration goes first, while the preview's clients still mark it one
+    expect(check(asParent)).toBe(false);
+    retire(preview);
+    expect(check(asParent)).toBe(false);
+  });
+
+  it('is the platform’s delivery to clear: retiring the preview’s clients does not reach the registry', async () => {
+    await dcr([PARENT_CALLBACK], 'Desk');
+    resourceBinding(PARENT);
+    const preview = scopeId.parse(ulid());
+    await mintPreviewClient(sql, register, mintInput(preview), transaction);
+    deliver(preview, [PREVIEW_MCP]);
+    const before = resourceRows();
+    retire(preview);
+    expect(resourceRows()).toEqual(before);
   });
 });

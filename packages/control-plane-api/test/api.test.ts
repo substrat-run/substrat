@@ -4042,8 +4042,10 @@ describe('control-plane API', () => {
   });
 
   it('filters the admin log by action and scope', async () => {
+    // Narrowed to the lifecycle tests' scope: a preview reap archives its fork too (#1704),
+    // so the tenant as a whole holds more archive rows than the two made here.
     const { entries } = await (
-      await req(`/admin-log?tenantId=${t1}&action=suspendScope&action=archiveScope`)
+      await req(`/admin-log?tenantId=${t1}&scopeId=${s1}&action=suspendScope&action=archiveScope`)
     ).json();
     expect(entries.length).toBe(2);
     expect(entries.every((e: { action: string }) => ['suspendScope', 'archiveScope'].includes(e.action))).toBe(true);
