@@ -63,6 +63,7 @@ import {
   billedMod,
   connectorTestFetch,
   permissionContractSuite,
+  reservedRoleContractSuite,
   scheduleContractSuite,
   scheduleEntitlementContractSuite,
   scheduleMod,
@@ -254,6 +255,13 @@ membershipExecutorContractSuite('adapter-cloudflare', async () => {
     controlPlane: env.CONTROL_PLANE,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
   });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #2430: the role doors and the declared module list, on the default tuple checker. The ScopeDO's
+// own module set (`contractTestModules`) carries the reserving module, as a deployed one would.
+reservedRoleContractSuite('adapter-cloudflare', async (options) => {
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, ...options });
   return { host, cleanup: async () => host.close() };
 });
 

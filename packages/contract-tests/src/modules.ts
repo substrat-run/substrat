@@ -29,6 +29,7 @@ import {
   substratError,
 } from '@substrat-run/contracts';
 import { membershipFixtureMod } from './membership-module.js';
+import { reservedRoleMod } from './reserved-role-module.js';
 import { rebuildMod, stateMod } from './entity-state-module.js';
 import { trashFloorMod, trashMod } from './entity-trash-module.js';
 import { derivedMod } from './derived-module.js';
@@ -3064,6 +3065,9 @@ export const contractTestModules: ModuleRegistration[] = [
   // #2166: the updated-stamps suite's module. Inert for every other suite — nothing else reads
   // its tables or invokes a `stamps/*` operation.
   stampsMod,
+  // #2430: the reserved-role suite's module. Its `rsv:run` is reserved to a system principal on
+  // every scope in the kit, which refuses nothing elsewhere: no other suite defines a role with it.
+  reservedRoleMod,
   // #2068: the subject-erasure suite's modules. Every scope in the kit carries them, so every
   // `shredSubject` in every suite runs their declared erasure and their hook — which reaches
   // only `er_*` tables nothing else writes, and misbehaves only for a subject the erasure suite

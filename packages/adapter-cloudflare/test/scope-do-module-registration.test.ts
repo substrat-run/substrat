@@ -79,3 +79,19 @@ describe('a ScopeDO refuses a module that withdraws its own operation, as its co
     await expect(construct([moduleOf('@test/reg-lone', ['reg/lone'], ['reg/unbound'])])).resolves.toBe(true);
   });
 });
+
+describe('a ScopeDO class given its permission surface refuses a module the surface leaves out (#2430)', () => {
+  const listed = moduleOf('@test/reg-listed', ['reg/listed']);
+  const permissions = { modules: [listed] };
+
+  it('refuses, when the class is defined, a module not in `permissions.modules`, naming it', () => {
+    expect(() => defineScopeDO([listed, moduleOf('@test/reg-unlisted', ['reg/unlisted'])], {}, { permissions })).toThrow(
+      /@test\/reg-unlisted is not in this host's permission surface \(the `permissions` it was given lists @test\/reg-listed\)/,
+    );
+  });
+
+  it('defines and starts a class whose modules the surface lists, and one given no surface', async () => {
+    expect(() => defineScopeDO([listed], {}, { permissions })).not.toThrow();
+    await expect(construct([listed, moduleOf('@test/reg-free', ['reg/free'])])).resolves.toBe(true);
+  });
+});
