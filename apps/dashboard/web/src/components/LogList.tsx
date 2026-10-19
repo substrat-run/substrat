@@ -62,7 +62,7 @@ export function lineTime(ts: number | null): string {
 
 /** The filter a field's value adds, when the list can filter by it. */
 function filterFor(key: (typeof FIELDS)[number], e: ObservabilityLogEvent): LogFilter | null {
-  if (key === 'level' && e.level && e.level in LEVEL) return { level: e.level };
+  if (key === 'level' && e.level && Object.hasOwn(LEVEL, e.level)) return { level: e.level };
   if (key === 'message' && e.message && e.message.length <= 200) return { search: e.message };
   if (key === 'invocationId' && e.invocationId && ULID.test(e.invocationId)) return { invocationId: e.invocationId };
   return null;
@@ -108,7 +108,7 @@ export function LogList({
         {!compact && <span role="columnheader" style={{ textAlign: 'right' }}>Invocation</span>}
       </div>
       {events.map((e, i) => {
-        const lv = (e.level && LEVEL[e.level]) || UNKNOWN_LEVEL;
+        const lv = (e.level && Object.hasOwn(LEVEL, e.level) ? LEVEL[e.level] : undefined) ?? UNKNOWN_LEVEL;
         const on = open === i;
         const toggle = () => setOpen(on ? null : i);
         const invocation = e.invocationId && ULID.test(e.invocationId) ? e.invocationId : null;

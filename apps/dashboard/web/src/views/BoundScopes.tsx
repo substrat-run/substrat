@@ -25,13 +25,14 @@ import { MonoTag, Pill, type PillKind } from '../components/ui';
  * zero under a heading that promises work.
  */
 
-const STATUS_PILL: Record<string, PillKind> = {
-  active: 'success',
-  provisioning: 'warning',
-  suspended: 'warning',
-  archiving: 'warning',
-  archived: 'neutral',
-};
+// A Map, not an object literal: a status named like an Object.prototype key must not find one.
+const STATUS_PILL = new Map<string, PillKind>([
+  ['active', 'success'],
+  ['provisioning', 'warning'],
+  ['suspended', 'warning'],
+  ['archiving', 'warning'],
+  ['archived', 'neutral'],
+]);
 
 const COLUMNS = '2.2fr 0.9fr 1.1fr 2fr';
 
@@ -268,7 +269,7 @@ export function BoundScopes({ teamId, d, all, onChanged }: { teamId: string; d: 
               }
             />
             <span>
-              <Pill kind={STATUS_PILL[s.status] ?? 'neutral'}>{s.status}</Pill>
+              <Pill kind={STATUS_PILL.get(s.status) ?? 'neutral'}>{s.status}</Pill>
             </span>
             <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{versionLabel(s)}</span>
             <span style={{ display: 'flex', flexWrap: 'wrap', gap: 6, minWidth: 0 }}>

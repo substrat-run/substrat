@@ -43,15 +43,19 @@ import { FieldReads } from './FieldReads';
  */
 
 /** Old tab URLs → their new home, so bookmarks and in-flight links keep working. */
-const TAB_ALIASES: Record<string, string> = {
-  snapshots: 'data/previews',
-  previews: 'data/previews',
-  model: 'data/schema',
-  permissions: 'settings/permissions',
-  env: 'settings/environment',
-  domains: 'settings/domains',
-  integrations: 'settings/integrations',
-};
+// A Map, not an object literal: the tab is the URL path, so `constructor` must not find Object's.
+const TAB_ALIASES = new Map([
+  ['snapshots', 'data/previews'],
+  ['previews', 'data/previews'],
+  ['model', 'data/schema'],
+  ['permissions', 'settings/permissions'],
+  ['env', 'settings/environment'],
+  ['domains', 'settings/domains'],
+  ['integrations', 'settings/integrations'],
+]);
+
+/** A tab path with an old URL's alias resolved: `main` or `main/sub`. */
+export const resolveTab = (tab: string): string => TAB_ALIASES.get(tab) ?? tab;
 
 /** One visitable public URL — a surface the app fronts (K-26), or the lone default. */
 type SurfaceUrl = { surface: string | null; label: string | null; hostname: string };
@@ -156,7 +160,7 @@ export function AppDetail({
   const meta = verticalMeta(app.vertical_slug);
   const statusKind = app.status === 'provisioning' ? 'info' : app.status === 'failed' ? 'danger' : 'success';
   const statusLabel = app.status === 'provisioning' ? 'Provisioning' : app.status === 'failed' ? 'Failed' : 'Active';
-  const [main, sub] = (TAB_ALIASES[tab] ?? tab).split('/');
+  const [main, sub] = resolveTab(tab).split('/');
 
   // The app's surface hostnames (K-26): the header's Visit control and the Overview
   // Production card both list a URL per surface, so the fetch lives here — one source,

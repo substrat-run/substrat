@@ -8,14 +8,15 @@ import { Page } from '../components/layout';
 import { card, MonoTag, PageTitle, Pill, type PillKind } from '../components/ui';
 
 const COLS = '2.4fr 1fr 1fr 1fr 140px';
-const STATUS: Record<Member['status'], { kind: PillKind; label: string }> = {
-  active: { kind: 'success', label: 'Active' },
-  invited: { kind: 'warning', label: 'Invited' },
-  revoked: { kind: 'neutral', label: 'Revoked' },
+// A Map, not an object literal: a status named like an Object.prototype key must not find one.
+const STATUS = new Map<string, { kind: PillKind; label: string }>([
+  ['active', { kind: 'success', label: 'Active' }],
+  ['invited', { kind: 'warning', label: 'Invited' }],
+  ['revoked', { kind: 'neutral', label: 'Revoked' }],
   // #1184: accepted, and the role is still being applied — or never will be.
-  joining: { kind: 'info', label: 'Joining' },
-  refused: { kind: 'danger', label: 'Not applied' },
-};
+  ['joining', { kind: 'info', label: 'Joining' }],
+  ['refused', { kind: 'danger', label: 'Not applied' }],
+]);
 const ROLE_OPTS: { value: InviteRole; label: string }[] = [
   { value: 'admin', label: 'Admin' },
   { value: 'member', label: 'Member' },
@@ -159,7 +160,7 @@ export function Team({
           <div style={{ padding: '20px 16px', fontSize: 13, color: 'var(--text-tertiary)' }}>No members yet.</div>
         )}
         {rows.map((m, i) => {
-          const s = STATUS[m.status];
+          const s = STATUS.get(m.status) ?? { kind: 'neutral' as const, label: m.status };
           // An owner whose sign-in carried no verified address is stored without one (#1359).
           const you = m.email !== '' && m.email === meEmail;
           const name = m.email ? (m.email.split('@')[0] ?? m.email) : 'owner';
