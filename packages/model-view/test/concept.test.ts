@@ -9,6 +9,7 @@ import {
   entityDiagram,
   lifecycleDiagram,
   parsePermissions,
+  readRolesSection,
   syncConcept,
 } from '../src/index.js';
 
@@ -309,6 +310,87 @@ describe('parsePermissions — the registry’s reservation column', () => {
       expect(v.reserved.size).toBe(0);
       expect(() => syncConcept(DOC, { model: MODEL, permissionsMd: md })).toThrow(PermissionsFormatError);
     }
+  });
+});
+
+describe('parsePermissions — system-held roles (§2a, K-55)', () => {
+  /**
+   * PERMISSIONS as `lint:permissions` writes it once a role is declared `holder: 'system'`: §1 with
+   * its reservation column, and §2a under the person roles. The emitter's own output is read back
+   * in `tools/reserved-keys.test.mts`.
+   */
+  const SYSTEM = `# Permission snapshot
+
+## 1. Registry — every key
+
+| Key | Description | Declared by | Reserved to a system principal |
+| --- | --- | --- | --- |
+| \`list:create\` | Create lists of your own | \`x\` | — |
+| \`list:manage\` | Rename and share a list | \`x\` | — |
+| \`list:reap\` | Reap abandoned lists | \`x\` | yes |
+
+## 2. Roles — as defined
+
+Identical in every tenant. Per-tenant customisation is a runtime concern.
+
+| Role | Permissions |
+| --- | --- |
+| \`member\` | \`list:create\` |
+
+### 2a. System-held roles — a platform host's standing principal
+
+Never given to a person: no invitation, member operation or role picker offers these.
+
+| Role | Permissions |
+| --- | --- |
+| \`reaper\` | \`list:reap\` |
+
+## 3. Coverage
+
+| Key | Held by |
+| --- | --- |
+| \`list:create\` | \`member\` |
+| \`list:reap\` | \`reaper\` |
+
+## 4. Entity-narrowed grant shapes
+
+| Entity type | Permissions granted per entity | Given |
+| --- | --- | --- |
+| \`list\` | \`list:manage\` | no — shared |
+`;
+
+  it('reads the person roles alone, and the system-held role apart from them', () => {
+    const v = parsePermissions(SYSTEM);
+    // Read as one table, §2a's header was a role named `Role` and its rule one named `---`.
+    expect(v.roles).toEqual([{ role: 'member', keys: ['list:create'] }]);
+    expect(v.systemRoles).toEqual([{ role: 'reaper', keys: ['list:reap'] }]);
+    expect([...v.reserved]).toEqual(['list:reap']);
+    expect(v.entityGrants).toEqual([{ entityType: 'list', keys: ['list:manage'] }]);
+  });
+
+  it('its twin: a file without §2a, older than it or with no system-held role, has none and reads as before', () => {
+    const v = parsePermissions(PERMISSIONS);
+    expect(v.systemRoles).toEqual([]);
+    expect(v.roles).toEqual([{ role: 'member', keys: ['list:create'] }]);
+  });
+
+  it('concept.md shows the system-held role in its own table, never among the roles a person is given', () => {
+    const out = syncConcept(DOC, { model: MODEL, permissionsMd: SYSTEM });
+    const roles = out.slice(out.indexOf('<!-- substrat:roles -->'), out.indexOf('<!-- /substrat:roles -->'));
+    expect(roles).toContain(
+      '| `member` | `list:create` — Create lists of your own |\n\nHeld by a platform host, never given to a person:\n\n| Role | What it can do |\n| --- | --- |\n| `reaper` | `list:reap` — Reap abandoned lists |',
+    );
+    expect(roles).not.toContain('| `Role` |');
+    expect(syncConcept(DOC, inputs)).not.toContain('Held by a platform host');
+  });
+
+  it('a Roles sub-section it does not know is returned whole by title, and adds no role', () => {
+    const extra = SYSTEM.replace('## 3. Coverage', '### 2b. Delegated roles\n\n| Role | Permissions |\n| --- | --- |\n| `deputy` | `list:create` |\n\n## 3. Coverage');
+    const v = parsePermissions(extra);
+    expect(v.roles.map((r) => r.role)).toEqual(['member']);
+    expect(v.systemRoles.map((r) => r.role)).toEqual(['reaper']);
+    const section = extra.slice(extra.indexOf('Identical in every'), extra.indexOf('## 3. Coverage'));
+    expect(readRolesSection(section).unknown).toEqual({ 'Delegated roles': '| Role | Permissions |\n| --- | --- |\n| `deputy` | `list:create` |' });
   });
 });
 

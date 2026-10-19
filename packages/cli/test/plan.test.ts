@@ -263,6 +263,25 @@ describe('conceptDelta — each section, and its twin when nothing changed', () 
     ]);
   });
 
+  /** §2a as the emitter writes it once a role is declared `holder: 'system'` (K-55), under the person roles. */
+  const withSystemRole = (md: string, role: string, keys: string[]) =>
+    `${md}\n### 2a. System-held roles — a platform host's standing principal\n\n| Role | Permissions |\n| --- | --- |\n| \`${role}\` | ${keys.map((k) => `\`${k}\``).join(', ')} |\n`;
+
+  it("permissions: a system-held role is named among a key's holders, and never as a role called `Role`", () => {
+    const base = reserving(permissions({ member: ['list:create'], owner: ['list:create', 'list:manage'] }, REAP), 'list:reap');
+    const d = conceptDelta(PKG, art(MODEL, base), art(MODEL, withSystemRole(base, 'reaper', ['list:reap'])));
+    expect(d.permissions.rows).toEqual([
+      { key: 'list:reap', description: 'Reap abandoned lists', before: [], after: ['reaper'], reserved: { before: true, after: true } },
+    ]);
+    expect(renderDelta(d, OPTS)).toContain(
+      '| `list:reap` | Reap abandoned lists | — no role — · reserved to a system principal | `reaper` · reserved to a system principal |',
+    );
+    expect(d.permissions.changes).toEqual([expect.objectContaining({ path: 'system-held role reaper', flagged: true })]);
+    // And a transition whose operation checks the key names the system-held role holding it.
+    const md = withOps(withSystemRole(base, 'reaper', ['list:reap']), [`| \`acme/cancel\` | \`list:reap\` | the scope | \`${PKG}\` |`]);
+    expect(conceptDelta(PKG, art(MODEL, md), art(cancelled(), md)).lifecycles.transitions[0]!.check).toMatchObject({ keys: ['list:reap'], roles: ['reaper'] });
+  });
+
   it('permissions: a registry the classifier cannot read gives no rows, only its finding', () => {
     const base = permissions({ member: ['list:create'] }, REAP);
     const head = reserving(base, 'list:reap').replace('| `list:reap` | Reap abandoned lists | `' + PKG + '` | yes |', '| `list:reap` | Reap abandoned lists | `' + PKG + '` | maybe |');

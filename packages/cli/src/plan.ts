@@ -66,7 +66,7 @@ export interface TransitionCheck {
   readonly keys: readonly string[];
   /** What the check narrows to, as `PERMISSIONS.md` words it ("one `list`, id from `listId`"). */
   readonly checkedOn: string;
-  /** Roles holding any of `keys`. */
+  /** Roles holding any of `keys`, system-held ones included. */
   readonly roles: readonly string[];
   /** Entity types whose grant shape gives any of `keys`, one record at a time. */
   readonly grantShapes: readonly string[];
@@ -76,7 +76,10 @@ export interface TransitionCheck {
 export interface PermissionRow {
   readonly key: string;
   readonly description: string;
-  /** Roles holding it at the base and now; `null` where the key does not exist on that side. */
+  /**
+   * Roles holding it at the base and now, system-held ones included; `null` where the key does not
+   * exist on that side.
+   */
   readonly before: readonly string[] | null;
   readonly after: readonly string[] | null;
   /**
@@ -152,7 +155,8 @@ function permissionRows(baseMd: string | null, headMd: string | null): Permissio
     if (md === null) return { holders: new Map<string, string[]>(), descriptions: new Map<string, string>(), reserved: new Set<string>() };
     const v = parsePermissions(md);
     const holders = new Map<string, string[]>([...v.descriptions.keys()].map((k) => [k, []]));
-    for (const r of v.roles) for (const k of r.keys) (holders.get(k) ?? holders.set(k, []).get(k)!).push(r.role);
+    // A system-held role holds only reserved keys, and the row says when a key is reserved.
+    for (const r of [...v.roles, ...v.systemRoles]) for (const k of r.keys) (holders.get(k) ?? holders.set(k, []).get(k)!).push(r.role);
     for (const list of holders.values()) list.sort();
     return { holders, descriptions: v.descriptions, reserved: v.reserved, unreadable: v.registryUnreadable };
   };
@@ -185,7 +189,7 @@ function checksIn(md: string | null): { checks: Map<string, TransitionCheck>; un
       declared: c.declared,
       keys: c.keys,
       checkedOn: c.checkedOn,
-      roles: sorted(v.roles.filter((r) => holds(r.keys)).map((r) => r.role)),
+      roles: sorted([...v.roles, ...v.systemRoles].filter((r) => holds(r.keys)).map((r) => r.role)),
       grantShapes: sorted(v.entityGrants.filter((g) => holds(g.keys)).map((g) => g.entityType)),
     });
   }

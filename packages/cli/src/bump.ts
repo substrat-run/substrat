@@ -48,7 +48,7 @@
  * authoring notation (`tools/model-diff.mts`). The same classifier is what `substrat changeset`
  * writes, what `--check` holds a hand-written changeset to, and what a status line can show.
  */
-import { operationsTableProblem, operationsUnknownFor, readRegistryTable } from '@substrat-run/model-view';
+import { operationsTableProblem, operationsUnknownFor, readRegistryTable, readRolesSection } from '@substrat-run/model-view';
 
 export type Level = 'patch' | 'minor' | 'major';
 export type Bump = 'none' | Level;
@@ -704,8 +704,10 @@ export interface PermissionSnapshot {
    * model-view shares). Judged major, never read as nothing reserved.
    */
   registryUnreadable?: string;
-  /** Role → the keys it holds. */
+  /** Role → the keys it holds: the roles a person can be given. */
   readonly roles: Record<string, string[]>;
+  /** System-held role (K-55, a platform host's standing principal) → the keys it holds. */
+  readonly systemRoles: Record<string, string[]>;
   /** Entity type → keys granted per entity, then its remaining cells as written. */
   readonly grantShapes: Record<string, { keys: string[]; terms: string[] }>;
   /** Scheduled operation → the keys its system principal holds, then the remaining cells. */
@@ -762,6 +764,7 @@ export function parsePermissions(text: string): PermissionSnapshot {
   const snap = {
     registry: {} as PermissionSnapshot['registry'],
     roles: {} as Record<string, string[]>,
+    systemRoles: {} as Record<string, string[]>,
     grantShapes: {} as Record<string, { keys: string[]; terms: string[] }>,
     schedules: {} as Record<string, { keys: string[]; terms: string[] }>,
     unread: {} as Record<string, string>,
@@ -777,7 +780,12 @@ export function parsePermissions(text: string): PermissionSnapshot {
       if ('unreadable' in read) snap.registryUnreadable = read.unreadable;
       else for (const r of read.rows) snap.registry[r.key] = { terms: [...r.terms], reserved: r.reserved };
     } else if (/^Roles\b/.test(heading)) {
-      for (const cells of rowsOf(section)) snap.roles[firstKey(cells)] = codesIn(cells[1] ?? '');
+      // The system-held roles' sub-section is its own table, read by model-view's judgement; one
+      // it does not know is judged whole, like an unknown section.
+      const read = readRolesSection(section);
+      for (const r of read.roles) snap.roles[r.role] = [...r.keys].sort();
+      for (const r of read.systemRoles) snap.systemRoles[r.role] = [...r.keys].sort();
+      for (const [title, text] of Object.entries(read.unknown)) snap.unread[`Roles › ${title}`] = text;
     } else if (/^Entity-narrowed grant shapes\b/.test(heading)) {
       for (const cells of rowsOf(section)) snap.grantShapes[firstKey(cells)] = { keys: codesIn(cells[1] ?? ''), terms: cells.slice(2) };
     } else if (/^Scheduled work\b/.test(heading)) {
@@ -841,6 +849,10 @@ export function classifyPermissions(baseText: string | null, headText: string | 
       },
     });
   holders('role', b.roles, h.roles);
+  // A platform host's standing principal is ranked as a person's role is: what it may do is the
+  // keys shown, so it gaining one widens, and a key leaving it for a person's role is that role's
+  // widening, each flagged.
+  holders('system-held role', b.systemRoles, h.systemRoles);
   const keysOf = (m: Record<string, { keys: string[] }>) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, v.keys]));
   holders('entity grant shape', keysOf(b.grantShapes), keysOf(h.grantShapes));
   holders('scheduled operation', keysOf(b.schedules), keysOf(h.schedules));
