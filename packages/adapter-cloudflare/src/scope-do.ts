@@ -1557,11 +1557,12 @@ export function defineScopeDO(
         }
         this.liveTargets.set(target.entityType, target.readPermission);
       }
-      // #2412: refused before any deletion, as on the other two hosts — a module's own handler
-      // must not be silently unbound by its own manifest.
-      const boundNames = Object.keys(registration.operations?.handlers ?? {});
+      // #2412: a module's own handler must not be silently unbound by its own manifest. The check
+      // sits inside the loop, so names earlier in the list are already deleted when it throws —
+      // as on the other two hosts, and harmless because the constructor throw discards the instance.
+      const ownOps = new Set(Object.keys(registration.operations?.handlers ?? {}));
       for (const name of manifest.withdraws ?? []) {
-        if (boundNames.includes(name)) {
+        if (ownOps.has(name)) {
           throw new Error(
             `${manifest.id} withdraws its own operation: ${name} (a module cannot withdraw itself — just don't register it)`,
           );
@@ -1572,7 +1573,6 @@ export function defineScopeDO(
       // #893: a schema declared for an operation this module does not bind
       // enforces nothing while reading as coverage — refused, as in the pure adapter.
       const declaredInputs = registration.operations?.inputs ?? {};
-      const ownOps = new Set(Object.keys(registration.operations?.handlers ?? {}));
       const unbound = Object.keys(declaredInputs).filter((name) => !ownOps.has(name));
       if (unbound.length > 0) {
         throw new Error(

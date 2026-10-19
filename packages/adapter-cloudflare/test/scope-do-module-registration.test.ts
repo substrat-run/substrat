@@ -72,6 +72,10 @@ describe('a ScopeDO refuses a module that withdraws its own operation, as its co
     await expect(
       construct([moduleOf('@test/reg-owner', ['reg/theirs']), moduleOf('@test/reg-withdrawer', ['reg/mine'], ['reg/theirs'])]),
     ).resolves.toBe(true);
+    // and in the reverse registration order: withdrawer first, owner after
+    await expect(
+      construct([moduleOf('@test/reg-withdrawer2', ['reg/mine2'], ['reg/theirs2']), moduleOf('@test/reg-owner2', ['reg/theirs2'])]),
+    ).resolves.toBe(true);
     await expect(construct([moduleOf('@test/reg-lone', ['reg/lone'], ['reg/unbound'])])).resolves.toBe(true);
   });
 });
