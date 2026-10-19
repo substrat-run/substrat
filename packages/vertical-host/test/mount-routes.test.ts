@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { defineRoutes, z, type RouteImpl } from '@substrat-run/contracts';
-import { mountRoutes } from '../src/index.js';
+import { defineRoutes, errorCodeOf, toProblem, z, type RouteImpl } from '@substrat-run/contracts';
+import { issuePathsOf, mountRoutes, RouteOutputMismatch } from '../src/index.js';
 
 /**
  * `mountRoutes` (#2170): a declared route set whose handlers are host code. What it owes
@@ -117,6 +117,38 @@ describe('mountRoutes (#2170)', () => {
     const res = await appWith().req('/api/teams/t1/broken');
     expect(res.status).toBe(500);
     expect(((await res.json()) as { error: string }).error).toContain("'acme/broken' answered outside its declared output");
+  });
+
+  it('#2401: that throw is `internal`, so the taxonomy answers 500 with no detail, and the route and issue paths ride on it for the log', async () => {
+    const thrown: unknown[] = [];
+    const { app, req } = appWith();
+    app.onError((err, c) => {
+      thrown.push(err);
+      const problem = toProblem(err, c.req.path);
+      return c.json(problem, problem.status as 500);
+    });
+    const res = await req('/api/teams/t1/broken');
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ status: 500, title: 'Internal error', code: 'internal' });
+    expect(body).not.toHaveProperty('detail');
+    // Neither the schema's wording nor the value the handler answered reaches the caller.
+    expect(JSON.stringify(body)).not.toMatch(/acme\/broken|expected|boolean|yes/);
+    expect(thrown).toHaveLength(1);
+    expect(errorCodeOf(thrown[0])).toBe('internal');
+    expect(thrown[0]).toBeInstanceOf(RouteOutputMismatch);
+    expect(thrown[0]).toMatchObject({ route: 'acme/broken', issuePaths: ['ok'] });
+  });
+
+  it('#2401: the issue paths are distinct fields, an index written `[]`, at most ten, and carry no value', () => {
+    // One field broken in every row of a list is one path, so a second broken field is not crowded out.
+    const everyRow = Array.from({ length: 30 }, (_, i) => ({ path: ['entries', i, 'at'] }));
+    const err = new RouteOutputMismatch('acme/list', [...everyRow, { path: ['entries', 29, 'id'] }, { path: [0, 'tags', 3] }, { path: ['total'] }]);
+    expect(err.issuePaths).toEqual(['entries[].at', 'entries[].id', '[].tags[]', 'total']);
+    const fields = Array.from({ length: 12 }, (_, i) => ({ path: ['entries', 0, `f${i}`] }));
+    expect(issuePathsOf(fields)).toEqual(Array.from({ length: 10 }, (_, i) => `entries[].f${i}`));
+    expect(err.code).toBe('internal');
+    expect(err.message).toBe("mountRoutes: 'acme/list' answered outside its declared output");
   });
 
   it('refuses at mount a declared route with no handler', () => {

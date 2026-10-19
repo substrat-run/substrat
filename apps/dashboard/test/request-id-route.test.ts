@@ -6,7 +6,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { REQUEST_ID_HEADER, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
-import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
+import { patchRows, rewrittenPlane, SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 
 /**
  * #2192: the dashboard worker itself stamps its answers — driven the way a request reaches
@@ -170,6 +170,43 @@ describe('the dashboard worker stamps every answer with a request id (#2192)', (
     });
     // The plane's detail is free text the dashboard did not write: it is never logged.
     expect(logged.join('\n')).not.toMatch(/bearer|eyJhbGciOi|secret-jwt|token=abc/i);
+  });
+
+  it('#2401: an answer outside a route’s declared output is a 500 with no detail; the logged line names the route and the issue paths, never a value', async () => {
+    const logged: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => void logged.push(String(args[0])));
+    await host.admin.recordOpsFailure({ actor: staff, operation: 'deploy.mine', tenantId: tenantId.parse(team), message: 'x' });
+    // Not a value from a newer vocabulary but a broken one: no reading of the declaration admits it.
+    env.CONTROL_PLANE_SVC = rewrittenPlane(
+      env.CONTROL_PLANE_SVC,
+      (p) => p.endsWith('/findings'),
+      patchRows((f) => ('firstSeen' in f ? { ...f, firstSeen: 'a-broken-instant' } : undefined)),
+    );
+    const res = await get(`/teams/${team}/findings`, { sub: OWNER_SUB });
+    const id = res.headers.get(REQUEST_ID_HEADER);
+    const text = await res.text();
+    expect(res.status, text).toBe(500);
+    const body = JSON.parse(text) as Record<string, unknown>;
+    expect(body).toMatchObject({ status: 500, title: 'Internal error', code: 'internal', requestId: id });
+    expect(body).not.toHaveProperty('detail');
+    // Neither the schema's wording, the field, nor the value the plane sent reaches the caller.
+    expect(text).not.toMatch(/firstSeen|a-broken-instant|mountRoutes|datetime|Invalid/);
+
+    const lines = logged.filter((l) => l.includes('dashboard.request-failed')).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(lines).toEqual([
+      {
+        event: 'dashboard.request-failed',
+        requestId: id,
+        method: 'GET',
+        path: `/api/teams/${team}/findings`,
+        status: 500,
+        errorName: 'Error',
+        errorCode: 'internal',
+        route: 'dashboard/list-findings',
+        outputPaths: ['entries[].firstSeen'],
+      },
+    ]);
+    expect(logged.join('\n')).not.toContain('a-broken-instant');
   });
 
   it('two requests get two ids, and an id the caller sends is never echoed', async () => {

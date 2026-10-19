@@ -46,11 +46,11 @@ function defaultErrorMessage(body: unknown): string | undefined {
 }
 
 
-/** `adminLogEntry` — a published schema, not a stored row. */
+/** `adminLogRow` — a published schema, not a stored row. */
 export interface AdminLogEntry {
   id: string;
   actor: string;
-  action: "defineRole" | "assignRole" | "unassignRole" | "grant" | "grantEntityShape" | "reconcileEntityGrantShapes" | "grantToOrg" | "addMember" | "removeMember" | "createOrg" | "registerIdentityPool" | "registerVertical" | "publishVersion" | "admitVersion" | "rejectVersion" | "setVerticalListed" | "requestPublish" | "setVerticalInstallsBlocked" | "setVerticalTenantProvisioner" | "setVerticalEmailSender" | "deleteVertical" | "bindScopeVersion" | "markScopeProvisioned" | "promoteVersion" | "setVerticalServing" | "setScopeServingRef" | "setScopeExpiresAt" | "resolveKeptCopy" | "backfillScopeCopy" | "bindHostname" | "setHostnameStatus" | "setHostnameIssuance" | "unbindHostname" | "drainAccessLog" | "drainEvents" | "redrainEvents" | "pruneAccessLog" | "createTenant" | "setTenantStatus" | "setTenantName" | "reapTenant" | "provisionScope" | "provisionTenantStore" | "provisionBlobStore" | "importScope" | "restoreScope" | "rewindScope" | "deleteSnapshot" | "suspendScope" | "unsuspendScope" | "archiveScope" | "unarchiveScope" | "reapScope" | "activateScope" | "grantEntitlement" | "revokeEntitlement" | "linkIdentity" | "unlinkIdentity" | "createConnection" | "updateConnectionSecret" | "revokeConnection" | "mintConnectLink" | "revokeConnectLink" | "consumeConnectLink" | "restoreConnectLink" | "grantToConnection" | "grantToSystem" | "revokeFromSystem" | "restoreToSystem" | "reassertSystemSwitch" | "revokeFromPeer" | "restoreToPeer" | "reassertPeerSwitch" | "moveImportCursor" | "restoreDirectory" | "shredSubject" | "setIssueStatus" | "beginImpersonation" | "endImpersonation" | "mintCapability" | "revokeCapability" | "transferOwner" | "markScopeCopy" | "clearScopeCopyMark" | "setFindingStatus" | "createFindingRule" | "revokeFindingRule" | "resolveStaleFinding" | "manageScopeMember" | "setPeerBinding" | "bindConnectionScope" | "uploadStoreDriverRelease" | "rollOutStoreDriver" | "rollBackStoreDriver" | "rebuildStoreDriver" | "sweepOrphanAttachments" | "uploadStoreKindRelease" | "rollOutStoreKind" | "rollBackStoreKind";
+  action: string;
   tenantId: string | null;
   scopeId: string | null;
   vertical: string | null;
@@ -59,7 +59,7 @@ export interface AdminLogEntry {
   causedBy: string | null;
   onBehalfOf?: { principal: string; tenantId: string; impersonation?: { session: string; by: string } } | null;
   at: string;
-  audited?: { operationId: string; outcome: "pending" | "applied" | "refused" | "failed" | "unknown" | "conflicting"; superseded: boolean };
+  audited?: { operationId: string; outcome: string; superseded: boolean };
 }
 
 /** `appEvent` — a published schema, not a stored row. */
@@ -144,18 +144,18 @@ export interface FailureGroupRow {
   lastStatus: number | null;
 }
 
-/** `findingEntry` — a published schema, not a stored row. */
+/** `findingRow` — a published schema, not a stored row. */
 export interface FindingEntry {
   id: string;
   tenantId: string;
-  kind: "invariant" | "drift" | "recurring";
+  kind: string;
   subject: string;
-  status: "open" | "acked" | "resolved" | "suppressed";
+  status: string;
   regressed: boolean;
-  severity: "info" | "warning" | "critical";
+  severity: string;
   title: string;
   operation: string | null;
-  codes: ("unauthenticated" | "permission_denied" | "forbidden" | "not_found" | "conflict" | "validation_failed" | "precondition_failed" | "rate_limited" | "unavailable" | "internal")[];
+  codes: string[];
   vertical: string | null;
   scopeId: string | null;
   count: number;
@@ -164,20 +164,20 @@ export interface FindingEntry {
   lastVersion: string | null;
   resolvedVersion: string | null;
   resolvedAt: string | null;
-  resolution: "verdict" | "stale" | null;
+  resolution: string | null;
   acknowledgedAt: string | null;
   ruleId: string | null;
-  evidence: { source: "ops-failures"; fingerprint: string } | { source: "sweep-runs"; kind: "schedule" | "freshness"; unit: string };
-  likelyCause: { kind: "deploy"; version: string; reason: string } | null;
+  evidence: { source: "ops-failures"; fingerprint: string } | { source: "sweep-runs"; kind: "schedule" | "freshness"; unit: string } | null;
+  likelyCause: { kind: string; version: string; reason: string } | null;
 }
 
-/** `findingRuleEntry` — a published schema, not a stored row. */
+/** `findingRuleRow` — a published schema, not a stored row. */
 export interface FindingRuleEntry {
   id: string;
   tenantId: string;
-  kind: "invariant" | "drift" | "recurring" | null;
+  kind: string | null;
   operation: string | null;
-  code: "unauthenticated" | "permission_denied" | "forbidden" | "not_found" | "conflict" | "validation_failed" | "precondition_failed" | "rate_limited" | "unavailable" | "internal" | null;
+  code: string | null;
   subject: string | null;
   expiresAt: string;
   reason: string;
@@ -308,14 +308,14 @@ export interface DashboardClient {
    *
    * `POST /apps/{scopeId}/hostnames` — `dashboard/add-app-hostname`
    */
-  addAppHostname(input: { scopeId: string; surface: string; domain?: string }): Promise<{ hostname: string; surface: string; status: string; statusNote: string | null; canonical: boolean; createdAt: string | null; validationRecords: ({ type: "hostname" | "txt"; name: string; value: string; status?: string | null })[] }>;
+  addAppHostname(input: { scopeId: string; surface: string; domain?: string }): Promise<{ hostname: string; surface: string; status: string; statusNote: string | null; canonical: boolean; createdAt: string | null; validationRecords: ({ type: string; name: string; value: string; status?: string | null })[] }>;
 
   /**
    * Add a custom domain to one of this team's apps; lands verifying with the DNS records to publish
    *
    * `POST /domains` — `dashboard/add-domain`
    */
-  addDomain(input: { hostname: string; appScopeId: string; surface?: string }): Promise<{ hostname: string; status: "pending" | "verifying" | "active" | "failed"; statusNote?: string | null; validationRecords?: ({ type: "hostname" | "txt"; name: string; value: string; status?: string | null })[] }>;
+  addDomain(input: { hostname: string; appScopeId: string; surface?: string }): Promise<{ hostname: string; status: string; statusNote?: string | null; validationRecords?: ({ type: string; name: string; value: string; status?: string | null })[] }>;
 
   /**
    * Attach a custom domain to a preview's scope: what makes a pinned preview a long-lived test environment
@@ -329,7 +329,7 @@ export interface DashboardClient {
    *
    * `POST /findings/rules` — `dashboard/create-finding-rule`
    */
-  createFindingRule(input: { kind?: "invariant" | "drift" | "recurring"; operation?: string; code?: "unauthenticated" | "permission_denied" | "forbidden" | "not_found" | "conflict" | "validation_failed" | "precondition_failed" | "rate_limited" | "unavailable" | "internal"; subject?: string; expiresAt: string; reason: string }): Promise<{ rule: FindingRuleEntry; suppressed: number }>;
+  createFindingRule(input: { kind?: string; operation?: string; code?: string; subject?: string; expiresAt: string; reason: string }): Promise<{ rule: FindingRuleEntry; suppressed: number }>;
 
   /**
    * Create a preview of an admitted version, or re-use the one with this tag (`reused`); `ttlHours: null` pins it
@@ -427,7 +427,7 @@ export interface DashboardClient {
    *
    * `GET /apps/{scopeId}/hostnames` — `dashboard/list-app-hostnames`
    */
-  listAppHostnames(input: { scopeId: string }): Promise<{ bindings: ({ hostname: string; surface: string; status: string; statusNote: string | null; canonical: boolean; createdAt: string | null; validationRecords: ({ type: "hostname" | "txt"; name: string; value: string; status?: string | null })[] })[]; surfaces: { name: string; label: string }[]; defaultHostname: string | null }>;
+  listAppHostnames(input: { scopeId: string }): Promise<{ bindings: ({ hostname: string; surface: string; status: string; statusNote: string | null; canonical: boolean; createdAt: string | null; validationRecords: ({ type: string; name: string; value: string; status?: string | null })[] })[]; surfaces: { name: string; label: string }[]; defaultHostname: string | null }>;
 
   /**
    * One page of this team's apps, newest first
@@ -476,7 +476,7 @@ export interface DashboardClient {
    *
    * `GET /domains` — `dashboard/list-domains`
    */
-  listDomains(input: { limit?: number; cursor?: string }): Promise<{ entries: ({ hostname: string; appScopeId: string; app: string; surface: string; status: "pending" | "verifying" | "active" | "failed"; statusNote: string | null; primary: boolean; createdAt: string; validationRecords: ({ type: "hostname" | "txt"; name: string; value: string; status?: string | null })[] })[]; nextCursor: string | null }>;
+  listDomains(input: { limit?: number; cursor?: string }): Promise<{ entries: ({ hostname: string; appScopeId: string; app: string; surface: string; status: string; statusNote: string | null; primary: boolean; createdAt: string; validationRecords: ({ type: string; name: string; value: string; status?: string | null })[] })[]; nextCursor: string | null }>;
 
   /**
    * This team's suppress rules; `active` keeps the unexpired ones
@@ -616,7 +616,7 @@ export interface DashboardClient {
    *
    * `POST /domains/{hostname}/verify` — `dashboard/verify-domain`
    */
-  verifyDomain(input: { hostname: string }): Promise<{ hostname: string; status: "pending" | "verifying" | "active" | "failed"; statusNote?: string | null; validationRecords?: ({ type: "hostname" | "txt"; name: string; value: string; status?: string | null })[] }>;
+  verifyDomain(input: { hostname: string }): Promise<{ hostname: string; status: string; statusNote?: string | null; validationRecords?: ({ type: string; name: string; value: string; status?: string | null })[] }>;
 }
 
 /**

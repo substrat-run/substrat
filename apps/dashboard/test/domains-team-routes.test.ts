@@ -7,7 +7,7 @@ import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/c
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { dashboardRoutes } from '../src/routes.js';
-import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
+import { patchRows, rewrittenPlane, SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 
 /**
  * The Domains area — the team's custom domains and each app's hostnames — declared under
@@ -335,6 +335,45 @@ describe('the Domains routes take their team from the path (#2170)', () => {
     it('the twin: a member, who manages apps, binds and unbinds through the same routes', async () => {
       expect((await send('POST', `/api/teams/${tenant}/apps/${mine}/hostnames`, { sub: subs.member, body: { surface: 'admin', domain: 'admin.acme.example' } })).status).toBe(201);
       expect((await send('DELETE', `/api/teams/${tenant}/apps/${mine}/hostnames/admin.acme.example`, { sub: subs.member })).status).toBe(200);
+    });
+  });
+
+  /**
+   * #2401: the plane owns the hostname statuses and the DNS record types. One this dashboard does
+   * not know is answered as the plane named it, never refused: for add-domain the bind has already
+   * committed by the time the answer is read, so a refusal would report a failure for a write that
+   * happened.
+   */
+  describe('a plane newer than this dashboard', () => {
+    const FUTURE_RECORD = { type: 'cname-flattened', name: '_x.acme.example', value: 'edge.example', status: null };
+    beforeEach(() => {
+      // Every hostname row the plane answers, in a status and with a record type this dashboard does not know.
+      env.CONTROL_PLANE_SVC = rewrittenPlane(
+        env.CONTROL_PLANE_SVC,
+        (p) => p.includes('/hostnames'),
+        patchRows((o) => ('hostname' in o && 'status' in o ? { ...o, status: 'quarantined', validationRecords: [FUTURE_RECORD] } : undefined)),
+      );
+    });
+
+    it('add-domain answers 201 for the bind that committed; list and verify answer 200; each as the plane named it', async () => {
+      const added = await send('POST', `/api/teams/${tenant}/domains`, { body: { ...DOMAIN, appScopeId: mine } });
+      expect(added.status, await added.clone().text()).toBe(201);
+      expect(await added.json()).toMatchObject({ hostname: 'shop.acme.example', status: 'quarantined', validationRecords: [FUTURE_RECORD] });
+      const listed = await send('GET', `/api/teams/${tenant}/domains`);
+      expect(listed.status, await listed.clone().text()).toBe(200);
+      expect(await listed.json()).toMatchObject({ entries: [{ hostname: 'shop.acme.example', status: 'quarantined', validationRecords: [FUTURE_RECORD] }] });
+      const verified = await send('POST', `/api/teams/${tenant}/domains/shop.acme.example/verify`);
+      expect(verified.status, await verified.clone().text()).toBe(200);
+      expect(await verified.json()).toMatchObject({ hostname: 'shop.acme.example', status: 'quarantined', validationRecords: [FUTURE_RECORD] });
+    });
+
+    it('an app’s hostnames: the bind answers 201 and the list 200, with the record type as the plane named it', async () => {
+      const bound = await send('POST', `/api/teams/${tenant}/apps/${mine}/hostnames`, { body: { surface: 'admin', domain: 'admin.acme.example' } });
+      expect(bound.status, await bound.clone().text()).toBe(201);
+      expect(await bound.json()).toMatchObject({ hostname: 'admin.acme.example', status: 'quarantined', validationRecords: [FUTURE_RECORD] });
+      const listed = await send('GET', `/api/teams/${tenant}/apps/${mine}/hostnames`);
+      expect(listed.status, await listed.clone().text()).toBe(200);
+      expect(await listed.json()).toMatchObject({ bindings: expect.arrayContaining([expect.objectContaining({ hostname: 'admin.acme.example', validationRecords: [FUTURE_RECORD] })]) });
     });
   });
 

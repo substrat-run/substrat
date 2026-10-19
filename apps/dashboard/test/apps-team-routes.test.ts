@@ -9,7 +9,7 @@ import { MODULES, provisionDashboard } from '../src/index.js';
 import { APP_EVENT_KINDS } from '../src/app-event-kinds.js';
 import { dashboardMigrations } from '../src/module.js';
 import { dashboardRoutes } from '../src/routes.js';
-import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
+import { patchRows, rewrittenPlane, SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 
 /**
  * The Apps read routes, declared under `/api/teams/:teamId` (#2170).
@@ -259,6 +259,23 @@ describe('the Apps read routes take their team from the path (#2170)', () => {
     );
     expect((await get(`/api/teams/${tenant}/apps/${secondApp}/audit`)).status).toBe(404);
     expect((await get(`/api/teams/${tenant}/audit?scopeId=${secondApp}`)).status).toBe(404);
+  });
+
+  it('audit (#2401): an action and an audited outcome this dashboard does not know are listed as the plane named them, on both routes', async () => {
+    // The plane owns both sets: a newer one names an action, or an outcome, the dashboard's contracts do not.
+    env.CONTROL_PLANE_SVC = rewrittenPlane(
+      env.CONTROL_PLANE_SVC,
+      (p) => p.endsWith('/admin-log'),
+      patchRows((e) => ('action' in e ? { ...e, action: 'frobnicateScope', audited: { operationId: 'op-1', outcome: 'reconsidered', superseded: false } } : undefined)),
+    );
+    const [a] = apps;
+    // One admin action against the app, so its own log has a row to answer.
+    await host.provisionScope(staff, { tenantId: tenant, scopeId: a! });
+    for (const path of [`/api/teams/${tenant}/audit`, `/api/teams/${tenant}/audit?scopeId=${a}`, `/api/teams/${tenant}/apps/${a}/audit`]) {
+      const page = await json(await get(path));
+      expect(page.entries.length, path).toBeGreaterThan(0);
+      for (const e of page.entries) expect(e, path).toMatchObject({ action: 'frobnicateScope', audited: { outcome: 'reconsidered' } });
+    }
   });
 
   it('a team the caller is not in is a 404 on every route, and the plane is not asked', async () => {
