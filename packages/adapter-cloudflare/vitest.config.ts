@@ -18,6 +18,8 @@ export default defineConfig({
     }),
   ],
   test: {
+    // vitest 5.0.4+ turns the module cache on by default, which crashes the workerd pool (WebSocket 1009).
+    fsModuleCache: false,
     include: ['test/**/*.test.ts'],
     passWithNoTests: true,
     // One file at a time, as the old pool's `singleWorker` ran them: several suites count

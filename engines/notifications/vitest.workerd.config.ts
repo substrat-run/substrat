@@ -12,6 +12,8 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   plugins: [cloudflareTest({ wrangler: { configPath: './test/workerd/wrangler.jsonc' } })],
   test: {
+    // vitest 5.0.4+ turns the module cache on by default, which crashes the workerd pool (WebSocket 1009).
+    fsModuleCache: false,
     include: ['test/workerd/**/*.test.ts'],
     testTimeout: 30_000,
     // One deployment walked through its whole life: storage carries across `it` blocks.
