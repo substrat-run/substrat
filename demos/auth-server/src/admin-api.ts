@@ -35,6 +35,7 @@ import {
   type ProviderEndpoints,
 } from './providers.js';
 import { resolveIssuerEndpoints } from './provider-discovery.js';
+import { isPlatformRow, relayClientId } from './social-relay.js';
 import { isHttpsOrLoopback, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import { deleteBankIdConfig, putBankIdConfig, readBankIdConfig, toWireBankId } from './bankid.js';
 import { SIGN_IN_LOG_LIMIT, readSignInLog, signInLogQuery } from './sign-in-log.js';
@@ -561,7 +562,11 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
   app.get('/providers', (c) =>
     c.json({
       catalogue: PROVIDER_CATALOGUE,
-      providers: readProviders(deps.sql).map(toWireProvider),
+      providers: readProviders(deps.sql).map((row) => ({
+        ...toWireProvider(row),
+        /** Delivered by the platform (#1544): a switch, not a credential form. */
+        platform: isPlatformRow(row, relayClientId(deps.sql)),
+      })),
     }),
   );
 
@@ -584,6 +589,28 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
   app.put('/providers/:providerId', async (c) => {
     const providerId = c.req.param('providerId');
     const input = parsedBody(providerPut, await c.req.json().catch(() => null));
+    // A row the platform delivered (#1544): the credential, issuer, label and endpoints are the
+    // platform's and are re-delivered on every reconcile, so an edit to them would be undone
+    // without a word. The operator's three decisions are the whole of what a save changes.
+    const platformRow = readProvider(deps.sql, providerId);
+    if (platformRow && isPlatformRow(platformRow, relayClientId(deps.sql))) {
+      upsertProvider(
+        deps.sql,
+        providerId,
+        {
+          clientId: platformRow.client_id,
+          issuer: platformRow.issuer,
+          label: platformRow.label,
+          endpoints: platformRow.endpoints ? (JSON.parse(platformRow.endpoints) as ProviderEndpoints) : null,
+          tenantId: null,
+          allowSignup: input.allowSignup,
+          trustEmail: input.trustEmail,
+          disabled: input.disabled,
+        },
+        platformRow,
+      );
+      return c.json({ ...toWireProvider(readProvider(deps.sql, providerId)!), platform: true });
+    }
     const descriptor = descriptorOf(providerId);
     if (descriptor?.issuerField) {
       // A NAMED generic entry (Supabase): the catalogue owns the id, the button label and the
@@ -672,8 +699,14 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
    */
   app.delete('/providers/:providerId', (c) => {
     const providerId = c.req.param('providerId');
-    if (!readProvider(deps.sql, providerId)) {
+    const row = readProvider(deps.sql, providerId);
+    if (!row) {
       throw new HTTPException(404, { message: `provider '${providerId}' is not configured` });
+    }
+    // The platform would deliver it again on its next reconcile, so removing it is not a thing
+    // this screen can do. Switching it off is, and keeps the operator's decisions.
+    if (isPlatformRow(row, relayClientId(deps.sql))) {
+      throw new HTTPException(409, { message: `'${providerId}' is provided by the platform — switch it off instead of removing it` });
     }
     deleteProvider(deps.sql, providerId);
     return c.json({ deleted: providerId });

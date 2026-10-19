@@ -32,6 +32,17 @@ any kind.
   platform's quota. `/internal/clients` is gated by `PLATFORM_SECRET`, because the platform
   is the party that knows which hostname belongs to which install.
 
+## How an install gets its client
+
+Nobody registers one by hand. The control plane's reconciler (`packages/control-plane-api/src/social-relay.ts`)
+does it for every Auth Server install, keyed by the install's scope (`PUT /internal/clients/by-ref/scope:<id>`):
+it reads `GET /providers`, builds one redirect URI per provider per hostname the platform has
+verified for the install, and delivers the client to the install as `substrat:social-relay`. It
+runs when one of the install's hostnames becomes active, and staff run it across every install
+after a provider is added here. Adding a provider is therefore: add it to `src/providers.ts`,
+give this worker its credential (`secrets.mjs`), deploy, and run `POST /social-relay/reconcile`
+on the control plane.
+
 ## The honest limitation
 
 One shared client carries one name on the consent screen, and it is the platform's. OAuth

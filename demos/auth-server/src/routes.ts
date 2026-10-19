@@ -36,6 +36,7 @@ import {
   previewClientCheck,
   previewClientMint,
   previewClientRetire,
+  SOCIAL_RELAY_SECRET_NEEDED,
   TOKEN_EXCHANGE_GRANT_TYPE,
 } from '@substrat-run/contracts';
 import {
@@ -364,7 +365,10 @@ app.post('/internal/reconcile', async (c) => {
 app.post('/internal/configure', async (c) => {
   assertPlatform(c.env, c.req.raw);
   const body = configureInstanceBody.parse(await c.req.json());
-  await stubFor(c.env, body.scopeId).setInstanceConfig(body.entries);
+  const outcome = await stubFor(c.env, body.scopeId).setInstanceConfig(body.entries);
+  // Everything else in the delivery is applied; the platform rotates the relay secret and sends
+  // the entry again (`@substrat-run/contracts`, social-relay.ts).
+  if (outcome?.socialRelaySecretNeeded) return c.json({ error: SOCIAL_RELAY_SECRET_NEEDED }, 409);
   return c.json({ applied: body.entries.length });
 });
 

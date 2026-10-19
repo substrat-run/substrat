@@ -1049,6 +1049,11 @@ export interface ConfiguredProvider {
   /** Set when the row is not offered for sign-in: why, and that saving it again re-discovers. */
   attention: string | null;
   updatedAt: number | null;
+  /**
+   * Delivered by the platform (#1544): its credential is the platform's, so the panel offers the
+   * operator's decisions and nothing else. Only on the read; a save never sends it.
+   */
+  platform?: boolean;
 }
 
 /** The editable half — `clientSecret` omitted on an edit means "keep the stored one". */

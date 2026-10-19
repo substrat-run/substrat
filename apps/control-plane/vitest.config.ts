@@ -37,6 +37,13 @@ export default defineConfig({
               status: 501,
               headers: { 'content-type': 'application/json' },
             }),
+          // #1544: the social relay is a separately deployed worker too. Same stub, same reason;
+          // the reconciler itself is driven in control-plane-api's suite against a fake relay.
+          SOCIAL_RELAY: () =>
+            new Response(JSON.stringify({ error: 'social relay not available in tests' }), {
+              status: 501,
+              headers: { 'content-type': 'application/json' },
+            }),
         },
       },
       wrangler: { configPath: './wrangler.jsonc' },

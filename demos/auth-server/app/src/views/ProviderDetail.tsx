@@ -92,7 +92,7 @@ export function ProviderDetailView({ providerId, issuer }: { providerId: string;
           {state.provider && <ProviderHeader entry={state.entry} provider={state.provider} />}
           <section className="panel">
             <div className="panel-head">
-              <h2>{state.provider ? 'Credentials' : 'Enable this provider'}</h2>
+              <h2>{state.provider?.platform ? 'Settings' : state.provider ? 'Credentials' : 'Enable this provider'}</h2>
             </div>
             {/* No key needed here: the whole view is keyed by `providerId` at its call site, so
                 one provider's unsaved credentials cannot outlive a move to another. */}
@@ -105,7 +105,8 @@ export function ProviderDetailView({ providerId, issuer }: { providerId: string;
               }}
             />
           </section>
-          {state.provider && <ProviderActions provider={state.provider} entry={state.entry} />}
+          {/* A platform row cannot be removed — it would be delivered again — only switched off. */}
+          {state.provider && !state.provider.platform && <ProviderActions provider={state.provider} entry={state.entry} />}
         </>
       )}
     </>
@@ -125,7 +126,8 @@ function ProviderHeader({
       <div className="panel-head">
         <h2>
           {entry?.label ?? provider.label ?? provider.id}{' '}
-          {!entry && provider.issuer && <span className="tag">custom OIDC</span>}
+          {provider.platform && <span className="tag">provided by Substrat</span>}
+          {!entry && provider.issuer && !provider.platform && <span className="tag">custom OIDC</span>}
         </h2>
       </div>
       <dl className="kv">

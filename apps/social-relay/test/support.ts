@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import type { ClientRecord, CodeRecord, FlowRecord, RegisterClientInput, RelayStore } from '../src/do-contract.js';
+import type { ClientRecord, CodeRecord, EnsuredClient, FlowRecord, RegisterClientInput, RelayStore } from '../src/do-contract.js';
 import { generateSigningKey, randomToken, sha256b64url, timingSafeEqual, type SigningKey } from '../src/jwt.js';
 import {
   applySchema,
@@ -13,6 +13,8 @@ import {
   sweepExpired,
   takeEphemeral,
   updateClientDisabled,
+  ensureClientRow,
+  rotateClientSecretRow,
   type SqlExec,
 } from '../src/store.js';
 
@@ -76,6 +78,12 @@ export function testStore(): TestStore {
     },
     async setClientDisabled(clientId: string, disabled: boolean) {
       return updateClientDisabled(sql, clientId, disabled);
+    },
+    async ensureClient(ref: string, input: RegisterClientInput, now: number): Promise<EnsuredClient> {
+      return ensureClientRow(sql, ref, input, now);
+    },
+    async rotateClientSecret(clientId: string) {
+      return rotateClientSecretRow(sql, clientId);
     },
     async deleteClient(clientId: string) {
       return removeClient(sql, clientId);

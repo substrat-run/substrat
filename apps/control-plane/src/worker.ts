@@ -114,7 +114,10 @@ import {
   reconcileOutcomeOf,
   reconcileThenReassert,
   reconcilePendingHostnames,
+  reconcileScopeSocialRelay,
+  relayHostnames,
   isCustomHostname,
+  type SocialRelayOptions,
   firstBuilderAuth,
   firstPlatformActorAuth,
   pushTokenBuilderAuth,
@@ -575,6 +578,14 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * to provision an instance of it (orchestration.md §5.4), the mirror of the router.
    */
   DISPATCH?: DispatchNamespace;
+  /**
+   * The platform's social sign-in relay (#1544, `apps/social-relay`), as a service binding, and
+   * the public origin it answers on (`https://id.substrat.net`). The origin is what every issuer
+   * and redirect URI is built from, so it is configuration rather than read off the binding.
+   * Both, plus PLATFORM_SECRET, or an Auth Server install is never registered there.
+   */
+  SOCIAL_RELAY?: Fetcher;
+  SOCIAL_RELAY_ORIGIN?: string;
   /**
    * PKCS8 Ed25519 private key, base64url, for audience `platform` (#2287). The
    * store script holds only the public key. A vertical is not given this one.
@@ -1294,7 +1305,13 @@ function importCursorDelegationFor(env: Env): ImportCursorDelegation | undefined
  */
 function capabilityDelegationFor(env: Env): CapabilityDelegation | undefined {
   if (!env.DISPATCH || !env.PLATFORM_SECRET) return undefined;
-  const ladder: ScopeDeploymentLadder = {
+  const ladder = scopeDeploymentLadderFor(env);
+  return capabilityDelegationOver(async (actor, scope) => (await scopeDeployment(ladder, actor, scope))?.client);
+}
+
+/** The control-plane API's ladder from a scope to its running deployment, outside a request. */
+function scopeDeploymentLadderFor(env: Env): ScopeDeploymentLadder {
+  return {
     verticals: verticalsFor(env),
     resolveVertical: resolveVerticalFor(env),
     resolveVerticalVersion: resolveVerticalVersionFor(env),
@@ -1304,7 +1321,54 @@ function capabilityDelegationFor(env: Env): CapabilityDelegation | undefined {
     tenantSlugOf: async (actor, tenantId) =>
       (await hostFor(env).admin.getTenant(actor, tenantId).catch(() => null))?.slug ?? null,
   };
-  return capabilityDelegationOver(async (actor, scope) => (await scopeDeployment(ladder, actor, scope))?.client);
+}
+
+/** How this control plane reaches the social relay (#1544), or undefined when it is not wired. */
+function socialRelayFor(env: Env): SocialRelayOptions | undefined {
+  const binding = env.SOCIAL_RELAY;
+  if (!binding || !env.SOCIAL_RELAY_ORIGIN || !env.PLATFORM_SECRET) return undefined;
+  return {
+    origin: env.SOCIAL_RELAY_ORIGIN,
+    fetch: (input, init) => binding.fetch(input, init),
+    platformSecret: env.PLATFORM_SECRET,
+  };
+}
+
+/**
+ * The cron sweep's half of the social-relay trigger: a custom domain of an Auth Server install
+ * just became active, so register it at the relay. Same reconcile the API runs, reached outside
+ * a request through the same deployment ladder.
+ */
+function relayOnActivatedFor(env: Env): ((row: { tenantId: string; scopeId: string; verticalSlug: string | null }) => Promise<void>) | undefined {
+  const relay = socialRelayFor(env);
+  if (!relay) return undefined;
+  const admin = hostFor(env).admin;
+  const ladder = scopeDeploymentLadderFor(env);
+  return async (row) => {
+    try {
+      const outcome = await reconcileScopeSocialRelay(
+        {
+          relay,
+          getScope: (t, s) => admin.getScopeRecord(SWEEP_ACTOR, tenantId.parse(t), scopeId.parse(s)),
+          activeHostnames: async (s) =>
+            relayHostnames(await admin.listHostnames(SWEEP_ACTOR, { scopeId: scopeId.parse(s), status: 'active' }), {
+              isCustom: (h) => isCustomHostname(h, platformBaseDomains(env)),
+              provisioner: provisionHostnameFor(env),
+            }),
+          deploymentOf: async (scope) => (await scopeDeployment(ladder, SWEEP_ACTOR, scope))?.client,
+        },
+        row.tenantId,
+        row.scopeId,
+      );
+      console.log('social-relay.reconciled', { scopeId: row.scopeId, trigger: 'hostname-sweep', ...outcome });
+    } catch (e) {
+      console.error('social-relay.reconcile.failed', {
+        scopeId: row.scopeId,
+        trigger: 'hostname-sweep',
+        detail: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
 }
 
 /**
@@ -2389,6 +2453,7 @@ export default {
         actor: SWEEP_ACTOR,
         provisioner,
         isCustom: (h) => isCustomHostname(h, bases),
+        onActivated: relayOnActivatedFor(env),
       });
       if (hostnameReport.activated || hostnameReport.failed || hostnameReport.created || hostnameReport.healed || hostnameReport.orphaned || hostnameReport.errors.length) {
         console.log('hostname-reconcile', hostnameReport);
@@ -2989,6 +3054,8 @@ export default {
         // platform mint under one of these base domains rides the wildcard.
         provisionHostname: provisionHostnameFor(env),
         platformBaseDomains: platformBaseDomains(env),
+        // #1544 — an Auth Server install's client at the platform's social relay.
+        socialRelay: socialRelayFor(env),
       }),
     );
 

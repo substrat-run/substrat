@@ -2,14 +2,18 @@ import { describe, expect, it } from 'vitest';
 import {
   applySchema,
   countInWindow,
+  ensureClientRow,
   insertClient,
   putEphemeral,
+  rotateClientSecretRow,
   selectClient,
+  selectClientSecretHash,
   sweepExpired,
   takeEphemeral,
 } from '../src/store.js';
 import { sqlExecOf } from './support.js';
 import Database from 'better-sqlite3';
+import { sha256b64url } from '../src/jwt.js';
 
 /**
  * The store's two load-bearing properties are properties of its SQL, so they are asserted
@@ -92,6 +96,79 @@ describe('the client registry', () => {
       redirectUris: ['https://a.example/cb', 'https://b.example/cb'],
       disabled: false,
       createdAt: 7,
+      ref: null,
     });
+  });
+
+  it('adds the ref column to a registry created before it existed, keeping its clients', () => {
+    // Production registered clients before `ref` existed; the DO re-applies the schema on
+    // start, so that table must gain the column in place rather than fail or be re-created.
+    const database = new Database(':memory:');
+    const sql = sqlExecOf(database);
+    sql.exec(`CREATE TABLE relay_client (
+      client_id TEXT PRIMARY KEY, name TEXT NOT NULL, secret_hash TEXT NOT NULL,
+      redirect_uris TEXT NOT NULL, disabled INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)`);
+    sql.exec(
+      `INSERT INTO relay_client (client_id, name, secret_hash, redirect_uris, created_at) VALUES ('old', 'Old', 'h', '[]', 1)`,
+    );
+    applySchema(sql);
+    applySchema(sql);
+    expect(selectClient(sql, 'old')).toMatchObject({ clientId: 'old', ref: null });
+  });
+});
+
+describe('ensuring a client by ref', () => {
+  const input = { name: 'An install', redirectUris: ['https://a.example/api/auth/callback/github-relay'] };
+
+  it('creates once, with a secret that matches the stored hash', async () => {
+    const sql = freshSql();
+    const first = await ensureClientRow(sql, 'scope:01', input, 5);
+    expect(first).toMatchObject({ created: true, disabled: false });
+    expect(first.clientSecret).toBeTruthy();
+    expect(selectClientSecretHash(sql, first.clientId)).toBe(await sha256b64url(first.clientSecret!));
+  });
+
+  it('finds the same client again, replaces its URIs and name, and never re-issues the secret', async () => {
+    const sql = freshSql();
+    const first = await ensureClientRow(sql, 'scope:01', input, 5);
+    const hash = selectClientSecretHash(sql, first.clientId);
+    const second = await ensureClientRow(
+      sql,
+      'scope:01',
+      { name: 'Renamed', redirectUris: ['https://b.example/api/auth/callback/google-relay'] },
+      9,
+    );
+    expect(second).toEqual({ clientId: first.clientId, clientSecret: null, created: false, disabled: false });
+    expect(selectClient(sql, first.clientId)).toMatchObject({
+      name: 'Renamed',
+      redirectUris: ['https://b.example/api/auth/callback/google-relay'],
+      createdAt: 5,
+    });
+    expect(selectClientSecretHash(sql, first.clientId)).toBe(hash);
+  });
+
+  it('keeps two installs apart', async () => {
+    const sql = freshSql();
+    const a = await ensureClientRow(sql, 'scope:a', input, 5);
+    const b = await ensureClientRow(sql, 'scope:b', input, 5);
+    expect(a.clientId).not.toBe(b.clientId);
+  });
+
+  it('leaves a disabled client disabled — the kill switch is not the reconciler’s to lift', async () => {
+    const sql = freshSql();
+    const first = await ensureClientRow(sql, 'scope:01', input, 5);
+    sql.exec('UPDATE relay_client SET disabled = 1 WHERE client_id = ?', first.clientId);
+    expect(await ensureClientRow(sql, 'scope:01', input, 6)).toMatchObject({ created: false, disabled: true });
+    expect(selectClient(sql, first.clientId)?.disabled).toBe(true);
+  });
+
+  it('rotates a secret so only the new one matches, and answers null for an unknown client', async () => {
+    const sql = freshSql();
+    const first = await ensureClientRow(sql, 'scope:01', input, 5);
+    const rotated = await rotateClientSecretRow(sql, first.clientId);
+    expect(rotated).toBeTruthy();
+    expect(rotated).not.toBe(first.clientSecret);
+    expect(selectClientSecretHash(sql, first.clientId)).toBe(await sha256b64url(rotated!));
+    expect(await rotateClientSecretRow(sql, 'nobody')).toBeNull();
   });
 });

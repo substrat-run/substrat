@@ -79,7 +79,8 @@ export function ProvidersPanel({ issuer }: { issuer: string | null }) {
                           <ProviderLink id={provider.id}>
                             {entry?.label ?? provider.label ?? provider.id}
                           </ProviderLink>
-                          {provider.issuer && !entry && <span className="tag">custom OIDC</span>}
+                          {provider.platform && <span className="tag">provided by Substrat</span>}
+                          {provider.issuer && !entry && !provider.platform && <span className="tag">custom OIDC</span>}
                           {provider.allowSignup && <span className="tag">creates accounts</span>}
                           {provider.trustEmail && <span className="tag">trusted email</span>}
                         </div>
@@ -198,6 +199,9 @@ export function ProviderEditor({
   const [saved, setSaved] = useState(false);
 
   const providerId = entry?.id ?? provider?.id ?? customId.trim();
+  // A platform row (#1544): the credential, issuer and label are the platform's and are
+  // re-delivered, so the server keeps them whatever is sent. Only the decisions are shown.
+  const platform = provider?.platform === true;
   const displayName = entry?.label ?? provider?.label ?? (label.trim() || 'custom provider');
 
   const save = async () => {
@@ -248,7 +252,15 @@ export function ProviderEditor({
   return (
     <div className="editor" onInput={() => setSaved(false)}>
       <h3>{provider ? `Edit ${displayName}` : entry ? `Enable ${entry.label}` : 'Add a custom OIDC provider'}</h3>
-      {!entry && (
+      {platform && (
+        <p className="muted">
+          Provided by Substrat. The platform holds the credential for {displayName} and keeps it
+          up to date, so there is nothing to register or paste. People see Substrat’s name on
+          {' '}{displayName}’s consent screen; to show your own, add {displayName} with your own
+          client instead.
+        </p>
+      )}
+      {!entry && !platform && (
         <>
           <Field
             label="Provider ID"
@@ -280,6 +292,7 @@ export function ProviderEditor({
           hint={entry.issuerField.hint}
         />
       )}
+      {!platform && (<>
       <label className="field">
         <span>Redirect URI</span>
         <code>
@@ -298,6 +311,7 @@ export function ProviderEditor({
         type="password"
         hint={provider?.clientSecretSet ? 'Leave blank to keep the secret already stored.' : undefined}
       />
+      </>)}
       {entry?.tenantField && (
         <Field
           label={entry.tenantField.label}
@@ -338,7 +352,11 @@ export function ProviderEditor({
         <input type="checkbox" checked={disabled} onChange={(e) => setDisabled(e.target.checked)} />
         <span>
           <strong>Disabled</strong>
-          <em className="hint">Keeps the credentials but takes the button off the login screen.</em>
+          <em className="hint">
+            {platform
+              ? 'Off by default. Untick to add the button to the login screen.'
+              : 'Keeps the credentials but takes the button off the login screen.'}
+          </em>
         </span>
       </label>
       {err && <p className="error">{err}</p>}

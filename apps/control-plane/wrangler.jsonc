@@ -68,6 +68,10 @@
 		// both envs and defaulted nowhere (#962): TEST once inherited prod's name through
 		// a code default and pushed every vertical into prod's namespace.
 		"DISPATCH_NAMESPACE": "substrat-verticals",
+		// #1544: the social sign-in relay's PUBLIC origin. Every issuer and redirect URI an Auth
+		// Server install is registered with is built from it, so it is stated, never read off the
+		// SOCIAL_RELAY service binding below (whose requests carry no meaningful host).
+		"SOCIAL_RELAY_ORIGIN": "https://id.substrat.net",
 		// The router’s Analytics Engine dataset — the ONLY place a per-tenant request
 		// number exists (observability.md §4.2), read by the installed-app traffic view.
 		// Must match this environment’s router binding (apps/router/wrangler.jsonc), and is
@@ -152,6 +156,9 @@
 	// a bring-up stopgap; with WfP enabled, a pushed + promoted vertical is reached with
 	// no per-vertical binding and no redeploy (see docs/architecture/scope-local-permissions.md).
 	"dispatch_namespaces": [{ "binding": "DISPATCH", "namespace": "substrat-verticals" }],
+	// #1544: the platform's social sign-in relay (apps/social-relay). Reached by binding rather
+	// than over the public hostname, so its platform-gated registration never leaves Cloudflare.
+	"services": [{ "binding": "SOCIAL_RELAY", "service": "substrat-social-relay" }],
 	// Cloudflare Email Service — the email RELAY (#303). The control plane is the ONE worker
 	// that holds an outbound-mail credential: a hosted vertical cannot bind `send_email` (a WfP
 	// dispatch script has no such binding, and the §4 sandbox refuses it), so a vertical granted
@@ -285,6 +292,7 @@
 				"VERTICAL_TRACE_SAMPLING": "1",
 				// Must match the test `dispatch_namespaces` binding below — see its hazard note.
 				"DISPATCH_NAMESPACE": "substrat-verticals-test",
+				"SOCIAL_RELAY_ORIGIN": "https://id-test.substrat.net", // differs
 				// The TEST router’s own dataset — see the prod entry for why this is stated and
 				// never defaulted.
 				"ROUTER_ANALYTICS_DATASET": "substrat_router_test", // differs
@@ -307,6 +315,7 @@
 			// Own dispatch namespace — a test control plane must never push verticals
 			// into prod's `substrat-verticals`. Create: wrangler dispatch-namespace create substrat-verticals-test
 			"dispatch_namespaces": [{ "binding": "DISPATCH", "namespace": "substrat-verticals-test" }], // differs
+			"services": [{ "binding": "SOCIAL_RELAY", "service": "substrat-social-relay-test" }], // differs
 				"send_email": [{ "name": "EMAIL" }], // relay binding (#303); a named env inherits no bindings
 			// #1691: TEST's own dataset — test calls stay out of prod's connector charts.
 			"analytics_engine_datasets": [{ "binding": "CONNECTOR_ANALYTICS", "dataset": "substrat_connector_calls_test" }], // differs

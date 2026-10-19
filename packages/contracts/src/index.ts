@@ -106,4 +106,5 @@ export * from './mcp.js';
 export * from './auth-delivery.js';
 export * from './places.js';
 export * from './delegations.js';
+export * from './social-relay.js';
 export * from './preview-client.js';
