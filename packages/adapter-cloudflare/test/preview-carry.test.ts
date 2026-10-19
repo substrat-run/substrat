@@ -5,6 +5,7 @@ import { CARRIED_AWAY_KEY, COPY_RESTORE_FENCE_LAPSED, LOAD_STAMP_KEY, SCOPE_COPY
 import {
   ControlPlaneError,
   createControlPlaneApi,
+  memoryCopyJobs,
   retryScopeScriptCopies,
   settleExpiredScopeScriptCopies,
   DEV_ACTOR_HEADER,
@@ -39,6 +40,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
 
   let dir: CloudflareScopeHost;
   let api: ReturnType<typeof createControlPlaneApi>;
+  let apiOptions: Parameters<typeof createControlPlaneApi>[0];
   const version: Record<'v1' | 'v2' | 'v3', string> = { v1: '', v2: '', v3: '' };
   const refOf = new Map<string, string>(); // versionId → its script
   const hostOf = new Map<string, CloudflareScopeHost>(); // script → its namespace
@@ -286,7 +288,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       refOf.set(id, ref);
       hostOf.set(ref, new CloudflareScopeHost({ scope: namespaces[v], controlPlane: env.PC_CONTROL_PLANE, secretBox }));
     }
-    api = createControlPlaneApi({
+    apiOptions = {
       host: dir,
       authenticate: UNSAFE_devPlatformActorAuth(),
       platformBaseDomains: ['global.substrat.run'],
@@ -300,8 +302,9 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         const ref = s === slug ? refOf.get(versionId) : undefined;
         return ref ? clientFor(ref) : undefined;
       },
-      resolveVerticalRef: async (ref) => (hostOf.has(ref) ? clientFor(ref) : undefined),
-    });
+      resolveVerticalRef: async (ref: string) => (hostOf.has(ref) ? clientFor(ref) : undefined),
+    };
+    api = createControlPlaneApi(apiOptions);
     // The app the previews fork: an install whose data lives in v1's script.
     await dir.provisionScope(staff, { tenantId: t, scopeId: prod, vertical: slug });
     await dir.admin.activateScope(staff, t, prod);
@@ -2234,6 +2237,152 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       }
       expect(wrote).toBe(true);
       expect(await served(pagedUrl)).toEqual({ ref: refOf.get(version.v3), bodies: after });
+    });
+  });
+
+  describe('a copy that outlasts its request runs as a job, and the same call finishes it (#2450 step 2)', () => {
+    let jobs: ReturnType<typeof memoryCopyJobs>;
+    let bg: ReturnType<typeof createControlPlaneApi>;
+    const many = (n: number, tag: string) => Array.from({ length: n }, (_, i) => `${tag} ${i} `.repeat(8));
+    const prodHostname = 'carry-acme.global.substrat.run';
+    beforeAll(() => {
+      paged = true;
+      // One page per step, so each test decides when every page moves.
+      jobs = memoryCopyJobs({ clientForRef: async (ref) => (hostOf.has(ref) ? clientFor(ref) : undefined), admin: dir.admin }, { stepMs: 0 });
+      bg = createControlPlaneApi({ ...apiOptions, copyJobs: jobs });
+    });
+    afterAll(() => {
+      paged = false;
+    });
+    const pushBg = async (tag: string, v: keyof typeof version, extra: object = {}) => {
+      const res = await bg.request(`/verticals/${slug}/previews`, {
+        method: 'POST',
+        headers: auth,
+        body: JSON.stringify({ tag, versionId: version[v], sourceScopeId: prod, async: true, ...extra }),
+      });
+      return {
+        status: res.status,
+        retryAfter: res.headers.get('retry-after'),
+        body: (await res.json()) as {
+          scopeId: ScopeId; hostname: string; error?: string; detail?: string; copying?: true;
+          progress?: { pages: number; rows: number; attempt: number };
+        },
+      };
+    };
+    const pumpToDone = async () => {
+      for (let i = 0; i < 200 && [...jobs.jobs.values()].some((j) => j.status === 'copying'); i++) await jobs.pump();
+    };
+    const ledger = async (sid: ScopeId) =>
+      (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid })).map((e) => `${e.moveId}:${e.role}:${e.state}`);
+    const noStage = async (v: keyof typeof version, sid: ScopeId) =>
+      (await hostFor(v).introspectScopeTables(sid)).map((tb) => tb.name).filter((n) => n.startsWith('_substrat_stage'));
+
+    let preview: ScopeId;
+    let hostname: string;
+    const rows = many(30, 'bg');
+
+    it('a fork answers 202 while its pages move, and the call that finds it done finishes the preview', async () => {
+      const prodHost = hostOf.get((await served(prodHostname)).ref)!;
+      await prodHost.restoreScopeLocal(prod, notes(...rows));
+
+      const first = await pushBg('bg-1', 'v1');
+      expect(first.status).toBe(202);
+      expect(first.retryAfter).toBe('5');
+      expect(first.body).toMatchObject({ copying: true, progress: { pages: 1, attempt: 1 } });
+      preview = first.body.scopeId;
+      expect((await dir.admin.getScopeRecord(staff, t, preview))?.status).toBe('provisioning');
+      expect(await ledger(preview)).toEqual([expect.stringMatching(/:destination:pending$/)]);
+
+      // Still copying: the same call answers progress, and moves nothing itself.
+      await jobs.pump();
+      const second = await pushBg('bg-1', 'v1');
+      expect(second.status).toBe(202);
+      expect(second.body.progress!.pages).toBe(2);
+
+      // A client that does not take a 202 is told it is in progress, not handed one.
+      const legacy = await push('bg-1', 'v1', { sourceScopeId: prod });
+      expect(legacy.status).toBe(409);
+
+      await pumpToDone();
+      const done = await pushBg('bg-1', 'v1');
+      expect(done.status).toBe(201);
+      hostname = done.body.hostname;
+      expect(await served(hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+      expect(await ledger(preview)).toEqual([expect.stringMatching(/:destination:done$/)]);
+      expect(await noStage('v1', preview)).toEqual([]);
+      expect(jobs.jobs.size).toBe(0);
+    });
+
+    it("a re-push's carry runs as a job while the preview keeps serving the old version's data", async () => {
+      const review = [...rows, 'a review note'];
+      await hostFor('v1').restoreScopeLocal(preview, notes(...review));
+      const first = await pushBg('bg-1', 'v2');
+      expect(first.status).toBe(202);
+      // During the copy the preview serves what it served.
+      expect(await served(hostname)).toEqual({ ref: refOf.get(version.v1), bodies: review });
+      await pumpToDone();
+      const done = await pushBg('bg-1', 'v2');
+      expect(done.status).toBe(200);
+      expect(await served(hostname)).toEqual({ ref: refOf.get(version.v2), bodies: review });
+      expect(await noStage('v2', preview)).toEqual([]);
+    });
+
+    it('a newer push replaces an older one still copying: its move is settled and its stage discarded', async () => {
+      const older = await pushBg('bg-1', 'v3');
+      expect(older.status).toBe(202);
+      const olderJob = jobs.jobs.get(`carry:${preview}`)!;
+      expect(olderJob.spec.versionId).toBe(version.v3);
+      const newer = await pushBg('bg-1', 'v1');
+      expect(newer.status).toBe(202);
+      expect(jobs.jobs.get(`carry:${preview}`)!.spec.versionId).toBe(version.v1);
+      const settled = (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: preview }))
+        .filter((e) => e.moveId === olderJob.spec.moveId).map((e) => e.state);
+      expect(settled).toEqual(['retained', 'retained']);
+      expect(await noStage('v3', preview)).toEqual([]);
+      // The older push's own next call is answered with what happened, not a preview.
+      expect((await pushBg('bg-1', 'v3')).status).toBe(202); // it starts again, replacing the v1 copy in turn
+      await pumpToDone();
+      expect((await pushBg('bg-1', 'v3')).status).toBe(200);
+      expect((await served(hostname)).ref).toBe(refOf.get(version.v3));
+    });
+
+    it('a job whose lease was settled under it fails, and its next call answers the refusal and frees the tag', async () => {
+      const started = await pushBg('bg-2', 'v1');
+      expect(started.status).toBe(202);
+      const job = jobs.jobs.get(`fork:${started.body.scopeId}`)!;
+      // Something else settled the move: a staff reap, a sweep after a lost lease.
+      await dir.admin.settleScopeScriptCopy(staff, t, started.body.scopeId, job.spec.destRef, job.spec.moveId, 'retained');
+      await jobs.pump();
+      expect(jobs.jobs.get(job.spec.id)?.status).toBe('failed');
+      const refused = await pushBg('bg-2', 'v1');
+      expect(refused.status).toBe(409);
+      expect(jobs.jobs.has(job.spec.id)).toBe(false);
+      // The retry forks afresh.
+      const again = await pushBg('bg-2', 'v1');
+      expect(again.status).toBe(202);
+      expect(again.body.scopeId).not.toBe(started.body.scopeId);
+      await pumpToDone();
+      expect((await pushBg('bg-2', 'v1')).status).toBe(201);
+    });
+
+    it('deleting a preview mid-copy stops the job, and the reap goes through', async () => {
+      const started = await pushBg('bg-3', 'v1');
+      expect(started.status).toBe(202);
+      const res = await bg.request(`/verticals/${slug}/previews/bg-3`, { method: 'DELETE', headers: auth });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { deleted: string | null }).deleted).toBe(started.body.scopeId);
+      expect(jobs.jobs.size).toBe(0);
+      expect(await dir.admin.getScopeRecord(staff, t, started.body.scopeId)).toBeFalsy();
+    });
+
+    it('--refresh mid-copy stops the job and forks afresh', async () => {
+      const started = await pushBg('bg-4', 'v1');
+      const fresh = await pushBg('bg-4', 'v1', { refresh: true });
+      expect(fresh.status).toBe(202);
+      expect(fresh.body.scopeId).not.toBe(started.body.scopeId);
+      expect(await dir.admin.getScopeRecord(staff, t, started.body.scopeId)).toBeFalsy();
+      await pumpToDone();
+      expect((await pushBg('bg-4', 'v1')).status).toBe(201);
     });
   });
 });
