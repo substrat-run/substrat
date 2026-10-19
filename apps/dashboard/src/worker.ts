@@ -104,8 +104,7 @@ const teamCookieOpts = (origin: string) => ({
 // is `provision.ts`'s — the same list the permission artifact is rendered from — so
 // what this DO runs and what `PERMISSIONS.md` documents can no longer drift. A
 // customer's app is its own deployment reached through the control plane; the
-// verticals an app can run are never bundled here (#978, D-33). Given that artifact's own
-// `permissions`, a module added beside the list is refused when the class is defined (#2430).
+// verticals an app can run are never bundled here (#978, D-33).
 export const ScopeDO = defineScopeDO(MODULES, {}, { permissions });
 export { ControlPlaneDO };
 

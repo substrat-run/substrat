@@ -61,10 +61,7 @@ import { SHOP_ENV } from './manifest.js';
 import { mountApi } from './routes.js';
 import { AUTH_CONFIG_KEY, ConfigDO, type ConfigDo } from './config-do.js';
 
-/**
- * The scope-DO class = the app binary: kernel + engines + this vertical, bundled. Given the same
- * `permissions` `substrat push` reads, it refuses a module that surface leaves out.
- */
+/** The scope-DO class = the app binary: kernel + engines + this vertical, bundled. */
 export const ScopeDO = defineScopeDO(MODULES, {}, { permissions });
 
 /**

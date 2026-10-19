@@ -15,10 +15,4 @@
  * out (#2430), and the template and every checked-in worker pass it. A host built without it is
  * not checked here, but its role doors still read the reservation off the modules it registers.
  */
-export {
-  reservedKeyMessage,
-  reservedKeyOffences,
-  reservedKeysOf,
-  type ReservedKey,
-  type ReservedKeyOffence,
-} from '../packages/contracts/src/reserved-keys.ts';
+export { reservedKeyMessage, reservedKeyOffences, reservedKeysOf } from '../packages/contracts/src/reserved-keys.ts';

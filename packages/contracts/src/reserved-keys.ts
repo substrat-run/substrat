@@ -102,8 +102,9 @@ export function reservedKeyLine(o: ReservedKeyOffence, reserved: ReadonlyMap<str
   if (o.notReserved) {
     return `${o.where} → ${o.key}: a system-held role holds only keys reserved to a system principal (a key its module declares \`holder: 'system'\`)`;
   }
-  const r = reserved.get(o.key);
-  return `${o.where} → ${o.key}: declared \`holder: 'system'\` by ${r ? `${r.declaredBy.join(', ')} (${r.description})` : 'a module it composes'}`;
+  // A person-side offence is only ever found for a key `reserved` holds.
+  const r = reserved.get(o.key)!;
+  return `${o.where} → ${o.key}: declared \`holder: 'system'\` by ${r.declaredBy.join(', ')} (${r.description})`;
 }
 
 /** The refusal's text, naming the vertical, the file, each grant, who reserved the key and the remedy. */

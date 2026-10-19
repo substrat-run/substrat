@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { instant, platformActorId, principalId, scopeId, tenantId, type PermissionKey, type PrincipalId } from '@substrat-run/contracts';
 import { ulid, type DeclaredPermissions, type ScopeHost } from '@substrat-run/kernel';
 import { expectRefusal, type ScopeHostFixture } from './scope-host-suite.js';
+import { permMod } from './modules.js';
 import { RSV_RUN, RSV_USE, reservedRoleMod } from './reserved-role-module.js';
 
 /**
@@ -33,15 +34,16 @@ export function reservedRoleContractSuite(
 
     const holds = async (who: PrincipalId, permission: PermissionKey) => {
       const stub = await host.getScope(who, t1, s1);
-      return (await stub.invoke<{ allowed: boolean }>('rsv/probe', { permission })).allowed;
+      return (await stub.invoke<{ allowed: boolean }>('perm/probe', { permission })).allowed;
     };
 
     beforeAll(async () => {
       fixture = await makeFixture();
       host = fixture.host;
       host.registerModule(reservedRoleMod);
+      host.registerModule(permMod); // its `perm/probe` reports what a principal holds
       await host.admin.createTenant(staff, { id: t1, slug: 'reserved-role-tenant', name: 'Reserved' });
-      await host.admin.grantEntitlement(staff, t1, 'rsv');
+      await host.admin.grantEntitlement(staff, t1, 'perm');
       await host.provisionScope(staff, { tenantId: t1, scopeId: s1, vertical: 'rsv-vertical' });
       await host.admin.activateScope(staff, t1, s1);
       await host.admin.defineRole(staff, t1, { key: 'member', permissions: [RSV_USE], source: 'vertical' });

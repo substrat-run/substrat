@@ -211,6 +211,8 @@ export const INDEX_VALUE_EXPORTS = [
   'assertLeaseMs',
   'assertMigrationLeavesLedgerAlone',
   'assertMigrationSql',
+  // #2430: both adapters' `registerModule` and `defineScopeDO` hold a module to the declared surface.
+  'assertModuleDeclared',
   'assertModuleEnqueueableKind',
   'assertNoCallerPurge',
   'assertNoSecret',
@@ -441,6 +443,8 @@ export const INDEX_VALUE_EXPORTS = [
   'noSealingKeyMessage',
   'noopConnectorCallRecorder',
   'normalizeUploadMediaType',
+  // #2430: each adapter's set of keys its registered modules reserve to a system principal.
+  'noteReservedKeys',
   'noteUncheckedCompletion',
   'observeFinding',
   'observeStoreCall',
@@ -545,6 +549,8 @@ export const INDEX_VALUE_EXPORTS = [
   'repointScopeGrants',
   'requestEmail',
   'requiredEntitlementFor',
+  // #2430: the one refusal both adapters' role doors (and the ControlPlaneDO's membership unit) answer.
+  'reservedRoleRefusal',
   'resolveAttachmentTextBounds',
   'resolveCapabilitySession',
   'resolvePeerInstanceFrom',

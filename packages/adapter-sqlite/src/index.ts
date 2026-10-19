@@ -3047,8 +3047,7 @@ export class SqliteScopeHost implements ScopeHost {
     if (this.modules.has(manifest.id)) {
       throw new Error(`module already registered: ${manifest.id}`);
     }
-    // #2430: a module the declared surface leaves out is judged by neither lint nor push.
-    assertModuleDeclared(this.permissions, manifest.id);
+    assertModuleDeclared(this.permissions, manifest.id); // #2430
     // #1835: the operations are the binder's own value, or the maps beside the handlers are a
     // copy nothing bound to them.
     assertBoundOperations(manifest.id, registration.operations);
@@ -5485,8 +5484,8 @@ export class SqliteScopeHost implements ScopeHost {
     const rt = await this.openActiveScope(tenantId, scopeId);
     const subject = asPrincipal(principalId.parse(caller));
     const target = principalId.parse(assignee);
+    this.refuseReservedRole(tenantId, roleKey, 'person'); // #2430
     return rt.actor.turn(async () => {
-      this.refuseReservedRole(tenantId, roleKey, 'person');
       const bound = await this.assignmentBound(subject, tenantId, scopeId, roleKey);
       if (bound.covered) applyScopeRoleChange(switchSqlOf(rt.db), scopeId, target, { revoke: [], grant: roleKey }, this.clock());
       return bound;

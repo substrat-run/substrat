@@ -33,8 +33,11 @@ import { parse as parseTypeScript } from '@babel/parser';
 import { repoRoot, toPosix } from './repo-path.mjs';
 
 const ROOT = repoRoot(import.meta.url);
-/** Where a package that declares a permission surface can live. */
-const ROOTS = ['demos', 'apps', 'examples', 'engines', 'packages'];
+/**
+ * Where a package that declares a permission surface lives, one level down: the same set
+ * `lint:permissions` renders and `tools/package-registrations.mts` loads, so the three agree.
+ */
+const ROOTS = ['demos', 'apps'];
 /** Not a workspace member, and its package.json is written by `create-substrat`: named directly. */
 const TEMPLATE = 'packages/create-substrat/template';
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'test', 'tests', '__tests__', '.wrangler', '.builder', 'app', 'web']);
@@ -59,26 +62,29 @@ const hasPermissions = (options) =>
   options.properties.some((p) => p.type === 'ObjectProperty' && !p.computed && (p.key.name ?? p.key.value) === 'permissions');
 
 /**
- * Each host construction in `source` that registers modules and passes no `permissions`, as
- * `{ line, what }`. Empty when every one does, or when the file constructs none.
+ * The host constructions in `source` that register modules (`checked`), and each of them that
+ * passes no `permissions`, as `{ line, what }` (`offences`).
  */
 export function hostPermissionOffences(source) {
   const nodes = [...walk(parse(source).program)];
   const registers = nodes.some(
     (n) => n.type === 'CallExpression' && n.callee.type === 'MemberExpression' && n.callee.property?.name === 'registerModule',
   );
-  const out = [];
+  let checked = 0;
+  const offences = [];
   for (const n of nodes) {
-    if (n.type === 'NewExpression' && HOSTS.has(n.callee.name) && registers && !hasPermissions(n.arguments[0])) {
-      out.push({ line: n.loc.start.line, what: `new ${n.callee.name}(…)` });
+    if (n.type === 'NewExpression' && HOSTS.has(n.callee.name) && registers) {
+      checked++;
+      if (!hasPermissions(n.arguments[0])) offences.push({ line: n.loc.start.line, what: `new ${n.callee.name}(…)` });
     }
     if (n.type === 'CallExpression' && n.callee.name === 'defineScopeDO') {
       const [modules, , options] = n.arguments;
-      const none = modules?.type === 'ArrayExpression' && modules.elements.length === 0;
-      if (!none && !hasPermissions(options)) out.push({ line: n.loc.start.line, what: 'defineScopeDO(…)' });
+      if (modules?.type === 'ArrayExpression' && modules.elements.length === 0) continue;
+      checked++;
+      if (!hasPermissions(options)) offences.push({ line: n.loc.start.line, what: 'defineScopeDO(…)' });
     }
   }
-  return out;
+  return { checked, offences };
 }
 
 // ── The predicate has to be able to tell its own cases apart, or a green run means nothing.
@@ -94,22 +100,18 @@ const SELF_TEST = [
   ['export const ScopeDO = defineScopeDO(MODULES, {}, opts);', 1],
   ['export const ScopeDO = defineScopeDO([], {});', 0],
 ];
-const drift = SELF_TEST.filter(([src, count]) => hostPermissionOffences(src).length !== count);
+const drift = SELF_TEST.filter(([src, count]) => hostPermissionOffences(src).offences.length !== count);
 if (drift.length > 0) {
   console.error('host-permissions: the predicate no longer tells its own cases apart:');
-  for (const [src, count] of drift) console.error(`  ${JSON.stringify(src)} → expected ${count}, got ${hostPermissionOffences(src).length}`);
+  for (const [src, count] of drift) console.error(`  ${JSON.stringify(src)} → expected ${count}, got ${hostPermissionOffences(src).offences.length}`);
   process.exit(2);
 }
 
-/** Every package directory under `dir` whose package.json declares `substrat.permissions`. */
-function* declaringPackages(dir, depth = 0) {
-  if (depth > 3 || !existsSync(dir)) return;
-  const pkg = join(dir, 'package.json');
-  if (existsSync(pkg) && JSON.parse(readFileSync(pkg, 'utf8')).substrat?.permissions) yield dir;
-  for (const entry of readdirSync(dir)) {
-    if (SKIP_DIRS.has(entry) || entry.startsWith('.')) continue;
-    const child = join(dir, entry);
-    if (statSync(child).isDirectory()) yield* declaringPackages(child, depth + 1);
+/** Every package directly under `root` whose package.json declares `substrat.permissions`. */
+function* declaringPackages(root) {
+  for (const name of readdirSync(root)) {
+    const pkg = join(root, name, 'package.json');
+    if (existsSync(pkg) && JSON.parse(readFileSync(pkg, 'utf8')).substrat?.permissions) yield join(root, name);
   }
 }
 
@@ -136,8 +138,9 @@ for (const pkg of packages) {
       console.log(`host-permissions: ${rel} is exempt — ${allowed[1].trim()}`);
       continue;
     }
-    constructions += [...text.matchAll(/new (?:Sqlite|Cloudflare)ScopeHost\(|defineScopeDO\(/g)].length;
-    for (const o of hostPermissionOffences(text)) offences.push(`  ${rel}:${o.line}  ${o.what}`);
+    const found = hostPermissionOffences(text);
+    constructions += found.checked;
+    for (const o of found.offences) offences.push(`  ${rel}:${o.line}  ${o.what}`);
   }
 }
 

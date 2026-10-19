@@ -44,7 +44,6 @@ export interface BikeShopWorld {
 }
 
 export function buildBikeShopHost(dir: string): SqliteScopeHost {
-  // `permissions`: a module registered here that the surface `substrat push` reads leaves out is refused.
   const host = new SqliteScopeHost({ dir, attachmentExtractors: defaultAttachmentExtractors(), permissions });
   for (const m of MODULES) host.registerModule(m);
   return host;

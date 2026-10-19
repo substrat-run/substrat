@@ -4235,8 +4235,7 @@ export class CloudflareScopeHost implements ScopeHost {
     if (this.moduleIds.has(manifest.id)) {
       throw new Error(`module already registered: ${manifest.id}`);
     }
-    // #2430: a module the declared surface leaves out is judged by neither lint nor push.
-    assertModuleDeclared(this.permissions, manifest.id);
+    assertModuleDeclared(this.permissions, manifest.id); // #2430
     // #2068: the same refusal the ScopeDO applies at code time, here at registration, so a
     // misdeclared erasure fails where it is registered on both hosts.
     moduleErasurePlan(registration);
