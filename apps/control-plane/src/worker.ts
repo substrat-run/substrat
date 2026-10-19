@@ -78,6 +78,8 @@ import {
   type LifecycleDelegation,
   analyticsEngineConnectorCallRecorder,
   type AnalyticsEngineDatasetLike,
+  defineCopyJobDO,
+  type CopyJobDo,
 } from '@substrat-run/adapter-cloudflare';
 import {
   createControlPlaneApi,
@@ -171,6 +173,10 @@ import {
   scopeDeployment,
   type ScopeDeployment,
   type ScopeDeploymentLadder,
+  advanceCopyJob,
+  newCopyJob,
+  type CopyJobRecord,
+  type CopyJobs,
 } from '@substrat-run/control-plane-api';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
@@ -207,6 +213,37 @@ export const CrossVerticalKickDO = defineKickCoalescerDO<Env>({
   run: (env, producer) => runCrossVerticalPass(env, producer),
   onError: (err) => console.error('cross-vertical kick: the pass failed; the sweep is the backstop', err),
 });
+
+/**
+ * #2450 step 2: one object per background preview copy, stepped by alarm. Each step renews the
+ * move's lease in the directory and moves pages between the two scripts the route resolved, by
+ * their names; the object itself decides only when the next step runs. A control plane with no
+ * dispatch namespace has nothing to copy through, so a job there fails rather than waits.
+ */
+export const ScopeCopyJobDO = defineCopyJobDO<Env, CopyJobRecord>({
+  advance: async (env, job) => {
+    const clientForRef = resolveVerticalRefFor(env);
+    if (!clientForRef) {
+      return {
+        ...job, status: 'failed', state: undefined, nextDelayMs: 0, updatedAt: Date.now(),
+        error: { status: 501, message: 'this control plane has no dispatch namespace to copy a preview through' },
+      };
+    }
+    return advanceCopyJob({ clientForRef, admin: hostFor(env).admin }, job);
+  },
+  onError: (err) => console.warn('scope copy job: a step threw; it is retried', err),
+});
+
+/** The preview route's job store over those objects (#2450): one object per job id. */
+function durableCopyJobs(ns: DurableObjectNamespace): CopyJobs {
+  const stubOf = (id: string) => ns.get(ns.idFromName(id)) as unknown as CopyJobDo<CopyJobRecord>;
+  return {
+    start: (spec, state) => stubOf(spec.id).start(newCopyJob(spec, state)),
+    get: (id) => stubOf(id).get(),
+    cancel: (id) => stubOf(id).cancel(),
+    forget: (id) => stubOf(id).forget(),
+  };
+}
 
 /** One producer's outgoing edges, now: the kick's pass. The sweep's reach, gates and recorder. */
 async function runCrossVerticalPass(env: Env, producer: { tenantId: TenantId; scopeId: ScopeId }): Promise<void> {
@@ -438,6 +475,11 @@ interface Env extends StaffAuthEnv, ConnectorEnv, RelayCallerEnv {
    * Absent, every aggregate read counts its span live (and a long window can time out).
    */
   OBS_CACHE?: DurableObjectNamespace<ObservabilityCacheDO>;
+  /**
+   * #2450 step 2: where a preview's copy runs when it outlasts the request that started it, one
+   * object per job. Absent, every copy runs inside its request, as before.
+   */
+  COPY_JOBS?: DurableObjectNamespace;
   /**
    * Days a reap's stored copy (`scopes/…` in SCOPE_BACKUPS, #493) is kept before the
    * sweep drops it (#557). UNSET keeps every copy forever — the platform never deletes
@@ -3017,6 +3059,7 @@ export default {
         resolveVertical: resolveVerticalFor(env),
         resolveVerticalVersion: resolveVerticalVersionFor(env),
         resolveVerticalRef: resolveVerticalRefFor(env),
+        ...(env.COPY_JOBS ? { copyJobs: durableCopyJobs(env.COPY_JOBS) } : {}),
         platformScopeStores: platformStoresFor(env),
         deployVertical: deployVerticalFor(env),
         ensureScopeStores: ensureScopeStoresFor(env),
