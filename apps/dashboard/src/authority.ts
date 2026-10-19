@@ -206,7 +206,8 @@ export interface TenantNarrowedControlPlaneOptions {
 /** One hostname binding as the CP returns it (a subset of contracts' HostnameBinding). */
 /** A DNS record a tenant must publish for a custom domain (contracts' dnsRecord). */
 export interface DnsRecordRow {
-  type: 'hostname' | 'txt';
+  /** The plane's (known: hostname, txt); a newer plane may name another (#2401). */
+  type: string;
   name: string;
   value: string;
   status: string | null;
@@ -2225,8 +2226,10 @@ export class TenantNarrowedControlPlane {
     return (await this.call<{ entries: FindingRuleEntry[] }>(`/tenants/${this.tenantId}/finding-rules${q}`)).entries;
   }
 
-  /** Suppress with a rule: a scope plus an expiry (#1748). */
-  createFindingRule(input: FindingRuleInput): Promise<{ rule: FindingRuleEntry; suppressed: number }> {
+  /** Suppress with a rule: a scope plus an expiry (#1748). `kind` and `code` are the plane's to validate (#2401). */
+  createFindingRule(
+    input: Omit<FindingRuleInput, 'kind' | 'code'> & { kind?: string; code?: string },
+  ): Promise<{ rule: FindingRuleEntry; suppressed: number }> {
     return this.post(`/tenants/${this.tenantId}/finding-rules`, input);
   }
 

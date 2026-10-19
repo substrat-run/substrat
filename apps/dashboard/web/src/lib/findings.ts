@@ -7,8 +7,11 @@ import type { FindingEntry, FindingRuleEntry } from './api.generated';
  * allows, what a suppress rule is built from — are one place and can be asserted on.
  */
 
-export type FindingStatus = FindingEntry['status'];
-export type FindingCode = FindingEntry['codes'][number];
+/**
+ * The statuses the inbox has a tab for. The plane owns the set and may add one this page does not
+ * know (#2401): a finding in it belongs to no tab, and offers no move.
+ */
+export type FindingStatus = 'open' | 'acked' | 'resolved' | 'suppressed';
 
 /** The inbox's tabs, in the order the design gives them. A tab is a status. */
 export const FINDING_TABS: { value: FindingStatus; label: string }[] = [
@@ -18,9 +21,13 @@ export const FINDING_TABS: { value: FindingStatus; label: string }[] = [
   { value: 'suppressed', label: 'Suppressed' },
 ];
 
+function isTab(status: string | undefined): status is FindingStatus {
+  return FINDING_TABS.some((t) => t.value === status);
+}
+
 /** The tab a URL value names; anything else is the inbox's front door, Open. */
 export function tabOf(value: string | undefined): FindingStatus {
-  return FINDING_TABS.find((t) => t.value === value)?.value ?? 'open';
+  return isTab(value) ? value : 'open';
 }
 
 /**
@@ -57,7 +64,7 @@ export function countIsExact(cursors: FindingCursors, tab: FindingStatus): boole
 
 export function countByStatus(entries: readonly FindingEntry[]): Record<FindingStatus, number> {
   const counts: Record<FindingStatus, number> = { open: 0, acked: 0, resolved: 0, suppressed: 0 };
-  for (const e of entries) counts[e.status] += 1;
+  for (const e of entries) if (isTab(e.status)) counts[e.status] += 1;
   return counts;
 }
 
@@ -70,9 +77,10 @@ export type FindingMove = 'acked' | 'resolved' | 'open';
 
 /**
  * The moves a finding in `status` offers. A suppressed finding offers none: it is held by a
- * rule, and the way out is revoking the rule — the plane refuses a status change on it.
+ * rule, and the way out is revoking the rule — the plane refuses a status change on it. Nor does
+ * one in a status this page does not know: what moves out of it is the plane's to say.
  */
-export function movesFrom(status: FindingStatus): { to: FindingMove; label: string }[] {
+export function movesFrom(status: string): { to: FindingMove; label: string }[] {
   switch (status) {
     case 'open':
       return [{ to: 'acked', label: 'Acknowledge' }, { to: 'resolved', label: 'Resolve' }];
@@ -80,13 +88,13 @@ export function movesFrom(status: FindingStatus): { to: FindingMove; label: stri
       return [{ to: 'resolved', label: 'Resolve' }, { to: 'open', label: 'Reopen' }];
     case 'resolved':
       return [{ to: 'open', label: 'Reopen' }];
-    case 'suppressed':
+    default:
       return [];
   }
 }
 
 /** Whether a finding can be suppressed by hand: only one not already held or settled. */
-export function canSuppress(status: FindingStatus): boolean {
+export function canSuppress(status: string): boolean {
   return status === 'open' || status === 'acked';
 }
 
@@ -99,7 +107,7 @@ export const EXPIRY_CHOICES = [
 /** What the dialog collects. `''` is "any" for the three scope dimensions. */
 export interface SuppressDraft {
   /** The finding's kind, or `''` for a rule over every kind. */
-  kind: '' | FindingEntry['kind'];
+  kind: string;
   operation: string;
   code: string;
   subject: string;
@@ -107,7 +115,11 @@ export interface SuppressDraft {
   reason: string;
 }
 
-/** The dialog's starting point: the finding's own scope, a week, no reason yet. */
+/**
+ * The dialog's starting point: the finding's own scope, a week, no reason yet. Its kind is the
+ * plane's word even when this page does not know it: the rule goes back to the plane, which
+ * validates it (#2401).
+ */
 export function draftFor(f: FindingEntry): SuppressDraft {
   return { kind: f.kind, operation: f.operation ?? '', code: '', subject: '', days: '7', reason: '' };
 }
@@ -130,7 +142,7 @@ export function ruleInput(d: SuppressDraft, now: number) {
   return {
     ...(d.kind ? { kind: d.kind } : {}),
     ...(d.operation ? { operation: d.operation } : {}),
-    ...(d.code ? { code: d.code as FindingCode } : {}),
+    ...(d.code ? { code: d.code } : {}),
     ...(d.subject ? { subject: d.subject } : {}),
     expiresAt: new Date(now + days * 86_400_000).toISOString(),
     reason: d.reason.trim(),

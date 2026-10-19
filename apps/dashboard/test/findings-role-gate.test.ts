@@ -6,7 +6,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
-import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
+import { patchRows, rewrittenPlane, SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 
 /**
  * The Findings routes ask WHO inside the team is calling (#1748).
@@ -211,15 +211,7 @@ describe('the findings routes ask the caller’s permission (#1748)', () => {
     });
 
     it('a plane that predates paging answers entries alone: no cursor is followed, and a full page is marked cut', async () => {
-      const plain = env.CONTROL_PLANE_SVC as { fetch: (u: string | URL | Request, i?: RequestInit) => Promise<Response> };
-      env.CONTROL_PLANE_SVC = {
-        fetch: async (u: string | URL | Request, i?: RequestInit) => {
-          const res = await plain.fetch(u, i);
-          if (!new URL(String(u)).pathname.endsWith('/findings')) return res;
-          const { entries } = (await res.json()) as { entries: unknown[] };
-          return Response.json({ entries });
-        },
-      };
+      env.CONTROL_PLANE_SVC = rewrittenPlane(env.CONTROL_PLANE_SVC, (p) => p.endsWith('/findings'), (body) => ({ entries: (body as { entries: unknown[] }).entries }));
       const body = await page('owner', '?limit=2');
       expect(body.available).toBe(true);
       expect(body.nextCursor).toBeNull();
@@ -265,6 +257,121 @@ describe('the findings routes ask the caller’s permission (#1748)', () => {
     expect((await myFinding()).status).toBe('suppressed');
     expect((await asRole('member', 'DELETE', `/api/teams/${tenant}/findings/rules/${created.id}`)).status).toBe(200);
     expect((await host.admin.listFindingRules(staff, tenant, { active: true }))).toEqual([]);
+  });
+
+  /**
+   * #2401: the plane owns a finding's kind, status, severity, resolution, codes, evidence and likely
+   * cause, and a rule's kind and code. A newer plane names ones this dashboard does not know: a read
+   * answers them as the plane named them, and a write that happened answers its own success status.
+   */
+  describe('a plane newer than this dashboard', () => {
+    const FUTURE = { kind: 'anomaly', status: 'snoozed', severity: 'urgent', resolution: 'merged', codes: ['teapot'], likelyCause: { kind: 'config', version: 'v9', reason: 'a setting changed' } };
+    const FUTURE_RULE = { kind: 'anomaly', code: 'teapot' };
+    /** Every finding and rule the plane answers, in a vocabulary from a newer plane. */
+    const fromTheFuture = patchRows((o) => {
+      if ('severity' in o && 'subject' in o) return { ...o, ...FUTURE, evidence: { source: 'traces', traceId: 'trace-from-the-future' } };
+      if ('expiresAt' in o && 'createdBy' in o) return { ...o, ...FUTURE_RULE };
+      return undefined;
+    });
+    let warned: string[];
+
+    beforeEach(() => {
+      env.CONTROL_PLANE_SVC = rewrittenPlane(env.CONTROL_PLANE_SVC, (p) => /\/findings|\/finding-rules/.test(p), fromTheFuture);
+      warned = [];
+      vi.spyOn(console, 'warn').mockImplementation((line: unknown) => void warned.push(String(line)));
+    });
+    afterEach(() => vi.restoreAllMocks());
+
+    it('the inbox lists them as the plane named them; evidence it cannot follow reads as null, said once per read in the log', async () => {
+      await host.admin.recordOpsFailure({ actor: staff, operation: 'deploy.again', tenantId: tenant, message: 'x' });
+      const res = await asRole('viewer', 'GET', `/api/teams/${tenant}/findings`);
+      expect(res.status, await res.clone().text()).toBe(200);
+      const body = (await res.json()) as { entries: unknown[] };
+      expect(body.entries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ ...FUTURE, operation: 'deploy.mine', evidence: null }),
+          expect.objectContaining({ ...FUTURE, operation: 'deploy.again', evidence: null }),
+        ]),
+      );
+      expect(body.entries).toHaveLength(2);
+      // Two rows failed the same field: one line, counting both.
+      expect(warned.map((l) => JSON.parse(l) as unknown)).toEqual([{ event: 'dashboard.output-drift', field: 'findings.evidence', paths: [expect.any(String)], count: 2 }]);
+      expect(warned.join('\n')).not.toMatch(/traces|trace-from-the-future/);
+    });
+
+    it('a likely cause this dashboard cannot read reads as null, and a verdict that happened still answers 200', async () => {
+      // A cause with no deploy version: the newer plane's, a config change say.
+      env.CONTROL_PLANE_SVC = rewrittenPlane(
+        env.CONTROL_PLANE_SVC,
+        (p) => /\/findings/.test(p),
+        patchRows((o) => ('severity' in o && 'subject' in o ? { ...o, likelyCause: { kind: 'config', reason: 'a setting changed' } } : undefined)),
+      );
+      const listed = await asRole('viewer', 'GET', `/api/teams/${tenant}/findings`);
+      expect(listed.status, await listed.clone().text()).toBe(200);
+      expect(((await listed.json()) as { entries: unknown[] }).entries).toEqual([expect.objectContaining({ kind: 'anomaly', likelyCause: null })]);
+      const f = await myFinding();
+      const verdict = await asRole('member', 'PUT', `/api/teams/${tenant}/findings/${f.id}/status`, { status: 'resolved' });
+      expect(verdict.status, await verdict.clone().text()).toBe(200);
+      expect(await verdict.json()).toMatchObject({ id: f.id, likelyCause: null });
+      expect((await myFinding()).status).toBe('resolved');
+      expect(warned.map((l) => (JSON.parse(l) as { field: string }).field)).toContain('findings.likelyCause');
+      expect(warned.join('\n')).not.toContain('a setting changed');
+    });
+
+    describe('a suppress rule names the kind and code the finding carries, and the plane judges them', () => {
+      const newer = () => ({ ...rule(), kind: 'anomaly', code: 'teapot' });
+      const posted = () => planeCalls.filter((c) => c === `POST /tenants/${tenant}/finding-rules`);
+
+      it('a plane that does not know them refuses the rule: its 400 is relayed, after it was asked', async () => {
+        const res = await asRole('member', 'POST', `/api/teams/${tenant}/findings/rules`, newer());
+        expect(res.status, await res.clone().text()).toBe(400);
+        expect(posted()).toHaveLength(1);
+        expect(await host.admin.listFindingRules(staff, tenant, { active: true })).toEqual([]);
+      });
+
+      it('a plane that knows them makes the rule: 201, answered in its own words', async () => {
+        const plain = env.CONTROL_PLANE_SVC as { fetch: (u: string | URL | Request, i?: RequestInit) => Promise<Response> };
+        env.CONTROL_PLANE_SVC = {
+          // The newer plane, standing in: it files the kind and code it knows as ones today's store holds.
+          fetch: (u: string | URL | Request, i?: RequestInit) =>
+            plain.fetch(u, typeof i?.body === 'string' ? { ...i, body: i.body.replace('"anomaly"', '"recurring"').replace('"teapot"', '"conflict"') } : i),
+        };
+        const res = await asRole('member', 'POST', `/api/teams/${tenant}/findings/rules`, newer());
+        expect(res.status, await res.clone().text()).toBe(201);
+        expect(((await res.json()) as { rule: unknown }).rule).toMatchObject(FUTURE_RULE);
+        expect(posted()).toHaveLength(1);
+        expect(await host.admin.listFindingRules(staff, tenant, { active: true })).toEqual([expect.objectContaining({ kind: 'recurring', code: 'conflict' })]);
+      });
+
+      it('a rule that narrows nothing is still refused here, before the plane is asked', async () => {
+        const res = await asRole('member', 'POST', `/api/teams/${tenant}/findings/rules`, { expiresAt: rule().expiresAt, reason: 'everything' });
+        expect(res.status).toBe(400);
+        expect(posted()).toEqual([]);
+      });
+    });
+
+    it('a verdict that happened answers 200, in the status the plane named', async () => {
+      const f = await myFinding();
+      const res = await asRole('member', 'PUT', `/api/teams/${tenant}/findings/${f.id}/status`, { status: 'resolved' });
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(await res.json()).toMatchObject({ id: f.id, status: 'snoozed', kind: 'anomaly' });
+      expect((await myFinding()).status).toBe('resolved');
+    });
+
+    it('suppress rules: create answers 201 for the rule it made, list and revoke 200, with the kind and code the plane named', async () => {
+      const created = await asRole('member', 'POST', `/api/teams/${tenant}/findings/rules`, rule());
+      expect(created.status, await created.clone().text()).toBe(201);
+      const { rule: made } = (await created.json()) as { rule: { id: string } };
+      expect(made).toMatchObject(FUTURE_RULE);
+      expect((await myFinding()).status).toBe('suppressed');
+      const listed = await asRole('viewer', 'GET', `/api/teams/${tenant}/findings/rules`);
+      expect(listed.status, await listed.clone().text()).toBe(200);
+      expect(await listed.json()).toEqual({ entries: [expect.objectContaining({ id: made.id, ...FUTURE_RULE })] });
+      const revoked = await asRole('member', 'DELETE', `/api/teams/${tenant}/findings/rules/${made.id}`);
+      expect(revoked.status, await revoked.clone().text()).toBe(200);
+      expect(await revoked.json()).toMatchObject({ id: made.id, ...FUTURE_RULE });
+      expect(await host.admin.listFindingRules(staff, tenant, { active: true })).toEqual([]);
+    });
   });
 
   /**

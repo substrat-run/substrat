@@ -39,6 +39,7 @@ import {
   PAGE_TOTAL_HEADER,
   errorCodeOf,
   mcpEndpointPath,
+  SubstratError,
 } from '@substrat-run/contracts';
 import { externalInput, externalJson } from './wire.js';
 import type { RouteImpl } from '@substrat-run/contracts';
@@ -665,7 +666,38 @@ interface RouteDecl {
   readonly status?: 200 | 201 | 202;
 }
 
-type SafeParse = (value: unknown) => { success: true; data: unknown } | { success: false; error: { message: string } };
+type SafeParse = (
+  value: unknown,
+) => { success: true; data: unknown } | { success: false; error: { message: string; issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey> }> } };
+
+/**
+ * A parse failure as an operator's log line may name it: the distinct issue PATHS, at most ten,
+ * never a value or a message, because what failed to parse may be anybody's data. An array index
+ * is written `[]` (`entries[].firstSeen`), so a field that fails in every row of a list is one
+ * path, and a second failing field still makes the ten.
+ */
+export function issuePathsOf(issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey> }>): string[] {
+  const pathOf = (path: ReadonlyArray<PropertyKey>) =>
+    path.map((seg, i) => (typeof seg === 'number' ? '[]' : `${i === 0 ? '' : '.'}${String(seg)}`)).join('');
+  return [...new Set(issues.map((i) => pathOf(i.path)))].slice(0, 10);
+}
+
+/**
+ * A declared route answered outside its declared output (#2401). That is the host's fault (the
+ * handler, or an upstream it relayed, disagrees with the declaration), never the caller's, so it
+ * is `internal`: a 500 with no `detail`, since the issues describe the schema's internals and are
+ * no use to the caller. They ride here instead, for the app's own log, as `issuePathsOf` names them.
+ */
+export class RouteOutputMismatch extends SubstratError {
+  readonly route: string;
+  readonly issuePaths: readonly string[];
+
+  constructor(route: string, issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey> }>) {
+    super('internal', `mountRoutes: '${route}' answered outside its declared output`);
+    this.route = route;
+    this.issuePaths = issuePathsOf(issues);
+  }
+}
 
 /** A declared schema's `safeParse`, read structurally — this package does not import zod. */
 function safeParseOf(schema: unknown): SafeParse | undefined {
@@ -697,7 +729,8 @@ export interface MountRoutesOptions<Ctx> {
  * what ordering cannot resolve), the query coercion a URL needs (§ `queryCoercers`),
  * the input parse (a refusal is a 400 naming the field), and the output parse — so a
  * response carries exactly what the route declares, and a handler that answers outside
- * it is a 500 naming the route rather than a field the client silently reads as absent.
+ * it is a 500 (`RouteOutputMismatch`, which names the route to the app's log) rather than a
+ * field the client silently reads as absent.
  *
  * What it does NOT do is decide a domain error's status: a handler's throw reaches the
  * app's `onError` untouched, as `mountOperations`' unmapped errors do.
@@ -776,9 +809,7 @@ function mountDeclaredRoutes<Ctx>(
       const result = await handle(ctx, input);
       if (!parseOut) return c.body(null, 204);
       const out = parseOut(result);
-      if (!out.success) {
-        throw new Error(`mountRoutes: '${name}' answered outside its declared output — ${out.error.message}`);
-      }
+      if (!out.success) throw new RouteOutputMismatch(name, out.error.issues);
       return c.json(out.data as object, decl.status ?? 200);
     };
 
