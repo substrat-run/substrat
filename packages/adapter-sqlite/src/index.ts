@@ -4870,8 +4870,10 @@ export class SqliteScopeHost implements ScopeHost {
     moduleId: ModuleId,
     tenantId: TenantId,
     scopeId: ScopeId,
+    /** #2431: observers, as `getScope` takes them — `runDueSchedules` counts its fires' requests through them. */
+    options?: ScopeStubOptions,
   ): Promise<ScopeStub> {
-    return this.openSystemScope(moduleId, tenantId, scopeId, false);
+    return this.openSystemScope(moduleId, tenantId, scopeId, false, options);
   }
 
   /**
@@ -4884,6 +4886,7 @@ export class SqliteScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
     purge: boolean,
+    options?: ScopeStubOptions,
   ): Promise<ScopeStub> {
     // The scheduler's door (#383) — mirror of getConnectorScope. The module must be
     // registered on this host (a schedule can only invoke its own vertical's ops),
@@ -4902,7 +4905,7 @@ export class SqliteScopeHost implements ScopeHost {
     if (refusal) throw substratError('conflict', refusal, { reason: SCOPE_GATE_REASONS.notActive });
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
-    return this.buildStub(tenantId, scopeId, rt, { kind: 'system', id: moduleId }, undefined, undefined, purge);
+    return this.buildStub(tenantId, scopeId, rt, { kind: 'system', id: moduleId }, options, undefined, purge);
   }
 
   /**
@@ -5858,6 +5861,11 @@ export class SqliteScopeHost implements ScopeHost {
 
     const now = Date.parse(nowIso);
     const lines = asyncLinePass(this.invocationLineSink);
+    // #2431: what the fires below report through `onPlatformRequests` — the callback an HTTP
+    // harness uses to flag the router kick (#458) — so the sweep that ran this pass can drain the
+    // scope at once. `ScheduleRunReport.platformRequests` says what that does and does not count.
+    let platformRequests = 0;
+    const counted: ScopeStubOptions = { onPlatformRequests: (n) => (platformRequests += n) };
     for (const schedule of mod.schedules) {
       const lastRunAt = gate.lastRuns.get(schedule.operation) ?? null;
       const lastRun = lastRunAt ? Date.parse(lastRunAt) : null;
@@ -5884,13 +5892,14 @@ export class SqliteScopeHost implements ScopeHost {
         if (schedule.purge) {
           // #119: a purge horizon's schedule runs its operation once per due entity, never once.
           // #2192: under the run's own id, so the purges and their deliveries join this run's line.
+          // #2431: what the purges enqueue is not counted (`ScheduleRunReport.platformRequests`).
           const pass = await this.runPurgeSweep(moduleId, tenantId, scopeId, schedule.operation, invocationId);
           stillDue = purgeStillDue(pass);
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
           report.errors.push(...outcome.errors);
           if (outcome.failure) throw outcome.failure;
         } else {
-          const stub = await this.getSystemScope(moduleId, tenantId, scopeId);
+          const stub = await this.getSystemScope(moduleId, tenantId, scopeId, counted);
           await stub.invoke(schedule.operation, schedule.input, { invocationId, onEmitted: (r) => (emitted = r) });
         }
         report.fired += 1;
@@ -5945,6 +5954,7 @@ export class SqliteScopeHost implements ScopeHost {
       );
     }
     lines.end();
+    if (platformRequests > 0) report.platformRequests = platformRequests;
     return report;
   }
 

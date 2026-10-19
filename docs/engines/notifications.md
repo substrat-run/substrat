@@ -70,8 +70,11 @@ drain. That covers:
   then finds no room.
 
 On the hosted platform a scheduled pass gets no immediate drain kick, unlike an operation a
-request ran, so its sends wait for the control plane's 15-minute sweep. A hold whose person's
-oldest message is two days old logs a warning.
+request ran, so its sends wait for the control plane's 15-minute sweep; the scope sweeper's pass
+report counts them (`schedules.platformRequests`). A sweep that both runs schedules and drains
+platform intents (`runPlatformSweep` with `drainPlatformRequestsFn`, on a self-host) drains the
+scope again right after its schedules, so there the sends go out in the same pass (#2431). A hold
+whose person's oldest message is two days old logs a warning.
 
 What it holds:
 

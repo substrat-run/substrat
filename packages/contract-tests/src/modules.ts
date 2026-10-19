@@ -1474,6 +1474,48 @@ export const deniedScheduleMod: ModuleRegistration = {
   }),
 };
 
+/** #2431: the kind `schedRequestMod`'s schedules enqueue. */
+export const SCHED_REQUEST_KIND = 'test.scheduled-send';
+
+/**
+ * #2431: schedules that enqueue platform requests, for `schedulePlatformRequestsContractSuite`.
+ * `sched-request/send` commits two, so a report carries a count rather than a flag;
+ * `sched-request/send-then-fail` enqueues one and throws, so its transaction takes the request
+ * back with it and a count that included it would be one too many. A module of its own, so no
+ * other suite's schedule counts move; `entitlementKey` is `scheduleMod`'s SKU, as
+ * `deniedScheduleMod`'s is.
+ */
+export const schedRequestModManifest = moduleManifest.parse({
+  id: '@test/sched-request',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [{ key: 'sched-request:send', description: 'enqueue the scheduled platform requests' }],
+  events: { emits: [], consumes: [] },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'sched',
+  schedules: [
+    { operation: 'sched-request/send', cadence: { everyMinutes: 60 }, permissions: ['sched-request:send'] },
+    { operation: 'sched-request/send-then-fail', cadence: { everyMinutes: 60 }, permissions: ['sched-request:send'] },
+  ],
+});
+
+export const schedRequestMod: ModuleRegistration = {
+  manifest: schedRequestModManifest,
+  ...testOperations({
+    'sched-request/send': (async (ctx) => {
+      assertAllowed(await ctx.check('sched-request:send' as PermissionKey));
+      ctx.requestPlatform({ kind: SCHED_REQUEST_KIND, payload: { n: 1 } });
+      ctx.requestPlatform({ kind: SCHED_REQUEST_KIND, payload: { n: 2 } });
+    }) as OperationHandler<never, unknown>,
+    'sched-request/send-then-fail': (async (ctx) => {
+      assertAllowed(await ctx.check('sched-request:send' as PermissionKey));
+      ctx.requestPlatform({ kind: SCHED_REQUEST_KIND, payload: { n: 3 } });
+      throw new Error('refused after enqueuing');
+    }) as OperationHandler<never, unknown>,
+  }),
+};
+
 // -- #1654: a composed engine's own schedule, on a tenant holding only the vertical's key --
 
 /**
@@ -3042,6 +3084,9 @@ export const contractTestModules: ModuleRegistration[] = [
   // `ctx.check` ever runs, which still counts as a failed schedule but records no
   // denial. Inert for every other suite — nothing else invokes `sched-denied/tick`.
   deniedScheduleMod,
+  // #2431: schedules that enqueue platform requests, here for the same reason. Inert for every
+  // other suite — its schedules run only on a host that registers it.
+  schedRequestMod,
   // #1654: the composed engine and the vertical composing it. Inert for every other suite —
   // only `scheduleEntitlementContractSuite` registers them on a host, so no other scope is
   // seated their system grant or reads their table.
