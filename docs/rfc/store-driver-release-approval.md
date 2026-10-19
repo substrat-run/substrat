@@ -162,9 +162,11 @@ approve --driver <id> --sha256 <hex> --reason <text>` and `revoke`.)*
   **too low**. It weakens the no-lower guard: a later move to a release whose real schema cannot
   read the data the bad release migrated then passes. New bytes do not repair the scripts already
   on the bad release; only rolling them forward to a correctly approved release does. A `schema`
-  approved too high is milder: every later release must carry at least that value. So the
-  approver checks the `schema` against the current release's before approving, and the approve
-  response shows both *(proposed)*.
+  approved too high is milder: every later release must carry at least that value. The approve
+  response shows the current release's `schema` beside the new one *(proposed)*. That catches a
+  value below current, which the no-lower guard would refuse anyway. It does not catch a release
+  that raises the schema but is recorded at the current value. Only the reviewer's reading of the
+  release's migrations catches that.
 - **Its own witness.** The audit log row follows the mutation in a separate write (#1292), so who,
   when and why are columns of the row, not only fields of the log.
 
@@ -199,13 +201,18 @@ declares no store reads nothing new.
 running the release. Because the ensurer checks the target before its no-op shortcut and
 `ensureScopeStoresOf` rethrows, **every push and serve of a vertical whose script runs a revoked
 release is refused** until a rollout moves that script, and the fleet rebuild cannot rebuild that
-script, so it ends `failing`. When the revoked release is the current one, a vertical's first push
+script, so it ends `failing`. Those scripts keep the older key lists after a key rotation until a
+rollout moves them (#2309). When the revoked release is the current one, a vertical's first push
 that declares the driver is refused too, because a new script is created at current. That cost is
 why a revoke is guarded.
 
 **Every request reads approvals after it takes its hold** *(proposed)*: a push or serve after its
-shared hold, a rebuild pass after its lease, a rollout request after its exclusive hold. A revoke
-is written under the exclusive hold, which no other live hold can coexist with, so a request that
+shared hold, a rebuild pass after its shared `holdStoreDriver`, not after `claimStoreDriverRebuild`
+(its lease comes first and excludes no revoke), and a rollout or rollback after its exclusive hold.
+Today the rollout and rollback routes in `api.ts` run `pinOf` and `assertSchemaKept` **before**
+`runStoreDriverRollout` takes the hold, so the switch (§5 step 4) moves the target's approval
+check, and the schema check that reads it, under the hold, or repeats them there. A revoke is
+written under the exclusive hold, which no other live hold can coexist with, so a request that
 uploads after the revoke has also read it.
 
 **The guard** (Q4, Q15). Without the emergency flag, a revoke is refused (409) while the release
@@ -215,7 +222,10 @@ is current, or while any script of the driver runs it. The guard reads each scri
 - **One page per request, under the exclusive hold** (`holdStoreDriver`, mode `exclusive`), so no
   push, serve, rebuild or rollout uploads a script while the page is read. A page reads at most
   `ROLLOUT_WALKS_PER_REQUEST` verticals from `storeDriverDeclarations`, in slug order. A larger
-  fleet answers `paused`, releases the hold, and the same revoke posted again continues.
+  fleet answers `paused`, releases the hold, and the same revoke posted again continues. A page
+  holds the driver exclusively for its settings reads and renewals only, under the same 10-minute
+  lease as a rollout request (`ROLLOUT_HOLD_TTL_MS`), and uploads nothing except the canary move
+  below.
 - **The hold is held, not assumed.** Each page renews the hold before every settings read, as a
   rollout renews before every upload, and stops without writing if the renewal fails. The revoke
   write itself asserts the exclusive hold (`assertExclusive`, as `beginStoreDriverRolloutIn`
@@ -240,10 +250,13 @@ is current, or while any script of the driver runs it. The guard reads each scri
   declaration `storeDriverDeclarations` lists as `unreadable` refuses the revoke, naming the
   script and the rollout to do first.
 - **The canary script on the last page.** Once every vertical has been read and none runs the
-  release, the canary script is read. If it runs the release (its canary failed), the revoke first
-  moves it back to the current good release, which the canary ensurer allows at any `schema`. A
-  current release exists here, because a revoke of the current release was refused on every page.
+  release, the canary script is read. It can run the release after any rollout to it that did not
+  end `good`: a canary that failed, or a canary that passed followed by `restore()`, which returns
+  verticals and leaves the canary script where it is. If a current good release exists, the revoke
+  first moves the canary script back to it, which the canary ensurer allows at any `schema`.
   Without the move, the fleet rebuild, which walks the canary first, would end `failing` on it.
+  With no current release (the driver's first rollout failed), the canary script stays where it is
+  until a rollout moves it, and the rebuild reports it until then.
 - **The write.** Then, still under the hold, the revoke is written and the ledger row removed.
 - **The emergency flag** *(proposed)*, with a reason, skips the walk and the canary move. It still
   takes the exclusive hold for its one request and writes under `assertExclusive`. While a
@@ -336,7 +349,8 @@ upload and one approval, not a permanent pin.
 ## 5. #2394 and the rollout order
 
 **#2394** (Q8) lands the graph driver id and its isolation basis only, and drops its pin, whose
-bytes the current module rule refuses. `STORE_DRIVERS` is empty on `main`, so no compiled pin is
+bytes the current module rule refuses. It lands at step 5 below, after the lifting record: an
+id-only registration does not parse before step 4 removes `releases` from the schema. `STORE_DRIVERS` is empty on `main`, so no compiled pin is
 carried over: no import, no compiled floor, no reconciliation. If a pin merged before the switch,
 this plan would be revisited.
 
@@ -452,8 +466,8 @@ sentence is followed by proposed text.
     *"…compare them with the approved sha256, rather than…"*.
 11. Limits. **"Pins are never removed."** The whole bullet → **"An approval can be revoked."**
     *"Revoking an approval stops every later upload of that release, a rollback to it included.
-    It is refused while a script runs the release, unless a person passes an emergency flag with a
-    reason. It does not stop a script that already runs the release; a rollout moves that script.
+    It is refused while the release is the driver's current good release or a script runs it,
+    unless a person passes an emergency flag with a reason. It does not stop a script that already runs the release; a rollout moves that script.
     Approvals and their revocations are kept and never deleted."*
 12. Why. *"No kind written outside this repo (a third-party kind) is registered until that
     isolation exists."* → *"A kind written outside this repo (a third-party kind) is registered
@@ -469,7 +483,8 @@ Everything else in D-63 is unchanged, including the condition that defines isola
 master-plan §12 rows follow through `lint:decisions`. The prose describing the pin follows the
 decision: [scope-stores.md](./scope-stores.md) step 8,
 [control-plane.md](../architecture/control-plane.md) §4.4, `apps/docs/concepts/scope-stores.md`,
-and the doc comments on `storeDriverRegistration` and `STORE_DRIVERS`.
+[graph-store-registration.md](./graph-store-registration.md), and the doc comments on
+`storeDriverRegistration` and `STORE_DRIVERS`.
 
 ## 8. Decided questions
 
@@ -500,9 +515,9 @@ Decided by the maintainer on 2026-10-19.
 - **Q12. Facts are fixed; a wrong fact needs new bytes.** *Why:* fixed facts let any approval row
   judge the release being left. Worst case, a `schema` approved too low lets a later move to a
   release that cannot read the data pass the no-lower guard, and only rolling forward repairs the
-  scripts on it (§2.2). Correcting a fact before the first rollout was considered and not taken:
-  it would reopen the decided answer, and the approval-time check against the current `schema`
-  covers the same mistake earlier.
+  scripts on it (§2.2). No mechanical check catches that case; the reviewer's reading of the
+  migrations does. Correcting a fact before the first rollout was considered and not taken,
+  because it would reopen the decided answer.
 - **Q13. Fail closed (503), no caching.** *Why:* a cached approval could outlive its revocation.
 - **Q14. "Not met" is recorded and does not refuse.** *Why:* refusing is stricter than D-63 and
   would block every driver until isolation exists.
