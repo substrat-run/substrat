@@ -7,6 +7,7 @@ import { manualClock, ulid, type ManualClock } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { MODULES, provisionDashboard, type DashboardNode } from '../src/index.js';
 import type { ConnectLinkRow, ConnectLinkConsume } from '../src/module.js';
+import { walkAll } from '../src/walk-all.js';
 
 /**
  * Connect links (#1220) — the DB-backed half of an OAuth-style provider connect.
@@ -60,7 +61,7 @@ describe('dashboard connect links', () => {
     });
 
   const outstanding = async (): Promise<ConnectLinkRow[]> =>
-    (await scope()).invoke('dashboard/list-connect-links', { provider: 'fortnox' });
+    walkAll(await scope(), 'dashboard/list-connect-links', { provider: 'fortnox' });
 
   it('mints outstanding, consumes exactly once, and records what the consent attached', async () => {
     const link = await mint();

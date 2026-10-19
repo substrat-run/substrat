@@ -57,6 +57,7 @@ import {
 } from '../src/index.js';
 import { listDeploymentsFromHost, verticalDeploymentFromHost, verticalDeploymentPageFromHost, versionRegistryFromHost, versionSchedulesFromHost, assertOwned } from '../src/deployments.js';
 import { ControlPlaneError } from '../src/authority.js';
+import { allApps, walkAll } from '../src/walk-all.js';
 
 /**
  * The central claim of docs/architecture/dashboard.md, cashed out: a tenant admin
@@ -135,7 +136,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
 
     // ...and it shows in the account's own app list.
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    const apps = await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {});
+    const apps = await allApps(dash);
     expect(apps.map((a) => a.app_scope_id)).toEqual([appScopeId]);
     expect(apps[0]!.status).toBe('active');
   });
@@ -157,17 +158,20 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       await dash.invoke('dashboard/update-app', { appScopeId, detail });
     }
     type Ev = { id: string; kind: string };
-    // Unpaged stays unbounded — existing callers unchanged.
-    const all = await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId });
-    expect(all).toHaveLength(5);
+    // A call that names no page gets the default one, which holds all five.
+    const all = await dash.invoke<Page<Ev>>('dashboard/app-events', { appScopeId });
+    expect(all.entries).toHaveLength(5);
+    expect(all.nextCursor).toBeNull();
 
-    // Walk two pages of 2, then the short tail: cursors key on the last row's id and
-    // the concatenation reproduces the unbounded read exactly (no gaps, no repeats).
-    const p1 = await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId, limit: 2 });
-    const p2 = await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId, limit: 2, cursor: p1[1]!.id });
-    const p3 = await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId, limit: 2, cursor: p2[1]!.id });
-    expect([...p1, ...p2, ...p3].map((e) => e.id)).toEqual(all.map((e) => e.id));
-    expect(p3).toHaveLength(1); // short page — the walk is done
+    // Walk two pages of 2, then the short tail: each cursor is the last row's id, and the
+    // concatenation reproduces the one-page read exactly (no gaps, no repeats).
+    const p1 = await dash.invoke<Page<Ev>>('dashboard/app-events', { appScopeId, limit: 2 });
+    expect(p1.nextCursor).toBe(p1.entries[1]!.id);
+    const p2 = await dash.invoke<Page<Ev>>('dashboard/app-events', { appScopeId, limit: 2, cursor: p1.nextCursor });
+    const p3 = await dash.invoke<Page<Ev>>('dashboard/app-events', { appScopeId, limit: 2, cursor: p2.nextCursor });
+    expect([...p1.entries, ...p2.entries, ...p3.entries].map((e) => e.id)).toEqual(all.entries.map((e) => e.id));
+    expect(p3.entries).toHaveLength(1);
+    expect(p3.nextCursor).toBeNull(); // short page — the walk is done
   });
 
   it('manages an app’s env: stores values, masks secrets on read, leaves untouched secrets, removes one', async () => {
@@ -195,7 +199,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
 
     // The read masks the secret's value but reports it as set; the non-secret is returned.
     type EnvVal = { key: string; isSecret: boolean; hasValue: boolean; value: string | null };
-    const values = (await dash.invoke('dashboard/list-app-env', { appScopeId })) as EnvVal[];
+    const values = await walkAll<EnvVal>(dash, 'dashboard/list-app-env', { appScopeId });
     expect(values.find((v) => v.key === 'PUBLIC_ORIGIN')?.value).toBe('https://hr.acme.com');
     const secret = values.find((v) => v.key === 'ADMIN_PASSWORD')!;
     expect(secret.value).toBeNull(); // never echoed
@@ -204,16 +208,16 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
 
     // An empty value leaves the secret unchanged (the form submits blank to keep it).
     await dash.invoke('dashboard/set-app-env', { appScopeId, entries: [{ key: 'ADMIN_PASSWORD', value: '', secret: true }] });
-    const still = (await dash.invoke('dashboard/list-app-env', { appScopeId })) as EnvVal[];
+    const still = await walkAll<EnvVal>(dash, 'dashboard/list-app-env', { appScopeId });
     expect(still.find((v) => v.key === 'ADMIN_PASSWORD')?.hasValue).toBe(true);
 
     // Delete removes just that key.
     await dash.invoke('dashboard/delete-app-env', { appScopeId, key: 'ADMIN_PASSWORD' });
-    const after = (await dash.invoke('dashboard/list-app-env', { appScopeId })) as EnvVal[];
+    const after = await walkAll<EnvVal>(dash, 'dashboard/list-app-env', { appScopeId });
     expect(after.map((v) => v.key)).toEqual(['PUBLIC_ORIGIN']);
 
     // Setting env recorded an Activity entry (the keys that moved, never the values).
-    const events = (await dash.invoke('dashboard/app-events', { appScopeId })) as Array<{ kind: string; detail: string | null }>;
+    const events = await walkAll<{ kind: string; detail: string | null }>(dash, 'dashboard/app-events', { appScopeId });
     expect(events.some((e) => e.kind === 'updated' && /env: /.test(e.detail ?? ''))).toBe(true);
   });
 
@@ -241,7 +245,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
 
     // ...but its row is FAILED, not left silently at 'provisioning'.
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    const apps = await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {});
+    const apps = await allApps(dash);
     expect(apps.find((a) => a.app_scope_id === failScopeId)?.status).toBe('failed');
   });
 
@@ -432,9 +436,9 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       }),
     ).rejects.toThrow('client registration at issuer failed');
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    const rows = await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {});
+    const rows = await allApps(dash);
     expect(rows.find((a) => a.app_scope_id === failScope)?.status).toBe('failed');
-    const events = await dash.invoke<Array<{ kind: string; detail: string | null }>>('dashboard/app-events', { appScopeId: failScope });
+    const events = await walkAll<{ kind: string; detail: string | null }>(dash, 'dashboard/app-events', { appScopeId: failScope });
     expect(events.find((e) => e.kind === 'failed')?.detail).toContain('client registration');
   });
 
@@ -603,7 +607,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     // what the user typed outlives the install request.
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
     type EnvVal = { key: string; isSecret: boolean; hasValue: boolean; value: string | null };
-    const values = (await dash.invoke('dashboard/list-app-env', { appScopeId: appScope })) as EnvVal[];
+    const values = await walkAll<EnvVal>(dash, 'dashboard/list-app-env', { appScopeId: appScope });
     expect(values.find((v) => v.key === 'ADMIN_EMAIL')?.value).toBe('ops@acme.com');
     const pw = values.find((v) => v.key === 'ADMIN_PASSWORD')!;
     expect(pw.value).toBeNull();
@@ -627,7 +631,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       }),
     ).rejects.toThrow('boom');
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    const values = (await dash.invoke('dashboard/list-app-env', { appScopeId: appScope })) as Array<{ key: string; value: string | null }>;
+    const values = await walkAll<{ key: string; value: string | null }>(dash, 'dashboard/list-app-env', { appScopeId: appScope });
     expect(values.find((v) => v.key === 'ADMIN_EMAIL')?.value).toBe('ops@acme.com');
   });
 
@@ -736,7 +740,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       }),
     ).rejects.toThrow(/deployment did not answer .*Worker threw exception.*install it again/s);
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    const rows = await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {});
+    const rows = await allApps(dash);
     expect(rows.find((a) => a.app_scope_id === deadScope)?.status).toBe('failed');
 
     // An honest 501 refusal (no live-config support) is NOT retried — retrying a
@@ -788,7 +792,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     expect(JSON.stringify(view)).not.toContain('super-secret');
 
     // The reserved `substrat:auth` row never leaks into the Env tab's list.
-    expect(await dash.invoke('dashboard/list-app-env', { appScopeId: appScope })).toEqual([]);
+    expect(await walkAll(dash, 'dashboard/list-app-env', { appScopeId: appScope })).toEqual([]);
 
     // An update WITHOUT a clientSecret keeps the stored one (the form can change the
     // issuer without re-typing a secret it never received back) — the returned merged
@@ -829,7 +833,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       }),
     ).rejects.toThrow(/identity setup failed/);
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    const events = await dash.invoke<Array<{ kind: string; detail: string | null }>>('dashboard/app-events', { appScopeId: failScope });
+    const events = await walkAll<{ kind: string; detail: string | null }>(dash, 'dashboard/app-events', { appScopeId: failScope });
     const detail = events.find((e) => e.kind === 'failed')?.detail ?? '';
     // The Activity trail carries what happened AND what to do next.
     expect(detail).toContain('no live-config support');
@@ -857,7 +861,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       }),
     ).rejects.toThrow('boom');
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    expect((await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {})).find((a) => a.app_scope_id === failScopeId)?.status).toBe('failed');
+    expect((await allApps(dash)).find((a) => a.app_scope_id === failScopeId)?.status).toBe('failed');
 
     // Retry (embedded — no failing plane) → a fresh, active app; the failed row is gone.
     const retried = await retryApp(host, {
@@ -872,7 +876,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     expect(retried.status).toBe('active');
     expect(retried.vertical_slug).toBe('meridian');
 
-    const apps = await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {});
+    const apps = await allApps(dash);
     // Only the fresh app is listed (the failed one soft-deleted on retry), and it's active.
     expect(apps).toHaveLength(1);
     expect(apps[0]!.app_scope_id).toBe(retried.app_scope_id);
@@ -897,9 +901,8 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       appOwnerGrants: [PROTOCOL_PERM.read] as PermissionKey[],
     });
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    const steps = (await dash.invoke('dashboard/install-steps', { appScopeId })) as Array<{
-      step: string; status: string; attempts: number; last_error: string | null;
-    }>;
+    type Step = { step: string; status: string; attempts: number; last_error: string | null };
+    const steps = await walkAll<Step>(dash, 'dashboard/install-steps', { appScopeId });
     // Embedded mode has no vertical round-trip ('provision') and no issuer choice
     // ('identity') — those steps never ran, so they honestly have no row.
     expect(steps.map((s) => s.step)).toEqual(['directory', 'activate', 'hostname']);
@@ -916,18 +919,17 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       dash.invoke('dashboard/record-install-step', { appScopeId, step: 'provision', seq: 1, status, ...(error ? { error } : {}) });
     await record('running');
     await record('failed', 'vertical refused provisioning: 503 no tenant store attached');
-    let [row] = (await dash.invoke('dashboard/install-steps', { appScopeId })) as Array<{
-      status: string; attempts: number; last_error: string | null;
-    }>;
+    type Step = { status: string; attempts: number; last_error: string | null };
+    let [row] = await walkAll<Step>(dash, 'dashboard/install-steps', { appScopeId });
     // The downstream error survives VERBATIM — the diagnosis the toast used to swallow.
     expect(row).toMatchObject({ status: 'failed', attempts: 1, last_error: 'vertical refused provisioning: 503 no tenant store attached' });
 
     // Resume re-enters the same step: back to running (attempts 2, error cleared), then done.
     await record('running');
-    [row] = (await dash.invoke('dashboard/install-steps', { appScopeId })) as typeof row[];
+    [row] = await walkAll<Step>(dash, 'dashboard/install-steps', { appScopeId });
     expect(row).toMatchObject({ status: 'running', attempts: 2, last_error: null });
     await record('done');
-    [row] = (await dash.invoke('dashboard/install-steps', { appScopeId })) as typeof row[];
+    [row] = await walkAll<Step>(dash, 'dashboard/install-steps', { appScopeId });
     expect(row).toMatchObject({ status: 'done', attempts: 2, last_error: null });
   });
 
@@ -941,7 +943,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     // never ran (the worker died mid-sequence). The dashboard renders an eternal spinner.
     await dash.invoke('dashboard/provision-app', { appScopeId, verticalSlug: 'protocol', name: 'Stuck' });
     await host.provisionScope(staff, { tenantId: acme.tenantId, scopeId: appScopeId, jurisdiction: 'global', vertical: 'protocol' });
-    expect((await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {})).find((a) => a.app_scope_id === appScopeId)?.status).toBe('provisioning');
+    expect((await allApps(dash)).find((a) => a.app_scope_id === appScopeId)?.status).toBe('provisioning');
 
     // Resume re-runs the idempotent tail against the SAME scope → active, with a hostname.
     const resumed = await resumeApp(host, {
@@ -965,11 +967,11 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     });
 
     // ...and the Activity trail shows the resume between created and active.
-    const events = (await dash.invoke('dashboard/app-events', { appScopeId })) as Array<{ kind: string }>;
+    const events = await walkAll<{ kind: string }>(dash, 'dashboard/app-events', { appScopeId });
     expect(events.map((e) => e.kind)).toEqual(expect.arrayContaining(['created', 'resumed', 'active']));
 
     // The durable step record (#424) converged with it — every step the resume ran is done.
-    const steps = (await dash.invoke('dashboard/install-steps', { appScopeId })) as Array<{ step: string; status: string }>;
+    const steps = await walkAll<{ step: string; status: string }>(dash, 'dashboard/install-steps', { appScopeId });
     expect(steps.map((s) => s.step)).toEqual(['directory', 'activate', 'hostname']);
     expect(steps.every((s) => s.status === 'done')).toBe(true);
 
@@ -993,15 +995,14 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       resumeApp(host, { node: acme, appScopeId, verticalSlug: 'protocol', name: 'StillStuck', controlPlane: failingCp }),
     ).rejects.toThrow('plane down');
 
-    const row = (await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {})).find((a) => a.app_scope_id === appScopeId);
+    const row = (await allApps(dash)).find((a) => a.app_scope_id === appScopeId);
     expect(row?.status).toBe('failed');
-    const events = (await dash.invoke('dashboard/app-events', { appScopeId })) as Array<{ kind: string; detail: string | null }>;
+    const events = await walkAll<{ kind: string; detail: string | null }>(dash, 'dashboard/app-events', { appScopeId });
     expect(events.some((e) => e.kind === 'failed' && e.detail === 'plane down')).toBe(true);
 
     // The step record names WHERE it died, with the downstream error verbatim (#424).
-    const steps = (await dash.invoke('dashboard/install-steps', { appScopeId })) as Array<{
-      step: string; status: string; last_error: string | null;
-    }>;
+    type Step = { step: string; status: string; last_error: string | null };
+    const steps = await walkAll<Step>(dash, 'dashboard/install-steps', { appScopeId });
     expect(steps).toHaveLength(1);
     expect(steps[0]).toMatchObject({ step: 'directory', status: 'failed', last_error: 'plane down' });
   });
@@ -1023,7 +1024,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
 
     // Dropped from the account's app list (soft-deleted)...
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    expect(await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {})).toHaveLength(0);
+    expect(await allApps(dash)).toHaveLength(0);
 
     // ...and the scope is ARCHIVED — getScope fails closed, so the app is offline.
     await expect(host.getScope(acme.principal, acme.tenantId, appScopeId)).rejects.toThrow();
@@ -1073,7 +1074,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     // Deleting the app now SUCCEEDS and drops the orphan row, rather than throwing.
     await expect(deprovisionApp(host, { node: acme, appScopeId })).resolves.toBeUndefined();
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    expect(await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {})).toHaveLength(0);
+    expect(await allApps(dash)).toHaveLength(0);
   });
 
   it('an owner provisions a real Documents app — a live engine scope with a default hostname', async () => {
@@ -1226,7 +1227,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       node: acme, appScopeId: okScope, verticalSlug: 'protocol', name: 'Docs',
       appEntitlements: ['protocol'], appOwnerGrants: [PROTOCOL_PERM.read] as PermissionKey[],
     });
-    const okEvents = await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId: okScope });
+    const okEvents = await walkAll<Ev>(dash, 'dashboard/app-events', { appScopeId: okScope });
     expect(okEvents).toHaveLength(2);
     expect(okEvents.map((e) => e.kind).sort()).toEqual(['active', 'created']);
 
@@ -1243,7 +1244,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
         controlPlane: failingCp,
       }),
     ).rejects.toThrow('no deployment is bound');
-    const failEvents = await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId: failScope });
+    const failEvents = await walkAll<Ev>(dash, 'dashboard/app-events', { appScopeId: failScope });
     expect(failEvents).toHaveLength(2);
     expect(failEvents.map((e) => e.kind).sort()).toEqual(['created', 'failed']);
     expect(failEvents.find((e) => e.kind === 'failed')?.detail).toContain('no deployment is bound');
@@ -1281,13 +1282,13 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     const r1 = await updateApp(host, { node: acme, appScopeId, verticalSlug: 'meridian' });
     expect(r1).toEqual({ updated: true, version: '0.0.10', previousVersion: '0.0.9' });
     expect((await host.admin.getScopeRecord(staff, acme.tenantId, appScopeId))?.verticalVersionId).toBe(v10);
-    const updated = (await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId })).find((e) => e.kind === 'updated');
+    const updated = (await walkAll<Ev>(dash, 'dashboard/app-events', { appScopeId })).find((e) => e.kind === 'updated');
     expect(updated?.detail).toBe('0.0.9 → 0.0.10');
 
     // Idempotent: running it again is a no-op (already current) — no rebind, no new event.
     const r2 = await updateApp(host, { node: acme, appScopeId, verticalSlug: 'meridian' });
     expect(r2.updated).toBe(false);
-    expect((await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId })).filter((e) => e.kind === 'updated')).toHaveLength(1);
+    expect((await walkAll<Ev>(dash, 'dashboard/app-events', { appScopeId })).filter((e) => e.kind === 'updated')).toHaveLength(1);
   });
 
   it('an Update that drops an export another app here imports is refused, and acknowledged it updates (#1756)', async () => {
@@ -1329,7 +1330,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     type Ev = { kind: string; detail: string | null };
     const dash = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
     const updatedLines = async () =>
-      (await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId })).filter((e) => e.kind === 'updated');
+      (await walkAll<Ev>(dash, 'dashboard/app-events', { appScopeId })).filter((e) => e.kind === 'updated');
 
     // Refused, and answered No: nothing moved, and nothing on the Activity trail says it did.
     const refused = await updateApp(host, { node: acme, appScopeId, verticalSlug: 'meridian' }).then(
@@ -1368,16 +1369,16 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       appScopeId, verticalSlug: 'acme/protocol',
     })) as DashboardAppRow;
     expect(healed.vertical_slug).toBe('acme/protocol');
-    const apps = await dash.invoke<DashboardAppRow[]>('dashboard/list-apps', {});
+    const apps = await allApps(dash);
     expect(apps.find((a) => a.app_scope_id === appScopeId)?.vertical_slug).toBe('acme/protocol');
 
     // The move is on the Activity trail, naming both lineages...
-    const events = await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId });
+    const events = await walkAll<Ev>(dash, 'dashboard/app-events', { appScopeId });
     expect(events.some((e) => e.kind === 'updated' && e.detail === 'rebound protocol → acme/protocol')).toBe(true);
 
     // ...and a row already naming the directory's slug is left alone (no second event).
     await dash.invoke('dashboard/reconcile-app-vertical', { appScopeId, verticalSlug: 'acme/protocol' });
-    expect((await dash.invoke<Ev[]>('dashboard/app-events', { appScopeId })).filter((e) => e.kind === 'updated')).toHaveLength(1);
+    expect((await walkAll<Ev>(dash, 'dashboard/app-events', { appScopeId })).filter((e) => e.kind === 'updated')).toHaveLength(1);
   });
 
   it('a principal without dashboard:provision-app is refused — before anything is provisioned', async () => {

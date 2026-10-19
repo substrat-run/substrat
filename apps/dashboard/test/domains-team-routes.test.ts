@@ -7,6 +7,7 @@ import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/c
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { dashboardRoutes } from '../src/routes.js';
+import { allApps } from '../src/walk-all.js';
 import { patchRows, rewrittenPlane, SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 
 /**
@@ -87,7 +88,7 @@ describe('the Domains routes take their team from the path (#2170)', () => {
   let env: Record<string, unknown>;
 
   const subs = { owner: 'sub-owner', member: 'sub-member', viewer: 'sub-viewer' } as const;
-  const appsOf = async (t: string) => (await handle[t]!.invoke('dashboard/list-apps', {})) as Row[];
+  const appsOf = async (t: string): Promise<Row[]> => allApps(handle[t]!);
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-domains-team-'));
