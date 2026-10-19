@@ -89,7 +89,7 @@ describe('scope-store copies through the platform (#2243, #2207)', () => {
       await host.admin.publishVersion(staff, {
         id,
         verticalSlug: 'docs',
-        version: `1.0.${id.slice(-4).toLowerCase()}`,
+        version: `1.0.${id.toLowerCase()}`,
         manifestDigest: `m-${id}`,
         permissionDigest: 'p',
         migrationDigest: 'g',

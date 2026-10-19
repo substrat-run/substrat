@@ -4398,7 +4398,7 @@ describe('control-plane API — vertical registry', () => {
   const version = (id: string, over: Record<string, unknown> = {}) => ({
     id,
     verticalSlug: 'fsm',
-    version: id.slice(-6),
+    version: id.toLowerCase(),
     manifestDigest: 'man-1',
     permissionDigest: 'perm-1',
     migrationDigest: 'mig-1',
@@ -4410,7 +4410,7 @@ describe('control-plane API — vertical registry', () => {
   const held = (id: string, over: Record<string, unknown> = {}) =>
     heldVersion(version(id, {
       manifestJson: JSON.stringify({
-        version: id.slice(-6),
+        version: id.toLowerCase(),
         entry: 'index.js',
         compatibilityDate: '2026-07-01',
         digests: { manifest: 'man-1', permission: over.permissionDigest ?? 'perm-1', migration: 'mig-1' },
@@ -4591,7 +4591,7 @@ describe('control-plane API — vertical registry', () => {
     it('accepts what the push path stores — a parsed deployManifest, re-serialized — and serves it back', async () => {
       const id = ulid();
       const parsed = deployManifest.parse({
-        version: id.slice(-6),
+        version: id.toLowerCase(),
         entry: 'index.js',
         compatibilityDate: '2026-07-01',
         registry: { permissions: [], roles: [], entityGrants: [] },
@@ -4605,7 +4605,7 @@ describe('control-plane API — vertical registry', () => {
     it('stores the manifest as sent — a key the schema does not know survives', async () => {
       const id = ulid();
       const sent = JSON.stringify({
-        version: id.slice(-6),
+        version: id.toLowerCase(),
         entry: 'index.js',
         compatibilityDate: '2026-07-01',
         digests: { manifest: 'm', permission: 'p', migration: 'g' },
@@ -4618,7 +4618,7 @@ describe('control-plane API — vertical registry', () => {
     it('refuses a registry whose entity-grant shape is a kernel namespace, and accepts its twin (#1869)', async () => {
       const withGrant = (id: string, entityType: string) =>
         JSON.stringify({
-          version: id.slice(-6),
+          version: id.toLowerCase(),
           entry: 'index.js',
           compatibilityDate: '2026-07-01',
           registry: { permissions: [], roles: [], entityGrants: [{ entityType, permissions: ['fsm:job-read'] }] },
@@ -4660,7 +4660,7 @@ describe('control-plane API — vertical registry', () => {
       entityGrants: [{ entityType: 'job', permissions: ['fsm:job-create'] }],
     };
     const manifestJson = JSON.stringify({
-      version: v4.slice(-6),
+      version: v4.toLowerCase(),
       entry: 'index.js',
       compatibilityDate: '2026-07-01',
       registry,
@@ -4693,7 +4693,7 @@ describe('control-plane API — vertical registry', () => {
       'POST',
       version(v5, {
         manifestJson: JSON.stringify({
-          version: v5.slice(-6),
+          version: v5.toLowerCase(),
           entry: 'index.js',
           compatibilityDate: '2026-07-01',
           registry,
@@ -5628,7 +5628,7 @@ describe('control-plane API — builder authz', () => {
   const version = (id: string, slug: string, over: Record<string, unknown> = {}) => ({
     id,
     verticalSlug: slug,
-    version: id.slice(-6),
+    version: id.toLowerCase(),
     manifestDigest: 'm1',
     permissionDigest: 'p1',
     migrationDigest: 'g1',
@@ -7958,7 +7958,7 @@ describe('control-plane API — staff tenant-pin resolution (#417)', () => {
   const version = (id: string, slug: string) => ({
     id,
     verticalSlug: slug,
-    version: id.slice(-6),
+    version: id.toLowerCase(),
     manifestDigest: 'm1',
     permissionDigest: 'p1',
     migrationDigest: 'g1',

@@ -386,7 +386,7 @@ describe('the promote refusal over HTTP: who is named to whom (#1705 PR 3)', () 
     await host.admin.publishVersion(staff, await heldVersion({
       id,
       verticalSlug: slug,
-      version: `1.0.${id.slice(-4).toLowerCase()}`,
+      version: `1.0.${id.toLowerCase()}`,
       manifestDigest: `m-${id}`,
       permissionDigest: 'p',
       migrationDigest: 'g',
