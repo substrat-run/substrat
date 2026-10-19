@@ -178,22 +178,30 @@ upload, recorded in the control plane's directory.
   append-only, with the revoke columns written once: nothing else on a row ever changes, a row
   is never deleted, and approving the same release again writes a new row.
 - **The directory records which release each script runs** *(proposed table
-  `store_driver_scripts`)*. One row per (driver, vertical) names the release the script was last
-  uploaded at. Today that fact lives only in each script's own settings (`STORE_RELEASE_VAR`, read
-  by the ensurer's `recorded()`), so answering "does any script run release X" means walking every
-  script. The ensurer writes the row under the hold it already takes: a shared hold for a push or
-  serve, the exclusive hold for a rollout or rollback. It marks the row `pending` with the target
-  before the upload and confirms it after, so an upload that lands without its confirmation still
-  leaves a row naming the release. The canary script has no row. The revoke guard and the freeze
-  below read this table.
+  `store_driver_scripts`)*. One row per (driver, vertical) holds two columns. `confirmed_sha256`
+  is the release the script was last uploaded at and confirmed. `pending_sha256` is a target an
+  upload is under way to. Today that fact lives only in each script's own settings
+  (`STORE_RELEASE_VAR`, read by the ensurer's `recorded()`), so answering "does any script run
+  release X" means walking every script. The ensurer writes the row under the hold it already
+  takes: a shared hold for a push or serve, the exclusive hold for a rollout or rollback. Before
+  the upload it sets `pending_sha256` to the target and leaves `confirmed_sha256` alone. After
+  the upload it moves the target into `confirmed_sha256` and clears `pending_sha256`. So an upload
+  that fails, or lands without its confirmation, still leaves the release the script ran named in
+  `confirmed_sha256` and the one it may now run named in `pending_sha256`. The revoke guard treats
+  a release named in **either** column as running. The canary script has no row.
+- **A release records once that a vertical ran it** *(proposed column `first_ran_at` on
+  `store_driver_releases`)*. The ensurer writes it, once and never clears it, the first time it
+  confirms a vertical's script at the release. The canary script does not count. This is the
+  release's history, which `store_driver_scripts` cannot give, because that table keeps only each
+  script's current and pending release. The freeze below reads `first_ran_at`.
 - **At most one live approval per (driver, sha256).** The table holds a unique index over
   (driver, sha256) for rows not revoked *(proposed)*, so a second approval of a release that is
   already approved is refused (409). Approving it again after a revoke writes a new row.
 - **A release's facts freeze once it has run.** `schema`, the class name and the catalog are
-  facts about one release. A re-approval may change them only while no vertical's script has
-  ever been uploaded at the release, meaning no `store_driver_scripts` row, pending or confirmed,
-  has ever named it. A rollout whose canary failed moved nothing, so it does not freeze a wrong
-  class name the canary just caught. The canary script does not count. After that, a re-approval
+  facts about one release. A re-approval may change them only while the release's `first_ran_at`
+  is unset, meaning no vertical's script has ever been confirmed at it. A rollout whose canary
+  failed moved nothing, so it does not freeze a wrong class name the canary just caught. A
+  vertical moving on to another release does not unfreeze it either. After that, a re-approval
   that differs from the release's latest approval row is refused (409). So every approval row of
   a release that a vertical has run agrees on those three facts.
 - **Each lookup is judged by its role, not by its function.** A lookup of the release a script
@@ -240,8 +248,8 @@ today (control-plane.md §4.4).
 ensurer checks the pin before its no-op shortcut (`current.release === sha256 && current.build
 === build` in `scriptEnsurer`), and `ensureScopeStoresOf` in `api.ts` rethrows, failing the push
 or serve. So while a vertical's script runs a revoked release, **every push and every serve of
-that vertical is refused**, until a rollout moves its script. That holds for every vertical that
-declares the driver. A fleet rebuild after a key change cannot rebuild those scripts either, so
+that vertical is refused**, until a rollout moves its script. That holds for each vertical that
+declares the driver and whose script runs the revoked release. A fleet rebuild after a key change cannot rebuild those scripts either, so
 they keep the older key lists until they are rolled forward, and the rebuild reports them as
 pending.
 
@@ -249,7 +257,8 @@ pending.
 **exclusive** hold, the hold a rollout takes (`holdStoreDriver`, mode `exclusive`), so no push,
 serve, rebuild or rollout can upload a script while the check runs. Under that hold it reads
 `storeDriverState`'s `current` and the `store_driver_scripts` rows for the driver. It refuses
-(409) a release that is current, or that any row, pending or confirmed, names, and it names the
+(409) a release that is current, or that any row names in either its confirmed or its pending
+column, and it names the
 rollout to do first *(proposed)*. The revoke is written while the hold is still held, and then
 the hold is released. A person can override the refusal with an explicit emergency flag and a
 reason *(proposed)*, accepting that pushes and serves of every vertical whose script runs the
@@ -259,9 +268,12 @@ uploaded again even once. See Q4.
 **After an emergency revoke of the current release, the only way out is forward.** When a
 roll-forward from the revoked release fails part way, `restore()` would return the verticals it
 reached to `from`, the revoked release. That is a move to a release without a live approval, so
-it is refused. So the return is skipped: the request ends `diverged`, its detail names the
-verticals now on the new release and the ones still on the revoked one, and the rollback is
-refused (422) because its target is revoked. The recovery is another rollout to an approved
+it is refused. So `restore()` gets a branch of its own *(proposed)*, checked before the schema
+comparison: when `from` has no live approval, it returns nothing. Today a missing `returning`
+schema falls into the "would lower the stored schema (X to undefined)" branch, which is the wrong
+reason. The new branch ends the request `diverged` with its own detail. That detail says `from`
+is revoked and names the verticals now on the new release and the ones still on the revoked one.
+The rollback is refused (422) because its target is revoked. The recovery is another rollout to an approved
 release, the same one once its failure is fixed, or another. Every script still on the revoked
 release stays refused for pushes and serves until that rollout reaches it. `status` lists them
 from `store_driver_scripts`. This is the cost the emergency flag accepts, and the revoke
@@ -304,8 +316,11 @@ move to the approval.
   catalog. The reserved operations stay the platform's requirement, held in source as
   `RESERVED_STORE_OPERATIONS` and asserted by the canary at every rollout.
 - **Schema change** *(proposed)*: `storeDriverRegistration` loses `releases` (it is `.min(1)`
-  today), and `className` and `operations` with it. What is left is the driver id and the
-  isolation basis of §6.
+  today), and `className`, `operations` and `platformOperations` with it. What is left is the
+  driver id and the isolation basis of §6. `platformOperations` is the field that today holds a
+  registration to answering every reserved operation, `substrat.erase` included. Dropping it
+  loses nothing, because the canary asserts every entry of `RESERVED_STORE_OPERATIONS` at every
+  rollout, before any vertical moves. That check runs on the bytes, which a declaration does not.
 
 **Rejected alternative:** *the whole registration as data.* Then the CLI's push check, the
 erasure gate and the upload plan would all depend on a directory read. A released CLI could not
@@ -318,8 +333,8 @@ confirm this split.
 pin ever written is #2394's, which is open, and whose bytes the current module rule refuses (§2,
 problem 1). Nothing has to be migrated if this lands first.
 
-**Recommended:** #2394 does not merge its pin. Its registration lands as the driver id alone
-(§4.4), and the graph driver's first release goes through upload and approval. Whether the
+**Recommended:** #2394 does not merge its pin. Its registration lands later, as the driver id and
+isolation basis alone (§4.4), at §8 step 6, after the readers have switched, and the graph driver's first release goes through upload and approval. Whether the
 graph driver may be approved at all is a separate question (§6, Q5).
 
 If a pin has merged by the time this is built, there are three options:
@@ -344,6 +359,15 @@ If a pin has merged by the time this is built, there are three options:
   declares `graph` would be refused. While the older control plane still serves during the
   switch deploy, it runs the pinned release whatever the data says. A revoke is therefore not
   relied on until the person attests that the deploy has finished (§8).
+  **The fresh approval must agree with the pin.** The scripts that run the pinned release were
+  built from the registration's `className` and the pin's `schema`, and no `first_ran_at` exists
+  yet to freeze anything. So while a compiled pin of the same sha256 exists, the approve route
+  refuses (409) an approval whose `schema` differs from the pin's, or whose class name differs
+  from the registration's `className` *(proposed)*. Without that check, the first push after the
+  switch would rebuild every `graph` script with another class. A different `schema` would
+  become the value the no-lower-schema guard judges every later move against. The switch also
+  sets `first_ran_at` on the pinned release when the backfill (§8, step 5) finds a script
+  running it.
 
 ### 5.1 The D-63 sentences an amendment would change
 
@@ -409,14 +433,22 @@ sentences below are quoted from D-63 as ratified, each followed by proposed repl
    upload of that release, a rollback to it included. It does not stop a script that already runs
    the release; a rollout or a rollback moves that script. Approvals and their revocations are
    kept and never deleted."*
-12. Limits. **"The allowlist takes effect at control-plane deploy."** The whole bullet → **"An
+12. Why. *"No kind written outside this repo (a third-party kind) is registered until that
+    isolation exists."* → *"A kind written outside this repo (a third-party kind) is registered
+    only with an isolation basis that names a decision record lifting this requirement for it.
+    Without one its registration is refused, and no release of it is approved."* This keeps the
+    gate at registration, where D-63 put it, and states that the approve route reads the same
+    basis (§6).
+13. Limits. **"The allowlist takes effect at control-plane deploy."** The whole bullet → **"An
     approval takes effect when it is written."** *"The driver's registration, its id, is compiled
     into the control plane and takes effect at control-plane deploy. An approval is data and
     takes effect at once. The staff sign-in that writes it is part of what this decision trusts."*
 
 Everything else in D-63 is unchanged. That includes "a release is published by a person", the
-canary, the rollback target, the module rule, one script per (driver, vertical), and the isolation
-sentence. The mirrored rows in master-plan §12 are rendered from the record, so the amendment
+canary, the rollback target, the module rule, one script per (driver, vertical), and the
+condition that defines isolation ("a separate script per tenant, no outbound access, and
+verification of the envelope outside the kind's reach"). Only its consequence for registration is
+restated, in item 12. The mirrored rows in master-plan §12 are rendered from the record, so the amendment
 changes them through `lint:decisions`. The prose that describes the pin would follow the decision:
 [scope-stores.md](./scope-stores.md) step 8,
 [control-plane.md](../architecture/control-plane.md) §4.4, `apps/docs/concepts/scope-stores.md`,
@@ -436,10 +468,17 @@ makes no claim about whether any driver, the graph driver included, meets it.
 
 - **The gate on whether a third-party driver may be approved at all stays in source.** The
   registration carries an isolation basis *(proposed field)*. It is either "written in this repo",
-  or a reference to the decision record that lifts D-63's sentence for that driver. The approve
-  route refuses a driver written outside this repo whose registration names no such record.
-  Lifting the requirement therefore stays a reviewed change in this repo, with a decision record
-  behind it, as D-63 has it. Only the per-release approval moves to data.
+  or a reference to the decision record that lifts D-63's sentence for that driver. A
+  registration of a driver written outside this repo is refused unless its basis names such a
+  record (§5.1, item 12), and the approve route reads the same basis. Lifting the requirement
+  therefore stays a reviewed change in this repo, with a decision record behind it, as D-63 has
+  it. Only the per-release approval moves to data.
+- **The basis is per driver, and each approval is held to it.** Source references are per
+  approval (§7), so one release could claim a basis it does not have. With the basis "written in
+  this repo", the approve route refuses (422) an approval any of whose source references names
+  another repository *(proposed)*. A release built from code outside this repo, a dependency
+  included, needs a basis that names a lifting record. That makes Q5 a fact the approve route
+  checks, rather than a judgement made once when the driver is registered.
 - **The basis is checked wherever an approval is read, not only when it is written.** The
   rollout, the rollback, the ensurer and the fleet rebuild treat an approval as live only while
   the compiled registration still carries an isolation basis that admits it. So if a later
@@ -573,11 +612,15 @@ problem 1.
    isolation basis (§4.4, §6). That arms `mayHoldScopeStores` and the push checks, with every
    reader already on approvals. A CLI release carries it, because the CLI's push check is
    compiled in. Under option (c), `graph` is already registered, and this step does nothing.
-7. **The first approval and the first rollout.** An approval can be written at any point from
-   step 4, and under option (c) it must be written before step 5 deploys. Approving is never
-   gated on a deploy, because it makes nothing run by itself. The gate is on the **first rollout
-   after the switch deploy**, once. The rollout route refuses until a person attests that the
-   switch deploy has finished rolling out (below) *(proposed)*. Later control-plane deploys do
+7. **The first approval and the first rollout.** An approval needs a registration and its
+   isolation basis to read. On the recommended path it can therefore be written only from step 6,
+   once the deploy that registers `graph` serves. Under option (c), `graph` is already registered
+   and carries its basis from step 4, so the approval can be written from step 4, and it must be
+   written before step 5 deploys. Approving is never gated on a deploy finishing, because it makes
+   nothing run by itself. The gate is on the **first rollout after the deploy that first admits an
+   approved release**, once. That is the step-6 deploy on the recommended path, and the step-5
+   switch deploy under (c). The rollout route refuses until a person attests that this deploy has
+   finished rolling out (below) *(proposed)*. Later control-plane deploys do
    not re-arm the gate, because they do not change which releases a version admits. A deploy
    that did change that would arm it again.
 
@@ -607,7 +650,9 @@ Three consequences:
   Pins have the same property today, since a rollback past the first registration does the same.
   An approval-based flow makes that version easier to forget, so the runbook names it: once a
   store holds data, the control plane is not rolled back below the release that registered its
-  driver.
+  driver. Under option (c) the runbook names a second floor, **the switch release** (step 5). A
+  control plane rolled back below it reads the compiled pin again and ignores every revocation in
+  data, so a revoked pinned release would run again.
 
 ## 9. Open questions for the maintainer
 
@@ -632,7 +677,9 @@ Three consequences:
   serve keep an existing script unchanged on a revoked release, so that only a move to it is
   refused?
 - **Q5. The graph driver.** Is the graph driver "written outside this repo" in D-63's sense? If so,
-  its first approval waits for the decision record of §6 that lifts the isolation sentence for it.
+  its registration and its first approval wait for the decision record of §6 that lifts the
+  isolation sentence for it. §6's source-reference rule makes this checkable: an approval whose
+  source references name another repository is refused under the basis "written in this repo".
   This RFC makes no claim that the requirement is met.
 - **Q6. Source references.** A structured list of (repository, commit) on the approval
   (recommended, §7), or free text?
@@ -661,7 +708,9 @@ Three consequences:
   may run (recommended). Or should the approve route refuse any condition marked "not met", which
   is stricter than D-63 and would block every driver until the isolation exists?
 - **Q15. A second record of which release each script runs.** §4.2 adds `store_driver_scripts`
-  beside each script's own `STORE_RELEASE_VAR`, so that the revoke guard and the freeze can read
-  one table under the driver's hold. Is a second record acceptable, given that a crash between
-  upload and confirmation leaves a `pending` row that the guard has to treat as running? Or
+  beside each script's own `STORE_RELEASE_VAR`, with a confirmed and a pending column, so that the
+  revoke guard can read one table under the driver's hold. It also adds `first_ran_at` on the
+  release for the freeze. Is a second record acceptable, given that a crash between upload and
+  confirmation leaves a pending target that the guard has to treat as running, beside the
+  confirmed release it also treats as running? Or
   should the revoke walk every script's settings under the hold instead, paged as a rollout is?
