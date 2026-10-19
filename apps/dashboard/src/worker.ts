@@ -4190,6 +4190,9 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const providerSlugs = await oidcProviderSlugsFor(host, cp);
+  // The choice may name another of the team's apps as the issuer, and the MCP registration below
+  // is moved between the team's auth-servers: both read every app, not the one addressed.
+  const apps = await allApps(dash);
   const choice = resolveAuthChoice(appAuthChoiceBody.parse(await c.req.json()), apps, providerSlugs);
   // Prefer the stored column, but fall back to the live router bindings: an app can be
   // fully reachable while its dashboard column is null (a bind whose activation step threw

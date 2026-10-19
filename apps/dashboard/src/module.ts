@@ -893,13 +893,10 @@ const listAppsOp: OperationHandler<Partial<z.infer<typeof listAppsInput>> & Page
   input,
 ) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
-  return keysetPage<DashboardAppRow>(
-    ctx,
-    `SELECT * FROM dashboard_apps WHERE deleted_at IS NULL${input.appScopeId === undefined ? '' : ' AND app_scope_id = ?'}`,
-    input.appScopeId === undefined ? [] : [input.appScopeId],
-    ['id'],
-    input,
-  );
+  const live = 'SELECT * FROM dashboard_apps WHERE deleted_at IS NULL';
+  return input.appScopeId === undefined
+    ? keysetPage<DashboardAppRow>(ctx, live, [], ['id'], input)
+    : keysetPage<DashboardAppRow>(ctx, `${live} AND app_scope_id = ?`, [input.appScopeId], ['id'], input);
 };
 
 const deleteAppInput = z.object({ appScopeId: z.string().min(1) });
