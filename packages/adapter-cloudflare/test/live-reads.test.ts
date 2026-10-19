@@ -15,14 +15,16 @@
  * The reasoning is on `ScopeHost.liveReads`, beside the `clock?: never` precedent.
  */
 import { env, runInDurableObject } from 'cloudflare:test';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   instant,
   permissionKey,
+  type ErrorCode,
   platformActorId,
   PROBLEM_CONTENT_TYPE,
   PROBLEM_TYPE_BLANK,
   principalId,
+  problemTypeFor,
   scopeId as scopeIdOf,
   tenantId as tenantIdOf,
 } from '@substrat-run/contracts';
@@ -87,7 +89,7 @@ const upgrade = (extra?: Record<string, string>): Request =>
  */
 async function expectRefusal(
   response: Response,
-  expected: { status: number; mode: string | null; code?: string; detail?: string },
+  expected: { status: number; title: string; mode: string | null; code?: ErrorCode; detail?: string },
 ): Promise<void> {
   expect(response.status).toBe(expected.status);
   expect(response.webSocket).toBeNull();
@@ -95,8 +97,12 @@ async function expectRefusal(
   expect(response.headers.get(LIVE_MODE_HEADER)).toBe(expected.mode);
   const body = (await response.json()) as Record<string, unknown>;
   expect(body.status).toBe(expected.status);
+  expect(body.title).toBe(expected.title);
   if (expected.code === undefined) expect(body.type).toBe(PROBLEM_TYPE_BLANK);
-  else expect(body.code).toBe(expected.code);
+  else {
+    expect(body.type).toBe(problemTypeFor(expected.code));
+    expect(body.code).toBe(expected.code);
+  }
   if (expected.detail === undefined) {
     expect(body).not.toHaveProperty('detail');
     expect(body).not.toHaveProperty('error');
@@ -746,7 +752,7 @@ describe('live reads: a root the principal is checked on (#938)', () => {
       request: upgrade(),
       within: checked(F1),
     });
-    await expectRefusal(response, { status: 403, mode: 'forbidden', code: 'forbidden', detail: 'live reads: the subscriber may not watch this root' });
+    await expectRefusal(response, { status: 403, title: 'Forbidden', mode: 'forbidden', code: 'forbidden', detail: 'live reads: the subscriber may not watch this root' });
   });
 
   it('refuses a root outside the grant, though the same principal may watch its neighbour', async () => {
@@ -757,7 +763,7 @@ describe('live reads: a root the principal is checked on (#938)', () => {
       request: upgrade(),
       within: checked(F_OUT),
     });
-    await expectRefusal(response, { status: 403, mode: 'forbidden', code: 'forbidden', detail: 'live reads: the subscriber may not watch this root' });
+    await expectRefusal(response, { status: 403, title: 'Forbidden', mode: 'forbidden', code: 'forbidden', detail: 'live reads: the subscriber may not watch this root' });
     // The positive twin: the same principal, a root its grant reaches.
     const ok = await watchChecked(reader, F1);
     expect(ok.closedWith).toBeNull();
@@ -906,7 +912,7 @@ describe('live reads: a root the principal is checked on (#938)', () => {
       within: checked(F1),
       expiresAt: new Date(Date.now() - 1000).toISOString(),
     });
-    await expectRefusal(response, { status: 403, mode: 'forbidden', code: 'forbidden', detail: 'live reads: the subscriber may not watch this root' });
+    await expectRefusal(response, { status: 403, title: 'Forbidden', mode: 'forbidden', code: 'forbidden', detail: 'live reads: the subscriber may not watch this root' });
   });
 
   it('refuses an expiry that is not an instant, rather than reading it as none', async () => {
@@ -1393,7 +1399,7 @@ describe('live reads: the door (#938)', () => {
       principal: insider,
       request: new Request('https://vertical.test/live'),
     });
-    await expectRefusal(response, { status: 426, mode: 'not-an-upgrade', detail: 'live reads are a WebSocket surface' });
+    await expectRefusal(response, { status: 426, title: 'Upgrade required', mode: 'not-an-upgrade', detail: 'live reads are a WebSocket surface' });
   });
 
   it('refuses an orange-to-orange connection and names polling as the fallback', async () => {
@@ -1409,6 +1415,7 @@ describe('live reads: the door (#938)', () => {
     });
     await expectRefusal(response, {
       status: 501,
+      title: 'Not implemented',
       mode: 'poll',
       detail:
         'live reads are not available over this connection — the request arrived ' +
@@ -1471,12 +1478,13 @@ describe("live reads: the scope's own fetch refuses with problem documents (#113
 
   it('answers a path that is not the subscription path with a 404 and no live mode', async () => {
     const response = await stub().fetch(new Request('https://scope.substrat.internal/_substrat/other'));
-    await expectRefusal(response, { status: 404, mode: null, detail: 'this scope has no such surface' });
+    await expectRefusal(response, { status: 404, title: 'Not found', mode: null, detail: 'this scope has no such surface' });
   });
 
   it('answers a request that is not an upgrade with a 426 and the not-an-upgrade mode', async () => {
     await expectRefusal(await fetchLive({}), {
       status: 426,
+      title: 'Upgrade required',
       mode: 'not-an-upgrade',
       detail: 'live reads are a WebSocket surface',
     });
@@ -1489,20 +1497,50 @@ describe("live reads: the scope's own fetch refuses with problem documents (#113
   ])('answers an upgrade missing the asserted %s with an internal 500 that carries no sentence', async (_label, missing) => {
     const headers = { ...handshake, ...asserted };
     delete (headers as Record<string, string>)[missing];
-    await expectRefusal(await fetchLive(headers), { status: 500, mode: null, code: 'internal' });
+    await expectRefusal(await fetchLive(headers), { status: 500, title: 'Internal error', mode: null, code: 'internal' });
   });
 
   it('answers a narrowing it cannot read, and an expiry it cannot read, with an internal 500', async () => {
     await expectRefusal(await fetchLive({ ...handshake, ...asserted, [LIVE_WITHIN_HEADER]: '%not-json' }), {
       status: 500,
+      title: 'Internal error',
       mode: null,
       code: 'internal',
     });
     await expectRefusal(await fetchLive({ ...handshake, ...asserted, [LIVE_EXPIRES_HEADER]: 'never' }), {
       status: 500,
+      title: 'Internal error',
       mode: null,
       code: 'internal',
     });
+  });
+
+  it('logs the sentence of each internal 500 and keeps it off the wire', async () => {
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(' '));
+    });
+    try {
+      const missing = { ...handshake, ...asserted };
+      delete (missing as Record<string, string>)[LIVE_PRINCIPAL_HEADER];
+      const cases: [Record<string, string>, string][] = [
+        [missing, 'live reads require an asserted principal, tenant and scope'],
+        [{ ...handshake, ...asserted, [LIVE_WITHIN_HEADER]: '%not-json' }, 'live reads: unreadable within narrowing'],
+        [{ ...handshake, ...asserted, [LIVE_EXPIRES_HEADER]: 'never' }, 'live reads: unreadable expiry'],
+      ];
+      for (const [headers, sentence] of cases) {
+        logged.length = 0;
+        const response = await fetchLive(headers);
+        const raw = await response.text();
+        expect(response.status).toBe(500);
+        expect(raw).not.toContain(sentence);
+        expect(logged.filter((line) => line.includes(sentence))).toHaveLength(1);
+        // The line names the failed assertion and nothing the request carried.
+        for (const value of Object.values(asserted)) expect(logged.join('\n')).not.toContain(value);
+      }
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

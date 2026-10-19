@@ -190,10 +190,13 @@ export function liveRefusalStatus(status: number, detail: string, mode?: LiveRef
 
 /**
  * A refusal that is the taxonomy's own (`forbidden`, `internal`). `internal` never carries
- * its `detail` on the wire: a 500 here is this package's bug, not the client's, and the
- * sentence is for the code that raises it.
+ * its `detail` on the wire: a 500 here is this package's bug, not the client's, so the
+ * sentence goes to the log instead, where a coordinator/DO skew can still be told apart.
+ * The sentences are fixed strings naming the assertion that failed — never a value, an id
+ * or a header's content.
  */
 export function liveRefusal(code: ErrorCode, detail: string, mode?: LiveRefusal): Response {
+  if (code === 'internal') console.error('substrat: live-read refused:', detail);
   return serveLiveRefusal(toProblem(substratError(code, detail)), mode);
 }
 

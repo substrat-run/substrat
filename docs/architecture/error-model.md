@@ -342,9 +342,10 @@ already answer their expected refusal as a value.
      through `liveRefusal` / `liveRefusalStatus` (`live-reads.ts`, shared by the coordinator's door
      in `host.ts` and the scope's `fetch` in `scope-do.ts`): `forbidden` for the 403, `about:blank`
      for the 404, 426 and 501, `internal` for the three 500s a missing or unreadable assertion
-     raises, which carry no `detail` — that fault is this package's, and the sentence stays in the
-     source. Statuses, the `error` sentence and the `x-substrat-live` values are unchanged, and
-     the 101 upgrades are untouched. `test/live-reads.test.ts` holds the media type, status,
+     raises, which carry no `detail` — that fault is this package's, so `liveRefusal` writes the
+     sentence to the log (`console.error`) and keeps it off the wire. Statuses and the
+     `x-substrat-live` values are unchanged, as is the `error` sentence everywhere except
+     those three 500s, which no longer carry it; the 101 upgrades are untouched. `test/live-reads.test.ts` holds the media type, status,
      header and detail of each refusal, the DO's own ones by fetching the stub directly.
    - **Still open, surface by surface:** the control-plane worker's own routes (`apps/control-plane`), CLI auth, the
      builder and the dashboard's 401s, `dev-issuer`; a `requestId` on the control plane's
