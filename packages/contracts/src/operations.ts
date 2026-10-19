@@ -892,9 +892,9 @@ export function defineOperations<
  * table read. Only a TOP-LEVEL array output is a list by this rule.
  *
  * **"Top-level" looks through wrappers** (#2436). `.optional()`, `.nullable()`, `.default()`,
- * `.readonly()`, `z.lazy()` and `.pipe()`/`.transform()` change what a handler may return,
- * not that it answers with a whole table, so an array under any of them is read as the
- * array it is. And an output the gate cannot read at all — `z.custom()` — is refused
+ * `.readonly()` and the rest of `WRAPPER_TYPES`, `z.lazy()` and `.pipe()`/`.transform()` change
+ * what a handler may return, not that it answers with a whole table, so an array under any of
+ * them is read as the array it is. And an output the gate cannot read at all — `z.custom()` — is refused
  * outright: it could be an array, and a gate that waves through what it cannot see is
  * one declaration away from not existing.
  */
