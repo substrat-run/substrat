@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/console-data",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "The data-source contract the console views read from — query-first, with declared capabilities — and its local implementation over the working tree and a trace reader",
   "license": "Apache-2.0",
