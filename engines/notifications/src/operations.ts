@@ -7,7 +7,8 @@
  * anybody else's address. An administrator reads the delivery log for the scope under
  * `notifications:read`, which is how "why did nobody hear about this" gets an answer. The
  * third key, `notifications:send-digests`, is the digest schedule's: the engine's system
- * principal holds it, and no person may (`lint:permissions` refuses a role granting it).
+ * principal holds it, and the manifest declares it `holder: 'system'`, so `lint:permissions`
+ * refuses a role or entity grant shape that would hand it to a person.
  *
  * Node checks only, and that is the design: the entities are a person's own preferences and
  * a log about the scope, neither of which narrows to a record somebody else holds a grant on.

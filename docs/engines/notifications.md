@@ -35,8 +35,8 @@ topic is required. `notify` then records the occasion `skipped` with reason `dig
 the rendered message.
 
 The engine's manifest declares a schedule, `notifications/send-digests`, every 15 minutes. It
-runs as the engine's system principal under `notifications:send-digests`, a key reserved to
-system principals. A person is due once their oldest held message is a day old. Nothing waits
+runs as the engine's system principal under `notifications:send-digests`, a key the manifest
+declares `holder: 'system'`, which reserves it to system principals. A person is due once their oldest held message is a day old. Nothing waits
 much longer than that, and a person with no more than 50 held gets one digest a day.
 
 Each due person gets one mail through the same `requestEmail` and delivery row, under the

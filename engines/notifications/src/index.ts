@@ -174,6 +174,8 @@ export const notificationsManifest = moduleManifest.parse({
     {
       key: 'notifications:send-digests',
       description: "Send the digests that are due now — the digest schedule's key, held by the engine's system principal and never by a person",
+      // A person holding it could send the scope's due digests whenever they liked.
+      holder: 'system',
     },
   ],
   events: {

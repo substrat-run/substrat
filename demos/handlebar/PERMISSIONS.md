@@ -9,31 +9,31 @@
 
 ## 1. Registry — every key a registered manifest declares
 
-| Key | Description | Declared by |
-| --- | --- | --- |
-| `bike:manage` | Register and manage customers' bikes | `@substrat-run/demo-handlebar` |
-| `customer:manage` | Manage customers and the workshop price list | `@substrat-run/demo-handlebar` |
-| `invoicing:export` | Export an invoice basis (makes it immutable) | `@substrat-run/engine-invoicing` |
-| `invoicing:read` | Read invoice bases | `@substrat-run/engine-invoicing` |
-| `notifications:read` | Read what became of every notification in the scope | `@substrat-run/engine-notifications` |
-| `notifications:self` | Set where your own notifications go and which topics reach you | `@substrat-run/engine-notifications` |
-| `notifications:send-digests` | Send the digests that are due now — the digest schedule's key, held by the engine's system principal and never by a person | `@substrat-run/engine-notifications` |
-| `protocol:attach` | Attach a document to a protocol instance — the sealed signed PDF a signing connector lands on completion, or a human-uploaded document (the attachmentTargets write gate) | `@substrat-run/engine-protocol` |
-| `protocol:bind` | Bind vertical-owned document content (ref + hash) to an open document protocol | `@substrat-run/engine-protocol` |
-| `protocol:countersign` | Counter-sign an already-signed protocol — a second signature on the same frozen content (customer at pickup) | `@substrat-run/engine-protocol` |
-| `protocol:create` | Define protocol templates and start protocol instances on entities | `@substrat-run/engine-protocol` |
-| `protocol:fill` | Record responses on an open checklist protocol (append-only) | `@substrat-run/engine-protocol` |
-| `protocol:read` | Read protocol templates, instances, responses, signature requests and signatures | `@substrat-run/engine-protocol` |
-| `protocol:record-signature` | Record a signature reported by an external signing provider — held by connector ingress, never by a human role | `@substrat-run/engine-protocol` |
-| `protocol:request-signature` | Freeze a protocol and request signatures from named parties (external signing flows); also cancels a pending request set | `@substrat-run/engine-protocol` |
-| `protocol:sign` | Sign a protocol in-app — freezes it forever (separate from fill: the technician fills, the arbetsledare signs) | `@substrat-run/engine-protocol` |
-| `protocol:void` | Void (supersede) a protocol — never deletes | `@substrat-run/engine-protocol` |
-| `workorder:assign` | Assign a technician | `@substrat-run/engine-workorder` |
-| `workorder:close` | Close a completed work order | `@substrat-run/engine-workorder` |
-| `workorder:complete` | Complete a work order (with billable lines) | `@substrat-run/engine-workorder` |
-| `workorder:create` | Create work orders | `@substrat-run/engine-workorder` |
-| `workorder:read` | Read work orders, time and material | `@substrat-run/engine-workorder` |
-| `workorder:report` | Start work, report time and material | `@substrat-run/engine-workorder` |
+| Key | Description | Declared by | Reserved to a system principal |
+| --- | --- | --- | --- |
+| `bike:manage` | Register and manage customers' bikes | `@substrat-run/demo-handlebar` | — |
+| `customer:manage` | Manage customers and the workshop price list | `@substrat-run/demo-handlebar` | — |
+| `invoicing:export` | Export an invoice basis (makes it immutable) | `@substrat-run/engine-invoicing` | — |
+| `invoicing:read` | Read invoice bases | `@substrat-run/engine-invoicing` | — |
+| `notifications:read` | Read what became of every notification in the scope | `@substrat-run/engine-notifications` | — |
+| `notifications:self` | Set where your own notifications go and which topics reach you | `@substrat-run/engine-notifications` | — |
+| `notifications:send-digests` | Send the digests that are due now — the digest schedule's key, held by the engine's system principal and never by a person | `@substrat-run/engine-notifications` | yes |
+| `protocol:attach` | Attach a document to a protocol instance — the sealed signed PDF a signing connector lands on completion, or a human-uploaded document (the attachmentTargets write gate) | `@substrat-run/engine-protocol` | — |
+| `protocol:bind` | Bind vertical-owned document content (ref + hash) to an open document protocol | `@substrat-run/engine-protocol` | — |
+| `protocol:countersign` | Counter-sign an already-signed protocol — a second signature on the same frozen content (customer at pickup) | `@substrat-run/engine-protocol` | — |
+| `protocol:create` | Define protocol templates and start protocol instances on entities | `@substrat-run/engine-protocol` | — |
+| `protocol:fill` | Record responses on an open checklist protocol (append-only) | `@substrat-run/engine-protocol` | — |
+| `protocol:read` | Read protocol templates, instances, responses, signature requests and signatures | `@substrat-run/engine-protocol` | — |
+| `protocol:record-signature` | Record a signature reported by an external signing provider — held by connector ingress, never by a human role | `@substrat-run/engine-protocol` | — |
+| `protocol:request-signature` | Freeze a protocol and request signatures from named parties (external signing flows); also cancels a pending request set | `@substrat-run/engine-protocol` | — |
+| `protocol:sign` | Sign a protocol in-app — freezes it forever (separate from fill: the technician fills, the arbetsledare signs) | `@substrat-run/engine-protocol` | — |
+| `protocol:void` | Void (supersede) a protocol — never deletes | `@substrat-run/engine-protocol` | — |
+| `workorder:assign` | Assign a technician | `@substrat-run/engine-workorder` | — |
+| `workorder:close` | Close a completed work order | `@substrat-run/engine-workorder` | — |
+| `workorder:complete` | Complete a work order (with billable lines) | `@substrat-run/engine-workorder` | — |
+| `workorder:create` | Create work orders | `@substrat-run/engine-workorder` | — |
+| `workorder:read` | Read work orders, time and material | `@substrat-run/engine-workorder` | — |
+| `workorder:report` | Start work, report time and material | `@substrat-run/engine-workorder` | — |
 
 ## 2. Roles — as defined by this vertical's provisioning code
 

@@ -149,7 +149,7 @@ why it is not kernel code.
 | --- | --- |
 | `notifications:self` | Set where your own notifications go and which topics reach you |
 | `notifications:read` | Read what became of every notification in the scope |
-| `notifications:send-digests` | The digest schedule's key. The engine's system principal holds it, and `lint:permissions` refuses a role that grants it to a person |
+| `notifications:send-digests` | The digest schedule's key. The engine's system principal holds it. The manifest declares it `holder: 'system'`, so `lint:permissions` refuses a role or entity grant shape that grants it to a person |
 
 ## Licence
 
