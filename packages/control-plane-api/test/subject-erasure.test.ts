@@ -366,7 +366,7 @@ describe('subject erasure (#37)', () => {
     }
     const versionId = ulid();
     await host.admin.publishVersion(staff, {
-      id: versionId, verticalSlug: 'docs', version: `1.0.${versionId.slice(-4).toLowerCase()}`, manifestDigest: `m-${versionId}`,
+      id: versionId, verticalSlug: 'docs', version: `1.0.${versionId.toLowerCase()}`, manifestDigest: `m-${versionId}`,
       permissionDigest: 'p', migrationDigest: 'g', deploymentRef: `docs-${versionId.toLowerCase()}`,
       manifestJson: JSON.stringify({
         version: '1.0.0', entry: 'worker.js', compatibilityDate: '2025-01-01',
@@ -415,7 +415,7 @@ describe('subject erasure (#37)', () => {
     }
     const versionId = ulid();
     await host.admin.publishVersion(staff, {
-      id: versionId, verticalSlug: 'docs', version: `1.0.${versionId.slice(-4).toLowerCase()}`, manifestDigest: `m-${versionId}`,
+      id: versionId, verticalSlug: 'docs', version: `1.0.${versionId.toLowerCase()}`, manifestDigest: `m-${versionId}`,
       permissionDigest: 'p', migrationDigest: 'g', deploymentRef: `docs-${versionId.toLowerCase()}`,
       manifestJson: JSON.stringify({
         version: '1.0.0', entry: 'worker.js', compatibilityDate: '2025-01-01',

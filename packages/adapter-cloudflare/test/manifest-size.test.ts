@@ -81,7 +81,7 @@ describe('the stored manifest size bound (#1677)', () => {
   const publish = async (manifestJson: string) => {
     const id = ulid();
     await host.admin.publishVersion(staff, {
-      id, verticalSlug: vertical, version: `1.0.${id.slice(-6).toLowerCase()}`, manifestDigest: 'm',
+      id, verticalSlug: vertical, version: `1.0.${id.toLowerCase()}`, manifestDigest: 'm',
       permissionDigest: 'p', migrationDigest: await digestOfJson(manifestJson), deploymentRef: null, manifestJson,
     });
     return id;

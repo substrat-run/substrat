@@ -74,7 +74,7 @@ describe('version migrations route (#1677)', () => {
     await host.admin.registerVertical(staff, { slug: 'rival/app', name: 'Rival App', source: 'cli', ownerTenant: tB });
     const publish = async (id: string, verticalSlug: string, manifestJson?: string) => {
       const input = {
-        id, verticalSlug, version: id.slice(-6),
+        id, verticalSlug, version: id.toLowerCase(),
         manifestDigest: 'm', permissionDigest: 'p', migrationDigest: 'g', deploymentRef: `ref-${id}`,
         ...(manifestJson ? { manifestJson } : {}),
       };
@@ -224,7 +224,7 @@ describe('version migrations route (#1677)', () => {
       await host.admin.registerVertical(staff, { slug: SLUG, name: 'Embedded', source: 'cli', ownerTenant: tA });
       const put = async (id: string, perm: string, mig: string, migrations: unknown[]) => {
         await host.admin.publishVersion(staff, await heldVersion({
-          id, verticalSlug: SLUG, version: id.slice(-6), manifestDigest: 'm', permissionDigest: perm, migrationDigest: mig,
+          id, verticalSlug: SLUG, version: id.toLowerCase(), manifestDigest: 'm', permissionDigest: perm, migrationDigest: mig,
           deploymentRef: null, manifestJson: manifest(migrations),
         }));
         await host.admin.admitVersion(staff, id);

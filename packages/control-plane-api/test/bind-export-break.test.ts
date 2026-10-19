@@ -112,7 +112,7 @@ describe('the bind gate route (#1756)', () => {
     const id = ulid();
     const ref = `${slug.replace('/', '-')}-${id.toLowerCase()}`;
     await host.admin.publishVersion(staff, await heldVersion({
-      id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
+      id, verticalSlug: slug, version: `1.0.${id.toLowerCase()}`, manifestDigest: `m-${id}`,
       permissionDigest: 'p', migrationDigest, deploymentRef: ref, manifestJson,
     }));
     await host.admin.admitVersion(staff, id);

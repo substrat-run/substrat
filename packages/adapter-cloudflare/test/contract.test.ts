@@ -1056,7 +1056,7 @@ describe('#1666 — the switch is moved in the serving deployment, and audited h
       const id = ulid();
       const shape = { entityType: 'contact', permissions, ...(retired ? { retired } : {}), bootstrap: true, holder: HOLDER, bind: { permission: 'contact:invite' } };
       await host.admin.publishVersion(staff, await heldVersion({
-        id, verticalSlug: slug, version: `1.0.${id.slice(-4).toLowerCase()}`, manifestDigest: `m-${id}`,
+        id, verticalSlug: slug, version: `1.0.${id.toLowerCase()}`, manifestDigest: `m-${id}`,
         permissionDigest: 'p', migrationDigest: 'g', deploymentRef: null,
         manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants: [shape] } }),
       }));
@@ -6260,7 +6260,7 @@ describe('#2185 — wedge risk: the retirements-finished column added to an exis
     const publish = async (slug: string, entityGrants: object[]) => {
       const id = ulid();
       await host.admin.publishVersion(staff, await heldVersion({
-        id, verticalSlug: slug, version: `1.0.${id.slice(-6).toLowerCase()}`, manifestDigest: `m-${id}`,
+        id, verticalSlug: slug, version: `1.0.${id.toLowerCase()}`, manifestDigest: `m-${id}`,
         permissionDigest: `p-${id}`, migrationDigest: 'g', deploymentRef: null,
         manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants } }),
       }));
@@ -6419,7 +6419,7 @@ describe('#2184 — wedge risk: the bound-shapes column added to an existing dir
     const publish = async (slug: string, entityGrants: object[]) => {
       const id = ulid();
       await host.admin.publishVersion(staff, await heldVersion({
-        id, verticalSlug: slug, version: `1.0.${id.slice(-6).toLowerCase()}`, manifestDigest: `m-${id}`,
+        id, verticalSlug: slug, version: `1.0.${id.toLowerCase()}`, manifestDigest: `m-${id}`,
         permissionDigest: `p-${id}`, migrationDigest: 'g', deploymentRef: null,
         manifestJson: JSON.stringify({ registry: { permissions: [], roles: [], entityGrants } }),
       }));
