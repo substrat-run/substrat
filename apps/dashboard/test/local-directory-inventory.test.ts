@@ -95,7 +95,7 @@ describe('the dashboard directory, as provisioning leaves it (#1343)', () => {
     // A test that only listed the role DEFINITIONS would stay green with the
     // `assignRole` call deleted from `provisionDashboard`.
     const ownerScope = await host.getScope(node.principal, node.tenantId, node.scopeId);
-    await expect(ownerScope.invoke('dashboard/list-apps', {})).resolves.toEqual([]);
+    await expect(ownerScope.invoke('dashboard/list-apps', {})).resolves.toEqual({ entries: [], nextCursor: null });
 
     const stranger = principalId.parse(ulid());
     const strangerScope = await host.getScope(stranger, node.tenantId, node.scopeId);

@@ -44,7 +44,11 @@ import {
 } from '@substrat-run/contracts';
 import { appAuthChoiceBody } from './app-auth-body.js';
 import { logOutputDrift } from './output-drift.js';
-import { APP_EVENT_KINDS } from './app-event-kinds.js';
+import { appEvent, appRow, installStep, memberRow } from './rows.js';
+
+// The rows the module shares, declared where module code may import them (`rows.ts`); the
+// browser client's schemas are read off this file's exports, so they stay exported here.
+export { appEvent, appRow, installStep, memberRow };
 
 /** The shared page query: the platform's `limit`/`cursor` (default 20, `LIST_PAGE_MAX`), cursor opaque. */
 const pageInput = {
@@ -137,42 +141,6 @@ const findingRuleIn = z
     message: 'a suppress rule names at least one of kind, operation, code or subject',
   });
 
-/** One installed app, as the Apps list shows it. */
-export const appRow = z.object({
-  id: z.string(),
-  app_scope_id: z.string(),
-  vertical_slug: z.string(),
-  name: z.string(),
-  status: z.enum(['provisioning', 'active', 'failed']),
-  hostname: z.string().nullable(),
-  /** The vertical's non-secret provision result as JSON (#426); null for a bare ack. */
-  provision_result: z.string().nullable().optional(),
-  created_by: z.string(),
-  created_at: z.string(),
-});
-
-/** One step of an app's install sequence (#424); a failed step carries the downstream error verbatim. */
-export const installStep = z.object({
-  step: z.string(),
-  seq: z.number().int(),
-  status: z.enum(['running', 'done', 'failed']),
-  attempts: z.number().int(),
-  last_error: z.string().nullable(),
-  started_at: z.string(),
-  settled_at: z.string().nullable(),
-});
-
-/** One lifecycle transition in an app's Activity panel. */
-export const appEvent = z.object({
-  id: z.string(),
-  app_scope_id: z.string(),
-  kind: z.enum(APP_EVENT_KINDS),
-  /** Failure reason / bound hostname / the version move / the vertical slug — depending on `kind`. */
-  detail: z.string().nullable(),
-  actor: z.string(),
-  created_at: z.string(),
-});
-
 /** What the install form posts. */
 export const installAppInput = z.object({
   verticalSlug: z.string().min(1),
@@ -222,25 +190,6 @@ export const appHostnameRow = z.object({
   createdAt: z.string().nullable(),
   /** DNS records to publish for a custom domain; empty for a platform mint. */
   validationRecords: z.array(dnsRecordOut),
-});
-
-/**
- * One row of the team roster: an active member, an outstanding invite, or an accepted invite
- * whose access is still being set up (`joining`) or never will be (`refused`, reason in
- * `refusal`, #1184). Mirrors the module's `DashboardMemberRow`.
- */
-export const memberRow = z.object({
-  id: z.string(),
-  /** The kernel principal once accepted; null while still `invited`. */
-  principal: z.string().nullable(),
-  email: z.string(),
-  role_key: z.string(),
-  status: z.enum(['active', 'invited', 'revoked', 'joining', 'refused']),
-  refusal: z.string().optional(),
-  invitation_id: z.string().nullable(),
-  invited_by: z.string(),
-  invited_at: z.string(),
-  joined_at: z.string().nullable(),
 });
 
 /** A role a member can be invited at — the owner is the un-invitable first member. */
