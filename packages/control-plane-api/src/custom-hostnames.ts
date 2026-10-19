@@ -46,7 +46,10 @@ export interface CustomHostnameIssuance {
 }
 
 export interface CustomHostnameProvisioner {
-  /** Register a custom hostname for issuance. Idempotent on Cloudflare's side per name. */
+  /**
+   * Register a custom hostname for issuance. Idempotent per name: when the zone already
+   * holds one, that object is adopted and its current state returned.
+   */
   create(hostname: string): Promise<CustomHostnameIssuance>;
   /** Poll a registered custom hostname's validation + certificate state. */
   check(customHostnameId: string): Promise<CustomHostnameIssuance>;
@@ -222,16 +225,38 @@ export function createCustomHostnameProvisioner(
     return env.result;
   };
 
+  /**
+   * The zone's custom hostname for exactly `name`, or null. Cloudflare's `hostname` filter
+   * is an exact match, but the result is compared again so a looser upstream filter can
+   * never hand back a neighbour's object.
+   */
+  const findByName = async (name: string): Promise<CfCustomHostname | null> => {
+    const res = await fetchFn(`${base}?hostname=${encodeURIComponent(name)}`, { headers: auth });
+    if (!res.ok) return null;
+    const env = (await res.json().catch(() => undefined)) as CfEnvelope<CfCustomHostname[]> | undefined;
+    return env?.result?.find((ch) => ch.hostname.toLowerCase() === name) ?? null;
+  };
+
   return {
     async create(hostname) {
+      const name = hostname.toLowerCase();
       const res = await fetchFn(base, {
         method: 'POST',
         headers: { ...auth, 'content-type': 'application/json' },
         body: JSON.stringify({
-          hostname: hostname.toLowerCase(),
+          hostname: name,
           ssl: { method: opts.sslMethod ?? 'txt', type: 'dv', settings: { min_tls_version: '1.2' } },
         }),
       });
+      // 409: the zone already holds this name. The object is ours — the SaaS zone is the
+      // control plane's own, and a binding row is unique per hostname, so nothing else
+      // can be counting on it — most often left behind by an unbind whose best-effort
+      // delete failed. Adopt it rather than fail: refusing would strand the row `failed`
+      // with no id, and every "Check again" and every sweep would POST into the same 409.
+      if (res.status === 409) {
+        const existing = await findByName(name);
+        if (existing) return toIssuance(existing);
+      }
       return toIssuance(await readEnvelope(res, 'custom-hostname create'));
     },
 
