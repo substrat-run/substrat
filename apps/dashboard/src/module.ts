@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { type AppEventKind } from './app-event-kinds.js';
-import { moduleManifest, permissionKey, substratError, type PermissionKey, type OrgId } from '@substrat-run/contracts';
+import { defineOperations, moduleManifest, permissionKey, substratError, type PermissionKey, type OrgId } from '@substrat-run/contracts';
 import {
   assertAllowed,
   MEMBER_ADD_REQUESTED,
@@ -13,7 +13,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
-  undeclaredOperations,
+  operationsFor,
 } from '@substrat-run/kernel';
 import { INVITES_PERM, sendInvite, acceptInvite, revokeInvite, readInvitation } from '@substrat-run/engine-invites';
 
@@ -685,7 +685,7 @@ const unbindAppHostnameOp: OperationHandler<z.infer<typeof snapshotAppInput>, { 
  */
 /** A check-only operation: it writes nothing, and answers whether the caller holds `perm`. */
 const checkOnly =
-  (perm: PermissionKey): OperationHandler<Record<string, never>, { ok: true }> =>
+  (perm: PermissionKey): OperationHandler<undefined, { ok: true }> =>
   async (ctx) => {
     assertAllowed(await ctx.check(perm));
     return { ok: true };
@@ -1319,7 +1319,7 @@ function joinedAs(ctx: OperationContext, row: DashboardMemberRow): DashboardMemb
  * them. Any member may leave (including the owner: on a throwaway/abandoned team
  * that is intended; a "last owner leaving" guard can come with team deletion).
  */
-const leaveSelfOp: OperationHandler<Record<string, never>, void> = async (ctx) => {
+const leaveSelfOp: OperationHandler<undefined, void> = async (ctx) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
   ctx.sql.exec(`UPDATE dashboard_members SET status = 'revoked' WHERE principal = ? AND status IN ('active','joining')`, [ctx.principal]);
 };
@@ -1331,7 +1331,7 @@ const leaveSelfOp: OperationHandler<Record<string, never>, void> = async (ctx) =
  * active members so the worker can sever their identity links — the platform effects
  * (deprovision apps, tenant → `deleting`) happen host-side after this asserts.
  */
-const deleteTeamOp: OperationHandler<Record<string, never>, { members: Array<{ principal: string; roleKey: string }> }> = async (ctx) => {
+const deleteTeamOp: OperationHandler<undefined, { members: Array<{ principal: string; roleKey: string }> }> = async (ctx) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.manageMembers));
   const me = ctx.sql.query<DashboardMemberRow>(
     `SELECT * FROM dashboard_members WHERE principal = ? AND status = 'active'`,
@@ -1560,12 +1560,280 @@ const listConnectLinksOp: OperationHandler<z.infer<typeof listConnectLinksInput>
   );
 };
 
+/**
+ * An operation's declared `output`, taken from the type of the handler bound to it. The dashboard
+ * emits no API document, so nothing reads the output schema at run time (the host parses an
+ * input, never a return); what a declaration needs is the TYPE, for `operationsFor` to hold the
+ * handler to.
+ */
+const returnsOf = <H extends (...args: never[]) => unknown>(_handler: H) => z.custom<Awaited<ReturnType<H>>>();
+
+const dashboardOperations = defineOperations({}, Object.values(DASHBOARD_PERM))({
+  'dashboard/provision-app': {
+    summary: 'Record a new app in this team, before its scope is provisioned',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: provisionAppInput,
+    output: returnsOf(provisionAppOp),
+  },
+  'dashboard/mark-app-active': {
+    summary: 'Mark a provisioned app active',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: markAppActiveInput,
+    output: returnsOf(markAppActiveOp),
+  },
+  'dashboard/update-app': {
+    summary: 'Rename an app or change its details',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: updateAppInput,
+    output: returnsOf(updateAppOp),
+  },
+  'dashboard/reconcile-app-vertical': {
+    summary: 'Re-point an app’s record at the vertical slug the directory now names',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: reconcileAppVerticalInput,
+    output: returnsOf(reconcileAppVerticalOp),
+  },
+  'dashboard/snapshot-app': {
+    summary: 'Authorize taking a snapshot of an app’s data',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: snapshotAppInput,
+    output: returnsOf(snapshotAppOp),
+  },
+  'dashboard/delete-app-snapshot': {
+    summary: 'Authorize deleting an app’s snapshot',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: snapshotAppInput,
+    output: returnsOf(deleteAppSnapshotOp),
+  },
+  'dashboard/export-app-data': {
+    summary: 'Authorize exporting an app’s data',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: snapshotAppInput,
+    output: returnsOf(exportAppDataOp),
+  },
+  'dashboard/restore-app-data': {
+    summary: 'Authorize restoring an app’s data',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: snapshotAppInput,
+    output: returnsOf(restoreAppDataOp),
+  },
+  'dashboard/bind-app-hostname': {
+    summary: 'Authorize binding a custom hostname to an app',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: snapshotAppInput,
+    output: returnsOf(bindAppHostnameOp),
+  },
+  'dashboard/unbind-app-hostname': {
+    summary: 'Authorize unbinding a custom hostname from an app',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: snapshotAppInput,
+    output: returnsOf(unbindAppHostnameOp),
+  },
+  'dashboard/authorize-scope-change': {
+    summary: 'Answer whether the caller may move or retire the installs a vertical still backs',
+    permission: DASHBOARD_PERM.provisionApp,
+    output: returnsOf(authorizeScopeChangeOp),
+  },
+  'dashboard/authorize-findings-read': {
+    summary: 'Answer whether the caller may read the team’s findings',
+    permission: DASHBOARD_PERM.readFindings,
+    output: returnsOf(authorizeFindingsReadOp),
+  },
+  'dashboard/authorize-findings-change': {
+    summary: 'Answer whether the caller may act on the team’s findings',
+    permission: DASHBOARD_PERM.manageFindings,
+    output: returnsOf(authorizeFindingsChangeOp),
+  },
+  'dashboard/mark-app-failed': {
+    summary: 'Mark an app’s install failed',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: markAppFailedInput,
+    output: returnsOf(markAppFailedOp),
+  },
+  'dashboard/record-install-step': {
+    summary: 'Record one step of an app’s install',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: recordInstallStepInput,
+    output: returnsOf(recordInstallStepOp),
+  },
+  'dashboard/install-steps': {
+    summary: 'Read the steps recorded for an app’s install',
+    permission: DASHBOARD_PERM.read,
+    input: installStepsInput,
+    output: returnsOf(installStepsOp),
+  },
+  'dashboard/resume-app': {
+    summary: 'Authorize and record a resume of an install stuck at provisioning',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: resumeAppInput,
+    output: returnsOf(resumeAppOp),
+  },
+  'dashboard/app-events': {
+    summary: 'Read an app’s event trail',
+    permission: DASHBOARD_PERM.read,
+    input: appEventsInput,
+    output: returnsOf(appEventsOp),
+  },
+  'dashboard/list-apps': {
+    summary: 'List the team’s apps',
+    permission: DASHBOARD_PERM.read,
+    input: listAppsInput,
+    output: returnsOf(listAppsOp),
+  },
+  'dashboard/delete-app': {
+    summary: 'Delete an app’s record, keeping its history',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: deleteAppInput,
+    output: returnsOf(deleteAppOp),
+  },
+  'dashboard/set-app-env': {
+    summary: 'Set an app’s environment values',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: setAppEnvInput,
+    output: returnsOf(setAppEnvOp),
+  },
+  'dashboard/list-app-env': {
+    summary: 'Read an app’s environment values',
+    permission: DASHBOARD_PERM.read,
+    input: listAppEnvInput,
+    output: returnsOf(listAppEnvOp),
+  },
+  'dashboard/delete-app-env': {
+    summary: 'Delete one of an app’s environment values',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: deleteAppEnvInput,
+    output: returnsOf(deleteAppEnvOp),
+  },
+  'dashboard/set-app-auth': {
+    summary: 'Set how an app signs its users in',
+    permission: DASHBOARD_PERM.provisionApp,
+    input: setAppAuthInput,
+    output: returnsOf(setAppAuthOp),
+  },
+  'dashboard/get-app-auth': {
+    summary: 'Read how an app signs its users in',
+    permission: DASHBOARD_PERM.read,
+    input: getAppAuthInput,
+    output: returnsOf(getAppAuthOp),
+  },
+  'dashboard/init-team': {
+    summary: 'Seed a new team with its invite-keying org and its owner',
+    permission: DASHBOARD_PERM.manageMembers,
+    input: initTeamInput,
+    output: returnsOf(initTeamOp),
+  },
+  'dashboard/invite-member': {
+    summary: 'Invite someone to the team at a role the caller already holds',
+    permission: DASHBOARD_PERM.manageMembers,
+    input: inviteMemberInput,
+    output: returnsOf(inviteMemberOp),
+  },
+  'dashboard/accept-invite': {
+    summary: 'Accept an invitation, as the recipient',
+    input: acceptInviteInput,
+    output: returnsOf(acceptInviteOp),
+    narrows: {
+      reason:
+        'Runs before the caller is a member, so there is no role to check: the invites engine verifies the ' +
+        'identifier hash against the invitation, and that hash is the authority',
+      checks: [],
+      unchecked: true,
+    },
+  },
+  'dashboard/preview-invite': {
+    summary: 'Read the address and role a still-open invitation names',
+    input: previewInviteInput,
+    output: returnsOf(previewInviteOp),
+    narrows: {
+      reason:
+        'Runs before the caller is a member, so there is no role to check: the authority is the signed invite ' +
+        'token the worker verifies before invoking, and it returns only that invitation’s own address, only while open',
+      checks: [],
+      unchecked: true,
+    },
+  },
+  'dashboard/resend-invite': {
+    summary: 'Re-send a pending invitation',
+    permission: DASHBOARD_PERM.manageMembers,
+    input: resendInviteInput,
+    output: returnsOf(resendInviteOp),
+  },
+  'dashboard/invite-link': {
+    summary: 'Read the link of a pending invitation',
+    permission: DASHBOARD_PERM.manageMembers,
+    input: inviteLinkInput,
+    output: returnsOf(inviteLinkOp),
+  },
+  'dashboard/revoke-invite': {
+    summary: 'Revoke a pending invitation',
+    permission: DASHBOARD_PERM.manageMembers,
+    input: revokeInviteInput,
+    output: returnsOf(revokeInviteOp),
+  },
+  'dashboard/list-members': {
+    summary: 'List the team’s roster',
+    permission: DASHBOARD_PERM.read,
+    input: listMembersInput,
+    output: returnsOf(listMembersOp),
+  },
+  'dashboard/remove-member': {
+    summary: 'Remove a member from the team',
+    permission: DASHBOARD_PERM.manageMembers,
+    input: removeMemberInput,
+    output: returnsOf(removeMemberOp),
+  },
+  'dashboard/leave-self': {
+    summary: 'Leave the team',
+    permission: DASHBOARD_PERM.read,
+    output: returnsOf(leaveSelfOp),
+  },
+  'dashboard/delete-team': {
+    summary: 'Delete the team, listing the members to remove',
+    permission: DASHBOARD_PERM.manageMembers,
+    output: returnsOf(deleteTeamOp),
+  },
+  'dashboard/begin-connection': {
+    summary: 'Authorize starting a connection to a third-party provider',
+    permission: DASHBOARD_PERM.manageIntegrations,
+    input: beginConnectionInput,
+    output: returnsOf(beginConnectionOp),
+  },
+  'dashboard/mint-connect-link': {
+    summary: 'Mint a one-time link for connecting a provider to an app',
+    permission: DASHBOARD_PERM.manageIntegrations,
+    input: mintConnectLinkInput,
+    output: returnsOf(mintConnectLinkOp),
+  },
+  'dashboard/consume-connect-link': {
+    summary: 'Use up a connect link',
+    permission: DASHBOARD_PERM.manageIntegrations,
+    input: consumeConnectLinkInput,
+    output: returnsOf(consumeConnectLinkOp),
+  },
+  'dashboard/restore-connect-link': {
+    summary: 'Put back a connect link whose use did not complete',
+    permission: DASHBOARD_PERM.manageIntegrations,
+    input: restoreConnectLinkInput,
+    output: returnsOf(restoreConnectLinkOp),
+  },
+  'dashboard/revoke-connect-link': {
+    summary: 'Revoke an outstanding connect link',
+    permission: DASHBOARD_PERM.manageIntegrations,
+    input: revokeConnectLinkInput,
+    output: returnsOf(revokeConnectLinkOp),
+  },
+  'dashboard/list-connect-links': {
+    summary: 'List the outstanding connect links',
+    permission: DASHBOARD_PERM.manageIntegrations,
+    input: listConnectLinksInput,
+    output: returnsOf(listConnectLinksOp),
+  },
+});
+
 export const dashboardModule: ModuleRegistration = {
   manifest: dashboardManifest,
   migrations: dashboardMigrations,
-  // The dashboard predates declared operation surfaces and declares none yet, so there is no
-  // declaration to bind its handlers to or to parse their inputs with; each handler parses its own.
-  ...undeclaredOperations('the dashboard declares no operation surface; its handlers parse their own input', {
+  ...operationsFor(dashboardOperations)({
     'dashboard/provision-app': provisionAppOp,
     'dashboard/mark-app-active': markAppActiveOp,
     'dashboard/update-app': updateAppOp,
