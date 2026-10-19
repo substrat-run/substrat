@@ -87,6 +87,12 @@ What it holds:
 | `notifications_cadences` | a topic a person takes as a digest, per channel; no row is `immediate` | none: no personal data beyond the principal id |
 | `notifications_digest_items` | each rendered message held for a person's next digest, deleted when it is sent or withdrawn; `failed_at` marks a person whose digest failed; `quarantined_at` a row set aside as unreadable, which stays until it reads again or an erasure deletes it | deleted with the principal (K-46); their occasions' deliveries keep `digest`, as a cancelled send's keeps `requested` |
 
+A person reads their own history with `notifications/my-deliveries`, under `notifications:self`: the
+delivery list with their principal pinned in, no `principal` input, and a narrower row (no
+idempotency key, no send-intent id, and a `reason` only where the engine wrote it, on a
+`skipped` row). Digests show as they are: the occasion `skipped`/`digest`, settled once its
+digest is written, and the digest under `@digest`.
+
 A vertical composing it needs the `emailSender` grant: without it the platform refuses
 every send, and each delivery settles `refused` with reason `permission_denied`.
 
@@ -98,5 +104,4 @@ Not built, in the order a vertical is expected to ask for them:
 - channels beyond email;
 - tenant-edited and per-locale templates, a digest's own wording among them;
 - quiet hours, and a digest at a chosen time of day;
-- digest cadences other than daily;
-- a person's own delivery history.
+- digest cadences other than daily.

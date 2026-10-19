@@ -117,6 +117,7 @@ shapes.
 | `invoicing/get` | `invoicing:read` | the scope | `@substrat-run/engine-invoicing` |
 | `invoicing/list` | `invoicing:read` | the scope | `@substrat-run/engine-invoicing` |
 | `notifications/list-deliveries` | `notifications:read` | the scope | `@substrat-run/engine-notifications` |
+| `notifications/my-deliveries` | `notifications:self` | the scope | `@substrat-run/engine-notifications` |
 | `notifications/my-preferences` | `notifications:self` | the scope | `@substrat-run/engine-notifications` |
 | `notifications/send-digests` | `notifications:send-digests` | the scope | `@substrat-run/engine-notifications` |
 | `notifications/set-my-address` | `notifications:self` | the scope | `@substrat-run/engine-notifications` |

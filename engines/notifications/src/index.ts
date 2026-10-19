@@ -170,7 +170,7 @@ export const notificationsManifest = moduleManifest.parse({
   version: '0.0.2',
   kernelContract: '^0.0.1',
   permissions: [
-    { key: 'notifications:self', description: 'Set where your own notifications go and which topics reach you' },
+    { key: 'notifications:self', description: 'Set where your own notifications go and which topics reach you, and read what became of them' },
     { key: 'notifications:read', description: 'Read what became of every notification in the scope' },
     {
       key: 'notifications:send-digests',

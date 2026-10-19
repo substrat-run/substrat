@@ -146,8 +146,7 @@ describe('engine-notifications — a person reads their own deliveries', () => {
   describe('what a row says', () => {
     it('carries what became of it and what it was about, and not the caller’s key or the platform’s intent', async () => {
       const [outcome] = await send(assigned([me.principal], { dedupeKey: 'evt-1' }));
-      const [{ id: intent }] = await intentsOf(h);
-      await settleEmail(h, 'email.sent', intent!, { about: ORDER });
+      await settleEmail(h, 'email.sent', outcome!.request!, { about: ORDER });
 
       const { entries } = await mine();
       expect(entries).toEqual([

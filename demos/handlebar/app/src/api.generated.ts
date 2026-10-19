@@ -479,6 +479,15 @@ export interface HandlebarClient {
   notificationsListDeliveries(input: { status?: "requested" | "skipped" | "sent" | "refused" | "dead_lettered"; topic?: string; principal?: string }): Promise<Paged<NotificationDelivery>>;
 
   /**
+   * What became of each notification sent to the caller, newest first
+   *
+   * `GET /me/notifications/deliveries` — `notifications/my-deliveries`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   */
+  notificationsMyDeliveries(input: { status?: "requested" | "skipped" | "sent" | "refused" | "dead_lettered"; topic?: string }): Promise<Paged<({ id: string; topic: string; channel: string; status: "requested" | "skipped" | "sent" | "refused" | "dead_lettered"; reason: string | null; about_type: string | null; about_id: string | null; created_at: string; settled_at: string | null })>>;
+
+  /**
    * The caller's notification address and every topic's switch
    *
    * `GET /me/notifications` — `notifications/my-preferences`
@@ -717,6 +726,8 @@ export function createClient(options: ClientOptions = {}): HandlebarClient {
       page("/invoicing", "GET", undefined, input),
     notificationsListDeliveries: (input: Args) =>
       page("/notifications/deliveries", "GET", undefined, input),
+    notificationsMyDeliveries: (input: Args) =>
+      page("/me/notifications/deliveries", "GET", undefined, input),
     notificationsMyPreferences: (input: Args) =>
       send("/me/notifications", "GET", undefined, input),
     notificationsSetMyAddress: (input: Args) =>
