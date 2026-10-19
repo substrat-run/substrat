@@ -20,3 +20,24 @@ export function tenantPlane(host: ControlPlaneApiOptions['host'], actor: Platfor
     tenantTokenSecret: TENANT_TOKEN_SECRET,
   });
 }
+
+interface ServiceBinding {
+  fetch(url: string | URL | Request, init?: RequestInit): Promise<Response>;
+}
+
+/**
+ * The real plane's answers, with `rewrite` applied to the JSON body of every successful answer
+ * whose path `match` accepts (#2401): a plane newer than the dashboard, or one answering outside a
+ * route's declaration. The write behind the answer really happens; only the answer is rewritten.
+ */
+export function rewrittenPlane(svc: unknown, match: (path: string) => boolean, rewrite: (body: unknown) => unknown): ServiceBinding {
+  const plain = svc as ServiceBinding;
+  return {
+    fetch: async (url, init) => {
+      const res = await plain.fetch(url, init);
+      const json = res.headers.get('content-type')?.includes('json') ?? false;
+      if (!res.ok || !json || !match(new URL(String(url)).pathname)) return res;
+      return Response.json(rewrite(await res.json()), { status: res.status });
+    },
+  };
+}

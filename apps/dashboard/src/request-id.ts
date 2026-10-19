@@ -2,7 +2,7 @@ import type { Context, MiddlewareHandler } from 'hono';
 import { REQUEST_ID_HEADER, errorCodeOf } from '@substrat-run/contracts';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import { ulid } from '@substrat-run/kernel';
-import { requestIdOf } from '@substrat-run/vertical-host';
+import { RouteOutputMismatch, requestIdOf } from '@substrat-run/vertical-host';
 
 /**
  * #2192: every answer the dashboard worker gives carries an id a person can quote.
@@ -41,9 +41,10 @@ export function dashboardRequestId(): MiddlewareHandler {
  * and much of it is not ours: a `ControlPlaneError`'s is the plane's problem detail, which a
  * handler may rethrow inside an `HTTPException`, and no pattern can promise that a detail
  * holds no token or personal data. So the line carries the error's class name, the declared
- * code (from the error catalog, by `errorCodeOf` or the plane's `problemCode`), and the
- * plane's status when the plane was the failure. The message stays in the response the
- * caller already holds, where the id now leads to this line.
+ * code (from the error catalog, by `errorCodeOf` or the plane's `problemCode`), the
+ * plane's status when the plane was the failure, and, when a declared route answered outside
+ * its output, the route and the issue paths. The message stays in the response the caller
+ * already holds, where the id now leads to this line.
  */
 function logFailedRequest(c: Context, requestId: string): void {
   console.error(
@@ -61,13 +62,26 @@ function logFailedRequest(c: Context, requestId: string): void {
 /** A class name is code's, unless something assigned `name`: then it is just `Error`. */
 const ERROR_NAME = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
 
-function failureOf(err: unknown): { errorName?: string; errorCode?: string; upstreamStatus?: number } {
+function failureOf(err: unknown): {
+  errorName?: string;
+  errorCode?: string;
+  upstreamStatus?: number;
+  route?: string;
+  outputPaths?: readonly string[];
+} {
   if (err === undefined) return {};
   const errorName = err instanceof Error && ERROR_NAME.test(err.name) ? err.name : 'Error';
   // The plane's failure, thrown as itself or carried as the cause of what a handler rethrew.
   const plane = [err, err instanceof Error ? err.cause : undefined].find((e) => e instanceof ControlPlaneError);
   const errorCode = errorCodeOf(err) ?? plane?.problemCode;
-  return { errorName, ...(errorCode ? { errorCode } : {}), ...(plane ? { upstreamStatus: plane.status } : {}) };
+  return {
+    errorName,
+    ...(errorCode ? { errorCode } : {}),
+    ...(plane ? { upstreamStatus: plane.status } : {}),
+    // #2401: a declared route answered outside its output. The caller got a bare 500; the route and
+    // the issue paths (field names, never a value) are what an operator needs to find the drift.
+    ...(err instanceof RouteOutputMismatch ? { route: err.route, outputPaths: err.issuePaths } : {}),
+  };
 }
 
 /** A response body carrying this request's id, so a caller who saw only the body can quote it. */

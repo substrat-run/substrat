@@ -32,12 +32,17 @@ const MOCK_DOMAINS: DomainRow[] = [
   },
 ];
 
-const STATUS: Record<DomainRow['status'], { kind: 'success' | 'warning' | 'danger' | 'neutral'; label: string; pulse?: boolean }> = {
+type StatusPill = { kind: 'success' | 'warning' | 'danger' | 'neutral'; label: string; pulse?: boolean };
+
+const STATUS: Record<string, StatusPill | undefined> = {
   active: { kind: 'success', label: 'Active' },
   verifying: { kind: 'warning', label: 'Verifying', pulse: true },
   pending: { kind: 'warning', label: 'Pending verification', pulse: true },
   failed: { kind: 'danger', label: 'Verification failed' },
 };
+
+/** The plane owns the set (#2401): a status this page does not know is shown as the plane named it. */
+const statusPill = (status: string): StatusPill => STATUS[status] ?? { kind: 'neutral', label: status };
 
 /** Domains — account level (screens 1o, 1p). Custom hostnames across the team's apps. */
 export function Domains({ teamId }: { teamId: string }) {
@@ -196,7 +201,7 @@ function DomainRowView({
   onRemove: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const s = STATUS[d.status];
+  const s = statusPill(d.status);
   const hasRecords = d.validationRecords.length > 0 && d.status !== 'active';
   return (
     <div style={{ borderBottom: last ? 'none' : '1px solid var(--border-subtle)' }}>
@@ -283,8 +288,11 @@ export function DnsRecords({ records }: { records: DnsRecord[] }) {
   );
 }
 
+/** The DNS record type to create for each kind the plane names; one this page does not know is shown as the plane named it. */
+const RECORD_TYPE: Record<string, string | undefined> = { hostname: 'CNAME', txt: 'TXT' };
+
 function RecordRow({ r }: { r: DnsRecord }) {
-  const type = r.type === 'hostname' ? 'CNAME' : 'TXT';
+  const type = RECORD_TYPE[r.type] ?? r.type;
   return (
     <>
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{type}</span>

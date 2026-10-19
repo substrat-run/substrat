@@ -37,13 +37,15 @@ import type { FindingsClient } from '../lib/mock-findings';
  * refusal, because the role the page guessed from may be a reload behind the answer.
  */
 
-const SEVERITY: Record<FindingEntry['severity'], 'danger' | 'warning' | 'info'> = {
+// The plane owns severity and kind (#2401): one this page does not know is shown as the plane named it.
+const SEVERITY: Record<string, 'danger' | 'warning' | 'info' | undefined> = {
   critical: 'danger',
   warning: 'warning',
   info: 'info',
 };
 
-const KIND_LABEL: Record<FindingEntry['kind'], string> = { invariant: 'Invariant', drift: 'Drift', recurring: 'Recurring' };
+const KIND_LABEL: Record<string, string | undefined> = { invariant: 'Invariant', drift: 'Drift', recurring: 'Recurring' };
+const kindLabel = (kind: string) => KIND_LABEL[kind] ?? kind;
 
 type Load =
   | { state: 'loading' }
@@ -311,10 +313,10 @@ function FindingRow({
     >
       <div style={{ flex: 1, minWidth: 0, display: 'grid', gap: 4 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <Badge status={SEVERITY[f.severity]}>{f.severity}</Badge>
+          <Badge status={SEVERITY[f.severity] ?? 'neutral'}>{f.severity}</Badge>
           <span style={{ fontSize: 14, fontWeight: 550, color: 'var(--text-primary)' }}>{f.title}</span>
           {f.regressed && <Badge status="warning" dot={false}>Regressed</Badge>}
-          <Badge status="neutral" dot={false}>{KIND_LABEL[f.kind]}</Badge>
+          <Badge status="neutral" dot={false}>{kindLabel(f.kind)}</Badge>
         </div>
         <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
           {f.count.toLocaleString('en-US')} {f.count === 1 ? 'occurrence' : 'occurrences'} · first seen {relativeTime(f.firstSeen)} · last seen {relativeTime(f.lastSeen)}
@@ -322,7 +324,7 @@ function FindingRow({
         </div>
         {f.likelyCause && (
           <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-            Likely cause: deploy <span style={{ fontFamily: 'var(--font-mono)' }}>{f.likelyCause.version}</span> — {f.likelyCause.reason}
+            Likely cause: {f.likelyCause.kind} <span style={{ fontFamily: 'var(--font-mono)' }}>{f.likelyCause.version}</span> — {f.likelyCause.reason}
           </div>
         )}
         {f.status === 'suppressed' && f.ruleId && (
@@ -392,9 +394,9 @@ function SuppressDialog({
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <Select
           label="Kind"
-          options={[{ value: '', label: 'Any kind' }, { value: finding.kind, label: KIND_LABEL[finding.kind] }]}
+          options={[{ value: '', label: 'Any kind' }, { value: finding.kind, label: kindLabel(finding.kind) }]}
           value={draft.kind}
-          onChange={(e) => set({ kind: e.target.value as SuppressDraft['kind'] })}
+          onChange={(e) => set({ kind: e.target.value })}
         />
         <Select
           label="Operation"

@@ -206,7 +206,8 @@ export interface TenantNarrowedControlPlaneOptions {
 /** One hostname binding as the CP returns it (a subset of contracts' HostnameBinding). */
 /** A DNS record a tenant must publish for a custom domain (contracts' dnsRecord). */
 export interface DnsRecordRow {
-  type: 'hostname' | 'txt';
+  /** The plane's (known: hostname, txt); a newer plane may name another (#2401). */
+  type: string;
   name: string;
   value: string;
   status: string | null;

@@ -1389,7 +1389,8 @@ export interface AppAuthUpdateResult {
 
 /** A DNS record the tenant must publish for a custom domain (§4.7). */
 export interface DnsRecord {
-  type: 'hostname' | 'txt';
+  /** The plane's (known: hostname, txt); a newer plane may name another (#2401). */
+  type: string;
   name: string;
   value: string;
   status?: string | null;
@@ -1402,7 +1403,8 @@ export interface DomainRow {
   /** The app (vertical install) this domain fronts. */
   app: string;
   surface: string;
-  status: 'pending' | 'verifying' | 'active' | 'failed';
+  /** The plane's (known: pending, verifying, active, failed); a newer plane may name another (#2401). */
+  status: string;
   statusNote: string | null;
   /** Canonical for its (scope, surface) — the "primary" tag. */
   primary: boolean;
@@ -1414,7 +1416,8 @@ export interface DomainRow {
 /** The raw binding a bind/verify returns (`POST /api/teams/:teamId/domains`, `/verify`). */
 export interface HostnameBinding {
   hostname: string;
-  status: 'pending' | 'verifying' | 'active' | 'failed';
+  /** As on `DomainRow`. */
+  status: string;
   statusNote?: string | null;
   validationRecords?: DnsRecord[];
 }

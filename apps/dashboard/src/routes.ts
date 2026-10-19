@@ -24,12 +24,13 @@ import {
   channelName,
   defineRoutes,
   dnsRecord,
-  hostnameStatus,
   LIST_PAGE_MAX,
   opsFailureEntry,
   FINDINGS_LIMIT_MAX,
   findingEntry,
+  findingEvidence,
   findingKind,
+  findingLikelyCause,
   findingRuleEntry,
   findingRuleInput,
   findingStatus,
@@ -54,6 +55,71 @@ const pageInput = {
 /** `{ entries, nextCursor }` — null once the keyset walk is over (contracts `pagination.ts`). */
 const pageOutput = <T extends z.ZodTypeAny>(entry: T) =>
   z.object({ entries: z.array(entry), nextCursor: z.string().nullable() });
+
+/*
+ * VERSION SKEW (#2170, #2401). The control plane ships separately from the dashboard, so a plane
+ * newer than this dashboard can answer a value this dashboard's contracts do not know. A route
+ * parses its output on the way out, and a parse that fails is an error the caller sees — for a
+ * WRITE, after the write happened (a domain bound, a preview created, a finding resolved, reported
+ * as a failure). So the schemas below for values the PLANE decides are forward-compatible:
+ *
+ * - an enum the plane owns is a `string` here, its known values documented, and reaches the page
+ *   as the plane said it (`hostnameStatusOut`, `adminLogRow`, `findingRow`, `previewAuthOut`);
+ * - a block the dashboard only forwards to a human who must read it, and whose absence already
+ *   means "cannot show you this" (a registry, a migration diff, a version's origin, a finding's
+ *   evidence), falls back to `null` on a value it cannot parse. For the promote review that is the
+ *   safe direction: the dialog treats `null` as "cannot diff, ask for an acknowledgement", never
+ *   as "no change";
+ * - a block whose absence would mean "nothing to worry about" (`exportBreaks`: whom the promotion
+ *   breaks) is never nulled; it is declared loosely (plain strings, no enums or id formats) so it
+ *   always reaches the dialog as the plane named it.
+ */
+
+/**
+ * A plane-owned block that reads as `null` ("cannot show") when this dashboard cannot parse it,
+ * and says so in the log (`dashboard.output-drift`, the field and the issue paths only).
+ */
+const orNull = <T extends z.ZodType>(schema: T, field: string) =>
+  schema.nullable().catch((ctx) => {
+    logOutputDrift(field, ctx.error.issues);
+    return null;
+  });
+
+/** Where a custom domain's issuance stands. The plane owns the set (known: pending, verifying, active, failed — contracts `hostnameStatus`). */
+const hostnameStatusOut = z.string();
+
+/** A DNS record to publish (contracts `dnsRecord`). Its `type` is the plane's (known: hostname, txt). */
+const dnsRecordOut = dnsRecord.extend({ type: z.string() });
+
+/**
+ * One admin-log row (contracts `adminLogEntry`). The plane owns `action` (known: contracts
+ * `adminAction`) and an audited change's `outcome` (known: pending, applied, refused, failed,
+ * unknown, conflicting); an action this dashboard does not know is listed as the plane named it.
+ */
+export const adminLogRow = adminLogEntry.extend({
+  action: z.string(),
+  audited: adminLogEntry.shape.audited.unwrap().extend({ outcome: z.string() }).optional(),
+});
+
+/**
+ * One finding (contracts `findingEntry`). The plane owns `kind` (known: invariant, drift,
+ * recurring), `status` (known: open, acked, resolved, suppressed), `severity` (known: info,
+ * warning, critical), `resolution` (known: verdict, stale), each of `codes` (known: contracts
+ * `errorCode`) and a likely cause's `kind` (known: deploy). `evidence` names where the occurrences
+ * are read: one this dashboard cannot follow reads as `null`.
+ */
+export const findingRow = findingEntry.extend({
+  kind: z.string(),
+  status: z.string(),
+  severity: z.string(),
+  resolution: z.string().nullable(),
+  codes: z.array(z.string()),
+  evidence: orNull(findingEvidence, 'findings.evidence'),
+  likelyCause: findingLikelyCause.extend({ kind: z.string() }).nullable(),
+});
+
+/** A suppress rule (contracts `findingRuleEntry`). Its `kind` and `code` are the plane's, as on a finding. */
+export const findingRuleRow = findingRuleEntry.extend({ kind: z.string().nullable(), code: z.string().nullable() });
 
 /** One installed app, as the Apps list shows it. */
 export const appRow = z.object({
@@ -112,21 +178,21 @@ export const domainRow = z.object({
   /** The app (vertical install) this domain fronts. */
   app: z.string(),
   surface: z.string(),
-  status: hostnameStatus,
+  status: hostnameStatusOut,
   statusNote: z.string().nullable(),
   /** Canonical for its (scope, surface) — the "primary" tag. */
   primary: z.boolean(),
   createdAt: z.string(),
   /** DNS records to publish while it is not yet active. */
-  validationRecords: z.array(dnsRecord),
+  validationRecords: z.array(dnsRecordOut),
 });
 
 /** What binding or re-polling a custom domain answers: where issuance stands and what to publish. */
-export const domainBinding = z.object({
+const domainBinding = z.object({
   hostname: z.string(),
-  status: hostnameStatus,
+  status: hostnameStatusOut,
   statusNote: z.string().nullable().optional(),
-  validationRecords: z.array(dnsRecord).optional(),
+  validationRecords: z.array(dnsRecordOut).optional(),
 });
 
 /** One hostname bound to an app's scope (an app's Domains tab). */
@@ -139,7 +205,7 @@ export const appHostnameRow = z.object({
   canonical: z.boolean(),
   createdAt: z.string().nullable(),
   /** DNS records to publish for a custom domain; empty for a platform mint. */
-  validationRecords: z.array(dnsRecord),
+  validationRecords: z.array(dnsRecordOut),
 });
 
 /**
@@ -169,33 +235,6 @@ const sentInvite = z.object({ invitationId: z.string(), acceptUrl: z.string(), e
 
 /** A surface the app's vertical declares it serves — the Domains tab's picker. */
 const declaredSurface = z.object({ name: z.string(), label: z.string() });
-
-/*
- * VERSION SKEW (#2170). The control plane ships separately from the dashboard, so a plane newer
- * than this dashboard can answer a value this dashboard's contracts do not know. A route parses
- * its output on the way out, and a parse that fails is an error the caller sees — for a WRITE,
- * after the write happened (a preview created, reported as a failure). So the schemas below for
- * values the PLANE decides are forward-compatible:
- *
- * - an enum the plane owns is a `string` here, its known values documented (`previewAuthOut`);
- * - a block the dashboard only forwards to a human who must read it, and whose absence already
- *   means "cannot show you this" (a registry, a migration diff, a version's origin), falls back
- *   to `null` on a value it cannot parse. For the promote review that is the safe direction: the
- *   dialog treats `null` as "cannot diff, ask for an acknowledgement", never as "no change";
- * - a block whose absence would mean "nothing to worry about" (`exportBreaks`: whom the promotion
- *   breaks) is never nulled; it is declared loosely (plain strings, no enums or id formats) so it
- *   always reaches the dialog as the plane named it.
- */
-
-/**
- * A plane-owned block that reads as `null` ("cannot show") when this dashboard cannot parse it,
- * and says so in the log (`dashboard.output-drift`, the field and the issue paths only).
- */
-const orNull = <T extends z.ZodType>(schema: T, field: string) =>
-  schema.nullable().catch((ctx) => {
-    logOutputDrift(field, ctx.error.issues);
-    return null;
-  });
 
 /** A preview's login status. The plane owns the set (known: wired, unregistered, ambiguous, unknown, superseded, not-applicable); a newer one reaches the panel as the plane said it. */
 const previewAuthOut = previewAuth.extend({ status: z.string() });
@@ -459,14 +498,14 @@ export const dashboardRoutes = defineRoutes({
   'dashboard/list-app-audit': {
     summary: "One page of the control-plane admin log for one of this team's apps, newest first",
     input: z.object({ scopeId: z.string().min(1), ...pageInput }),
-    output: pageOutput(adminLogEntry),
+    output: pageOutput(adminLogRow),
     http: { method: 'GET', path: '/apps/{scopeId}/audit' },
   },
   'dashboard/list-team-audit': {
     summary: "One page of this team's whole admin log, or one app's with `scopeId`, newest first",
     // An empty `scopeId` is no narrowing — the whole log, as the cookie route reads it.
     input: z.object({ scopeId: z.string().optional(), ...pageInput }),
-    output: pageOutput(adminLogEntry),
+    output: pageOutput(adminLogRow),
     http: { method: 'GET', path: '/audit' },
   },
 
@@ -789,36 +828,32 @@ export const dashboardRoutes = defineRoutes({
     // `available: false` is a plane that predates findings — said as such, never as an empty inbox.
     // `nextCursor` is null when the walk is over. `cut` is true only when a control plane that
     // predates paging returned a full page it cannot continue: the list may be longer than shown.
-    output: z.object({ available: z.boolean(), entries: z.array(findingEntry), nextCursor: z.string().nullable(), cut: z.boolean() }),
+    output: z.object({ available: z.boolean(), entries: z.array(findingRow), nextCursor: z.string().nullable(), cut: z.boolean() }),
     http: { method: 'GET', path: '/findings' },
   },
   'dashboard/set-finding-status': {
     summary: "Acknowledge, resolve or reopen one of this team's findings",
     input: z.object({ id: z.string().min(1), status: findingStatusInput }),
-    output: findingEntry,
+    output: findingRow,
     http: { method: 'PUT', path: '/findings/{id}/status' },
   },
   'dashboard/list-finding-rules': {
     summary: "This team's suppress rules; `active` keeps the unexpired ones",
     input: z.object({ active: z.boolean().optional() }),
-    output: z.object({ entries: z.array(findingRuleEntry) }),
+    output: z.object({ entries: z.array(findingRuleRow) }),
     http: { method: 'GET', path: '/findings/rules' },
   },
   'dashboard/create-finding-rule': {
     summary: 'Suppress with a rule: a scope plus an expiry, audited by the plane',
     input: findingRuleInput,
-    output: z.object({ rule: findingRuleEntry, suppressed: z.number().int().nonnegative() }),
+    output: z.object({ rule: findingRuleRow, suppressed: z.number().int().nonnegative() }),
     http: { method: 'POST', path: '/findings/rules' },
     status: 201,
   },
   'dashboard/revoke-finding-rule': {
     summary: 'End a suppress rule now',
     input: z.object({ ruleId: z.string().min(1) }),
-    output: findingRuleEntry,
+    output: findingRuleRow,
     http: { method: 'DELETE', path: '/findings/rules/{ruleId}' },
   },
 });
-
-// Re-exported so the generated client names them (`substrat.client.schemas`) instead of
-// inlining each one at every method that returns it.
-export { adminLogEntry, findingEntry, findingRuleEntry };

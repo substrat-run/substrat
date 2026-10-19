@@ -1,5 +1,5 @@
 import { ApiError } from './api.generated';
-import type { FindingEntry, FindingRuleEntry } from './api.generated';
+import type { DashboardClient, FindingEntry, FindingRuleEntry } from './api.generated';
 
 /**
  * The Findings inbox's logic (#1748), kept out of the view so the rules a reader would
@@ -7,8 +7,16 @@ import type { FindingEntry, FindingRuleEntry } from './api.generated';
  * allows, what a suppress rule is built from — are one place and can be asserted on.
  */
 
-export type FindingStatus = FindingEntry['status'];
-export type FindingCode = FindingEntry['codes'][number];
+/**
+ * The statuses the inbox has a tab for. The plane owns the set and may add one this page does not
+ * know (#2401): a finding in it belongs to no tab, and offers no move.
+ */
+export type FindingStatus = 'open' | 'acked' | 'resolved' | 'suppressed';
+
+type RuleInput = Parameters<DashboardClient['createFindingRule']>[0];
+/** What a rule may name. A finding's own kind or code is the plane's word; one this dashboard's input does not accept is refused (400) and the dialog says so. */
+type RuleKind = NonNullable<RuleInput['kind']>;
+export type FindingCode = NonNullable<RuleInput['code']>;
 
 /** The inbox's tabs, in the order the design gives them. A tab is a status. */
 export const FINDING_TABS: { value: FindingStatus; label: string }[] = [
@@ -57,8 +65,12 @@ export function countIsExact(cursors: FindingCursors, tab: FindingStatus): boole
 
 export function countByStatus(entries: readonly FindingEntry[]): Record<FindingStatus, number> {
   const counts: Record<FindingStatus, number> = { open: 0, acked: 0, resolved: 0, suppressed: 0 };
-  for (const e of entries) counts[e.status] += 1;
+  for (const e of entries) if (isTab(e.status)) counts[e.status] += 1;
   return counts;
+}
+
+function isTab(status: string): status is FindingStatus {
+  return FINDING_TABS.some((t) => t.value === status);
 }
 
 /** The tab's findings, most recently seen first (the plane's own order, `id` breaking a tie as it does). */
@@ -70,9 +82,10 @@ export type FindingMove = 'acked' | 'resolved' | 'open';
 
 /**
  * The moves a finding in `status` offers. A suppressed finding offers none: it is held by a
- * rule, and the way out is revoking the rule — the plane refuses a status change on it.
+ * rule, and the way out is revoking the rule — the plane refuses a status change on it. Nor does
+ * one in a status this page does not know: what moves out of it is the plane's to say.
  */
-export function movesFrom(status: FindingStatus): { to: FindingMove; label: string }[] {
+export function movesFrom(status: string): { to: FindingMove; label: string }[] {
   switch (status) {
     case 'open':
       return [{ to: 'acked', label: 'Acknowledge' }, { to: 'resolved', label: 'Resolve' }];
@@ -80,13 +93,13 @@ export function movesFrom(status: FindingStatus): { to: FindingMove; label: stri
       return [{ to: 'resolved', label: 'Resolve' }, { to: 'open', label: 'Reopen' }];
     case 'resolved':
       return [{ to: 'open', label: 'Reopen' }];
-    case 'suppressed':
+    default:
       return [];
   }
 }
 
 /** Whether a finding can be suppressed by hand: only one not already held or settled. */
-export function canSuppress(status: FindingStatus): boolean {
+export function canSuppress(status: string): boolean {
   return status === 'open' || status === 'acked';
 }
 
@@ -99,7 +112,7 @@ export const EXPIRY_CHOICES = [
 /** What the dialog collects. `''` is "any" for the three scope dimensions. */
 export interface SuppressDraft {
   /** The finding's kind, or `''` for a rule over every kind. */
-  kind: '' | FindingEntry['kind'];
+  kind: string;
   operation: string;
   code: string;
   subject: string;
@@ -128,7 +141,7 @@ export function draftReady(d: SuppressDraft): boolean {
 export function ruleInput(d: SuppressDraft, now: number) {
   const days = EXPIRY_CHOICES.find((c) => c.value === d.days)?.days ?? 7;
   return {
-    ...(d.kind ? { kind: d.kind } : {}),
+    ...(d.kind ? { kind: d.kind as RuleKind } : {}),
     ...(d.operation ? { operation: d.operation } : {}),
     ...(d.code ? { code: d.code as FindingCode } : {}),
     ...(d.subject ? { subject: d.subject } : {}),

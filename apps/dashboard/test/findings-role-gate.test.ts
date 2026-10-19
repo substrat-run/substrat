@@ -6,7 +6,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
-import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
+import { rewrittenPlane, SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 
 /**
  * The Findings routes ask WHO inside the team is calling (#1748).
@@ -265,6 +265,65 @@ describe('the findings routes ask the caller’s permission (#1748)', () => {
     expect((await myFinding()).status).toBe('suppressed');
     expect((await asRole('member', 'DELETE', `/api/teams/${tenant}/findings/rules/${created.id}`)).status).toBe(200);
     expect((await host.admin.listFindingRules(staff, tenant, { active: true }))).toEqual([]);
+  });
+
+  /**
+   * #2401: the plane owns a finding's kind, status, severity, resolution, codes, evidence and likely
+   * cause, and a rule's kind and code. A newer plane names ones this dashboard does not know: a read
+   * answers them as the plane named them, and a write that happened answers its own success status.
+   */
+  describe('a plane newer than this dashboard', () => {
+    const FUTURE = { kind: 'anomaly', status: 'snoozed', severity: 'urgent', resolution: 'merged', codes: ['teapot'], likelyCause: { kind: 'config', version: 'v9', reason: 'a setting changed' } };
+    const FUTURE_RULE = { kind: 'anomaly', code: 'teapot' };
+    /** Every finding and rule the plane answers, in a vocabulary from a newer plane. */
+    const fromTheFuture = (v: unknown): unknown => {
+      if (Array.isArray(v)) return v.map(fromTheFuture);
+      if (v === null || typeof v !== 'object') return v;
+      const o = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fromTheFuture(x)]));
+      if ('severity' in o && 'subject' in o) return { ...o, ...FUTURE, evidence: { source: 'traces', traceId: 'trace-from-the-future' } };
+      if ('expiresAt' in o && 'createdBy' in o) return { ...o, ...FUTURE_RULE };
+      return o;
+    };
+    let warned: string[];
+
+    beforeEach(() => {
+      env.CONTROL_PLANE_SVC = rewrittenPlane(env.CONTROL_PLANE_SVC, (p) => /\/findings|\/finding-rules/.test(p), fromTheFuture);
+      warned = [];
+      vi.spyOn(console, 'warn').mockImplementation((line: unknown) => void warned.push(String(line)));
+    });
+    afterEach(() => vi.restoreAllMocks());
+
+    it('the inbox lists them as the plane named them; evidence it cannot follow reads as null, said once in the log', async () => {
+      const res = await asRole('viewer', 'GET', `/api/teams/${tenant}/findings`);
+      expect(res.status, await res.clone().text()).toBe(200);
+      const body = (await res.json()) as { entries: unknown[] };
+      expect(body.entries).toEqual([expect.objectContaining({ ...FUTURE, operation: 'deploy.mine', evidence: null })]);
+      expect(warned.map((l) => JSON.parse(l) as unknown)).toEqual([{ event: 'dashboard.output-drift', field: 'findings.evidence', paths: [expect.any(String)] }]);
+      expect(warned.join('\n')).not.toMatch(/traces|trace-from-the-future/);
+    });
+
+    it('a verdict that happened answers 200, in the status the plane named', async () => {
+      const f = await myFinding();
+      const res = await asRole('member', 'PUT', `/api/teams/${tenant}/findings/${f.id}/status`, { status: 'resolved' });
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(await res.json()).toMatchObject({ id: f.id, status: 'snoozed', kind: 'anomaly' });
+      expect((await myFinding()).status).toBe('resolved');
+    });
+
+    it('suppress rules: create answers 201 for the rule it made, list and revoke 200, with the kind and code the plane named', async () => {
+      const created = await asRole('member', 'POST', `/api/teams/${tenant}/findings/rules`, rule());
+      expect(created.status, await created.clone().text()).toBe(201);
+      const { rule: made } = (await created.json()) as { rule: { id: string } };
+      expect(made).toMatchObject(FUTURE_RULE);
+      expect((await myFinding()).status).toBe('suppressed');
+      const listed = await asRole('viewer', 'GET', `/api/teams/${tenant}/findings/rules`);
+      expect(listed.status, await listed.clone().text()).toBe(200);
+      expect(await listed.json()).toEqual({ entries: [expect.objectContaining({ id: made.id, ...FUTURE_RULE })] });
+      const revoked = await asRole('member', 'DELETE', `/api/teams/${tenant}/findings/rules/${made.id}`);
+      expect(revoked.status, await revoked.clone().text()).toBe(200);
+      expect(await revoked.json()).toMatchObject({ id: made.id, ...FUTURE_RULE });
+      expect(await host.admin.listFindingRules(staff, tenant, { active: true })).toEqual([]);
+    });
   });
 
   /**

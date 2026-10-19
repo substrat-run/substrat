@@ -80,6 +80,14 @@ describe('findings, pure', () => {
     expect([canSuppress('open'), canSuppress('acked'), canSuppress('resolved'), canSuppress('suppressed')]).toEqual([true, true, false, false]);
   });
 
+  it('#2401: a status from a newer plane, which the inbox has no tab for, is counted in none and offers no move', () => {
+    const later = finding({ id: 'z', status: 'snoozed' });
+    expect(countByStatus([finding({ id: 'a' }), later])).toEqual({ open: 1, acked: 0, resolved: 0, suppressed: 0 });
+    expect(inTab([later], 'open')).toEqual([]);
+    expect(movesFrom('snoozed')).toEqual([]);
+    expect(canSuppress('snoozed')).toBe(false);
+  });
+
   it('builds the rule body from the set dimensions only, expiring at the chosen distance', () => {
     const d = { ...draftFor(finding({})), code: 'conflict', days: '7', reason: ' known retry storm ' };
     expect(draftReady(d)).toBe(true);
@@ -222,6 +230,38 @@ describe('Findings view', () => {
     const tabs = [...host.querySelectorAll('button')].map((b) => b.textContent);
     expect(tabs.some((t) => t?.startsWith('Open'))).toBe(true);
     expect(tabs.some((t) => t?.startsWith('Suppressed'))).toBe(true);
+  });
+
+  it('#2401: shows a kind, severity, code and likely cause from a newer plane as the plane named them', async () => {
+    const newer = finding({
+      id: 'n',
+      title: 'from a newer plane',
+      kind: 'anomaly',
+      severity: 'urgent',
+      codes: ['teapot'],
+      evidence: null,
+      likelyCause: { kind: 'config', version: 'v9', reason: 'a setting changed' },
+    });
+    await mount(fake([newer]));
+    const r = row('n');
+    expect(r.textContent).toContain('anomaly');
+    expect(r.textContent).toContain('urgent');
+    expect(r.textContent).toContain('teapot');
+    expect(r.textContent).toContain('Likely cause: config v9');
+    // Its status is one the inbox knows, so its moves are drawn as for any other.
+    expect(button('Acknowledge', r)).toBeTruthy();
+    await click(button('Suppress…', r));
+    const kinds = [...document.body.querySelectorAll('label')].find((l) => l.textContent?.startsWith('Kind'))?.querySelector('select');
+    expect([...kinds!.options].map((o) => o.textContent)).toEqual(['Any kind', 'anomaly']);
+  });
+
+  it('#2401: a verdict the plane answers in a status the inbox has no tab for leaves the tab, and is no error', async () => {
+    const client = fake(entries);
+    client.setFindingStatus = async (input) => ({ ...entries.find((e) => e.id === input.id)!, status: 'snoozed' });
+    await mount(client);
+    await click(button('Acknowledge', row('o')));
+    expect(host.textContent).not.toContain('open one');
+    expect(host.querySelector('[role="alert"]')).toBeNull();
   });
 
   it('asks the parent to switch tab, and renders the one it is given', async () => {
