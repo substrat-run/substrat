@@ -1,5 +1,14 @@
 # @substrat-run/engine-assistant
 
+## 0.1.4
+
+### Patch Changes
+
+- 482e9b7: A manifest's permission declaration may say `holder: 'system'`: the key is reserved to a system principal, and `lint:permissions` refuses it in any role a person can hold and in any entity grant shape. Additive: a declaration without it means what it meant before, anyone may hold the key. `engine-assistant` declares it on `assistant:run`, which replaces the table of reserved keys the permission checkpoint used to keep. A vertical built from its model reserves a key of its own through `manifestOperations`, whose `permissions` now also take `{ description, holder: 'system' }`.
+- Updated dependencies [482e9b7]
+  - @substrat-run/contracts@0.152.0
+  - @substrat-run/kernel@0.152.0
+
 ## 0.1.3
 
 ### Patch Changes
