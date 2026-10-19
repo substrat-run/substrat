@@ -183,7 +183,7 @@ import {
 import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
-import { connectionGrantsForScope, transferScope, type StagedDump, type VerticalClient } from './vertical-client.js';
+import { beginTransfer, connectionGrantsForScope, transferScope, type StagedDump, type TransferredScope, type VerticalClient } from './vertical-client.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
 import type { ScopeStoreEnsurerOptions, StoreCanaryTarget } from './store-script.js';
@@ -3707,6 +3707,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     versionId: string,
     opts: { dropServingRef?: boolean } = {},
   ): Promise<Carried | null> => {
+    const move = await carryBegin(c, scope, versionId, opts);
+    if (!move) return null;
+    // #2450: a page at a time into the destination's stage, so a scope of any size moves. The
+    // stage moves neither the destination's load stamp nor its write revision, so the marker
+    // `carryFinish` reads next still describes the store the restore commits into.
+    return carryWith(c, scope, versionId, move, () =>
+      transferScope(move.source, move.dest, { from: scope.id }, { retry: retryTransient }));
+  };
+
+  /** The two ends a carry moves between, resolved and checked (`carryOntoVersion`), or null when nothing moves. */
+  const carryEnds = async (
+    c: ReqCtx,
+    scope: Scope,
+    versionId: string,
+    opts: { dropServingRef?: boolean } = {},
+  ): Promise<{ source: VerticalClient; dest: VerticalClient; from: string; to: string } | null> => {
     const resolveVersion = options.resolveVerticalVersion;
     if (!scope.vertical) return null;
     const actor = c.get('actor');
@@ -3742,6 +3758,38 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           `so the version was not bound (#1710)`,
       );
     }
+    return { source, dest, from, to };
+  };
+
+  /**
+   * A carry's move, recorded (#2450): what `carryBegin` ledgered, and what `carryFinish` needs to
+   * finish it, from this request or (a copy too large for one) a later one after a job moved it.
+   */
+  type CarryMove = {
+    moveId: string;
+    erasureEpoch: number;
+    from: string;
+    to: string;
+    source: VerticalClient;
+    dest: VerticalClient;
+    restoredStamp: string;
+    /** Epoch ms the move's lease was last recorded or renewed at: its restore fence counts from here. */
+    leasedAt: number;
+    /** The scope's binding and pin as the carry read them; the restore is refused if either moved. */
+    expected: { versionId: string | null; servingRef: string | null };
+  };
+
+  /** `carryOntoVersion`'s checks and its ledger entries, up to the copy (#2450): null when nothing moves. */
+  const carryBegin = async (
+    c: ReqCtx,
+    scope: Scope,
+    versionId: string,
+    opts: { dropServingRef?: boolean } = {},
+  ): Promise<CarryMove | null> => {
+    const ends = await carryEnds(c, scope, versionId, opts);
+    if (!ends) return null;
+    const { source, dest, from, to } = ends;
+    const actor = c.get('actor');
     // Before exporting or restoring anything, retain the script identity in the directory, so a
     // failed carry stays named for reap and erasure. Both entries are leased to this move: if this
     // request dies, a sweep settles them once the lease runs out, and the move can then no longer
@@ -3759,12 +3807,55 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await c.var.admin.recordScopeScriptCopy(actor, scope.tenantId, scope.id, to, moveId,
         { role: 'destination', loadStamp: restoredStamp, leaseMs: copyLeaseMs });
       const erasureEpoch = await c.var.admin.scopeErasureEpoch(actor, scope.tenantId, scope.id);
-      // #2450: a page at a time into the destination's stage, so a scope of any size moves. The
-      // stage moves neither the destination's load stamp nor its write revision, so the marker read
-      // next still describes the store the restore below commits into.
-      const { dump, loadStamp: sourceStamp, revision: sourceRevision, meta } = await transferScope(
-        source, dest, { from: scope.id }, { retry: retryTransient },
-      );
+      return {
+        moveId, erasureEpoch, from, to, source, dest, restoredStamp, leasedAt: recordedAt,
+        expected: { versionId: scope.verticalVersionId ?? null, servingRef: scope.servingRef ?? null },
+      };
+    } catch (error) {
+      await settleCarryRetained(c, scope, versionId, { moveId, from, to });
+      throw error;
+    }
+  };
+
+  /** Neither script of an unconfirmed move can be discarded: a retry or reap can still reach both. */
+  const settleCarryRetained = async (
+    c: ReqCtx, scope: Scope, versionId: string, move: { moveId: string; from: string; to: string },
+  ): Promise<void> => {
+    const actor = c.get('actor');
+    // A crash leaves them pending and blocks key finalization.
+    const settled = await Promise.allSettled([
+      c.var.admin.settleScopeScriptCopy(actor, scope.tenantId, scope.id, move.from, move.moveId, 'retained'),
+      c.var.admin.settleScopeScriptCopy(actor, scope.tenantId, scope.id, move.to, move.moveId, 'retained'),
+    ]);
+    for (const result of settled) {
+      if (result.status === 'rejected') recordCarryCleanup(c, scope, versionId, 'copy-ledger', result.reason);
+    }
+  };
+
+  /**
+   * Finish a carry whose data `transfer` moves (#2450): the copy, then the #1722 checks and the
+   * restore. Any failure settles both ends retained.
+   */
+  const carryWith = async (
+    c: ReqCtx,
+    scope: Scope,
+    versionId: string,
+    move: CarryMove,
+    transfer: () => Promise<TransferredScope>,
+  ): Promise<Carried> => {
+    try {
+      return await carryFinish(c, scope, move, await transfer());
+    } catch (error) {
+      await settleCarryRetained(c, scope, versionId, move);
+      throw error;
+    }
+  };
+
+  const carryFinish = async (c: ReqCtx, scope: Scope, move: CarryMove, transferred: TransferredScope): Promise<Carried> => {
+    const actor = c.get('actor');
+    const { moveId, erasureEpoch, from, to, source, dest, restoredStamp } = move;
+    const { dump, loadStamp: sourceStamp, revision: sourceRevision, meta } = transferred;
+    {
       // What the destination holds now, read before the binding is checked again. The restore
       // sends it back and is refused if the store moved since: another carry into the same script
       // loaded it, or it went live under another carry's bind and took a write. That is a CI retry
@@ -3773,8 +3864,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const now = await c.var.admin.getScopeRecord(actor, scope.tenantId, scope.id);
       if (
         !now ||
-        (now.verticalVersionId ?? null) !== (scope.verticalVersionId ?? null) ||
-        (now.servingRef ?? null) !== (scope.servingRef ?? null)
+        (now.verticalVersionId ?? null) !== move.expected.versionId ||
+        (now.servingRef ?? null) !== move.expected.servingRef
       ) {
         throw new ControlPlaneError(
           412,
@@ -3795,7 +3886,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         loadStamp: restoredStamp,
         ...(destMarker === 'unfenced' ? {} : { expect: destMarker }),
         // The store refuses this load once the move's lease can have run out (#1722).
-        fence: copyRestoreFence(moveId, recordedAt, copyLeaseMs, erasureEpoch),
+        fence: copyRestoreFence(moveId, move.leasedAt, copyLeaseMs, erasureEpoch),
       });
       return {
         moveId,
@@ -3810,17 +3901,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         sourceRevision,
         restoredStamp,
       };
-    } catch (error) {
-      // Neither script can be discarded based on this unconfirmed move. A retry or reap
-      // can still reach both. A crash leaves them pending and blocks key finalization.
-      const settled = await Promise.allSettled([
-        c.var.admin.settleScopeScriptCopy(actor, scope.tenantId, scope.id, from, moveId, 'retained'),
-        c.var.admin.settleScopeScriptCopy(actor, scope.tenantId, scope.id, to, moveId, 'retained'),
-      ]);
-      for (const result of settled) {
-        if (result.status === 'rejected') recordCarryCleanup(c, scope, versionId, 'copy-ledger', result.reason);
-      }
-      throw error;
     }
   };
 
