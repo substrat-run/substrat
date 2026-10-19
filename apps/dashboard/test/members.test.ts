@@ -2,11 +2,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { orgId, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { orgId, platformActorId, principalId, scopeId, tenantId, type Page } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { MODULES, provisionDashboard, reconcileRoles, ensureRosterSeeded, type DashboardNode } from '../src/index.js';
 import type { DashboardMemberRow } from '../src/module.js';
+import { walkAll } from '../src/walk-all.js';
 import { b64url } from '../src/b64.js';
 import { registerDashboardMembership } from '../src/membership.js';
 import { GITHUB_STATE_PURPOSE, INVITE_TOKEN_PURPOSE, signClaim, verifyClaim } from '../src/signed-token.js';
@@ -55,16 +56,17 @@ describe('Dashboard teams — invite + accept', () => {
     return node;
   };
 
-  const members = async (node: DashboardNode): Promise<DashboardMemberRow[]> => {
-    const scope = await host.getScope(node.principal, node.tenantId, node.scopeId);
-    return scope.invoke<DashboardMemberRow[]>('dashboard/list-members', {});
-  };
+  const members = async (node: DashboardNode): Promise<DashboardMemberRow[]> =>
+    walkAll(await host.getScope(node.principal, node.tenantId, node.scopeId), 'dashboard/list-members');
 
   it('the list reads answer a call with no input at all, as they did before their inputs were declared', async () => {
     const acme = await makeTeam('acme', 'owner@acme.com');
     const scope = await host.getScope(acme.principal, acme.tenantId, acme.scopeId);
-    await expect(scope.invoke<DashboardMemberRow[]>('dashboard/list-members')).resolves.toHaveLength(1);
-    await expect(scope.invoke<unknown[]>('dashboard/list-apps')).resolves.toEqual([]);
+    // A paged read is handed an empty page request rather than nothing, so a bare call answers a first page.
+    const roster = await scope.invoke<Page<DashboardMemberRow>>('dashboard/list-members');
+    expect(roster.entries).toHaveLength(1);
+    expect(roster.nextCursor).toBeNull();
+    await expect(scope.invoke('dashboard/list-apps')).resolves.toEqual({ entries: [], nextCursor: null });
   });
 
   it('delete-team is owner-only: revokes the roster and returns the members to unlink', async () => {

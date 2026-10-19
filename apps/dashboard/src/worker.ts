@@ -23,16 +23,17 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { EdgeHealth, SweepRunEntry } from '@substrat-run/contracts';
-import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, promoteReviewReasonIn, substratError, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery, type PromotionReviewBinding } from '@substrat-run/contracts';
+import { importCursorAcknowledgementMissing, isPlatformRequest, isUndecodablePlatformRequest, memberInviteInput, memberRoleInput, importCursorMove, bindAcknowledgement, promoteReviewReasonIn, substratError, parsePlatformBaseDomains, OPERATION_SERIES_MAX_MOVES, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, connectLinkId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PlatformRequestEntry, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest, type RouteImpl, type ListPageQuery, type Page, type PromotionReviewBinding } from '@substrat-run/contracts';
 import { defineScopeDO, defineScopeSweeperDO, ControlPlaneDO, CloudflareScopeHost, SCOPE_SWEEPER_NAME, type ScopeSweeperDo } from '@substrat-run/adapter-cloudflare';
 import { effectVerdict, registerDashboardMembership } from './membership.js';
 import { globalFetch, ulid, type ExecutorOutcome, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { emailRefusalMessage, identifyEmail, mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type EmailIdentityEnv, type OidcEnv, type SessionUser } from '@substrat-run/oidc-rp';
-import { dashboardRoutes, type appEvent, type domainRow, type installAppInput, type installStep, type memberRow } from './routes.js';
+import { dashboardRoutes, type appEvent, type domainRow, type installAppInput, type memberRow } from './routes.js';
 import { mountRoutes } from '@substrat-run/vertical-host';
 import { dashboardRequestId, withRequestIdOf } from './request-id.js';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
+import { allApps, walkAll } from './walk-all.js';
 import { MODULES, permissions, ExportBreakRefused, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, sharedIssuerEntry, type AppAuthChoice } from './auth-wiring.js';
 import { appAuthChoiceBody } from './app-auth-body.js';
@@ -1036,7 +1037,7 @@ app.post('/api/teams/delete', async (c) => {
   // Deprovision every app — the same per-app path as deleting one by hand, so
   // shared-plane scopes archive and hostnames stop resolving. Best-effort per app:
   // one stuck app must not leave the rest running.
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   // Every app's issuer, resolved while the auth-servers are still among the apps (#1619).
   const issuers = await teamIssuersFor(host, cp, apps);
@@ -1071,7 +1072,8 @@ app.post('/api/teams/delete', async (c) => {
 /**
  * Every GET list below shares the platform-wide pagination convention (contracts
  * pagination.ts): `?limit&cursor` in (default 20), `{ entries, nextCursor }` out,
- * keyset on the list's own sort key. The module ops stay unbounded when unpaged.
+ * keyset on the list's own sort key. The module's list reads page the same way (#2426); a caller
+ * that needs every row walks them (`walkAll`).
  */
 const pageParams = (c: { req: { query(key: string): string | undefined } }) =>
   listPageQuery.parse({ limit: c.req.query('limit'), cursor: c.req.query('cursor') });
@@ -1281,7 +1283,8 @@ app.post('/api/invites/accept', async (c) => {
 /** The Apps list, healed and reconciled — behind the team-path list route (#2170). */
 async function listAppsPage(c: Context<{ Bindings: Env }>, host: CloudflareScopeHost, node: DashboardNode, page: ListPageQuery) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', { limit: page.limit, cursor: page.cursor })) as DashboardAppRow[];
+  const listed = await dash.invoke<Page<DashboardAppRow>>('dashboard/list-apps', { limit: page.limit, cursor: page.cursor });
+  const apps = listed.entries;
   // Self-heal the URL from the live directory: the hostname column is a snapshot
   // taken at install time, and an install whose bind was recorded late (or repaired
   // platform-side) leaves it null forever while the router happily serves the app.
@@ -1341,10 +1344,10 @@ async function listAppsPage(c: Context<{ Bindings: Env }>, host: CloudflareScope
   // existing installs take, since nothing registered them when they were made. Once per
   // isolate per TEAM, whoever loads the list, and retried by the next load until a pass
   // converges (`McpReconcileGate` says why a viewer may trigger it). After the response:
-  // the team's apps are walked UNPAGED, because an app's issuer can be on another page, and
+  // every page of the team's apps is walked, because an app's issuer can be on another page, and
   // a pass is several deliveries per app, which the Apps list must not wait on.
   const pass = mcpReconcile.run(node.tenantId, async () => {
-    const all = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+    const all = await allApps(dash);
     const slugs = await oidcProviderSlugsFor(host, cp);
     const outcomes = await reconcileMcpResources({
       apps: all,
@@ -1366,9 +1369,9 @@ async function listAppsPage(c: Context<{ Bindings: Env }>, host: CloudflareScope
   // Register the team's apps as PLACES at the team auth-servers they sign in with (#1670,
   // `places.ts`), so a login's places page on that issuer can list them. Its own gate: once per
   // isolate per team, again when this first page changed (a fresh install is at its top), and
-  // every few minutes otherwise. After the response, over the unpaged list, like the pass above.
+  // every few minutes otherwise. After the response, over every page, like the pass above.
   const placesPass = placesReconcile.run(node.tenantId, apps, async (sent) => {
-    const all = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+    const all = await allApps(dash);
     const slugs = await oidcProviderSlugsFor(host, cp);
     // `reconcilePlaces` logs a pass that left anything undone itself, skipped apps included.
     return reconcilePlaces({
@@ -1388,7 +1391,8 @@ async function listAppsPage(c: Context<{ Bindings: Env }>, host: CloudflareScope
       ),
     );
   }
-  return pageOf(apps, page.limit, (a) => a.id);
+  // The heals above patched the page's rows in place; its cursor is the module's.
+  return listed;
 }
 
 /**
@@ -1413,8 +1417,8 @@ app.get('/api/apps/:scopeId/steps', async (c) => {
 });
 
 async function installStepsOf(host: CloudflareScopeHost, node: DashboardNode, appScopeId: string) {
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  return (await dash.invoke('dashboard/install-steps', { appScopeId })) as z.infer<typeof installStep>[];
+  // Every page: the route answers the whole record, which is a handful of steps.
+  return walkAll(await host.getScope(node.principal, node.tenantId, node.scopeId), 'dashboard/install-steps', { appScopeId });
 }
 
 /**
@@ -1428,8 +1432,8 @@ async function installStepsOf(host: CloudflareScopeHost, node: DashboardNode, ap
 async function listDomainsIn({ c, host, node }: TeamContext, page: ListPageQuery) {
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  // Unpaged: names + default hostnames must cover EVERY app, whatever page of domains this is.
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  // Every page: names + default hostnames must cover EVERY app, whatever page of domains this is.
+  const apps = await allApps(dash);
   const appName = new Map(apps.map((a) => [a.app_scope_id, a.name]));
   // Each app's auto-managed default hostname — subtracted so the list shows only the
   // custom domains a tenant added on top (the platform mint is not a "domain" to manage).
@@ -1477,7 +1481,7 @@ async function addDomainIn(
 ) {
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   if (!apps.some((a) => a.app_scope_id === body.appScopeId)) {
     throw new HTTPException(404, { message: 'app not found' });
   }
@@ -1517,12 +1521,11 @@ app.get('/api/apps/:scopeId/events', async (c) => {
 
 async function appEventsPage(host: CloudflareScopeHost, node: DashboardNode, appScopeId: string, page: ListPageQuery) {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const events = (await dash.invoke('dashboard/app-events', {
+  return dash.invoke<Page<z.infer<typeof appEvent>>>('dashboard/app-events', {
     appScopeId,
     limit: page.limit,
     cursor: page.cursor,
-  })) as z.infer<typeof appEvent>[];
-  return pageOf(events, page.limit, (e) => e.id);
+  });
 }
 
 /**
@@ -1551,7 +1554,7 @@ app.get('/api/apps/:scopeId/audit', async (c) => {
 async function auditLogOf(c: Context<{ Bindings: Env }>, host: CloudflareScopeHost, node: DashboardNode, page: ListPageQuery, asked?: string) {
   if (!asked) return controlPlaneFor(c.env, node.tenantId, node.principal).auditLogPage({ limit: page.limit, cursor: page.cursor });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === asked);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   // After the lookup: a foreign scope id is a 404 whether or not a control plane is bound.
@@ -1589,7 +1592,7 @@ app.get('/api/apps/:scopeId/deployments', async (c) => {
   // tab always rendered); channels stay complete (~3). `nextCursor` walks older versions.
   const page = pageParams(c);
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -1631,7 +1634,7 @@ app.get('/api/apps/:scopeId/deployments/:versionId/assets', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -1657,7 +1660,7 @@ app.get('/api/apps/:scopeId/permissions', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -1708,7 +1711,7 @@ app.get('/api/apps/:scopeId/model', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const { appRow, scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const slug = appRow.vertical_slug;
@@ -1744,7 +1747,7 @@ app.get('/api/apps/:scopeId/processes', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const { appRow, scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const periodParam = c.req.query('period') ?? '7d';
@@ -1801,7 +1804,7 @@ app.get('/api/apps/:scopeId/release-comparison', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -1864,7 +1867,7 @@ app.get('/api/apps/:scopeId/schedules', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -1968,7 +1971,7 @@ app.get('/api/apps/:scopeId/peers', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -2035,7 +2038,7 @@ app.post('/api/apps/:scopeId/peers/switch', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   await assertMayManageApps(host, node);
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const body = peerSwitchRequest.parse(await c.req.json());
@@ -2051,7 +2054,7 @@ app.put('/api/apps/:scopeId/peers/binding', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   await assertMayManageApps(host, node);
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const body = z.object({ vertical: z.string().min(1), targetScopeId: scopeId.nullable() }).strict().parse(await c.req.json());
@@ -2070,7 +2073,7 @@ app.get('/api/apps/:scopeId/edges', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   // Focused on this app, so the plane asks nothing about the tenant's other edges. Filtered again
@@ -2093,7 +2096,7 @@ app.post('/api/apps/:scopeId/edges/move', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   await assertMayManageApps(host, node);
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const raw: unknown = await c.req.json().catch(() => ({}));
@@ -2109,7 +2112,7 @@ app.get('/api/apps/:scopeId/scopes', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -2166,7 +2169,7 @@ app.get('/api/apps/:scopeId/tables', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const tables = await cp.listScopeTables(scope);
@@ -2223,7 +2226,7 @@ app.get('/api/fleet-health', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   // The verdict carries the app's own name and vertical: the operator this view is
   // for runs one vertical for thirty clients, and a scope id does not tell them whose
   // app is broken.
@@ -2312,7 +2315,7 @@ app.get('/api/apps/:scopeId/facets', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(
@@ -2332,7 +2335,7 @@ app.get('/api/apps/:scopeId/history', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(
@@ -2358,7 +2361,7 @@ app.get('/api/apps/:scopeId/cause', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(
@@ -2382,7 +2385,7 @@ app.get('/api/apps/:scopeId/effects', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(
@@ -2402,7 +2405,7 @@ app.get('/api/apps/:scopeId/invocation', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(
@@ -2430,7 +2433,7 @@ app.get('/api/apps/:scopeId/denials', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   // The log compares `at` and `until` as ISO text, so only an ISO 8601 instant with a zone
   // is accepted, and it is forwarded in the log's own spelling (UTC, milliseconds): a
@@ -2456,7 +2459,7 @@ app.get('/api/apps/:scopeId/dead-letters', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(
@@ -2474,7 +2477,7 @@ app.get('/api/apps/:scopeId/tables/:table', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const input = readScopeTableInput.parse({
     table: c.req.param('table'),
@@ -2496,7 +2499,7 @@ app.post('/api/apps/:scopeId/query', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const input = queryScopeInput.parse(await c.req.json());
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -2518,7 +2521,7 @@ app.post('/api/apps/:scopeId/update', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   // `snapshot` = fork-before-promote (§4): snapshot the data first when the update
@@ -2553,7 +2556,7 @@ app.post('/api/apps/:scopeId/bind', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const body = z
@@ -2674,7 +2677,7 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -2845,7 +2848,7 @@ app.get('/api/apps/:scopeId/field-coverage', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -2868,7 +2871,7 @@ app.get('/api/apps/:scopeId/field-reads', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -2894,7 +2897,7 @@ app.get('/api/apps/:scopeId/migrations', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -2910,7 +2913,7 @@ app.get('/api/apps/:scopeId/bookmarks', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -2928,7 +2931,7 @@ app.post('/api/apps/:scopeId/rewind', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const body = z.object({ bookmark: z.string().min(1) }).parse(await c.req.json());
@@ -2948,7 +2951,7 @@ app.get('/api/apps/:scopeId/snapshots', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const snapshots = await listAppSnapshots(host, {
@@ -2964,7 +2967,7 @@ app.post('/api/apps/:scopeId/snapshots', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const body = z
@@ -2985,7 +2988,7 @@ app.delete('/api/apps/:scopeId/snapshots/:snapshotId', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   // The snapshot must be a fork OF THIS APP — a snapshot id belonging to another
@@ -3019,7 +3022,7 @@ app.get('/api/apps/:scopeId/export', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const dump = await exportAppData(host, {
@@ -3035,7 +3038,7 @@ app.post('/api/apps/:scopeId/restore', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   // The upload is a pulled export or a local `.dump.json`. Any tenantId/scopeId in the file
@@ -3069,7 +3072,7 @@ app.get('/api/apps/:scopeId/env', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   // The env-spec comes from the REGISTRY (a vertical declares it in its manifest; the
@@ -3085,7 +3088,7 @@ app.get('/api/apps/:scopeId/env', async (c) => {
     const remote = (await cp.listCatalog()).find((v) => v.slug === appRow.vertical_slug);
     spec = (remote?.envSpec as typeof spec) ?? [];
   }
-  const values = await dash.invoke('dashboard/list-app-env', { appScopeId: appRow.app_scope_id });
+  const values = await walkAll(dash, 'dashboard/list-app-env', { appScopeId: appRow.app_scope_id });
   return c.json({ spec, values });
 });
 
@@ -3094,7 +3097,7 @@ app.put('/api/apps/:scopeId/env', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const body = await c.req.json<{ entries?: Array<{ key: string; value: string; secret?: boolean }> }>();
@@ -3137,7 +3140,7 @@ app.delete('/api/apps/:scopeId/env/:key', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   await dash.invoke('dashboard/delete-app-env', { appScopeId: appRow.app_scope_id, key: c.req.param('key') });
@@ -3225,7 +3228,7 @@ app.get('/api/apps/:scopeId/integrations', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const required =
@@ -3264,7 +3267,7 @@ app.post('/api/apps/:scopeId/integrations/:provider', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const spec = PROVIDERS[c.req.param('provider')];
@@ -3319,7 +3322,7 @@ app.delete('/api/apps/:scopeId/integrations/:provider', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const spec = PROVIDERS[c.req.param('provider')];
@@ -3380,7 +3383,7 @@ async function inspectableConnection(
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const spec = PROVIDERS[c.req.param('provider') ?? ''];
@@ -3511,7 +3514,7 @@ app.get('/api/integrations', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const requiredBy = await requiredProvidersBySlug(host, c.env, node.tenantId, apps.map((a) => a.vertical_slug));
   const rows = await connectionsFor(c.env, node.tenantId, node.principal);
   // #1232: one bulk tenant-wide read for every row's strip — per-connection calls
@@ -3667,10 +3670,10 @@ function roundLinkRow(env: Env, round: ConnectRound): RoundLinkRow | null {
     ));
   return {
     check: async () => {
-      const rows = (await (await dash()).invoke('dashboard/list-connect-links', {
+      const rows = await walkAll(await dash(), 'dashboard/list-connect-links', {
         appScopeId: claim.appScopeId,
         provider: claim.provider,
-      })) as ConnectLinkRow[];
+      });
       return rows.some((r) => r.id === claim.linkId) ? null : 'unknown';
     },
     consume: async (account) => {
@@ -3699,7 +3702,7 @@ app.post('/api/apps/:scopeId/integrations/:provider/connect-links', async (c) =>
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const spec = PROVIDERS[c.req.param('provider')];
@@ -3739,16 +3742,16 @@ app.get('/api/apps/:scopeId/integrations/:provider/connect-links', async (c) => 
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const spec = PROVIDERS[c.req.param('provider')];
   if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
   await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
-  const rows = (await dash.invoke('dashboard/list-connect-links', {
+  const rows = await walkAll(dash, 'dashboard/list-connect-links', {
     appScopeId: appRow.app_scope_id,
     provider: spec.provider,
-  })) as ConnectLinkRow[];
+  });
   // The links the APP itself minted and mailed (connections.md §3.5.4) belong on this card
   // too: a tenant admin must be able to see and kill a link a bureau's staff sent out, and
   // they live in the platform's directory rather than here. Marked `source: 'app'`. A plane
@@ -3798,7 +3801,7 @@ app.delete('/api/apps/:scopeId/integrations/:provider/connect-links/:linkId', as
   // id from another app, or another tenant, is a 404 there as it is here.
   const appScope = scopeId.safeParse(c.req.param('scopeId'));
   const linkId = connectLinkId.safeParse(c.req.param('linkId'));
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   if (appScope.success && linkId.success && apps.some((a) => a.app_scope_id === appScope.data)) {
     if (await controlPlaneFor(c.env, node.tenantId, node.principal).revokeConnectLink(appScope.data, linkId.data)) {
       return c.body(null, 204);
@@ -4030,7 +4033,7 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
 /** One of the team's own apps by scope id, or the 404 every hostname route answers for one that is not. */
 async function ownAppRow({ host, node }: TeamContext, appScopeId: string): Promise<DashboardAppRow> {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   return appRow;
@@ -4140,7 +4143,7 @@ app.get('/api/apps/:scopeId/owner-seat', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(await cp.ownerSeat(scope));
@@ -4156,7 +4159,7 @@ app.post('/api/apps/:scopeId/owner-claim', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   return c.json(await cp.mintOwnerClaim(scope), 201);
@@ -4175,7 +4178,7 @@ async function appMembersTarget(c: Context<{ Bindings: Env }>) {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId') ?? '');
   return { scope, cp: controlPlaneFor(c.env, node.tenantId, node.principal) };
 }
@@ -4207,7 +4210,7 @@ app.get('/api/apps/:scopeId/auth', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const auth = await dash.invoke('dashboard/get-app-auth', { appScopeId: appRow.app_scope_id });
@@ -4235,7 +4238,7 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -4334,7 +4337,7 @@ async function installAppIn({ c, host, node }: TeamContext, body: z.infer<typeof
   let appAuth: AppAuthChoice | undefined;
   let installIssuers: TeamIssuer[] = [];
   if (body.auth) {
-    const apps = (await (await host.getScope(node.principal, node.tenantId, node.scopeId)).invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+    const apps = await allApps(await host.getScope(node.principal, node.tenantId, node.scopeId));
     const providers = body.auth.source === 'auth-server' ? await oidcProviderSlugsFor(host, cp) : new Set<string>();
     appAuth = resolveAuthChoice(body.auth, apps, providers);
     // The team's auth-servers, so an EXTERNAL pick whose URL is one of them is still
@@ -4363,7 +4366,7 @@ async function removeAppIn({ c, host, node }: TeamContext, id: string): Promise<
   // Resolve the app to its scope id + hostname from the team's OWN apps only — the
   // id is theirs or it does not exist to them (list-apps is tenant-scoped).
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.id === id);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -4393,7 +4396,7 @@ async function removeAppIn({ c, host, node }: TeamContext, id: string): Promise<
  */
 async function retryAppIn({ c, host, node }: TeamContext, failedScopeId: string): Promise<DashboardAppRow> {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === failedScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   if (appRow.status !== 'failed') throw new HTTPException(409, { message: 'only a failed app can be retried' });
@@ -4424,7 +4427,7 @@ async function retryAppIn({ c, host, node }: TeamContext, failedScopeId: string)
  */
 async function resumeAppIn({ c, host, node }: TeamContext, appScopeId: string): Promise<DashboardAppRow> {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === appScopeId);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   if (appRow.status !== 'provisioning') {
@@ -4552,7 +4555,7 @@ app.get('/api/apps/:scopeId/observability/metrics', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -4592,7 +4595,7 @@ app.get('/api/observability/tenant-metrics-series', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const scopeIds = seriesScopes(apps, c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? []);
   // No apps at all is an honest empty series, not a question for the plane.
   if (scopeIds.length === 0) return c.json([]);
@@ -4643,7 +4646,7 @@ app.get('/api/observability/business-volumes', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const scopeIds = seriesScopes(apps, c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? []);
   const hours = chartHours(c.req.query('hours'));
   let window: { since: string; until: string };
@@ -4712,7 +4715,7 @@ app.get('/api/observability/traffic', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const scopeIds = seriesScopes(apps, c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? []);
   const hours = chartHours(c.req.query('hours'));
   const window = chartWindow(c.req.query('since'), c.req.query('until'), hours);
@@ -4749,7 +4752,7 @@ app.get('/api/observability/app-metrics', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const scopeIds = apps.map((a) => a.app_scope_id);
   if (scopeIds.length === 0) return c.json(deriveAppMetrics({ rows: [], scopeIds, cap: TENANT_METRICS_LIMIT }));
   const hours = chartHours(c.req.query('hours'));
@@ -4768,7 +4771,7 @@ app.get('/api/apps/:scopeId/observability/logs', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
@@ -4822,7 +4825,7 @@ app.get('/api/apps/:scopeId/observability/requests/:kind', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const params = REQUEST_READ_KEYS.flatMap((k) => (c.req.queries(k) ?? []).map((v) => [k, v] as const));
@@ -4842,7 +4845,7 @@ app.get('/api/apps/:scopeId/observability/log-patterns', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const params = LOG_PATTERN_KEYS.flatMap((k) => (c.req.queries(k) ?? []).map((v) => [k, v] as const));
@@ -4886,7 +4889,7 @@ app.get('/api/apps/:scopeId/traffic', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const hours = chartHours(c.req.query('hours'));
@@ -4939,7 +4942,7 @@ app.get('/api/apps/:scopeId/failures', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const window = chartWindow(c.req.query('since'), c.req.query('until'), 24);
@@ -4982,7 +4985,7 @@ app.get('/api/apps/:scopeId/overlays', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const apps = await allApps(dash);
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const hours = chartHours(c.req.query('hours'));
@@ -5122,11 +5125,10 @@ function teamScope({ host, node }: TeamContext) {
  * envelope is the ONE list-read shape (contracts pagination.ts).
  */
 async function listMembersIn(ctx: TeamContext, page: ListPageQuery) {
-  const members = (await (await teamScope(ctx)).invoke('dashboard/list-members', {
+  return (await teamScope(ctx)).invoke<Page<z.input<typeof memberRow>>>('dashboard/list-members', {
     limit: page.limit,
     cursor: page.cursor,
-  })) as Array<z.input<typeof memberRow>>;
-  return pageOf(members, page.limit, (m) => m.id);
+  });
 }
 
 /** The signed-in person's display name, for the invite email's "from". The session was verified by `teamContext`. */

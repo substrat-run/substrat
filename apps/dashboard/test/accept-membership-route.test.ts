@@ -7,6 +7,7 @@ import { orgId, platformActorId, principalId, scopeId, tenantId, type OrgId, typ
 import { ulid, type HostAdmin, type ScopeHost } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 import { DASHBOARD_CP_ACTOR, registerDashboardMembership } from '../src/membership.js';
+import { walkAll } from '../src/walk-all.js';
 
 /**
  * `POST /api/invites/accept` once the membership executor effects the join (#1184), driven
@@ -170,12 +171,7 @@ async function accept(sub: string, email: string, token: string): Promise<Respon
 const principalOf = (t: Team, sub: string) => host.admin.resolveIdentity(t.tenant, PROVIDER, sub);
 
 const roster = async (t: Team) =>
-  (await (await host.getScope(t.owner, t.tenant, t.dashScope)).invoke('dashboard/list-members', {})) as {
-    id: string;
-    email: string;
-    status: string;
-    refusal?: string;
-  }[];
+  walkAll(await host.getScope(t.owner, t.tenant, t.dashScope), 'dashboard/list-members');
 
 /** The owner removes the roster row for `email` through the worker. */
 async function remove(t: Team, email: string): Promise<Response> {
