@@ -3027,7 +3027,6 @@ export const contractTestModules: ModuleRegistration[] = [
   // read. It consumes `perm.acted` and writes one row per delivery; nothing else
   // in the kit reads `imp_echo`, so it is inert for every other suite.
   impersonationEchoMod,
-  connectorMod,
   // #1184: the invite events the membership executor consumes. Inert for every other suite —
   // only `membershipExecutorContractSuite` grants its entitlement or mounts the executor.
   membershipFixtureMod,

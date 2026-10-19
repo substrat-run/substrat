@@ -1600,6 +1600,9 @@ export function defineScopeDO(
 
     private defineOperation(name: string, handler: OperationHandler<never, unknown>): void {
       if (this.withdrawn.has(name)) return; // withdrawn by another manifest — never binds
+      // The coordinator and the pure host refuse a repeat the same way (`bindOperation`): a second
+      // registration would otherwise replace the first without a word.
+      if (this.operations.has(name)) throw new Error(`operation already defined: ${name}`);
       this.operations.set(name, handler);
     }
 
