@@ -6,7 +6,8 @@ import { runningVersionStoresOf, scopeStoresOf } from '../src/index.js';
 /**
  * #2207: the control plane names a scope's stores from the version its deployment runs, by the
  * router's rule (`READ_ROUTE_SQL`): the vertical's serving version for a scope on the serving
- * pin, the bound version otherwise. Anything it cannot tell refuses once a driver is registered.
+ * pin, the bound version otherwise. Anything it cannot tell refuses once a driver is registered,
+ * unless no version of the vertical ever declared a store (#2394).
  */
 describe('scopeStoresOf (#2207)', () => {
   const actor = platformActorId.parse(ulid());
@@ -75,9 +76,11 @@ describe('scopeStoresOf (#2207)', () => {
     expect(await ask(admin({ bound: null }, null), { servingRef: null, verticalVersionId: 'bound' })).toEqual([]);
   });
 
+  // A running version that cannot be named or read, in a vertical a version of which declared a
+  // store (`older`, which no scope runs): that store may exist, so it refuses.
   for (const [what, a, scope] of [
-    ['no version at all', admin({}, null), { servingRef: null, verticalVersionId: null }],
-    ['a serving pin with nothing served', admin({}, null), { servingRef: 'stable', verticalVersionId: null }],
+    ['no version at all', admin({ older: manifest(GRAPH) }, null), { servingRef: null, verticalVersionId: null }],
+    ['a serving pin with nothing served', admin({ older: manifest(GRAPH) }, null), { servingRef: 'stable', verticalVersionId: null }],
     ['a vertical the registry does not know', admin({}, 'unknown-vertical'), { servingRef: 'stable', verticalVersionId: null }],
     ['a pin naming another script than the serving pointer', admin({ served: manifest(GRAPH) }, 'served'), { servingRef: 'older-script', verticalVersionId: null }],
     ['a manifest that does not read', admin({ bound: '{nope' }, null), { servingRef: null, verticalVersionId: 'bound' }],
@@ -88,6 +91,31 @@ describe('scopeStoresOf (#2207)', () => {
       expect(await ask(a, scope, [])).toEqual([]);
     });
   }
+
+  // The same running versions in a vertical no version of which declared a store (#2394): a store
+  // can exist only under a binding a version declared, so there is none to reach, and none is
+  // answered rather than refusing every lifecycle call of that vertical.
+  for (const [what, a, scope] of [
+    ['no version at all', admin({}, null), { servingRef: null, verticalVersionId: null }],
+    ['a serving pin with nothing served', admin({}, null), { servingRef: 'stable', verticalVersionId: null }],
+    ['a pin naming another script than the serving pointer', admin({ served: manifest([]) }, 'served'), { servingRef: 'older-script', verticalVersionId: null }],
+  ] as const) {
+    it(`${what}, in a vertical that never declared a store: none, with or without a driver registered`, async () => {
+      expect(await ask(a, scope)).toEqual([]);
+      expect(await runningVersionStoresOf(a, actor, { id, vertical: 'docs', ...scope }, registered)).toEqual([]);
+      expect(await ask(a, scope, [])).toEqual([]);
+    });
+  }
+
+  it('a version unknown whose vertical’s declarations cannot be read refuses (503): only a record that reads as empty says none', async () => {
+    const a = admin({ older: '{nope' }, null);
+    const scope = { servingRef: null, verticalVersionId: null };
+    const refusal = await ask(a, scope).then(() => undefined, (e: unknown) => e);
+    expect((refusal as { status?: number } | undefined)?.status).toBe(503);
+    // The running version's stores alone too: a restore judges a dump against them and nothing else.
+    const running = await runningVersionStoresOf(a, actor, { id, vertical: 'docs', ...scope }, registered).then(() => undefined, (e: unknown) => e);
+    expect((running as { status?: number } | undefined)?.status).toBe(503);
+  });
 
   it('the same binding declared as two drivers refuses (#2286)', async () => {
     const a = admin({

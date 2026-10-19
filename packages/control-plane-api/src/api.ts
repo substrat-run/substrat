@@ -417,7 +417,9 @@ export interface ControlPlaneApiOptions {
   platformScopeStores?: PlatformScopeStores;
   /**
    * The registered scope-store drivers (#2207) this control plane judges a scope's stores against
-   * (`mayHoldScopeStores`, #2242). `STORE_DRIVERS` unless a test registers one.
+   * (`mayHoldScopeStores`, #2242), and a push's declared drivers and both uploads' plans
+   * (`assertSandboxContract`, `verticalUploadBindings`). `STORE_DRIVERS` unless a test registers
+   * one: the hosted worker passes none, so the reviewed registry is the one it runs.
    */
   storeDrivers?: readonly StoreDriverRegistration[];
   /** #1722: how long a copy move owns its ledger entries, and so how long its restore may land
@@ -7982,6 +7984,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         bindings: verticalUploadBindings({
           vertical: slug,
           manifest,
+          drivers: options.storeDrivers,
           // #2349: the digest of the served version's stored migrations, which its scopes hold
           // the SQL they apply to.
           platformBindings: [
@@ -8327,7 +8330,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const manifest = deployManifest.parse(JSON.parse(raw));
 
     // §4 sandbox contract, before anything reaches the namespace.
-    assertSandboxContract(manifest);
+    assertSandboxContract(manifest, options.storeDrivers);
     // #2339: a push whose migration digest is not the one its migrations give is refused here,
     // before the upload, by the derivation `publishVersion` stores (and refuses with) again.
     await publishedMigrationDigest({
@@ -8546,6 +8549,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         bindings: verticalUploadBindings({
           vertical: slug,
           manifest,
+          drivers: options.storeDrivers,
           // #2349: the migrations this push declares, which are the ones the version stores.
           platformBindings: await migrationsDigestBindings(manifest.migrations ?? null),
         }),

@@ -161,10 +161,20 @@ describe('assertSandboxContract', () => {
     expectRefusal([{ type: 'ai', name: 'LLM' }], /binding 'LLM' \(type 'ai'\)/);
   });
 
-  it('refuses a scope store whose driver is not registered', () => {
+  it('refuses a scope store whose driver is not registered, and admits it against a registry holding that driver', () => {
+    const declaring = { ...manifest([]), scopeStores: [{ binding: 'GRAPH', driver: 'graph' as const }] };
+    // A test fixture, not a release: the digest and commit are placeholders.
+    const fixture: StoreDriverRegistration = {
+      driver: 'graph',
+      releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
+      className: 'Store',
+      operations: [],
+      platformOperations: [...RESERVED_STORE_OPERATIONS],
+    };
+    expect(() => assertSandboxContract(declaring, [fixture])).not.toThrow();
     let thrown: unknown;
     try {
-      assertSandboxContract({ ...manifest([]), scopeStores: [{ binding: 'GRAPH', driver: 'graph' }] });
+      assertSandboxContract(declaring);
     } catch (err) {
       thrown = err;
     }
@@ -250,10 +260,13 @@ describe('scope store upload plan (#2210)', () => {
     expect(scopeStoreUploadPlan({ vertical: 'acme/crm', stores, drivers: [driver('1.0.0')] }).bindings).toEqual([]);
   });
 
-  it('an upload refuses a declared driver that is not registered, which is every driver today', () => {
+  it('an upload refuses a declared driver the registry does not hold, which is every driver today, and admits a registered one', () => {
     expect(() =>
       verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: stores }, platformBindings: [] }),
     ).toThrow(/not registered/);
+    expect(
+      verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: stores }, platformBindings: [], drivers: [driver('1.0.0')] }).map((b) => b.name),
+    ).toEqual([]);
     expect(verticalUploadBindings({ vertical: 'acme/crm', manifest: { bindings: [], scopeStores: [] }, platformBindings: [] })).toEqual([]);
   });
 
@@ -278,6 +291,9 @@ describe('scope store upload plan (#2210)', () => {
   it('refuses a driver that is not registered', () => {
     expect(() =>
       scopeStoreUploadPlan({ vertical: 'acme/crm', stores: [{ binding: 'GRAPH', driver: 'graph' }] }),
+    ).toThrow(/not registered/);
+    expect(() =>
+      scopeStoreUploadPlan({ vertical: 'acme/crm', stores: [{ binding: 'GRAPH', driver: 'graph' }], drivers: [] }),
     ).toThrow(/not registered/);
   });
 });

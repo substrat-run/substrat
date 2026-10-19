@@ -709,16 +709,12 @@ describe('subject erasure (#37)', () => {
       expect((await host.admin.getScopeRecord(staff, t, scoped))?.status).toBe('archived');
     });
 
-    it('a version that cannot be told refuses once a driver is registered, and proceeds while none is', async () => {
-      // A scope with a vertical and neither a serving pin nor a bound version: nothing says
-      // what it runs. With no driver registered no store can exist, as before stores.
-      await host.admin.registerVertical(staff, { slug: 'unserved', name: 'unserved', source: 'cli' });
-      const scoped = scopeId.parse(ulid());
-      await host.provisionScope(staff, { tenantId: t, scopeId: scoped, vertical: 'unserved' });
-      await host.admin.activateScope(staff, t, scoped);
-      const record = await host.admin.getScopeRecord(staff, t, scoped);
-      expect(record?.servingRef ?? null).toBeNull();
-      expect(record?.verticalVersionId ?? null).toBeNull();
+    it('a version that cannot be told refuses once a driver is registered, where its vertical declared a store, and proceeds while none is', async () => {
+      // An install of `served`, whose version declares GRAPH, pinned to a script that is not the
+      // serving one: nothing says what it runs, and its vertical's store may hold data. With no
+      // driver registered no store can exist, as before stores.
+      const scoped = await install();
+      await host.admin.setScopeServingRef(staff, t, scoped, `${SERVED}-elsewhere`);
       const backup = (drivers: readonly unknown[]) =>
         api(recording(fresh()), drivers).request(`/tenants/${t}/scopes/${scoped}/backups`, { method: 'POST', headers: auth });
       expect((await backup([graphDriver])).status).toBe(503);
@@ -728,6 +724,27 @@ describe('subject erasure (#37)', () => {
       expect(shred.status).toBe(503);
       const marks = await host.admin.listShreddedSubjects(staff, t, scoped);
       expect(marks.subjects).not.toContain(who);
+    });
+
+    it('a version that cannot be told, in a vertical that never declared a store, proceeds with a driver registered (#2394)', async () => {
+      // A scope with a vertical and neither a serving pin nor a bound version, of a vertical with
+      // no version at all: no store of it can exist, so nothing is asked and the erasure lands.
+      await host.admin.registerVertical(staff, { slug: 'unserved', name: 'unserved', source: 'cli' });
+      const scoped = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t, scopeId: scoped, vertical: 'unserved' });
+      await host.admin.activateScope(staff, t, scoped);
+      const record = await host.admin.getScopeRecord(staff, t, scoped);
+      expect(record?.servingRef ?? null).toBeNull();
+      expect(record?.verticalVersionId ?? null).toBeNull();
+      const calls = fresh();
+      const backup = await api(recording(calls), [graphDriver]).request(`/tenants/${t}/scopes/${scoped}/backups`, { method: 'POST', headers: auth });
+      expect(backup.status).toBeLessThan(300);
+      const who = ulid();
+      const shred = await api(recording(calls), [graphDriver]).request(`/tenants/${t}/scopes/${scoped}/subjects/${who}/shred`, { method: 'POST', headers: auth });
+      expect(shred.status, await shred.clone().text()).toBe(200);
+      expect(calls).toEqual(fresh());
+      const marks = await host.admin.listShreddedSubjects(staff, t, scoped);
+      expect(marks.subjects).toContain(who);
     });
 
     it("refuses an undeclared dump store before the destination's own data is touched", async () => {

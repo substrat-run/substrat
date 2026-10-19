@@ -153,10 +153,27 @@ describe('a scope store is declared by binding and driver (#2208)', () => {
     );
   });
 
-  it('refuses graph while no driver is registered', () => {
+  it('refuses graph while no driver is registered, naming the reason', () => {
     const stores = [{ binding: 'GRAPH', driver: 'graph' as const }];
-    expect(() => assertScopeStoresRegistered(stores)).toThrow(/not registered/);
-    expect(() => assertDeclaredScopeStores({ scopeStores: stores })).toThrow(/not registered/);
+    expect(STORE_DRIVERS).toEqual([]);
+    const reason = "deploy refused: scope store 'GRAPH' declares driver 'graph', which is not registered.";
+    expect(() => assertScopeStoresRegistered(stores)).toThrow(reason);
+    expect(() => assertDeclaredScopeStores({ scopeStores: stores })).toThrow(reason);
+  });
+
+  it('judges against the registry a caller passes: a test fixture holding graph admits it', () => {
+    const stores = [{ binding: 'GRAPH', driver: 'graph' as const }];
+    // A test fixture, not a release: the digest and commit are placeholders.
+    const fixture: StoreDriverRegistration = {
+      driver: 'graph',
+      releases: [{ sha256: 'a'.repeat(64), sourceCommit: 'b'.repeat(40), schema: 0 }],
+      className: 'Store',
+      operations: [],
+      platformOperations: [...RESERVED_STORE_OPERATIONS],
+    };
+    expect(() => assertScopeStoresRegistered(stores, [fixture])).not.toThrow();
+    expect(() => assertDeclaredScopeStores({ scopeStores: stores, drivers: [fixture] })).not.toThrow();
+    expect(() => assertDeclaredScopeStores({ scopeStores: stores, drivers: [] })).toThrow(/not registered/);
   });
 
   it('refuses a registration that does not answer substrat.erase', () => {
@@ -361,6 +378,7 @@ describe('mayHoldScopeStores / scopeStoresDeclaredIn (#2242)', () => {
     expect(STORE_DRIVERS).toEqual([]);
     for (const json of [declaring, manifest(), null, undefined, '{not json']) {
       expect(mayHoldScopeStores(json)).toBe(false);
+      expect(mayHoldScopeStores(json, [])).toBe(false);
     }
   });
 

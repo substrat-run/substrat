@@ -166,13 +166,19 @@ export async function unrouteScope(
  * The gate is `mayHoldScopeStores`: with no driver registered nothing can hold a store, and the
  * answer is none. Otherwise a version that cannot be named, a manifest that cannot be read, or one
  * the gate says may hold a store without naming it refuses (503), rather than let a backup, a
- * wipe, a replay or an erasure skip a store that may hold data.
+ * wipe, a replay or an erasure skip a store that may hold data — where a store can exist (#2394).
+ * One can exist only under a binding some version of the scope's vertical declared: the router
+ * reaches a store only through a version row's manifest (`READ_ROUTE_SQL`), and `publishVersion`
+ * records that row's bindings in the same transaction (`HostAdmin.verticalScopeStores`). So when
+ * that record says the vertical has declared none, the answer is none; when it cannot be read, the
+ * refusal stands. A bind or promote that lands after the read is the erasure fence's to refuse,
+ * as it is for a version that declares none.
  *
  * `running` is a resolution the caller already holds (`runningVersionOf`), so a caller that fences
  * on the version reads it once and judges the stores against the same read.
  */
 export async function runningVersionStoresOf(
-  admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest'>,
+  admin: Pick<HostAdmin, 'verticalServing' | 'versionManifest' | 'verticalScopeStores'>,
   actor: PlatformActorId,
   scope: Pick<Scope, 'id' | 'vertical' | 'verticalVersionId' | 'servingRef'>,
   drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS,
@@ -186,7 +192,21 @@ export async function runningVersionStoresOf(
   if (!mayHoldScopeStores(manifestJson, drivers)) return [];
   const declared = typeof manifestJson === 'string' && scopeStoresDeclaredIn(manifestJson) ? declaredStoresOf(manifestJson) : [];
   if (declared.length > 0) return declared;
+  if ((await storesDeclaredBy(admin, actor, scope.vertical)).length === 0) return [];
   throw new ControlPlaneError(503, `scope ${scope.id} may hold scope stores, and the version it runs cannot say which`);
+}
+
+/** Every binding any version of `vertical` declared (#2286); a record that cannot be read refuses (503). */
+async function storesDeclaredBy(
+  admin: Pick<HostAdmin, 'verticalScopeStores'>,
+  actor: PlatformActorId,
+  vertical: string,
+): Promise<readonly DeclaredScopeStore[]> {
+  try {
+    return await admin.verticalScopeStores(actor, vertical);
+  } catch {
+    throw new ControlPlaneError(503, `the scope stores '${vertical}' has declared could not be read`);
+  }
 }
 
 /**
@@ -209,12 +229,7 @@ export async function scopeStoreReachOf(
 ): Promise<{ running: DeclaredScopeStore[]; all: DeclaredScopeStore[] }> {
   const current = await runningVersionStoresOf(admin, actor, scope, drivers, running);
   if (!scope.vertical || !mayHoldScopeStores(undefined, drivers)) return { running: current, all: current };
-  let declared: readonly DeclaredScopeStore[];
-  try {
-    declared = await admin.verticalScopeStores(actor, scope.vertical);
-  } catch {
-    throw new ControlPlaneError(503, `the scope stores '${scope.vertical}' has declared could not be read`);
-  }
+  const declared = await storesDeclaredBy(admin, actor, scope.vertical);
   const all = new Map(declared.map((store) => [store.binding, store.driver]));
   for (const store of current) {
     const driver = all.get(store.binding);

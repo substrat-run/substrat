@@ -207,7 +207,7 @@ export interface ScopeStoreUploadPlan {
  * Which store scripts a vertical's stores need (#2210). One script per (driver, vertical), shared
  * by every binding of that driver, named by {@link scopeStoreScriptName}, which carries no release:
  * a new release of the driver is uploaded into the same name. A driver that is not in `drivers` is
- * refused. The default registry is empty. The upload itself is `createScopeStoreEnsurer`.
+ * refused. The default registry is {@link STORE_DRIVERS}. The upload itself is `createScopeStoreEnsurer`.
  */
 export function scopeStoreUploadPlan(input: {
   readonly vertical: string;
@@ -300,13 +300,14 @@ export async function migrationsDigestBindings(
  * stops applying. (The kernel seam is `provisionTenantStore`/`openTenantStore`; on Cloudflare
  * the platform mints a live D1 per tenant and attaches it to the serving script — #301 PR-2.)
  */
-export function assertSandboxContract(m: DeployManifest): void {
+export function assertSandboxContract(m: DeployManifest, drivers: readonly StoreDriverRegistration[] = STORE_DRIVERS): void {
   // The same derivation push applies (#2224): an own DO binding is an own store.
   assertDeclaredScopeStores({
     ...storeNamesOfBindings(m.bindings),
     tenantStores: m.tenantStores,
     blobStores: m.blobStores,
     scopeStores: m.scopeStores,
+    drivers,
   });
   const own = new Set(m.doClasses);
   const admissible = new Set<string>(ADMISSIBLE_BINDING_TYPES);

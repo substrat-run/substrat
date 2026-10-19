@@ -257,7 +257,12 @@ sweep's wipe and storage gauge. The router gives an unknown scope no store, so i
 `mayHoldScopeStores` is the gate. With no driver registered, nothing can hold a store and
 every path proceeds as before. Once a driver is registered, an unknown version or an
 unreadable manifest makes the operation refuse with 503 rather than skip a store that may
-hold data. A hosted control plane with no route to the store scripts refuses the same way.
+hold data, where a version of the scope's vertical has declared a store (#2394). A store
+exists only under a binding some version declared: the router reaches one only through a
+version row's manifest, and publish records that row's bindings in the same transaction
+(`verticalScopeStores`). So a vertical whose record reads as empty holds no store, and the
+path proceeds; a record that cannot be read refuses. A hosted control plane with no route
+to the store scripts refuses the same way.
 
 A store dump is opaque to the platform, so a copy can bring an erased subject's rows
 back. After a restore, and after a snapshot copy, the platform runs `substrat.erase`
@@ -300,7 +305,8 @@ unreadable, so an empty answer from the stores is a claim that nothing is held, 
 platform does not make that claim when it cannot tell (#2242). Erasure fails closed:
 
 - A scope that may hold a store has its stores erased. "May" means its version's manifest
-  declares a store, or the version cannot be named, or its manifest cannot be read. The
+  declares a store, or the version cannot be named, or its manifest cannot be read, and in
+  those last two a version of its vertical has declared a store (#2394). The
   version is the one the router reads (above): the serving pointer's when the scope is pinned
   to the vertical's current serving script, the bound version when it has no pin, and
   unknown otherwise.
@@ -766,7 +772,7 @@ Each rule is one assertion a test can make. The follow-up issues cite these ids.
 | (g) A dump binding the destination does not declare, or declares as another driver, refuses the restore ahead of `host.restoreScope` | `refuseUndeclaredDumpStores` |
 | (h) The snapshot route reports its erasure replay | `storeReplayFields` |
 | (i) One resolver names a scope's stores, the rule of §8: the serving version when the scope is pinned to its vertical's current serving script, the bound version when it has no pin, and unknown otherwise. Backup, full pull, the full tenant export, snapshot, reap, restore, the import check, shred and the sweeper all use it | `scopeStoresOf` |
-| (j) Every store path fails closed once a driver is registered: a version that cannot be named, a manifest that cannot be read, or a hosted control plane with no route to the store scripts refuses with 503, and the reap keeps the scope. The sweeper's wipe and meter go through the same resolver | `scopeStoresOf`, `unreachablePlatformScopeStores`, `wipeDeclaredScopeStores`, `declaredStoreSizes` |
+| (j) Every store path fails closed once a driver is registered: a version that cannot be named, a manifest that cannot be read (both where a version of the vertical declared a store, #2394), or a hosted control plane with no route to the store scripts refuses with 503, and the reap keeps the scope. The sweeper's wipe and meter go through the same resolver | `scopeStoresOf`, `unreachablePlatformScopeStores`, `wipeDeclaredScopeStores`, `declaredStoreSizes` |
 | (k) Shred erases the stores through the same resolver and gate (`mayHoldScopeStores`), on the orchestrated and the direct paths, and refuses with 503 before the key goes. With no platform path, the host's own co-located stores are erased in its finalize | `platformStoresOf`, `finalizeSubjectShred` |
 | (l) A vertical cannot declare a binding in the `SUBSTRAT_` namespace, so no declared binding reads as a store binding | `control-plane-api/src/deploy.ts` (declared-binding check) |
 | (p) Store script names are injective over (driver, vertical), and the `substrat-store-` name space is reserved against vertical scripts | `scopeStoreScriptName`, `platformScriptCollision` (#2247) |
