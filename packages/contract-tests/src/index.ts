@@ -60,6 +60,7 @@ export { counterScopeStoreRunner } from './counter-runner.js';
 export { findingsAtomicContractSuite, type DirectoryExec } from './findings-atomic-suite.js';
 export { INVITEFIX_A, membershipFixtureMod } from './membership-module.js';
 export { scheduleEntitlementContractSuite } from './schedule-entitlement-suite.js';
+export { schedulePlatformRequestsContractSuite } from './schedule-platform-requests-suite.js';
 export { jobRunContractSuite } from './job-run-suite.js';
 export { systemSwitchContractSuite } from './system-switch-suite.js';
 export {
@@ -120,6 +121,8 @@ export {
   PEER_LISTENER,
   PEER_BARE,
   scheduleMod,
+  schedRequestMod,
+  SCHED_REQUEST_KIND,
   composedEngineMod,
   composerMod,
   jobsMod,

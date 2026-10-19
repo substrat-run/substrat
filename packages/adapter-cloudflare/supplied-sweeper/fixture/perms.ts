@@ -37,6 +37,8 @@ export const fixtureModule: ModuleRegistration = {
     'fixture/tick': (async (ctx) => {
       assertAllowed(await ctx.check(TICK));
       ctx.sql.exec('INSERT INTO fixture_ticks (n) VALUES (1)');
+      // #2431: one platform request per tick, which the supplied sweeper's pass counts.
+      ctx.requestPlatform({ kind: 'fixture.ticked', payload: {} });
     }) as OperationHandler<never, unknown>,
     'fixture/count': ((ctx) =>
       ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM fixture_ticks')[0]!.n) as OperationHandler<never, unknown>,

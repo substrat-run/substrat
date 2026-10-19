@@ -65,6 +65,7 @@ import {
   permissionContractSuite,
   scheduleContractSuite,
   scheduleEntitlementContractSuite,
+  schedulePlatformRequestsContractSuite,
   scheduleMod,
   jobRunContractSuite,
   systemSwitchContractSuite,
@@ -664,6 +665,18 @@ scheduleContractSuite('adapter-cloudflare', async () => {
 // permission through a real role, so only the SKU gate can refuse it. `runDueSchedules`
 // directly, never a sweep, so the shared directory is safe here.
 scheduleEntitlementContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #2431: a scheduled pass reports the platform requests it enqueued, counted on the coordinator
+// from what the ScopeDO hands back for each fire. `runDueSchedules` directly, never a sweep, so
+// the shared directory is safe here.
+schedulePlatformRequestsContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,

@@ -147,4 +147,9 @@ export interface ScheduleSweepReport {
   skipped: number;
   /** Due schedules whose operation failed — recorded, stepped over. */
   failed: number;
+  /**
+   * Platform requests the fired schedules enqueued (#2431), summed from each pass's
+   * `ScheduleRunReport.platformRequests`. Absent when none did.
+   */
+  platformRequests?: number;
 }

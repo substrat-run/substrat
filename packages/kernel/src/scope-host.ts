@@ -1393,6 +1393,16 @@ export interface ScheduleRunReport {
    * adapters' drivers always fill it.
    */
   runs?: { operation: string; outcome: 'ok' | 'failed' | 'skipped' }[];
+  /**
+   * Platform requests this pass's runs enqueued and committed (#2431), counted the way
+   * `ScopeStubOptions.onPlatformRequests` counts an invoke's. A sweep that ran the pass drains
+   * the scope again when this is set, so a scheduled write waits seconds rather than one sweep
+   * interval. Absent when the pass enqueued none, and from a host that predates the field:
+   * either way the requests wait for the next drain, as they always did. A purge horizon's runs
+   * are not counted: the purges run inside the scope, which reports no count for them, and
+   * whatever they enqueue waits for the next drain.
+   */
+  platformRequests?: number;
 }
 
 /**
