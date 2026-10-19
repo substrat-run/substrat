@@ -109,6 +109,31 @@ describe('createCustomHostnameProvisioner', () => {
     );
   });
 
+  const duplicate = () =>
+    new Response(
+      JSON.stringify({ success: false, errors: [{ code: 1406, message: 'Duplicate custom hostname found.' }] }),
+      { status: 409 },
+    );
+
+  it('create adopts the zone\'s existing object on a 409 — a leaked one from a failed unbind', async () => {
+    const fetchFn = vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') return duplicate();
+      expect(url).toBe('https://api.cloudflare.com/client/v4/zones/zone1/custom_hostnames?hostname=legal.acme.com');
+      return envelope([cfResult({ id: 'ch_leaked', status: 'active', ssl: { status: 'active' } })]);
+    });
+    const r = await provisioner(fetchFn as never).create('Legal.acme.com');
+    expect(r).toMatchObject({ customHostnameId: 'ch_leaked', status: 'active', note: null });
+  });
+
+  it('create still fails on a 409 when the lookup finds no object of that exact name', async () => {
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) =>
+      init?.method === 'POST' ? duplicate() : envelope([cfResult({ id: 'ch_other', hostname: 'other.acme.com' })]),
+    );
+    await expect(provisioner(fetchFn as never).create('legal.acme.com')).rejects.toThrow(
+      /\(409\): Duplicate custom hostname found/,
+    );
+  });
+
   it('remove tolerates a 404 as already-gone', async () => {
     const fetchFn = vi.fn(async () => new Response('', { status: 404 }));
     await expect(provisioner(fetchFn as never).remove('ch_gone')).resolves.toBeUndefined();
