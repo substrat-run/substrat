@@ -19,6 +19,23 @@ workorder:report   Start work, report time and material
 invoicing:export   Export an invoice basis (makes it immutable)
 ```
 
+A key that only the platform's own principals may hold says so where it is declared, with
+`holder: 'system'`:
+
+```ts
+permissions: [
+  { key: 'assistant:use', description: 'Open and read your own threads' },
+  { key: 'assistant:run', description: "Write the assistant's side of a thread", holder: 'system' },
+],
+```
+
+Such a key is never given to a person. `lint:permissions` refuses it in any role a person
+can hold and in any entity grant shape. It may appear only in a schedule's or a peer's
+`permissions`, or in a role declared `holder: 'system'`. A vertical that composes the
+engine inherits the reservation with the manifest, and the permission snapshot marks the key
+so that removing `holder: 'system'` shows in the reviewed diff. Leave `holder` out and the
+key may be held by anyone it is granted to, which is what every key meant before the field.
+
 ### Roles @ nodes
 
 A role bundles permissions; an assignment binds a principal to a role **at a node of the

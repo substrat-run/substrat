@@ -5,59 +5,102 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { reservedKeyMessage, reservedKeyOffences } from './reserved-keys.mts';
+import { pathToFileURL } from 'node:url';
+import { repoRoot } from './repo-path.mjs';
+import { reservedKeyMessage, reservedKeyOffences, reservedKeysOf } from './reserved-keys.mts';
 
 const none = { roles: [], grants: [] };
 
+/** engine-assistant's three keys, as its manifest declares them: the run key reserved. */
+const assistant = {
+  manifest: {
+    id: '@substrat-run/engine-assistant',
+    permissions: [
+      { key: 'assistant:use', description: 'use' },
+      { key: 'assistant:audit', description: 'audit' },
+      { key: 'assistant:run', description: 'drive a run', holder: 'system' as const },
+    ],
+  },
+};
+const reserved = reservedKeysOf([assistant]);
+
 test('a role granting assistant:run is an offence naming the role', () => {
-  const o = reservedKeyOffences({ ...none, roles: [{ key: 'member', permissions: ['assistant:use', 'assistant:run'] }] });
+  const o = reservedKeyOffences({ ...none, roles: [{ key: 'member', permissions: ['assistant:use', 'assistant:run'] }] }, reserved);
   assert.deepEqual(o, [{ where: 'role member', key: 'assistant:run' }]);
 });
 
 test('an entity grant shape granting it is an offence too', () => {
-  const o = reservedKeyOffences({ ...none, grants: [{ entityType: 'thread', permissions: ['assistant:run'] }] });
+  const o = reservedKeyOffences({ ...none, grants: [{ entityType: 'thread', permissions: ['assistant:run'] }] }, reserved);
   assert.deepEqual(o, [{ where: 'grant shape on thread', key: 'assistant:run' }]);
 });
 
 test('its twin: use and audit on roles, and on a shape, pass', () => {
-  const o = reservedKeyOffences({
-    roles: [
-      { key: 'member', permissions: ['assistant:use'] },
-      { key: 'staff', permissions: ['assistant:use', 'assistant:audit'] },
-    ],
-    grants: [{ entityType: 'thread', permissions: ['assistant:use'] }],
-  });
+  const o = reservedKeyOffences(
+    {
+      roles: [
+        { key: 'member', permissions: ['assistant:use'] },
+        { key: 'staff', permissions: ['assistant:use', 'assistant:audit'] },
+      ],
+      grants: [{ entityType: 'thread', permissions: ['assistant:use'] }],
+    },
+    reserved,
+  );
   assert.deepEqual(o, []);
 });
 
 test('a system-held role may hold a reserved key (K-55), and nothing else may', () => {
   assert.deepEqual(
-    reservedKeyOffences({ ...none, roles: [{ key: 'assistant-host', holder: 'system', permissions: ['assistant:run'] }] }),
+    reservedKeyOffences({ ...none, roles: [{ key: 'assistant-host', holder: 'system', permissions: ['assistant:run'] }] }, reserved),
     [],
   );
   assert.deepEqual(
-    reservedKeyOffences({
-      ...none,
-      roles: [{ key: 'assistant-host', holder: 'system', permissions: ['assistant:run', 'assistant:use'] }],
-    }),
+    reservedKeyOffences(
+      { ...none, roles: [{ key: 'assistant-host', holder: 'system', permissions: ['assistant:run', 'assistant:use'] }] },
+      reserved,
+    ),
     [{ where: 'system-held role assistant-host', key: 'assistant:use', notReserved: true }],
   );
 });
 
 test('holder: person is the same as no holder', () => {
-  const o = reservedKeyOffences({ ...none, roles: [{ key: 'm', holder: 'person', permissions: ['assistant:run'] }] });
+  const o = reservedKeyOffences({ ...none, roles: [{ key: 'm', holder: 'person', permissions: ['assistant:run'] }] }, reserved);
   assert.deepEqual(o, [{ where: 'role m', key: 'assistant:run' }]);
 });
 
-test('the message names the vertical, the file, the grant and the remedy', () => {
-  const m = reservedKeyMessage('demos/x', 'src/provision.ts', [{ where: 'role member', key: 'assistant:run' }]);
+test('the message names the vertical, the file, the grant, the declaring module and the remedy', () => {
+  const m = reservedKeyMessage('demos/x', 'src/provision.ts', [{ where: 'role member', key: 'assistant:run' }], reserved);
   assert.match(m, /demos\/x\/src\/provision\.ts/);
-  assert.match(m, /role member → assistant:run/);
+  assert.match(m, /role member → assistant:run: declared `holder: 'system'` by @substrat-run\/engine-assistant \(drive a run\)/);
   assert.match(m, /schedule/);
 });
 
+// The declaration, not a table: which keys are reserved is read off the manifests.
+test('the reserved keys are exactly those a manifest declares holder: system', () => {
+  assert.deepEqual([...reserved.keys()], ['assistant:run']);
+  const digests = { manifest: { id: '@acme/engine-x', permissions: [{ key: 'x:send-digests', description: 'send', holder: 'system' as const }] } };
+  assert.deepEqual([...reservedKeysOf([assistant, digests]).keys()], ['assistant:run', 'x:send-digests']);
+});
+
+test('…so a key nobody marks is not reserved, assistant:run included', () => {
+  const unmarked = { manifest: { id: '@acme/engine-y', permissions: [{ key: 'assistant:run', description: 'drive a run' }] } };
+  const keys = reservedKeysOf([unmarked]);
+  assert.equal(keys.size, 0);
+  assert.deepEqual(reservedKeyOffences({ ...none, roles: [{ key: 'member', permissions: ['assistant:run'] }] }, keys), []);
+});
+
+test('one module marking a key reserves it, whatever another module declaring it says', () => {
+  const redeclared = { manifest: { id: '@acme/vertical', permissions: [{ key: 'assistant:run', description: 'mine now' }] } };
+  for (const modules of [[assistant, redeclared], [redeclared, assistant]]) {
+    const keys = reservedKeysOf(modules);
+    assert.deepEqual(keys.get('assistant:run')?.declaredBy, ['@substrat-run/engine-assistant']);
+    assert.deepEqual(reservedKeyOffences({ ...none, roles: [{ key: 'member', permissions: ['assistant:run'] }] }, keys), [
+      { where: 'role member', key: 'assistant:run' },
+    ]);
+  }
+});
+
 // End to end: the tool itself, on a fixture vertical, so the wiring is held and not only the function.
-const fixture = (roles: unknown, schedules: unknown = []) => {
+const fixtureWith = (modules: string, roles: unknown, grants: unknown = []) => {
   const dir = mkdtempSync(join(tmpdir(), 'reserved-keys-'));
   mkdirSync(join(dir, 'src'));
   writeFileSync(
@@ -66,12 +109,22 @@ const fixture = (roles: unknown, schedules: unknown = []) => {
   );
   writeFileSync(
     join(dir, 'src/p.mjs'),
-    `export const permissions = { entityGrants: [], roles: ${JSON.stringify(roles)}, modules: [{ manifest: {
-  id: 'engine-assistant', schedules: ${JSON.stringify(schedules)},
-  permissions: ['assistant:use','assistant:audit','assistant:run'].map((key) => ({ key, description: key })) } }] };`,
+    `${modules}\nexport const permissions = { entityGrants: ${JSON.stringify(grants)}, roles: ${JSON.stringify(roles)}, modules };`,
   );
   return dir;
 };
+/** A fixture whose one module mirrors engine-assistant's manifest: assistant:run declared holder: system. */
+const fixture = (roles: unknown, schedules: unknown = [], grants: unknown = []) =>
+  fixtureWith(
+    `const modules = [{ manifest: { id: 'engine-assistant', schedules: ${JSON.stringify(schedules)},
+  permissions: [
+    { key: 'assistant:use', description: 'assistant:use' },
+    { key: 'assistant:audit', description: 'assistant:audit' },
+    { key: 'assistant:run', description: 'assistant:run', holder: 'system' },
+  ] } }];`,
+    roles,
+    grants,
+  );
 const run = (dir: string) =>
   spawnSync('pnpm', ['exec', 'tsx', 'tools/permission-diff.mts', '--root', dir], { encoding: 'utf8' });
 
@@ -79,6 +132,12 @@ test('the tool exits 2 on a role granting assistant:run, naming it', () => {
   const r = run(fixture([{ key: 'member', permissions: ['assistant:run'] }]));
   assert.equal(r.status, 2);
   assert.match(r.stderr, /role member → assistant:run/);
+});
+
+test('…and on an entity grant shape granting it', () => {
+  const r = run(fixture([{ key: 'member', permissions: ['assistant:use'] }], [], [{ entityType: 'thread', permissions: ['assistant:run'] }]));
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /grant shape on thread → assistant:run/);
 });
 
 test('…and passes a role with use/audit, with the run key held only by a schedule (system principal)', () => {
@@ -108,14 +167,12 @@ test('…and refuses a system-held role holding a person-grade key', () => {
 });
 
 test('a system-held role holding no reserved key is an offence, not a vacuous pass', () => {
-  const o = reservedKeyOffences({ ...none, roles: [{ key: 'x', holder: 'system', permissions: [] }] });
+  const o = reservedKeyOffences({ ...none, roles: [{ key: 'x', holder: 'system', permissions: [] }] }, reserved);
   assert.deepEqual(o, [{ where: 'system-held role x', key: '(none)', notReserved: true, empty: true }]);
 });
 
 test('the message header follows the offence kind, and the remedy is not circular', () => {
-  const m = reservedKeyMessage('demos/x', 'src/p.ts', [
-    { where: 'system-held role h', key: 'assistant:use', notReserved: true },
-  ]);
+  const m = reservedKeyMessage('demos/x', 'src/p.ts', [{ where: 'system-held role h', key: 'assistant:use', notReserved: true }], reserved);
   assert.match(m, /declares a system-held role that is not made of keys reserved/);
   assert.doesNotMatch(m, /to a person's role or grant shape/);
 });
@@ -131,4 +188,61 @@ test('the Held-by column keeps the bare role key', () => {
   assert.equal(run(dir).status, 0);
   const md = readFileSync(join(dir, 'PERMISSIONS.md'), 'utf8');
   assert.doesNotMatch(md, /\(system\)/);
+});
+
+// A second key, declared by another engine: no table to edit, the manifest is the whole change.
+const digestsEngine = (holder: string) => `const modules = [{ manifest: { id: '@acme/engine-digests',
+  permissions: [
+    { key: 'digests:read', description: 'read your digests' },
+    { key: 'digests:send', description: 'send every subscriber their digest'${holder} },
+  ] } }];`;
+
+test('a manifest declaring holder: system on a new key: a role granting it exits 2, naming the declaring module', () => {
+  const r = run(fixtureWith(digestsEngine(`, holder: 'system'`), [{ key: 'member', permissions: ['digests:read', 'digests:send'] }]));
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /role member → digests:send: declared `holder: 'system'` by @acme\/engine-digests/);
+});
+
+test('…its twin: the same key unmarked passes in a role, so the declaration is what reserves it', () => {
+  const r = run(fixtureWith(digestsEngine(''), [{ key: 'member', permissions: ['digests:read', 'digests:send'] }]));
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('…and the registry marks the reserved key, so dropping the declaration is a line in the reviewed diff', () => {
+  const dir = fixtureWith(digestsEngine(`, holder: 'system'`), [{ key: 'member', permissions: ['digests:read'] }]);
+  assert.equal(run(dir).status, 0);
+  const md = readFileSync(join(dir, 'PERMISSIONS.md'), 'utf8');
+  assert.match(md, /\| Key \| Description \| Declared by \| Reserved to a system principal \|/);
+  assert.match(md, /\| `digests:send` \| [^\n]* \| `@acme\/engine-digests` \| yes \|/);
+  assert.match(md, /\| `digests:read` \| [^\n]* \| `@acme\/engine-digests` \| — \|/);
+});
+
+test('…and with nothing reserved the registry has no such column, so every other artifact reads as it did', () => {
+  const dir = fixtureWith(digestsEngine(''), [{ key: 'member', permissions: ['digests:read'] }]);
+  assert.equal(run(dir).status, 0);
+  const md = readFileSync(join(dir, 'PERMISSIONS.md'), 'utf8');
+  assert.match(md, /\| Key \| Description \| Declared by \|\n/);
+  assert.doesNotMatch(md, /Reserved to a system principal/);
+});
+
+// Against the producer: engine-assistant's own built manifest, not a copy of it. If the engine
+// stops declaring the run key reserved, this goes red here as well as in its own suite.
+const realAssistant = `import { assistantManifest } from ${JSON.stringify(
+  pathToFileURL(join(repoRoot(import.meta.url), 'engines/assistant/dist/index.js')).href,
+)};\nconst modules = [{ manifest: assistantManifest }];`;
+
+test('the real engine-assistant manifest reserves assistant:run: a role granting it exits 2', () => {
+  const r = run(fixtureWith(realAssistant, [{ key: 'member', permissions: ['assistant:use', 'assistant:run'] }]));
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /role member → assistant:run: declared `holder: 'system'` by @substrat-run\/engine-assistant/);
+});
+
+test('…and passes the same vertical with the run key in a system-held role', () => {
+  const r = run(
+    fixtureWith(realAssistant, [
+      { key: 'member', permissions: ['assistant:use'] },
+      { key: 'assistant-host', holder: 'system', permissions: ['assistant:run'] },
+    ]),
+  );
+  assert.equal(r.status, 0, r.stderr);
 });

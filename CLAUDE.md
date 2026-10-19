@@ -187,10 +187,13 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 - `pnpm lint:permissions` — emit each vertical's `PERMISSIONS.md` (the permission-diff
   checkpoint below); CI runs it with `--check` and fails on drift
   It also refuses (exit 2) a role or entity grant shape that holds a key reserved to a
-  system principal — `assistant:run` today (`tools/reserved-keys.mts`, tests via
-  `pnpm test:reserved-keys`). The system side is a schedule's or a peer's `permissions`,
-  which it does not read, so no marker is needed; a table is the right size for one key,
-  and a `holder: 'system'` on the permission declaration is the step when a second appears.
+  system principal (`tools/reserved-keys.mts`, tests via `pnpm test:reserved-keys`). A key
+  is reserved by its own declaration: `holder: 'system'` on the manifest's permission entry
+  (`assistant:run` is), read off the loaded manifests, never a table in the tool. One module
+  marking a key reserves it whatever another declaring it says, so a vertical cannot lift an
+  engine's reservation by re-declaring the key. The system side is a schedule's or a peer's
+  `permissions`, or a role declared `holder: 'system'` (K-55). §1 of `PERMISSIONS.md` marks
+  each reserved key, so dropping a declaration shows in the reviewed diff.
 - `pnpm lint:changelog` — the published weekly changelog (`apps/docs/changelog/`).
   With no flag it prints a week's raw material — every first-parent merge grouped by
   area, the commits that landed without a PR, and each package's version span

@@ -30,8 +30,9 @@
  *      (`user-message`, `turn-start`, `approval-resolved`) is written by `sendMessage` and
  *      `resolveApproval` under `assistant:use`, as the owner. What the assistant did is
  *      written by `appendEvents` under `assistant:run`, which is held by a SYSTEM principal
- *      (the assistant host's) and by no role a person has — `lint:permissions` refuses a
- *      role or entity grant shape that grants it (tools/reserved-keys.mts). Even the run key writes only
+ *      (the assistant host's) and by no role a person has — the manifest declares it
+ *      `holder: 'system'`, and `lint:permissions` refuses a role or entity grant shape that
+ *      grants it (tools/reserved-keys.mts). Even the run key writes only
  *      inside a turn the user opened: with no turn open, `appendEvents` is `no_turn_open`,
  *      so a run cannot keep a resting thread busy and lock its owner out.
  *   5. **An event is bounded.** A body over `MAX_EVENT_BYTES` is refused: a large tool
@@ -188,6 +189,8 @@ export const assistantManifest = moduleManifest.parse({
       key: 'assistant:run',
       description:
         "Drive a run: take the lease, append the assistant's events, claim a tool's execution. For a system principal (the assistant host's) only — never a role a person holds",
+      // A person holding it could write the assistant's side of their own thread.
+      holder: 'system',
     },
   ],
   events: { emits: assistantEmitDeclarations, consumes: [] },

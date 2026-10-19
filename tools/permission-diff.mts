@@ -34,13 +34,15 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from '
 import { join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { repoRoot, toPosix } from './repo-path.mjs';
-import { reservedKeyMessage, reservedKeyOffences } from './reserved-keys.mts';
+import { reservedKeyMessage, reservedKeyOffences, reservedKeysOf } from './reserved-keys.mts';
 
 // Structural shapes — deliberately not imported from the kernel. The tool needs
 // four fields, and depending on the packages it inspects would be a cycle.
 interface PermissionDecl {
   key: string;
   description: string;
+  /** Reserved to a system principal: no person's role or entity grant shape may carry it. */
+  holder?: 'system';
 }
 interface ScheduleLike {
   operation: string;
@@ -359,15 +361,19 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
     );
   }
 
-  // A key reserved to a system principal sits on the schedules/peers side above, never in a
-  // role or a per-entity shape a person can be handed.
-  const reserved = reservedKeyOffences({ roles, grants });
-  if (reserved.length) cannot(reservedKeyMessage(rel, entry, reserved));
+  // A key a manifest declares `holder: 'system'` sits on the schedules/peers side above, or in a
+  // system-held role, never in a role or a per-entity shape a person can be handed.
+  const reservedKeys = reservedKeysOf(modules);
+  const reserved = reservedKeyOffences({ roles, grants }, reservedKeys);
+  if (reserved.length) cannot(reservedKeyMessage(rel, entry, reserved, reservedKeys));
 
   const holders = new Map<string, string[]>();
   for (const r of roles) for (const p of r.permissions) holders.set(p, [...(holders.get(p) ?? []), r.key]);
 
   const registry = [...declaredBy.entries()].map(([key, v]) => ({ key, ...v })).sort(byKey);
+  // A key's reservation is a declaration on its manifest, so dropping one must land in this diff:
+  // the column appears once any key is reserved, and every other vertical's artifact reads as it did.
+  const reservedCell = (key: string) => (reservedKeys.size ? ` ${reservedKeys.has(key) ? 'yes' : '—'} |` : '');
   const out: string[] = [];
 
   out.push(
@@ -382,9 +388,11 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
     ``,
     `## 1. Registry — every key a registered manifest declares`,
     ``,
-    `| Key | Description | Declared by |`,
-    `| --- | --- | --- |`,
-    ...registry.map((r) => `| ${code(r.key)} | ${r.description} | ${r.modules.map(code).join(', ')} |`),
+    `| Key | Description | Declared by |${reservedKeys.size ? ' Reserved to a system principal |' : ''}`,
+    `| --- | --- | --- |${reservedKeys.size ? ' --- |' : ''}`,
+    ...registry.map(
+      (r) => `| ${code(r.key)} | ${r.description} | ${r.modules.map(code).join(', ')} |${reservedCell(r.key)}`,
+    ),
     ``,
     `## 2. Roles — as defined by this vertical's provisioning code`,
     ``,
@@ -399,8 +407,8 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
           `### 2a. System-held roles — a platform host's standing principal`,
           ``,
           `Never given to a person: no invitation, member operation or role picker offers these. Each`,
-          `holds only keys reserved to a system principal (K-55), so what a host can do is exactly the`,
-          `keys shown. Widening one lands here, in the reviewed diff.`,
+          `holds only keys its module reserves to a system principal (§1, K-55), so what a host can do`,
+          `is exactly the keys shown. Widening one lands here, in the reviewed diff.`,
           ``,
           `| Role | Permissions |`,
           `| --- | --- |`,

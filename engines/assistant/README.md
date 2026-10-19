@@ -52,8 +52,8 @@ without a run; closing the thread is their only way out.
 
 `assistant:use` is a person's: open and read their own threads, say something, approve or deny.
 `assistant:run` is for a **system principal only** (the assistant host's), never a role a person
-holds: it writes the assistant's side of the record. `pnpm lint:permissions` refuses a role or
-entity grant shape that grants it. `assistant:audit` reads other principals' threads and
+holds: it writes the assistant's side of the record. The manifest declares it `holder: 'system'`,
+and `pnpm lint:permissions` refuses a role or entity grant shape that grants it. `assistant:audit` reads other principals' threads and
 never writes, and only together with `assistant:use`, which every read checks first.
 
 ## What it guarantees

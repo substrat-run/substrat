@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { permissionKey } from '../src/ids.js';
+import { moduleManifest, permissionDeclaration } from '../src/manifest.js';
 import { coverage, roleDefinition } from '../src/permission.js';
 
 const PERM = permissionKey.parse('billing:manage');
@@ -48,5 +49,31 @@ describe('roleDefinition.holder', () => {
   it('is optional, and refuses an unknown holder', () => {
     expect(roleDefinition.parse(base).holder).toBeUndefined();
     expect(() => roleDefinition.parse({ ...base, holder: 'robot' })).toThrow();
+  });
+});
+
+describe('permissionDeclaration.holder', () => {
+  const base = { key: 'assistant:run', description: 'Drive a run' };
+
+  it('keeps holder: system through parsing, and through the manifest that carries it', () => {
+    expect(permissionDeclaration.parse({ ...base, holder: 'system' }).holder).toBe('system');
+    const manifest = moduleManifest.parse({
+      id: '@acme/engine-x',
+      version: '0.0.1',
+      kernelContract: '^0.0.1',
+      permissions: [{ ...base, holder: 'system' }, { key: 'assistant:use', description: 'Use' }],
+      events: { emits: [], consumes: [] },
+      migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
+      attachmentTargets: [],
+      entitlementKey: 'x',
+    });
+    expect(manifest.permissions.map((p) => p.holder)).toEqual(['system', undefined]);
+  });
+
+  // Additive: a declaration written before the field means what it meant, anyone may hold it.
+  it('is optional, and refuses person or any other holder', () => {
+    expect(permissionDeclaration.parse(base)).toEqual(base);
+    expect(() => permissionDeclaration.parse({ ...base, holder: 'person' })).toThrow();
+    expect(() => permissionDeclaration.parse({ ...base, holder: 'robot' })).toThrow();
   });
 });
