@@ -32,7 +32,7 @@
  * where a digest's own wording would come from), quiet hours and a digest's time of day, other
  * digest cadences (today any cadence row holds a topic for the one daily schedule: a second
  * cadence needs a `digestCadence` value, the cadence recorded on each held item, and a schedule
- * that sends only its own), and a person's own delivery history.
+ * that sends only its own).
  */
 import { z } from 'zod';
 import {
@@ -74,8 +74,8 @@ export type NotificationsConflictReason = (typeof NOTIFICATIONS_CONFLICT_REASONS
 const conflict = (reason: NotificationsConflictReason, message: string) =>
   substratError('conflict', message, { reason });
 
-export { notificationsEntities, deliveryRow } from './entities.js';
-import { deliveryRow, digestItemRow, notificationsEntities } from './entities.js';
+export { notificationsEntities, deliveryRow, myDeliveryRow } from './entities.js';
+import { deliveryRow, digestItemRow, myDeliveryRow, notificationsEntities } from './entities.js';
 export {
   notificationsOperations,
   NOTIFICATIONS_PERMISSIONS,
@@ -680,6 +680,34 @@ export function listDeliveries(ctx: OperationContext, page: PageParams): Page<z.
   );
 }
 
+/**
+ * What became of each notification sent to the caller, newest first: `listDeliveries` with the
+ * `principal` filter pinned to `ctx.principal`, last, so nothing in `page` can name anyone else.
+ *
+ * Every delivery of theirs is listed, including the ones that were not mailed on their own — a
+ * topic they muted (`skipped`/`muted`), a missing address (`skipped`/`no_address`), an occasion
+ * held for their digest (`skipped`/`digest`, settled once the digest that carried it is
+ * written) — and the digest itself, which is a delivery of its own under `DIGEST_TOPIC`. A held
+ * message set aside as unreadable reads `skipped`/`quarantined` until it is released.
+ *
+ * The row is `myDeliveryRow`, not the administrator's: it names neither the caller's idempotency
+ * key nor the platform's send intent, and a `refused` or `dead_lettered` row carries no `reason`,
+ * since that is the platform's outcome code (a missing sender grant, a provider refusal) and
+ * belongs to whoever reads the whole log. The `reason` of a `skipped` row is the engine's own
+ * word for it.
+ *
+ * No permission check: like every by-call engine function, the caller checks first.
+ */
+export function listMyDeliveries(ctx: OperationContext, page: PageParams): Page<z.infer<typeof myDeliveryRow>> {
+  const mine = listDeliveries(ctx, { ...page, filters: { ...page.filters, principal: ctx.principal } });
+  return mapPage(mine, (row) =>
+    returns(myDeliveryRow, 'notifications/my-deliveries', {
+      ...row,
+      reason: row.status === 'skipped' ? row.reason : null,
+    }),
+  );
+}
+
 // ============================================================================
 // Digests — what was held, sent as one mail per person
 // ============================================================================
@@ -1075,6 +1103,11 @@ export const notificationsModule: ModuleRegistration = {
         ...input,
         filters: { status: input?.status, topic: input?.topic, principal: input?.principal },
       });
+    },
+    'notifications/my-deliveries': async (ctx, input) => {
+      assertAllowed(await ctx.check(NOTIFICATIONS_PERM.self));
+      // `input` is absent when invoked with no body at all (`inputOptional`).
+      return listMyDeliveries(ctx, { ...input, filters: { status: input?.status, topic: input?.topic } });
     },
     'notifications/send-digests': async (ctx) => {
       assertAllowed(await ctx.check(NOTIFICATIONS_PERM.sendDigests));
