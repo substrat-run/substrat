@@ -1440,6 +1440,11 @@ export function defineScopeDO(
 
     private registerModule(registration: ModuleRegistration): void {
       const manifest = registration.manifest;
+      // #2412: one id, one registration — the refusal the coordinator and the pure host make, so a
+      // module list they would turn away cannot start here.
+      if (this.modules.has(manifest.id)) {
+        throw new Error(`module already registered: ${manifest.id}`);
+      }
       // #1835: the binder's own value, or nothing registers — as in the pure adapter.
       assertBoundOperations(manifest.id, registration.operations);
       // #119: refused before anything is recorded, as in the pure adapter.
@@ -1552,7 +1557,15 @@ export function defineScopeDO(
         }
         this.liveTargets.set(target.entityType, target.readPermission);
       }
+      // #2412: refused before any deletion, as on the other two hosts — a module's own handler
+      // must not be silently unbound by its own manifest.
+      const boundNames = Object.keys(registration.operations?.handlers ?? {});
       for (const name of manifest.withdraws ?? []) {
+        if (boundNames.includes(name)) {
+          throw new Error(
+            `${manifest.id} withdraws its own operation: ${name} (a module cannot withdraw itself — just don't register it)`,
+          );
+        }
         this.withdrawn.set(name, manifest.id);
         this.operations.delete(name);
       }
