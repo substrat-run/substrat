@@ -1,5 +1,15 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.152.0
+
+### Patch Changes
+
+- 2a3ddc2: The live-read surface's refusals answer RFC 9457 problem documents (`application/problem+json`) instead of `text/plain`: the coordinator's `426` (not an upgrade) and `501` (orange-to-orange, poll instead), and the scope's `403` (the subscriber may not watch the root), `404`, `426` and the three `500`s a missing or unreadable assertion raises. Every status and the `x-substrat-live` header value are unchanged, and so is the sentence (now `detail`, and `error` beside it) except on the three `500`s: a `500` is the taxonomy's `internal`, which carries no sentence on the wire, so the DO logs it instead. The `101` upgrades are untouched.
+- ac38ed5: A ScopeDO now refuses a module list that registers one module id twice, or a module that withdraws an operation it binds itself, with the messages the pure host and the coordinator already give. Both used to start: the duplicate silently replaced the first registration's record, and the self-withdrawal unbound the module's own handler.
+- Updated dependencies [482e9b7]
+  - @substrat-run/contracts@0.152.0
+  - @substrat-run/kernel@0.152.0
+
 ## 0.151.0
 
 ### Minor Changes
@@ -7112,7 +7122,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
