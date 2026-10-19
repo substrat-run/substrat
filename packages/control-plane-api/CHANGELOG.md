@@ -1,5 +1,93 @@
 # @substrat-run/control-plane-api
 
+## 0.154.0
+
+### Minor Changes
+
+- bf18880: A scope's data now moves between scripts a page at a time, so `preview create` and a carry onto another version no longer fail once a scope passes 32 MiB (#2450). Before this, the whole scope crossed a Durable Object RPC (32 MiB per message) and two isolates (128 MB each) as one value.
+
+  - **Source.** `exportDumpPage` reads the dump in pages of about 4 MiB (`SCOPE_DUMP_PAGE_MAX_BYTES`):
+
+    - each table in rowid order, in batches;
+    - every table in some page, empty or not, so its schema always travels.
+
+    Each page is read in one turn. The pages carry the store's write revision, and the copy is started again when it moves between pages. After three attempts it is refused with a 409 and nothing is moved.
+
+  - **Destination.** `stageDumpPage` keeps the pages in the store's own `_substrat_stage*` tables:
+
+    - untyped, so every cell is kept as it arrived;
+    - the load stamp and the write revision a carry fences on do not move.
+
+    `commitStagedDumpChecked` then runs the same load `importDump` runs, in one transaction with the same fences and refusals, reading the rows from the stage a batch at a time. No dump carries the stage tables, and a load's drops leave them alone.
+
+  - **Vertical routes.** `vertical-host` answers `/internal/export-page`, `/internal/stage`, `/internal/restore-staged` and `/internal/stage/discard`. A host without the methods answers 501.
+  - **Control plane.** `transferScope` drives the copy for every carry, for adopt-onto-serving, and for the preview fork. A fork reads unstamped, so it writes nothing into its source. These still move whole, exactly as before:
+    - a scope that fits in one page;
+    - a source that predates the paged verbs;
+    - a destination that predates them. Only this case keeps the old ceiling: the pages are merged into one dump in memory.
+  - `contracts` adds `scopeDumpPage` and `mergeDumpPages`; `kernel` adds `loadDropsRowsOf`.
+
+  Not yet: moving the copy out of the request into a durable job, and a copy that stays exact on a busy scope at GB scale (#2450, steps 2 and 3).
+
+- 34c4455: A key reserved to a system principal (`holder: 'system'` on its declaration) is now refused at push, not only by `lint:permissions` (#2430).
+
+  - `substrat push` (and `push --check`) refuses before anything uploads, in the lint's own words, naming each grant and the module that reserved the key:
+
+    - a role a person can hold, an entity grant shape, or an owner grant (a module's `ownerGrants`, or the package's `substrat.ownerGrants`) that holds a reserved key;
+    - a role declared `holder: 'system'` that holds anything else, or nothing.
+
+    A `substrat.ownerGrants` that is not a list of keys is refused by both, naming the field, rather than read as no owner grant.
+
+  - The registry a push ships carries the reservation: a reserved key's row and a system-held role's row say `holder: 'system'`. Both are left out otherwise, so a vertical that reserves nothing ships the registry, and the permission digest, it had. `push --check` prints the marks.
+  - The platform's push routes refuse the same, read off those rows:
+    - `pushedPermissionRegistry` covers roles and shapes;
+    - `pushedOwnerGrantProblems` covers the manifest's `ownerGrants`.
+      A registry from a CLI that predates the marks carries none and is refused nothing.
+  - The diff a promote shows (the dashboard's promote dialog, Permissions tab and Deployments ledger, the console, `substrat promote`) itemises two changes it used to leave out:
+
+    - a reservation moving on a key both versions declare (`reservationChanges`);
+    - a role moving between a person's and a system principal's (`roleChanges[].holder`).
+
+    A key that arrives already reserved is marked where it is added (`reservedAddedKeys`), and a role held by a system principal whose holder did not move, a new one included, is marked as one (`roleChanges[].systemHeld`), so no reader shows it as a person's role holding a reserved key.
+
+  - The rule itself is exported from `@substrat-run/contracts` (`reservedKeysOf`, `reservedKeyOffences`, `reservedKeyMessage`, `ownerGrantSets`, `declaredOwnerGrants`), which `lint:permissions` now reads too.
+
+### Patch Changes
+
+- 1872bb7: An Auth Server install now gets platform-provided social sign-in without anyone registering anything: GitHub (and later Google and Apple) through the platform's social relay at `id.substrat.net`, offered on the install's **Sign-in providers** screen as a switch that starts off (#1544).
+
+  **Auth Server.** A new platform delivery, `substrat:social-relay`, carries the install's client at the relay and the providers the relay serves. Each provider becomes a `<provider>-relay` sign-in provider, created switched off.
+
+  - A later delivery keeps the operator's three decisions (enabled, creates accounts, trusted email) and replaces only what the platform owns.
+  - A provider of the operator's own under the same id is never touched. One configured against the relay by hand is adopted.
+  - A provider the relay stops serving is switched off.
+  - On the screen, these providers say "provided by Substrat". They show the switches and no credential form, and cannot be removed, only switched off.
+  - A delivery without a secret keeps the one held. When none is held, `/internal/configure` answers 409 `social_relay_secret_needed`.
+
+  **Control plane.** `socialRelay` on `createControlPlaneApi` reconciles one install's client at the relay:
+
+  - It reads the relay's live providers and builds callbacks from the install's active hostnames. A custom domain counts only once Cloudflare reports it verified, asked at that moment.
+  - It ensures the client under `scope:<scope id>` and delivers the entry. The secret is rotated only when the install answers that it holds none.
+  - It runs when a hostname of an Auth Server install becomes active, through the bind, verify and status routes and the hostname sweep (`reconcilePendingHostnames` takes `onActivated`). That covers install time and every custom domain.
+  - Two staff-only routes, `POST /tenants/:t/scopes/:s/social-relay` and `POST /social-relay/reconcile`, reconcile one install or all of them, for example after the relay gains a provider.
+  - The worker reaches the relay through a `SOCIAL_RELAY` service binding, with `SOCIAL_RELAY_ORIGIN` set per environment.
+
+  **Relay.** New endpoints:
+
+  - `GET /providers` lists the providers it can serve, with their endpoints.
+  - `PUT /internal/clients/by-ref/:ref` ensures one client per install, returning the secret only on create.
+  - `POST /internal/clients/:id/secret` rotates a client's secret.
+  - A client now takes up to 64 redirect URIs.
+  - A disabled client stays disabled through any reconcile.
+
+- Updated dependencies [bf18880]
+- Updated dependencies [34c4455]
+- Updated dependencies [34c4455]
+- Updated dependencies [1872bb7]
+  - @substrat-run/contracts@0.154.0
+  - @substrat-run/kernel@0.154.0
+  - @substrat-run/control-plane-client@0.3.5
+
 ## 0.153.0
 
 ### Patch Changes

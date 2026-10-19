@@ -1,5 +1,55 @@
 # @substrat-run/contract-tests
 
+## 0.154.0
+
+### Minor Changes
+
+- 34c4455: A scope host's person-facing role doors, its raw grant and connection grant doors and its reconcile of declared entity-grant shapes refuse a key reserved to a system principal, and its platform role doors refuse a role mixing one with other keys (#2430). The platform doors do not yet tell a person from a host principal: they admit a role made only of reserved keys for any principal. A host can also hold its registered modules to the vertical's declared permission surface.
+
+  **Which keys.** The reservations are read off the modules the host registers (`holder: 'system'` on a manifest permission entry), off the modules its declared `permissions` lists, and, at a Cloudflare scope node, off the modules the scope's class registers. A key none of them marks is a person's key, so nothing an older engine declared is refused.
+
+  **The doors and what each refuses.** Every refusal is `forbidden`.
+
+  - **A person's doors** refuse a role carrying a reserved key, even to a caller who holds every key of it. They are `assignScopeRoleBounded`, `changeScopeRoleBounded` (the role moved to) and a membership add. A membership add answers `{ applied: false, reserved }`, which the membership executor records as the refusal. `canAssign` and `ctx.canAssign` give the same answer, and since they are also the bound on taking a role away, a person cannot remove such a role through them either.
+  - **A raw grant** of a reserved key to a principal or an org is refused, whoever makes it: `HostAdmin.grant`, `grantToOrg`, `grantEntityShape`, the Cloudflare host's `grantEntityLocal` and `grantEntityShapeLocal`, and `ctx.grant`, including inside `ctx.atomic` and from a system actor.
+  - **A connection grant** of a reserved key is refused too, since a connection acts for the external provider that holds its token: `HostAdmin.grantToConnection` against the reservations the host can see (its own modules', and the scope's when the same deployment serves it), before anything is recorded; and the Cloudflare host's `connectorGrantLocal` against the reservations of the scope it serves. A grant the directory already recorded is skipped when `provisionScopeLocal` or `seatScopeLocal` delivers it, never seated, and reported as `skippedConnectionGrants` in their answer, which the vertical host's provision and reconcile routes pass on, and in a `connection-grants-skipped` warn line in the serving deployment's log. The platform does not read that answer field yet, so the warn line is where a skip shows. The provision itself goes on.
+  - **A reconcile of declared shapes** (`HostAdmin.reconcileEntityGrantShapes`, and the Cloudflare host's `topUpEntityGrantShapesLocal` and `provisionScopeLocal` with `entityGrants`) refuses, before anything is written, a shape whose `permissions` hold a reserved key: it would give the key to every holder of the shape, and record it as what a binding link grants. A reserved key a shape only `retired` is taken back, and passes.
+  - **The platform's doors**, `HostAdmin.assignRole` and the Cloudflare host's `assignScopeRole`, refuse a role mixing a reserved key with other keys. They admit a role made only of reserved keys, the shape a role declared `holder: 'system'` has (K-55). `assignScopeRole` judges the role as the scope's checks read it: the tenant its provisioning receipt names, or, on a scope from before receipts, each tenant its role rows name. A receipt-less scope with no role row whose checks read the control plane is refused, since the tenant a check would expand cannot be known.
+
+  **What the platform's doors cannot tell.** A stored role does not record its holder, and these doors do not know whether the assignee is a person. So a role made only of reserved keys is admitted for any principal. Two roles assigned there can give one principal reserved and person keys together.
+
+  **What is never checked.**
+
+  - Nothing already held is revoked.
+  - Not checked yet:
+    - a role or grant a host seats or composes itself;
+    - a role definition widened after it was assigned;
+    - a role or grant conferred on a host that registers no modules;
+    - on a shared control plane, the directory record of a connection grant for a scope another deployment serves, and of a tenant-wide one: the plane cannot see that deployment's reservations, so it records the grant, which then confers nothing (the serving deployment refuses it at delivery and skips it at every re-seat) but stays listed until revoked;
+    - grants and shape bindings recorded before these checks existed, or before the key was reserved, and what reaches a person through them later (such as an org membership or a binding link), including what an older build of a vertical seats again after a rollback.
+
+  **Declaring the surface.**
+
+  - `SqliteScopeHost` and `CloudflareScopeHost` take a new option, `permissions`. `defineScopeDO` takes it as a third argument, `{ permissions }`.
+  - The value is the vertical's `definePermissions(...)`. Given, a module its `modules` leaves out is refused at registration (on the ScopeDO, when the class is defined), and what the listed manifests reserve joins what the registered ones do.
+  - Omitted, nothing is compared.
+
+  **New exports.**
+
+  - From the kernel: `reservedRoleRefusal`, `reservedGrantRefusal`, `reservedShapeRefusal`, `noteReservedKeys` and `assertModuleDeclared`.
+  - From contract-tests: `reservedRoleContractSuite`, which both adapters run.
+
+  **Test kit.** The engine test kit's `as(...)` / `mintPrincipal(...)` gives a principal its reserved keys through a role made only of them, declared `holder: 'system'`, and the rest through a person's role. A test asking for both still gets exactly that set.
+
+### Patch Changes
+
+- Updated dependencies [bf18880]
+- Updated dependencies [34c4455]
+- Updated dependencies [34c4455]
+- Updated dependencies [1872bb7]
+  - @substrat-run/contracts@0.154.0
+  - @substrat-run/kernel@0.154.0
+
 ## 0.153.0
 
 ### Patch Changes
@@ -6231,7 +6281,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
