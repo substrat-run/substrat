@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { EmittedLifecycle, EmittedModel } from '@substrat-run/contracts';
-import { decisionsLog, entityDiagram, lifecycleDiagram, parseModel, parsePermissions } from '@substrat-run/model-view';
+import { decisionsLog, entityDiagram, lifecycleDiagram, parseModel, parsePermissions, type PermissionsView } from '@substrat-run/model-view';
 import { type Artifacts, type Bump, type Change, classify } from './bump.js';
 import { baseCommit, CannotRun, changesetDirFor, defaultBase, gitRoot, packageNameOf, readArtifacts } from './changeset.js';
 import { renderConceptFor } from './concept.js';
@@ -146,6 +146,12 @@ function transitionChanges(entity: string, base: EmittedLifecycle | undefined, h
 }
 
 /**
+ * Every role that holds keys: a person's, and a system-held one (K-55). A system-held role holds only
+ * reserved keys, and plan's rows say when a key is reserved.
+ */
+const allRoles = (v: PermissionsView) => [...v.roles, ...v.systemRoles];
+
+/**
  * The permission-diff rows that differ: a key added, removed, re-described, held by other roles, or
  * reserved to a system principal or no longer. None when either registry cannot be read: the
  * classifier's finding says so, and a row read off an unreadable table would be a guess.
@@ -155,8 +161,7 @@ function permissionRows(baseMd: string | null, headMd: string | null): Permissio
     if (md === null) return { holders: new Map<string, string[]>(), descriptions: new Map<string, string>(), reserved: new Set<string>() };
     const v = parsePermissions(md);
     const holders = new Map<string, string[]>([...v.descriptions.keys()].map((k) => [k, []]));
-    // A system-held role holds only reserved keys, and the row says when a key is reserved.
-    for (const r of [...v.roles, ...v.systemRoles]) for (const k of r.keys) (holders.get(k) ?? holders.set(k, []).get(k)!).push(r.role);
+    for (const r of allRoles(v)) for (const k of r.keys) (holders.get(k) ?? holders.set(k, []).get(k)!).push(r.role);
     for (const list of holders.values()) list.sort();
     return { holders, descriptions: v.descriptions, reserved: v.reserved, unreadable: v.registryUnreadable };
   };
@@ -183,13 +188,14 @@ function checksIn(md: string | null): { checks: Map<string, TransitionCheck>; un
   if (md === null) return { checks: out };
   const v = parsePermissions(md);
   if (v.operationsUnreadable !== undefined) return { checks: out, unreadable: v.operationsUnreadable };
+  const roles = allRoles(v);
   for (const [op, c] of v.operations ?? []) {
     const holds = (keys: readonly string[]) => keys.some((k) => c.keys.includes(k));
     out.set(op, {
       declared: c.declared,
       keys: c.keys,
       checkedOn: c.checkedOn,
-      roles: sorted([...v.roles, ...v.systemRoles].filter((r) => holds(r.keys)).map((r) => r.role)),
+      roles: sorted(roles.filter((r) => holds(r.keys)).map((r) => r.role)),
       grantShapes: sorted(v.entityGrants.filter((g) => holds(g.keys)).map((g) => g.entityType)),
     });
   }

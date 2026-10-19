@@ -270,16 +270,16 @@ describe('parsePermissions / decisionsLog', () => {
   });
 });
 
-describe('parsePermissions — the registry’s reservation column', () => {
-  /** PERMISSIONS with §1 as the emitter writes it once some key is reserved: a last cell, `yes` or `—`. */
-  const withColumn = (md: string, mark: (key: string) => string) =>
-    md
-      .replace(
-        '| Key | Description | Declared by |\n| --- | --- | --- |',
-        '| Key | Description | Declared by | Reserved to a system principal |\n| --- | --- | --- | --- |',
-      )
-      .replace(/^(\| `(list:[a-z]+)` \| [^\n]+ \| `x` \|)$/gm, (_, row: string, key: string) => `${row} ${mark(key)} |`);
+/** PERMISSIONS with §1 as the emitter writes it once some key is reserved: a last cell, `yes` or `—`. */
+const withColumn = (md: string, mark: (key: string) => string) =>
+  md
+    .replace(
+      '| Key | Description | Declared by |\n| --- | --- | --- |',
+      '| Key | Description | Declared by | Reserved to a system principal |\n| --- | --- | --- | --- |',
+    )
+    .replace(/^(\| `(list:[a-z]+)` \| [^\n]+ \| `x` \|)$/gm, (_, row: string, key: string) => `${row} ${mark(key)} |`);
 
+describe('parsePermissions — the registry’s reservation column', () => {
   it('reads which keys are reserved, and the descriptions as before', () => {
     const v = parsePermissions(withColumn(PERMISSIONS, (k) => (k === 'list:manage' ? 'yes' : '—')));
     expect([...v.reserved]).toEqual(['list:manage']);
@@ -316,49 +316,17 @@ describe('parsePermissions — the registry’s reservation column', () => {
 
 describe('parsePermissions — system-held roles (§2a, K-55)', () => {
   /**
-   * PERMISSIONS as `lint:permissions` writes it once a role is declared `holder: 'system'`: §1 with
-   * its reservation column, and §2a under the person roles. The emitter's own output is read back
+   * PERMISSIONS as `lint:permissions` writes it once a role is declared `holder: 'system'`: a key
+   * reserved in §1, held by §2a's role under the person roles. The emitter's own output is read back
    * in `tools/reserved-keys.test.mts`.
    */
-  const SYSTEM = `# Permission snapshot
-
-## 1. Registry — every key
-
-| Key | Description | Declared by | Reserved to a system principal |
-| --- | --- | --- | --- |
-| \`list:create\` | Create lists of your own | \`x\` | — |
-| \`list:manage\` | Rename and share a list | \`x\` | — |
-| \`list:reap\` | Reap abandoned lists | \`x\` | yes |
-
-## 2. Roles — as defined
-
-Identical in every tenant. Per-tenant customisation is a runtime concern.
-
-| Role | Permissions |
-| --- | --- |
-| \`member\` | \`list:create\` |
-
-### 2a. System-held roles — a platform host's standing principal
-
-Never given to a person: no invitation, member operation or role picker offers these.
-
-| Role | Permissions |
-| --- | --- |
-| \`reaper\` | \`list:reap\` |
-
-## 3. Coverage
-
-| Key | Held by |
-| --- | --- |
-| \`list:create\` | \`member\` |
-| \`list:reap\` | \`reaper\` |
-
-## 4. Entity-narrowed grant shapes
-
-| Entity type | Permissions granted per entity | Given |
-| --- | --- | --- |
-| \`list\` | \`list:manage\` | no — shared |
-`;
+  const SYSTEM = withColumn(
+    PERMISSIONS.replace('| `list:manage` | Rename and share a list | `x` |', '$&\n| `list:reap` | Reap abandoned lists | `x` |'),
+    (k) => (k === 'list:reap' ? 'yes' : '—'),
+  ).replace(
+    '| `member` | `list:create` |\n',
+    "$&\n### 2a. System-held roles — a platform host's standing principal\n\n| Role | Permissions |\n| --- | --- |\n| `reaper` | `list:reap` |\n",
+  );
 
   it('reads the person roles alone, and the system-held role apart from them', () => {
     const v = parsePermissions(SYSTEM);
@@ -369,19 +337,32 @@ Never given to a person: no invitation, member operation or role picker offers t
     expect(v.entityGrants).toEqual([{ entityType: 'list', keys: ['list:manage'] }]);
   });
 
-  it('its twin: a file without §2a, older than it or with no system-held role, has none and reads as before', () => {
-    const v = parsePermissions(PERMISSIONS);
-    expect(v.systemRoles).toEqual([]);
-    expect(v.roles).toEqual([{ role: 'member', keys: ['list:create'] }]);
+  it('its twin: a file without §2a, older than it or with no system-held role, has none and the same roles', () => {
+    expect(parsePermissions(PERMISSIONS).systemRoles).toEqual([]);
+    expect(parsePermissions(PERMISSIONS).roles).toEqual(parsePermissions(SYSTEM).roles);
   });
 
   it('concept.md shows the system-held role in its own table, never among the roles a person is given', () => {
-    const out = syncConcept(DOC, { model: MODEL, permissionsMd: SYSTEM });
-    const roles = out.slice(out.indexOf('<!-- substrat:roles -->'), out.indexOf('<!-- /substrat:roles -->'));
-    expect(roles).toContain(
-      '| `member` | `list:create` — Create lists of your own |\n\nHeld by a platform host, never given to a person:\n\n| Role | What it can do |\n| --- | --- |\n| `reaper` | `list:reap` — Reap abandoned lists |',
+    const region = [
+      '| Role | What they can do |',
+      '| --- | --- |',
+      '| `member` | `list:create` — Create lists of your own |',
+      '',
+      'Held by a platform host, never given to a person:',
+      '',
+      '| Role | What it can do |',
+      '| --- | --- |',
+      '| `reaper` | `list:reap` — Reap abandoned lists |',
+      '',
+      'Shared one record at a time, without a role:',
+      '',
+      '| Record | What the person it is shared with can do |',
+      '| --- | --- |',
+      '| `list` | `list:manage` — Rename and share a list |',
+    ];
+    expect(syncConcept(DOC, { model: MODEL, permissionsMd: SYSTEM })).toContain(
+      `<!-- substrat:roles -->\n\n${region.join('\n')}\n\n<!-- /substrat:roles -->`,
     );
-    expect(roles).not.toContain('| `Role` |');
     expect(syncConcept(DOC, inputs)).not.toContain('Held by a platform host');
   });
 

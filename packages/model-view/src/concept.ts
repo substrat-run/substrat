@@ -238,10 +238,13 @@ export interface RoleRowView {
   readonly keys: readonly string[];
 }
 
-const roleRows = (text: string): RoleRowView[] =>
+/** A table whose first cell names the row and whose second lists its keys, as §2 and §4 are. */
+const keyedRows = (text: string): { name: string; keys: string[] }[] =>
   tableRows(text)
-    .map(([role, keys]) => ({ role: unquote(role ?? ''), keys: keysOf(keys ?? '') }))
-    .filter((r) => r.role !== '');
+    .map(([name, keys]) => ({ name: unquote(name ?? ''), keys: keysOf(keys ?? '') }))
+    .filter((r) => r.name !== '');
+
+const roleRows = (text: string): RoleRowView[] => keyedRows(text).map(({ name, keys }) => ({ role: name, keys }));
 
 /**
  * The Roles section as `lint:permissions` writes it: the table of the roles a person can be given,
@@ -290,9 +293,7 @@ export function parsePermissions(md: string): PermissionsView {
   }
   const registryView = { descriptions, reserved, ...('unreadable' in registry ? { registryUnreadable: registry.unreadable } : {}) };
   const { roles, systemRoles } = rolesSection === undefined ? { roles: [], systemRoles: [] } : readRolesSection(rolesSection);
-  const entityGrants = tableRows(section('Entity-narrowed grant shapes')?.body ?? '')
-    .map(([entityType, keys]) => ({ entityType: unquote(entityType ?? ''), keys: keysOf(keys ?? '') }))
-    .filter((g) => g.entityType !== '');
+  const entityGrants = keyedRows(section('Entity-narrowed grant shapes')?.body ?? '').map(({ name, keys }) => ({ entityType: name, keys }));
   const view = { roles, systemRoles, entityGrants, ...registryView };
   const opSection = section('Operations');
   if (opSection === undefined) return view;
@@ -335,32 +336,31 @@ function renderRoles({ permissionsMd }: ConceptInputs): string {
   if (view.registryUnreadable !== undefined) {
     throw new PermissionsFormatError(`PERMISSIONS.md's Registry cannot be read: ${view.registryUnreadable} — regenerate it with \`pnpm lint:permissions\``);
   }
-  const out: string[] = [];
-  if (view.roles.length === 0) {
-    out.push('_No roles are defined._');
-  } else {
-    out.push('| Role | What they can do |', '| --- | --- |');
-    for (const r of bySort(view.roles, (x) => x.role)) {
-      out.push(`| \`${r.role}\` | ${renderKeys(r.keys, view.descriptions)} |`);
-    }
-  }
+  /** A two-column table, one row per name, sorted, with its keys and their descriptions. */
+  const table = (header: string, rows: readonly { name: string; keys: readonly string[] }[]) => [
+    header,
+    '| --- | --- |',
+    ...bySort(rows, (r) => r.name).map((r) => `| \`${r.name}\` | ${renderKeys(r.keys, view.descriptions)} |`),
+  ];
+  const out: string[] =
+    view.roles.length === 0
+      ? ['_No roles are defined._']
+      : table('| Role | What they can do |', view.roles.map((r) => ({ name: r.role, keys: r.keys })));
   if (view.systemRoles.length > 0) {
-    out.push('', 'Held by a platform host, never given to a person:', '', '| Role | What it can do |', '| --- | --- |');
-    for (const r of bySort(view.systemRoles, (x) => x.role)) {
-      out.push(`| \`${r.role}\` | ${renderKeys(r.keys, view.descriptions)} |`);
-    }
+    out.push(
+      '',
+      'Held by a platform host, never given to a person:',
+      '',
+      ...table('| Role | What it can do |', view.systemRoles.map((r) => ({ name: r.role, keys: r.keys }))),
+    );
   }
   if (view.entityGrants.length > 0) {
     out.push(
       '',
       'Shared one record at a time, without a role:',
       '',
-      '| Record | What the person it is shared with can do |',
-      '| --- | --- |',
+      ...table('| Record | What the person it is shared with can do |', view.entityGrants.map((g) => ({ name: g.entityType, keys: g.keys }))),
     );
-    for (const g of bySort(view.entityGrants, (x) => x.entityType)) {
-      out.push(`| \`${g.entityType}\` | ${renderKeys(g.keys, view.descriptions)} |`);
-    }
   }
   return out.join('\n');
 }

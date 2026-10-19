@@ -758,12 +758,10 @@ describe('PERMISSIONS.md', () => {
    * reserved, and held by a system-held role in §2a, under the person roles. The emitter's own
    * output is read back in `tools/reserved-keys.test.mts`.
    */
-  const withSystemRole = (t: string, row = '| `reaper` | `list:manage` |') =>
-    reserving('list:manage')(t).replace(
-      '| `viewer` | `list:read` |\n',
-      `| \`viewer\` | \`list:read\` |\n\n### 2a. System-held roles — a platform host's standing principal\n\nNever given to a person.\n\n| Role | Permissions |\n| --- | --- |\n${row}\n`,
-    );
-  const SYSTEM = withSystemRole(PERMS);
+  const SYSTEM = reserving('list:manage')(PERMS).replace(
+    '| `viewer` | `list:read` |\n',
+    "$&\n### 2a. System-held roles — a platform host's standing principal\n\nNever given to a person.\n\n| Role | Permissions |\n| --- | --- |\n| `reaper` | `list:manage` |\n",
+  );
 
   it('reads a system-held role apart from the person roles, and the same file against itself is no change', () => {
     const snap = parsePermissions(SYSTEM);
@@ -774,9 +772,9 @@ describe('PERMISSIONS.md', () => {
     expect(classifyPermissions(SYSTEM, SYSTEM)).toEqual({ bump: 'none', changes: [] });
   });
 
-  it('its twin: a file without §2a has no system-held role, and its roles read as before', () => {
+  it('its twin: a file without §2a has no system-held role, and the same roles', () => {
     expect(parsePermissions(PERMS).systemRoles).toEqual({});
-    expect(parsePermissions(PERMS).roles).toEqual({ member: ['list:create', 'list:read'], viewer: ['list:read'] });
+    expect(parsePermissions(PERMS).roles).toEqual(parsePermissions(SYSTEM).roles);
   });
 
   it('a system-held role added is a flagged widening, by its name; removed, a flagged narrowing', () => {
