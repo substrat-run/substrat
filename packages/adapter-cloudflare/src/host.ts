@@ -533,7 +533,6 @@ import type {
 import {
   isOrangeToOrange,
   isUpgradeRequest,
-  LIVE_MODE_HEADER,
   LIVE_PRINCIPAL_HEADER,
   LIVE_SCOPE_HEADER,
   LIVE_SUBSCRIBE_PATH,
@@ -542,8 +541,8 @@ import {
   LIVE_EXPIRES_HEADER,
   liveInstant,
   encodeLiveWithin,
+  liveRefusalStatus,
   liveWithinOf,
-  type LiveRefusal,
 } from './live-reads.js';
 import { tenantStoreDatabaseName, type D1TenantStores } from './d1.js';
 import { blobStoreBucketName, r2TenantBlobStore, type R2BlobStores } from './r2.js';
@@ -11185,10 +11184,7 @@ export class CloudflareScopeHost implements ScopeHost {
         throw substratError('validation_failed', 'live reads: `expiresAt` must be an ISO 8601 instant');
       }
       if (!isUpgradeRequest(request)) {
-        return new Response('live reads are a WebSocket surface', {
-          status: 426,
-          headers: { [LIVE_MODE_HEADER]: 'not-an-upgrade' satisfies LiveRefusal },
-        });
+        return liveRefusalStatus(426, 'live reads are a WebSocket surface', 'not-an-upgrade');
       }
       /**
        * The orange-to-orange refusal (#938).
@@ -11209,10 +11205,11 @@ export class CloudflareScopeHost implements ScopeHost {
        * what will not work. This connection cannot carry the thing that was asked for.
        */
       if (isOrangeToOrange(request)) {
-        return new Response(
+        return liveRefusalStatus(
+          501,
           'live reads are not available over this connection — the request arrived ' +
             'through a proxied customer zone, which does not carry WebSockets. Poll instead.',
-          { status: 501, headers: { [LIVE_MODE_HEADER]: 'poll' satisfies LiveRefusal } },
+          'poll',
         );
       }
       /**
