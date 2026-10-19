@@ -93,7 +93,7 @@ function reader(answer: (s: ScopeId) => number | null | Error = () => 4096) {
   };
 }
 
-const drained = { drained: 0, done: 0, failed: 0, pending: 0 };
+const drained = { drained: 0, done: 0, failed: 0, pending: 0, attempted: [] };
 
 describe('runPlatformSweep · storage gauge (#1524)', () => {
   it('reads only the scopes the platform-intent drain reached this pass', async () => {

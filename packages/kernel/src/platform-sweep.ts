@@ -159,8 +159,12 @@ export interface PlatformSweepOptions {
     done: number;
     failed: number;
     pending: number;
-    /** #2431: the ids this drain tried, which a second drain in the same pass is told to skip. */
-    attempted?: string[];
+    /**
+     * #2431: the ids this drain tried, which a second drain in the same pass is told to skip —
+     * `[]` when it tried none. Required, so a fn that leaves it out does not compile, rather than
+     * having its intents silently tried twice.
+     */
+    attempted: string[];
     /** No deployment could be reached for this scope, so nothing was drained or counted (#1840). */
     unreachable?: boolean;
     /** Pending intents nothing could run or settle — their stored id is not an id (#1637). */
@@ -1410,7 +1414,7 @@ export async function runPlatformSweep(
         const earlier = drainedThisPass.get(s.id);
         if (!earlier) return;
         try {
-          const again = await drain!(s.tenantId, s.id, { skip: earlier.attempted ?? [] });
+          const again = await drain!(s.tenantId, s.id, { skip: earlier.attempted });
           tallyPlatformDrain(report, s, again, earlier);
         } catch (err) {
           report.errors.push({ kind: 'platform-request', id: s.id, error: message(err) });

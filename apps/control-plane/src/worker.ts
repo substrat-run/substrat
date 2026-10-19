@@ -1976,17 +1976,21 @@ export function drainContextOf(
   };
 }
 
+function withoutAttempted({ attempted: _, ...report }: ScopeDrainReport & { attempted: string[] }): ScopeDrainReport {
+  return report;
+}
+
 async function drainOneScope(
   env: Env,
   t: TenantId,
   s: ScopeId,
   /** #2431: intents an earlier drain this pass already tried — `PlatformDrainOptions.skip`. */
   opts?: { skip?: readonly string[] },
-): Promise<ScopeDrainReport & { attempted?: string[] }> {
+): Promise<ScopeDrainReport & { attempted: string[] }> {
   const host = hostFor(env);
   const resolveVerticalForScope = resolveVerticalForScopeFor(env);
   const target = await drainTarget(await host.admin.getScopeRecord(SWEEP_ACTOR, t, s), resolveVerticalForScope);
-  if ('report' in target) return target.report;
+  if ('report' in target) return { ...target.report, attempted: [] };
   const { rec, vertical, client } = target;
   // The managed-tenant capability (#412/#444): who may create tenants is the registry's
   // `tenantProvisioner` flag — a staff grant read by admitManager at drain time. The
@@ -2061,8 +2065,7 @@ async function drainOneScope(
       attempted,
     },
   );
-  // Only for the sweep, which passes options: the kick route returns its report to the router as is.
-  return opts ? { ...report, attempted } : report;
+  return { ...report, attempted };
 }
 
 /**
@@ -2627,8 +2630,9 @@ export default {
       const kick = drainKickOf(body);
       // Runs inline: the router backgrounds this call with `ctx.waitUntil`, so completing the
       // drain here is what keeps the subrequest alive long enough to actually settle the intents.
+      // `attempted` is for the sweep's second drain (#2431); the router is answered as before.
       const report = kick.intents
-        ? await drainOneScope(c.env, ids.data, sids.data)
+        ? withoutAttempted(await drainOneScope(c.env, ids.data, sids.data))
         : { drained: 0, done: 0, failed: 0, pending: 0 };
       // The scope's response committed an exported type: ask for THIS producer's outgoing edges.
       // Through its coalescer, never inline: the flag is a header tenant code sets, and a pass
