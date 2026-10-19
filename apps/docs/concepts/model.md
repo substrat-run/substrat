@@ -431,8 +431,13 @@ Every one of these is a compile error, not a lint:
 - **`paged.over.sortable` and `filterable` name columns of the named entity** — a typo is a
   compile error listing the columns that do exist, and the entity must be *pointable*, since
   a keyset walk needs one column to break ties on
-- **a bare `z.array()` output with no `paged`** is refused when the module loads: a list read
-  that answers with the whole table is unbounded by construction
+- **an array output with no `paged`** is refused when the module loads: a list read that
+  answers with the whole table is unbounded by construction. An array under `.optional()`,
+  `.nullable()`, `.default()`, `.readonly()`, a union or intersection, `z.lazy()` or a pipe's out
+  side is the same array, and so is a `z.record()`, `z.map()` or `z.set()`. An output the gate
+  cannot read — `z.custom()`, `z.instanceof()`, `z.any()`, `z.unknown()`, a transform — is refused
+  too, since it could be the whole table. Declare the entry schema and `paged`. An array *inside*
+  an object (`z.object({ ids: z.array(…) })`) is not judged
 - **`concurrency.over` names the entity the operation `emits` about** — a version is the ULID
   of the last event about the entity, so a guarded write that announces nothing would leave
   both writers' `If-Match` passing and both commits landing; refused at module load
