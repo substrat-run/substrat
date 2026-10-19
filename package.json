@@ -104,6 +104,7 @@
     "lint:publish-manifests": "node tools/publish-manifests.mjs",
     "test:publish-manifests": "node --test tools/publish-manifests.test.mjs",
     "test:bare-regexp": "node --test tools/bare-regexp.test.mjs",
+    "test:version-label": "node --test tools/version-label.test.mjs",
     "test:attachment-writers": "node --test tools/attachment-writers.test.mjs",
     "test:review-checklist": "node --test tools/review-checklist.test.mjs",
     "test:secret-literals": "node --test tools/secret-literals.test.mjs",

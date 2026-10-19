@@ -129,6 +129,12 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   `expect.stringMatching(/zzz/)`. Only `toMatchObject` has the flaw — `toEqual`,
   `toHaveProperty` and `expect.objectContaining({ a: /re/ })` apply the pattern — so
   those are not refused (`tools/bare-regexp.mjs`, fixtures via `pnpm test:bare-regexp`).
+  It also refuses a **version label cut from an id** (#2402): `version: \`1.0.${id.slice(-4)}\``.
+  `vertical_versions` is unique on `(slug, version)` and the kernel's ulid re-draws its random
+  half in every later millisecond, so a suffix collides with another version of the slug now and
+  then — a red on `main` that no change caused. Write the label from the whole id,
+  `1.0.${id.toLowerCase()}`. Scoped to `version:` values, so a slug or tag taking an id's tail is
+  untouched (`tools/version-label.mjs`, fixtures via `pnpm test:version-label`).
   A pattern reached through a variable is out of its sight; write it inline.
 - **Every node suite runs with a Durable Object's `LIKE`/`GLOB` pattern limit on** (#1655).
   A DO's SQLite refuses a pattern over **50 bytes** (`LIKE or GLOB pattern too complex`);
