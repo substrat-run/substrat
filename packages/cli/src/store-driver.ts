@@ -9,19 +9,25 @@
  *   fleet takes more than one request: the command says so, and running it again continues.
  * - `rollback` returns the driver to the immediately previous good release.
  *
- * What is packed is the driver's own package only: every `driver_<name>/…/*.py` under `--dir`, by
- * its path relative to it. `__pycache__` is skipped. Anything else is refused by name, vendored
- * packages included: a release is one `driver_` package (the platform's module rule), so a driver
- * that needs a third-party package cannot be published yet.
+ * What is packed is the driver's own package, every `driver_<name>/…/*.py` under `--dir`, and a
+ * `python_modules/` directory next to it (#2390). Paths are relative to `--dir`. `__pycache__`
+ * is skipped, and so are the two markers `pywrangler sync` writes into `python_modules/`
+ * (`.synced` and `pyvenv.cfg`), which the output names. Anything else is refused by the same
+ * module rule the upload applies: one `driver_` package, and vendored paths that do not shadow
+ * the runtime or the entry. The workers runtime SDK a sync installs is refused, not dropped.
+ *
+ * What vouches for what (D-63): the source commit vouches for the driver package and for the
+ * pyproject/lock its dependencies were installed from. `python_modules/` is install output, which
+ * git normally ignores, so it is not held to the commit; its bytes are vouched for by the release
+ * sha256 alone, which covers every vendored name and byte. The output says so for every release
+ * that carries one, pinned or not.
  */
 import { spawnSync } from 'node:child_process';
-import { lstatSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { STORE_RELEASE_MAX_BYTES, type StoreDriverReleaseUpload } from '@substrat-run/contracts';
+import { classifyPythonStoreModule, STORE_RELEASE_MAX_BYTES, STORE_RELEASE_MAX_MODULES, type StoreDriverReleaseUpload } from '@substrat-run/contracts';
 import type { StoreDriverRebuildView, StoreDriverView } from '@substrat-run/control-plane-client';
 import { planeFor } from './plane.js';
-
-const DRIVER_MODULE = /^driver_[a-z0-9_]+\/(?:[A-Za-z_][A-Za-z0-9_]*\/)*[A-Za-z_][A-Za-z0-9_]*\.py$/;
 
 function base64(bytes: Uint8Array): string {
   let text = '';
@@ -29,13 +35,24 @@ function base64(bytes: Uint8Array): string {
   return btoa(text);
 }
 
-/** How deep, and how many files, a driver's package may go: past either it is not one package. */
+/** How deep a driver's tree may go: past it, it is not one package. How many files is the release's own limit. */
 const MAX_DEPTH = 16;
-const MAX_FILES = 2000;
+
+/** Where a release's dependencies are, under `--dir`: the one directory the commit does not vouch for. */
+const VENDORED_DIR = 'python_modules';
 
 /**
- * Every file under `dir`, by its path relative to it, `__pycache__` and `.pyc` left out. A symbolic
- * link is refused, not followed: it could pack a file from outside `dir`, or loop forever.
+ * The markers `pywrangler sync` writes into `python_modules/` beside what it installs: install
+ * output, not a dependency. The walk skips exactly these; the upload still refuses them by name.
+ */
+export const INSTALLER_MARKERS: readonly string[] = [`${VENDORED_DIR}/.synced`, `${VENDORED_DIR}/pyvenv.cfg`];
+
+const isVendored = (file: string) => file.startsWith(`${VENDORED_DIR}/`);
+
+/**
+ * Every file under `dir`, by its path relative to it, `__pycache__`, `.pyc` and the
+ * {@link INSTALLER_MARKERS} left out. A symbolic link is refused, not followed: it could pack a
+ * file from outside `dir`, or loop forever.
  */
 export function packedFilesOf(dir: string): string[] {
   const out: string[] = [];
@@ -48,8 +65,12 @@ export function packedFilesOf(dir: string): string[] {
       if (stat.isDirectory()) {
         if (name !== '__pycache__') walk(path, depth + 1);
       } else if (!name.endsWith('.pyc')) {
-        out.push(relative(dir, path).split(sep).join('/'));
-        if (out.length > MAX_FILES) throw new Error(`'${dir}' holds more than ${MAX_FILES} files`);
+        const file = relative(dir, path).split(sep).join('/');
+        if (INSTALLER_MARKERS.includes(file)) continue;
+        out.push(file);
+        if (out.length > STORE_RELEASE_MAX_MODULES) {
+          throw new Error(`'${dir}' holds more than ${STORE_RELEASE_MAX_MODULES} files; a release carries at most ${STORE_RELEASE_MAX_MODULES} modules`);
+        }
       }
     }
   };
@@ -57,10 +78,15 @@ export function packedFilesOf(dir: string): string[] {
   return out;
 }
 
+/** The {@link INSTALLER_MARKERS} present under `dir`: what the walk skipped. */
+export const skippedInstallerMarkersOf = (dir: string): string[] => INSTALLER_MARKERS.filter((file) => existsSync(join(dir, file)));
+
 /**
- * The commit `dir` is checked out at, for the files about to be packed. Refused unless every one
- * of them is tracked and unchanged there: an untracked, ignored or edited file is not that
- * commit, so the bundle would carry bytes the commit a reviewer reads does not.
+ * The commit `dir` is checked out at, for the driver's files about to be packed. Refused unless
+ * every one of them is tracked and unchanged there, and nothing else under `dir` but
+ * `python_modules/` is changed or deleted: an untracked, ignored or edited file is not that
+ * commit, so the bundle would carry bytes the commit a reviewer reads does not. `python_modules/`
+ * is held to neither check: it is install output, and the release sha256 vouches for its bytes.
  */
 export function sourceCommitOf(dir: string, files: readonly string[]): string {
   const git = (...args: string[]) => spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
@@ -69,11 +95,11 @@ export function sourceCommitOf(dir: string, files: readonly string[]): string {
   const tracked = git('ls-files', '-z', '--', '.');
   if (tracked.status !== 0) throw new Error(`git ls-files failed in '${dir}'`);
   const known = new Set(tracked.stdout.split('\0').filter(Boolean));
-  const untracked = files.filter((file) => !known.has(file));
+  const untracked = files.filter((file) => !isVendored(file) && !known.has(file));
   if (untracked.length > 0) {
     throw new Error(`${untracked.join(', ')} ${untracked.length === 1 ? 'is' : 'are'} not committed (untracked or ignored), so the bundle is not commit ${head.stdout.trim()}`);
   }
-  const dirty = git('status', '--porcelain', '--', '.');
+  const dirty = git('status', '--porcelain', '--', '.', `:(exclude)${VENDORED_DIR}`);
   if (dirty.status !== 0 || dirty.stdout.trim() !== '') {
     throw new Error(`'${dir}' has uncommitted changes, so the bundle is not commit ${head.stdout.trim()}; commit them, or pass --commit`);
   }
@@ -83,16 +109,13 @@ export function sourceCommitOf(dir: string, files: readonly string[]): string {
 /** The driver's package under `dir`, as the upload body. `entry` is the module with the class. */
 export function packStoreDriverDir(dir: string, entry: string, sourceCommit: string): StoreDriverReleaseUpload {
   const files = packedFilesOf(dir);
-  const refused = files.filter((path) => !DRIVER_MODULE.test(path));
-  if (refused.length > 0) {
-    throw new Error(
-      `only the driver's own package is published (driver_<name>/…/*.py); refused: ${refused.join(', ')}. ` +
-        'Vendored packages are not supported: a release is one driver_ package.',
-    );
-  }
-  const packages = new Set(files.map((path) => path.split('/')[0]));
+  const packages = new Set<string>();
+  const classes = new Map(files.map((path) => [path, classifyPythonStoreModule(path)] as const));
+  for (const classified of classes.values()) if (classified.kind === 'driver') packages.add(classified.packageName);
   if (packages.size !== 1) throw new Error(`'${dir}' must hold exactly one driver_ package, not ${[...packages].join(', ') || 'none'}`);
-  if (!files.includes(entry)) throw new Error(`'${dir}' has no ${entry}`);
+  const entryClass = classes.get(entry);
+  if (!entryClass) throw new Error(`'${dir}' has no ${entry}`);
+  if (entryClass.kind !== 'driver') throw new Error(`'${entry}' is not a driver module`);
   let total = 0;
   const modules = files.map((name) => {
     const content = readFileSync(join(dir, name));
@@ -101,6 +124,23 @@ export function packStoreDriverDir(dir: string, entry: string, sourceCommit: str
   });
   if (total > STORE_RELEASE_MAX_BYTES) throw new Error(`the package is ${total} bytes; a release carries at most ${STORE_RELEASE_MAX_BYTES}`);
   return { sourceCommit, entry, modules };
+}
+
+/**
+ * What `upload` says about what vouches for the release it stored, beyond its sha256 and commit:
+ * the installer markers the walk skipped, and, when it carries `python_modules/`, that those bytes
+ * are vouched for by the sha256 only. Said for every such release, whether it is pinned yet or not.
+ */
+export function storeDriverPackLines(input: { files: readonly string[]; skipped: readonly string[]; sha256: string; sourceCommit: string }): string[] {
+  const lines = input.skipped.length > 0 ? [`  skipped the installer's markers: ${input.skipped.join(', ')}`] : [];
+  const vendored = input.files.filter(isVendored).length;
+  if (vendored > 0) {
+    lines.push(
+      `  ${VENDORED_DIR}/: ${vendored} file(s) vouched for by sha256 ${input.sha256} only, not by commit ${input.sourceCommit}; ` +
+        'the commit vouches for the driver package and the pyproject/lock it was installed from',
+    );
+  }
+  return lines;
 }
 
 /** A release is named by its sha256 as `upload` printed it; anything else is refused before a request. */

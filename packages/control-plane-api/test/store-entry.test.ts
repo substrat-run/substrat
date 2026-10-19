@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { storeDriverReleaseDigest } from '@substrat-run/contracts';
 import { generateScopeStoreKeyPair } from '@substrat-run/contracts/scope-store-envelope';
 import {
   STORE_CLASS_PLACEHOLDER,
@@ -6,6 +7,7 @@ import {
   STORE_DRIVER_PLACEHOLDER,
   STORE_OBJECT_BINDING,
   STORE_OBJECT_CLASS,
+  STORE_PYTHON_DATA_CONTENT_TYPE,
   STORE_RESERVED_MODULES,
   STORE_VERIFIER_MODULE,
   withPythonStoreEntry,
@@ -145,7 +147,57 @@ describe('withPythonStoreEntry', async () => {
     ['a class name that is not a Python identifier', release(), { className: 'Graph$Store' }, /not an identifier/],
     ['an empty script name', release(), { script: '' }, /script name/],
     ['one key for both audiences', release(), { platformPublicKeys: [caller.publicKey] }, /both audiences/],
+    ['a vendored path that climbs', release({ modules: [py('driver_graph/store.py'), py('python_modules/../store.py')] }), {}, /may not ship/],
+    ['a vendored absolute path', release({ modules: [py('driver_graph/store.py'), py('/python_modules/six.py')] }), {}, /may not ship/],
+    ['a vendored drive path', release({ modules: [py('driver_graph/store.py'), py('C:/python_modules/six.py')] }), {}, /may not ship/],
+    ['a vendored backslash', release({ modules: [py('driver_graph/store.py'), py('python_modules\\six.py')] }), {}, /may not ship/],
+    ['a vendored name that takes the driver prefix', release({ modules: [py('driver_graph/store.py'), py('python_modules/driver_other/x.py')] }), {}, /driver_other/],
+    ['a vendored name that takes the entry prefix', release({ modules: [py('driver_graph/store.py'), py('python_modules/substrat_store/x.py')] }), {}, /substrat_store/],
+    ['a vendored workers package', release({ modules: [py('driver_graph/store.py'), py('python_modules/workers/__init__.py')] }), {}, /workers/],
+    ['a vendored workers module', release({ modules: [py('driver_graph/store.py'), py('python_modules/workers.py')] }), {}, /workers\.py/],
+    ['a vendored workers SDK javascript', release({ modules: [py('driver_graph/store.py'), py('python_modules/workers/workflows.js')] }), {}, /workflows\.js/],
+    ['a vendored js package', release({ modules: [py('driver_graph/store.py'), py('python_modules/js/ffi.py')] }), {}, /js\/ffi\.py/],
+    ['a vendored pyodide package', release({ modules: [py('driver_graph/store.py'), py('python_modules/pyodide/ffi.py')] }), {}, /pyodide/],
+    ['a vendored runtime SDK file', release({ modules: [py('driver_graph/store.py'), py('python_modules/_workers_sdk_patch_loader.py')] }), {}, /_workers_sdk/],
+    ['a vendored path file', release({ modules: [py('driver_graph/store.py'), py('python_modules/pkg/extra.pth')] }), {}, /\.pth/],
+    ['a vendored pyvenv.cfg', release({ modules: [py('driver_graph/store.py'), py('python_modules/pyvenv.cfg')] }), {}, /pyvenv\.cfg/],
+    ['a vendored sync marker', release({ modules: [py('driver_graph/store.py'), py('python_modules/pkg/marker.synced')] }), {}, /\.synced/],
+    ['a duplicate vendored module', release({ modules: [py('driver_graph/store.py'), py('python_modules/six.py'), py('python_modules/six.py')] }), {}, /twice/],
+    ['an entry that is a vendored module', release({ entry: 'python_modules/six.py', modules: [py('driver_graph/store.py'), py('python_modules/six.py')] }), {}, /not a driver module/],
   ] as const)('refuses %s', (_, bad, patch, error) => {
     expect(() => withPythonStoreEntry(bad, { ...options, ...patch })).toThrow(error);
+  });
+
+  it('ships a vendored .py, a data file and a nested package as Data modules, and the driver as Python', () => {
+    const given = release({
+      modules: [
+        py('driver_graph/store.py'),
+        py('python_modules/six.py'),
+        { name: 'python_modules/vendor_probe/payload.txt', content: new TextEncoder().encode('payload-ok') },
+        py('python_modules/vendor_probe/nested/mod.py'),
+      ],
+    });
+    const script = withPythonStoreEntry(given, options);
+    expect(script.modules.map((m) => [m.name, m.contentType])).toEqual([
+      ['substrat_store_entry.py', 'text/x-python'],
+      [STORE_VERIFIER_MODULE, 'application/javascript+module'],
+      ['driver_graph/store.py', 'text/x-python'],
+      ['python_modules/six.py', STORE_PYTHON_DATA_CONTENT_TYPE],
+      ['python_modules/vendor_probe/payload.txt', STORE_PYTHON_DATA_CONTENT_TYPE],
+      ['python_modules/vendor_probe/nested/mod.py', STORE_PYTHON_DATA_CONTENT_TYPE],
+    ]);
+    expect(script.modules[3]!.content).toBe(given.modules[1]!.content);
+    expect(STORE_PYTHON_DATA_CONTENT_TYPE).toBe('application/octet-stream');
+  });
+
+  it('covers a vendored module in the release sha256 the same way it covers a driver module', async () => {
+    const base = release();
+    const vendor = { name: 'python_modules/vendor_probe/payload.txt', content: new TextEncoder().encode('one') };
+    const withVendor = release({ modules: [...base.modules, vendor] });
+    const changed = release({ modules: [...base.modules, { ...vendor, content: new TextEncoder().encode('two') }] });
+    const digest = await storeDriverReleaseDigest(withVendor);
+    expect(digest).not.toBe(await storeDriverReleaseDigest(base));
+    expect(digest).not.toBe(await storeDriverReleaseDigest(changed));
+    expect(await storeDriverReleaseDigest({ ...withVendor, modules: [...withVendor.modules].reverse() })).toBe(digest);
   });
 });

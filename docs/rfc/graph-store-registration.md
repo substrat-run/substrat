@@ -63,8 +63,11 @@ resolveHistoryRevision
   ratified text defers registering an external driver until stronger isolation
   exists; confirm that requirement is satisfied before enabling this one.
 - Check that the release fits the current Python module rules: one `driver_`
-  package, no vendored dependencies or reserved platform module names. The
-  original proposal does not establish compatibility with these rules.
+  package, plus `python_modules/<path>` for its dependencies. It may not ship
+  `workers`, `js`, `pyodide`, the workers runtime SDK, or a vendored path that
+  takes the driver's or the entry's name, a standard-library name or the rest
+  of the runtime's glue. The original proposal does not
+  establish compatibility with these rules.
 - Exercise the real dispatch upload and reserved-operation canary, and verify
   schema compatibility for rollout and rollback. Local entry tests alone do
   not establish a production dispatch upload.
