@@ -130,7 +130,9 @@ every active install whose provision receipt is behind the version it now serves
 
 **5. Recurring schedules.** For each vertical that declares them, enumerate live scopes and
 invoke each due operation. A fork or a snapshot is **skipped**, so a test copy never runs
-real recurring side effects.
+real recurring side effects. When the pass also drains platform intents, a scope whose
+schedules just enqueued some is drained once more right after them, so a scheduled send does
+not wait a whole interval for phase 3 to come round again.
 
 **6. Freshness expectations.** Record a verdict on event types that were expected to have
 been seen recently — the "nothing ran" signal, which is otherwise invisible because absence

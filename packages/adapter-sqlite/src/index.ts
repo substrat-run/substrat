@@ -5861,8 +5861,9 @@ export class SqliteScopeHost implements ScopeHost {
 
     const now = Date.parse(nowIso);
     const lines = asyncLinePass(this.invocationLineSink);
-    // #2431: what the fires below enqueued, reported so the sweep that ran this pass can drain
-    // the scope at once. The callback an HTTP harness uses to flag the router kick (#458).
+    // #2431: what the fires below report through `onPlatformRequests` — the callback an HTTP
+    // harness uses to flag the router kick (#458) — so the sweep that ran this pass can drain the
+    // scope at once. `ScheduleRunReport.platformRequests` says what that does and does not count.
     let platformRequests = 0;
     const counted: ScopeStubOptions = { onPlatformRequests: (n) => (platformRequests += n) };
     for (const schedule of mod.schedules) {

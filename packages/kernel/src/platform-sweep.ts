@@ -933,7 +933,8 @@ export interface PlatformRequestUnsettleable {
 /**
  * Platform-intent drain counts, summed across scopes in one pass. A scope the pass drains twice,
  * once more after its schedules enqueued requests (#2431), adds what each drain did, while
- * `pending` and `unsettleable` are its later drain's: they describe the queue the pass leaves.
+ * `pending` and `unsettleable` are its later drain's: they describe the queue the pass leaves. A
+ * later drain that reached no deployment, or threw, leaves the earlier one's figures standing.
  */
 export interface PlatformRequestDrainTotals {
   /** Active scopes that had at least one intent drained. */
@@ -1373,11 +1374,13 @@ export async function runPlatformSweep(
         // that one gives them the scope's whole headroom under the pending cap. Once, firing
         // nothing, so it cannot loop, and only on a scope the drain phase reached; any other waits
         // for the next pass. The cost: an intent the first drain left pending is tried again here,
-        // one more attempt toward its ceiling.
+        // one more attempt toward its ceiling. A second drain that reached no deployment saw no
+        // queue, so the first drain's figures stand, as they do when it throws.
         const earlier = drainedThisPass.get(s.id);
         if (!earlier || !drain) return;
         try {
-          tallyPlatformDrain(report, s, await drain(s.tenantId, s.id), earlier);
+          const again = await drain(s.tenantId, s.id);
+          if (!again.unreachable) tallyPlatformDrain(report, s, again, earlier);
         } catch (err) {
           report.errors.push({ kind: 'platform-request', id: s.id, error: message(err) });
         }

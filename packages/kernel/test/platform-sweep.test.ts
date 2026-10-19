@@ -1552,6 +1552,21 @@ describe('runPlatformSweep — recurring schedules (#383)', () => {
       }
     });
 
+    it('a second drain that reaches no deployment leaves the first drain’s figures standing', async () => {
+      const c = redrainCase({
+        sending: [
+          { drained: 0, done: 0, failed: 0, pending: 5, unsettleable: { count: 1, ids: ['x'] } },
+          { ...quiet, unreachable: true },
+        ],
+      });
+      const report = await runPlatformSweep(c.host, opts({ drainPlatformRequestsFn: c.drainPlatformRequestsFn }));
+      expect(c.timeline.filter((e) => e === 'drain:sending')).toHaveLength(2);
+      // It saw no queue, so it says nothing about one: the first drain's queue is the pass's.
+      expect(report.platformRequestTotals).toMatchObject({ pending: 5, unsettleable: 1, unreachable: 0 });
+      expect(report.platformRequestUnsettleable).toEqual([{ tenantId: T, scopeId: c.sending, count: 1, ids: ['x'] }]);
+      expect(report.errors).toEqual([]);
+    });
+
     it('records a second drain that throws, and the pass goes on', async () => {
       const c = redrainCase({ sending: [{ drained: 1, done: 1, failed: 0, pending: 0 }, new Error('vertical down')] });
       const report = await runPlatformSweep(c.host, opts({ drainPlatformRequestsFn: c.drainPlatformRequestsFn }));

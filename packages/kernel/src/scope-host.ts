@@ -1394,13 +1394,16 @@ export interface ScheduleRunReport {
    */
   runs?: { operation: string; outcome: 'ok' | 'failed' | 'skipped' }[];
   /**
-   * Platform requests this pass's runs enqueued and committed (#2431), counted the way
-   * `ScopeStubOptions.onPlatformRequests` counts an invoke's. A sweep that ran the pass drains
-   * the scope again when this is set, so a scheduled write waits seconds rather than one sweep
-   * interval. Absent when the pass enqueued none, and from a host that predates the field:
-   * either way the requests wait for the next drain, as they always did. A purge horizon's runs
-   * are not counted: the purges run inside the scope, which reports no count for them, and
-   * whatever they enqueue waits for the next drain.
+   * Platform requests this pass's runs enqueued (#2431): exactly what
+   * `ScopeStubOptions.onPlatformRequests` reports for each fire's invoke. That is the
+   * `ctx.requestPlatform` calls the operation itself committed, plus, on Cloudflare, the
+   * connector deliveries its tail routed to the platform. It is not a consumer's requests from
+   * that tail, and not those of a fire whose invoke threw after the operation committed. A
+   * sweep that ran the pass drains the scope again when this is set, so a scheduled write
+   * waits seconds rather than one sweep interval; whatever it does not count waits for the next
+   * drain, as it always did. Absent when the count is zero, and from a host that predates the
+   * field. A purge horizon's runs are not counted: the purges run inside the scope, which
+   * reports no count for them.
    */
   platformRequests?: number;
 }
