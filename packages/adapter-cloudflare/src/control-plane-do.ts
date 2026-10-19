@@ -168,7 +168,7 @@ import {
   type ServingPointer,
 } from '@substrat-run/kernel';
 import {
-  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS, SERVES_NOW_CONDITION, SERVES_NOW_PREDICATE, servesNowParams, type ExpectedServing,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_RENEW_SQL, copyMoveRenewParams, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS, SERVES_NOW_CONDITION, SERVES_NOW_PREDICATE, servesNowParams, type ExpectedServing,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
   type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -3564,6 +3564,16 @@ export class ControlPlaneDO extends DurableObject {
       this.recordAdmin({ ...audit, before: { erasureEpoch: scope!.erasure_epoch } });
       return 'recorded';
     });
+  }
+
+  /** #2450: renew every entry of a move at once, or none (`COPY_MOVE_RENEW_SQL`). */
+  renewScopeScriptCopy(tenantId: string, scopeId: string, moveId: string, leaseMs: number = SCOPE_COPY_LEASE_MS):
+    { renewedAt: number; leaseUntil: string } | null {
+    const renewedAt = Date.now();
+    const leaseUntil = new Date(renewedAt + leaseMs).toISOString();
+    const renewed = this.sql.exec(COPY_MOVE_RENEW_SQL,
+      ...copyMoveRenewParams(tenantId, scopeId, moveId, leaseUntil, new Date(renewedAt).toISOString())).rowsWritten > 0;
+    return renewed ? { renewedAt, leaseUntil } : null;
   }
 
   claimExpiredScopeScriptCopies(input: { now: string; leaseUntil: string; owner: string; limit: number }): ScopeScriptCopyRow[] {

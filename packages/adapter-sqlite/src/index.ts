@@ -841,7 +841,7 @@ import {
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow, normalizeUploadMediaType, type RedeemedUploadLink, type UploadLinkRedeemInput, type UploadTarget } from '@substrat-run/kernel';
 import {
-  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_RENEW_SQL, copyMoveRenewParams, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
   type ScopeCopyMoveConfirmation, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -10021,6 +10021,13 @@ export class SqliteScopeHost implements ScopeHost {
             { scriptRef, fromLogId: opts?.fromLogId ?? null });
           return 'recorded';
         })();
+      },
+      renewScopeScriptCopy: async (_actor, tenantId, scopeId, moveId, opts) => {
+        const renewedAt = Date.now();
+        const leaseUntil = new Date(renewedAt + (opts?.leaseMs ?? SCOPE_COPY_LEASE_MS)).toISOString();
+        const renewed = this.directory.prepare(COPY_MOVE_RENEW_SQL)
+          .run(...copyMoveRenewParams(tenantId, scopeId, moveId, leaseUntil, new Date(renewedAt).toISOString())).changes > 0;
+        return renewed ? { renewedAt, leaseUntil } : null;
       },
       claimExpiredScopeScriptCopies: async (_actor, input) => {
         const limit = assertRowLimit('limit', input.limit);

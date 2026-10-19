@@ -55,6 +55,27 @@ export const copyMoveConfirmParams = (
   now, tenantId, scopeId, confirm.moveId,
 ];
 
+/**
+ * Renew a move's lease (#2450): every entry of the move at once, or none. Only while each is still
+ * pending, unclaimed and inside its lease, which is exactly what a confirming bind requires
+ * (`COPY_MOVE_LIVE_PREDICATE`), so a renewal never reaches an entry a sweep could have claimed: the
+ * sweep claims an entry only once its lease has run out, and a lease renewed in time never does. A
+ * lease only grows. For a copy that runs longer than one lease (a scope copied a page at a time in
+ * the background), renewed at every step. Params: `copyMoveRenewParams`.
+ */
+export const COPY_MOVE_RENEW_SQL = `
+  UPDATE scope_script_copies SET lease_until = MAX(lease_until, ?)
+  WHERE tenant_id = ? AND scope_id = ? AND move_id = ? AND state = 'pending'
+    AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS move
+      WHERE move.tenant_id = scope_script_copies.tenant_id AND move.scope_id = scope_script_copies.scope_id
+        AND move.move_id = scope_script_copies.move_id
+        AND (move.state <> 'pending' OR move.lease_owner IS NOT NULL
+          OR move.lease_until IS NULL OR move.lease_until <= ?))`;
+
+export const copyMoveRenewParams = (
+  tenantId: string, scopeId: string, moveId: string, leaseUntil: string, now: string,
+): string[] => [leaseUntil, tenantId, scopeId, moveId, now];
+
 /** Pending entries whose lease ran out before `?` (or that never had one), oldest first, `LIMIT ?`. */
 export const COPY_EXPIRED_SQL = `
   SELECT tenant_id, scope_id, script_ref, move_id FROM scope_script_copies

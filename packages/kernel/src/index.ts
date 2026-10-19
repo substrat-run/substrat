@@ -142,6 +142,8 @@ export {
   subjectErasureClaimParams,
   type SubjectErasureFence,
   COPY_EXPIRED_SQL,
+  COPY_MOVE_RENEW_SQL,
+  copyMoveRenewParams,
   COPY_MOVE_CONFIRM_SQL,
   COPY_MOVE_LIVE_PREDICATE,
   SCOPE_SCRIPT_COPY_COLUMNS,

@@ -2841,6 +2841,18 @@ export interface HostAdmin {
     opts?: { role?: ScopeCopyRole; loadStamp?: string | null; leaseMs?: number },
   ): Promise<void>;
   /**
+   * Renew the lease of every entry `moveId` recorded for this scope (#2450), to `leaseMs` from now
+   * (default `SCOPE_COPY_LEASE_MS`): all of them, or none. Only while each is still pending,
+   * unclaimed and inside its lease, so a move a sweep could already be acting on is never revived.
+   * Answers the lease's new end, which the move's restore fence is then computed from
+   * (`copyRestoreFence` at the renewal), or `null` when nothing was renewed: the move must stop,
+   * since it can no longer be confirmed. For a copy that runs longer than one lease.
+   */
+  renewScopeScriptCopy(
+    actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, moveId: string,
+    opts?: { leaseMs?: number },
+  ): Promise<{ renewedAt: number; leaseUntil: string } | null>;
+  /**
    * Claim up to `limit` pending entries whose lease ran out before `now` (a move that crashed,
    * or a sweep that did), leasing each to `owner` until `leaseUntil`. An entry whose lease is
    * live is never returned, so a move still in flight keeps it; and a move whose lease ran out
