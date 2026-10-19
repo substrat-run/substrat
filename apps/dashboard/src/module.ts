@@ -837,7 +837,7 @@ const listPageInput = {
 const listAppsInput = z.object(listPageInput);
 
 /** The account's apps, newest first — a plain read, gated by `dashboard:read`. Deleted apps are hidden. */
-const listAppsOp: OperationHandler<z.infer<typeof listAppsInput>, DashboardAppRow[]> = async (ctx, raw) => {
+const listAppsOp: OperationHandler<z.infer<typeof listAppsInput> | undefined, DashboardAppRow[]> = async (ctx, raw) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
   const input = listAppsInput.parse(raw ?? {});
   return ctx.sql.query<DashboardAppRow>(
@@ -1284,7 +1284,7 @@ const revokeInviteOp: OperationHandler<z.infer<typeof revokeInviteInput>, void> 
 const listMembersInput = z.object(listPageInput);
 
 /** The team roster — active members + outstanding invites, newest first (id DESC ≡ invited_at DESC). Gated read. */
-const listMembersOp: OperationHandler<z.infer<typeof listMembersInput>, DashboardMemberRow[]> = async (ctx, raw) => {
+const listMembersOp: OperationHandler<z.infer<typeof listMembersInput> | undefined, DashboardMemberRow[]> = async (ctx, raw) => {
   assertAllowed(await ctx.check(DASHBOARD_PERM.read));
   const input = listMembersInput.parse(raw ?? {});
   const rows = ctx.sql.query<DashboardMemberRow>(
@@ -1678,6 +1678,7 @@ const dashboardOperations = defineOperations({}, Object.values(DASHBOARD_PERM))(
     summary: 'List the team’s apps',
     permission: DASHBOARD_PERM.read,
     input: listAppsInput,
+    inputOptional: true,
     output: returnsOf(listAppsOp),
   },
   'dashboard/delete-app': {
@@ -1774,6 +1775,7 @@ const dashboardOperations = defineOperations({}, Object.values(DASHBOARD_PERM))(
     summary: 'List the team’s roster',
     permission: DASHBOARD_PERM.read,
     input: listMembersInput,
+    inputOptional: true,
     output: returnsOf(listMembersOp),
   },
   'dashboard/remove-member': {
