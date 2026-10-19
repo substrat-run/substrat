@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { buildPermissionRegistry, pushedPermissionRegistry, type PermissionsInput } from '../src/deploy.js';
+import { permissionKey } from '../src/ids.js';
 import { moduleManifest } from '../src/manifest.js';
 import { reservedKeyOffences, reservedKeysOf } from '../src/reserved-keys.js';
 
@@ -80,7 +81,7 @@ describe('a reserved key in a person’s role or grant shape is refused where th
     expect(() =>
       build({
         roles: [role('assistant-host', ['assistant:run'], 'system'), role('member', ['assistant:use'])],
-        entityGrants: [{ entityType: 'thread', permissions: ['assistant:use'] }],
+        entityGrants: [{ entityType: 'thread', permissions: [permissionKey.parse('assistant:use')] }],
       }),
     ).not.toThrow();
   });
