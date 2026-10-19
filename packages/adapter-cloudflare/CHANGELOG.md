@@ -1,5 +1,24 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.151.0
+
+### Minor Changes
+
+- a00c87a: Both scope hosts now count the `ctx.check` calls each invocation makes. An operation that declares a `permission` and returns without calling `ctx.check` writes a `warn` line through `ctx.log` (template `operation completed without a permission check`, field `finding: 'unchecked-operation'`), stamped with the tenant, scope, operation and invocation like every other line. The invocation itself is unchanged: no error and no rollback. A refused, caught or throwing check counts, and so does one made inside a helper or a kernel verb. Derived handlers, `narrows` walks and modules bound with `undeclaredOperations` are not held to a check. An operation that deliberately checks nothing declares `narrows: { reason, checks: [], unchecked: true }`.
+
+  A node test run can make it a failure by setting the registered `globalThis` flag named by `REFUSE_UNCHECKED_OPERATIONS_KEY`: the operation then throws `UncheckedOperation` after the line and rolls back. The kernel exports `countChecks`, `noteUncheckedCompletion`, `checkHeldOperationsOf`, `UncheckedOperation`, `REFUSE_UNCHECKED_OPERATIONS_KEY`, `UNCHECKED_OPERATION_TEMPLATE` and `UNCHECKED_OPERATION_FINDING`. `@substrat-run/contract-tests` adds `checkTallyContractSuite`, which every adapter runs.
+
+### Patch Changes
+
+- 9c3a275: A `defineScopeDO` class now refuses an operation name that two registrations both bind, with `operation already defined: <name>` when the object starts. The coordinator and the pure host already refused it; the Durable Object let the second registration replace the first without a word. A worker that registers the same module list on its `CloudflareScopeHost` is unaffected, since the coordinator refuses a repeat there already. A worker whose `defineScopeDO` list differs from its coordinator's and repeats a name would now fail at construction, with that message.
+- Updated dependencies [8273013]
+- Updated dependencies [4efc88d]
+- Updated dependencies [a667881]
+- Updated dependencies [f614b00]
+- Updated dependencies [a00c87a]
+  - @substrat-run/contracts@0.151.0
+  - @substrat-run/kernel@0.151.0
+
 ## 0.150.0
 
 ### Patch Changes
@@ -7093,7 +7112,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
