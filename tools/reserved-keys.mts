@@ -11,10 +11,9 @@
  * principal already holds to one schedule's call. It says where a system principal may USE a key,
  * not that a person may not be given it. Nothing else models "never a person's".
  *
- * Which keys are reserved is declared, not listed here: a module marks one `holder: 'system'` on
- * its manifest's permission declaration, so an engine states it where it declares the key and
- * the reservation reaches every vertical that composes the engine. It was a table in this file
- * while `assistant:run` was the only such key.
+ * Which keys are reserved is declared: a module marks one `holder: 'system'` on its manifest's
+ * permission declaration, so an engine states it where it declares the key and the reservation
+ * reaches every vertical that composes the engine.
  */
 
 /** What the manifests say about a key reserved to a system principal. */
@@ -36,16 +35,16 @@ interface ManifestLike {
  * re-declaring the key, unmarked, in a module of its own.
  */
 export function reservedKeysOf(modules: ManifestLike[]): Map<string, ReservedKey> {
-  const out = new Map<string, ReservedKey>();
+  const seen = new Map<string, { description: string; declaredBy: Set<string> }>();
   for (const m of modules) {
     for (const p of m.manifest.permissions) {
       if (p.holder !== 'system') continue;
-      const seen = out.get(p.key);
-      if (seen) seen.declaredBy = [...new Set([...seen.declaredBy, m.manifest.id])].sort();
-      else out.set(p.key, { description: p.description, declaredBy: [m.manifest.id] });
+      let key = seen.get(p.key);
+      if (!key) seen.set(p.key, (key = { description: p.description, declaredBy: new Set() }));
+      key.declaredBy.add(m.manifest.id);
     }
   }
-  return out;
+  return new Map([...seen].map(([k, v]) => [k, { description: v.description, declaredBy: [...v.declaredBy].sort() }]));
 }
 
 export interface ReservedKeyOffence {

@@ -213,6 +213,13 @@ const byKey = <T extends { key: string }>(a: T, b: T) => a.key.localeCompare(b.k
 const sorted = (keys: string[]) => [...keys].sort((a, b) => a.localeCompare(b));
 const code = (s: string) => `\`${s}\``;
 
+/** A markdown table from `[header, cell]` columns, so a column can be added only when a row needs it. */
+const table = <T,>(columns: [string, (row: T) => string][], rows: T[]): string[] => [
+  `| ${columns.map(([h]) => h).join(' | ')} |`,
+  `| ${columns.map(() => '---').join(' | ')} |`,
+  ...rows.map((row) => `| ${columns.map(([, cell]) => cell(row)).join(' | ')} |`),
+];
+
 /**
  * §4's table. Each extra column appears only when some shape needs it, so every other
  * vertical's artifact reads as it did.
@@ -242,11 +249,7 @@ const grantShapeTable = (grants: EntityGrantLike[]): string[] => {
       (g) => (g.bind ? code(g.bind.permission) : '—'),
     ]);
   }
-  return [
-    `| ${columns.map(([h]) => h).join(' | ')} |`,
-    `| ${columns.map(() => '---').join(' | ')} |`,
-    ...grants.map((g) => `| ${columns.map(([, cell]) => cell(g)).join(' | ')} |`),
-  ];
+  return table(columns, grants);
 };
 
 /**
@@ -364,16 +367,21 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
   // A key a manifest declares `holder: 'system'` sits on the schedules/peers side above, or in a
   // system-held role, never in a role or a per-entity shape a person can be handed.
   const reservedKeys = reservedKeysOf(modules);
-  const reserved = reservedKeyOffences({ roles, grants }, reservedKeys);
-  if (reserved.length) cannot(reservedKeyMessage(rel, entry, reserved, reservedKeys));
+  const offences = reservedKeyOffences({ roles, grants }, reservedKeys);
+  if (offences.length) cannot(reservedKeyMessage(rel, entry, offences, reservedKeys));
 
   const holders = new Map<string, string[]>();
   for (const r of roles) for (const p of r.permissions) holders.set(p, [...(holders.get(p) ?? []), r.key]);
 
   const registry = [...declaredBy.entries()].map(([key, v]) => ({ key, ...v })).sort(byKey);
-  // A key's reservation is a declaration on its manifest, so dropping one must land in this diff:
-  // the column appears once any key is reserved, and every other vertical's artifact reads as it did.
-  const reservedCell = (key: string) => (reservedKeys.size ? ` ${reservedKeys.has(key) ? 'yes' : '—'} |` : '');
+  const registryColumns: [string, (r: (typeof registry)[number]) => string][] = [
+    ['Key', (r) => code(r.key)],
+    ['Description', (r) => r.description],
+    ['Declared by', (r) => r.modules.map(code).join(', ')],
+  ];
+  // A key's reservation is a declaration on its manifest, so dropping one must land in this diff.
+  // The column appears once any key is reserved, so every other vertical's artifact reads as it did.
+  if (reservedKeys.size) registryColumns.push(['Reserved to a system principal', (r) => (reservedKeys.has(r.key) ? 'yes' : '—')]);
   const out: string[] = [];
 
   out.push(
@@ -388,11 +396,7 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
     ``,
     `## 1. Registry — every key a registered manifest declares`,
     ``,
-    `| Key | Description | Declared by |${reservedKeys.size ? ' Reserved to a system principal |' : ''}`,
-    `| --- | --- | --- |${reservedKeys.size ? ' --- |' : ''}`,
-    ...registry.map(
-      (r) => `| ${code(r.key)} | ${r.description} | ${r.modules.map(code).join(', ')} |${reservedCell(r.key)}`,
-    ),
+    ...table(registryColumns, registry),
     ``,
     `## 2. Roles — as defined by this vertical's provisioning code`,
     ``,
