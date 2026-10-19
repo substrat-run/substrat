@@ -65,13 +65,14 @@ export interface Actor {
 // apps/dashboard workers). The dashboard's is the one most of a team's entries carry:
 // the admin log records the service that called the control plane, not the person who
 // clicked, so those entries read as the dashboard rather than as a guessed name.
-const SERVICE_ACTORS: Record<string, string> = {
-  '01JZ00000000000000000000SV': 'A connected app',
-  '01JZ00000000000000000000SW': 'Scheduled sweep',
-  '01JZ00000000000000000000CR': 'Connection relay',
-  '01JZ000000000000000000DASH': 'Dashboard',
-  '01JZ000000000000000000BDR1': 'Builder',
-};
+// A Map, not an object literal: an actor id named like an Object.prototype key must not find one.
+const SERVICE_ACTORS = new Map([
+  ['01JZ00000000000000000000SV', 'A connected app'],
+  ['01JZ00000000000000000000SW', 'Scheduled sweep'],
+  ['01JZ00000000000000000000CR', 'Connection relay'],
+  ['01JZ000000000000000000DASH', 'Dashboard'],
+  ['01JZ000000000000000000BDR1', 'Builder'],
+]);
 
 function initialsOf(name: string): string {
   const local = name.split('@')[0]!.replace(/[._-]+/g, ' ').trim();
@@ -87,7 +88,7 @@ function initialsOf(name: string): string {
 export function actorOf(actor: string): Actor {
   if (actor.includes('@')) return { kind: 'person', name: actor, initials: initialsOf(actor) };
   if (actor.startsWith('service:')) return { kind: 'job', name: 'Substrat', initials: 'SU' };
-  const service = SERVICE_ACTORS[actor];
+  const service = SERVICE_ACTORS.get(actor);
   if (service) return { kind: 'job', name: service, initials: initialsOf(service) };
   return { kind: 'unknown', name: `Actor ${shortId(actor)}`, initials: '?' };
 }

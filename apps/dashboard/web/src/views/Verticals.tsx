@@ -36,18 +36,19 @@ import { card, CopyButton, OriginTag, Pill, PageTitle, MonoTag, type PillKind } 
  * a running app) and the CLI push.
  */
 
-const ADMISSION_PILL: Record<string, PillKind> = {
-  admitted: 'success',
-  pending: 'warning',
-  rejected: 'danger',
-};
+// A Map, not an object literal: an admission named like an Object.prototype key must not find one.
+const ADMISSION_PILL = new Map<string, PillKind>([
+  ['admitted', 'success'],
+  ['pending', 'warning'],
+  ['rejected', 'danger'],
+]);
 
 /** Which channels point at a given version id. */
 function channelsFor(d: Deployment, versionId: string): string[] {
   return d.channels.filter((c) => c.versionId === versionId).map((c) => c.channel);
 }
 
-const CHANNEL_PILL: Record<string, PillKind> = { prod: 'success' };
+const CHANNEL_PILL = new Map<string, PillKind>([['prod', 'success']]);
 
 /**
  * The versions table's shape, shared by the header and every row so the two cannot drift.
@@ -60,7 +61,7 @@ const CHANNEL_PILL: Record<string, PillKind> = { prod: 'success' };
 const VERSION_COLUMNS = '1.5fr 1.4fr 0.9fr 1fr 0.9fr';
 const VERSION_HEADER = ['Version', 'Pushed', 'Admission', 'Channels', '~Promote'];
 
-function VersionRow({
+export function VersionRow({
   d,
   v,
   last,
@@ -99,14 +100,14 @@ function VersionRow({
         <OriginTag origin={v.origin} />
       </span>
       <span>
-        <Pill kind={ADMISSION_PILL[v.admission] ?? 'neutral'}>{v.admission}</Pill>
+        <Pill kind={ADMISSION_PILL.get(v.admission) ?? 'neutral'}>{v.admission}</Pill>
       </span>
       <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {here.length === 0 ? (
           <span style={{ color: 'var(--text-tertiary)' }}>—</span>
         ) : (
           here.map((ch) => (
-            <Pill key={ch} kind={CHANNEL_PILL[ch] ?? 'neutral'}>
+            <Pill key={ch} kind={CHANNEL_PILL.get(ch) ?? 'neutral'}>
               {ch}
             </Pill>
           ))
