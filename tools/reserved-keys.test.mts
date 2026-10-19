@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
+import { parsePermissions as permissionsView } from '../packages/model-view/dist/index.js';
+import { classifyPermissions, parsePermissions as snapshotOf } from '../packages/cli/src/bump.ts';
 import { repoRoot } from './repo-path.mjs';
 import { reservedKeyMessage, reservedKeyOffences, reservedKeysOf } from './reserved-keys.mts';
 
@@ -196,6 +198,48 @@ test('…its twin: the same key unmarked passes in a role, and the registry has 
   // Nothing reserved, so the artifact reads as every vertical's did before the column.
   assert.match(rendered(dir), /\| Key \| Description \| Declared by \|\n/);
   assert.doesNotMatch(rendered(dir), /Reserved to a system principal/);
+});
+
+// Emitter to readers: what the tool writes is what `substrat plan`'s classifier and model-view's
+// reader (plan's table, concept.md, the console) read back, column included. No checked-in
+// artifact carries the column yet, so nothing else feeds one to them.
+test('the emitted registry round-trips through both readers, a multi-line description included', () => {
+  const emit = (reserve: boolean) => {
+    const dir = fixtureWith(
+      modulesOf([
+        {
+          ...assistant.manifest,
+          permissions: [
+            { key: 'assistant:use', description: 'Open threads,\nread your own' },
+            { key: 'assistant:run', description: 'drive a run', ...(reserve ? { holder: 'system' } : {}) },
+          ],
+          schedules: [{ operation: 'assistant/sweep', permissions: ['assistant:run'] }],
+        },
+      ]),
+      [{ key: 'member', permissions: ['assistant:use'] }],
+    );
+    assert.equal(run(dir).status, 0);
+    return rendered(dir);
+  };
+  const marked = emit(true);
+  const view = permissionsView(marked);
+  assert.equal(view.registryUnreadable, undefined);
+  assert.deepEqual([...view.reserved], ['assistant:run']);
+  // The newline is flattened, so the row keeps its reservation cell where the readers look.
+  assert.equal(view.descriptions.get('assistant:use'), 'Open threads, read your own');
+  assert.equal(snapshotOf(marked).registryUnreadable, undefined);
+  assert.equal(snapshotOf(marked).registry['assistant:run']?.reserved, true);
+  assert.equal(classifyPermissions(marked, marked).bump, 'none');
+  // And the two directions, emitted rather than hand-written.
+  const unreserved = emit(false);
+  assert.deepEqual([...permissionsView(unreserved).reserved], []);
+  const widened = classifyPermissions(marked, unreserved);
+  assert.equal(widened.bump, 'minor');
+  assert.deepEqual(
+    widened.changes.map((c) => [c.path, c.flagged, /widening/.test(c.detail)]),
+    [['key assistant:run', true, true]],
+  );
+  assert.ok(classifyPermissions(unreserved, marked).changes.some((c) => c.flagged && /narrowing/.test(c.detail)));
 });
 
 // Against the producer: engine-assistant's own built manifest, not a copy of it. If the engine

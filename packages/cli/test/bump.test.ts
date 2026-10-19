@@ -723,6 +723,13 @@ describe('PERMISSIONS.md', () => {
     expect(classifyPermissions(reserving('list:manage')(PERMS), PERMS).changes).toEqual([reservationFlag('list:manage', 'widening')]);
   });
 
+  it('a key added already reserved says so, beside the flag every added key gets', () => {
+    const added = perms((t) => reserving('list:share')(t.replace('| `list:read` | Read a list |', '| `list:share` | Share | `@acme/vertical` |\n| `list:read` | Read a list |')));
+    expect(added.changes).toEqual([
+      expect.objectContaining({ path: 'key list:share', flagged: true, detail: expect.stringMatching(/reserved to a system principal/) }),
+    ]);
+  });
+
   it('no column is no reservation: a file older than it reads as nothing reserved, with no false flag', () => {
     // The column appearing with nothing in it newly reserved is not a permission change.
     const appeared = perms(reserving());

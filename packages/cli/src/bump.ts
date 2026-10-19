@@ -48,7 +48,7 @@
  * authoring notation (`tools/model-diff.mts`). The same classifier is what `substrat changeset`
  * writes, what `--check` holds a hand-written changeset to, and what a status line can show.
  */
-import { operationsTableProblem, operationsUnknownFor } from '@substrat-run/model-view';
+import { operationsTableProblem, operationsUnknownFor, readRegistryTable } from '@substrat-run/model-view';
 
 export type Level = 'patch' | 'minor' | 'major';
 export type Bump = 'none' | Level;
@@ -700,8 +700,8 @@ export interface PermissionSnapshot {
   /** Permission key → its description and declaring module, and whether it is reserved to a system principal. */
   readonly registry: Record<string, { terms: string[]; reserved: boolean }>;
   /**
-   * The Registry table is not one the emitter writes: its header is neither layout, or a
-   * reservation cell is neither `yes` nor `—`. Judged major, never read as nothing reserved.
+   * The Registry table is not one the emitter writes ({@link readRegistryTable}, the judgement
+   * model-view shares). Judged major, never read as nothing reserved.
    */
   registryUnreadable?: string;
   /** Role → the keys it holds. */
@@ -735,16 +735,7 @@ const DERIVED_SECTIONS = [/^Coverage\b/, /^Not covered by this artifact/, /^No p
 
 const codesIn = (cell: string): string[] => [...cell.matchAll(/`([^`]+)`/g)].map((m) => m[1]!).sort();
 
-/**
- * §1's two layouts. The emitter adds the last column only once some key is reserved to a system
- * principal (`holder: 'system'` on its declaration), so a table without it, from a vertical with
- * nothing reserved or from an emitter older than the column, reads as nothing reserved.
- */
-const REGISTRY_HEADER = ['Key', 'Description', 'Declared by'];
-const RESERVED_HEADER = 'Reserved to a system principal';
-
-/** A section's table rows, the header first and the separator dropped. */
-function tableOf(section: string): string[][] {
+function rowsOf(section: string): string[][] {
   const rows: string[][] = [];
   for (const line of section.split('\n')) {
     const t = line.trim();
@@ -759,26 +750,7 @@ function tableOf(section: string): string[][] {
     if (cells.every((c) => /^:?-+:?$/.test(c))) continue; // the separator
     rows.push(cells);
   }
-  return rows;
-}
-
-const rowsOf = (section: string): string[][] => tableOf(section).slice(1);
-
-/** §1 read against its header: each key's terms and reservation, or why the table cannot be read. */
-function readRegistry(section: string, keyOf: (cells: string[]) => string): Pick<PermissionSnapshot, 'registry' | 'registryUnreadable'> {
-  const [header = [], ...rows] = tableOf(section);
-  const reservedColumn = header.join('|') === [...REGISTRY_HEADER, RESERVED_HEADER].join('|');
-  if (!reservedColumn && header.join('|') !== REGISTRY_HEADER.join('|')) {
-    return { registry: {}, registryUnreadable: `its header is not | ${REGISTRY_HEADER.join(' | ')} |, with or without | ${RESERVED_HEADER} |` };
-  }
-  const registry: PermissionSnapshot['registry'] = {};
-  for (const cells of rows) {
-    // The reservation is the LAST cell, so a description's own pipe cannot move it.
-    const mark = reservedColumn ? cells.at(-1) : '—';
-    if (mark !== 'yes' && mark !== '—') return { registry, registryUnreadable: `the reservation of ${keyOf(cells)} is neither yes nor —` };
-    registry[keyOf(cells)] = { terms: cells.slice(1, reservedColumn ? -1 : undefined), reserved: mark === 'yes' };
-  }
-  return { registry };
+  return rows.slice(1); // the header row
 }
 
 /**
@@ -801,7 +773,9 @@ export function parsePermissions(text: string): PermissionSnapshot {
     // The FIRST code span names the row: a schedule's cell reads "`op` — purges a trashed `list`".
     const firstKey = (cells: string[]) => /`([^`]+)`/.exec(cells[0] ?? '')?.[1] ?? cells[0] ?? '';
     if (/^Registry\b/.test(heading)) {
-      Object.assign(snap, readRegistry(section, firstKey));
+      const read = readRegistryTable(section);
+      if ('unreadable' in read) snap.registryUnreadable = read.unreadable;
+      else for (const r of read.rows) snap.registry[r.key] = { terms: [...r.terms], reserved: r.reserved };
     } else if (/^Roles\b/.test(heading)) {
       for (const cells of rowsOf(section)) snap.roles[firstKey(cells)] = codesIn(cells[1] ?? '');
     } else if (/^Entity-narrowed grant shapes\b/.test(heading)) {
@@ -845,7 +819,7 @@ export function classifyPermissions(baseText: string | null, headText: string | 
   } else {
     keyed(b.registry, h.registry, {
       removed: (k) => flag(`key ${k}`, 'removed from the registry — whoever held it loses what it gated'),
-      added: (k) => flag(`key ${k}`, 'added to the registry'),
+      added: (k, hd) => flag(`key ${k}`, hd.reserved ? 'added to the registry, reserved to a system principal' : 'added to the registry'),
       both: (k, bd, hd) => {
         if (canon(bd.terms, false) !== canon(hd.terms, false)) push('patch', `key ${k}`, 'description or declaring module changed');
         // Reserved to a system principal means no person may be given the key: losing that widens

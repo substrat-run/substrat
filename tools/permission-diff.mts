@@ -376,7 +376,9 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
   const registry = [...declaredBy.entries()].map(([key, v]) => ({ key, ...v })).sort(byKey);
   const registryColumns: [string, (r: (typeof registry)[number]) => string][] = [
     ['Key', (r) => code(r.key)],
-    ['Description', (r) => r.description],
+    // One line, its pipes escaped, as an operation's reason is: a newline would split the row and
+    // leave the reservation column unreadable to the plan classifier.
+    ['Description', (r) => prose(r.description)],
     ['Declared by', (r) => r.modules.map(code).join(', ')],
   ];
   // A key's reservation is a declaration on its manifest, so dropping one must land in this diff.
@@ -411,8 +413,8 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
           `### 2a. System-held roles — a platform host's standing principal`,
           ``,
           `Never given to a person: no invitation, member operation or role picker offers these. Each`,
-          `holds only keys its module reserves to a system principal (§1, K-55), so what a host can do`,
-          `is exactly the keys shown. Widening one lands here, in the reviewed diff.`,
+          `holds only keys a module here reserves to a system principal (§1, K-55), so what a host can`,
+          `do is exactly the keys shown. Widening one lands here, in the reviewed diff.`,
           ``,
           `| Role | Permissions |`,
           `| --- | --- |`,

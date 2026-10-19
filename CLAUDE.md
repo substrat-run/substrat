@@ -193,7 +193,9 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   marking a key reserves it whatever another declaring it says, so a vertical cannot lift an
   engine's reservation by re-declaring the key. The system side is a schedule's or a peer's
   `permissions`, or a role declared `holder: 'system'` (K-55). §1 of `PERMISSIONS.md` marks
-  each reserved key, so dropping a declaration shows in the reviewed diff.
+  each reserved key, so dropping a declaration shows in the reviewed diff. The reservation
+  follows the vertical's `permissions.modules`, so that list has to be what the host
+  registers: by convention both read one `MODULES` constant, and nothing checks it yet.
 - `pnpm lint:changelog` — the published weekly changelog (`apps/docs/changelog/`).
   With no flag it prints a week's raw material — every first-parent merge grouped by
   area, the commits that landed without a PR, and each package's version span

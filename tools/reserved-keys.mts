@@ -14,6 +14,12 @@
  * Which keys are reserved is declared: a module marks one `holder: 'system'` on its manifest's
  * permission declaration, so an engine states it where it declares the key and the reservation
  * reaches every vertical that composes the engine.
+ *
+ * It reaches them through the vertical's `permissions.modules`, the list every other part of
+ * `lint:permissions` reads, so that list has to be what the host registers. By convention both
+ * read one `MODULES` constant, and nothing checks it: a vertical that registered an engine without
+ * listing it, and declared the engine's key unmarked in a module of its own, would pass here. The
+ * table this replaced matched by key name in every vertical and refused that.
  */
 
 /** What the manifests say about a key reserved to a system principal. */

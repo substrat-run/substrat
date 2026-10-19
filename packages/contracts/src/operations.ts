@@ -2795,10 +2795,18 @@ export type PermissionsDeclaredBy<Ops> = {
  * reached solely by a proof walk has to be declarable here or it would vanish
  * from the review artifact.
  */
+/**
+ * A key's description in `manifestOperations`, or its description and who may hold it: the object
+ * form carries `holder: 'system'` onto the manifest's permission declaration, so a vertical built
+ * from its model reserves a key of its own where it describes it, as an engine does.
+ */
+export type PermissionDescription = string | { readonly description: string; readonly holder: 'system' };
+
 export function manifestOperations<const Ops extends Record<string, object>>(
   operations: Ops,
   spec: {
-    readonly permissions: Readonly<Record<PermissionsDeclaredBy<Ops>, string>> & Readonly<Record<string, string>>;
+    readonly permissions: Readonly<Record<PermissionsDeclaredBy<Ops>, PermissionDescription>> &
+      Readonly<Record<string, PermissionDescription>>;
     /**
      * Keys these operations CHECK but another module DECLARES — each named with
      * the module that owns it.
@@ -2823,13 +2831,13 @@ export function manifestOperations<const Ops extends Record<string, object>>(
     readonly consumes?: readonly { readonly type: string; readonly schemaVersion: number }[];
   },
 ): {
-  permissions: { key: string; description: string }[];
+  permissions: { key: string; description: string; holder?: 'system' }[];
   events: {
     emits: { type: string; schemaVersion: number }[];
     consumes: { type: string; schemaVersion: number }[];
   };
 } {
-  const described = spec.permissions as Record<string, string>;
+  const described = spec.permissions as Record<string, PermissionDescription>;
   const elsewhere = spec.checksDeclaredElsewhere ?? {};
   const used = permissionsUsedBy(operations);
 
@@ -2864,7 +2872,10 @@ export function manifestOperations<const Ops extends Record<string, object>>(
   return {
     permissions: Object.keys(described)
       .sort()
-      .map((key) => ({ key, description: described[key] as string })),
+      .map((key) => {
+        const d = described[key]!;
+        return typeof d === 'string' ? { key, description: d } : { key, description: d.description, holder: d.holder };
+      }),
     events: {
       emits: eventsEmittedBy(operations),
       consumes: [...(spec.consumes ?? [])].sort((a, b) => a.type.localeCompare(b.type)),

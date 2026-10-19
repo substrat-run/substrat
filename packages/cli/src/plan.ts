@@ -72,13 +72,18 @@ export interface TransitionCheck {
   readonly grantShapes: readonly string[];
 }
 
-/** One row of the permission-diff table: a key whose description or holders moved. */
+/** One row of the permission-diff table: a key whose description, holders or reservation moved. */
 export interface PermissionRow {
   readonly key: string;
   readonly description: string;
   /** Roles holding it at the base and now; `null` where the key does not exist on that side. */
   readonly before: readonly string[] | null;
   readonly after: readonly string[] | null;
+  /**
+   * Present when the key is reserved to a system principal on either side: whether it is, at the
+   * base and now (`null` where the key does not exist on that side).
+   */
+  readonly reserved?: { readonly before: boolean | null; readonly after: boolean | null };
 }
 
 export interface ConceptDelta {
@@ -137,25 +142,33 @@ function transitionChanges(entity: string, base: EmittedLifecycle | undefined, h
   return out;
 }
 
-/** The permission-diff rows that differ: a key added, removed, re-described or held by other roles. */
+/**
+ * The permission-diff rows that differ: a key added, removed, re-described, held by other roles, or
+ * reserved to a system principal or no longer. None when either registry cannot be read: the
+ * classifier's finding says so, and a row read off an unreadable table would be a guess.
+ */
 function permissionRows(baseMd: string | null, headMd: string | null): PermissionRow[] {
   const view = (md: string | null) => {
-    if (md === null) return { holders: new Map<string, string[]>(), descriptions: new Map<string, string>() };
+    if (md === null) return { holders: new Map<string, string[]>(), descriptions: new Map<string, string>(), reserved: new Set<string>() };
     const v = parsePermissions(md);
     const holders = new Map<string, string[]>([...v.descriptions.keys()].map((k) => [k, []]));
     for (const r of v.roles) for (const k of r.keys) (holders.get(k) ?? holders.set(k, []).get(k)!).push(r.role);
     for (const list of holders.values()) list.sort();
-    return { holders, descriptions: v.descriptions };
+    return { holders, descriptions: v.descriptions, reserved: v.reserved, unreadable: v.registryUnreadable };
   };
   const b = view(baseMd);
   const h = view(headMd);
+  if (b.unreadable !== undefined || h.unreadable !== undefined) return [];
   const rows: PermissionRow[] = [];
   for (const key of sorted(new Set([...b.holders.keys(), ...h.holders.keys()]))) {
     const before = b.holders.get(key) ?? null;
     const after = h.holders.get(key) ?? null;
     const description = h.descriptions.get(key) ?? b.descriptions.get(key) ?? '';
-    if (JSON.stringify(before) === JSON.stringify(after) && b.descriptions.get(key) === h.descriptions.get(key)) continue;
-    rows.push({ key, description, before, after });
+    const [wasReserved, isReserved] = [b.reserved.has(key), h.reserved.has(key)];
+    const same = JSON.stringify(before) === JSON.stringify(after) && b.descriptions.get(key) === h.descriptions.get(key);
+    if (same && wasReserved === isReserved) continue;
+    const reserved = { before: before === null ? null : wasReserved, after: after === null ? null : isReserved };
+    rows.push({ key, description, before, after, ...(wasReserved || isReserved ? { reserved } : {}) });
   }
   return rows;
 }
@@ -338,6 +351,8 @@ const listed = (cs: readonly Change[]) => {
   return lines.length > MAX_LISTED ? [...lines.slice(0, MAX_LISTED), `- … and ${lines.length - MAX_LISTED} more`] : lines;
 };
 const roles = (rs: readonly string[] | null) => (rs === null ? '— (no such key)' : rs.length ? code(rs) : '— no role —');
+/** A side of a row where the key is reserved to a system principal says so beside its roles. */
+const reservedOn = (on: boolean | null | undefined) => (on ? ' · reserved to a system principal' : '');
 function checkCell(c: TransitionCheck | undefined): string {
   if (c === undefined) return '— not in PERMISSIONS.md —';
   if (!c.declared) return 'checked in code, not declared';
@@ -413,7 +428,9 @@ export function renderDelta(d: ConceptDelta, opts: { base: string; digest: strin
   else {
     if (p.rows.length) {
       out.push('| Key | Description | Roles before | Roles after |', '| --- | --- | --- | --- |');
-      for (const r of p.rows) out.push(`| \`${r.key}\` | ${cell(r.description) || '—'} | ${roles(r.before)} | ${roles(r.after)} |`);
+      for (const r of p.rows) {
+        out.push(`| \`${r.key}\` | ${cell(r.description) || '—'} | ${roles(r.before)}${reservedOn(r.reserved?.before)} | ${roles(r.after)}${reservedOn(r.reserved?.after)} |`);
+      }
       out.push('');
     }
     out.push('Each of these is a permission diff a person reads and approves (the human checkpoint):', '', ...listed(p.changes), '');

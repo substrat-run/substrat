@@ -29,6 +29,10 @@ permissions: [
 ],
 ```
 
+A vertical built from its model reserves a key of its own the same way, in
+`manifestOperations`: `{ 'list:reap': { description: 'Reap abandoned lists', holder: 'system' } }`
+in place of the plain description.
+
 Such a key is never given to a person. `lint:permissions` refuses it in any role a person
 can hold and in any entity grant shape. It may appear only in a schedule's or a peer's
 `permissions`, or in a role declared `holder: 'system'`. A vertical that composes the

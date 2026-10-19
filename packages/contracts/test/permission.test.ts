@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import { permissionKey } from '../src/ids.js';
 import { moduleManifest, permissionDeclaration } from '../src/manifest.js';
+import { manifestOperations } from '../src/operations.js';
 import { coverage, roleDefinition } from '../src/permission.js';
 
 const PERM = permissionKey.parse('billing:manage');
@@ -75,5 +76,22 @@ describe('permissionDeclaration.holder', () => {
     expect(permissionDeclaration.parse(base)).toEqual(base);
     expect(() => permissionDeclaration.parse({ ...base, holder: 'person' })).toThrow();
     expect(() => permissionDeclaration.parse({ ...base, holder: 'robot' })).toThrow();
+  });
+});
+
+// A vertical built from its model describes its keys in `manifestOperations`, not in a hand-written
+// manifest: the object form is where it reserves one of its own, and it reaches the declaration.
+describe('manifestOperations carries holder: system', () => {
+  const declared = manifestOperations(
+    {},
+    { permissions: { 'list:read': 'Read a list', 'list:reap': { description: 'Reap abandoned lists', holder: 'system' } } },
+  ).permissions;
+
+  it('onto the permission declaration, and only for the key that says so', () => {
+    expect(declared).toEqual([
+      { key: 'list:read', description: 'Read a list' },
+      { key: 'list:reap', description: 'Reap abandoned lists', holder: 'system' },
+    ]);
+    expect(declared.map((p) => permissionDeclaration.parse(p))).toEqual(declared);
   });
 });
