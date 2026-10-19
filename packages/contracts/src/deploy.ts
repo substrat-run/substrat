@@ -11,6 +11,7 @@ import { substratError } from './errors.js';
 import { blankReason } from './review-text.js';
 import { SCOPE_STORE_CANARY, STORE_DRIVER_ID } from './script-names.js';
 import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
+import { reservedKeyLine, reservedKeyOffences, reservedKeysOf, type ReservedKey } from './reserved-keys.js';
 
 // The deploy manifest is the JSON part a `substrat push` sends alongside the
 // module files (self-serve-deploy.md). It lives here — not in the transport
@@ -1251,6 +1252,13 @@ export const permissionRegistryEntry = z.object({
   key: permissionKey,
   description: z.string().min(1),
   declaredBy: z.array(moduleId).min(1),
+  /**
+   * #2430: the key is reserved to a system principal, because a module in `declaredBy` declares it
+   * `holder: 'system'` (the union rule of `reservedKeysOf`). Omitted otherwise, so a registry that
+   * reserves nothing keeps the permission digest it had. ABSENT means a person key, on a registry
+   * pushed before the field too, so nothing older is read as reserved.
+   */
+  holder: z.literal('system').optional(),
 });
 export type PermissionRegistryEntry = z.infer<typeof permissionRegistryEntry>;
 
@@ -1505,16 +1513,37 @@ export type PermissionRegistry = z.infer<typeof permissionRegistry>;
  * Only at the push boundary: {@link storedDeployManifest} reads history with the plain
  * {@link permissionRegistry}, so a version stored before the refusal stays readable.
  */
-export const pushedPermissionRegistry = permissionRegistry.extend({
-  entityGrants: z
-    .array(
-      entityGrantShape.extend({ entityType: declaredEntityType }).superRefine((shape, ctx) => {
-        for (const message of retiredShapeProblems(shape)) ctx.addIssue({ code: 'custom', path: ['retired'], message });
-        for (const message of bindShapeProblems(shape)) ctx.addIssue({ code: 'custom', path: ['bind'], message });
-      }),
-    )
-    .default([]),
-});
+export const pushedPermissionRegistry = permissionRegistry
+  .extend({
+    entityGrants: z
+      .array(
+        entityGrantShape.extend({ entityType: declaredEntityType }).superRefine((shape, ctx) => {
+          for (const message of retiredShapeProblems(shape)) ctx.addIssue({ code: 'custom', path: ['retired'], message });
+          for (const message of bindShapeProblems(shape)) ctx.addIssue({ code: 'custom', path: ['bind'], message });
+        }),
+      )
+      .default([]),
+  })
+  // #2430: the push boundary holds the reservation the registry's rows carry, as the CLI did.
+  .superRefine((registry, ctx) => {
+    for (const message of registryReservedKeyProblems(registry)) ctx.addIssue({ code: 'custom', path: [], message });
+  });
+
+/**
+ * #2430: a registry's reserved-key offences, one line each — a person's role or grant shape holding
+ * a key its row marks `holder: 'system'`, and a system-held role holding anything else or nothing.
+ * Checked where a registry is BUILT ({@link buildPermissionRegistry}) and where a push carries one
+ * ({@link pushedPermissionRegistry}), both from the rows, so the two cannot word it differently.
+ * A registry from a CLI that predates the field marks no key, so it is refused nothing.
+ */
+function registryReservedKeyProblems(registry: Pick<PermissionRegistry, 'permissions' | 'roles' | 'entityGrants'>): string[] {
+  const reserved = new Map<string, ReservedKey>(
+    registry.permissions
+      .filter((p) => p.holder === 'system')
+      .map((p) => [p.key, { description: p.description, declaredBy: p.declaredBy }]),
+  );
+  return reservedKeyOffences({ roles: registry.roles, grants: registry.entityGrants }, reserved).map((o) => reservedKeyLine(o, reserved));
+}
 
 /**
  * A vertical's declared permission surface, as the **single typed source** — the input the
@@ -1646,15 +1675,23 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
     }
   }
 
+  // #2430: a system-held role (K-55) says so in the registry, as a reserved key does below. A
+  // person role carries no holder (`'person'` is the same as none), so no existing digest moves.
   const roles = [...input.roles]
     .sort((a, b) => cmp(a.key, b.key))
     .map((r) => {
       if (!r.source) throw new Error(`buildPermissionRegistry: role '${r.key}' has no source`);
-      return { key: r.key, permissions: sortKeys(r.permissions), source: r.source };
+      return { key: r.key, permissions: sortKeys(r.permissions), source: r.source, ...(r.holder === 'system' ? { holder: r.holder } : {}) };
     });
 
+  const reserved = reservedKeysOf(input.modules);
   const permissions = [...declaredBy.entries()]
-    .map(([key, v]) => ({ key, description: v.description, declaredBy: [...v.modules].sort(cmp) }))
+    .map(([key, v]) => ({
+      key,
+      description: v.description,
+      declaredBy: [...v.modules].sort(cmp),
+      ...(reserved.has(key) ? { holder: 'system' as const } : {}),
+    }))
     .sort((a, b) => cmp(a.key, b.key));
 
   const entityGrants = [...(input.entityGrants ?? [])]
@@ -1670,6 +1707,7 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
   const problems = [
     ...entityGrants.flatMap(retiredShapeProblems),
     ...entityGrants.flatMap((g) => bindShapeProblems(g, new Set(declaredBy.keys()))),
+    ...registryReservedKeyProblems({ permissions, roles, entityGrants }),
   ];
   if (problems.length > 0) throw new Error(`buildPermissionRegistry: ${problems.join('; ')}`);
 

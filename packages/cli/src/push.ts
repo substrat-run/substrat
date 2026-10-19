@@ -13,6 +13,9 @@ import {
   assetsNeed,
   ATTACHMENT_BLOB_BINDING,
   buildPermissionRegistry,
+  reservedKeyMessage,
+  reservedKeyOffences,
+  reservedKeysOf,
   declaresAttachmentTargets,
   DECLARED_MIGRATIONS_MAX,
   DECLARED_MIGRATIONS_SQL_BYTES_MAX,
@@ -473,6 +476,12 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
         );
       }
     }
+    // #2430: a key a module declares `holder: 'system'` in a role a person can hold, or in an entity
+    // grant shape, refused before anything uploads, in `lint:permissions`' own words. The registry
+    // build below refuses it too; this is the message that names the remedy.
+    const reserved = reservedKeysOf(mod.permissions.modules);
+    const offences = reservedKeyOffences({ roles: mod.permissions.roles, grants: mod.permissions.entityGrants ?? [] }, reserved);
+    if (offences.length > 0) throw new Error(reservedKeyMessage(basename(resolve(dir)), entry, offences, reserved));
     // #1234: the declared half of a declared-vs-observed finding — what the modules say
     // they emit and consume, which exists nowhere off their manifests.
     const declaredEvents = flattenDeclaredEvents(mod.permissions);
@@ -645,12 +654,13 @@ export function formatPermissionSurface(surface: PermissionSurface, label?: stri
   lines.push('', 'keys:');
   if (registry.permissions.length === 0) lines.push('  (none declared)');
   for (const p of registry.permissions) {
-    lines.push(`  ${p.key.padEnd(width)}  [${p.declaredBy.join(', ')}]  ${p.description}`);
+    const held = p.holder === 'system' ? '  (reserved to a system principal)' : '';
+    lines.push(`  ${p.key.padEnd(width)}  [${p.declaredBy.join(', ')}]  ${p.description}${held}`);
   }
   lines.push('', 'roles:');
   if (registry.roles.length === 0) lines.push('  (none declared)');
   for (const r of registry.roles) {
-    lines.push(`  ${r.key}  (${r.source}, ${r.permissions.length} key(s))`);
+    lines.push(`  ${r.key}  (${r.source}${r.holder === 'system' ? ', system-held' : ''}, ${r.permissions.length} key(s))`);
     for (const key of r.permissions) lines.push(`    ${key}`);
   }
   if (registry.entityGrants.length > 0) {
