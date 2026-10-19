@@ -10,6 +10,7 @@
  * Nothing in this module reaches the network or the database. It is names and shapes.
  */
 import {
+  LIVE_MODE_HEADER,
   permissionKey,
   problemForStatus,
   PROBLEM_CONTENT_TYPE,
@@ -17,6 +18,7 @@ import {
   toProblem,
   type EntityRef,
   type ErrorCode,
+  type LiveRefusal,
   type Problem,
   type PrincipalId,
   type ScopeId,
