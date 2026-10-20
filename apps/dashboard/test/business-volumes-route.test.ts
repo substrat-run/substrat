@@ -10,7 +10,7 @@ import { SERVICE_TOKEN, tenantPlane } from './tenant-plane.js';
 import type { BusinessVolumesAnswer } from '../src/business-volumes.js';
 
 /**
- * `GET /api/observability/business-volumes` (#1750), end to end: the worker driven the way a
+ * `GET /api/teams/:teamId/observability/business-volumes` (#1750), end to end: the worker driven the way a
  * request reaches it, the real control plane over a SQLite host behind the service binding
  * (the `processes-route.test.ts` harness), and real events in the app scopes' outboxes counted
  * by the kernel's own `readOperationSeries`. `business-volumes.test.ts` pins the arithmetic;
@@ -173,7 +173,7 @@ describe('the business volumes route (#1750)', () => {
   });
 
   const get = (sub: string | null, query = '') =>
-    app.request(`/api/observability/business-volumes${query}`, { method: 'GET', headers: sub ? { cookie: `sb_session=${sub}` } : {} }, env);
+    app.request(`/api/teams/${tenant}/observability/business-volumes${query}`, { method: 'GET', headers: sub ? { cookie: `sb_session=${sub}` } : {} }, env);
   const read = async (query = ''): Promise<BusinessVolumesAnswer> => {
     const res = await get(OWNER_SUB, query);
     expect(res.status).toBe(200);
@@ -260,5 +260,41 @@ describe('the business volumes route (#1750)', () => {
     const until = new Date().toISOString();
     const since = new Date(Date.now() - 80 * HOUR).toISOString();
     expect((await get(OWNER_SUB, `?since=${since}&until=${until}`)).status).toBe(400);
+  });
+
+  it('uses the path team across two tabs, regardless of which team the cookie last selected', async () => {
+    const b = tenantId.parse(ulid());
+    const bScope = scopeId.parse(ulid());
+    const bOwner = principalId.parse(ulid());
+    await provisionDashboard(host, { tenantId: b, scopeId: bScope, owner: bOwner, slug: 'team-b', name: 'Team B' });
+    await host.admin.linkIdentity(staff, { provider: PROVIDER, externalId: OWNER_SUB, principal: bOwner, tenantId: b, scopeId: bScope });
+    const ask = (pathTeam: string, cookieTeam: string) => app.request(
+      `/api/teams/${pathTeam}/observability/business-volumes`,
+      { headers: { cookie: `sb_session=${OWNER_SUB}; sb_team=${cookieTeam}` } }, env,
+    );
+    const aRead = await ask(tenant, b);
+    const bRead = await ask(b, tenant);
+    expect(aRead.status).toBe(200);
+    expect(bRead.status).toBe(200);
+    expect(((await aRead.json()) as BusinessVolumesAnswer).apps.map((a) => a.scopeId)).toEqual([appScope, emptyScope]);
+    expect(((await bRead.json()) as BusinessVolumesAnswer).apps).toEqual([]);
+  });
+
+  it('refuses a nonmember path on every migrated read, while the same session can read its own team', async () => {
+    const paths = [
+      '/observability/metrics', '/observability/logs', `/apps/${appScope}/observability/metrics`,
+      '/observability/tenant-metrics-series', '/observability/connector-calls',
+      '/observability/business-volumes', '/observability/traffic', '/observability/app-metrics',
+    ];
+    const headers = { cookie: `sb_session=${OWNER_SUB}; sb_team=${tenant}` };
+    for (const path of paths) {
+      expect((await app.request(`/api/teams/${otherTenant}${path}`, { headers }, env)).status, path).toBe(404);
+    }
+    expect((await app.request(`/api/teams/${tenant}/observability/business-volumes`, { headers }, env)).status).toBe(200);
+    expect((await app.request(`/api/teams/${tenant}/observability/logs`, { headers }, env)).status).toBe(400);
+    for (const path of paths) {
+      const old = path.startsWith('/apps/') ? `/api${path}` : `/api${path}`;
+      expect((await app.request(old, { headers }, env)).status, old).toBe(404);
+    }
   });
 });

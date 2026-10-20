@@ -82,6 +82,7 @@ function around(at: string): { from: string; to: string } {
 
 /** Display app traffic and health with release, failure, and schedule evidence on one clock. */
 export function Pulse({
+  teamId,
   apps,
   scopeId,
   hours,
@@ -97,6 +98,7 @@ export function Pulse({
   onRefresh,
   onMarker,
 }: {
+  teamId: string;
   apps: AppRow[];
   scopeId: string | null;
   hours: number;
@@ -154,7 +156,7 @@ export function Pulse({
           series: { window: t.window, series: [{ scopeId, buckets: t.buckets }], bucketMinutes: t.bucketMinutes, available: t.available },
           markers: t.markers,
         }))
-      : api.teamTraffic({ hours, ...requestWindow }).then((s) => ({ series: s, markers: [] }));
+      : api.teamTraffic(teamId, { hours, ...requestWindow }).then((s) => ({ series: s, markers: [] }));
     // The overlays ride a second route, started beside the first and never awaited with
     // it: the card draws the moment the series lands, and a slow overlay source must not
     // hold it. A failure costs the glyphs and nothing else.
@@ -180,7 +182,7 @@ export function Pulse({
     return () => {
       live = false;
     };
-  }, [scopeId, hours, nonce, requestWindow?.since, requestWindow?.until]);
+  }, [teamId, scopeId, hours, nonce, requestWindow?.since, requestWindow?.until]);
 
   useEffect(() => {
     let live = true;
@@ -196,11 +198,11 @@ export function Pulse({
       })) });
       return;
     }
-    api.connectorCalls({ hours, ...requestWindow })
+    api.connectorCalls(teamId, { hours, ...requestWindow })
       .then((v) => live && setConnectorCalls(v))
       .catch(() => { if (live) { setConnectorError(true); setConnectorCalls({ available: false, buckets: [] }); } });
     return () => { live = false; };
-  }, [hours, nonce, requestWindow?.since, requestWindow?.until]);
+  }, [teamId, hours, nonce, requestWindow?.since, requestWindow?.until]);
 
   useEffect(() => {
     let live = true;
@@ -210,11 +212,11 @@ export function Pulse({
       setBusiness(scopeId ? { ...MOCK_BUSINESS_VOLUMES, rows: MOCK_BUSINESS_VOLUMES.rows.filter((r) => r.scopeId === scopeId) } : MOCK_BUSINESS_VOLUMES);
       return;
     }
-    api.businessVolumes({ ...(scopeId ? { scopeIds: [scopeId] } : {}), hours, ...requestWindow })
+    api.businessVolumes(teamId, { ...(scopeId ? { scopeIds: [scopeId] } : {}), hours, ...requestWindow })
       .then((v) => live && setBusiness(v))
       .catch(() => live && setBusinessError(true));
     return () => { live = false; };
-  }, [scopeId, hours, nonce, requestWindow?.since, requestWindow?.until]);
+  }, [teamId, scopeId, hours, nonce, requestWindow?.since, requestWindow?.until]);
 
   useEffect(() => {
     let live = true;
@@ -228,11 +230,11 @@ export function Pulse({
     // Two reads, and neither gates the other: a missing verdict still leaves the traffic,
     // and missing traffic still leaves the verdicts.
     api.fleetHealth().then((r) => live && setHealth(r.rows)).catch(() => live && setHealth(null));
-    api.appMetrics(hours).then((m) => live && setMetrics(m)).catch(() => live && setMetrics(null));
+    api.appMetrics(teamId, hours).then((m) => live && setMetrics(m)).catch(() => live && setMetrics(null));
     return () => {
       live = false;
     };
-  }, [hours, nonce]);
+  }, [teamId, hours, nonce]);
 
   const rows = useMemo(() => {
     const all = pulseAppRows({ apps, health: health ?? null, metrics: metrics ?? null, series, custom: cursor !== null });

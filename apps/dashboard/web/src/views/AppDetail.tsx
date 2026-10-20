@@ -230,7 +230,7 @@ export function AppDetail({
         onChange={onTab}
       />
 
-      {main === 'overview' && <Overview app={app} meta={meta} statusKind={statusKind} statusLabel={statusLabel} surfaceUrls={surfaceUrls} />}
+      {main === 'overview' && <Overview teamId={teamId} app={app} meta={meta} statusKind={statusKind} statusLabel={statusLabel} surfaceUrls={surfaceUrls} />}
       {main === 'data' && (
         <Data
           teamId={teamId}
@@ -406,9 +406,9 @@ function ScopeOwnerSeat({ scopeId, versionId, active }: { scopeId: string; versi
   return <OwnerSeatCard scopeId={scopeId} seat={seat} onClaimed={read} />;
 }
 
-function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: AppRow; meta: { label: string; accent: string }; statusKind: 'success' | 'info' | 'danger'; statusLabel: string; surfaceUrls: SurfaceUrl[] }) {
+function Overview({ teamId, app, meta, statusKind, statusLabel, surfaceUrls }: { teamId: string; app: AppRow; meta: { label: string; accent: string }; statusKind: 'success' | 'info' | 'danger'; statusLabel: string; surfaceUrls: SurfaceUrl[] }) {
   const mono = { fontFamily: 'var(--font-mono)', fontSize: 12.5 } as const;
-  const metrics24 = useTenantMetrics(app.app_scope_id);
+  const metrics24 = useTenantMetrics(teamId, app.app_scope_id);
   const schedules = useAppSchedules(app.app_scope_id);
   // The app's REAL audit trail (created / active / failed+reason / deleted), one page
   // newest-first; `eventsCursor` walks older activity. Dev-preview shows a sample.
@@ -542,7 +542,7 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
       {/* What arrived at the app, by status class, with the shared overlays (#1767) —
           full width because it is a time axis, and the Overview's sparkline it replaced
           answered the same question in less space and with no way in. */}
-      <AppTraffic scopeId={app.app_scope_id} surfaces={surfaceUrls} metrics24={metrics24} />
+      <AppTraffic teamId={teamId} scopeId={app.app_scope_id} surfaces={surfaceUrls} metrics24={metrics24} />
       <AppSchedulesCard key={`schedules:${app.app_scope_id}`} scopeId={app.app_scope_id} schedules={schedules} />
       <SchedulesAbsent scopeId={app.app_scope_id} schedules={schedules} />
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16, alignItems: 'start' }}>

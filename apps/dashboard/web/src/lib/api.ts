@@ -1888,20 +1888,18 @@ export const api = {
   // -- observability (design/observability.md §5, view 2) -------------------
   // Metrics/logs for THIS team's pushed verticals only — the worker narrows by
   // owned deployment refs. 501 = the platform has no observability backend.
-  observabilityMetrics: (hours = 24, vertical?: string) =>
-    call<ObservabilityRow[]>(
-      `/observability/metrics?hours=${hours}${vertical ? `&vertical=${encodeURIComponent(vertical)}` : ''}`,
-    ),
+  observabilityMetrics: (teamId: string, hours = 24, vertical?: string) =>
+    teamApi(teamId).observabilityMetrics({ hours: String(hours), vertical }),
   // `services` is a set: one version, or every version the tab is showing — the
   // worker asks the plane for them together and answers one merged stream.
-  observabilityLogs: (q: { services: string[]; level?: string; search?: string; hours?: number; limit?: number }) => {
+  observabilityLogs: (teamId: string, q: { services: string[]; level?: string; search?: string; hours?: number; limit?: number }) => {
     const p = new URLSearchParams();
     for (const s of q.services) p.append('service', s);
     if (q.level) p.set('level', q.level);
     if (q.search) p.set('search', q.search);
     if (q.hours) p.set('hours', String(q.hours));
     if (q.limit) p.set('limit', String(q.limit));
-    return call<ObservabilityLogEvent[]>(`/observability/logs?${p.toString()}`);
+    return call<ObservabilityLogEvent[]>(`/teams/${encodeURIComponent(teamId)}/observability/logs?${p.toString()}`);
   },
 
   // -- the tenant grain (observability.md §3 view 4) ------------------------
@@ -1910,35 +1908,35 @@ export const api = {
   // asks about an app running someone else's vertical, which the reads above cannot
   // answer at all: an installed vertical has no owned service ref and comes back empty.
   // Narrowed to this app's scope by the worker, never by this client.
-  appTenantMetrics: (scopeId: string, hours = 24, window?: { since: string; until: string }) =>
-    call<TenantMetricsRow[]>(`/apps/${encodeURIComponent(scopeId)}/observability/metrics?${new URLSearchParams({ hours: String(hours), ...window })}`),
+  appTenantMetrics: (teamId: string, scopeId: string, hours = 24, window?: { since: string; until: string }) =>
+    teamApi(teamId).appObservabilityMetrics({ scopeId, hours: String(hours), ...window }),
   /**
    * The same traffic bucketed over time, across MY apps (#1447): one series per app, in
    * one read. No `scopeIds` means every app this team has installed — resolved by the
    * worker against the team's own apps, never by this client.
    */
-  tenantMetricsSeries: (q: { scopeIds?: string[]; hours?: number } = {}) => {
+  tenantMetricsSeries: (teamId: string, q: { scopeIds?: string[]; hours?: number } = {}) => {
     const p = new URLSearchParams();
     for (const s of q.scopeIds ?? []) p.append('scopeId', s);
     if (q.hours) p.set('hours', String(q.hours));
     const qs = p.toString();
-    return call<TenantMetricsBucket[]>(`/observability/tenant-metrics-series${qs ? `?${qs}` : ''}`);
+    return call<TenantMetricsBucket[]>(`/teams/${encodeURIComponent(teamId)}/observability/tenant-metrics-series${qs ? `?${qs}` : ''}`);
   },
   /**
    * The same read, shaped for the team Observability chart (#1447): one zero-filled
    * series per app, every scope asked for present whether it served or not. No
    * `scopeIds` means every app this team has installed — resolved by the worker.
    */
-  teamTraffic: (q: { scopeIds?: string[]; hours?: number; since?: string; until?: string } = {}) =>
-    call<TeamTrafficSeries>(`/observability/traffic${obsWindowQs(q)}`),
-  connectorCalls: (q: { hours?: number; since?: string; until?: string } = {}) =>
-    call<ConnectorCallsView>(`/observability/connector-calls?${new URLSearchParams({
-      ...(q.hours ? { hours: String(q.hours) } : {}),
-      ...(q.since ? { since: q.since } : {}),
-      ...(q.until ? { until: q.until } : {}),
-    })}`),
-  businessVolumes: (q: { scopeIds?: string[]; hours?: number; since?: string; until?: string } = {}) =>
-    call<BusinessVolumesView>(`/observability/business-volumes${obsWindowQs(q)}`),
+  teamTraffic: (teamId: string, q: { scopeIds?: string[]; hours?: number; since?: string; until?: string } = {}) =>
+    q.scopeIds?.length
+      ? call<TeamTrafficSeries>(`/teams/${encodeURIComponent(teamId)}/observability/traffic${obsWindowQs(q)}`)
+      : teamApi(teamId).teamTraffic({ hours: q.hours === undefined ? undefined : String(q.hours), since: q.since, until: q.until }),
+  connectorCalls: (teamId: string, q: { hours?: number; since?: string; until?: string } = {}) =>
+    teamApi(teamId).connectorCalls({ hours: q.hours === undefined ? undefined : String(q.hours), since: q.since, until: q.until }),
+  businessVolumes: (teamId: string, q: { scopeIds?: string[]; hours?: number; since?: string; until?: string } = {}) =>
+    q.scopeIds?.length
+      ? call<BusinessVolumesView>(`/teams/${encodeURIComponent(teamId)}/observability/business-volumes${obsWindowQs(q)}`)
+      : teamApi(teamId).businessVolumes({ hours: q.hours === undefined ? undefined : String(q.hours), since: q.since, until: q.until }),
   /** `since`/`until` are the chart's time cursor — a window ending in the past, which
    *  `hours` cannot name. Sent instead of `hours`, never beside it. */
   appTenantLogs: (
@@ -2084,7 +2082,7 @@ export const api = {
 
   /** Every app's health, worst first (#1238) — the rollup, not a per-app read. */
   fleetHealth: () => call<{ rows: AppHealthRow[] }>('/fleet-health'),
-  appMetrics: (hours = 24) => call<AppMetricsView>(`/observability/app-metrics?hours=${hours}`),
+  appMetrics: (teamId: string, hours = 24) => teamApi(teamId).appMetrics({ hours: String(hours) }),
 
   /** Field coverage for the running version (#1321) — declared vs returnable. */
   /** Declared-vs-observed findings (#1234) — what this app promises against what it has done. */

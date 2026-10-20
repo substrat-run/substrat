@@ -391,7 +391,8 @@ export const tenantMetricsRow = z.object({
 });
 export const tenantMetricsBucket = z.object({
   scopeId: z.string(), start: z.string(), bucketMinutes: z.number(), requests: z.number(), errors: z.number(),
-  durationP50: z.number(), durationP95: z.number(),
+  class2xx: z.number().optional(), class3xx: z.number().optional(), class4xx: z.number().optional(),
+  durationP50: z.number(), durationP95: z.number().optional(),
 });
 export const connectorCallsView = z.object({
   available: z.boolean(),
@@ -408,7 +409,7 @@ export const businessVolumesView = z.object({
     operations: z.array(z.string()), today: z.number(), yesterday: z.number(),
     buckets: z.array(z.object({ start: z.string(), count: z.number() })),
   })),
-  apps: z.array(z.object({ scopeId: z.string(), unavailable: z.string().nullable() })),
+  apps: z.array(z.object({ scopeId: z.string(), unavailable: z.enum(['no-version', 'no-moves', 'not-yet-available']).nullable() })),
 });
 export const teamTrafficSeries = z.object({
   window: z.object({ since: z.string(), until: z.string() }).optional(),

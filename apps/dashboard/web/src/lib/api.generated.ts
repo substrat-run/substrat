@@ -318,11 +318,39 @@ export interface DashboardClient {
   addDomain(input: { hostname: string; appScopeId: string; surface?: string }): Promise<{ hostname: string; status: string; statusNote?: string | null; validationRecords?: ({ type: string; name: string; value: string; status?: string | null })[] }>;
 
   /**
+   * One traffic summary row per installed app for this team's Apps table
+   *
+   * `GET /observability/app-metrics` — `dashboard/app-metrics`
+   */
+  appMetrics(input: { hours?: string }): Promise<{ available: boolean; cap: number | null; rows: ({ scopeId: string; requests: number | null; errors: number | null; p95: number | null })[] }>;
+
+  /**
+   * One installed app's traffic at this team's tenant grain
+   *
+   * `GET /apps/{scopeId}/observability/metrics` — `dashboard/app-observability-metrics`
+   */
+  appObservabilityMetrics(input: { scopeId: string; hours?: string; since?: string; until?: string }): Promise<({ scopeId: string; vertical: string | null; surface: string | null; requests: number; errors: number; durationP50: number; durationP95: number })[]>;
+
+  /**
    * Attach a custom domain to a preview's scope: what makes a pinned preview a long-lived test environment
    *
    * `POST /deployments/{slug}/previews/{tag}/domain` — `dashboard/bind-preview-domain`
    */
   bindPreviewDomain(input: { slug: string; tag: string; domain: string; surface?: string; canonical?: boolean }): Promise<PreviewDomainRow>;
+
+  /**
+   * Lifecycle move volumes for this team's installed apps
+   *
+   * `GET /observability/business-volumes` — `dashboard/business-volumes`
+   */
+  businessVolumes(input: { scopeId?: string; hours?: string; since?: string; until?: string }): Promise<{ window: { since: string; until: string }; bucketMinutes: number; rows: { scopeId: string; entityType: string; state: string; terminal: boolean; fromInitial: boolean; operations: string[]; today: number; yesterday: number; buckets: { start: string; count: number }[] }[]; apps: ({ scopeId: string; unavailable: "no-version" | "no-moves" | "not-yet-available" | null })[] }>;
+
+  /**
+   * Connector calls for this team on Pulse's time axis
+   *
+   * `GET /observability/connector-calls` — `dashboard/connector-calls`
+   */
+  connectorCalls(input: { hours?: string; since?: string; until?: string }): Promise<{ available: boolean; buckets: { provider: string; start: string; bucketMinutes: number; calls: number; errors: number; ok: number; class4xx: number; class5xx: number; timeouts: number; failed: number; durationP50: number; durationP95: number }[] }>;
 
   /**
    * Suppress with a rule: a scope plus an expiry, audited by the plane
@@ -521,6 +549,20 @@ export interface DashboardClient {
   moveScopes(input: { slug: string; scopeIds: string[]; target: string; ackMigrations?: boolean; reviews?: Record<string, { base: string | null; digest: string }> }): Promise<{ moved: string[]; refusal: { scopeId: string; message: string; reason?: "rebind_review_stale" | "rebind_review_unbound" } | null }>;
 
   /**
+   * Logs for this team's published service versions
+   *
+   * `GET /observability/logs` — `dashboard/observability-logs`
+   */
+  observabilityLogs(input: { service?: string; hours?: string; limit?: string; level?: string; search?: string }): Promise<({ timestamp: number | null; level: string | null; message: string | null; service: string | null; outcome: string | null; trigger: string | null; invocation: string | null; entrypoint: string | null; requestId: string | null; invocationId?: string | null; cpuTimeMs: number | null; wallTimeMs: number | null; raw?: unknown })[]>;
+
+  /**
+   * Metrics for this team's published verticals
+   *
+   * `GET /observability/metrics` — `dashboard/observability-metrics`
+   */
+  observabilityMetrics(input: { hours?: string; vertical?: string }): Promise<({ vertical: string; version: string; versionId: string | null; service: string; requests: number; errors: number; subrequests: number; cpuTimeP50: number; cpuTimeP99: number })[]>;
+
+  /**
    * Promote a version to prod (self-serve while the vertical is private; the registry gates migration and permission changes on a bound acknowledgement)
    *
    * `POST /deployments/{slug}/promote` — `dashboard/promote-deployment`
@@ -612,6 +654,20 @@ export interface DashboardClient {
   setFindingStatus(input: { id: string; status: "open" | "acked" | "resolved" }): Promise<FindingEntry>;
 
   /**
+   * Zero-filled traffic series for this team's installed apps
+   *
+   * `GET /observability/traffic` — `dashboard/team-traffic`
+   */
+  teamTraffic(input: { scopeId?: string; hours?: string; since?: string; until?: string }): Promise<{ window?: { since: string; until: string }; series: ({ scopeId: string; buckets: ({ start: string; requests: number; errors: number; durationP95: number | null; green?: number; yellow?: number })[] })[]; bucketMinutes: number; available: boolean }>;
+
+  /**
+   * Bucketed traffic for this team's installed apps
+   *
+   * `GET /observability/tenant-metrics-series` — `dashboard/tenant-metrics-series`
+   */
+  tenantMetricsSeries(input: { scopeId?: string; hours?: string; since?: string; until?: string }): Promise<{ scopeId: string; start: string; bucketMinutes: number; requests: number; errors: number; durationP50: number; durationP95: number }[]>;
+
+  /**
    * Re-poll a custom domain's issuance ("check again")
    *
    * `POST /domains/{hostname}/verify` — `dashboard/verify-domain`
@@ -682,8 +738,16 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/hostnames`, "POST", omit(input, ["scopeId"]), undefined),
     addDomain: (input: Args) =>
       send("/domains", "POST", input, undefined),
+    appMetrics: (input: Args) =>
+      send("/observability/app-metrics", "GET", undefined, input),
+    appObservabilityMetrics: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/metrics`, "GET", undefined, omit(input, ["scopeId"])),
     bindPreviewDomain: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/previews/${encodeURIComponent(String(input.tag))}/domain`, "POST", omit(input, ["slug","tag"]), undefined),
+    businessVolumes: (input: Args) =>
+      send("/observability/business-volumes", "GET", undefined, input),
+    connectorCalls: (input: Args) =>
+      send("/observability/connector-calls", "GET", undefined, input),
     createFindingRule: (input: Args) =>
       send("/findings/rules", "POST", input, undefined),
     createPreview: (input: Args) =>
@@ -740,6 +804,10 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send("/audit", "GET", undefined, input),
     moveScopes: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/scopes/move`, "POST", omit(input, ["slug"]), undefined),
+    observabilityLogs: (input: Args) =>
+      send("/observability/logs", "GET", undefined, input),
+    observabilityMetrics: (input: Args) =>
+      send("/observability/metrics", "GET", undefined, input),
     promoteDeployment: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/promote`, "POST", omit(input, ["slug"]), undefined),
     removeApp: (input: Args) =>
@@ -766,6 +834,10 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/members/invites/${encodeURIComponent(String(input.invitationId))}`, "DELETE", undefined, omit(input, ["invitationId"])),
     setFindingStatus: (input: Args) =>
       send(`/findings/${encodeURIComponent(String(input.id))}/status`, "PUT", omit(input, ["id"]), undefined),
+    teamTraffic: (input: Args) =>
+      send("/observability/traffic", "GET", undefined, input),
+    tenantMetricsSeries: (input: Args) =>
+      send("/observability/tenant-metrics-series", "GET", undefined, input),
     verifyDomain: (input: Args) =>
       send(`/domains/${encodeURIComponent(String(input.hostname))}/verify`, "POST", omit(input, ["hostname"]), undefined),
   } as unknown as DashboardClient;

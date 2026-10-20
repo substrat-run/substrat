@@ -181,6 +181,7 @@ export function Observability({
     return (
       <>
       <Pulse
+        teamId={teamId}
         apps={apps}
         scopeId={scopeId}
         hours={hours}
@@ -305,7 +306,7 @@ export function Observability({
         // cursor comes along: "what was happening at 09:13" is one question asked of both.
         <LogStream mode={logMode} onMode={(k) => onNav({ app: scopeId, view: k, ...(cursor ?? {}) })}>
           {logMode === 'logs' && (
-            <LinesMode scopeId={scopeId} q={q} hours={hours} nonce={nonce} cursor={cursor} window={panelWindow} onFilters={(filters) => navigateQuery({ ...q, ...filters })} onOpenRequest={openRequest} />
+            <LinesMode teamId={teamId} scopeId={scopeId} q={q} hours={hours} nonce={nonce} cursor={cursor} window={panelWindow} onFilters={(filters) => navigateQuery({ ...q, ...filters })} onOpenRequest={openRequest} />
           )}
           {logMode === 'requests' && (
             <RequestsMode
@@ -363,6 +364,7 @@ export function Observability({
  * cursor, since under one the panel withholds the hint anyway.
  */
 function LinesMode({
+  teamId,
   scopeId,
   q,
   hours,
@@ -372,6 +374,7 @@ function LinesMode({
   onFilters,
   onOpenRequest,
 }: {
+  teamId: string;
   scopeId: string;
   q: ObsQuery;
   hours: number;
@@ -390,11 +393,11 @@ function LinesMode({
       setMetrics(MOCK_APP_METRICS);
       return;
     }
-    api.appMetrics(hours).then((m) => live && setMetrics(m)).catch(() => {});
+    api.appMetrics(teamId, hours).then((m) => live && setMetrics(m)).catch(() => {});
     return () => {
       live = false;
     };
-  }, [hours, nonce, cursor === null]);
+  }, [teamId, hours, nonce, cursor === null]);
   const requests = metrics?.available ? metrics.rows.find((r) => r.scopeId === scopeId)?.requests : undefined;
   return (
     <TenantLogs
