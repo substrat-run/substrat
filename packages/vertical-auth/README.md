@@ -1,7 +1,7 @@
 # @substrat-run/vertical-auth
 
 Pluggable auth for [Substrat](https://github.com/substrat-run/substrat) verticals — one
-interface the app codes against, and three interchangeable implementations behind it.
+interface the app codes against, and two OIDC implementations behind it.
 
 A vertical scaffolded with [`create-substrat`](https://npmjs.com/package/create-substrat)
 answers `/api/*` with `401` until real auth is wired into `authenticatedPrincipal`. This is
@@ -28,7 +28,7 @@ interface AuthProvider {
 Substrat `PrincipalId` is a **separate, per-scope concern** — the identity directory below —
 so swapping the implementation never touches the app.
 
-## Three implementations
+## OIDC providers
 
 - **`oidcAuthProvider`** — token-based. The SPA logs in at the issuer and presents a JWT; this
   verifies it against the issuer's JWKS. Covers Supabase, Auth0, AuthHero, Keycloak, Zitadel
@@ -37,16 +37,14 @@ so swapping the implementation never touches the app.
   Authorization-Code + PKCE, session cookie, `returnTo` handling. Built on
   [`@substrat-run/oidc-rp`](https://npmjs.com/package/@substrat-run/oidc-rp), the same verifier
   the platform's own surfaces use.
-- **`doAuthProvider`** — Better Auth running inside the per-tenant `IdentityDO`, for verticals
-  that own their credentials rather than delegating to an issuer.
 
 ## The identity directory
 
-`IdentityDO` is one Durable Object **per tenant**, running its own SQLite. A tenant's users,
-sessions, and credentials live in that tenant's DO — there is no shared `AUTH_DB` for a bug to
-leak across tenants. It holds the provider-agnostic `sub → principal` mapping, so
-`setPendingOwner` / `resolvePrincipal` are used under **every** provider, including the two
-OIDC ones where Better Auth stays dormant.
+`IdentityDO` is one Durable Object **per tenant**, running its own SQLite. It stores
+ownership, invites, sites, scope configuration, and the OIDC session-signing secret.
+Credentials and login sessions belong to the configured OIDC issuer. It holds the
+provider-agnostic `sub → principal` mapping, so
+`setPendingOwner` / `resolvePrincipal` are used under both OIDC providers.
 
 That mapping is what makes first-run ownership work. The owner seat is minted **empty** at
 provision (the platform knows the principal it minted, not the login the tenant's issuer will
@@ -72,7 +70,7 @@ keeps the window it has and never re-opens a claimed seat. Access is invite-only
 Also exported: `resolveCookieDomain`, which refuses to set a session cookie on a public suffix
 (guarded by [`@substrat-run/psl`](https://npmjs.com/package/@substrat-run/psl)) or anywhere
 in the shared platform hostname space. `instanceAuthFor` reads the trusted
-`PLATFORM_BASE_DOMAINS` worker binding; direct `oidcRpAuthProvider` and `doAuthProvider`
+`PLATFORM_BASE_DOMAINS` worker binding; direct `oidcRpAuthProvider`
 callers pass the same list as `platformBaseDomains` when using `cookieDomain`. The
 default `substrat.run` zone is always refused. A rejected domain uses a host-only cookie,
 expires old domain cookies, and invalidates sessions issued under the old policy.
