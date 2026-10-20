@@ -3848,20 +3848,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /**
-   * A job's failure, as the route answers it (#2450). A refusal keeps the status and sentence the
-   * synchronous copy would have answered. A fault the copy met (a 5xx: its deadline, an end it could
-   * not reach, a stage it could not keep) is answered 409, naming that status: the call reporting it
-   * did not fail, the copy did, earlier. A 502–504 reads to every client as a gateway's, which it
-   * retries, though nothing about the copy will change.
-   */
-  const jobRefusal = (job: CopyJobRecord): ControlPlaneError => {
-    const error = job.error ?? { status: 409, message: `the copy of scope ${job.spec.scopeId} was cancelled before it finished; nothing was moved` };
-    return error.status >= 500
-      ? new ControlPlaneError(409, `the background copy failed with ${error.status}: ${error.message}`)
-      : new ControlPlaneError(error.status, error.message);
-  };
-
-  /**
    * Finish a carry a job copied (#2450): renew the move's lease, which the restore's fence then
    * counts from, and run the same `carryFinish` an in-request carry runs. A move the job can no
    * longer finish is refused. A finish that fails is settled (`finishingJob`) and forgets the job;
@@ -9989,10 +9975,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         `the copy for preview '${opts.tag}' (version ${opts.versionId}) is no longer running: it failed, a newer push ` +
           `or a refresh replaced it, or the preview was deleted. Nothing was moved; a new create starts the copy over`,
       );
-    /** A job's failure, answered (`jobRefusal`). A fault it met is recorded here, since its answer is no 5xx (#559). */
+    /**
+     * A job's failure, as the route answers it. A refusal keeps the status and sentence the
+     * synchronous copy would have answered. A fault the copy met (a 5xx: its deadline, an end it
+     * could not reach, a stage it could not keep) is answered 409, naming that status: the call
+     * reporting it did not fail, the copy did, earlier. A 502–504 reads to every client as a
+     * gateway's, which it retries, though nothing about the copy will change. The fault is recorded
+     * here, since its answer is no 5xx for the backstop to see (#559).
+     */
     const refuseFailedJob = (job: CopyJobRecord): ControlPlaneError => {
-      const error = job.error;
-      if (error && error.status >= 500 && error.status !== 501) {
+      const error = job.error ?? { status: 409, message: `the copy of scope ${job.spec.scopeId} was cancelled before it finished; nothing was moved` };
+      if (error.status < 500) return new ControlPlaneError(error.status, error.message);
+      if (error.status !== 501) {
         recordFailure({
           actor,
           operation: 'preview.create',
@@ -10005,7 +9999,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           message: error.message,
         });
       }
-      return jobRefusal(job);
+      return new ControlPlaneError(409, `the background copy failed with ${error.status}: ${error.message}`);
     };
     // #527 guard: a preview MUST serve the version it just bound. Routing resolves
     // `COALESCE(scope.servingRef, version.deploymentRef)` (control-plane-do `readRoute`),
