@@ -10250,6 +10250,22 @@ export class SqliteScopeHost implements ScopeHost {
           { expiresAt },
         );
       },
+      keepAlivePendingScopeCopy: async (actor, tenantId, scopeId, moveId, status, expectedExpiresAt, expiresAt) => {
+        const changed = this.directory.prepare(
+          `UPDATE scopes SET expires_at = ?
+           WHERE tenant_id = ? AND scope_id = ? AND status = ? AND expires_at IS ?
+             AND reap_claimed_at IS NULL
+             AND EXISTS (SELECT 1 FROM scope_script_copies AS move
+               WHERE move.tenant_id = scopes.tenant_id AND move.scope_id = scopes.scope_id
+                 AND move.move_id = ? AND move.state = 'pending')
+             AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS move
+               WHERE move.tenant_id = scopes.tenant_id AND move.scope_id = scopes.scope_id
+                 AND move.move_id = ? AND move.state <> 'pending')`,
+        ).run(expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId, moveId).changes > 0;
+        if (changed) this.recordAdmin(actor, 'setScopeExpiresAt', { tenantId, scopeId },
+          { expiresAt: expectedExpiresAt }, { expiresAt });
+        return changed;
+      },
       readUndrainedEvents: async (actor, tenantId, scopeId, limit): Promise<UndrainedEvents> => {
         // The COMMITTED outbox (#1624). On the shared connection this read saw an in-flight
         // operation's uncommitted event, the drain shipped it, and the rollback left the lake

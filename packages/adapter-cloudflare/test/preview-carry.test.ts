@@ -2917,6 +2917,31 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       return createControlPlaneApi({ ...apiOptions, host, copyJobs: jobs });
     };
 
+    /** Pause one poll after it read the scope but before the directory compare-and-set. */
+    const heldKeepAlive = () => {
+      const reached = deferred();
+      const release = deferred();
+      let armed = true;
+      const admin = new Proxy(dir.admin, {
+        get: (a, key) => {
+          const method: unknown = Reflect.get(a, key);
+          if (key === 'keepAlivePendingScopeCopy') return async (...args: Parameters<typeof dir.admin.keepAlivePendingScopeCopy>) => {
+            if (armed) {
+              armed = false;
+              reached.resolve();
+              await release.promise;
+            }
+            return (method as typeof dir.admin.keepAlivePendingScopeCopy).apply(a, args);
+          };
+          return typeof method === 'function' ? method.bind(a) : method;
+        },
+      });
+      const host = new Proxy(dir, {
+        get: (h, key) => key === 'admin' ? admin : Reflect.get(h, key),
+      });
+      return { api: createControlPlaneApi({ ...apiOptions, host, copyJobs: jobs }), reached: reached.promise, release: release.resolve };
+    };
+
     it('a finish whose renewal throws outright settles its move and discards its stage, as a refused one does', async () => {
       const renewDrops = () => adminDrops('renewScopeScriptCopy');
       const entriesOf = async (sid: ScopeId, moveId: string) => (await ledger(sid)).filter((e) => e.startsWith(`${moveId}:`));
@@ -3047,6 +3072,39 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       await pumpToDone();
       expect((await pushBg('bg-41', 'v1', { ttlHours: 2, poll: true })).status).toBe(201);
       expect(await expiry(longer.body.scopeId)).toBeGreaterThan(Date.now() + 2 * hour - 60_000);
+    });
+
+    it('two overlapping 202 polls extend and audit a lapsed preview deadline only once', async () => {
+      const sid = (await pushBg('bg-keepalive-race', 'v1', { ttlHours: 1 })).body.scopeId;
+      const old = new Date(Date.now() - 60_000).toISOString();
+      await dir.admin.setScopeExpiresAt(staff, t, sid, old);
+      const before = (await dir.admin.auditLog(staff, { scopeId: sid, action: 'setScopeExpiresAt' })).length;
+      const held = heldKeepAlive();
+      const first = pushBg('bg-keepalive-race', 'v1', { ttlHours: 1, poll: true }, held.api);
+      await held.reached;
+      expect((await pushBg('bg-keepalive-race', 'v1', { ttlHours: 1, poll: true })).status).toBe(202);
+      held.release();
+      expect((await first).status).toBe(202);
+      expect(Date.parse((await dir.admin.getScopeRecord(staff, t, sid))!.expiresAt!)).toBeGreaterThan(Date.now());
+      expect((await dir.admin.auditLog(staff, { scopeId: sid, action: 'setScopeExpiresAt' })).length).toBe(before + 1);
+    });
+
+    it('a poll delayed past a failed fork settlement leaves its lapsed deadline in place', async () => {
+      const sid = (await pushBg('bg-keepalive-settle', 'v1', { ttlHours: 1 })).body.scopeId;
+      const old = new Date(Date.now() - 60_000).toISOString();
+      await dir.admin.setScopeExpiresAt(staff, t, sid, old);
+      const before = (await dir.admin.auditLog(staff, { scopeId: sid, action: 'setScopeExpiresAt' })).length;
+      const held = heldKeepAlive();
+      const poll = pushBg('bg-keepalive-settle', 'v1', { ttlHours: 1, poll: true }, held.api);
+      await held.reached;
+      const move = jobs.jobs.get(`fork:${sid}`)!.spec.moveId;
+      const entry = (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid }))
+        .find((e) => e.moveId === move)!;
+      await dir.admin.settleScopeScriptCopy(staff, t, sid, entry.scriptRef, move, 'retained');
+      held.release();
+      expect((await poll).status).toBe(202);
+      expect((await dir.admin.getScopeRecord(staff, t, sid))!.expiresAt).toBe(old);
+      expect((await dir.admin.auditLog(staff, { scopeId: sid, action: 'setScopeExpiresAt' })).length).toBe(before);
     });
 
     it('a fork bind that committed but lost its answer has landed: the preview is answered, not abandoned', async () => {

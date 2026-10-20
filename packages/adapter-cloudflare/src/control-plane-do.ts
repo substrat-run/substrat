@@ -3429,6 +3429,23 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec('UPDATE scopes SET expires_at = ? WHERE scope_id = ?', expiresAt, scopeId);
   }
 
+  /** One atomic compare-and-set across the preview row and every entry of its copy move. */
+  keepAlivePendingScopeCopy(tenantId: string, scopeId: string, moveId: string, status: string,
+    expectedExpiresAt: string | null, expiresAt: string | null): boolean {
+    return this.sql.exec(
+      `UPDATE scopes SET expires_at = ?
+       WHERE tenant_id = ? AND scope_id = ? AND status = ? AND expires_at IS ?
+         AND reap_claimed_at IS NULL
+         AND EXISTS (SELECT 1 FROM scope_script_copies AS move
+           WHERE move.tenant_id = scopes.tenant_id AND move.scope_id = scopes.scope_id
+             AND move.move_id = ? AND move.state = 'pending')
+         AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS move
+           WHERE move.tenant_id = scopes.tenant_id AND move.scope_id = scopes.scope_id
+             AND move.move_id = ? AND move.state <> 'pending')`,
+      expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId, moveId,
+    ).rowsWritten > 0;
+  }
+
   async listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]> {
     const where: string[] = ['vertical_slug = ?'];
     const params: (string | number)[] = [verticalSlug];
