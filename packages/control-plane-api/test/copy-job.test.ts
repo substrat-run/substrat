@@ -9,6 +9,7 @@ import {
   copyJobThrewRetryMs,
   memoryCopyJobs,
   newCopyJob,
+  versionOrderOf,
   type CopyJobDeps,
   type CopyJobSpec,
 } from '../src/copy-job.js';
@@ -73,6 +74,7 @@ function harness(opts: { renew?: () => boolean; pageFails?: (n: number) => Error
     tenantId: t,
     scopeId: preview,
     versionId: 'v2',
+    versionOrder: '2026-10-20T10:00:00.000Z v2',
     moveId: 'move-1',
     sourceRef: 'src',
     destRef: 'dst',
@@ -336,6 +338,21 @@ describe('advanceCopyJob (#2450)', () => {
     const h = harness();
     const job = await advanceCopyJob(h.deps, newCopyJob(h.spec({ destRef: 'gone' }), await h.begin(), h.clock.now));
     expect(job).toMatchObject({ status: 'copying', faults: 1 });
+  });
+});
+
+describe('versionOrderOf (#2450)', () => {
+  it('orders versions by when the registry recorded them, whatever their ids', () => {
+    // A publisher may name any id: this one sorts after every ULID, and was recorded first.
+    const named = { id: 'zz-named-by-its-publisher', createdAt: '2026-10-20T10:00:00.000Z' };
+    const pushed = { id: ulid(), createdAt: '2026-10-20T10:00:01.000Z' };
+    expect(named.id > pushed.id).toBe(true);
+    expect(versionOrderOf(named) < versionOrderOf(pushed)).toBe(true);
+    // At the same instant, the ids decide.
+    const same = '2026-10-20T10:00:00.000Z';
+    expect(versionOrderOf({ id: 'a', createdAt: same }) < versionOrderOf({ id: 'b', createdAt: same })).toBe(true);
+    // One instant written two ways is one place.
+    expect(versionOrderOf({ id: 'a', createdAt: '2026-10-20T10:00:00Z' })).toBe(versionOrderOf({ id: 'a', createdAt: same }));
   });
 });
 

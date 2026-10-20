@@ -23,6 +23,7 @@ const specOf = (id: string, sid: string): CopyJobSpec => ({
   tenantId: tenantId.parse(ulid()),
   scopeId: scopeId.parse(sid),
   versionId: ulid(),
+  versionOrder: `${new Date().toISOString()} v`,
   moveId: ulid(),
   sourceRef: 'version-source',
   destRef: 'version-dest',

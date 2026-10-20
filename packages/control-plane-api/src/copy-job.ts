@@ -30,6 +30,8 @@ export interface CopyJobSpec {
   /** The scope the move is ledgered under: the preview. */
   scopeId: ScopeId;
   versionId: string;
+  /** `versionOrderOf` the version: what a push for another version is compared against. */
+  versionOrder: string;
   moveId: string;
   /** The deployments the copy reads and writes, resolved again at every step. */
   sourceRef: string;
@@ -132,6 +134,14 @@ const leaseShareMs = (leaseMs: number): number => Math.floor(leaseMs / 4);
 export const copyJobThrewRetryMs = (job: CopyJobRecord): number => Math.min(30_000, leaseShareMs(job.spec.leaseMs));
 
 export const copyJobId = (kind: CopyJobSpec['kind'], scopeId: string): string => `${kind}:${scopeId}`;
+
+/**
+ * A version's place in push order (#2450), as text that sorts in that order: when the registry
+ * recorded it, then its id. The time is the registry's own, so the order holds whatever id a
+ * publisher chose (a push mints a ULID, in that same order; a publish may name any id).
+ */
+export const versionOrderOf = (version: { id: string; createdAt: string }): string =>
+  `${new Date(version.createdAt).toISOString()} ${version.id}`;
 
 /** A job's first record, around the state `beginTransfer` left. */
 export function newCopyJob(spec: CopyJobSpec, state: TransferState, now: number = Date.now()): CopyJobRecord {

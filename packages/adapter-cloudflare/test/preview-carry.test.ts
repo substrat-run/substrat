@@ -261,6 +261,25 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     };
     return { hook, reached: reached.promise, release: release.resolve };
   };
+  /**
+   * Register version `id` of the vertical, served by script `ref`. A moment apart from the last, so
+   * every version has its own place in push order (#2450: when the registry recorded it).
+   */
+  const publish = async (id: string, label: string, ref: string) => {
+    await new Promise((r) => setTimeout(r, 5));
+    await dir.admin.publishVersion(staff, await heldVersion({
+      id, verticalSlug: slug, version: label,
+      manifestDigest: `m-${label}`, permissionDigest: 'p', migrationDigest: 'g', deploymentRef: ref,
+      manifestJson: JSON.stringify({
+        version: label, entry: 'worker.js', compatibilityDate: '2025-01-01',
+        doClasses: ['ScopeDO'],
+        bindings: [{ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' }],
+        digests: { manifest: `m-${label}`, permission: 'p', migration: 'g' },
+        registry: { permissions: [], roles: [], entityGrants: [] },
+      }),
+    }));
+    refOf.set(id, ref);
+  };
 
   beforeAll(async () => {
     await warmControlPlane(env.PC_CONTROL_PLANE);
@@ -274,19 +293,8 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     for (const v of ['v1', 'v2', 'v3'] as const) {
       const id = ulid();
       const ref = `carry-vert-${id.toLowerCase()}`;
-      await dir.admin.publishVersion(staff, await heldVersion({
-        id, verticalSlug: slug, version: `1.0.${v.slice(1)}`,
-        manifestDigest: `m-${v}`, permissionDigest: 'p', migrationDigest: 'g', deploymentRef: ref,
-        manifestJson: JSON.stringify({
-          version: `1.0.${v.slice(1)}`, entry: 'worker.js', compatibilityDate: '2025-01-01',
-          doClasses: ['ScopeDO'],
-          bindings: [{ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' }],
-          digests: { manifest: `m-${v}`, permission: 'p', migration: 'g' },
-          registry: { permissions: [], roles: [], entityGrants: [] },
-        }),
-      }));
+      await publish(id, `1.0.${v.slice(1)}`, ref);
       version[v] = id;
-      refOf.set(id, ref);
       hostOf.set(ref, new CloudflareScopeHost({ scope: namespaces[v], controlPlane: env.PC_CONTROL_PLANE, secretBox }));
     }
     apiOptions = {
@@ -2821,6 +2829,34 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(reason(gone)).toMatch(/is no longer running/);
       expect(jobs.jobs.has(`carry:${sid}`)).toBe(false);
       expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
+    });
+
+    it('a push is newer by when the registry recorded it, not by how its id sorts', async () => {
+      // A version its publisher named, recorded after every other, whose id sorts before every ULID.
+      const named = `0-named-${ulid().toLowerCase()}`;
+      await publish(named, '2.0.0-named', refOf.get(version.v3)!);
+      expect(named < version.v1).toBe(true);
+      const create = async (versionId: string) => {
+        const res = await bg.request(`/verticals/${slug}/previews`, {
+          method: 'POST',
+          headers: auth,
+          body: JSON.stringify({ tag: 'bg-16', versionId, sourceScopeId: prod, async: true }),
+        });
+        return { status: res.status, body: (await res.json()) as { scopeId: ScopeId; detail?: string } };
+      };
+      const older = await create(version.v1);
+      expect(older.status).toBe(202);
+      // The named version is the newer push: it replaces v1's copy.
+      const newer = await create(named);
+      expect(newer.status).toBe(202);
+      expect(newer.body.scopeId).not.toBe(older.body.scopeId);
+      expect(jobs.jobs.get(`fork:${newer.body.scopeId}`)?.spec.versionId).toBe(named);
+      // And v1, whose id sorts after it, is the older one.
+      const refused = await create(version.v1);
+      expect(refused.status).toBe(409);
+      expect(refused.body.detail).toMatch(/superseded/);
+      await pumpToDone();
+      expect((await create(named)).status).toBe(201);
     });
   });
 });

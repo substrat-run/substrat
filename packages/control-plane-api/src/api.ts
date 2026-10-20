@@ -184,7 +184,7 @@ import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
 import { beginTransfer, connectionGrantsForScope, transferScope, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
-import { COPY_JOB_MAX_MS, copyJobHeld, copyJobId, type CopyJobRecord, type CopyJobs } from './copy-job.js';
+import { COPY_JOB_MAX_MS, copyJobHeld, copyJobId, versionOrderOf, type CopyJobRecord, type CopyJobs } from './copy-job.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
 import type { ScopeStoreEnsurerOptions, StoreCanaryTarget } from './store-script.js';
@@ -3738,14 +3738,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   /**
    * #2450: a push older than the one a preview's job is copying for is refused, never allowed to
    * replace it. Otherwise two CI runs for one preview would cancel each other's copy at every poll.
-   * Version ids are ULIDs, so their order is the order they were pushed in.
+   * Older by `versionOrderOf`: when the registry recorded each version, whatever its id.
    */
-  const supersededRefusal = (job: CopyJobRecord, versionId: string, tag: string): ControlPlaneError | null =>
-    versionId < job.spec.versionId
+  const supersededRefusal = (
+    job: CopyJobRecord,
+    mine: { versionId: string; order: string },
+    tag: string,
+  ): ControlPlaneError | null =>
+    mine.order < job.spec.versionOrder
       ? new ControlPlaneError(
         409,
         `a newer push (version ${job.spec.versionId}) to preview '${tag}' is copying its data, so this push ` +
-          `(version ${versionId}) was superseded and did nothing`,
+          `(version ${mine.versionId}) was superseded and did nothing`,
       )
       : null;
 
@@ -10028,11 +10032,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     );
     // #2450 step 2: a fork a job is copying. While it copies, this call answers its progress, and
     // once it is done, this call finishes the preview. A failed job frees the tag with its error, so
-    // the caller's retry forks afresh; one a refresh or a newer push replaces is stopped, and its row
+    // a new create forks afresh; one a refresh or a newer push replaces is stopped, and its row
     // expired, so the code below reaps it at once.
     const forkJob = existing?.status === 'provisioning' && options.copyJobs
       ? await options.copyJobs.get(copyJobId('fork', existing.id))
       : null;
+    // #2450: where this push stands against another's, on a host that runs copies as jobs.
+    const incoming = options.copyJobs ? await c.var.admin.getVersion(actor, opts.versionId, slug) : undefined;
+    if (options.copyJobs && !incoming) throw new ControlPlaneError(404, `unknown version ${opts.versionId} for vertical '${slug}'`);
+    // Compared only where a job is found, which is only on such a host, where it was read.
+    const mine = { versionId: opts.versionId, order: incoming ? versionOrderOf(incoming) : '' };
     // A poll goes on only to a fork job (below, where one for another version refuses it) or a live
     // preview (the carry, below). Anything else is a copy gone: never reaped, never forked afresh.
     if (poll && !(existing && (forkJob || existing.status === 'active'))) throw copyGone();
@@ -10235,7 +10244,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     };
 
     if (existing && forkJob) {
-      const superseded = !opts.refresh && supersededRefusal(forkJob, opts.versionId, opts.tag);
+      const superseded = !opts.refresh && supersededRefusal(forkJob, mine, opts.tag);
       if (superseded) throw superseded;
       const replaced = opts.refresh || forkJob.spec.versionId !== opts.versionId;
       // A poll's own fork is this one or none: it replaces nothing.
@@ -10278,7 +10287,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           throw new ControlPlaneError(409, `a push to preview '${opts.tag}' is still copying its data. Retry once it finishes`);
         };
         if (held && held.spec.versionId !== opts.versionId) {
-          const superseded = supersededRefusal(held, opts.versionId, opts.tag);
+          const superseded = supersededRefusal(held, mine, opts.tag);
           if (superseded) throw superseded;
           // A poll's own carry is not an older push's: it replaces nothing.
           if (poll) throw copyGone();
@@ -10322,7 +10331,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             }
             if ('state' in begun) {
               const job = await jobs.start({
-                id: copyJobId('carry', preview.id), kind: 'carry', tenantId, scopeId: preview.id, versionId: opts.versionId,
+                id: copyJobId('carry', preview.id), kind: 'carry', tenantId, scopeId: preview.id, versionId: opts.versionId, versionOrder: mine.order,
                 moveId: move.moveId, sourceRef: move.from, destRef: move.to, actor, leaseMs: copyLeaseMs,
                 erasureEpoch: move.erasureEpoch, restoredStamp: move.restoredStamp, expected: move.expected,
                 startedAt: Date.now(), deadline: Date.now() + COPY_JOB_MAX_MS,
@@ -10333,7 +10342,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
               if (job.spec.moveId !== move.moveId) {
                 await settleCarryRetained(c, preview, opts.versionId, move);
                 await move.dest.discardStagedScope(preview.id, begun.state.stageId).catch(() => undefined);
-                const superseded = supersededRefusal(job, opts.versionId, opts.tag);
+                const superseded = supersededRefusal(job, mine, opts.tag);
                 if (superseded) throw superseded;
               }
               return copyingAnswer(job);
@@ -10538,7 +10547,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           );
           if ('state' in begun) {
             const job = await jobs.start({
-              id: copyJobId('fork', previewId), kind: 'fork', tenantId, scopeId: previewId, versionId: opts.versionId,
+              id: copyJobId('fork', previewId), kind: 'fork', tenantId, scopeId: previewId, versionId: opts.versionId, versionOrder: mine.order,
               moveId: move.moveId, sourceRef: forkPaged.sourceRef, destRef: targetRef, actor, leaseMs: copyLeaseMs,
               erasureEpoch: move.erasureEpoch, restoredStamp: move.restoredStamp,
               startedAt: Date.now(), deadline: Date.now() + COPY_JOB_MAX_MS,
