@@ -25,6 +25,22 @@ export async function runningImportsOf(
   readImports: (verticalSlug: string, versionId: string) => Promise<ManifestImports>,
   concurrency: number,
 ): Promise<{ scope: Scope; key: string; versionId: string | null; fact: ManifestImports | undefined; threw?: string }[]> {
+  return runningFactsOf(admin, actor, scopes, readImports, (reason) => ({ kind: 'unreadable', reason }), concurrency);
+}
+
+/**
+ * {@link runningImportsOf} for any fact a stored manifest carries (#2316 reads connection landings
+ * through it): one read per distinct running version, `unreadable(reason)` standing in for a read
+ * that threw. One walk, so every reader agrees about which code a scope runs.
+ */
+export async function runningFactsOf<F>(
+  admin: Pick<HostAdmin, 'listVerticals'>,
+  actor: PlatformActorId,
+  scopes: readonly Scope[],
+  read: (verticalSlug: string, versionId: string) => Promise<F>,
+  unreadable: (reason: string) => F,
+  concurrency: number,
+): Promise<{ scope: Scope; key: string; versionId: string | null; fact: F | undefined; threw?: string }[]> {
   const serving = await servingPointersFor(admin, actor, scopes);
   const versions = new Map<string, { slug: string; versionId: string }>();
   const keyed: { scope: Scope; key: string; versionId: string | null }[] = [];
@@ -35,13 +51,13 @@ export async function runningImportsOf(
     if (versionId && !versions.has(key)) versions.set(key, { slug: s.vertical, versionId });
     keyed.push({ scope: s, key, versionId });
   }
-  const facts = new Map<string, ManifestImports>();
+  const facts = new Map<string, F>();
   const threw = new Map<string, string>();
   await mapBounded([...versions], concurrency, async ([key, v]) => {
     try {
-      facts.set(key, await readImports(v.slug, v.versionId));
+      facts.set(key, await read(v.slug, v.versionId));
     } catch (err) {
-      facts.set(key, { kind: 'unreadable', reason: message(err) });
+      facts.set(key, unreadable(message(err)));
       threw.set(key, message(err));
     }
   });

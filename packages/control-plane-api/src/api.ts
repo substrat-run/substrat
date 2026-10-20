@@ -1,4 +1,5 @@
 import { PREVIEW_CONNECTIONS_REFUSAL } from './connection-relay.js';
+import { connectionBindingOptions } from './connection-binding-options.js';
 import type { ConnectionScopeBinding, ConnectionScopeBindingInput } from '@substrat-run/control-plane-client';
 import { resolveObservabilityWindow } from './observability-window.js';
 import { Hono } from 'hono';
@@ -2854,23 +2855,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (target.status !== 'active' || !target.vertical || target.vertical !== row.vertical) {
       return refuseStatus(c, 409, 'connection and target must share an active vertical scope');
     }
-    const fields = {
+    const schema = connectionBindingOptions(row.provider).extend({
       operation: z.string().regex(/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/),
       permission: permissionKey,
-    };
-    const schema = row.provider === 'planima'
-      ? z.object({ ...fields,
-          organizationId: z.number().int().positive().nullable().optional(),
-          currency: z.string().regex(/^[A-Z]{3}$/).optional(),
-          window: z.object({ fromYear: z.number().int(), toYear: z.number().int() })
-            .refine((w) => w.toYear >= w.fromYear, 'window ends before it starts').nullable().optional(),
-          horizonYears: z.number().int().min(0).optional(),
-        }).strict()
-      : row.provider === 'microsoft365'
-        // #2101: the channel folder, by its drive path. The connector resolves it and holds the
-        // fence to it; this only bounds the input.
-        ? z.object({ ...fields, folder: z.string().trim().min(1).max(400) }).strict()
-        : z.object(fields).strict();
+    });
     const input = schema.parse(await c.req.json());
     const grants = await c.var.host.connectionGrantsInScope(row.tenantId, scopeId);
     if (!grants.some((g) => g.connectionId === row.id && g.permission === input.permission)) {

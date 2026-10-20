@@ -33,8 +33,10 @@ import {
   exportsOfManifestJson,
   assertNoBindingShapeBreak,
   importsOfManifestJson,
+  connectionLandingsOfManifestJson,
   type ExportBreak,
   type ManifestImports,
+  type ManifestConnectionLandings,
   type ExportedBatch,
   type ExportReadInput,
   type ImportBatch,
@@ -5225,6 +5227,13 @@ export class SqliteScopeHost implements ScopeHost {
     const manifest = this.manifestJsonOf(versionId, slug);
     if (manifest === undefined) throw substratError('not_found', `unknown version ${versionId} for vertical '${slug}'`);
     return importsOfManifestJson(manifest);
+  }
+
+  /** #2316: what one version of `slug` declares about connection landings; `not_found` for a version it does not know. */
+  async versionConnectionLandings(slug: string, versionId: string): Promise<ManifestConnectionLandings> {
+    const manifest = this.manifestJsonOf(versionId, slug);
+    if (manifest === undefined) throw substratError('not_found', `unknown version ${versionId} for vertical '${slug}'`);
+    return connectionLandingsOfManifestJson(manifest);
   }
 
   /** #1705 PR 3: the promote gate's question, over two stored versions (`exportBreaksOf`). */

@@ -3,7 +3,7 @@
  * its sites (each site IS a scope), so it can list and switch between them CP-lessly. Kept as
  * plain functions over a minimal SQLite `exec` seam rather than methods on the IdentityDO, so
  * the logic is unit-testable against a plain SQLite without standing up a Durable Object (the
- * DO module pulls in Better Auth, which the workers test pool cannot load). The IdentityDO's
+ * DO module imports cloudflare:workers, which a Node test pool cannot load). The IdentityDO's
  * `recordSite`/`listSites`/`resolveSiteScope` delegate here.
  */
 

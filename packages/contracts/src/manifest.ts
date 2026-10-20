@@ -3,6 +3,7 @@ import { moduleId, permissionKey, verticalSlug } from './ids.js';
 import { eventType } from './events.js';
 import { uploadLinkPolicy } from './attachments.js';
 import { peerSpec } from './peer.js';
+import { connectionLandingSpec } from './connection-landing.js';
 import { isKernelNamespace } from './object-ref.js';
 import { entityStateDeclaration } from './entity-state.js';
 import { subjectErasureDeclaration } from './subject-erasure.js';
@@ -422,6 +423,20 @@ export const moduleManifest = z.object({
   //
   // Optional: additive-only surface (D-28) — every earlier manifest still parses.
   peers: z.array(peerSpec).optional(),
+  // CONNECTION LANDINGS (#2316): which operation a poll-only connector's data lands through,
+  // per provider, and the key the connection holds while it does. Lifted into the permission
+  // registry, so PERMISSIONS.md renders it and the permission digest moves with it: the key a
+  // connection is given is part of the reviewed permission diff, as a peer's is. The platform
+  // grants it and binds each live connection of the provider from the RUNNING version's
+  // declaration. See `connectionLandingSpec`.
+  //
+  // Optional: additive-only surface (D-28) — every earlier manifest still parses.
+  connections: z
+    .array(connectionLandingSpec)
+    .refine((ls) => new Set(ls.map((l) => l.provider)).size === ls.length, {
+      message: 'a module declares at most one landing per provider — a connection binds one operation per scope',
+    })
+    .optional(),
   // FRESHNESS EXPECTATIONS (#1232): event types this module expects to keep
   // arriving, and how stale is too stale. See freshnessSpec; evaluated scope-side
   // by the sweep, no permission needed — it is a read of the scope's own outbox.

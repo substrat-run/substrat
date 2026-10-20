@@ -49,9 +49,8 @@ directory below), which is what lets the implementation swap without touching th
 `emailVerified` is **three-state**. `true` and `false` are the provider asserting something
 about the address; `undefined` is the provider saying nothing — what an OIDC issuer that
 never emits `email_verified` looks like, and what a session minted before the field existed
-looks like for the rest of its life. All three providers below populate it: the two OIDC ones
-carry the issuer's `email_verified` claim through unchanged, and `doAuthProvider` reports its
-own directory's flag. Nothing in this package gates on it: a vertical's invites are claimed by
+looks like for the rest of its life. Both OIDC providers
+carry the issuer's `email_verified` claim through unchanged. Nothing in this package gates on it: a vertical's invites are claimed by
 token, not by address. A vertical that does key something on an address should ask
 [`identifyEmail`](/reference/oidc-rp#an-address-is-an-identifier-only-when-the-issuer-verified-it)
 from `@substrat-run/oidc-rp`, the rule the platform's own apps use: only `true` passes, and
@@ -119,14 +118,12 @@ demo look different here.
 
 ## What it selects between
 
-The composition is OIDC-only, so `provider()` picks between the first two. `doAuthProvider` is
-never selected by it — a vertical that owns credentials constructs one directly.
+The composition is OIDC-only; `provider()` selects one of these two providers.
 
 | Export | Login happens | Selected when |
 |---|---|---|
 | `oidcRpAuthProvider` | server-side, in your worker | a `substrat:auth` choice was delivered with `mode: 'oidc'` and both an `issuer` and a `clientId` — the hosted path, one script and many issuers |
 | `oidcAuthProvider` | at the issuer; the app verifies a presented JWT | nothing usable was delivered and `AUTH_PROVIDER=oidc` names a fixed `OIDC_ISSUER` — standalone deploys, or an SPA already holding a token from Supabase, Auth0, AuthHero, Keycloak, Zitadel |
-| `doAuthProvider` | in your own Durable Object | never by the composition; construct it yourself when the vertical owns credentials rather than delegating to an issuer |
 
 `oidcAuthProvider` is discovery-driven: the issuer URL is the only wired-in value, and the ID
 token is signature-verified against the issuer's JWKS. `oidcRpAuthProvider` runs
@@ -170,14 +167,12 @@ somebody signed in here.
 
 ## The identity directory
 
-`IdentityDO` is one Durable Object **per tenant**, running its own SQLite. A tenant's users,
-sessions and credentials live in that tenant's DO — there is no shared `AUTH_DB` for a bug to
-leak across. It is one of the vertical's own DO classes, so it stays
+`IdentityDO` is one Durable Object **per tenant**, running its own SQLite. It stores ownership, invites, sites, scope configuration, and the OIDC session-signing secret.
+Credentials belong to the configured OIDC issuer. It is one of the vertical's own DO classes, so it stays
 [sandbox-clean](/concepts/deploying): the platform refuses cross-script bindings, not a
 vertical's own.
 
-Its `sub → principal` mapping is **provider-agnostic** and used under *every* provider,
-including the two OIDC ones where Better Auth stays dormant:
+Its `sub → principal` mapping is **provider-agnostic** and used under both OIDC providers:
 
 - `setPendingOwner` — records the owner seat at provision. The seat is minted **empty** (the
   platform knows the principal it minted, not the login the tenant's issuer will emit) and

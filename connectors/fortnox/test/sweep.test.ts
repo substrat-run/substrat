@@ -9,6 +9,7 @@ import {
   platformActorId,
   scopeId,
   tenantId,
+  type ConnectionId,
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
@@ -393,5 +394,57 @@ describe('fortnox connector — inbound sync', () => {
       label: 'Lands through',
       value: OPERATION,
     });
+  });
+
+  it('sweeps each company of a bureau with its own credential (#2316)', async () => {
+    // One connection per client company in the same (tenant, vertical), told apart by
+    // `externalAccountRef` (#1267). Opening by (tenant, vertical) alone threw for both once the
+    // second existed, so neither company's books ever landed.
+    await host.admin.revokeConnection(staff, connId);
+    const companies = ['111111', '222222'];
+    const ids: ConnectionId[] = [];
+    for (const ref of companies) {
+      const id = connectionId.parse(ulid());
+      await host.admin.createConnection(staff, {
+        id,
+        tenantId: t,
+        vertical: 'forecast',
+        provider: 'fortnox',
+        label: `Company ${ref}`,
+        externalAccountRef: ref,
+        secret: { clientId: 'client-id', clientSecret: 'client-secret', tenantId: '123456' },
+      });
+      await host.admin.grantToConnection(staff, { connectionId: id, permission: LEDGER_RECORD, node: { tenantId: t, scopeId: s }, grantedBy: staff });
+      await bindFortnoxScope(host, { connectionId: id, tenantId: t, scopeId: s, vertical: 'forecast', operation: OPERATION, permission: LEDGER_RECORD, externalAccountRef: ref });
+      ids.push(id);
+    }
+
+    for (const id of ids) {
+      const result = await sweepFortnoxLedger(host, id, options());
+      expect(result.failed).toEqual([]);
+      expect(result.synced).toHaveLength(1);
+    }
+    expect(landed.map((p) => p.connectionId).sort()).toEqual([...ids].sort());
+  });
+
+  it('refuses to read one company with another\'s credential (#2316)', async () => {
+    // A binding written before it recorded the company opens whichever connection the pair
+    // finds. With a second company that is ambiguous, and the refusal names the re-bind.
+    await bind();
+    const other = connectionId.parse(ulid());
+    await host.admin.createConnection(staff, {
+      id: other,
+      tenantId: t,
+      vertical: 'forecast',
+      provider: 'fortnox',
+      label: 'Second company',
+      externalAccountRef: '222222',
+      secret: { clientId: 'client-id', clientSecret: 'client-secret', tenantId: '123456' },
+    });
+
+    const result = await sweepFortnoxLedger(host, connId, options());
+
+    expect(landed).toEqual([]);
+    expect(result.failed).toEqual([{ scopeId: s, error: expect.stringMatching(/multiple live 'fortnox' connections/) }]);
   });
 });

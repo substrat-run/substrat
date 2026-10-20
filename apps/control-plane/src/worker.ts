@@ -195,6 +195,7 @@ import {
   mailSendersFor,
   connectFlowsFor,
   connectorSweepersFor,
+  connectionBindersFor,
   type ConnectorEnv,
 } from './connectors.js';
 
@@ -2278,6 +2279,13 @@ export default {
       // surface (the host's connectorDelegation). A connection whose secret cannot be
       // opened (no CONNECTION_SEAL_KEY) fails its sweep loudly into report.errors.
       sweepers: connectorSweepersFor(env),
+      // #2316: each live connection is granted and bound from the landings its vertical's running
+      // version declares, before it is swept — so a company approved through a connect link lands
+      // without anyone running `substrat connection bind`.
+      connectionLandings: {
+        read: (slug, versionId) => host.versionConnectionLandings(slug, versionId),
+        binders: connectionBindersFor(env),
+      },
       // #1232: the durable sweep record. Fire-and-forget — a recorder failure must
       // never sink the pass it is recording (the ops-failure recorder's shape).
       recordSweepRun: (e) => void host.admin.recordSweepRun(e).catch(() => undefined),

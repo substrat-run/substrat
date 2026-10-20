@@ -21,10 +21,12 @@ import {
   type ImportResult,
   type ImportState,
   importsOfManifestJson,
+  connectionLandingsOfManifestJson,
   exportsOfManifestJson,
   assertNoBindingShapeBreak,
   type ExportBreak,
   type ManifestImports,
+  type ManifestConnectionLandings,
   importCursorMove,
   importCursorMoveAt,
   importCursorMoved,
@@ -12496,6 +12498,19 @@ export class CloudflareScopeHost implements ScopeHost {
       throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
     }
     return importsOfManifestJson(v.manifest_json);
+  }
+
+  /**
+   * What one pushed version declares about connection landings (#2316), from its stored manifest:
+   * the connector pass reads it for each install's running version. Unaudited for the reason
+   * {@link versionImports} is: it is the platform's own code metadata, read every pass.
+   */
+  async versionConnectionLandings(verticalSlug: string, versionId: string): Promise<ManifestConnectionLandings> {
+    const v = await this.cp.readVersion(versionId);
+    if (!v || v.vertical_slug !== verticalSlug) {
+      throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
+    }
+    return connectionLandingsOfManifestJson(v.manifest_json);
   }
 }
 

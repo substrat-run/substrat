@@ -61,9 +61,40 @@ the alternative is to write the binding, then discover at sweep time that the co
 invoke the operation — in a background timer nobody is watching, with a whole maintenance plan
 already fetched against a rate limit that only allows ten requests every ten seconds.
 
-## Bind a hosted connection
+## How a binding comes into existence
 
-A staff or service operator can bind an existing connection without handling its token:
+**Declare it, and the platform makes it.** The consuming vertical names the landing in its module
+manifest:
+
+```ts
+connections: [
+  { provider: 'planima', operation: 'maintenance/record-plan', permission: 'plan:record',
+    options: { organizationId: null, currency: 'SEK', horizonYears: 50 } },
+],
+```
+
+On the connector pass after a Planima connection appears — pasted into the dashboard's door, or
+stored by the vertical's own relay — the platform grants that connection `plan:record` on every
+primary, active install of the vertical in the tenant, and binds it with these options, through
+`bindPlanimaScope` and its grant check. The landing is part of the vertical's permission registry,
+so `PERMISSIONS.md` shows it and a change to it is acknowledged at promote. See
+[connection landings](/concepts/permissions#a-provider-s-connections-connection-landings) for the
+rules.
+
+`options` takes exactly what the binding door takes: `organizationId`, `currency`, `window` and
+`horizonYears`. Anything else is refused and reported on the connection's sweep row, never bound
+with a default. A pass that finds the binding already matching writes nothing, so the sync cursor
+survives; a changed declaration re-binds. An option the declaration leaves out is left as it is.
+
+**An install that is already running** picks the landing up with no reconcile, promote or command:
+pushing and promoting the version that declares it is enough, and the next pass (every quarter
+hour) grants and binds. A connection created before the declaration is bound on that same pass.
+
+## Bind a hosted connection by hand
+
+The declaration is the normal path. A staff or service operator can still bind a connection
+directly — for a vertical that declares nothing, or to narrow one install to one organization —
+without handling its token:
 
 ```sh
 substrat connection bind <connection-id> --tenant <tenant-id> --scope <scope-id> \
@@ -80,18 +111,26 @@ reports `permissionHeld` from each target scope's live grants. If a target canno
 (for example, its scope is suspended or its deployment is unavailable), the stored binding
 remains in the response with `permissionInspectionError` and no `permissionHeld` value.
 
-This door does **not** grant permissions. The tenant's authorized connection flow must have
-granted the landing key first. A missing or undelivered grant returns 409 before a binding is
-written. The scope must be active, primary, and run the connection's vertical. Tenant-service
-and builder credentials cannot use this staff/service route. Binding changes are audited with
-the request actor and target scope.
+This door does **not** grant permissions. The connection must already hold the landing key — from
+a declaration, or from the vertical's own relay. A missing or undelivered grant returns 409 before a
+binding is written. The scope must be active, primary, and run the connection's vertical.
+Tenant-service and builder credentials cannot use this staff/service route. Binding changes are
+audited with the request actor and target scope.
 
 For hosted verticals, deploy a version of `@substrat-run/vertical-host` that serves
 `/internal/connector-grants` before binding: the platform reads permissions from the deployment
 serving the scope. An older deployment fails explicitly; the control plane's placeholder scope
-cannot stand in for it. This change adds no automatic binding at consent or reconcile and no
-cadence override. The existing quarter-hour sweep is the next opportunity after binding;
-verify the first landing in the consuming application's sync view.
+cannot stand in for it.
+
+## What a sweep reports
+
+Each pass writes one row per connection, shown in Health › Connections:
+
+- **ok** — every bound scope synced, or was unchanged.
+- **skipped** — the connection has no binding, so nothing was polled.
+- **failed** — a scope could not be landed in (the landing operation refused, the key was missing,
+  Planima answered with an error), or a declared landing could not be granted or bound. The row
+  names each scope and why.
 
 ## The credential
 
@@ -204,5 +243,9 @@ moved to a status added last week.
   `project_id` and their category *name*, which is enough for a consumer to group by; the
   catalogue reads would cost three more requests per pass against a tight budget for data that
   changes rarely.
+- **One cadence for every connection.** The platform pass runs every quarter hour. Planima allows
+  10,000 calls per token per day, and one pass costs at least `1 + 3 × facilities`, so a token
+  syncing more than about 34 facilities runs out of budget before the day does. A per-provider or
+  per-binding interval is not built yet.
 - **No incremental sync.** The whole window is re-read every pass because the API offers no
   "changed since" filter. `updated_at` is on each row but cannot be filtered on.

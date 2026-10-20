@@ -54,9 +54,41 @@ A sweep can therefore never be configured into a state where it fetches a year o
 then cannot write it down — the failure lands in the operator's hands, naming what to grant,
 instead of in a background timer nobody is watching.
 
-### Bind a hosted connection
+### How a binding comes into existence
 
-A staff or service operator can bind each company's existing connection:
+**Declare it, and the platform makes it.** The consuming vertical names the landing in its module
+manifest:
+
+```ts
+connections: [
+  { provider: 'fortnox', operation: 'ledger/record-period', permission: 'ledger:record' },
+],
+```
+
+Each client company is its own connection, told apart by its `externalAccountRef`. On the connector
+pass after a company's connection appears — through the dashboard's Connect, a connect link the
+vertical mailed, or the vertical's own relay — the platform grants that connection `ledger:record`
+on every primary, active install of the vertical in the tenant and binds it, through
+`bindFortnoxScope` and its grant check. A bureau with ten companies gets ten bindings into the same
+install, and each one is swept with its own company's credential: the binding records the company,
+so the sweep opens that connection and no other. The landing is part of the vertical's permission
+registry, so `PERMISSIONS.md` shows it and a change to it is acknowledged at promote. See
+[connection landings](/concepts/permissions#a-provider-s-connections-connection-landings).
+
+**An install that is already running** picks the landing up with no reconcile, promote or command:
+pushing and promoting the version that declares it is enough, and the next pass (every quarter
+hour) grants and binds every company connected so far. A binding written by hand before bindings
+recorded the company is re-written once on that pass.
+
+Each pass writes one row per connection, shown in Health › Connections: **ok** when every bound
+scope synced or was unchanged, **skipped** when the connection has no binding, and **failed**,
+naming the scope, when a scope could not be landed in or a declared landing could not be granted or
+bound.
+
+### Bind a hosted connection by hand
+
+The declaration is the normal path. A staff or service operator can still bind a company's
+connection directly, for a vertical that declares nothing:
 
 ```sh
 substrat connection bind <connection-id> --tenant <tenant-id> --scope <scope-id> \
@@ -64,12 +96,12 @@ substrat connection bind <connection-id> --tenant <tenant-id> --scope <scope-id>
 substrat connection bindings <connection-id> --tenant <tenant-id>
 ```
 
-The connection must already hold `ledger:record` on that scope through the tenant's authorized
-connection flow. This command grants nothing. It verifies the live scope projection, refuses
+The connection must already hold `ledger:record` on that scope, from a declaration or the
+vertical's own relay. This command grants nothing. It verifies the live scope projection, refuses
 preview/fork and mismatched-vertical targets, and records the binding change in the admin log.
 The read reports `permissionHeld` alongside each stored binding. See the
-[hosted Planima binding door](/connectors/planima#bind-a-hosted-connection) for the HTTP paths
-and deployment prerequisite. Planima-specific options are rejected for Fortnox.
+[hosted Planima binding door](/connectors/planima#bind-a-hosted-connection-by-hand) for the HTTP
+paths and deployment prerequisite. Planima-specific options are rejected for Fortnox.
 
 ## The credential
 

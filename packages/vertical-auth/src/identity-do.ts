@@ -1,11 +1,4 @@
 import { DurableObject } from 'cloudflare:workers';
-import { betterAuth } from 'better-auth';
-import { drizzleAdapter } from 'better-auth/adapters/drizzle';
-import { drizzle } from 'drizzle-orm/durable-sqlite';
-import * as schema from './auth-schema.js';
-import type { AuthProvider, AuthSubject } from './provider.js';
-import { cookieDomainDecision, expireBetterAuthDomainCookies, forwardIdentityCookieConfig } from './cookie-domain.js';
-import { parsePlatformBaseDomains } from '@substrat-run/contracts';
 import {
   SITE_REGISTRY_DDL,
   recordSite as recordSiteRow,
@@ -58,48 +51,11 @@ import {
 export type { InviteRow, MemberBinding } from './member-directory.js';
 
 /**
- * The per-tenant IDENTITY Durable Object — one per tenant, running its OWN Better Auth
- * over its OWN SQLite (Drizzle's Durable-Object driver, not a shared D1), and holding the
- * provider-agnostic `sub → principal` directory. A tenant's users/sessions/credentials are
- * isolated in its DO; there is NO per-worker `AUTH_DB` to leak across tenants.
- *
- * It runs in its own isolate (separate process + storage from the vertical's business-data
- * DO), and is one of the vertical's OWN DO classes — a legal sandbox-clean binding (the
- * contract refuses only cross-script / platform bindings).
- *
- * Two roles, either or both used per deployment:
- *   - `doAuthProvider` (below) exposes Better Auth here as an `AuthProvider` (the
- *     `better-auth-do` config). With an OIDC provider instead, Better Auth stays dormant.
- *   - `setPendingOwner` / `resolvePrincipal` / `claimOwnerByCapability` are the identity directory —
- *     used under EVERY provider, since the subject → principal mapping is provider-independent.
- *     The owner seat's rules (the bounded first sign-in, the claim link) are in owner-seat.ts.
+ * Per-tenant identity directory and configuration store. Authentication belongs to
+ * the configured OIDC issuer; this DO maps verified subjects to scope principals
+ * and retains ownership, invites, sites, and the relying party's session secret.
  */
-
 const SCHEMA_STATEMENTS: string[] = [
-  `CREATE TABLE IF NOT EXISTS user (
-    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
-    email_verified INTEGER NOT NULL DEFAULT 0, image TEXT,
-    created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
-    updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))`,
-  `CREATE TABLE IF NOT EXISTS session (
-    id TEXT PRIMARY KEY NOT NULL, expires_at INTEGER NOT NULL, token TEXT NOT NULL UNIQUE,
-    created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
-    updated_at INTEGER NOT NULL, ip_address TEXT, user_agent TEXT,
-    user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE)`,
-  `CREATE INDEX IF NOT EXISTS session_userId_idx ON session (user_id)`,
-  `CREATE TABLE IF NOT EXISTS account (
-    id TEXT PRIMARY KEY NOT NULL, account_id TEXT NOT NULL, provider_id TEXT NOT NULL,
-    user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
-    access_token TEXT, refresh_token TEXT, id_token TEXT,
-    access_token_expires_at INTEGER, refresh_token_expires_at INTEGER, scope TEXT, password TEXT,
-    created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
-    updated_at INTEGER NOT NULL)`,
-  `CREATE INDEX IF NOT EXISTS account_userId_idx ON account (user_id)`,
-  `CREATE TABLE IF NOT EXISTS verification (
-    id TEXT PRIMARY KEY NOT NULL, identifier TEXT NOT NULL, value TEXT NOT NULL, expires_at INTEGER NOT NULL,
-    created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
-    updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))`,
-  `CREATE INDEX IF NOT EXISTS verification_identifier_idx ON verification (identifier)`,
   // The PROVIDER-AGNOSTIC identity directory (`identity`: a verified `sub` → the Substrat
   // PrincipalId it maps to, per scope — K-22, the same login is a different principal in each
   // scope, independent of WHICH provider verified it) and the OWNER SEAT around it —
@@ -113,7 +69,7 @@ const SCHEMA_STATEMENTS: string[] = [
   // Outstanding member invites (the post-setup join path) — the table and its rows are in
   // `member-directory.ts`, tested there without a DO.
   ...INVITE_DDL,
-  // This DO's own config — notably its session-signing secret, generated here per tenant.
+  // This DO's own config, including the OIDC session-signing secret.
   `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
   // PER-SCOPE instance config, delivered by the platform via /internal/configure
   // (vertical-auth-detach.md §2.2) — notably the scope's `substrat:auth` issuer choice.
@@ -128,14 +84,10 @@ const SCHEMA_STATEMENTS: string[] = [
   ...SITE_REGISTRY_DDL,
 ];
 
-// The IdentityDO needs no injected env: its signing secret is generated per tenant and
-// kept in its own storage (see below), so there is no shared worker secret to manage.
+// The OIDC session secret is generated per tenant and kept in this DO's storage.
 export type IdentityDoEnv = Record<string, never>;
 
 export class IdentityDO extends DurableObject<IdentityDoEnv> {
-  /** This tenant's Better Auth signing secret — generated in this DO, never shared, never a worker binding. */
-  private authSecret!: string;
-
   constructor(ctx: DurableObjectState, env: IdentityDoEnv) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
@@ -144,18 +96,6 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
       // #1686's `invite.capability_id`).
       migrateOwnerSeat(ctx.storage.sql as unknown as RegistrySql);
       migrateInvites(ctx.storage.sql as unknown as RegistrySql);
-      // Load-or-generate this tenant's OWN signing secret. Each IdentityDO mints its own on
-      // first init and persists it here, so the secret is per-tenant, never leaves the DO,
-      // and needs no `wrangler secret put` (which would be one value shared across every
-      // tenant on the deployed script — the multi-tenant hazard we're avoiding).
-      const row = [...ctx.storage.sql.exec("SELECT value FROM config WHERE key = 'auth_secret'")][0] as { value: string } | undefined;
-      if (row) {
-        this.authSecret = row.value;
-      } else {
-        const bytes = crypto.getRandomValues(new Uint8Array(32));
-        this.authSecret = btoa(String.fromCharCode(...bytes));
-        ctx.storage.sql.exec("INSERT INTO config (key, value) VALUES ('auth_secret', ?)", this.authSecret);
-      }
     });
   }
 
@@ -192,8 +132,7 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   /**
    * Everything the worker needs to build the scope's `AuthProvider`, in ONE round-trip:
    * the scope's delivered config (notably `substrat:auth`) plus this tenant's
-   * session-signing secret (minted here on first use, never a worker binding — the same
-   * per-tenant-secret move as `auth_secret`). One method rather than two keeps the
+   * session-signing secret (minted here on first use, never a worker binding). One method rather than two keeps the
    * per-request cost at a single DO hop.
    */
   async authWiring(scopeId: string): Promise<{ config: Record<string, string>; sessionSecret: string }> {
@@ -299,8 +238,7 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    * Map a verified subject to a PrincipalId in this scope. If already bound, return it. If
    * not, and the scope's owner seat is unclaimed with its first-sign-in window still open,
    * CLAIM it. Otherwise null — a valid login with no seat has no access, and after the
-   * window the seat is reached by claim link only. Provider-agnostic: the subject may come
-   * from Better Auth or an OIDC issuer.
+   * window the seat is reached by claim link only. The subject is verified by the configured OIDC issuer.
    */
   async resolvePrincipal(scopeId: string, sub: string): Promise<string | null> {
     return resolvePrincipalRow(this.registrySql, scopeId, sub, Date.now());
@@ -427,82 +365,10 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   async listMemberBindings(scopeId: string): Promise<MemberBinding[]> {
     return listMemberBindingRows(this.registrySql, scopeId);
   }
-
-  /** A Better Auth instance over THIS DO's SQLite, trusting the caller's origin. */
-  private auth(origin: string, cookieDomain?: string | null, rejectOldDomainSession = false) {
-    const db = drizzle(this.ctx.storage, { schema });
-    return betterAuth({
-      database: drizzleAdapter(db, { provider: 'sqlite', schema }),
-      emailAndPassword: { enabled: true, autoSignIn: true, minPasswordLength: 8 },
-      // Per-tenant, generated + persisted in THIS DO (see the constructor) — never shared.
-      secret: rejectOldDomainSession ? `${this.authSecret}\u0000platform-domain-v2` : this.authSecret,
-      baseURL: origin,
-      trustedOrigins: [origin],
-      // Shared login across a scope's surfaces (crm.…, eka.… — one parent domain): the
-      // session cookie rides `Domain=…` instead of host-only. Verified everywhere already
-      // (one per-tenant secret, this DO); the attribute is the only thing that was missing.
-      ...(cookieDomain
-        ? { advanced: { crossSubDomainCookies: { enabled: true, domain: cookieDomain } } }
-        : {}),
-    });
-  }
-
-  /**
-   * The DO's HTTP surface (used only when Better Auth is the chosen provider). `/__session`
-   * resolves the request to an `AuthSubject`; everything else is a Better Auth request. The
-   * worker forwards requests here; Better Auth never runs in the worker.
-   *
-   * `x-substrat-cookie-domain` is the worker relaying the scope's delivered `substrat:auth`
-   * cookie-domain choice (the DO can't look it up itself — this fetch carries no scope id).
-   * The stub is reachable only from the worker, so the header is as trusted as the config;
-   * it is still re-validated against the request host before it touches a Set-Cookie.
-   */
-  override async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    const { domain: cookieDomain, cleanupDomain } = cookieDomainDecision(
-      request.headers.get('x-substrat-cookie-domain') ?? undefined,
-      url.hostname,
-      parsePlatformBaseDomains(request.headers.get('x-substrat-platform-base-domains')),
-    );
-    if (cleanupDomain) {
-      // Better Auth session tokens are opaque database keys, so changing its secret
-      // alone does not revoke an old cookie. Revoke once per rejected domain before
-      // processing even the first request that presents one.
-      const marker = [...this.ctx.storage.sql.exec(
-        "SELECT value FROM config WHERE key = 'rejected_cookie_domain'",
-      )][0] as { value: string } | undefined;
-      if (marker?.value !== cleanupDomain) {
-        this.ctx.storage.sql.exec('DELETE FROM session');
-        this.ctx.storage.sql.exec(
-          "INSERT OR REPLACE INTO config (key, value) VALUES ('rejected_cookie_domain', ?)", cleanupDomain,
-        );
-      }
-    }
-    const auth = this.auth(url.origin, cookieDomain, cleanupDomain !== null);
-    const withCleanup = (response: Response): Response =>
-      expireBetterAuthDomainCookies(response, url.origin, cleanupDomain);
-    if (url.pathname === '/__session') {
-      const session = await auth.api.getSession({ headers: request.headers });
-      const subject: AuthSubject | null = session?.user
-        ? {
-            sub: session.user.id,
-            email: session.user.email ?? null,
-            name: session.user.name ?? null,
-            // Better Auth owns the address here — it is the thing that sent the
-            // verification mail — so unlike an OIDC issuer's optional claim, this one is
-            // always an assertion, never silence.
-            emailVerified: session.user.emailVerified,
-          }
-        : null;
-      return withCleanup(Response.json(subject));
-    }
-    return withCleanup(await auth.handler(request));
-  }
 }
 
 /** A minimal stub shape — the identity DO's callable surface (avoids leaking the full class type). */
 export type IdentityStub = {
-  fetch(request: Request): Promise<Response>;
   setScopeConfig(scopeId: string, entries: Array<{ key: string; value: string }>): Promise<void>;
   getScopeConfig(scopeId: string): Promise<Record<string, string>>;
   authWiring(scopeId: string): Promise<{ config: Record<string, string>; sessionSecret: string }>;
@@ -546,26 +412,3 @@ export type IdentityStub = {
 type _StubCarriesClass = IdentityDO extends IdentityStub ? true : never;
 type _ClassMethodsMissingFromStub = Exclude<keyof IdentityDO, keyof DurableObject | keyof IdentityStub>;
 export const _identityStubPin: [_StubCarriesClass, _ClassMethodsMissingFromStub] extends [true, never] ? true : never = true;
-
-/**
- * The `AuthProvider` backed by a tenant's identity-DO stub (the `better-auth-do` config).
- * `handle` forwards the raw request; `resolve` asks the DO's `/__session` probe, carrying
- * the request's cookies. The worker holds only this — never Better Auth itself.
- *
- * `cookieDomain` (the scope's delivered `substrat:auth` choice) rides to the DO as a
- * header because the worker holds the config and the DO holds Better Auth — see fetch().
- */
-export function doAuthProvider(
-  stub: Pick<IdentityStub, 'fetch'>,
-  origin: string,
-  opts?: { cookieDomain?: string; platformBaseDomains?: readonly string[] },
-): AuthProvider {
-  const forward = (request: Request): Request => forwardIdentityCookieConfig(request, opts);
-  return {
-    handle: (request) => stub.fetch(forward(request)),
-    async resolve(headers) {
-      const res = await stub.fetch(forward(new Request(`${origin}/__session`, { headers })));
-      return (await res.json()) as AuthSubject | null;
-    },
-  };
-}

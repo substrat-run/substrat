@@ -881,7 +881,10 @@ export {
   runCrossVerticalFrom,
   registryImportCandidates,
   crossVerticalHealth,
+  NO_BINDING,
 } from './platform-sweep.js';
+// #2316: a vertical's declared connection landings, granted and bound by the connector pass.
+export type { ConnectionBinder, ConnectionLandingOptionsInput, LandingOutcome } from './connection-landings.js';
 export { SCHEDULE_STATE_DDL, SCHEDULE_STATE_REBUILD, scheduleStateHasKind } from './schedule-state.js';
 export type { ScheduleSweepReport, ScheduleStateKind } from './schedule-state.js';
 export type {
@@ -892,6 +895,7 @@ export type {
   PlatformRequestUnsettleable,
   AccessLogSweepReport,
   ConnectorSweeper,
+  ConnectorSweepAnswer,
   MigrationSweepReport,
   PlatformSweepOptions,
   PlatformSweepReport,

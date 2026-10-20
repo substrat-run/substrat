@@ -1,0 +1,223 @@
+import type {
+  Connection,
+  ConnectionLandingOptions,
+  ManifestConnectionLandings,
+  PlatformActorId,
+  ProjectedConnectionGrant,
+  Scope,
+  ScopeId,
+  TenantId,
+} from '@substrat-run/contracts';
+import type { ScopeHost } from './scope-host.js';
+import { runningFactsOf } from './export-break.js';
+import { isPrimaryScope } from './scope-identity.js';
+import { message } from './map-bounded.js';
+import { ulid } from './ulid.js';
+
+/**
+ * Connection landings, applied (#2316): the connector pass's step that turns a vertical's declared
+ * `connections` into a held key and a binding for every live connection of that provider.
+ *
+ * Why it runs in the connector pass rather than at provision or reconcile: a connection arrives on
+ * its own clock. A company's administrator approves a connect link days after the vertical was
+ * deployed, and nothing is provisioned or reconciled then. The pass already visits every live
+ * connection every few minutes, so this is where a new one is first seen.
+ *
+ * It writes only what is missing or different, so a pass over a settled connection writes nothing
+ * and logs nothing:
+ *
+ * - **The key** is granted (`grantToConnection`, audited, delivered to the scope) only when the
+ *   scope does not hold it, read from the scope's own enforced tuples, not the directory.
+ * - **The binding** is written (the connector's own `bind`, which still refuses a connection that
+ *   does not hold the key, then audited) only when the connection has none for the scope or the one
+ *   it has names a different operation, key, or declared option. An option the declaration does not
+ *   name is left as it is, so an operator's narrower binding (one Planima organization, say)
+ *   survives a declaration that is silent about it.
+ *
+ * Nothing is unbound. A version that stops declaring a landing leaves its bindings in place, and a
+ * pass that lands through an operation the version no longer has reports the refusal on the
+ * connection's sweep row; `unbind` stays a person's act. A revoked connection is never reached:
+ * the pass skips it, and the revoke itself tombstoned its grants and deleted its bindings.
+ */
+
+/**
+ * What the connector pass needs from a provider to bind its connections: the connector's own bind
+ * and binding list, the same ones the staff binding door calls (#2317).
+ */
+export interface ConnectionBinder {
+  /** The bindings `connection` holds, one per scope. Fields beyond these three are its options. */
+  list(host: ScopeHost, connection: Connection): Promise<readonly { scopeId: string; operation: string; permission: string }[]>;
+  /** Bind `connection` to one scope. Refuses a connection that does not hold `permission` there. */
+  bind(
+    host: ScopeHost,
+    connection: Connection,
+    target: { tenantId: TenantId; scopeId: ScopeId; vertical: string; operation: string; permission: string } & Record<string, unknown>,
+  ): Promise<unknown>;
+  /**
+   * The provider's options, validated, from what a declaration carries. Throws with a reason a
+   * person can act on; a provider that takes none refuses any. Absent means the provider takes none.
+   * When `current` is supplied, preserve its provider options unless `raw` overrides them.
+   * Do not copy binding metadata (including the sync cursor) into the options.
+   */
+  options?(
+    raw: ConnectionLandingOptions | undefined,
+    current?: { scopeId: string; operation: string; permission: string },
+  ): Record<string, unknown>;
+  /**
+   * True when a binding that matches the declaration must still be re-written, for a fact the
+   * connection carries and the declaration does not (Fortnox's company, recorded on bindings
+   * written after #2316). Absent means a matching binding is always current.
+   */
+  stale?(binding: { scopeId: string; operation: string; permission: string }, connection: Connection): boolean;
+}
+
+export interface ConnectionLandingOptionsInput {
+  /** The version's declared landings, read off its stored manifest (`connectionLandingsOfManifestJson`). */
+  read(verticalSlug: string, versionId: string): Promise<ManifestConnectionLandings>;
+  /** provider slug → its binder. A provider with none is never bound by a declaration. */
+  binders: Record<string, ConnectionBinder>;
+}
+
+/** What one connection's landing step did, folded into its sweep row and the pass report. */
+export interface LandingOutcome {
+  /** Scopes whose key this step granted. */
+  granted: ScopeId[];
+  /** Scopes this step bound, or re-bound to a changed declaration. */
+  bound: ScopeId[];
+  /** Scopes it could not grant or bind, and why. The connection's sweep row reports each. */
+  failed: { scopeId: string; error: string }[];
+}
+
+/** One install a landing targets, as the per-pass cache holds it. */
+interface Target {
+  scope: Scope;
+  versionId: string | null;
+  fact: ManifestConnectionLandings | undefined;
+}
+
+/**
+ * The per-pass memory of the landing step: which installs each (tenant, vertical) has and what
+ * they run, and the keys each scope holds. Each is read once per pass however many connections
+ * ask, and kept as a promise so concurrent connections share one read.
+ */
+export class LandingPass {
+  private readonly targets = new Map<string, Promise<Target[]>>();
+  private readonly held = new Map<string, Promise<ProjectedConnectionGrant[]>>();
+
+  constructor(
+    private readonly host: ScopeHost,
+    private readonly actor: PlatformActorId,
+    private readonly input: ConnectionLandingOptionsInput,
+    private readonly concurrency: number,
+  ) {}
+
+  /** Grant and bind what `connection`'s installs declare for its provider, and say what happened. */
+  async apply(connection: Connection): Promise<LandingOutcome> {
+    const out: LandingOutcome = { granted: [], bound: [], failed: [] };
+    const binder = this.input.binders[connection.provider];
+    if (!binder) return out;
+    const targets = await this.targetsOf(connection.tenantId, connection.vertical);
+    let existing: Awaited<ReturnType<ConnectionBinder['list']>> | undefined;
+    for (const t of targets) {
+      const scopeId = t.scope.id;
+      if (!t.fact || t.fact.kind === 'none') continue;
+      if (t.fact.kind === 'unreadable') {
+        out.failed.push({ scopeId, error: `the declared connection landings of version ${t.versionId ?? '(none)'} cannot be read: ${t.fact.reason}` });
+        continue;
+      }
+      const landing = t.fact.rows.find((r) => r.provider === connection.provider);
+      if (!landing) continue;
+      try {
+        const options = binder.options ? binder.options(landing.options) : {};
+        const grants = await this.grantsIn(connection.tenantId, scopeId);
+        if (!grants.some((g) => g.connectionId === connection.id && g.permission === landing.permission)) {
+          await this.host.admin.grantToConnection(this.actor, {
+            connectionId: connection.id,
+            permission: landing.permission,
+            node: { tenantId: connection.tenantId, scopeId },
+            grantedBy: this.actor,
+          });
+          out.granted.push(scopeId);
+        }
+        existing ??= await binder.list(this.host, connection);
+        const current = existing.find((b) => b.scopeId === scopeId);
+        if (current && sameLanding(current, landing.operation, landing.permission, options) && !binder.stale?.(current, connection)) continue;
+        const bindingOptions = binder.options ? binder.options(landing.options, current) : options;
+        const operationId = ulid();
+        const audit = {
+          tenantId: connection.tenantId,
+          scopeId,
+          operationId,
+          connectionId: connection.id,
+          provider: connection.provider,
+          operation: landing.operation,
+          permission: landing.permission,
+          ...bindingOptions,
+        };
+        await binder.bind(this.host, connection, {
+          ...bindingOptions,
+          tenantId: connection.tenantId,
+          scopeId,
+          vertical: connection.vertical,
+          operation: landing.operation,
+          permission: landing.permission,
+        });
+        // After the write, as the staff door's `applied` row: a bind that threw is reported on the
+        // sweep row instead, and is retried by the next pass.
+        await this.host.admin.recordConnectionBindingChange(this.actor, { ...audit, phase: 'applied' });
+        out.bound.push(scopeId);
+      } catch (err) {
+        out.failed.push({ scopeId, error: message(err) });
+      }
+    }
+    return out;
+  }
+
+  /** Every primary, active install of `vertical` in `tenantId`, with what its running version declares. */
+  private targetsOf(tenantId: TenantId, vertical: string): Promise<Target[]> {
+    const key = `${tenantId}\u0000${vertical}`;
+    let found = this.targets.get(key);
+    if (!found) {
+      found = (async () => {
+        const scopes = (await this.host.admin.listScopes(this.actor, { tenantId })).filter(
+          (s) => s.vertical === vertical && s.status === 'active' && isPrimaryScope(s),
+        );
+        if (scopes.length === 0) return [];
+        const running = await runningFactsOf<ManifestConnectionLandings>(
+          this.host.admin,
+          this.actor,
+          scopes,
+          (slug, versionId) => this.input.read(slug, versionId),
+          (reason) => ({ kind: 'unreadable', reason }),
+          this.concurrency,
+        );
+        return running.map((r) => ({ scope: r.scope, versionId: r.versionId, fact: r.fact }));
+      })();
+      this.targets.set(key, found);
+    }
+    return found;
+  }
+
+  /** The keys connections hold on one scope, as its enforced tuples say. */
+  private grantsIn(tenantId: TenantId, scopeId: ScopeId): Promise<ProjectedConnectionGrant[]> {
+    const key = `${tenantId}\u0000${scopeId}`;
+    let found = this.held.get(key);
+    if (!found) {
+      found = this.host.connectionGrantsInScope(tenantId, scopeId);
+      this.held.set(key, found);
+    }
+    return found;
+  }
+}
+
+/** A binding matches a declaration when its operation, key and every DECLARED option agree. */
+function sameLanding(
+  binding: { operation: string; permission: string },
+  operation: string,
+  permission: string,
+  options: Record<string, unknown>,
+): boolean {
+  if (binding.operation !== operation || binding.permission !== permission) return false;
+  const held = binding as Readonly<Record<string, unknown>>;
+  return Object.entries(options).every(([k, v]) => JSON.stringify(held[k] ?? null) === JSON.stringify(v ?? null));
+}

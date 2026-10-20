@@ -1,5 +1,21 @@
 # @substrat-run/vertical-auth
 
+## 0.26.0
+
+### Minor Changes
+
+- 8122e15: Remove the unused built-in Better Auth email/password provider from IdentityDO. OIDC workers no longer pull Better Auth or Drizzle into their bundles. Authentication continues through the configured OIDC issuer; the per-tenant identity directory, ownership, invites, sites, scope configuration, and OIDC session secret remain intact.
+
+  The former doAuthProvider export and IdentityDO HTTP authentication surface are removed. Consumers must use oidcAuthProvider or oidcRpAuthProvider. Existing credential tables are left untouched, but are no longer created or used; the separate auth-server keeps its credential handling.
+
+### Patch Changes
+
+- Updated dependencies [6933146]
+- Updated dependencies [35bdba2]
+- Updated dependencies [10b7e03]
+  - @substrat-run/contracts@0.155.0
+  - @substrat-run/kernel@0.155.0
+
 ## 0.25.3
 
 ### Patch Changes

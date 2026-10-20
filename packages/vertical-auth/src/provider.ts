@@ -1,9 +1,8 @@
 /**
  * The `AuthProvider` contract — the ONLY thing a vertical's app depends on for identity.
  *
- * The application codes to this interface and does not care WHICH auth is behind it: Better
- * Auth running in a per-tenant Durable Object (`identity-do.ts`), an OIDC issuer (`oidc.ts`),
- * or a test mock all satisfy it. Swapping the implementation never touches the app.
+ * The application codes to this interface: OIDC bearer verification, the browser
+ * relying-party flow, or a test mock all satisfy it. Swapping the implementation never touches the app.
  *
  *   - `handle` — the credential/session endpoints (`/api/auth/*`): sign-up, login, logout,
  *     callbacks. The worker forwards the raw request; the provider owns what's behind it.
@@ -12,7 +11,7 @@
  *     per-scope concern (the identity directory), not the provider's job.
  */
 export interface AuthSubject {
-  /** The provider's stable subject id — a Better Auth user id, an OIDC `sub`, … */
+  /** The provider's stable subject id — an OIDC `sub` */
   sub: string;
   email: string | null;
   name: string | null;

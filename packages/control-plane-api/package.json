@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/control-plane-api",
-  "version": "0.154.0",
+  "version": "0.155.0",
   "description": "HTTP surface over HostAdmin — the audited control-plane transport (control-plane.md §4.5)",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -42,6 +42,8 @@
   "devDependencies": {
     "@hono/node-server": "^1.13.0",
     "@substrat-run/adapter-sqlite": "workspace:^",
+    "@substrat-run/connector-fortnox": "workspace:^",
+    "@substrat-run/connector-planima": "workspace:^",
     "@substrat-run/vertical-host": "workspace:^",
     "@types/better-sqlite3": "^9.6.0",
     "better-auth": "^1.7.1",
