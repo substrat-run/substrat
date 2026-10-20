@@ -15,7 +15,7 @@ A preview whose data takes more than one page to copy now copies in the backgrou
 - **The job.** `advanceCopyJob` is one step of a background copy:
   - it renews the lease;
   - it moves pages for a bounded time;
-  - a refusal fails the job, a transient fault backs off and retries, and a job past six hours fails;
+  - a refusal fails the job, a transient fault backs off and retries, and a job past six hours fails (one whose steps were lost is failed so by the next call that reads it, `copyJobAt`);
   - a job that fails discards its stage, and its record keeps naming it;
   - a copy torn part way is staged again, even when it now fits one page;
   - the step, and the wait before a retry, each stay inside a quarter of the move's lease.

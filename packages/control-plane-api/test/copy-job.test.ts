@@ -5,6 +5,7 @@ import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import {
   COPY_JOB_MAX_FAULTS,
   advanceCopyJob,
+  copyJobAt,
   copyJobId,
   copyJobLive,
   copyJobThrewRetryMs,
@@ -386,6 +387,23 @@ describe('copyJobLive (#2450)', () => {
     // Held by the call finishing it, it is live past that lease too.
     expect(copyJobLive({ ...done, claimedUntil: now + 2 * lease }, now + lease + 1)).toBe(true);
     for (const status of ['failed', 'cancelled'] as const) expect(copyJobLive({ ...copying, status }, now)).toBe(false);
+  });
+
+  it('copyJobAt reads a job whose steps were lost past its deadline as failed by it, and any other as it is', async () => {
+    const h = harness();
+    const job = newCopyJob(h.spec({ startedAt: h.clock.now, deadline: h.clock.now + 60_000 }), await h.begin(), h.clock.now);
+    const lease = job.spec.leaseMs;
+    expect(copyJobAt(job, h.clock.now + 60_000 + lease)).toBe(job);
+    expect(copyJobAt(job, h.clock.now + 60_000 + lease + 1)).toMatchObject({
+      status: 'failed',
+      error: { status: 504, message: expect.stringMatching(/ran past its 1 min limit; nothing was moved/) },
+      state: { stageId: job.state!.stageId },
+    });
+    // The same sentence a step fails it with at the deadline.
+    expect((await advanceCopyJob(h.deps, { ...job, spec: { ...job.spec, deadline: h.clock.now - 1, startedAt: h.clock.now - 60_001 } })).error?.message)
+      .toMatch(/ran past its 1 min limit; nothing was moved/);
+    const done = { ...job, status: 'done' as const };
+    expect(copyJobAt(done, h.clock.now + 10 * lease)).toBe(done);
   });
 });
 

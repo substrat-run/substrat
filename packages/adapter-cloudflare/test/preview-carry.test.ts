@@ -3240,5 +3240,35 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await call('bg-28', 'v2', { poll: true })).status).toBe(200);
       expect(await served(h)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
     });
+
+    it('a job left copying past its deadline with no step to fail it is failed by the next call that reads it', async () => {
+      // A fork whose steps stopped: nothing pumps it again.
+      const started = await pushBg('bg-34', 'v1');
+      expect(started.status).toBe(202);
+      const sid = started.body.scopeId;
+      const id = `fork:${sid}`;
+      const job = jobs.jobs.get(id)!;
+      expect(await noStage('v1', sid)).not.toEqual([]);
+      /** The job as it would be had it started `ms` earlier: its whole window moved back. */
+      const earlier = (ms: number) => ({ ...job, spec: { ...job.spec, startedAt: job.spec.startedAt - ms, deadline: job.spec.deadline - ms } });
+      const toDeadline = job.spec.deadline - Date.now();
+      // Within a lease of its deadline, its next step still fails it there: the call waits.
+      jobs.jobs.set(id, earlier(toDeadline + 1));
+      expect((await poll('bg-34', 'v1')).status).toBe(202);
+      // Past that, it has lost its steps: the call fails it, as its step would have.
+      jobs.jobs.set(id, earlier(toDeadline + job.spec.leaseMs + 1_000));
+      const failed = await poll('bg-34', 'v1');
+      expect(failed.status).toBe(409);
+      expect(reason(failed)).toMatch(/background copy failed with 504: the copy of scope \w+ ran past its \d+ min limit/);
+      expect(jobs.jobs.has(id)).toBe(false);
+      expect(await noStage('v1', sid)).toEqual([]);
+      await vi.waitFor(async () => {
+        expect((await dir.admin.listOpsFailures(staff, { scopeId: sid })).map((f) => [f.stage, f.status])).toEqual([['copy', 504]]);
+      });
+      // A new create forks afresh.
+      expect((await pushBg('bg-34', 'v1')).status).toBe(202);
+      await pumpToDone();
+      expect((await poll('bg-34', 'v1')).status).toBe(201);
+    });
   });
 });

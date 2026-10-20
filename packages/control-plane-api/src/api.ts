@@ -185,7 +185,8 @@ import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } fro
 import { mintTenantToken } from './tenant-token.js';
 import { beginTransfer, connectionGrantsForScope, transferScope, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
 import {
-  COPY_JOB_MAX_MS, copyJobHeld, copyJobId, copyJobLive, copyTagId, versionIdOfOrder, versionOrderOf, type CopyJobRecord, type CopyJobs,
+  COPY_JOB_MAX_MS, copyJobAt, copyJobHeld, copyJobId, copyJobLive, copyTagId, versionIdOfOrder, versionOrderOf,
+  type CopyJobRecord, type CopyJobs,
 } from './copy-job.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
@@ -3820,6 +3821,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }, e);
     }
     return new ControlPlaneError(409, `the background copy failed with ${status} while it was finished: ${body.detail ?? 'internal error'}`);
+  };
+
+  /**
+   * A preview's copy job (#2450), as of now (`copyJobAt`): one whose steps were lost past its
+   * deadline reads as failed by it, so the route settles and answers it instead of waiting forever.
+   */
+  const readCopyJob = async (id: string): Promise<CopyJobRecord | null> => {
+    const job = await options.copyJobs?.get(id);
+    return job ? copyJobAt(job, Date.now()) : null;
   };
 
   /**
@@ -10101,9 +10111,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // once it is done, this call finishes the preview. A failed job frees the tag with its error, so
     // a new create forks afresh; one a refresh or a newer push replaces is stopped, and its row
     // expired, so the code below reaps it at once.
-    const forkJob = existing?.status === 'provisioning' && options.copyJobs
-      ? await options.copyJobs.get(copyJobId('fork', existing.id))
-      : null;
+    const forkJob = existing?.status === 'provisioning' ? await readCopyJob(copyJobId('fork', existing.id)) : null;
     // #2450: where this push stands against another's, on a host that runs copies as jobs.
     const incoming = options.copyJobs ? await c.var.admin.getVersion(actor, opts.versionId, slug) : undefined;
     if (options.copyJobs && !incoming) throw new ControlPlaneError(404, `unknown version ${opts.versionId} for vertical '${slug}'`);
@@ -10374,7 +10382,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const preview = existing;
       try {
         // #2450 step 2: a carry a job is copying, for this push or an older one.
-        const held = options.copyJobs ? await options.copyJobs.get(copyJobId('carry', preview.id)) : null;
+        const held = await readCopyJob(copyJobId('carry', preview.id));
         const inProgress = (job: CopyJobRecord): PreviewCopying => {
           if (jobs) return copyingAnswer(job);
           throw new ControlPlaneError(409, `a push to preview '${opts.tag}' is still copying its data. Retry once it finishes`);

@@ -78,7 +78,9 @@ Two adapter implementations behind one interface, mirroring the whole platform:
     (`HostAdmin.renewScopeScriptCopy`) and then moves pages for up to 20 s. The ledger keeps
     naming a live move, so no sweep, reap or erasure can act on it while it runs. A step, and the
     wait before a retry, each stay inside a quarter of the lease. A job that passes six hours fails
-    and stops renewing; a job that fails discards its stage.
+    and stops renewing; a job that fails discards its stage. One still copying more than a lease
+    past that has lost its steps, and the next call that reads it fails it the same way
+    (`copyJobAt`).
   - The same create call, repeated, finds the job. While it copies, the call answers its progress.
     Once it is done, the call claims it (`CopyJobs.claim`, one call at a time), renews the lease and
     runs the in-request path's own restore and bind, with the fence counted from that renewal. A

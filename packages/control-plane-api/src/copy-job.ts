@@ -123,6 +123,23 @@ export const copyJobLive = (job: CopyJobRecord, now: number): boolean => {
   return job.status === 'done' && (copyJobHeld(job, now) || now < job.updatedAt + job.spec.leaseMs);
 };
 
+/** What a job that ran past its deadline fails with. */
+const deadlineFailure = (spec: CopyJobSpec): { status: number; message: string } => ({
+  status: 504,
+  message: `the copy of scope ${spec.scopeId} ran past its ${Math.round((spec.deadline - spec.startedAt) / 60_000)} min limit; nothing was moved`,
+});
+
+/**
+ * `job` as read at `now` (epoch ms). One still copying past its deadline by more than a lease has
+ * lost its steps (its next alarm was never stored, say), since a step fails it at the deadline: it is
+ * read as failed by that deadline, as its step would have left it, so the route settles and answers
+ * it rather than wait on it for good. Any other job is read as it is.
+ */
+export const copyJobAt = (job: CopyJobRecord, now: number): CopyJobRecord =>
+  job.status === 'copying' && !copyJobLive(job, now)
+    ? { ...job, status: 'failed', error: deadlineFailure(job.spec), nextDelayMs: 0 }
+    : job;
+
 /** What a step needs: the two deployments, and the ledger to renew the lease in. */
 export interface CopyJobDeps {
   clientForRef(ref: string): Promise<VerticalClient | undefined>;
@@ -212,7 +229,8 @@ export async function advanceCopyJob(
     return { ...job, status: 'failed', error: { status, message }, nextDelayMs: 0, updatedAt: now() };
   };
   if (now() > spec.deadline) {
-    return failed(504, `the copy of scope ${spec.scopeId} ran past its ${Math.round((spec.deadline - spec.startedAt) / 60_000)} min limit; nothing was moved`);
+    const { status, message } = deadlineFailure(spec);
+    return failed(status, message);
   }
   try {
     // First: a move whose lease cannot be renewed can no longer be confirmed, so it must stop.
