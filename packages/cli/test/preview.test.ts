@@ -425,4 +425,68 @@ describe('preview create retries a transient platform fault (#1918)', () => {
     ]);
     await expect(run(createPreview(args))).rejects.not.toThrow(/most likely died/);
   });
+
+  describe('a poll during a background copy (#2450)', () => {
+    const copying = () =>
+      Response.json({ copying: true, scopeId: 'S1', versionId: '01J', progress: { pages: 1, rows: 10, attempt: 1 }, retryAfter: 5 }, { status: 202 });
+    const dropped = (): Response => {
+      throw new TypeError('fetch failed');
+    };
+    /** As `script`, but an answer may throw, as `fetch` does for a dropped connection. */
+    const scriptThrowing = (answers: Array<() => Response>) => {
+      const bodies: unknown[] = [];
+      globalThis.fetch = (async (_url: string, init: RequestInit = {}) => {
+        bodies.push(init.body ? JSON.parse(init.body as string) : null);
+        return answers[Math.min(bodies.length, answers.length) - 1]!();
+      }) as unknown as typeof fetch;
+      return bodies;
+    };
+    const waits: number[] = [];
+    const polling = { ...args, sleep: async (ms: number) => void waits.push(ms) };
+
+    it('one that fails as a gateway or the network fails is polled again, and the wait goes on', async () => {
+      vi.useFakeTimers();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      waits.length = 0;
+      // A 502 on every try of the second call, then a dropped connection on every try of the third.
+      const bodies = scriptThrowing([
+        copying,
+        () => fault('p1'), () => fault('p2'), () => fault('p3'),
+        dropped, dropped, dropped,
+        copying,
+        () => Response.json(ok, { status: 201 }),
+      ]);
+      await expect(run(createPreview(polling))).resolves.toEqual(ok);
+      expect(bodies).toHaveLength(9);
+      // Each failed poll waited the interval the last answer gave, and said so.
+      expect(waits).toEqual([5_000, 5_000, 5_000, 5_000]);
+      expect(warn.mock.calls.map((c) => String(c[0])).filter((l) => /polling the copy failed/.test(l))).toEqual([
+        expect.stringMatching(/\(502\); polling again in 5s \(1 of 10\)/),
+        expect.stringMatching(/\(network error: fetch failed\); polling again in 5s \(2 of 10\)/),
+      ]);
+    });
+
+    it('a definite answer to a poll ends the wait at once; the first call is still sent once on a dropped connection', async () => {
+      vi.useFakeTimers();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let bodies = scriptThrowing([copying, () => Response.json({ error: 'the copy of scope S1 was cancelled' }, { status: 409 })]);
+      await expect(run(createPreview(polling))).rejects.toThrow(/\(409\).*cancelled/);
+      expect(bodies).toHaveLength(2);
+      bodies = scriptThrowing([dropped, copying]);
+      await expect(run(createPreview(polling))).rejects.toThrow(/fetch failed/);
+      expect(bodies).toHaveLength(1);
+    });
+
+    it('a control plane that stays unreachable ends the wait after its last allowed poll', async () => {
+      vi.useFakeTimers();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const bodies = scriptThrowing([copying, () => fault('down')]);
+      const settled = createPreview(polling).then((v) => ({ v }), (e: unknown) => ({ e }));
+      await vi.advanceTimersByTimeAsync(120_000);
+      const r = await settled;
+      expect('e' in r && String(r.e)).toMatch(/\(502\)/);
+      // The first call, then eleven polls of three tries each: ten ridden out, the eleventh thrown.
+      expect(bodies).toHaveLength(1 + 11 * 3);
+    });
+  });
 });
