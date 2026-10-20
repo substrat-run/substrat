@@ -95,6 +95,13 @@ export const COPY_JOB_MAX_MS = 6 * 3_600_000;
 /** Consecutive transient faults a job rides out (backing off) before it fails. */
 export const COPY_JOB_MAX_FAULTS = 6;
 const backoffMs = (faults: number): number => Math.min(60_000, 1_000 * 2 ** faults);
+/**
+ * The most of a move's lease that one step may spend moving pages, and that a retry may wait: a
+ * quarter each. A renewal is followed by at most one of each before the next renewal, so the lease
+ * keeps half of itself spare for a page that overruns the step and for the alarm's own lateness, and
+ * a sweep never finds it run out between two steps. At the default lease (30 min) neither bites.
+ */
+const leaseShareMs = (leaseMs: number): number => Math.floor(leaseMs / 4);
 
 export const copyJobId = (kind: CopyJobSpec['kind'], scopeId: string): string => `${kind}:${scopeId}`;
 
@@ -107,7 +114,8 @@ export function newCopyJob(spec: CopyJobSpec, state: TransferState, now: number 
  * One step of a job: renew the move's lease, then move pages for up to `stepMs`. A job that is not
  * `copying` is answered as it is. A refusal fails it; a transient fault (a 5xx, an unreachable
  * deployment) is retried at the next step, backing off, and fails it only after
- * `COPY_JOB_MAX_FAULTS` in a row.
+ * `COPY_JOB_MAX_FAULTS` in a row. Both the step and the wait before a retry stay inside a quarter of
+ * the move's lease (`leaseShareMs`), so the lease cannot run out before the next step renews it.
  */
 export async function advanceCopyJob(
   deps: CopyJobDeps,
@@ -132,7 +140,7 @@ export async function advanceCopyJob(
     if (!source || !dest) {
       throw new ControlPlaneError(502, `the copy of scope ${spec.scopeId} could not reach '${!source ? spec.sourceRef : spec.destRef}'`);
     }
-    const until = now() + (opts.stepMs ?? COPY_JOB_STEP_MS);
+    const until = now() + Math.min(opts.stepMs ?? COPY_JOB_STEP_MS, leaseShareMs(spec.leaseMs));
     const progress = await transferStep({ source, dest }, job.state, { until: () => now() >= until });
     if ('done' in progress) {
       return { ...job, status: 'done', state: undefined, done: progress.done, faults: 0, nextDelayMs: 0, updatedAt: now() };
@@ -146,7 +154,7 @@ export async function advanceCopyJob(
     if (!transient) return failed(status, message);
     const faults = job.faults + 1;
     if (faults >= COPY_JOB_MAX_FAULTS) return failed(status, `${message} (after ${faults} attempts)`);
-    return { ...job, faults, nextDelayMs: backoffMs(faults), updatedAt: now() };
+    return { ...job, faults, nextDelayMs: Math.min(backoffMs(faults), leaseShareMs(spec.leaseMs)), updatedAt: now() };
   }
 }
 

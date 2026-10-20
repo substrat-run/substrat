@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { platformActorId, scopeId, tenantId, type ScopeDumpPage, type ScopeDumpTable } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { SCOPE_COPY_LEASE_MS, ulid } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
 import {
   COPY_JOB_MAX_FAULTS,
@@ -73,7 +73,8 @@ function harness(opts: { renew?: () => boolean; pageFails?: (n: number) => Error
     sourceRef: 'src',
     destRef: 'dst',
     actor,
-    leaseMs: 60_000,
+    // The production lease, which bounds neither a step nor a retry here.
+    leaseMs: SCOPE_COPY_LEASE_MS,
     erasureEpoch: 0,
     restoredStamp: 'stamp-1',
     startedAt: clock.now,
@@ -145,6 +146,31 @@ describe('advanceCopyJob (#2450)', () => {
     for (let i = 0; i < COPY_JOB_MAX_FAULTS; i++) stuck = await advanceCopyJob(always.deps, stuck);
     expect(stuck).toMatchObject({ status: 'failed', error: { status: 503 } });
     expect(stuck.error!.message).toMatch(new RegExp(`after ${COPY_JOB_MAX_FAULTS} attempts`));
+  });
+
+  it('a short lease bounds both a step and the wait before a retry to a quarter of it', async () => {
+    // An 8 s lease: each page takes 1 s on this clock, and a fault would back off 16 s.
+    const pageMs = (h: ReturnType<typeof harness>, fail?: (n: number) => boolean) => ({ ...h.deps, clientForRef: async (ref: string) => {
+      const client = await h.deps.clientForRef(ref);
+      if (ref !== 'src' || !client) return client;
+      return { ...client, exportScopePage: async (...args: Parameters<VerticalClient['exportScopePage']>) => {
+        h.clock.now += 1_000;
+        if (fail?.(Number(args[1] ?? 0))) throw new ControlPlaneError(503, 'down');
+        return client.exportScopePage(...args);
+      } } as unknown as VerticalClient;
+    } });
+    const h = harness();
+    const step = await advanceCopyJob(pageMs(h), newCopyJob(h.spec({ leaseMs: 8_000 }), await h.begin(), h.clock.now));
+    // Two seconds of pages, not the 20 s step: two pages after the one the route staged.
+    expect(step).toMatchObject({ status: 'copying', pages: 3 });
+
+    const f = harness();
+    const faulty = { ...newCopyJob(f.spec({ leaseMs: 8_000 }), await f.begin(), f.clock.now), faults: 3 };
+    expect(await advanceCopyJob(pageMs(f, () => true), faulty)).toMatchObject({ status: 'copying', faults: 4, nextDelayMs: 2_000 });
+    // The same fault under the production lease waits its whole backoff.
+    const g = harness();
+    const unbound = { ...newCopyJob(g.spec(), await g.begin(), g.clock.now), faults: 3 };
+    expect(await advanceCopyJob(pageMs(g, () => true), unbound)).toMatchObject({ faults: 4, nextDelayMs: 16_000 });
   });
 
   it('a refusal fails the job at once, with the status the route will answer', async () => {
