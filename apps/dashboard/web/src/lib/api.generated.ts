@@ -665,7 +665,7 @@ export interface DashboardClient {
    *
    * `GET /observability/tenant-metrics-series` — `dashboard/tenant-metrics-series`
    */
-  tenantMetricsSeries(input: { scopeId?: string; hours?: string; since?: string; until?: string }): Promise<{ scopeId: string; start: string; bucketMinutes: number; requests: number; errors: number; durationP50: number; durationP95: number }[]>;
+  tenantMetricsSeries(input: { scopeId?: string; hours?: string; since?: string; until?: string }): Promise<{ scopeId: string; start: string; bucketMinutes: number; requests: number; errors: number; class2xx?: number; class3xx?: number; class4xx?: number; durationP50: number; durationP95?: number }[]>;
 
   /**
    * Re-poll a custom domain's issuance ("check again")

@@ -374,27 +374,27 @@ export const trafficSeries = z.object({
 });
 
 /** Read-only observability responses. Plane-owned labels stay strings across deploy skew. */
-export const observabilityRow = z.object({
+const observabilityRow = z.object({
   vertical: z.string(), version: z.string(), versionId: z.string().nullable(), service: z.string(),
   requests: z.number(), errors: z.number(), subrequests: z.number(), cpuTimeP50: z.number(), cpuTimeP99: z.number(),
 });
-export const observabilityLogEvent = z.object({
+const observabilityLogEvent = z.object({
   timestamp: z.number().nullable(), level: z.string().nullable(), message: z.string().nullable(),
   service: z.string().nullable(), outcome: z.string().nullable(), trigger: z.string().nullable(),
   invocation: z.string().nullable(), entrypoint: z.string().nullable(), requestId: z.string().nullable(),
   invocationId: z.string().nullable().optional(), cpuTimeMs: z.number().nullable(), wallTimeMs: z.number().nullable(),
   raw: z.unknown().optional(),
 });
-export const tenantMetricsRow = z.object({
+const tenantMetricsRow = z.object({
   scopeId: z.string(), vertical: z.string().nullable(), surface: z.string().nullable(),
   requests: z.number(), errors: z.number(), durationP50: z.number(), durationP95: z.number(),
 });
-export const tenantMetricsBucket = z.object({
+const tenantMetricsBucket = z.object({
   scopeId: z.string(), start: z.string(), bucketMinutes: z.number(), requests: z.number(), errors: z.number(),
   class2xx: z.number().optional(), class3xx: z.number().optional(), class4xx: z.number().optional(),
   durationP50: z.number(), durationP95: z.number().optional(),
 });
-export const connectorCallsView = z.object({
+const connectorCallsView = z.object({
   available: z.boolean(),
   buckets: z.array(z.object({
     provider: z.string(), start: z.string(), bucketMinutes: z.number(), calls: z.number(), errors: z.number(),
@@ -402,7 +402,7 @@ export const connectorCallsView = z.object({
     durationP50: z.number(), durationP95: z.number(),
   })),
 });
-export const businessVolumesView = z.object({
+const businessVolumesView = z.object({
   window: z.object({ since: z.string(), until: z.string() }), bucketMinutes: z.number(),
   rows: z.array(z.object({
     scopeId: z.string(), entityType: z.string(), state: z.string(), terminal: z.boolean(), fromInitial: z.boolean(),
@@ -411,12 +411,12 @@ export const businessVolumesView = z.object({
   })),
   apps: z.array(z.object({ scopeId: z.string(), unavailable: z.enum(['no-version', 'no-moves', 'not-yet-available']).nullable() })),
 });
-export const teamTrafficSeries = z.object({
+const teamTrafficSeries = z.object({
   window: z.object({ since: z.string(), until: z.string() }).optional(),
   series: z.array(z.object({ scopeId: z.string(), buckets: z.array(trafficBucket) })),
   bucketMinutes: z.number(), available: z.boolean(),
 });
-export const appMetricsView = z.object({
+const appMetricsView = z.object({
   available: z.boolean(), cap: z.number().nullable(),
   rows: z.array(z.object({ scopeId: z.string(), requests: z.number().nullable(), errors: z.number().nullable(), p95: z.number().nullable() })),
 });

@@ -4453,8 +4453,8 @@ async function observabilityLogsIn({ c, node }: TeamContext) {
  * ones that can, because an app running somebody else's vertical has no owned service ref
  * and reads as empty up there.
  *
- * Two narrowings stack, and neither is the client's to choose. The tenant is fixed from
- * the session by `controlPlaneFor`, so a request cannot name another. The scope is
+ * Two narrowings stack. The tenant is fixed by the checked team path through
+ * `controlPlaneFor`, so a request cannot reach another. The scope is
  * resolved through this tenant's own `list-apps` first, so a foreign scope id is a 404
  * rather than a filter that quietly matches nothing (K-3) — belt and braces, since the
  * tenant predicate alone would already have emptied it.

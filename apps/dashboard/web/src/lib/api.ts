@@ -1915,13 +1915,8 @@ export const api = {
    * one read. No `scopeIds` means every app this team has installed — resolved by the
    * worker against the team's own apps, never by this client.
    */
-  tenantMetricsSeries: (teamId: string, q: { scopeIds?: string[]; hours?: number } = {}) => {
-    const p = new URLSearchParams();
-    for (const s of q.scopeIds ?? []) p.append('scopeId', s);
-    if (q.hours) p.set('hours', String(q.hours));
-    const qs = p.toString();
-    return call<TenantMetricsBucket[]>(`/teams/${encodeURIComponent(teamId)}/observability/tenant-metrics-series${qs ? `?${qs}` : ''}`);
-  },
+  tenantMetricsSeries: (teamId: string, q: { scopeIds?: string[]; hours?: number } = {}) =>
+    call<TenantMetricsBucket[]>(`/teams/${encodeURIComponent(teamId)}/observability/tenant-metrics-series${obsWindowQs(q)}`),
   /**
    * The same read, shaped for the team Observability chart (#1447): one zero-filled
    * series per app, every scope asked for present whether it served or not. No
