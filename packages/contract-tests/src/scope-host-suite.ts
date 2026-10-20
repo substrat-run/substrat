@@ -5961,6 +5961,12 @@ export function scopeHostContractSuite(
       expect(await host.admin.renewScopeScriptCopy(staff, t1, s, move)).toBeNull();
       expect(await leases()).toEqual(held);
 
+      // A move of one entry renews as a move of two does, while it is live: the twin of the two
+      // single-entry refusals below, so a host refusing every one-entry move is red here.
+      const single = ulid();
+      await host.admin.recordScopeScriptCopy(staff, t1, s, to, single, { role: 'destination', leaseMs: 60_000 });
+      expect(await host.admin.renewScopeScriptCopy(staff, t1, s, single, { leaseMs: 3_600_000 })).not.toBeNull();
+
       // A lease already run out is never revived: a sweep may be acting on it.
       const lapsed = ulid();
       await host.admin.recordScopeScriptCopy(staff, t1, s, to, lapsed, { role: 'destination', leaseMs: 1 });
@@ -5982,6 +5988,8 @@ export function scopeHostContractSuite(
       const other = ulid();
       await host.admin.recordScopeScriptCopy(staff, t1, s, from, other, { role: 'source' });
       expect(await host.admin.renewScopeScriptCopy(staff, t2, s, other)).toBeNull();
+      // Its twin: the tenant that recorded it renews it, so the refusal above is the tenant's key.
+      expect(await host.admin.renewScopeScriptCopy(staff, t1, s, other)).not.toBeNull();
     });
 
     it('a backfilled copy is retained, once per script, never over a ledgered one, and never under a reap claim (#1722)', async () => {
