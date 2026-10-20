@@ -673,6 +673,8 @@ cannot be resolved statically and is outside this preflight. Remove the dependen
 Worker API; if Node compatibility is intended, declare `needsNodeCompat: true` in
 `substrat.runtimeNeeds` (or `nodejs_compat` in a hand-authored Wrangler config). `nodejs_als`
 allows only `node:async_hooks`.
+The only guarded exception is a tested Worker crypto fallback in `tweetnacl`; other guarded
+imports are refused. The allowance stops applying if that dependency's source guard changes.
 
 ### Declared outbound hosts
 

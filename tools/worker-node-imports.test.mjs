@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const cliRule = new URL('../packages/cli/dist/worker-node-imports.js', import.meta.url);
@@ -110,10 +110,52 @@ test('a transitive CommonJS require of a builtin is refused without nodejs_compa
     const found = await refusedBuiltins(w.path, []);
     assert.deepEqual(found.refused, ['node:crypto']);
     assert.match(workerNodeImportOffence(w.path, [], found), /worker\.js -> .*dependency\.cjs -> node:crypto/);
+    assert.match(workerNodeImportOffence(w.path, [], found), /Guarded imports have no general exception/);
     assert.deepEqual((await refusedBuiltins(w.path, ['nodejs_compat'])).refused, []);
   } finally {
     w.done();
   }
+});
+
+test('only the known guarded tweetnacl require-call is allowed', async () => {
+  const w = entry([]);
+  try {
+    const dependency = join(w.path, '..', 'node_modules', 'tweetnacl');
+    mkdirSync(dependency, { recursive: true });
+    writeFileSync(join(dependency, 'package.json'), JSON.stringify({ name: 'tweetnacl', main: 'nacl-fast.js' }));
+    writeFileSync(w.path, `import nacl from 'tweetnacl'; export default { fetch: () => new Response(String(nacl)) };`);
+    const file = join(dependency, 'nacl-fast.js');
+    const guarded = `var crypto = typeof self !== 'undefined' ? (self.crypto || self.msCrypto) : null;\nif (crypto && crypto.getRandomValues) {\n  // Worker PRNG\n} else if (typeof require !== 'undefined') {\n  // Node.js.\n  crypto = require('crypto');\n}\nmodule.exports = crypto;`;
+    writeFileSync(file, guarded);
+    assert.deepEqual((await refusedBuiltins(w.path, [])).refused, []);
+
+    writeFileSync(file, `var crypto = require('crypto'); module.exports = crypto;`);
+    assert.deepEqual((await refusedBuiltins(w.path, [])).refused, ['crypto']);
+
+    writeFileSync(file, guarded.replace("require('crypto')", "require('node:crypto')"));
+    assert.deepEqual((await refusedBuiltins(w.path, [])).refused, ['node:crypto']);
+
+    writeFileSync(file, guarded + `\nmodule.exports.later = () => import('crypto');`);
+    assert.deepEqual((await refusedBuiltins(w.path, [])).refused, ['crypto']);
+
+    writeFileSync(file, guarded + `\nmodule.exports.other = () => require('fs');`);
+    assert.deepEqual((await refusedBuiltins(w.path, [])).refused, ['fs']);
+
+    writeFileSync(join(dependency, 'package.json'), JSON.stringify({ name: 'other-package', main: 'nacl-fast.js' }));
+    writeFileSync(file, guarded);
+    assert.deepEqual((await refusedBuiltins(w.path, [])).refused, ['crypto']);
+  } finally {
+    w.done();
+  }
+});
+
+test('the installed tweetnacl file still has the exact Worker-first guard', async () => {
+  const file = new URL('../apps/dashboard/node_modules/tweetnacl/nacl-fast.js', import.meta.url);
+  const source = readFileSync(file, 'utf8');
+  assert.match(source, /var crypto = typeof self !== 'undefined' \? \(self\.crypto \|\| self\.msCrypto\) : null;\s*if \(crypto && crypto\.getRandomValues\) \{/);
+  assert.match(source, /} else if \(typeof require !== 'undefined'\) \{\s*\/\/ Node\.js\.\s*crypto = require\('crypto'\);/);
+  assert.equal(source.match(/\brequire\s*\(\s*['"]crypto['"]\s*\)/g)?.length, 1);
+  assert.deepEqual((await refusedBuiltins(file.pathname, [])).refused, []);
 });
 
 test('the shared IdentityDO bundles for a flagless OIDC worker', async () => {
