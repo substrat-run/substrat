@@ -61,10 +61,18 @@ interface PeerLike {
   operations: string[];
   permissions: string[];
 }
+interface ConnectionLike {
+  provider: string;
+  operation: string;
+  permission: string;
+  options?: Record<string, unknown>;
+}
 interface ModuleLike {
   manifest: {
     id: string;
     permissions: PermissionDecl[];
+    /** #2316: which operation a provider's connections land through, holding which key. */
+    connections?: ConnectionLike[];
     schedules?: ScheduleLike[];
     /** #119: where a purge schedule's horizon is declared. */
     entityStates?: { entityType: string; purgeAfterDays?: number }[];
@@ -355,6 +363,14 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
         if (!registeredOps.has(op)) orphans.push(`peer ${code(peer.vertical)} → operation ${code(op)} (not registered)`);
       }
     }
+    // #2316: a connection landing's key is granted to every connection of the provider; its
+    // operation is what the connector invokes. Either one missing lands nothing, every pass.
+    for (const l of m.manifest.connections ?? []) {
+      if (!declaredBy.has(l.permission)) orphans.push(`connection ${code(l.provider)} → ${code(l.permission)}`);
+      if (opsKnown && !registeredOps.has(l.operation)) {
+        orphans.push(`connection ${code(l.provider)} → operation ${code(l.operation)} (not registered)`);
+      }
+    }
   }
   if (orphans.length) {
     cannot(
@@ -520,6 +536,40 @@ function render(rel: string, pkg: string, src: Surface, regenerate: string, entr
       ...peers.map(
         (p) =>
           `| ${code(p.vertical)} | ${code(p.module)} | ${sorted(p.operations).map(code).join(', ') || '— none (receive only) —'} | ${sorted(p.permissions).map(code).join(', ')} |`,
+      ),
+      ``,
+    );
+    section += 1;
+  }
+
+  // §_. Provider connections (#2316): which key the platform grants every connection of a provider,
+  // and the operation its data lands through. A connection acts for whoever holds the provider's
+  // token, so the key it is given is reviewed here, like a peer's.
+  const landings = modules
+    .flatMap((m) => (m.manifest.connections ?? []).map((l) => ({ module: m.manifest.id, ...l })))
+    .sort((a, b) => a.provider.localeCompare(b.provider) || a.module.localeCompare(b.module));
+  if (landings.length) {
+    out.push(
+      `## ${section}. Provider connections — what each provider's connections may do here`,
+      ``,
+      `Every live connection of the provider in a tenant where this vertical is installed is`,
+      `granted the key shown on each instance, and bound so its data lands through the operation`,
+      `shown — by the platform, from the version the instance runs, on the connector pass after the`,
+      `connection appears. A connection acts for whoever holds the provider's token, never as a`,
+      `person. Revoking the connection takes back the key and the binding together.`,
+      ``,
+      `| Provider | Declared by | Lands through | Holds | Options |`,
+      `| --- | --- | --- | --- | --- |`,
+      ...landings.map(
+        (l) =>
+          `| ${code(l.provider)} | ${code(l.module)} | ${code(l.operation)} | ${code(l.permission)} | ${
+            l.options && Object.keys(l.options).length
+              ? Object.entries(l.options)
+                  .sort(([a], [b]) => a.localeCompare(b))
+                  .map(([k, v]) => code(`${k}: ${JSON.stringify(v)}`))
+                  .join(', ')
+              : '—'
+          } |`,
       ),
       ``,
     );

@@ -1,11 +1,13 @@
 import {
   globalFetch,
   type ConnectorHandler,
+  type ConnectionBinder,
   type ConnectorSweeper,
   type MailSender,
   type ScopeHost,
 } from '@substrat-run/kernel';
 import type { ConnectFlowSpec, ConnectionInspector } from '@substrat-run/control-plane-api';
+import { connectionBindingOptions } from '@substrat-run/control-plane-api';
 import {
   SCRIVE_CALLBACK_ROUTE,
   SCRIVE_CONNECTION_GRANTS,
@@ -173,6 +175,13 @@ export interface ConnectorRegistration {
   /** The poll floor (#574): re-read the provider's truth and write it back. */
   sweep(env: ConnectorEnv): ConnectorSweeper;
   /**
+   * #2316: this provider's bindings record the connection's `externalAccountRef`, because one
+   * (tenant, vertical) holds a connection per external account and the sweep opens the credential
+   * by it. A binding that does not carry the connection's account is re-written by the connector
+   * pass. Absent for a provider with one connection per (tenant, vertical).
+   */
+  readonly accountOnBinding?: true;
+  /**
    * The webhook ingress, for a provider that calls back (#96). Absent is a complete
    * connector — push collapses the sweep's latency, it never replaces it.
    *
@@ -332,8 +341,12 @@ const SCRIVE: ConnectorRegistration = {
 const FORTNOX: ConnectorRegistration = {
   provider: 'fortnox',
   grants: FORTNOX_CONNECTION_GRANTS,
+  accountOnBinding: true,
   inspector: (env) => ({
-    bindScope: (h, row, target) => bindFortnoxScope(h, { ...target, connectionId: row.id }),
+    // #2316: the company rides on the binding, so the sweep opens THIS company's credential when a
+    // bureau has several connected.
+    bindScope: (h, row, target) =>
+      bindFortnoxScope(h, { ...target, connectionId: row.id, externalAccountRef: row.externalAccountRef }),
     bindings: (h, row) => listFortnoxBindings(h, row.id),
     probe: async (h, row) =>
       probeFortnoxConnection(h, row, {
@@ -464,6 +477,41 @@ export function connectionInspectorsFor(env: ConnectorEnv): Record<string, Conne
 /** The `{ provider → sweeper }` shape `runPlatformSweep` takes. */
 export function connectorSweepersFor(env: ConnectorEnv) {
   return Object.fromEntries(CONNECTORS.map((c) => [c.provider, c.sweep(env)]));
+}
+
+/**
+ * The `{ provider → binder }` shape `runPlatformSweep`'s `connectionLandings` takes (#2316): the
+ * same `bindScope` and `bindings` the staff binding door calls, so a binding a vertical declares is
+ * written by the code a person's would be, refused on the same missing key, and validated by the
+ * same options schema. A provider whose inspector binds nothing is absent, and its connections are
+ * never bound from a declaration.
+ */
+export function connectionBindersFor(env: ConnectorEnv): Record<string, ConnectionBinder> {
+  return Object.fromEntries(
+    CONNECTORS.flatMap((c) => {
+      const inspector = c.inspector(env);
+      const { bindScope, bindings } = inspector;
+      if (!bindScope || !bindings) return [];
+      const options = connectionBindingOptions(c.provider);
+      const binder: ConnectionBinder = {
+        list: (h, row) => bindings(h, row),
+        bind: (h, row, target) => bindScope(h, row, target as Parameters<typeof bindScope>[2]),
+        options: (raw, current) => options.parse({
+          ...(current ? options.strip().parse(current) : {}),
+          ...(raw ?? {}),
+        }),
+        ...(c.accountOnBinding
+          ? {
+              // A binding written before it recorded the company opens whichever connection
+              // (tenant, vertical) finds, and throws once a second company is connected.
+              stale: (binding, row) =>
+                ((binding as { externalAccountRef?: string | null }).externalAccountRef ?? null) !== row.externalAccountRef,
+            }
+          : {}),
+      };
+      return [[c.provider, binder]];
+    }),
+  );
 }
 
 /**

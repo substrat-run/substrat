@@ -11,6 +11,8 @@ import { substratError } from './errors.js';
 import { blankReason } from './review-text.js';
 import { SCOPE_STORE_CANARY, STORE_DRIVER_ID } from './script-names.js';
 import { bindingShapeBreaks, bindingShapeRefusal } from './registry-diff.js';
+import { connectionLandingOptions } from './connection-landing.js';
+import { connectionProvider } from './connections.js';
 import {
   ownerGrantSets,
   reservedKeyLine,
@@ -1061,7 +1063,7 @@ export type ManifestImports =
  */
 function registryRowsOfManifestJson<T>(
   manifestJson: string | null | undefined,
-  key: 'imports' | 'exports' | 'entityGrants',
+  key: 'imports' | 'exports' | 'entityGrants' | 'connections',
   row: z.ZodType<T>,
 ): { rows: T[] } | { unreadable: string } | null {
   if (!manifestJson) return null;
@@ -1108,6 +1110,29 @@ export function exportsOfManifestJson(manifestJson: string | null | undefined): 
   if (read === null) return { kind: 'none' };
   if ('unreadable' in read) return { kind: 'unreadable', reason: read.unreadable };
   return { kind: 'exports', rows: read.rows.map((r) => ({ type: r.type, schemaVersion: r.schemaVersion })) };
+}
+
+/**
+ * What a STORED manifest says about connection landings (#2316), in `importsOfManifestJson`'s three
+ * answers. The connector pass reads it for the version each install runs: a `landings` row is what
+ * the platform grants a connection of that provider and binds it with.
+ *
+ * `unreadable` is never acted on — a pass grants nothing from a declaration it cannot read — and
+ * it is reported on the connection's sweep row, so a broken manifest is not silent.
+ */
+export type ManifestConnectionLandings =
+  | { kind: 'none' }
+  | { kind: 'landings'; rows: Omit<PermissionRegistryConnection, 'declaredBy'>[] }
+  | { kind: 'unreadable'; reason: string };
+
+export function connectionLandingsOfManifestJson(manifestJson: string | null | undefined): ManifestConnectionLandings {
+  const read = registryRowsOfManifestJson(manifestJson, 'connections', permissionRegistryConnection);
+  if (read === null) return { kind: 'none' };
+  if ('unreadable' in read) return { kind: 'unreadable', reason: read.unreadable };
+  return {
+    kind: 'landings',
+    rows: read.rows.map((r) => ({ provider: r.provider, operation: r.operation, permission: r.permission, ...(r.options ? { options: r.options } : {}) })),
+  };
 }
 
 /**
@@ -1499,6 +1524,21 @@ export const permissionRegistryImport = z.object({
 });
 export type PermissionRegistryImport = z.infer<typeof permissionRegistryImport>;
 
+/**
+ * One provider whose connections land in this vertical (#2316): the operation the connector
+ * invokes and the key a connection is granted for it. A row here is authority handed to whoever
+ * holds the provider token, so it belongs in the same artifact, and the same digest, as the keys a
+ * person is given.
+ */
+export const permissionRegistryConnection = z.object({
+  provider: connectionProvider,
+  operation: z.string().regex(/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/),
+  permission: permissionKey,
+  options: connectionLandingOptions.optional(),
+  declaredBy: z.array(moduleId).min(1),
+});
+export type PermissionRegistryConnection = z.infer<typeof permissionRegistryConnection>;
+
 export const permissionRegistry = z.object({
   permissions: z.array(permissionRegistryEntry),
   roles: z.array(roleDefinition),
@@ -1511,6 +1551,8 @@ export const permissionRegistry = z.object({
   // or what enters it, cannot be promoted unacknowledged.
   exports: z.array(permissionRegistryExport).optional(),
   imports: z.array(permissionRegistryImport).optional(),
+  // #2316: connection landings. Optional and omitted when none, for the digest reason above.
+  connections: z.array(permissionRegistryConnection).optional(),
 });
 export type PermissionRegistry = z.infer<typeof permissionRegistry>;
 
@@ -1534,6 +1576,17 @@ export const pushedPermissionRegistry = permissionRegistry
   // #2430: the push boundary holds the reservation the registry's rows carry, as the CLI did.
   .superRefine((registry, ctx) => {
     for (const message of registryReservedKeyProblems(registry)) ctx.addIssue({ code: 'custom', path: [], message });
+    // #2316: a landing's key is one the registry declares and does not reserve, and one landing per provider.
+    const keys = new Map(registry.permissions.map((p) => [p.key as string, p]));
+    const providers = new Set<string>();
+    for (const l of registry.connections ?? []) {
+      const where = `connections '${l.provider}'`;
+      const key = keys.get(l.permission);
+      if (!key) ctx.addIssue({ code: 'custom', path: ['connections'], message: `${where}: lands holding ${l.permission}, which the registry does not declare` });
+      else if (key.holder === 'system') ctx.addIssue({ code: 'custom', path: ['connections'], message: `${where}: lands holding ${l.permission}, which is reserved to a system principal` });
+      if (providers.has(l.provider)) ctx.addIssue({ code: 'custom', path: ['connections'], message: `${where}: declared more than once` });
+      providers.add(l.provider);
+    }
   });
 
 /**
@@ -1761,6 +1814,7 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
   }
   const exports = [...exportRows.values()].sort((a, b) => cmp(a.type, b.type));
   const imports = [...importRows.values()].sort((a, b) => cmp(a.from, b.from) || cmp(a.type, b.type));
+  const connections = connectionRowsOf(input.modules, new Set(declaredBy.keys()), reserved);
 
   return {
     permissions,
@@ -1768,7 +1822,45 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
     entityGrants,
     ...(exports.length ? { exports } : {}),
     ...(imports.length ? { imports } : {}),
+    ...(connections.length ? { connections } : {}),
   };
+}
+
+/**
+ * #2316: the modules' connection landings as registry rows, one per provider. Two modules stating
+ * the same landing collapse into one row naming both; two stating DIFFERENT landings for one
+ * provider are refused, since a connection binds one operation per scope and the platform would
+ * otherwise pick one. Refused as well: a key no module declares (the grant could never be
+ * checked) and a key reserved to a system principal (a connection acts for whoever holds the
+ * provider's token, #2430).
+ */
+function connectionRowsOf(
+  modules: PermissionsInput['modules'],
+  declared: ReadonlySet<string>,
+  reserved: ReadonlyMap<string, ReservedKey>,
+): PermissionRegistryConnection[] {
+  const rows = new Map<string, PermissionRegistryConnection>();
+  const problems: string[] = [];
+  const same = (a: Omit<PermissionRegistryConnection, 'declaredBy'>, b: Omit<PermissionRegistryConnection, 'declaredBy'>) =>
+    a.operation === b.operation && a.permission === b.permission && JSON.stringify(a.options ?? {}) === JSON.stringify(b.options ?? {});
+  // `?? []` although parsed manifests carry the field: the CLI imports a vertical's modules as plain JS.
+  for (const m of modules) {
+    for (const l of m.manifest.connections ?? []) {
+      const where = `connections '${l.provider}' (${m.manifest.id})`;
+      if (!declared.has(l.permission)) problems.push(`${where}: lands holding ${l.permission}, which no module declares`);
+      if (reserved.has(l.permission)) problems.push(`${where}: lands holding ${l.permission}, which is reserved to a system principal`);
+      const row = rows.get(l.provider);
+      if (!row) {
+        rows.set(l.provider, { provider: l.provider, operation: l.operation, permission: l.permission, ...(l.options ? { options: l.options } : {}), declaredBy: [m.manifest.id] });
+      } else if (same(row, l)) {
+        row.declaredBy = [...new Set([...row.declaredBy, m.manifest.id])].sort((a, b) => a.localeCompare(b));
+      } else {
+        problems.push(`${where}: declares a different landing for '${l.provider}' than ${row.declaredBy.join(', ')}`);
+      }
+    }
+  }
+  if (problems.length > 0) throw new Error(`buildPermissionRegistry: ${problems.join('; ')}`);
+  return [...rows.values()].sort((a, b) => a.provider.localeCompare(b.provider));
 }
 
 /**

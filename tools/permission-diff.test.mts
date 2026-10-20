@@ -270,3 +270,46 @@ test('a reworded proof-walk reason is a changed row: --check refuses, and the cl
   const r = classifyPermissions(before, rendered(dir));
   assert.deepEqual(r.changes.map((c) => [c.path, c.level, c.flagged]), [['operation docs/mine', 'minor', true]]);
 });
+
+/** #2316: a fixture vertical whose one module declares `connections`. */
+const writeLandingFixture = (dir: string, connections: unknown[]): string => {
+  mkdirSync(join(dir, 'src'), { recursive: true });
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'fixture', type: 'module', substrat: { permissions: 'src/p.mjs' } }));
+  writeFileSync(
+    join(dir, 'src/p.mjs'),
+    `export const permissions = {
+  entityGrants: [],
+  roles: [{ key: 'owner', permissions: ['plan:read'], source: 'vertical' }],
+  modules: [{ manifest: {
+    id: '@fixture/plan',
+    permissions: [{ key: 'plan:read', description: 'read the plan' }, { key: 'plan:record', description: 'land a plan' }],
+    attachmentTargets: [],
+    connections: ${JSON.stringify(connections)},
+  } }],
+};`,
+  );
+  return dir;
+};
+
+test('a declared connection landing gets a row: the provider, the module, the operation, the key, the options (#2316)', () => {
+  const dir = writeLandingFixture(mkdtempSync(join(tmpdir(), 'permission-diff-')), [
+    { provider: 'planima', operation: 'maintenance/record-plan', permission: 'plan:record', options: { organizationId: null, horizonYears: 50 } },
+  ]);
+  const r = run(dir);
+  assert.equal(r.status, 0, r.stderr);
+  const md = rendered(dir);
+  assert.match(md, /## \d+\. Provider connections — what each provider's connections may do here/);
+  assert.match(
+    md,
+    /\| `planima` \| `@fixture\/plan` \| `maintenance\/record-plan` \| `plan:record` \| `horizonYears: 50`, `organizationId: null` \|/,
+  );
+});
+
+test('a landing holding a key nothing declares is refused, like a peer\'s (#2316)', () => {
+  const dir = writeLandingFixture(mkdtempSync(join(tmpdir(), 'permission-diff-')), [
+    { provider: 'fortnox', operation: 'ledger/record-period', permission: 'ledger:record' },
+  ]);
+  const r = run(dir);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr + r.stdout, /connection `fortnox` → `ledger:record`/);
+});

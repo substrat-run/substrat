@@ -149,6 +149,16 @@ export interface FortnoxBinding {
    * authority of this binding without opening the vertical's source.
    */
   permission: string;
+  /**
+   * WHICH company's connection reads the books (#2316): the connection's `externalAccountRef`.
+   *
+   * A bureau holds one Fortnox connection per client company in the same (tenant, vertical)
+   * (#1267), so the credential cannot be found from those two alone: opening without the account
+   * throws as soon as a second company is connected, which failed every company's sweep. Recorded
+   * at bind from the connection being bound. Absent on a binding written before it existed, which
+   * still opens the single live connection and fails, naming the re-bind, once there are several.
+   */
+  externalAccountRef?: string | null;
   boundAt: string;
   /** Set after the first successful sync — the cursor that makes a re-sync cheap. */
   lastSync?: {
@@ -243,6 +253,8 @@ export async function bindFortnoxScope(
     vertical: string;
     operation: string;
     permission: string;
+    /** The connection's `externalAccountRef` — the company. See {@link FortnoxBinding.externalAccountRef}. */
+    externalAccountRef?: string | null;
     now?: () => number;
   },
 ): Promise<FortnoxBinding> {
@@ -271,6 +283,7 @@ export async function bindFortnoxScope(
     vertical: input.vertical,
     operation: input.operation,
     permission: input.permission,
+    ...(input.externalAccountRef ? { externalAccountRef: input.externalAccountRef } : {}),
     boundAt: new Date(input.now?.() ?? Date.now()).toISOString(),
   };
   await host.admin.putConnectorState(input.connectionId, bindingKey(input.scopeId), binding);
@@ -345,6 +358,7 @@ export async function syncFortnoxScope(
     binding.tenantId,
     binding.vertical,
     options.timeoutMs ?? 30_000,
+    { externalAccountRef: binding.externalAccountRef ?? null, expected: connectionId },
   );
   const api = new FortnoxApi(conn, {
     apiBase: options.apiBase,
@@ -559,7 +573,7 @@ export async function probeFortnoxSecret(
 /** Probe the credential a live connection already holds. Verifying is itself a use. */
 export async function probeFortnoxConnection(
   host: ScopeHost,
-  connection: { tenantId: string; vertical: string },
+  connection: { tenantId: string; vertical: string; externalAccountRef?: string | null },
   options: FortnoxConnectorOptions,
 ): Promise<ConnectionProbe> {
   const conn = await openFortnoxConnection(
@@ -568,6 +582,7 @@ export async function probeFortnoxConnection(
     connection.tenantId,
     connection.vertical,
     options.timeoutMs ?? 15_000,
+    { externalAccountRef: connection.externalAccountRef ?? null },
   );
   return probeWith(conn, options);
 }
@@ -677,12 +692,14 @@ export async function fortnoxConnectionActivity(
  */
 export async function fortnoxCredentialSummary(
   host: ScopeHost,
-  connection: { tenantId: string; vertical: string },
+  connection: { tenantId: string; vertical: string; externalAccountRef?: string | null },
 ): Promise<ConnectionCredential> {
+  // #2316: this company's connection, not whichever one (tenant, vertical) would pick.
   const open = await host.admin.openConnection(
     tenantIdSchema.parse(connection.tenantId),
     connection.vertical,
     'fortnox',
+    connection.externalAccountRef ?? undefined,
   );
   if (!open) {
     throw new Error(
@@ -703,19 +720,36 @@ export async function fortnoxCredentialSummary(
 const maskSecret = (value: string): string =>
   value.length < 8 ? '••••••••' : `••••••••${value.slice(-4)}`;
 
-/** Open the live Fortnox connection for a (tenant, vertical), with health recorded. */
+/**
+ * Open the live Fortnox connection for a (tenant, vertical) — and, with several companies
+ * connected, the one `account.externalAccountRef` names (#2316) — with health recorded.
+ *
+ * `account.expected` is the connection a binding names. The credential that reads and the
+ * identity that writes must be the same connection, so a mismatch is refused loudly rather than
+ * landing one company's books as another's connection — Planima's backstop, which here guards a
+ * reachable case: a binding written before it recorded the account, once a second company exists.
+ */
 async function openFortnoxConnection(
   admin: HostAdmin,
   fetchImpl: FetchLike,
   tenant: string,
   vertical: string,
   timeoutMs: number,
+  account: { externalAccountRef?: string | null; expected?: ConnectionId } = {},
 ): Promise<ConnectorConnection> {
   const parsedTenant = tenantIdSchema.parse(tenant);
-  const open = await admin.openConnection(parsedTenant, vertical, 'fortnox');
+  const open = await admin.openConnection(parsedTenant, vertical, 'fortnox', account.externalAccountRef ?? undefined);
   if (!open) {
     throw new Error(
-      `no live 'fortnox' connection for tenant ${tenant} / vertical '${vertical}'`,
+      `no live 'fortnox' connection for tenant ${tenant} / vertical '${vertical}'` +
+        (account.externalAccountRef ? ` and company ${account.externalAccountRef}` : ''),
+    );
+  }
+  if (account.expected !== undefined && open.id !== account.expected) {
+    throw new Error(
+      `binding names connection ${account.expected}, but the live 'fortnox' connection opened for tenant ` +
+        `${tenant} / vertical '${vertical}' is ${open.id} — the credential that reads and the identity ` +
+        `that writes must be the same connection. Re-bind the scope against ${account.expected}.`,
     );
   }
   return {

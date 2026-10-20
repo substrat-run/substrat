@@ -6,6 +6,7 @@ import { FORTNOX_CONNECTION_GRANTS } from '@substrat-run/connector-fortnox';
 import { PLANIMA_CONNECTION_GRANTS } from '@substrat-run/connector-planima';
 import {
   CONNECTORS,
+  connectionBindersFor,
   connectionInspectorsFor,
   connectorGrantsFor,
   connectorSweepersFor,
@@ -35,6 +36,20 @@ describe('connector registry', () => {
     // A provider that is not registered is absent everywhere — the inspection route
     // 501s honestly rather than the plane pretending it operates it.
     expect(connectionInspectorsFor(ENV)['docusign']).toBeUndefined();
+  });
+
+  it('preserves existing provider options on rebind without copying binding metadata', () => {
+    const binder = connectionBindersFor(ENV)['planima']!;
+    const current = {
+      scopeId: 'scope', operation: 'maintenance/record-plan', permission: 'plan:record',
+      organizationId: 42, currency: 'EUR', window: { fromYear: 2026, toYear: 2030 },
+      horizonYears: 50, boundAt: '2026-10-20T00:00:00Z', lastSync: { hash: 'old' },
+    };
+    expect(binder.options!({ horizonYears: 10 }, current)).toEqual({
+      organizationId: 42, currency: 'EUR', window: { fromYear: 2026, toYear: 2030 }, horizonYears: 10,
+    });
+    expect(binder.options!({ organizationId: null }, current)).toMatchObject({ organizationId: null });
+    expect(() => binder.options!({ horizonYear: 10 }, current)).toThrow();
   });
 
   it('takes the declared grants from the connector, never a second list', () => {
@@ -153,4 +168,27 @@ it('registered poll binding doors preserve the vertical landing configuration', 
     expect(await inspector.bindings!(host, row)).toEqual([binding]);
     expect(records.size).toBe(1);
   }
+});
+
+describe('connection binders (#2316)', () => {
+  const ENV = { SCRIVE_BASE_URL: 'https://api-testbed.scrive.test', PLATFORM_CP_URL: 'https://cp.test' };
+  it('binds from a declaration only for a provider whose inspector binds, with the door\'s options (#2316)', () => {
+    const binders = connectionBindersFor(ENV);
+    // Scrive is dispatched, not polled: nothing to bind, so a declaration for it binds nothing.
+    expect(Object.keys(binders).sort()).toEqual(['fortnox', 'microsoft365', 'planima']);
+    expect(binders['planima']!.options!({ organizationId: null, horizonYears: 50 })).toEqual({ organizationId: null, horizonYears: 50 });
+    // The staff door's schema, strict: a typo'd option is refused rather than bound with a default.
+    expect(() => binders['planima']!.options!({ horizonYear: 50 })).toThrow();
+    expect(() => binders['fortnox']!.options!({ horizonYears: 50 })).toThrow();
+    expect(binders['fortnox']!.options!(undefined)).toEqual({});
+  });
+
+  it('re-writes a Fortnox binding that does not carry its connection\'s company (#2316)', () => {
+    const stale = connectionBindersFor(ENV)['fortnox']!.stale!;
+    const binding = { scopeId: 's', operation: 'ledger/record-period', permission: 'ledger:record' };
+    const row = { externalAccountRef: '111111' } as Parameters<typeof stale>[1];
+    expect(stale(binding, row)).toBe(true);
+    expect(stale({ ...binding, externalAccountRef: '111111' } as typeof binding, row)).toBe(false);
+    expect(connectionBindersFor(ENV)['planima']!.stale).toBeUndefined();
+  });
 });
