@@ -33,3 +33,15 @@ export function walkAll<N extends PagedRead>(
 
 /** Every one of the team's apps. */
 export const allApps = (scope: Pick<ScopeStub, 'invoke'>) => walkAll(scope, 'dashboard/list-apps');
+
+/**
+ * The team's app running under `appScopeId`, or `undefined` when it has none (#2437). One read
+ * with the filter `list-apps` takes, never the walk to it — a lookup by scope id costs the same
+ * for a team of three apps and a team of three hundred. A scope id that is empty or missing asks
+ * for no app rather than for every app, since the filter's absence is the unfiltered list.
+ */
+export async function appByScopeId(scope: Pick<ScopeStub, 'invoke'>, appScopeId: string | undefined) {
+  if (!appScopeId) return undefined;
+  const page = await scope.invoke<Page<EntryOf<'dashboard/list-apps'>>>('dashboard/list-apps', { appScopeId, limit: 1 });
+  return page.entries.find((a) => a.app_scope_id === appScopeId);
+}

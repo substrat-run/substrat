@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/engine-notifications
 
-5 operations · 0 narrowed checks · assessed node-only
+6 operations · 0 narrowed checks · assessed node-only
 
 ## 1. Kernel-enforced properties
 
@@ -27,7 +27,7 @@ inherits them by running on the platform; nothing in the app's own code can opt 
 
 ## 2. This app's entity checks — none, and that is the assessment
 
-Five operations, five node checks. Three act on the CALLER's own preferences under `notifications:self` and take no principal as input, so there is no other record a grant could narrow them to; the fourth reads the scope's delivery log under `notifications:read`, which is an administrator's view of the scope rather than of any one entity; the fifth sends the digests that are due under `notifications:send-digests`, the digest schedule's key, which acts on the whole scope by design. The case that would change this is a delivery log narrowed to the entity a mail was about, which would be a per-entity walk over `about` and is not offered.
+Six operations, six node checks. Three act on the CALLER's own preferences under `notifications:self` and take no principal as input, so there is no other record a grant could narrow them to; the fourth reads the caller's own deliveries under the same key, pinned to the caller's principal and equally without a principal input; the fifth reads the scope's delivery log under `notifications:read`, which is an administrator's view of the scope rather than of any one entity; the sixth sends the digests that are due under `notifications:send-digests`, the digest schedule's key, which acts on the whole scope by design. The case that would change this is a delivery log narrowed to the entity a mail was about, which would be a per-entity walk over `about` and is not offered.
 
 **How this is established.** This package declares its operation surface, so the claim is
 read off the declaration by the same `planEntityCheckCoverage` the conformance kit uses:
@@ -47,7 +47,7 @@ as an assessment rather than as silence.
 
 | Kind | Count | Operations |
 | --- | --- | --- |
-| Node-level check | 5 | `notifications/list-deliveries`, `notifications/my-preferences`, `notifications/send-digests`, `notifications/set-my-address`, `notifications/set-my-preference` |
+| Node-level check | 6 | `notifications/list-deliveries`, `notifications/my-deliveries`, `notifications/my-preferences`, `notifications/send-digests`, `notifications/set-my-address`, `notifications/set-my-preference` |
 | Per-entity proof walk (`narrows`) | 0 | — |
 
 ## 4. Not covered by this artifact

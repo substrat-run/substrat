@@ -180,6 +180,14 @@ export interface PlatformDrainOptions {
   recordFailure?: (entry: Omit<OpsFailureInput, 'actor'>) => void;
   /** Test override of {@link MAX_PLATFORM_REQUEST_ATTEMPTS}. */
   maxAttempts?: number;
+  /**
+   * #2431: intents an earlier drain of this scope already tried in the same sweep pass. Left
+   * alone here, so a second drain runs only what was enqueued since — every run is one
+   * attempt toward the ceiling, and a pass must not spend two on one intent.
+   */
+  skip?: ReadonlySet<string>;
+  /** #2431: filled with the id of each intent this drain dispatches, for a later drain's `skip`. */
+  attempted?: string[];
 }
 
 /**
@@ -202,7 +210,7 @@ export async function drainScopePlatformRequests(
   // id — the settle route parses it as a ULID. Decided on the id ITSELF, never on a settle's
   // caught error, which would also swallow a transient outage. The rest are reported, not run.
   const unsettleable = listed.filter((e) => isUndecodablePlatformRequest(e) && !platformRequestId.safeParse(e.id).success);
-  const pending = listed.filter((e) => !unsettleable.includes(e));
+  const pending = listed.filter((e) => !unsettleable.includes(e) && !(e.id !== null && opts?.skip?.has(e.id)));
   const reported = unsettleable.length
     ? { unsettleable: { count: unsettleable.length, ids: unsettleable.slice(0, UNSETTLEABLE_IDS).map((e) => e.id) } }
     : {};
@@ -218,6 +226,7 @@ export async function drainScopePlatformRequests(
     const { id, kind, attempts } = isUndecodablePlatformRequest(request)
       ? { id: platformRequestId.parse(request.id), kind: 'undecodable', attempts: 0 }
       : request;
+    opts?.attempted?.push(id);
     const handler = handlers[kind];
     let outcome: PlatformRequestOutcome;
     let inert = false;

@@ -96,6 +96,27 @@ describe('drainScopePlatformRequests — the kind→handler dispatcher', () => {
     ]);
   });
 
+  it('a second drain in a pass skips what the first tried, and says what it tried (#2431)', async () => {
+    const tried = intent('provision-sibling');
+    const fresh = intent('provision-sibling');
+    const { client, settled } = fakeTransport([tried, fresh]);
+    const runs: string[] = [];
+    const handler: PlatformRequestHandler = async (_ctx, request) => {
+      runs.push(request.id);
+      return { status: 'pending', error: 'still waiting' };
+    };
+    const attempted: string[] = [];
+    const report = await drainScopePlatformRequests(client, ctx, { 'provision-sibling': handler }, {
+      skip: new Set([tried.id]),
+      attempted,
+    });
+    // The skipped intent is neither run nor settled, so it spends no attempt and is not counted.
+    expect(runs).toEqual([fresh.id]);
+    expect(settled.map((s) => s.id)).toEqual([fresh.id]);
+    expect(report).toEqual({ drained: 1, done: 0, failed: 0, pending: 1 });
+    expect(attempted).toEqual([fresh.id]);
+  });
+
   it('settles an unknown kind as failed — never a silent drop', async () => {
     const unknown = intent('mystery');
     const { client, settled } = fakeTransport([unknown]);

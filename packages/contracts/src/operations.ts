@@ -890,24 +890,166 @@ export function defineOperations<
  * **A nested array is untouched.** `output: z.object({ ids: z.array(…) })` is an
  * object with a list inside it — a shape whose size the operation controls — not a
  * table read. Only a TOP-LEVEL array output is a list by this rule.
+ *
+ * **"Top-level" looks through wrappers** (#2436). The output is judged as the handler returns it:
+ * `.optional()`, `.nullable()`, `.default()`, `.readonly()` and the rest of `WRAPPER_TYPES`
+ * (a promise of an array is an array), `z.lazy()`, both sides of an intersection, every option of a
+ * union (`array.or(z.null())` is `.nullable()`) and every element of a fixed tuple change what a
+ * handler may return, not that it answers with a whole table, so an array under any of them is read
+ * as the array it is. A pipe is read at its OUT side only — `.transform()` makes one: the in side is
+ * what the wire carries before the transform, not what the operation answers with.
+ *
+ * **What it refuses besides an array.**
+ * - A record, map, set, tuple with a rest element, or object with a catchall (a record by another
+ *   spelling; `looseObject` and `strictObject` are not one): a container whose size the caller does
+ *   not bound, with no page to walk.
+ * - An output it cannot read: `z.custom()` (`z.instanceof()` is one), `z.any()`, `z.unknown()`, and a
+ *   transform (`z.transform()`, or a pipe whose out side is one, which is what `.transform()` makes).
+ *   Any of them could be a whole-table array, and a gate that waves through what it cannot see is one
+ *   declaration away from not existing.
+ * - A schema it cannot finish judging: a `z.lazy()` whose getter throws, or one nested so deep that the
+ *   walk gives up (a factory returning a fresh schema on every call never repeats, so no visited set
+ *   ends it). Depth is what is capped, not width: a union of hundreds of literals is fine.
+ *
+ * What it does not judge is any field of an object, which is the nested-array rule above.
  */
 function assertListsArePaged(operations: Record<string, unknown>): void {
   for (const [name, op] of Object.entries(operations)) {
     const decl = op as { output?: unknown; paged?: unknown };
     if (decl.paged !== undefined) continue;
-    if (!(decl.output instanceof z.ZodArray)) continue;
-    throw new Error(
-      `model: '${name}' returns a bare array and does not declare \`paged\` — a list read ` +
-        'that answers with the whole table is unbounded by construction.\n' +
-        '  Remedy: declare the ENTRY as `output` and add `paged`. Either the kernel ' +
-        'composes the walk —\n' +
-        "    paged: { over: { entity: 'thing', sortable: ['created_at'], filterable: ['status'] } }\n" +
-        '  — or, where it cannot (a kernel table, a correlated subquery, a per-row ' +
-        'permission walk),\n' +
-        '  the handler composes its own and names the entry field the cursor walks:\n' +
-        "    paged: { sortKey: 'article' }",
-    );
+    const verdict = outputListVerdict(decl.output);
+    if (verdict.kind === 'ok') continue;
+    const under = verdict.via.length > 0 ? ` (under ${verdict.via.join(' > ')})` : '';
+    const entryOrPaged =
+      '  Remedy: declare the real entry schema as `output`, or add `paged` if the handler composes its own page.';
+    switch (verdict.kind) {
+      case 'array':
+        throw new Error(
+          `model: '${name}' returns ${verdict.via.length > 0 ? `an array${under}` : 'a bare array'} and does not ` +
+            'declare `paged` — a list read that answers with the whole table is unbounded by construction.\n' +
+            '  Remedy: declare the ENTRY as `output` and add `paged`. Either the kernel composes the walk —\n' +
+            "    paged: { over: { entity: 'thing', sortable: ['created_at'], filterable: ['status'] } }\n" +
+            '  — or, where it cannot (a kernel table, a correlated subquery, a per-row permission walk),\n' +
+            '  the handler composes its own and names the entry field the cursor walks:\n' +
+            "    paged: { sortKey: 'article' }",
+        );
+      case 'container':
+        throw new Error(
+          `model: '${name}' returns a ${verdict.type}${under} and does not declare \`paged\` — a container the ` +
+            `caller does not bound is a list read with no page to walk.\n${entryOrPaged}`,
+        );
+      case 'opaque':
+        throw new Error(
+          `model: '${name}' declares an opaque output, ${verdict.what}${under}, and does not declare \`paged\` — ` +
+            `the list gate cannot tell whether it is a whole-table array.\n${entryOrPaged}`,
+        );
+      case 'unreadable':
+        throw new Error(
+          `model: '${name}' declares an output the list gate cannot judge${under} — ${verdict.why} — and does ` +
+            `not declare \`paged\`.\n${entryOrPaged}`,
+        );
+    }
   }
+}
+
+/** The schema types that wrap one inner schema and only change what a caller may send or get back. */
+const WRAPPER_TYPES = new Set([
+  'promise',
+  'optional',
+  'nullable',
+  'nullish',
+  'default',
+  'prefault',
+  'nonoptional',
+  'catch',
+  'readonly',
+]);
+
+/** Output schemas the gate cannot see into, by `def.type`, as the refusal names them. */
+const OPAQUE_OUTPUTS: Record<string, string> = {
+  custom: '`z.custom()` (or `z.instanceof()`)',
+  any: '`z.any()`',
+  unknown: '`z.unknown()`',
+  transform: 'a transform (`.transform()`)',
+};
+
+/** Containers whose size the caller does not bound, by `def.type`. */
+const UNBOUNDED_CONTAINERS = new Set(['record', 'map', 'set']);
+
+/** The `catchall` types that mark an object strict or loose rather than a record of its values. */
+const NON_RECORD_CATCHALLS = new Set(['never', 'unknown', 'any']);
+
+/**
+ * The deepest chain of wrappers, pipes, unions and lazies the walk follows before it gives up. Depth,
+ * not width: the walk is depth-first, so a union of lazies that fans out reaches this on its first
+ * path, and a union of hundreds of literals never gets near it.
+ */
+const MAX_OUTPUT_DEPTH = 32;
+
+type OutputVerdict =
+  | { kind: 'ok' }
+  | { kind: 'array'; via: string[] }
+  | { kind: 'container'; type: string; via: string[] }
+  | { kind: 'opaque'; what: string; via: string[] }
+  | { kind: 'unreadable'; why: string; via: string[] };
+
+/**
+ * What a declared output is, as far as "is this a list read" goes: the first array, unbounded
+ * container, opaque schema or unjudgeable schema the walk meets, with the wrappers it went through.
+ *
+ * Read structurally by `def.type`, as every other Zod read in this package is. Two bounds end the
+ * walk: a visited set (a lazy schema that refers to itself must not loop the declaration) and a depth
+ * cap (a lazy factory that returns a fresh schema each call defeats the visited set).
+ */
+function outputListVerdict(schema: unknown): OutputVerdict {
+  const pending: { schema: unknown; via: string[] }[] = [{ schema, via: [] }];
+  const seen = new Set<unknown>();
+  while (pending.length > 0) {
+    const { schema: current, via } = pending.pop()!;
+    if (current === undefined || current === null || seen.has(current)) continue;
+    seen.add(current);
+    if (via.length > MAX_OUTPUT_DEPTH) return { kind: 'unreadable', why: 'schema too deep to judge', via: [] };
+    const def = (current as { _zod?: { def?: unknown } })._zod?.def as
+      | {
+          type?: string;
+          innerType?: unknown;
+          out?: unknown;
+          getter?: () => unknown;
+          options?: unknown[];
+          left?: unknown;
+          right?: unknown;
+          rest?: unknown;
+          items?: unknown[];
+          catchall?: unknown;
+        }
+      | undefined;
+    if (def?.type === undefined) continue;
+    const type = def.type;
+    const deeper = [...via, type];
+    if (type === 'array') return { kind: 'array', via };
+    if (type in OPAQUE_OUTPUTS) return { kind: 'opaque', what: OPAQUE_OUTPUTS[type]!, via };
+    if (UNBOUNDED_CONTAINERS.has(type)) return { kind: 'container', type, via };
+    if (type === 'tuple' && def.rest != null) return { kind: 'container', type: 'tuple with a rest element', via };
+    const catchall = (def.catchall as { _zod?: { def?: { type?: string } } } | undefined)?._zod?.def?.type;
+    if (type === 'object' && catchall !== undefined && !NON_RECORD_CATCHALLS.has(catchall)) {
+      return { kind: 'container', type: 'catchall object (a record by another spelling)', via };
+    }
+    // Pushed in reverse, so the first option is the first judged.
+    if (WRAPPER_TYPES.has(type)) pending.push({ schema: def.innerType, via: deeper });
+    else if (type === 'pipe') pending.push({ schema: def.out, via: deeper });
+    else if (type === 'union' || type === 'tuple') {
+      for (const option of [...(def.options ?? def.items ?? [])].reverse()) pending.push({ schema: option, via: deeper });
+    } else if (type === 'intersection') {
+      pending.push({ schema: def.right, via: deeper }, { schema: def.left, via: deeper });
+    } else if (type === 'lazy') {
+      try {
+        pending.push({ schema: def.getter?.(), via: deeper });
+      } catch {
+        return { kind: 'unreadable', why: 'a `z.lazy()` whose getter throws at declaration', via };
+      }
+    }
+  }
+  return { kind: 'ok' };
 }
 
 /**

@@ -2082,11 +2082,21 @@ export function drainContextOf(
   };
 }
 
-async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDrainReport> {
+function withoutAttempted({ attempted: _, ...report }: ScopeDrainReport & { attempted: string[] }): ScopeDrainReport {
+  return report;
+}
+
+async function drainOneScope(
+  env: Env,
+  t: TenantId,
+  s: ScopeId,
+  /** #2431: intents an earlier drain this pass already tried — `PlatformDrainOptions.skip`. */
+  opts?: { skip?: readonly string[] },
+): Promise<ScopeDrainReport & { attempted: string[] }> {
   const host = hostFor(env);
   const resolveVerticalForScope = resolveVerticalForScopeFor(env);
   const target = await drainTarget(await host.admin.getScopeRecord(SWEEP_ACTOR, t, s), resolveVerticalForScope);
-  if ('report' in target) return target.report;
+  if ('report' in target) return { ...target.report, attempted: [] };
   const { rec, vertical, client } = target;
   // The managed-tenant capability (#412/#444): who may create tenants is the registry's
   // `tenantProvisioner` flag — a staff grant read by admitManager at drain time. The
@@ -2098,7 +2108,8 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDr
     resolveVerticalForScope,
     patchScriptBindings: patchScriptBindingsFor(env),
   };
-  return drainScopePlatformRequests(
+  const attempted: string[] = [];
+  const report = await drainScopePlatformRequests(
     client,
     drainContextOf(rec, vertical, await host.admin.getTenant(SWEEP_ACTOR, t)),
     {
@@ -2156,8 +2167,11 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<ScopeDr
       recordFailure: (entry) => {
         void host.admin.recordOpsFailure({ actor: SWEEP_ACTOR, ...entry }).catch(() => undefined);
       },
+      ...(opts?.skip?.length ? { skip: new Set(opts.skip) } : {}),
+      attempted,
     },
   );
+  return { ...report, attempted };
 }
 
 /**
@@ -2262,7 +2276,7 @@ export default {
     // #1840: what the drain row is stamped with — the drain phase's end, or the pass start
     // when the phase reached no scope at all.
     const passStartedAt = new Date();
-    const platformDrain = timedDrain((t: TenantId, s: ScopeId) => drainOneScope(env, t, s));
+    const platformDrain = timedDrain((t: TenantId, s: ScopeId, o?: { skip?: readonly string[] }) => drainOneScope(env, t, s, o));
     const report = await runPlatformSweep(host, {
       actor: SWEEP_ACTOR,
       // Sanctioned egress for the connector sweepers below.
@@ -2723,8 +2737,9 @@ export default {
       const kick = drainKickOf(body);
       // Runs inline: the router backgrounds this call with `ctx.waitUntil`, so completing the
       // drain here is what keeps the subrequest alive long enough to actually settle the intents.
+      // `attempted` is for the sweep's second drain (#2431); the router is answered as before.
       const report = kick.intents
-        ? await drainOneScope(c.env, ids.data, sids.data)
+        ? withoutAttempted(await drainOneScope(c.env, ids.data, sids.data))
         : { drained: 0, done: 0, failed: 0, pending: 0 };
       // The scope's response committed an exported type: ask for THIS producer's outgoing edges.
       // Through its coalescer, never inline: the flag is a header tenant code sets, and a pass

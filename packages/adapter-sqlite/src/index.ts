@@ -5940,8 +5940,8 @@ export class SqliteScopeHost implements ScopeHost {
         if (schedule.purge) {
           // #119: a purge horizon's schedule runs its operation once per due entity, never once.
           // #2192: under the run's own id, so the purges and their deliveries join this run's line.
-          // #2431: what the purges enqueue is not counted (`ScheduleRunReport.platformRequests`).
-          const pass = await this.runPurgeSweep(moduleId, tenantId, scopeId, schedule.operation, invocationId);
+          // #2431: each purge is an invoke, and reports what it enqueued through `counted` like any other.
+          const pass = await this.runPurgeSweep(moduleId, tenantId, scopeId, schedule.operation, invocationId, counted);
           stillDue = purgeStillDue(pass);
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
           report.errors.push(...outcome.errors);
@@ -6021,6 +6021,8 @@ export class SqliteScopeHost implements ScopeHost {
     operation: string,
     /** #2192: the schedule run this pass belongs to; every purge in it runs under that id. */
     runInvocationId: string,
+    /** #2431: how each purge reports the platform requests it enqueued. */
+    counted?: ScopeStubOptions,
   ): Promise<PurgePass> {
     const entityType = this.modules
       .get(moduleId)
@@ -6045,7 +6047,7 @@ export class SqliteScopeHost implements ScopeHost {
         : purgeDueOf(spineSql(rt.db), this.statePlans, this.operationTarget, operation, entityType, now);
     });
     if ('held' in due) return heldPurgePass(due.held);
-    const stub = await this.openSystemScope(moduleId, tenantId, scopeId, true);
+    const stub = await this.openSystemScope(moduleId, tenantId, scopeId, true, counted);
     return runPurgePass(
       operation,
       due,
