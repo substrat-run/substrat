@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { moduleId, permissionKey, scopeId, tenantId, verticalSlug } from './ids.js';
-import { envVarSpec, capability, lifecycleHold, declaredEntityType, freshnessSpec, scheduleSpec, PLATFORM_BINDING_PREFIX, type ModuleManifest } from './manifest.js';
+import { envVarSpec, capability, lifecycleHold, declaredEntityType, freshnessSpec, permissionDeclaration, scheduleSpec, PLATFORM_BINDING_PREFIX, type ModuleManifest } from './manifest.js';
 import { eventType } from './events.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
 import { RESERVED_STORE_OPERATIONS } from './scope-store-envelope.js';
@@ -1294,6 +1294,14 @@ export const permissionRegistryEntry = z.object({
 });
 export type PermissionRegistryEntry = z.infer<typeof permissionRegistryEntry>;
 
+/** The permission declarations of one loaded module, carried beside the registry at push. */
+export const deployModuleDeclaration = z.object({
+  id: moduleId,
+  permissions: z.array(permissionDeclaration),
+  ownerGrants: z.array(permissionKey).optional(),
+});
+export type DeployModuleDeclaration = z.infer<typeof deployModuleDeclaration>;
+
 /** An entity-narrowed grant SHAPE — which keys a per-entity grant carries (§4 of
  *  PERMISSIONS.md). The grants themselves are per-principal, runtime, scope-local; only
  *  their declared shapes are a code fact and belong in the manifest. */
@@ -1614,13 +1622,46 @@ function registryReservedKeyProblems(
  * plane's push routes call it beside {@link pushedPermissionRegistry}: a manifest cannot carry a
  * refinement, since history is read through an `extend` of it.
  */
-export function pushedOwnerGrantProblems(manifest: { ownerGrants?: readonly string[]; registry?: Pick<PermissionRegistry, 'permissions' | 'roles' | 'entityGrants'> }): string[] {
-  if (!manifest.registry || !manifest.ownerGrants?.length) return [];
+export function pushedOwnerGrantProblems(manifest: { ownerGrants?: readonly string[]; modules?: readonly DeployModuleDeclaration[]; registry?: Pick<PermissionRegistry, 'permissions' | 'roles' | 'entityGrants'> }): string[] {
+  if (!manifest.registry) return [];
   return registryReservedKeyProblems(
     { permissions: manifest.registry.permissions, roles: [], entityGrants: [] },
     undefined,
-    ownerGrantSets([], manifest.ownerGrants),
+    ownerGrantSets((manifest.modules ?? []).map((manifest) => ({ manifest })), manifest.ownerGrants),
   );
+}
+
+/** Check the registry's key rows against the module declarations shipped beside it. */
+export function pushedModuleRegistryProblems(
+  modules: readonly DeployModuleDeclaration[] | undefined,
+  registry: Pick<PermissionRegistry, 'permissions'>,
+): string[] {
+  if (modules === undefined) return []; // A CLI predating this field cannot be cross-checked.
+  const expected = new Map(permissionRowsOfModules(modules).map((row) => [row.key, row]));
+  const seen = new Set<string>();
+  const problems: string[] = [];
+  for (const row of registry.permissions) {
+    const key = row.key;
+    if (seen.has(key)) {
+      problems.push(`${key}: registry lists the key more than once`);
+      continue;
+    }
+    seen.add(key);
+    const declared = expected.get(key);
+    if (!declared) {
+      problems.push(`${key}: registry lists a key no module declares`);
+      continue;
+    }
+    if (row.description !== declared.description) problems.push(`${key}: registry description disagrees with module declarations`);
+    if (JSON.stringify([...row.declaredBy].sort()) !== JSON.stringify(declared.declaredBy)) {
+      problems.push(`${key}: registry declaredBy disagrees with module declarations (expected ${declared.declaredBy.join(', ')})`);
+    }
+    if (row.holder !== declared.holder) {
+      problems.push(`${key}: registry holder disagrees with module declarations (expected ${declared.holder ?? 'unmarked'})`);
+    }
+  }
+  for (const key of expected.keys()) if (!seen.has(key)) problems.push(`${key}: module declaration is absent from registry`);
+  return problems;
 }
 
 /**
@@ -1740,18 +1781,35 @@ function assertKeysMatchModules(
  * the output — and therefore `digests.permission` — is a pure function of content, independent
  * of declaration order.
  */
+/** One derivation for the CLI's registry and the control plane's publish check. */
+export function permissionRowsOfModules(
+  modules: readonly Pick<ModuleManifest, 'id' | 'permissions' | 'ownerGrants'>[],
+): PermissionRegistryEntry[] {
+  const declaredBy = new Map<PermissionRegistryEntry['key'], { description: string; modules: Set<PermissionRegistryEntry['declaredBy'][number]> }>();
+  for (const m of modules) {
+    for (const p of m.permissions) {
+      const seen = declaredBy.get(p.key);
+      if (seen) seen.modules.add(m.id);
+      else declaredBy.set(p.key, { description: p.description, modules: new Set([m.id]) });
+    }
+  }
+  const reserved = reservedKeysOf(modules.map((manifest) => ({ manifest })));
+  return [...declaredBy.entries()]
+    .map(([key, v]) => ({
+      key,
+      description: v.description,
+      declaredBy: [...v.modules].sort((a, b) => a.localeCompare(b)),
+      ...(reserved.has(key) ? { holder: 'system' as const } : {}),
+    }))
+    .sort((a, b) => a.key.localeCompare(b.key));
+}
+
 export function buildPermissionRegistry(input: PermissionsInput): PermissionRegistry {
   const cmp = (a: string, b: string) => a.localeCompare(b);
   const sortKeys = <T extends string>(keys: readonly T[]): T[] => [...keys].sort(cmp);
 
-  const declaredBy = new Map<PermissionRegistryEntry['key'], { description: string; modules: Set<PermissionRegistryEntry['declaredBy'][number]> }>();
-  for (const m of input.modules) {
-    for (const p of m.manifest.permissions) {
-      const seen = declaredBy.get(p.key);
-      if (seen) seen.modules.add(m.manifest.id);
-      else declaredBy.set(p.key, { description: p.description, modules: new Set([m.manifest.id]) });
-    }
-  }
+  const permissions = permissionRowsOfModules(input.modules.map((m) => m.manifest));
+  const declaredKeys = new Set(permissions.map((p) => p.key));
 
   // #2430: a system-held role (K-55) says so in the registry, as a reserved key does below. A
   // person role carries no holder (`'person'` is the same as none), so no existing digest moves.
@@ -1763,15 +1821,6 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
     });
 
   const reserved = reservedKeysOf(input.modules);
-  const permissions = [...declaredBy.entries()]
-    .map(([key, v]) => ({
-      key,
-      description: v.description,
-      declaredBy: [...v.modules].sort(cmp),
-      ...(reserved.has(key) ? { holder: 'system' as const } : {}),
-    }))
-    .sort((a, b) => cmp(a.key, b.key));
-
   const entityGrants = [...(input.entityGrants ?? [])]
     .sort((a, b) => cmp(a.entityType, b.entityType))
     .map((g) => ({
@@ -1784,7 +1833,7 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
     }));
   const problems = [
     ...entityGrants.flatMap(retiredShapeProblems),
-    ...entityGrants.flatMap((g) => bindShapeProblems(g, new Set(declaredBy.keys()))),
+    ...entityGrants.flatMap((g) => bindShapeProblems(g, declaredKeys)),
     ...registryReservedKeyProblems({ permissions, roles, entityGrants }, reserved, ownerGrantSets(input.modules)),
   ];
   if (problems.length > 0) throw new Error(`buildPermissionRegistry: ${problems.join('; ')}`);
@@ -1814,7 +1863,7 @@ export function buildPermissionRegistry(input: PermissionsInput): PermissionRegi
   }
   const exports = [...exportRows.values()].sort((a, b) => cmp(a.type, b.type));
   const imports = [...importRows.values()].sort((a, b) => cmp(a.from, b.from) || cmp(a.type, b.type));
-  const connections = connectionRowsOf(input.modules, new Set(declaredBy.keys()), reserved);
+  const connections = connectionRowsOf(input.modules, declaredKeys, reserved);
 
   return {
     permissions,
@@ -2214,6 +2263,9 @@ export const deployManifest = z.object({
   /** Registry-driven install (marketplace-publish.md §3), from package.json `substrat.*` —
    *  carried so the dashboard installs without a hardcoded catalog entry. Validated here. */
   ownerGrants: z.array(permissionKey).optional(),
+  /** Loaded module declarations for checking the registry's key rows at publish. Optional for
+   * older CLIs; a present empty list asserts that no module declares a key. */
+  modules: z.array(deployModuleDeclaration).optional(),
   entitlements: z.array(z.string()).optional(),
   provides: z.array(capability).optional(),
   requires: z.array(capability).optional(),
