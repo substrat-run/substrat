@@ -2602,6 +2602,51 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
     });
 
+    it('a carry this call finished stays claimed until its bind is over, so a newer push polling meanwhile waits', async () => {
+      const sid = (await pushBg('bg-10', 'v1')).body.scopeId;
+      await pumpToDone();
+      const { hostname: ten } = (await pushBg('bg-10', 'v1')).body;
+      // The bind reads the source's marker first (`bindAfterCarry`): there, the finish is over and
+      // the preview is still bound to v1.
+      const atBind = (s: ScopeId) => (ref: string, sid2: ScopeId) => ref === refOf.get(version.v1) && sid2 === s;
+
+      // A bind that fails still lets the job go: the retry carries afresh.
+      expect((await pushBg('bg-10', 'v2')).status).toBe(202);
+      await pumpToDone();
+      hooks.marker = async (ref, s) => {
+        if (atBind(sid)(ref, s)) throw substratError('precondition_failed', 'the source moved before the bind');
+      };
+      try {
+        expect((await pushBg('bg-10', 'v2')).status).toBe(412);
+      } finally {
+        delete hooks.marker;
+      }
+      expect(jobs.jobs.has(`carry:${sid}`)).toBe(false);
+      expect((await served(ten)).ref).toBe(refOf.get(version.v1));
+
+      // One that lands: until it has, a newer push waits and starts nothing of its own.
+      expect((await pushBg('bg-10', 'v2')).status).toBe(202);
+      await pumpToDone();
+      const held = holdFirst(atBind(sid));
+      hooks.marker = held.hook;
+      try {
+        const finishing = pushBg('bg-10', 'v2');
+        await held.reached;
+        expect((await pushBg('bg-10', 'v3')).status).toBe(202);
+        expect(jobs.jobs.get(`carry:${sid}`)).toMatchObject({ status: 'done', spec: { versionId: version.v2 } });
+        held.release();
+        expect((await finishing).status).toBe(200);
+      } finally {
+        delete hooks.marker;
+      }
+      expect(jobs.jobs.has(`carry:${sid}`)).toBe(false);
+      // The newer push then carries from what v2's bind left, and lands.
+      expect((await pushBg('bg-10', 'v3')).status).toBe(202);
+      await pumpToDone();
+      expect((await pushBg('bg-10', 'v3')).status).toBe(200);
+      expect(await served(ten)).toEqual({ ref: refOf.get(version.v3), bodies: rows });
+    });
+
     it('of two pushes that both began a copy, the one whose job lost the start leaves no page staged', async () => {
       // bg-6 serves v2. v1 and v3 both begin a carry, and v1's job is stored first: v3's call is
       // answered v1's job, and the page it staged in v3's script goes with its move.

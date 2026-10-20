@@ -3825,7 +3825,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   /**
    * Finish a carry a job copied (#2450): renew the move's lease, which the restore's fence then
    * counts from, and run the same `carryFinish` an in-request carry runs. A move the job can no
-   * longer finish is settled and refused.
+   * longer finish is settled and refused. A finish that fails forgets the job; one that lands
+   * leaves it claimed, for the caller to forget once its bind has landed or failed: until then the
+   * preview is still bound to the version this carry replaces, and a newer push that found no job
+   * would carry from there.
    */
   const finishCarryJob = async (c: ReqCtx, scope: Scope, versionId: string, job: CopyJobRecord): Promise<Carried> => {
     const { spec } = job;
@@ -3845,8 +3848,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         moveId: spec.moveId, erasureEpoch: spec.erasureEpoch, from: spec.sourceRef, to: spec.destRef,
         source, dest, restoredStamp: spec.restoredStamp, leasedAt: lease.renewedAt, expected,
       }, async () => done));
-    } finally {
+    } catch (e) {
       await options.copyJobs?.forget(spec.id).catch(() => undefined);
+      throw e;
     }
   };
 
@@ -10218,6 +10222,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // `dropServingRef`: a preview provisioned before #527 inherited a serving_ref that is
       // cleared just below, so its route leaves the serving script too.
       let carried: Awaited<ReturnType<typeof carryOntoVersion>> | undefined;
+      /** The job this call claimed and finished, if any: forgotten once the bind below is over. */
+      let finishedJob: CopyJobRecord | undefined;
       const preview = existing;
       try {
         // #2450 step 2: a carry a job is copying, for this push or an older one.
@@ -10241,6 +10247,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           const claimed = await options.copyJobs?.claim(held.spec.id, copyClaimMs);
           if (!claimed) return inProgress(held);
           carried = await finishCarryJob(c, preview, opts.versionId, claimed);
+          finishedJob = claimed;
         }
         if (carried === undefined && jobs) {
           const move = await carryBegin(c, preview, opts.versionId, { dropServingRef: true });
@@ -10301,10 +10308,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // #527 has its inherited serving_ref cleared, so routing follows the bound version (its
       // per-version script) and not the prod serving script; the OFF positions are re-asserted
       // there (#1674); and the copy left in the old script is wiped.
-      await bindAfterCarry(c, existing, opts.versionId, carried, {
-        clearServingRef: true,
-        recarry: () => carryOntoVersion(c, existing, opts.versionId, { dropServingRef: true }),
-      });
+      try {
+        await bindAfterCarry(c, existing, opts.versionId, carried, {
+          clearServingRef: true,
+          recarry: () => carryOntoVersion(c, existing, opts.versionId, { dropServingRef: true }),
+        });
+      } finally {
+        // #2450: a job this call finished stays claimed until its bind has landed or failed, so a
+        // newer push polling meanwhile waits, rather than carry from the binding this one replaces.
+        if (finishedJob) await options.copyJobs?.forget(finishedJob.spec.id).catch(() => undefined);
+      }
       // Renew (or clear) the preview's GC deadline so a reused preview does not silently die.
       await c.var.admin.setScopeExpiresAt(actor, tenantId, existing.id, expiresAt);
       const hostname = await bindPreviewHostname(c.var.admin, actor, baseHostname, tenantId, existing.id, opts.tag, surface);
