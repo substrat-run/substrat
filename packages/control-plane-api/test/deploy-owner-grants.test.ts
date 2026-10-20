@@ -37,7 +37,7 @@ describe('POST /verticals/:slug/deploy holds ownerGrants to the registry’s res
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  const push = async (manifest: { ownerGrants?: string[]; marked: boolean }) => {
+  const push = async (manifest: { ownerGrants?: string[]; marked: boolean; modules?: unknown[] }) => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string, init?: { method?: string }) => {
@@ -66,6 +66,7 @@ describe('POST /verticals/:slug/deploy holds ownerGrants to the registry’s res
           entityGrants: [],
         },
         ...(manifest.ownerGrants ? { ownerGrants: manifest.ownerGrants } : {}),
+        ...(manifest.modules ? { modules: manifest.modules } : {}),
       }),
     );
     fd.set('tenant', slug);
@@ -95,5 +96,18 @@ describe('POST /verticals/:slug/deploy holds ownerGrants to the registry’s res
       const res = await push(manifest);
       expect(res.status, `${JSON.stringify(manifest)}: ${await res.clone().text()}`).toBe(201);
     }
+  });
+
+  it('checks the same declarations on the upload path before upload (#2446)', async () => {
+    const modules = [{ id: 'crm', permissions: [
+      { key: 'crm:contact-read', description: 'Read a contact' },
+      { key: 'crm:sync-run', description: 'Run a sync', holder: 'system' },
+    ] }];
+    const before = uploads.length;
+    const bad = await push({ marked: false, modules });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { error: string }).error).toContain('crm:sync-run: registry holder disagrees with module declarations');
+    expect(uploads.length).toBe(before);
+    expect((await push({ marked: true, modules })).status).toBe(201);
   });
 });

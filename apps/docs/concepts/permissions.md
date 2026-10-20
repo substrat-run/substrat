@@ -50,8 +50,13 @@ way the lint does:
 
 The registry a push ships marks each reserved key, and each system-held role, with
 `holder: 'system'`. The platform refuses a push whose registry rows mark a key that a role, a
-shape or the owner grants hold. A registry from a CLI too old to write the marks carries none,
-and the platform refuses it nothing.
+shape or the owner grants hold. The deploy manifest also carries each loaded module's permission
+declarations (`modules: [{ id, permissions, ownerGrants? }]`). At publish, the platform derives
+the key rows from those declarations and refuses a registry that disagrees about its keys,
+descriptions, declaring modules or `holder` marks. A CLI too old to send `modules` remains
+accepted without this consistency check; its registry is still checked by the older row rules.
+This check compares two claims shipped by the same builder. Third-party module declarations
+remain author-asserted until the known-engine catalog in #2446's next step.
 
 At runtime, a host reads the reservations off the modules it registers and the modules its
 `permissions` lists, and refuses at these doors:

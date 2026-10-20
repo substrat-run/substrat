@@ -4,7 +4,7 @@
  * where a push carries it. A registry that reserves nothing is the registry it was.
  */
 import { describe, expect, it } from 'vitest';
-import { buildPermissionRegistry, pushedOwnerGrantProblems, pushedPermissionRegistry, type PermissionsInput } from '../src/deploy.js';
+import { buildPermissionRegistry, pushedModuleRegistryProblems, pushedOwnerGrantProblems, pushedPermissionRegistry, type PermissionsInput } from '../src/deploy.js';
 import { permissionKey } from '../src/ids.js';
 import { moduleManifest } from '../src/manifest.js';
 import {
@@ -39,6 +39,49 @@ const build = (over: Partial<PermissionsInput> = {}) =>
   buildPermissionRegistry({ modules: [engine], roles: [], entityGrants: [], ...over });
 const role = (key: string, permissions: string[], holder?: 'person' | 'system') =>
   ({ key, permissions, source: 'vertical', ...(holder ? { holder } : {}) }) as PermissionsInput['roles'][number];
+
+describe('module declarations verify the pushed key rows (#2446)', () => {
+  const modules = [engine.manifest];
+  const registry = build();
+
+  it('accepts the registry derived from the same declarations and a legacy manifest without them', () => {
+    expect(pushedModuleRegistryProblems(modules, registry)).toEqual([]);
+    expect(pushedModuleRegistryProblems(undefined, registry)).toEqual([]);
+  });
+
+  it('refuses a dropped or added holder mark, an undeclared key, and a missing declared key', () => {
+    const run = registry.permissions.find((p) => p.key === 'assistant:run')!;
+    const use = registry.permissions.find((p) => p.key === 'assistant:use')!;
+    expect(pushedModuleRegistryProblems(modules, { permissions: [{ ...run, holder: undefined }, use] })).toEqual([
+      'assistant:run: registry holder disagrees with module declarations (expected system)',
+    ]);
+    expect(pushedModuleRegistryProblems(modules, { permissions: [run, { ...use, holder: 'system' }] })).toEqual([
+      'assistant:use: registry holder disagrees with module declarations (expected unmarked)',
+    ]);
+    expect(pushedModuleRegistryProblems(modules, { permissions: [...registry.permissions, { ...use, key: permissionKey.parse('assistant:extra') }] })).toEqual([
+      'assistant:extra: registry lists a key no module declares',
+    ]);
+    expect(pushedModuleRegistryProblems(modules, { permissions: [run] })).toEqual([
+      'assistant:use: module declaration is absent from registry',
+    ]);
+  });
+
+  it('checks declaredBy and descriptions, including a key declared by two modules', () => {
+    const other = manifest('@acme/vertical', [{ key: 'assistant:run', description: 'mine' }]);
+    const row = buildPermissionRegistry({ modules: [engine, { manifest: other }], roles: [] }).permissions[0]!;
+    expect(pushedModuleRegistryProblems([engine.manifest, other], { permissions: [row, registry.permissions[1]!] })).toEqual([]);
+    expect(pushedModuleRegistryProblems([engine.manifest, other], { permissions: [{ ...row, declaredBy: [engine.manifest.id], description: 'wrong' }, registry.permissions[1]!] })).toEqual([
+      'assistant:run: registry description disagrees with module declarations',
+      'assistant:run: registry declaredBy disagrees with module declarations (expected @acme/engine-assistant, @acme/vertical)',
+    ]);
+  });
+
+  it('checks module owner grants against the registry mark', () => {
+    expect(pushedOwnerGrantProblems({ registry, modules: [{ ...engine.manifest, ownerGrants: [permissionKey.parse('assistant:run')] }] })).toEqual([
+      "owner grants of @acme/engine-assistant → assistant:run: reserved to a system principal (`holder: 'system'` on its registry row)",
+    ]);
+  });
+});
 
 describe('the registry carries the reservation (#2430)', () => {
   it('marks a reserved key holder: system and leaves every other row as it was', () => {

@@ -1653,7 +1653,7 @@ export function pushedModuleRegistryProblems(
       continue;
     }
     if (row.description !== declared.description) problems.push(`${key}: registry description disagrees with module declarations`);
-    if (JSON.stringify([...row.declaredBy].sort()) !== JSON.stringify(declared.declaredBy)) {
+    if (JSON.stringify([...row.declaredBy].sort((a, b) => a.localeCompare(b))) !== JSON.stringify(declared.declaredBy)) {
       problems.push(`${key}: registry declaredBy disagrees with module declarations (expected ${declared.declaredBy.join(', ')})`);
     }
     if (row.holder !== declared.holder) {
