@@ -87,8 +87,9 @@ Two adapter implementations behind one interface, mirroring the whole platform:
     call that finds the job claimed answers its progress instead, and touches nothing. A carry's
     claim is held until its bind is over, so a newer push cannot start from the binding it
     replaces. The preview's deadline counts from the latest call, as every create's does: the
-    calls during a copy keep it alive only while that move remains pending and the deadline
-    is still the one the call read; overlapping polls extend and audit it once. The finish
+    calls during a copy keep it alive only while every entry of that move remains pending,
+    unclaimed and inside its lease, and the deadline is still the one the call read; overlapping
+    polls extend and audit it once. The finish
     applies the deadline again. A finish that fails,
     however it fails, settles the move and discards the stage it
     would have loaded, and a fork, like a carry, refuses a source that was carried away and wiped
