@@ -3040,6 +3040,13 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(made.status).toBe(201);
       expect((await dir.admin.getScopeRecord(staff, t, sid))?.status).toBe('active');
       expect(await expiry(sid)).toBeGreaterThan(Date.now() + hour - 60_000);
+
+      // Its twin: a fork whose deadline outlasts its copy lands with that deadline still ahead.
+      const longer = await pushBg('bg-41', 'v1', { ttlHours: 2 });
+      expect(longer.status).toBe(202);
+      await pumpToDone();
+      expect((await pushBg('bg-41', 'v1', { ttlHours: 2, poll: true })).status).toBe(201);
+      expect(await expiry(longer.body.scopeId)).toBeGreaterThan(Date.now() + 2 * hour - 60_000);
     });
 
     it('a fork bind that committed but lost its answer has landed: the preview is answered, not abandoned', async () => {
