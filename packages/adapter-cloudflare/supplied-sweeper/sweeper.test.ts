@@ -8,7 +8,8 @@
  *     `SWEEPER` binding, and the var that hands its roster to `mountPlatformSurface`;
  *   - `/internal/provision` puts the scope on that sweeper's roster — no hook of the vertical's;
  *   - a pass runs the due schedule on the scope, through the host the vertical registered, and
- *     counts the platform requests it enqueued, and logs nothing for a routine pass (#2431);
+ *     counts the platform requests it enqueued, kicks one platform drain, and logs nothing
+ *     for a routine pass (#2431);
  *   - `/internal/delete-scope` takes the scope off the roster.
  */
 import { SELF, env, runInDurableObject } from 'cloudflare:test';
@@ -28,6 +29,7 @@ interface TestEnv {
   SWEEPER: DurableObjectNamespace;
   SUBSTRAT_SCOPE_SWEEPER?: string;
   PLATFORM_SECRET: string;
+  CONTROL_PLANE_URL: string;
 }
 const e = env as unknown as TestEnv;
 
@@ -76,24 +78,69 @@ describe('the platform-supplied sweeper runs a vertical that wires none (#1902)'
     expect(await ticksOn(s)).toBe(0);
     const logged = vi.spyOn(console, 'log');
     try {
-      const report = asReport(await sweeper().sweepNow());
+      const { report, next, calls } = await runInDurableObject(sweeper(), async (instance) => {
+        const calls: { url: string; method: string; body: unknown }[] = [];
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = async (input, init) => {
+          const request = new Request(input, init);
+          calls.push({ url: request.url, method: request.method, body: await request.json() });
+          return new Response(null, { status: 202 });
+        };
+        try {
+          const report = asReport(await (instance as unknown as SweeperStub).sweepNow());
+          const next = asReport(await (instance as unknown as SweeperStub).sweepNow());
+          return { report, next, calls };
+        } finally {
+          globalThis.fetch = originalFetch;
+        }
+      });
       expect(report.errors).toEqual([]);
       expect(report.schedules.fired).toBeGreaterThan(0);
       expect(await ticksOn(s)).toBe(1);
-      // #2431: the tick's platform request waits for the platform's drain sweep — nothing routes
-      // this alarm to kick one — so the pass counts it. A pass like that is routine, and the
-      // supplied sweeper logs only a failing one, so no line here buries the ones that matter.
       expect(report.schedules.platformRequests).toBe(1);
+      expect(calls).toEqual([{
+        url: `${e.CONTROL_PLANE_URL}/internal/drain-scope`,
+        method: 'POST',
+        body: { tenantId: t, scopeId: s, platformRequests: true, exports: false },
+      }]);
       expect(sweepLines(logged.mock.calls)).toEqual([]);
 
       // Not due again for an hour: the next pass leaves it alone, enqueues nothing and logs nothing.
       logged.mockClear();
-      const next = asReport(await sweeper().sweepNow());
       expect(await ticksOn(s)).toBe(1);
       expect(next.schedules.platformRequests).toBeUndefined();
       expect(sweepLines(logged.mock.calls)).toEqual([]);
     } finally {
       logged.mockRestore();
+    }
+  });
+
+  it('a failed drain kick leaves the scheduled pass successful', async () => {
+    const failingScope = scopeId.parse(ulid());
+    const provision = await platform('/internal/provision', { tenantId: t, scopeId: failingScope, owner });
+    expect(provision.status, await provision.clone().text()).toBe(201);
+    try {
+      const { report, attempts } = await runInDurableObject(sweeper(), async (instance) => {
+        let attempts = 0;
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = async () => {
+          attempts += 1;
+          throw new Error('kick unavailable');
+        };
+        try {
+          const report = asReport(await (instance as unknown as SweeperStub).sweepNow());
+          return { report, attempts };
+        } finally {
+          globalThis.fetch = originalFetch;
+        }
+      });
+      expect(report.errors).toEqual([]);
+      expect(report.schedules.platformRequests).toBe(1);
+      expect(attempts).toBe(1);
+      expect(await ticksOn(failingScope)).toBe(1);
+    } finally {
+      const deleted = await platform('/internal/delete-scope', { tenantId: t, scopeId: failingScope });
+      expect(deleted.status, await deleted.clone().text()).toBe(200);
     }
   });
 

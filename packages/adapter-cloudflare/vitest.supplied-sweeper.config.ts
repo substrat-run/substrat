@@ -37,7 +37,12 @@ writeFileSync(
   JSON.stringify({
     ...uploaded,
     name: 'fixture-scheduled-vertical',
-    vars: { ...uploaded.vars, PLATFORM_SECRET: 'test-platform-secret', ROUTER_SECRET: 'test-router-secret' },
+    vars: {
+      ...uploaded.vars,
+      PLATFORM_SECRET: 'test-platform-secret',
+      ROUTER_SECRET: 'test-router-secret',
+      CONTROL_PLANE_URL: 'https://control-plane.test',
+    },
   }),
 );
 

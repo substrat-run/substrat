@@ -50,8 +50,8 @@ export interface ScopeSweepReport {
   drainTotals: ExecutorDrainReport;
   /**
    * The recurring-schedule outcomes summed across the roster (#383/#461). Its `platformRequests`
-   * (#2431) are requests the schedules enqueued that wait for the platform's next drain sweep:
-   * the router kicks a drain for a request it routed, and nothing routes this alarm.
+   * (#2431) are requests the schedules enqueued. A configured drain kick asks the platform
+   * to run them after this pass; its periodic sweep remains the backstop.
    */
   schedules: ScheduleSweepReport;
   /** Present when this deployment opted into driving resumable jobs. */
@@ -142,6 +142,8 @@ export interface ScopeSweeperDoConfig<Env> {
   concurrency?: number;
   /** Observe each pass — logging or a health metric. Never throws into the loop. */
   onPass?(outcome: ScopeSweepOutcome, env: Env): void;
+  /** Best-effort platform drain kick after a scope's schedules enqueue requests. */
+  kickPlatformDrain?(env: Env, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
   /**
    * #1232: the version identity the pass reports — read `env.SUBSTRAT_VERSION_ID`
    * here (an accessor rather than a widened Env constraint, so existing workers
@@ -366,6 +368,7 @@ export function defineScopeSweeperDO<Env>(
             }
           }
           let touched = false;
+          let needsPlatformDrain = false;
           // #1232: the pass's outcomes, batched for ONE intent per scope — a pass every
           // couple of minutes times N schedules cannot be one intent each against the
           // journal cap. Stamped with pass time here; the drain runs a window later.
@@ -378,10 +381,9 @@ export function defineScopeSweeperDO<Env>(
               report.schedules.fired += r.fired;
               report.schedules.skipped += r.skipped;
               report.schedules.failed += r.failed;
-              // #2431: this sweeper has no channel to the platform's drain (D-40), so what the
-              // schedules enqueued waits for the drain's next sweep. Counted, so the wait shows.
               if (r.platformRequests) {
                 report.schedules.platformRequests = (report.schedules.platformRequests ?? 0) + r.platformRequests;
+                needsPlatformDrain = true;
               }
               for (const e of r.errors) {
                 report.errors.push({
@@ -444,6 +446,12 @@ export function defineScopeSweeperDO<Env>(
             } catch {
               // Telemetry never sinks a pass — a failed report is the next pass's to retry.
             }
+          }
+          // One kick per scope per pass, after every schedule has run. A failed kick affects
+          // latency only: the intents are durable and the platform's sweep will find them.
+          const kick = config.kickPlatformDrain;
+          if (needsPlatformDrain && kick) {
+            this.ctx.waitUntil(Promise.resolve().then(() => kick(this.env, tenantId, scopeId)).catch(() => {}));
           }
         }
       };
