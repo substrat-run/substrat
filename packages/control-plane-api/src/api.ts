@@ -10091,11 +10091,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const due = expiresAt === null
         ? row.expiresAt !== null
         : row.expiresAt === null || Date.parse(row.expiresAt) < Date.parse(expiresAt) - PREVIEW_CREATE_BOUND_MS;
-      if (due && typeof c.var.admin.keepAlivePendingScopeCopy === 'function') {
-        await c.var.admin.keepAlivePendingScopeCopy(
-          actor, tenantId, row.id, moveId, row.status, row.expiresAt, expiresAt,
-        ).catch(() => undefined);
-      }
+      if (due) await c.var.admin.keepAlivePendingScopeCopy(
+        actor, tenantId, row.id, moveId, row.status, row.expiresAt, expiresAt,
+      ).catch(() => undefined);
     };
     // Residency (K-7/K-32): forking pins the copy's EXECUTION to the preview deployment.
     // Anything tighter than `global` cannot be honoured until Regional Services, so refuse

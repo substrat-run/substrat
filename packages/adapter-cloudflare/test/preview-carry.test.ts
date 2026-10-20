@@ -3089,26 +3089,6 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await dir.admin.auditLog(staff, { scopeId: sid, action: 'setScopeExpiresAt' })).length).toBe(before + 1);
     });
 
-    it('an older host without conditional keep-alive still answers copy progress', async () => {
-      const prodHost = hostOf.get((await served(prodHostname)).ref)!;
-      await prodHost.restoreScopeLocal(prod, notes(...rows));
-      const tag = 'bg-keepalive-older-host';
-      const started = await pushBg(tag, 'v1', { ttlHours: 1 });
-      expect(started.status).toBe(202);
-      const sid = started.body.scopeId;
-      const old = new Date(Date.now() - 60_000).toISOString();
-      await dir.admin.setScopeExpiresAt(staff, t, sid, old);
-      const admin = new Proxy(dir.admin, {
-        get: (target, key) => key === 'keepAlivePendingScopeCopy' ? undefined : Reflect.get(target, key),
-      });
-      const host = new Proxy(dir, {
-        get: (target, key) => key === 'admin' ? admin : Reflect.get(target, key),
-      });
-      const olderApi = createControlPlaneApi({ ...apiOptions, host, copyJobs: jobs });
-      expect((await pushBg(tag, 'v1', { ttlHours: 1, poll: true }, olderApi)).status).toBe(202);
-      expect((await dir.admin.getScopeRecord(staff, t, sid))?.expiresAt).toBe(old);
-    });
-
     it('a poll delayed past a failed fork settlement leaves its lapsed deadline in place', async () => {
       const sid = (await pushBg('bg-keepalive-settle', 'v1', { ttlHours: 1 })).body.scopeId;
       const old = new Date(Date.now() - 60_000).toISOString();
