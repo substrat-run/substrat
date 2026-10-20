@@ -109,14 +109,41 @@ describe('assertListsArePaged', () => {
     expect(() => list(z.union([entry, z.unknown()]))).toThrow(OPAQUE);
   });
 
-  it('refuses an unbounded container: record, map, set, promise, tuple with a rest', () => {
+  it('refuses an unbounded container: record, map, set, tuple with a rest, object with a catchall', () => {
     expect(() => list(z.record(z.string(), entry))).toThrow(/returns a record /);
     expect(() => list(z.map(z.string(), entry))).toThrow(/returns a map /);
     expect(() => list(z.set(z.string()))).toThrow(/returns a set /);
-    expect(() => list(z.promise(arr))).toThrow(/returns a promise /);
     expect(() => list(z.tuple([z.string()]).rest(z.string()))).toThrow(/returns a tuple with a rest element /);
+    expect(() => list(z.object({}).catchall(entry))).toThrow(/returns a catchall object /);
+    expect(() => list(z.object({ id: z.string() }).catchall(z.string()))).toThrow(CONTAINER);
     expect(() => list(z.record(z.string(), entry).nullable())).toThrow(CONTAINER);
+  });
+
+  it('leaves a fixed tuple, a loose object and a strict object alone', () => {
     expect(() => list(z.tuple([z.string(), z.number()]))).not.toThrow();
+    expect(() => list(z.looseObject({ id: z.string() }))).not.toThrow();
+    expect(() => list(z.strictObject({ id: z.string() }))).not.toThrow();
+    expect(() => list(entry.catchall(z.never()))).not.toThrow();
+  });
+
+  it('looks into the elements of a fixed tuple', () => {
+    expect(() => list(z.tuple([z.string(), arr]))).toThrow(/returns an array \(under tuple\)/);
+    expect(() => list(z.tuple([z.string(), z.unknown()]))).toThrow(OPAQUE);
+  });
+
+  it('looks through a promise like a wrapper: a promise of an array is an array', () => {
+    expect(() => list(z.promise(arr))).toThrow(/returns an array \(under promise\)/);
+    expect(() => list(z.promise(arr).optional())).toThrow(WRAPPED);
+    expect(() => list(z.promise(entry))).not.toThrow();
+  });
+
+  it('judges a union by its options, not its width: hundreds of literals are fine', () => {
+    const literals = Array.from({ length: 300 }, (_, i) => z.literal(`v${i}`));
+    const variants = Array.from({ length: 300 }, (_, i) => z.object({ kind: z.literal(`k${i}`) }));
+    expect(() => list(z.union(literals as unknown as [z.ZodLiteral<string>, z.ZodLiteral<string>]))).not.toThrow();
+    expect(() => list(z.union(variants as unknown as [(typeof variants)[0], (typeof variants)[0]]))).not.toThrow();
+    // …and an array hiding at the far end of a wide union is still found
+    expect(() => list(z.union([...literals, arr] as unknown as [z.ZodLiteral<string>, z.ZodLiteral<string>]))).toThrow(WRAPPED);
   });
 
   it('terminates on a lazy schema that refers to itself', () => {
@@ -127,14 +154,21 @@ describe('assertListsArePaged', () => {
   });
 
   it('gives up on a lazy factory that returns a fresh schema every call, with its own words', () => {
+    // each getter call is a new object, so only the depth cap can end this walk
     const fresh = (): z.ZodType => z.lazy(fresh);
     expect(() => list(fresh())).toThrow(/schema too deep to judge/);
     expect(() => list(fresh())).toThrow(REMEDY);
   });
 
-  it('gives up on a union of fresh lazies that fans out instead of deepening', () => {
+  it('gives up on a union of fresh lazies that fans out as well as deepens', () => {
     const fan = (): z.ZodType => z.union([z.lazy(fan), z.lazy(fan)]);
     expect(() => list(fan())).toThrow(/schema too deep to judge/);
+  });
+
+  it('follows a finite chain of wrappers that is deep but under the cap', () => {
+    let chained: z.ZodType = arr;
+    for (let i = 0; i < 20; i++) chained = chained.optional();
+    expect(() => list(chained)).toThrow(WRAPPED);
   });
 
   it('reports a lazy whose getter throws as that, not as z.custom', () => {

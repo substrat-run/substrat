@@ -220,10 +220,11 @@ supplies the envelope, the query parameters and the handler's return type:
 
 ::: tip Not adopted — enforced
 An operation that declares no `paged` and answers with an array is **refused when the module
-loads**. The gate looks through `.optional()`, `.nullable()`, `.default()`, `.readonly()`, a union
-or intersection, `z.lazy()` and a pipe's out side, and it refuses an output it cannot read
-(`z.custom()`, `z.any()`, `z.unknown()`, a transform) or an unbounded container (`z.record()`,
-`z.map()`, `z.set()`). What it does not judge is the inside of an object: `{ items: z.array(…) }`
+loads**. The gate looks through `.optional()`, `.nullable()`, `.default()`, `.readonly()`,
+`z.promise()`, a union or intersection, the elements of a fixed tuple, `z.lazy()` and a pipe's out
+side, and it refuses an output it cannot read (`z.custom()`, `z.any()`, `z.unknown()`, a
+transform) or an unbounded container (`z.record()`, `z.map()`, `z.set()`, a tuple with a rest
+element, an object with a `catchall`). What it does not judge is the inside of an object: `{ items: z.array(…) }`
 is accepted, because the operation controls that shape, so a handler can still return a whole table
 there. Routes declared with `defineRoutes` (the dashboard's) are not `defineOperations` and do not
 go through it. The declared filter/sort vocabulary (`paged.over` — the kernel-composed half) is what keeps a

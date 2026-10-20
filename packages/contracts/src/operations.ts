@@ -892,14 +892,16 @@ export function defineOperations<
  * table read. Only a TOP-LEVEL array output is a list by this rule.
  *
  * **"Top-level" looks through wrappers** (#2436). The output is judged as the handler returns it:
- * `.optional()`, `.nullable()`, `.default()`, `.readonly()` and the rest of `WRAPPER_TYPES`, `z.lazy()`,
- * both sides of an intersection and every option of a union (`array.or(z.null())` is `.nullable()`)
- * change what a handler may return, not that it answers with a whole table, so an array under any of
- * them is read as the array it is. A pipe is read at its OUT side only — `.transform()` makes one: the
- * in side is what the wire carries before the transform, not what the operation answers with.
+ * `.optional()`, `.nullable()`, `.default()`, `.readonly()` and the rest of `WRAPPER_TYPES`
+ * (a promise of an array is an array), `z.lazy()`, both sides of an intersection, every option of a
+ * union (`array.or(z.null())` is `.nullable()`) and every element of a fixed tuple change what a
+ * handler may return, not that it answers with a whole table, so an array under any of them is read
+ * as the array it is. A pipe is read at its OUT side only — `.transform()` makes one: the in side is
+ * what the wire carries before the transform, not what the operation answers with.
  *
  * **What it refuses besides an array.**
- * - A record, map, set, promise, or tuple with a rest element: a container whose size the caller does
+ * - A record, map, set, tuple with a rest element, or object with a catchall (a record by another
+ *   spelling; `looseObject` and `strictObject` are not one): a container whose size the caller does
  *   not bound, with no page to walk.
  * - An output it cannot read: `z.custom()` (`z.instanceof()` is one), `z.any()`, `z.unknown()`, and a
  *   transform (`z.transform()`, or a pipe whose out side is one, which is what `.transform()` makes).
@@ -907,7 +909,7 @@ export function defineOperations<
  *   declaration away from not existing.
  * - A schema it cannot finish judging: a `z.lazy()` whose getter throws, or one nested so deep that the
  *   walk gives up (a factory returning a fresh schema on every call never repeats, so no visited set
- *   ends it).
+ *   ends it). Depth is what is capped, not width: a union of hundreds of literals is fine.
  *
  * What it does not judge is any field of an object, which is the nested-array rule above.
  */
@@ -952,6 +954,7 @@ function assertListsArePaged(operations: Record<string, unknown>): void {
 
 /** The schema types that wrap one inner schema and only change what a caller may send or get back. */
 const WRAPPER_TYPES = new Set([
+  'promise',
   'optional',
   'nullable',
   'nullish',
@@ -971,12 +974,17 @@ const OPAQUE_OUTPUTS: Record<string, string> = {
 };
 
 /** Containers whose size the caller does not bound, by `def.type`. */
-const UNBOUNDED_CONTAINERS = new Set(['record', 'map', 'set', 'promise']);
+const UNBOUNDED_CONTAINERS = new Set(['record', 'map', 'set']);
 
-/** The deepest chain of wrappers, pipes, unions and lazies the walk follows before it gives up. */
+/** The `catchall` types that mark an object strict or loose rather than a record of its values. */
+const NON_RECORD_CATCHALLS = new Set(['never', 'unknown', 'any']);
+
+/**
+ * The deepest chain of wrappers, pipes, unions and lazies the walk follows before it gives up. Depth,
+ * not width: the walk is depth-first, so a union of lazies that fans out reaches this on its first
+ * path, and a union of hundreds of literals never gets near it.
+ */
 const MAX_OUTPUT_DEPTH = 32;
-/** The most schemas one output's walk visits; a union of lazies can fan out without being deep. */
-const MAX_OUTPUT_NODES = 256;
 
 type OutputVerdict =
   | { kind: 'ok' }
@@ -991,7 +999,7 @@ type OutputVerdict =
  *
  * Read structurally by `def.type`, as every other Zod read in this package is. Two bounds end the
  * walk: a visited set (a lazy schema that refers to itself must not loop the declaration) and a depth
- * and node cap (a lazy factory that returns a fresh schema each call defeats the visited set).
+ * cap (a lazy factory that returns a fresh schema each call defeats the visited set).
  */
 function outputListVerdict(schema: unknown): OutputVerdict {
   const pending: { schema: unknown; via: string[] }[] = [{ schema, via: [] }];
@@ -1000,9 +1008,7 @@ function outputListVerdict(schema: unknown): OutputVerdict {
     const { schema: current, via } = pending.pop()!;
     if (current === undefined || current === null || seen.has(current)) continue;
     seen.add(current);
-    if (seen.size > MAX_OUTPUT_NODES || via.length > MAX_OUTPUT_DEPTH) {
-      return { kind: 'unreadable', why: 'schema too deep to judge', via: [] };
-    }
+    if (via.length > MAX_OUTPUT_DEPTH) return { kind: 'unreadable', why: 'schema too deep to judge', via: [] };
     const def = (current as { _zod?: { def?: unknown } })._zod?.def as
       | {
           type?: string;
@@ -1013,6 +1019,8 @@ function outputListVerdict(schema: unknown): OutputVerdict {
           left?: unknown;
           right?: unknown;
           rest?: unknown;
+          items?: unknown[];
+          catchall?: unknown;
         }
       | undefined;
     if (def?.type === undefined) continue;
@@ -1020,14 +1028,17 @@ function outputListVerdict(schema: unknown): OutputVerdict {
     const deeper = [...via, type];
     if (type === 'array') return { kind: 'array', via };
     if (type in OPAQUE_OUTPUTS) return { kind: 'opaque', what: OPAQUE_OUTPUTS[type]!, via };
-    if (UNBOUNDED_CONTAINERS.has(type) || (type === 'tuple' && def.rest != null)) {
-      return { kind: 'container', type: type === 'tuple' ? 'tuple with a rest element' : type, via };
+    if (UNBOUNDED_CONTAINERS.has(type)) return { kind: 'container', type, via };
+    if (type === 'tuple' && def.rest != null) return { kind: 'container', type: 'tuple with a rest element', via };
+    const catchall = (def.catchall as { _zod?: { def?: { type?: string } } } | undefined)?._zod?.def?.type;
+    if (type === 'object' && catchall !== undefined && !NON_RECORD_CATCHALLS.has(catchall)) {
+      return { kind: 'container', type: 'catchall object (a record by another spelling)', via };
     }
     // Pushed in reverse, so the first option is the first judged.
     if (WRAPPER_TYPES.has(type)) pending.push({ schema: def.innerType, via: deeper });
     else if (type === 'pipe') pending.push({ schema: def.out, via: deeper });
-    else if (type === 'union') {
-      for (const option of [...(def.options ?? [])].reverse()) pending.push({ schema: option, via: deeper });
+    else if (type === 'union' || type === 'tuple') {
+      for (const option of [...(def.options ?? def.items ?? [])].reverse()) pending.push({ schema: option, via: deeper });
     } else if (type === 'intersection') {
       pending.push({ schema: def.right, via: deeper }, { schema: def.left, via: deeper });
     } else if (type === 'lazy') {

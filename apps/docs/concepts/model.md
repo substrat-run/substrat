@@ -433,8 +433,9 @@ Every one of these is a compile error, not a lint:
   a keyset walk needs one column to break ties on
 - **an array output with no `paged`** is refused when the module loads: a list read that
   answers with the whole table is unbounded by construction. An array under `.optional()`,
-  `.nullable()`, `.default()`, `.readonly()`, a union or intersection, `z.lazy()` or a pipe's out
-  side is the same array, and so is a `z.record()`, `z.map()` or `z.set()`. An output the gate
+  `.nullable()`, `.default()`, `.readonly()`, `z.promise()`, a union or intersection, an element
+  of a fixed tuple, `z.lazy()` or a pipe's out side is the same array, and so is a `z.record()`,
+  `z.map()`, `z.set()`, a tuple with a rest element or an object with a `catchall`. An output the gate
   cannot read — `z.custom()`, `z.instanceof()`, `z.any()`, `z.unknown()`, a transform — is refused
   too, since it could be the whole table. Declare the entry schema and `paged`. An array *inside*
   an object (`z.object({ ids: z.array(…) })`) is not judged
