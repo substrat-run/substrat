@@ -112,15 +112,19 @@ export const copyJobHeld = (job: CopyJobRecord, now: number): boolean =>
   job.status === 'done' && (job.claimedUntil ?? 0) > now;
 
 /**
- * Whether `job` can still move or land its push's data, at `now` (epoch ms): copying, and not past
- * its deadline by more than a lease (a step fails it there, so one still copying has lost its steps);
- * or done and still finishable, held by the call finishing it or inside the lease its last step
- * renewed. A failed or cancelled job cannot, nor can one left done past that lease: its claim would
- * find the lease gone.
+ * Whether `job` can still move or land its push's data, at `now` (epoch ms): copying, with its
+ * steps still running; or done and still finishable, held by the call finishing it or inside the
+ * lease its last step renewed. A failed or cancelled job cannot, nor can one left done past that
+ * lease: its claim would find the lease gone.
+ *
+ * A copying job's steps have stopped once its last recorded step is more than a lease old (each
+ * step records itself, and it and the wait before the next stay inside a quarter of the lease, so
+ * its lease has lapsed too), or once it is past its deadline by more than a lease (a step fails it there).
  */
 export const copyJobLive = (job: CopyJobRecord, now: number): boolean => {
-  if (job.status === 'copying') return now <= job.spec.deadline + job.spec.leaseMs;
-  return job.status === 'done' && (copyJobHeld(job, now) || now < job.updatedAt + job.spec.leaseMs);
+  const { leaseMs, deadline } = job.spec;
+  if (job.status === 'copying') return now <= deadline + leaseMs && now <= job.updatedAt + leaseMs;
+  return job.status === 'done' && (copyJobHeld(job, now) || now < job.updatedAt + leaseMs);
 };
 
 /** What a job that ran past its deadline fails with. */
@@ -130,15 +134,22 @@ const deadlineFailure = (spec: CopyJobSpec): { status: number; message: string }
 });
 
 /**
- * `job` as read at `now` (epoch ms). One still copying past its deadline by more than a lease has
- * lost its steps (its next alarm was never stored, say), since a step fails it at the deadline: it is
- * read as failed by that deadline, as its step would have left it, so the route settles and answers
- * it rather than wait on it for good. Any other job is read as it is.
+ * `job` as read at `now` (epoch ms). One still copying whose steps have stopped (`copyJobLive`: its
+ * next alarm was never stored, say) is read as failed, by its deadline when it is past it and as
+ * stalled otherwise, so the route settles and answers it rather than wait on it for good. Any other
+ * job is read as it is.
  */
-export const copyJobAt = (job: CopyJobRecord, now: number): CopyJobRecord =>
-  job.status === 'copying' && !copyJobLive(job, now)
-    ? { ...job, status: 'failed', error: deadlineFailure(job.spec), nextDelayMs: 0 }
-    : job;
+export const copyJobAt = (job: CopyJobRecord, now: number): CopyJobRecord => {
+  if (job.status !== 'copying' || copyJobLive(job, now)) return job;
+  const error = now > job.spec.deadline
+    ? deadlineFailure(job.spec)
+    : {
+      status: 504,
+      message: `the copy of scope ${job.spec.scopeId} made no progress for ${Math.round((now - job.updatedAt) / 60_000)} min, ` +
+        `so its steps had stopped; nothing was moved`,
+    };
+  return { ...job, status: 'failed', error, nextDelayMs: 0 };
+};
 
 /** What a step needs: the two deployments, and the ledger to renew the lease in. */
 export interface CopyJobDeps {

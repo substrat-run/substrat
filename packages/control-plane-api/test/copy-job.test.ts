@@ -378,9 +378,14 @@ describe('copyJobLive (#2450)', () => {
     const copying = newCopyJob(h.spec({ deadline: now + 1_000 }), state, now);
     const lease = copying.spec.leaseMs;
     expect(copyJobLive(copying, now)).toBe(true);
-    // Past its deadline by less than a lease, a step still fails it; by more, its steps are gone.
-    expect(copyJobLive(copying, now + 1_000 + lease)).toBe(true);
-    expect(copyJobLive(copying, now + 1_000 + lease + 1)).toBe(false);
+    // Its last step more than a lease ago: its steps have stopped, whatever its deadline.
+    const far = newCopyJob(h.spec({ deadline: now + 10 * lease }), state, now);
+    expect(copyJobLive(far, now + lease)).toBe(true);
+    expect(copyJobLive(far, now + lease + 1)).toBe(false);
+    // Stepping still, but past its deadline by less than a lease, a step still fails it; by more, its steps are gone.
+    const stepping = { ...copying, updatedAt: now + 1_000 + lease };
+    expect(copyJobLive(stepping, now + 1_000 + lease)).toBe(true);
+    expect(copyJobLive(stepping, now + 1_000 + lease + 1)).toBe(false);
     const done = { ...copying, status: 'done' as const, updatedAt: now };
     expect(copyJobLive(done, now + lease - 1)).toBe(true);
     expect(copyJobLive(done, now + lease)).toBe(false);
@@ -389,15 +394,24 @@ describe('copyJobLive (#2450)', () => {
     for (const status of ['failed', 'cancelled'] as const) expect(copyJobLive({ ...copying, status }, now)).toBe(false);
   });
 
-  it('copyJobAt reads a job whose steps were lost past its deadline as failed by it, and any other as it is', async () => {
+  it('copyJobAt reads a job whose steps stopped as failed, by its deadline or as stalled, and any other as it is', async () => {
     const h = harness();
-    const job = newCopyJob(h.spec({ startedAt: h.clock.now, deadline: h.clock.now + 60_000 }), await h.begin(), h.clock.now);
-    const lease = job.spec.leaseMs;
+    const created = newCopyJob(h.spec({ startedAt: h.clock.now, deadline: h.clock.now + 60_000 }), await h.begin(), h.clock.now);
+    const lease = created.spec.leaseMs;
+    // Its last step recorded at its deadline's lease: read as it is there, failed by the deadline past it.
+    const job = { ...created, updatedAt: h.clock.now + 60_000 + lease };
     expect(copyJobAt(job, h.clock.now + 60_000 + lease)).toBe(job);
     expect(copyJobAt(job, h.clock.now + 60_000 + lease + 1)).toMatchObject({
       status: 'failed',
       error: { status: 504, message: expect.stringMatching(/ran past its 1 min limit; nothing was moved/) },
       state: { stageId: job.state!.stageId },
+    });
+    // Short of its deadline, with no step recorded for more than a lease: stalled.
+    const idle = newCopyJob(h.spec({ startedAt: h.clock.now, deadline: h.clock.now + 10 * lease }), await h.begin(), h.clock.now);
+    expect(copyJobAt(idle, h.clock.now + lease)).toBe(idle);
+    expect(copyJobAt(idle, h.clock.now + lease + 1)).toMatchObject({
+      status: 'failed',
+      error: { status: 504, message: expect.stringMatching(/made no progress for 30 min, so its steps had stopped; nothing was moved/) },
     });
     // The same sentence a step fails it with at the deadline.
     expect((await advanceCopyJob(h.deps, { ...job, spec: { ...job.spec, deadline: h.clock.now - 1, startedAt: h.clock.now - 60_001 } })).error?.message)

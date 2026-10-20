@@ -3370,6 +3370,20 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await pushBg('bg-34', 'v1')).status).toBe(202);
       await pumpToDone();
       expect((await poll('bg-34', 'v1')).status).toBe(201);
+
+      // Long before its deadline, a job whose last step is more than a lease old has stopped too.
+      const idle = await pushBg('bg-40', 'v1');
+      expect(idle.status).toBe(202);
+      const idleId = `fork:${idle.body.scopeId}`;
+      const stopped = jobs.jobs.get(idleId)!;
+      jobs.jobs.set(idleId, { ...stopped, updatedAt: Date.now() - stopped.spec.leaseMs + 60_000 });
+      expect((await poll('bg-40', 'v1')).status).toBe(202);
+      jobs.jobs.set(idleId, { ...stopped, updatedAt: Date.now() - stopped.spec.leaseMs - 1_000 });
+      const stalled = await poll('bg-40', 'v1');
+      expect(stalled.status).toBe(409);
+      expect(reason(stalled)).toMatch(/background copy failed with 504: the copy of scope \w+ made no progress for 30 min/);
+      expect(jobs.jobs.has(idleId)).toBe(false);
+      expect(await noStage('v1', idle.body.scopeId)).toEqual([]);
     });
   });
 });
