@@ -82,8 +82,8 @@ routing stays on the same script or the incoming version is co-located. When a c
   A copy too large for one request runs in the background: `preview create` prints how far it has
   got and waits, and the preview keeps serving the previous version until the copy is done. A newer
   push to the same preview stops an older one that is still copying, and takes over. A create for
-  an older version is refused while a newer push's copy runs and for 15 minutes after that push's
-  last call; after that, an older version can be previewed again.
+  an older version is refused while a newer push's copy is running or being finished, and for 15
+  minutes after that push's last call; after that, an older version can be previewed again.
 - **A copy needs its source to hold still.** It reads the source in pages, so a source that takes a
   write between two pages is copied again from the start. One that keeps changing through three
   attempts is refused (`409`) with nothing moved; re-run the push when it is quieter.
