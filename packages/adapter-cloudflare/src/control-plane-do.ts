@@ -3431,10 +3431,14 @@ export class ControlPlaneDO extends DurableObject {
 
   /** One atomic compare-and-set across the preview row and every entry of its copy move. */
   keepAlivePendingScopeCopy(tenantId: string, scopeId: string, moveId: string, status: string,
-    expectedExpiresAt: string | null, expiresAt: string | null): boolean {
-    return this.sql.exec(PENDING_COPY_KEEP_ALIVE_SQL,
-      ...pendingCopyKeepAliveParams(expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId,
-        new Date().toISOString())).rowsWritten > 0;
+    expectedExpiresAt: string | null, expiresAt: string | null, audit: AdminEntryInput): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const changed = this.sql.exec(PENDING_COPY_KEEP_ALIVE_SQL,
+        ...pendingCopyKeepAliveParams(expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId,
+          new Date().toISOString())).rowsWritten > 0;
+      if (changed) this.recordAdmin(audit);
+      return changed;
+    });
   }
 
   async listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]> {

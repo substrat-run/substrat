@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
+import { expect, it } from 'vitest';
 import { ATTACHMENT_TEXT_JOB, ATTACHMENT_TEXT_MODULE, UNSAFE_allowAllChecker, manualClock, ulid, webCryptoSecretBox, type ModuleLogLine, type InvocationLogLine, type TenantBlobStore } from '@substrat-run/kernel';
 import { defaultAttachmentExtractors } from '@substrat-run/attachment-extractors';
 import {
@@ -65,7 +66,7 @@ import {
   spineGuardContractSuite,
   sqlLimitsContractSuite,
 } from '@substrat-run/contract-tests';
-import { errorCodeOf, instant, moduleId, platformActorId } from '@substrat-run/contracts';
+import { errorCodeOf, instant, moduleId, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import { SqliteScopeHost } from '../src/index.js';
 
 scopeHostContractSuite('adapter-sqlite', async () => {
@@ -368,6 +369,40 @@ systemSwitchContractSuite('adapter-sqlite', async () => {
 /** #2089: the kill-switch suites' outcome-row fault — a trigger on this host's directory. */
 const execDirectorySql = (host: SqliteScopeHost, sql: string) =>
   (host as unknown as { directory: { exec(q: string): void } }).directory.exec(sql);
+
+it('rolls back a preview keep-alive when its audit insert fails in SQLite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-keepalive-audit-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  const actor = platformActorId.parse(ulid());
+  const tenant = tenantId.parse(ulid());
+  const scope = scopeId.parse(ulid());
+  const move = ulid();
+  const old = new Date(Date.now() - 60_000).toISOString();
+  const next = new Date(Date.now() + 3_600_000).toISOString();
+  const trigger = `test_refuse_keepalive_${scope.toLowerCase()}`;
+  try {
+    await host.admin.createTenant(actor, { id: tenant, slug: `keepalive-${tenant.toLowerCase()}`, name: 'Keep alive' });
+    await host.provisionScope(actor, { tenantId: tenant, scopeId: scope, kind: 'preview', expiresAt: old });
+    await host.admin.recordScopeScriptCopy(actor, tenant, scope, `version-${ulid().toLowerCase()}`, move,
+      { role: 'destination' });
+    execDirectorySql(host, `CREATE TRIGGER ${trigger} BEFORE INSERT ON _substrat_admin_log
+      WHEN NEW.scope_id = '${scope}' AND NEW.action = 'setScopeExpiresAt'
+      BEGIN SELECT RAISE(ABORT, 'keep-alive audit refused (test)'); END`);
+    try {
+      await expect(host.admin.keepAlivePendingScopeCopy(actor, tenant, scope, move, 'provisioning', old, next))
+        .rejects.toThrow(/keep-alive audit refused/);
+      expect((await host.admin.getScopeRecord(actor, tenant, scope))?.expiresAt).toBe(old);
+      expect(await host.admin.auditLog(actor, { scopeId: scope, action: 'setScopeExpiresAt' })).toEqual([]);
+    } finally {
+      execDirectorySql(host, `DROP TRIGGER IF EXISTS ${trigger}`);
+    }
+    expect(await host.admin.keepAlivePendingScopeCopy(actor, tenant, scope, move, 'provisioning', old, next)).toBe(true);
+    expect((await host.admin.auditLog(actor, { scopeId: scope, action: 'setScopeExpiresAt' })).length).toBe(1);
+  } finally {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 const refuseAdminRowsOf = (host: SqliteScopeHost) => async (scope: string, phase: string) => {
   const { create, drop } = adminRowFaultSql(scope, phase);

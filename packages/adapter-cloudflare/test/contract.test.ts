@@ -139,6 +139,44 @@ scopeHostContractSuite(
   { supportsRuntimeRegistration: false },
 );
 
+it('rolls back a preview keep-alive when its audit insert fails in the directory DO', async () => {
+  const host = new CloudflareScopeHost({
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    fetch: connectorTestFetch,
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    checker: UNSAFE_allowAllChecker,
+  });
+  const actor = platformActorId.parse(ulid());
+  const tenant = tenantId.parse(ulid());
+  const scope = scopeId.parse(ulid());
+  const move = ulid();
+  const old = new Date(Date.now() - 60_000).toISOString();
+  const next = new Date(Date.now() + 3_600_000).toISOString();
+  const trigger = `test_refuse_keepalive_${scope.toLowerCase()}`;
+  try {
+    await host.admin.createTenant(actor, { id: tenant, slug: `keepalive-${tenant.toLowerCase()}`, name: 'Keep alive' });
+    await host.provisionScope(actor, { tenantId: tenant, scopeId: scope, kind: 'preview', expiresAt: old });
+    await host.admin.recordScopeScriptCopy(actor, tenant, scope, `version-${ulid().toLowerCase()}`, move,
+      { role: 'destination' });
+    await execDirectorySql(`CREATE TRIGGER ${trigger} BEFORE INSERT ON _substrat_admin_log
+      WHEN NEW.scope_id = '${scope}' AND NEW.action = 'setScopeExpiresAt'
+      BEGIN SELECT RAISE(ABORT, 'keep-alive audit refused (test)'); END`);
+    try {
+      await expect(host.admin.keepAlivePendingScopeCopy(actor, tenant, scope, move, 'provisioning', old, next))
+        .rejects.toThrow(/keep-alive audit refused/);
+      expect((await host.admin.getScopeRecord(actor, tenant, scope))?.expiresAt).toBe(old);
+      expect(await host.admin.auditLog(actor, { scopeId: scope, action: 'setScopeExpiresAt' })).toEqual([]);
+    } finally {
+      await execDirectorySql(`DROP TRIGGER IF EXISTS ${trigger}`);
+    }
+    expect(await host.admin.keepAlivePendingScopeCopy(actor, tenant, scope, move, 'provisioning', old, next)).toBe(true);
+    expect((await host.admin.auditLog(actor, { scopeId: scope, action: 'setScopeExpiresAt' })).length).toBe(1);
+  } finally {
+    await host.close();
+  }
+});
+
 // #2005: a fork or a preview causes no outbound effects — on the coordinator, which is where
 // a co-located host runs its executors and reads the directory that says what a scope is.
 inertScopeContractSuite('adapter-cloudflare', async () => {

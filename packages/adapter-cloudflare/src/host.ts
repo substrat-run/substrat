@@ -917,7 +917,7 @@ interface ControlPlaneStub {
   setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation): Promise<boolean>;
   setScopeExpiresAt(scopeId: string, expiresAt: string | null): Promise<void>;
   keepAlivePendingScopeCopy(tenantId: string, scopeId: string, moveId: string, status: string,
-    expectedExpiresAt: string | null, expiresAt: string | null): Promise<boolean>;
+    expectedExpiresAt: string | null, expiresAt: string | null, audit: AdminEntry): Promise<boolean>;
   deleteScopeDirectory(scopeId: string): Promise<void>;
   readChannel(verticalSlug: string, channel: string): Promise<ChannelRow | undefined>;
   moveChannel(from: string | null, history: ChannelHistoryRow): Promise<boolean>;
@@ -8666,12 +8666,11 @@ export class CloudflareScopeHost implements ScopeHost {
         );
       },
       keepAlivePendingScopeCopy: async (actor, tenantId, scopeId, moveId, status, expectedExpiresAt, expiresAt) => {
-        const changed = await this.cp.keepAlivePendingScopeCopy(
+        return this.cp.keepAlivePendingScopeCopy(
           tenantId, scopeId, moveId, status, expectedExpiresAt, expiresAt,
+          this.adminEntry(actor, 'setScopeExpiresAt', { tenantId, scopeId },
+            { expiresAt: expectedExpiresAt }, { expiresAt }),
         );
-        if (changed) await this.recordAdmin(actor, 'setScopeExpiresAt', { tenantId, scopeId },
-          { expiresAt: expectedExpiresAt }, { expiresAt });
-        return changed;
       },
       scopeAppliedMigrations: async (actor, tenantId, scopeId) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);
