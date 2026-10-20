@@ -1609,18 +1609,19 @@ export async function prepareWorkerBundle(
   dir: string,
   resolved = resolveWranglerConfig(dir),
   label = 'Worker',
+  output: 'stdout' | 'stderr' = 'stdout',
 ): Promise<PreparedWorkerBundle> {
   const { cfg, needs } = resolved;
   const out = mkdtempSync(join(tmpdir(), 'substrat-build-'));
   const generated = needs ? generatedConfigPath(dir) : undefined;
-  console.log(`building ${label} …`);
+  (output === 'stderr' ? console.error : console.log)(`building ${label} …`);
   try {
     if (generated) writeFileSync(generated, JSON.stringify(cfg, null, 2) + '\n');
     try {
       execFileSync(
         'npx',
         ['wrangler', 'deploy', '--dry-run', '--outdir', out, ...(generated ? ['--config', generated] : [])],
-        { cwd: dir, stdio: 'inherit' },
+        { cwd: dir, stdio: output === 'stderr' ? ['inherit', 2, 2] : 'inherit' },
       );
     } finally {
       if (generated) rmSync(generated, { force: true });

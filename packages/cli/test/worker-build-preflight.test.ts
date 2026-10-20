@@ -1,8 +1,9 @@
 import { expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /** A Wrangler dry-run stub that performs the configured build and counts uploads. */
 function pushWithGeneratedFile(generated: string, forgedReceipt = false): { status: number; output: string } {
@@ -128,4 +129,36 @@ it('allows the same command path when nodejs_compat is declared and builds once'
   const result = commandWithBuiltin(['nodejs_compat'], 'push');
   expect(result.networkCalled, result.output).toBe(true);
   expect(result.builds).toBe(1);
+});
+
+it.each([false, true])('push --check --json stays parseable with a configured build: %s', (withBuild) => {
+  const dir = mkdtempSync(join(tmpdir(), 'worker-check-json-'));
+  try {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: '@acme/board', type: 'module', substrat: { slug: 'board', permissions: 'permissions.mjs' } }));
+    writeFileSync(join(dir, 'permissions.mjs'), 'export const permissions = { modules: [], roles: [], entityGrants: [] };');
+    writeFileSync(join(dir, 'wrangler.jsonc'), JSON.stringify({
+      main: 'worker.js', compatibility_date: '2026-07-01',
+      ...(withBuild ? { build: { command: 'node generate.mjs' } } : {}),
+    }));
+    writeFileSync(join(dir, 'worker.js'), `${withBuild ? "import './generated.js';" : ''} export default { fetch: () => new Response('ok') };`);
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'npx'), `#!/bin/sh
+echo 'configured build stdout'
+echo 'configured build stderr' >&2
+printf 'export const ready = true;\n' > generated.js
+while [ "$1" != '--outdir' ]; do shift; done
+shift
+printf 'export default {};\n' > "$1/worker.js"
+`, { mode: 0o755 });
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('../dist/cli.js', import.meta.url)), 'push', dir, '--check', '--json'], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(() => JSON.parse(result.stdout), result.stdout).not.toThrow();
+    if (withBuild) expect(result.stderr).toContain('configured build stdout');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

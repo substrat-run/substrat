@@ -481,7 +481,7 @@ async function cmdPush(): Promise<void> {
     if (deployCfg) {
       const build = deployCfg.build as { command?: unknown } | undefined;
       if (typeof build?.command === 'string') {
-        const prepared = await prepareWorkerBundle(dir);
+        const prepared = await prepareWorkerBundle(dir, undefined, 'Worker', jsonCheck ? 'stderr' : 'stdout');
         rmSync(prepared.out, { recursive: true, force: true });
       } else {
         await checkWorkerImports(dir, deployCfg);
