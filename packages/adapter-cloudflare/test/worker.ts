@@ -32,7 +32,7 @@ import { CloudflareScopeHost } from './test-host.js';
 import { definePlatformSweeperDO } from '../src/platform-sweeper-do.js';
 import { defineScopeSweeperDO } from '../src/scope-sweeper-do.js';
 import { defineKickCoalescerDO } from '../src/kick-coalescer-do.js';
-import { defineCopyJobDO, type CopyJobDoRecord } from '../src/copy-job-do.js';
+import { defineCopyJobDO, type CopyJobDoRecord, type CopyJobStep } from '../src/copy-job-do.js';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
 import { DurableObject } from 'cloudflare:workers';
 import { wipedCopyMod } from './wiped-copy-module.js';
@@ -616,13 +616,21 @@ export interface TestCopyJob extends CopyJobDoRecord {
   holdMs?: number;
   /** Which job a record belongs to, when a test starts a second one under the same id. */
   name?: string;
+  /** Set by a step that a cancel or forget stopped part way through its hold. */
+  stoppedEarly?: boolean;
 }
 
-const testCopyStep = async (_env: unknown, job: TestCopyJob): Promise<TestCopyJob> => {
-  if (job.holdMs) await new Promise((r) => setTimeout(r, job.holdMs));
+const testCopyStep = async (_env: unknown, job: TestCopyJob, step: CopyJobStep): Promise<TestCopyJob> => {
+  // Held in short waits, each one a boundary at which a stopped step stops, as a page is a copy's.
+  for (const until = Date.now() + (job.holdMs ?? 0); Date.now() < until && !step.stopped();) {
+    await new Promise((r) => setTimeout(r, 5));
+  }
   if (job.throwUntil !== undefined && Date.now() < job.throwUntil) throw new Error('a step that threw');
   const steps = job.steps + 1;
-  return { ...job, steps, status: steps >= job.target ? 'done' : 'copying', nextDelayMs: 0, updatedAt: Date.now() };
+  return {
+    ...job, steps, ...(step.stopped() ? { stoppedEarly: true } : {}),
+    status: steps >= job.target ? 'done' : 'copying', nextDelayMs: 0, updatedAt: Date.now(),
+  };
 };
 
 export const CopyJobTestDO = defineCopyJobDO<unknown, TestCopyJob>({ retainMs: 60_000, advance: testCopyStep });

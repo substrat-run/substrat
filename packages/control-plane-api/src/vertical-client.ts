@@ -2272,11 +2272,14 @@ export async function beginTransfer(
  * Move the next pages of a copy (#2450), until it is staged whole or `until` says to stop (a job's
  * time budget); always at least one page. A source written since the first page starts the copy
  * again under a new stage, the old one discarded.
+ *
+ * `stopped` (a job being cancelled or forgotten): the copy starts nothing new. A torn copy then
+ * discards its stage and answers where it was, opening no other: whoever stopped it settles it.
  */
 export async function transferStep(
   { source, dest }: TransferEnds,
   state: TransferState,
-  opts: TransferOptions & { until?: () => boolean } = {},
+  opts: TransferOptions & { until?: () => boolean; stopped?: () => boolean } = {},
 ): Promise<TransferProgress> {
   const retry = opts.retry ?? (<T>(run: () => Promise<T>) => run());
   let next: TransferState = state;
@@ -2304,9 +2307,13 @@ export async function transferStep(
 }
 
 /** A torn copy: discard its stage and begin again, or refuse once the attempts are spent. */
-async function restart(ends: TransferEnds, state: TransferState, opts: TransferOptions, staged: boolean): Promise<TransferProgress> {
+async function restart(
+  ends: TransferEnds, state: TransferState, opts: TransferOptions & { stopped?: () => boolean }, staged: boolean,
+): Promise<TransferProgress> {
   // Best effort: a stage nothing commits is replaced by the next one, and goes with a wipe.
   if (staged) await ends.dest.discardStagedScope(state.into, state.stageId).catch(() => undefined);
+  // Stopped: a new stage would outlast whoever stopped this copy, so none is opened.
+  if (opts.stopped?.()) return { state };
   const attempts = opts.attempts ?? TRANSFER_ATTEMPTS;
   if (state.attempt >= attempts) {
     throw new ControlPlaneError(

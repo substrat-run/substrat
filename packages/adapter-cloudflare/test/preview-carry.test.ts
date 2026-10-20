@@ -2675,5 +2675,44 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await pushBg('bg-6', 'v2')).status).toBe(200);
       expect(await served(six.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
     });
+
+    it('a delete that lands while a step pages stops the step and waits for it, so nothing it does outlives the reap', async () => {
+      const started = await pushBg('bg-11', 'v1');
+      expect(started.status).toBe(202);
+      const pid = started.body.scopeId;
+      const prodRef = (await served(prodHostname)).ref;
+      const prodStub = env.PC_V1_SCOPE.get(env.PC_V1_SCOPE.idFromName(prod)) as unknown as {
+        testWrite(s: string, i: string, b: string): Promise<string>;
+      };
+      // The step is held at its next page read, and the source takes a write there: the page reads
+      // torn, which would start the copy again under a new stage in the preview's scope.
+      const reached = deferred();
+      const release = deferred();
+      let once = false;
+      hooks.page = async (ref, sid) => {
+        if (once || ref !== prodRef || sid !== prod) return;
+        once = true;
+        reached.resolve();
+        await release.promise;
+        await prodStub.testWrite(prod, 'between-pages', 'a write between two pages');
+      };
+      try {
+        const stepping = jobs.pump();
+        await reached.promise;
+        const deleting = bg.request(`/verticals/${slug}/previews/bg-11`, { method: 'DELETE', headers: auth });
+        await pause(50);
+        release.resolve();
+        await stepping;
+        expect((await deleting).status).toBe(200);
+      } finally {
+        delete hooks.page;
+      }
+      // The reap came after the step's last act: no stage in the preview's scope, no job, no row.
+      expect(await noStage('v1', pid)).toEqual([]);
+      expect(jobs.jobs.size).toBe(0);
+      expect(await dir.admin.getScopeRecord(staff, t, pid)).toBeFalsy();
+      // Prod as it was, for anything after this.
+      await hostOf.get(prodRef)!.restoreScopeLocal(prod, notes(...rows));
+    });
   });
 });

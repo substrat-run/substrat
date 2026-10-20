@@ -26,16 +26,26 @@ export interface CopyJobDo<R extends CopyJobDoRecord> {
    */
   claim(holdMs: number): Promise<R | null>;
   /**
-   * Stop a job that is copying, or done and not held: a step running now writes nothing after this,
-   * and no claim takes it. A job a caller holds is answered as it is.
+   * Stop a job that is copying, or done and not held: no later step or claim acts on it. A step
+   * running now is stopped first, and waited for, so the record answered is the last one any step
+   * wrote and nothing a step does follows the answer. A job a caller holds is answered as it is.
    */
   cancel(): Promise<R | null>;
-  /** Drop the record and its alarm. */
+  /** Drop the record and its alarm, after stopping a step running now and waiting for it. */
   forget(): Promise<void>;
 }
 
 const claimedNow = (record: CopyJobDoRecord): boolean =>
   record.status === 'done' && (record.claimedUntil ?? 0) > Date.now();
+
+/** What a running step can ask the object it runs in (#2450). */
+export interface CopyJobStep {
+  /**
+   * True once a cancel or forget is waiting on this step. The step stops at its next boundary (a
+   * page staged) and starts nothing new (no new stage for a torn copy), and answers where it got to.
+   */
+  stopped(): boolean;
+}
 
 export interface CopyJobDoConfig<Env, R extends CopyJobDoRecord> {
   /**
@@ -43,7 +53,7 @@ export interface CopyJobDoConfig<Env, R extends CopyJobDoRecord> {
    * receive a closure over RPC. It is where the authority lives (the deployment resolves each end
    * and the ledger here); this object decides only WHEN a step runs, and keeps the record.
    */
-  advance(env: Env, record: R): Promise<R>;
+  advance(env: Env, record: R, step: CopyJobStep): Promise<R>;
   /** How long a finished record is kept for the route to read, ms. Default 24 h. */
   retainMs?: number;
   /** A step that threw rather than answering a record. Never rethrown; the step is retried. */
@@ -70,15 +80,37 @@ const RUN = 'run';
  * (`claim`), so two calls that read it never both finish it.
  *
  * Alarms are one at a time per object, so two steps never run together. A `cancel` or `forget`
- * can arrive while a step's I/O is in flight, and so can a `start` after that `forget`: the step's
- * answer is then dropped, and so is its retry, so a cancelled job stays cancelled, a forgotten one
- * stays gone, and a job started again keeps its own record and its own alarm.
+ * that arrives while a step's I/O is in flight stops that step (`CopyJobStep.stopped`) and waits for
+ * it to end, so whoever acts on the answer next (settling the move, discarding its stage, reaping
+ * the scope) acts after the last thing the step did, never before it. Should a step's answer still
+ * meet a record that changed under it (a forget, or a forget and a new `start`), its answer and its
+ * retry are dropped, by the run token: a cancelled job stays cancelled, a forgotten one stays gone,
+ * and a job started again keeps its own record and its own alarm.
  */
 export function defineCopyJobDO<Env, R extends CopyJobDoRecord>(
   config: CopyJobDoConfig<Env, R>,
 ): new (ctx: DurableObjectState, env: Env) => DurableObject<Env> & CopyJobDo<R> {
   const retainMs = config.retainMs ?? 24 * 3_600_000;
   return class CopyJobDO extends DurableObject<Env> {
+    /** The step running now: a cancel or forget stops it and waits for `over`. */
+    private step: { stopped: boolean; over: Promise<void> } | null = null;
+    /** Cancels and forgets in progress: a step that starts meanwhile is stopped from its outset. */
+    private stopping = 0;
+
+    /** Run `act` once no step is running, and with none starting until it is done. */
+    private async whileStopped<T>(act: () => Promise<T>): Promise<T> {
+      this.stopping++;
+      try {
+        for (let step = this.step; step; step = this.step) {
+          step.stopped = true;
+          await step.over;
+        }
+        return await act();
+      } finally {
+        this.stopping--;
+      }
+    }
+
     async start(record: R): Promise<R> {
       const held = await this.ctx.storage.get<R>(KEY);
       if (held) return held;
@@ -99,19 +131,23 @@ export function defineCopyJobDO<Env, R extends CopyJobDoRecord>(
       return claimed;
     }
 
-    async cancel(): Promise<R | null> {
-      const held = await this.ctx.storage.get<R>(KEY);
-      if (!held) return null;
-      if (held.status !== 'copying' && (held.status !== 'done' || claimedNow(held))) return held;
-      const cancelled = { ...held, status: 'cancelled', nextDelayMs: 0, updatedAt: Date.now() } as R;
-      await this.ctx.storage.put(KEY, cancelled);
-      await this.ctx.storage.setAlarm(Date.now() + retainMs);
-      return cancelled;
+    cancel(): Promise<R | null> {
+      return this.whileStopped(async () => {
+        const held = await this.ctx.storage.get<R>(KEY);
+        if (!held) return null;
+        if (held.status !== 'copying' && (held.status !== 'done' || claimedNow(held))) return held;
+        const cancelled = { ...held, status: 'cancelled', nextDelayMs: 0, updatedAt: Date.now() } as R;
+        await this.ctx.storage.put(KEY, cancelled);
+        await this.ctx.storage.setAlarm(Date.now() + retainMs);
+        return cancelled;
+      });
     }
 
-    async forget(): Promise<void> {
-      await this.ctx.storage.deleteAlarm();
-      await this.ctx.storage.deleteAll();
+    forget(): Promise<void> {
+      return this.whileStopped(async () => {
+        await this.ctx.storage.deleteAlarm();
+        await this.ctx.storage.deleteAll();
+      });
     }
 
     /** Whether the job this step read is still the one stored, and still copying. */
@@ -121,6 +157,19 @@ export function defineCopyJobDO<Env, R extends CopyJobDoRecord>(
     }
 
     async alarm(): Promise<void> {
+      // Registered before the first await, so a cancel or forget arriving at any point finds it.
+      let ended!: () => void;
+      const step = { stopped: this.stopping > 0, over: new Promise<void>((resolve) => { ended = resolve; }) };
+      this.step = step;
+      try {
+        await this.runStep(step);
+      } finally {
+        if (this.step === step) this.step = null;
+        ended();
+      }
+    }
+
+    private async runStep(step: { stopped: boolean }): Promise<void> {
       const stored = await this.ctx.storage.get([KEY, RUN]);
       const held = stored.get(KEY) as R | undefined;
       const run = stored.get(RUN) as string | undefined;
@@ -131,9 +180,11 @@ export function defineCopyJobDO<Env, R extends CopyJobDoRecord>(
         else await this.ctx.storage.setAlarm(held.updatedAt + retainMs);
         return;
       }
+      // A cancel or forget is waiting: it acts on the record as it is.
+      if (step.stopped) return;
       let next: R;
       try {
-        next = await config.advance(this.env, held);
+        next = await config.advance(this.env, held, { stopped: () => step.stopped });
       } catch (err) {
         config.onError?.(err, this.env);
         // Not over a cancel's retention alarm, nor over the alarm a job started since has set.

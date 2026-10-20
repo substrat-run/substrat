@@ -141,9 +141,18 @@ export function newCopyJob(spec: CopyJobSpec, state: TransferState, now: number 
 export async function advanceCopyJob(
   deps: CopyJobDeps,
   job: CopyJobRecord,
-  opts: { stepMs?: number } = {},
+  opts: {
+    stepMs?: number;
+    /**
+     * A cancel or forget is waiting on this step (`CopyJobStep.stopped`): it moves no further page
+     * and opens no new stage, and answers where it got to, for that caller to settle.
+     */
+    stopped?: () => boolean;
+  } = {},
 ): Promise<CopyJobRecord> {
   if (job.status !== 'copying' || !job.state) return job;
+  const stopped = opts.stopped ?? (() => false);
+  if (stopped()) return job;
   const now = deps.now ?? Date.now;
   const { spec } = job;
   const staged = job.state;
@@ -174,7 +183,9 @@ export async function advanceCopyJob(
     // `alwaysStage`: a copy torn mid-way starts again, and one that now fits a page must still be
     // staged. The job's record holds where the data is, never the data (a page is up to 4 MiB, more
     // than a Durable Object stores in one value).
-    const progress = await transferStep({ source, dest }, job.state, { until: () => now() >= until, alwaysStage: true });
+    const progress = await transferStep({ source, dest }, job.state, {
+      until: () => now() >= until || stopped(), stopped, alwaysStage: true,
+    });
     if ('done' in progress) {
       if (Array.isArray(progress.done.dump)) {
         // Only an end that stopped paging part way answers a whole dump; there is nowhere to keep it.
@@ -205,6 +216,15 @@ export function memoryCopyJobs(deps: CopyJobDeps, opts: { stepMs?: number } = {}
 } {
   const jobs = new Map<string, CopyJobRecord>();
   const now = deps.now ?? Date.now;
+  /** The step `pump` runs now, per job: a cancel or forget stops it and waits for it, as the Durable Object's do. */
+  const running = new Map<string, { stopped: boolean; over: Promise<void> }>();
+  const whileStopped = async <T>(id: string, act: () => T): Promise<T> => {
+    for (let step = running.get(id); step; step = running.get(id)) {
+      step.stopped = true;
+      await step.over;
+    }
+    return act();
+  };
   return {
     jobs,
     async start(spec, state) {
@@ -224,26 +244,38 @@ export function memoryCopyJobs(deps: CopyJobDeps, opts: { stepMs?: number } = {}
       jobs.set(id, claimed);
       return claimed;
     },
-    async cancel(id) {
-      const job = jobs.get(id);
-      if (!job) return null;
-      if (job.status !== 'copying' && (job.status !== 'done' || copyJobHeld(job, now()))) return job;
-      // `state` stays, as in the Durable Object: it names the stage the caller discards next.
-      const cancelled: CopyJobRecord = { ...job, status: 'cancelled', nextDelayMs: 0, updatedAt: now() };
-      jobs.set(id, cancelled);
-      return cancelled;
+    cancel(id) {
+      return whileStopped(id, () => {
+        const job = jobs.get(id);
+        if (!job) return null;
+        if (job.status !== 'copying' && (job.status !== 'done' || copyJobHeld(job, now()))) return job;
+        // `state` stays, as in the Durable Object: it names the stage the caller discards next.
+        const cancelled: CopyJobRecord = { ...job, status: 'cancelled', nextDelayMs: 0, updatedAt: now() };
+        jobs.set(id, cancelled);
+        return cancelled;
+      });
     },
-    async forget(id) {
-      jobs.delete(id);
+    forget(id) {
+      return whileStopped(id, () => {
+        jobs.delete(id);
+      });
     },
     /** Run one step of `id` (or of every job copying), as an alarm would. */
     async pump(id) {
       for (const [key, job] of [...jobs]) {
         if (id !== undefined && key !== id) continue;
-        const next = await advanceCopyJob(deps, job, opts);
-        // A cancel, a forget, or a forget and a new start, that landed while the step ran wins, as
-        // in the Durable Object: each stores a record of its own, so the one this step read is gone.
-        if (jobs.get(key) === job) jobs.set(key, next);
+        let ended!: () => void;
+        const step = { stopped: false, over: new Promise<void>((resolve) => { ended = resolve; }) };
+        running.set(key, step);
+        try {
+          const next = await advanceCopyJob(deps, job, { ...opts, stopped: () => step.stopped });
+          // Should the record have changed under the step regardless, its answer is dropped, as in
+          // the Durable Object: every start and cancel stores a record of its own.
+          if (jobs.get(key) === job) jobs.set(key, next);
+        } finally {
+          if (running.get(key) === step) running.delete(key);
+          ended();
+        }
       }
     },
   };

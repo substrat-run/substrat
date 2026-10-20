@@ -5,9 +5,9 @@ import type { TestCopyJob } from './worker.js';
 
 /**
  * #2450 step 2 on workerd: the object a background copy runs in. It stores the job, runs one step
- * per alarm until the job is no longer copying, keeps a finished job for the route to read, and
- * lets a cancel or forget that lands during a step win over that step's answer. The alarms fire by
- * themselves, as in production, so each case waits for what it asserts.
+ * per alarm until the job is no longer copying, and keeps a finished job for the route to read. A
+ * cancel or forget that lands during a step stops that step and waits for it before it acts. The
+ * alarms fire by themselves, as in production, so each case waits for what it asserts.
  */
 type Stub = DurableObjectStub & CopyJobDo<TestCopyJob>;
 const stubOf = (ns: DurableObjectNamespace, name: string) => ns.get(ns.idFromName(name)) as unknown as Stub;
@@ -46,25 +46,38 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
     expect(await until(stub, (j) => j?.status === 'done')).toMatchObject({ status: 'done', steps: 1 });
   });
 
-  it('a cancel that lands during a step wins over that step, and no later step runs', async () => {
+  it('a cancel stops the step in flight and waits for it: its answer lands first, then the job is cancelled, and no later step runs', async () => {
     const stub = stubOf(env.COPY_JOB_TEST, `cancel-${crypto.randomUUID()}`);
-    await stub.start(job({ holdMs: 80 }));
+    // A step held for a minute, which only a stop ends early.
+    await stub.start(job({ holdMs: 60_000 }));
     await sleep(20);
-    expect((await stub.cancel())?.status).toBe('cancelled');
-    await sleep(150);
-    expect(await stub.get()).toMatchObject({ status: 'cancelled', steps: 0 });
+    const asked = Date.now();
+    const cancelled = await stub.cancel();
+    // Answered once the step had stopped and written where it got to, long before its hold ran out:
+    // nothing the step does follows the cancel's answer, and the caller's own fields stay.
+    expect(Date.now() - asked).toBeLessThan(5_000);
+    expect(cancelled).toMatchObject({ status: 'cancelled', steps: 1, stoppedEarly: true, target: 3 });
+    await sleep(100);
+    expect(await stub.get()).toMatchObject({ status: 'cancelled', steps: 1 });
     // A cancel of a job no longer copying changes nothing.
-    expect(await stub.cancel()).toMatchObject({ status: 'cancelled', steps: 0 });
+    expect(await stub.cancel()).toMatchObject({ status: 'cancelled', steps: 1 });
   });
 
-  it('forget drops the job and its alarm; a step in flight writes nothing back', async () => {
+  it('forget stops the step in flight and waits for it, then drops the job and its alarm', async () => {
     const stub = stubOf(env.COPY_JOB_TEST, `forget-${crypto.randomUUID()}`);
-    await stub.start(job({ holdMs: 80 }));
+    await stub.start(job({ holdMs: 60_000 }));
     await sleep(20);
+    const asked = Date.now();
     await stub.forget();
-    await sleep(150);
+    expect(Date.now() - asked).toBeLessThan(5_000);
+    expect(await stub.get()).toBeNull();
+    await sleep(100);
     expect(await stub.get()).toBeNull();
     expect(await runDurableObjectAlarm(stub)).toBe(false);
+    // The step has really ended: a job started now runs at once, where a step still holding its
+    // alarm would keep the new one waiting for the rest of the minute.
+    await stub.start(job({ target: 1, name: 'after' }));
+    expect(await until(stub, (j) => j?.status === 'done')).toMatchObject({ name: 'after', steps: 1 });
   });
 
   it('a step of a job forgotten and started again under the same id writes nothing over the new job', async () => {

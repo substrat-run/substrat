@@ -282,6 +282,46 @@ describe('advanceCopyJob (#2450)', () => {
     expect(blip.discarded).toEqual([]);
   });
 
+  it('a stopped step moves no further page, and a copy it tears opens no new stage', async () => {
+    // Stopped before it starts: nothing at all, not even the renewal.
+    const idle = harness();
+    const untouched = newCopyJob(idle.spec(), await idle.begin(), idle.clock.now);
+    expect(await advanceCopyJob(idle.deps, untouched, { stopped: () => true })).toBe(untouched);
+    expect(idle.renewals).toEqual([]);
+
+    // Stopped while it pages: the page in flight is staged, and the step answers there.
+    let stop = false;
+    const paging = harness({ pageFails: (n) => ((stop ||= n === 2), null) });
+    const part = await advanceCopyJob(paging.deps, newCopyJob(paging.spec(), await paging.begin(), paging.clock.now), { stopped: () => stop });
+    expect(part).toMatchObject({ status: 'copying', pages: 3 });
+    expect(paging.staged.map((s) => s.seq)).toEqual([0, 1, 2]);
+    // Its twin, not stopped, moves every page in the same step.
+    const whole = harness();
+    expect(await advanceCopyJob(whole.deps, newCopyJob(whole.spec(), await whole.begin(), whole.clock.now), { stopped: () => false }))
+      .toMatchObject({ status: 'done' });
+
+    // A torn read after the stop: the stage is discarded, and no other is opened.
+    let torn = false;
+    const staged: { stageId: string; seq: number }[] = [];
+    const discarded: string[] = [];
+    const source = {
+      exportScopePage: async (_s: string, cursor: string | null): Promise<ScopeDumpPage> => {
+        if (cursor !== null) torn = true;
+        return { tables: [rowsOf('a')], next: torn ? null : '1', loadStamp: null, revision: torn ? 'r2' : 'r1' };
+      },
+    } as unknown as VerticalClient;
+    const dest = {
+      stageScopePage: async (_s: string, stageId: string, seq: number) => (staged.push({ stageId, seq }), { staged: true }),
+      discardStagedScope: async (_s: string, stageId: string) => void discarded.push(stageId),
+    } as unknown as VerticalClient;
+    const begun = (await beginTransfer({ source, dest }, { from: prod, to: preview }, { stamp: false, alwaysStage: true })) as { state: TransferState };
+    const deps = { ...paging.deps, clientForRef: async (ref: string) => (ref === 'src' ? source : ref === 'dst' ? dest : undefined) };
+    const stopped = await advanceCopyJob(deps, newCopyJob(paging.spec(), begun.state, paging.clock.now), { stopped: () => torn });
+    expect(stopped).toMatchObject({ status: 'copying', state: { stageId: begun.state.stageId } });
+    expect(discarded).toEqual([begun.state.stageId]);
+    expect(staged.map((s) => s.seq)).toEqual([0]);
+  });
+
   it('a refusal fails the job at once, with the status the route will answer', async () => {
     const h = harness({ pageFails: (n) => (n === 1 ? new ControlPlaneError(409, 'took writes') : null) });
     const job = await advanceCopyJob(h.deps, newCopyJob(h.spec(), await h.begin(), h.clock.now));
@@ -313,6 +353,22 @@ describe('memoryCopyJobs (#2450)', () => {
     expect(await jobs.get(spec.id)).toBeNull();
   });
 
+  it('a cancel stops the step in flight and waits for it, as the Durable Object does: its answer lands, then the job is cancelled', async () => {
+    let cancelling: Promise<unknown> | null = null;
+    let jobs: ReturnType<typeof memoryCopyJobs> | undefined;
+    // The cancel lands while the step renews its lease, before it pages.
+    const h = harness({ renew: () => ((cancelling ??= jobs!.cancel(copyJobId('fork', preview))), true) });
+    jobs = memoryCopyJobs(h.deps, { stepMs: 60_000 });
+    const spec = h.spec();
+    const state = await h.begin();
+    await jobs.start(spec, state);
+    await jobs.pump(spec.id);
+    // The step stopped after one page (unstopped, this budget moves every page), and that answer
+    // is what the cancel then cancelled.
+    expect(await cancelling).toMatchObject({ status: 'cancelled', pages: 2, state: { stageId: state.stageId } });
+    expect(h.staged.map((s) => s.seq)).toEqual([0, 1]);
+  });
+
   it('a done job goes to one claim at a time, until its hold runs out', async () => {
     const h = harness();
     const jobs = memoryCopyJobs(h.deps, { stepMs: 60_000 });
@@ -341,10 +397,11 @@ describe('memoryCopyJobs (#2450)', () => {
     expect(await jobs.claim(spec.id, 1_000)).toBeNull();
   });
 
-  it("a step writes its answer over its own record, never over a job started again while it ran", async () => {
+  it('a forget and a new start that land during a step wait for it: the newer job is what is left, as it started', async () => {
     // While a step renews its lease, the route settles the job (forget) and a newer push starts its own.
     let during: (() => Promise<void>) | null = null;
-    const h = harness({ renew: () => (during ? (void during(), true) : true) });
+    let landed: Promise<void> | null = null;
+    const h = harness({ renew: () => (during ? ((landed = during()), true) : true) });
     const jobs = memoryCopyJobs(h.deps, { stepMs: 0 });
     const state = await h.begin();
     const old = h.spec();
@@ -360,7 +417,8 @@ describe('memoryCopyJobs (#2450)', () => {
       await jobs.start(newer, state);
     };
     await jobs.pump(old.id);
-    // The old step's answer (move-1, three pages) is dropped: the newer job is as it started.
+    await landed;
+    // The forget waited for the old step (move-1) to answer, so nothing of it outlives the newer job.
     expect(await jobs.get(old.id)).toMatchObject({ spec: { moveId: 'move-2', versionId: 'v3' }, pages: 1 });
   });
 });

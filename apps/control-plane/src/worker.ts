@@ -221,15 +221,16 @@ export const CrossVerticalKickDO = defineKickCoalescerDO<Env>({
  * dispatch namespace has nothing to copy through, so a job there fails rather than waits.
  */
 export const ScopeCopyJobDO = defineCopyJobDO<Env, CopyJobRecord>({
-  advance: async (env, job) => {
+  advance: async (env, job, step) => {
     const clientForRef = resolveVerticalRefFor(env);
     if (!clientForRef) {
       return {
-        ...job, status: 'failed', state: undefined, nextDelayMs: 0, updatedAt: Date.now(),
+        ...job, status: 'failed', nextDelayMs: 0, updatedAt: Date.now(),
         error: { status: 501, message: 'this control plane has no dispatch namespace to copy a preview through' },
       };
     }
-    return advanceCopyJob({ clientForRef, admin: hostFor(env).admin }, job);
+    // A cancel or forget waiting on this step stops it at its next page (#2450).
+    return advanceCopyJob({ clientForRef, admin: hostFor(env).admin }, job, { stopped: step.stopped });
   },
   onError: (err) => console.warn('scope copy job: a step threw; it is retried', err),
 });
