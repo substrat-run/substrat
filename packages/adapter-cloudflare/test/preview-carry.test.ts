@@ -2884,31 +2884,33 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await create(named)).status).toBe(201);
     });
 
+    /** An API over the same jobs whose next call of `method` on the directory throws, as a dropped call does. */
+    const adminDrops = (method: string) => {
+      let armed = true;
+      const admin = new Proxy(dir.admin, {
+        get: (a, key) => {
+          if (key === method && armed) {
+            return async () => {
+              armed = false;
+              throw new Error(`${method} was dropped on its way`);
+            };
+          }
+          const v: unknown = Reflect.get(a, key);
+          return typeof v === 'function' ? v.bind(a) : v;
+        },
+      });
+      const host = new Proxy(dir, {
+        get: (h, key) => {
+          if (key === 'admin') return admin;
+          const v: unknown = Reflect.get(h, key);
+          return typeof v === 'function' ? v.bind(h) : v;
+        },
+      });
+      return createControlPlaneApi({ ...apiOptions, host, copyJobs: jobs });
+    };
+
     it('a finish whose renewal throws outright settles its move and discards its stage, as a refused one does', async () => {
-      /** An API over the same jobs whose next renewal of a copy's lease throws, as a dropped call does. */
-      const renewDrops = () => {
-        let armed = true;
-        const admin = new Proxy(dir.admin, {
-          get: (a, key) => {
-            if (key === 'renewScopeScriptCopy' && armed) {
-              return async () => {
-                armed = false;
-                throw new Error('the renewal was dropped on its way');
-              };
-            }
-            const v: unknown = Reflect.get(a, key);
-            return typeof v === 'function' ? v.bind(a) : v;
-          },
-        });
-        const host = new Proxy(dir, {
-          get: (h, key) => {
-            if (key === 'admin') return admin;
-            const v: unknown = Reflect.get(h, key);
-            return typeof v === 'function' ? v.bind(h) : v;
-          },
-        });
-        return createControlPlaneApi({ ...apiOptions, host, copyJobs: jobs });
-      };
+      const renewDrops = () => adminDrops('renewScopeScriptCopy');
       const entriesOf = async (sid: ScopeId, moveId: string) => (await ledger(sid)).filter((e) => e.startsWith(`${moveId}:`));
 
       // A fork: done, its pages staged in v1's script.
@@ -2984,6 +2986,28 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await noStage('v2', made)).toEqual([]);
       expect(await served(h)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
       expect(reason(await poll('bg-32', 'v2'))).toMatch(/is no longer running/);
+    });
+
+    it("a fault after a finish's bind landed is the served preview's, answered as itself, and the next poll finds it served", async () => {
+      // A fork whose hostname binding is dropped once its bind has landed.
+      const sid = (await pushBg('bg-35', 'v1')).body.scopeId;
+      await pumpToDone();
+      const after = await pushBg('bg-35', 'v1', { poll: true }, adminDrops('bindHostname'));
+      expect(after.status).toBe(500);
+      expect(reason(after) ?? '').not.toMatch(/background copy failed/);
+      expect((await dir.admin.getScopeRecord(staff, t, sid))?.verticalVersionId).toBe(version.v1);
+      const made = await poll('bg-35', 'v1');
+      expect(made.status).toBe(200);
+      expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+
+      // A carry whose switches' re-assert, after the bind, is dropped.
+      expect((await pushBg('bg-35', 'v2')).status).toBe(202);
+      await pumpToDone();
+      const carried = await pushBg('bg-35', 'v2', { poll: true }, adminDrops('reassertSystemSwitches'));
+      expect(carried.status).toBe(500);
+      expect(reason(carried) ?? '').not.toMatch(/background copy failed/);
+      expect((await poll('bg-35', 'v2')).status).toBe(200);
+      expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
     });
 
     it('a carry whose bind landed but whose job was never forgotten is answered the preview, never finished again', async () => {

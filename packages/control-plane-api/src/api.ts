@@ -10278,13 +10278,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         .setScopeExpiresAt(actor, tenantId, previewId, new Date().toISOString())
         .catch(() => undefined);
     };
-    const completeFork = async (p: {
+    type ForkLanding = {
       previewId: ScopeId;
       parent: Scope | null;
       fork: { moveId: string } | null;
       targetRef: string | null;
       load: (() => Promise<unknown>) | null;
-    }) => {
+    };
+    const completeFork = async (p: ForkLanding) => {
+      await landFork(p);
+      return servedFork(p);
+    };
+    /** A fork's data loaded, its row activated and the version bound: the fork has landed. */
+    const landFork = async (p: ForkLanding): Promise<void> => {
       try {
         if (p.load) await restoreOrRecord(p.load, p.previewId);
         await c.var.admin.activateScope(actor, tenantId, p.previewId);
@@ -10297,6 +10303,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         await abandonFork(p.previewId, p.fork, p.targetRef);
         throw e;
       }
+    };
+    /** What follows a landed fork: its hostname, the #527 guard and its login. A fault here leaves it served. */
+    const servedFork = async (p: ForkLanding) => {
       const hostname = await bindPreviewHostname(c.var.admin, actor, baseHostname, tenantId, p.previewId, opts.tag, surface);
       await assertServesBoundVersion(p.previewId);
       const auth = await wireLogin(p.previewId, hostname, p.parent);
@@ -10313,14 +10322,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     /**
      * Finish a fork a job copied (#2450): renew its lease, which the restore's fence then counts
      * from, and load the staged dump into the preview as an in-request fork would have. However it
-     * fails, its move is settled (`finishingJob`) and the row expired, so the next create reaps it.
+     * fails before it has landed, its move is settled (`finishingJob`) and the row expired, so the
+     * next create reaps it.
      */
     const finishForkJob = async (preview: Scope, job: CopyJobRecord) => {
       const { spec } = job;
       const fork = { moveId: spec.moveId };
       const done = job.done;
       try {
-        return await finishingJob(c, job, async () => {
+        // The copy's part of the finish ends once the fork has landed: a fault after that (its
+        // hostname, the guard, its login) is the served preview's, answered as itself.
+        const landed = await finishingJob(c, job, async (): Promise<ForkLanding> => {
           let load: () => Promise<unknown>;
           let parent: Scope | null;
           try {
@@ -10338,12 +10350,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
               loadStamp: spec.restoredStamp, fence,
             });
           } catch (e) {
-            // Nothing was loaded: the row goes as a failed load leaves it (`completeFork`).
+            // Nothing was loaded: the row goes as a failed load leaves it (`landFork`).
             await abandonFork(preview.id, fork, spec.destRef);
             throw e;
           }
-          return completeFork({ previewId: preview.id, parent, fork, targetRef: spec.destRef, load });
+          const landing = { previewId: preview.id, parent, fork, targetRef: spec.destRef, load };
+          await landFork(landing);
+          return landing;
         });
+        return await servedFork(landed);
       } finally {
         await options.copyJobs?.forget(spec.id).catch(() => undefined);
       }
@@ -10496,8 +10511,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           recarry: () => carryOntoVersion(c, existing, opts.versionId, { dropServingRef: true }),
         });
       } catch (e) {
-        // A job's bind that failed is that copy's end, as its load's is (`finishRefusal`).
-        throw finishedJob ? finishRefusal(c, finishedJob, e) : e;
+        // A job's bind that failed is that copy's end, as its load's is (`finishRefusal`). A fault
+        // after the bind landed (re-asserting the switches, the source's settle) is the served
+        // preview's, answered as itself: a retry finds the preview serving this version.
+        if (!finishedJob) throw e;
+        const now = await c.var.admin.getScopeRecord(actor, tenantId, existing.id).catch(() => undefined);
+        throw now?.verticalVersionId === opts.versionId ? e : finishRefusal(c, finishedJob, e);
       } finally {
         // #2450: a job this call finished stays claimed until its bind has landed or failed, so a
         // newer push polling meanwhile waits, rather than carry from the binding this one replaces.
