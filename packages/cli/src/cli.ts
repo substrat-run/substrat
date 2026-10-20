@@ -21,6 +21,7 @@
  */
 import { bindConnectionScope, listConnectionBindings } from './connections.js';
 import { join, resolve as resolvePath } from 'node:path';
+import { rmSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { loadConfig, saveConfig, resolveAuth } from './config.js';
 import { browserLogin } from './login.js';
@@ -34,6 +35,7 @@ import {
   assertSchedulesAreSwept,
   checkPermissionSurface,
   checkWorkerImports,
+  prepareWorkerBundle,
   deployConfigIfAny,
   formatDeclaredModel,
   formatPermissionSurface,
@@ -468,7 +470,13 @@ async function cmdPush(): Promise<void> {
     // config has no bindings to judge; the push itself names that refusal.
     const deployCfg = deployConfigIfAny(dir);
     if (deployCfg) {
-      await checkWorkerImports(dir, deployCfg);
+      const build = deployCfg.build as { command?: unknown } | undefined;
+      if (typeof build?.command === 'string') {
+        const prepared = await prepareWorkerBundle(dir);
+        rmSync(prepared.out, { recursive: true, force: true });
+      } else {
+        await checkWorkerImports(dir, deployCfg);
+      }
       assertSchedulesAreSwept(
         dir,
         deployCfg,
@@ -517,6 +525,10 @@ async function cmdPush(): Promise<void> {
     );
   }
 
+  // The local build and import gate runs before auth or registry version lookup. The
+  // receipt lets push() use the same Wrangler output without running build.command twice.
+  const preparedWorker = await prepareWorkerBundle(dir);
+
   // Which workspace the push acts for is the PROJECT's call: --tenant → SUBSTRAT_TENANT →
   // package.json `substrat.tenant`. Never the machine-wide login default — the first push
   // of a slug CLAIMS `<tenant>/<slug>` for whatever tenant resolved, so a silent global
@@ -553,6 +565,7 @@ async function cmdPush(): Promise<void> {
     // does not scan the same tree twice.
     skipLint: argv.includes('--skip-lint'),
     linted,
+    preparedWorker,
     // A data-loss replay (#2321) that was skipped or incomplete is a loud warning; this makes it a refusal.
     requireDataLossCheck: dataLossCheckRequired(argv),
     envSpec: meta.envSpec,
@@ -1085,6 +1098,7 @@ async function cmdPreview(): Promise<void> {
       console.error('no --slug given and none in package.json');
       process.exit(1);
     }
+    const preparedWorker = await prepareWorkerBundle(dir);
     // Workspace resolves exactly as `push` (project pin, never the login default) so the
     // preview push lands in the same workspace the vertical is owned by.
     let tenant = flag('tenant') ?? process.env.SUBSTRAT_TENANT ?? meta.tenant;
@@ -1115,6 +1129,7 @@ async function cmdPreview(): Promise<void> {
       // …and the same data-loss replay (#2321), which a preview's migrations meet too.
       requireDataLossCheck: dataLossCheckRequired(argv),
       linted,
+      preparedWorker,
       envSpec: meta.envSpec,
       ownerGrants: meta.ownerGrants,
       entitlements: meta.entitlements,
