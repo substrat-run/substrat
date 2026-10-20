@@ -125,10 +125,10 @@ export const INDEX_VALUE_EXPORTS = [
   'ORPHAN_SWEEP_UNLICENSED',
   'OUTBOX_ENTITY_INDEX',
   'OUTBOX_MARK_SQL',
-  // #2464: one conditional preview expiry write in both directory adapters.
-  'PENDING_COPY_KEEP_ALIVE_SQL',
   'PEER_BINDINGS_DDL',
   'PEER_SWITCHES_DDL',
+  // #2464: one conditional preview expiry write in both directory adapters.
+  'PENDING_COPY_KEEP_ALIVE_SQL',
   'PLATFORM_REQUEST_COLUMNS',
   'PLATFORM_REQUEST_REDACTION_SQL',
   'PROVISIONED_VERSIONS_SQL',
