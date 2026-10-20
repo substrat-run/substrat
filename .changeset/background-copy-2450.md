@@ -15,12 +15,13 @@ A preview whose data takes more than one page to copy now copies in the backgrou
 - **The job.** `advanceCopyJob` is one step of a background copy:
   - it renews the lease;
   - it moves pages for a bounded time;
-  - a refusal fails the job, a transient fault backs off and retries, and a job past six hours fails.
+  - a refusal fails the job, a transient fault backs off and retries, and a job past six hours fails;
+  - the step, and the wait before a retry, each stay inside a quarter of the move's lease.
 
-  `defineCopyJobDO` (adapter-cloudflare) runs those steps one per alarm, keeps a finished job for the route to read, and lets a cancel or forget that lands during a step win. `memoryCopyJobs` is the same, in memory, for tests.
+  `defineCopyJobDO` (adapter-cloudflare) runs those steps one per alarm, keeps a finished job for the route to read, and lets a cancel, a forget, or a forget and a new start that lands during a step win. Its `claim` hands a done job to one caller at a time. `memoryCopyJobs` is the same, in memory, for tests.
 - **The preview route.** With the new `copyJobs` option and a caller that sends `async: true`, `POST /verticals/:slug/previews` copies the first page in the request.
-  - A fork or carry that needs more answers `202` with its progress and `Retry-After`, and the same call, repeated, finishes the preview once the job is done.
-  - A refresh, a delete or a newer push stops a job still copying and settles its move.
+  - A fork or carry that needs more answers `202` with its progress and `Retry-After`, and the same call, repeated, finishes the preview once the job is done. Only the call that claims the done job finishes it; another call answers `202` meanwhile.
+  - A refresh, a delete or a newer push stops a job still copying and settles its move. A newer push waits for a claimed job to be finished.
   - A caller that does not send `async` is answered as before. While a job copies, that caller gets a `409` saying the copy is in progress.
 - **The CLI.** `substrat preview create` sends `async: true`, prints the copy's progress while it waits (up to six hours), and sends `--refresh` on its first call only.
 

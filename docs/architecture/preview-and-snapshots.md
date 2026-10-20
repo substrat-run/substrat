@@ -76,13 +76,16 @@ Two adapter implementations behind one interface, mirroring the whole platform:
     before, then hands the rest to a Durable Object per job (`ScopeCopyJobDO`). It answers 202.
   - Each step of the job, one per alarm, renews the move's lease
     (`HostAdmin.renewScopeScriptCopy`) and then moves pages for up to 20 s. The ledger keeps
-    naming a live move, so no sweep, reap or erasure can act on it while it runs. A job that
-    passes six hours fails and stops renewing.
+    naming a live move, so no sweep, reap or erasure can act on it while it runs. A step, and the
+    wait before a retry, each stay inside a quarter of the lease. A job that passes six hours fails
+    and stops renewing.
   - The same create call, repeated, finds the job. While it copies, the call answers its progress.
-    Once it is done, the call renews the lease and runs the in-request path's own restore and bind,
-    with the fence counted from that renewal.
+    Once it is done, the call claims it (`CopyJobs.claim`, one call at a time), renews the lease and
+    runs the in-request path's own restore and bind, with the fence counted from that renewal. A
+    call that finds the job claimed answers its progress instead, and touches nothing.
   - A refresh, a delete or a newer push to the preview cancels the job, settles its move
-    `retained`, and discards its stage.
+    `retained`, and discards its stage. A newer push waits for a claimed job to be finished rather
+    than tear it down.
 
   Only previews run this way; a rebind or adopt of a live scope still copies in its request. One
   step remains open in #2450: an online copy with catch-up, for a busy scope at GB scale.
