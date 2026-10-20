@@ -8,7 +8,7 @@ import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 
 /**
- * `GET /api/apps/:scopeId/observability/logs?invocationId=` (#1525).
+ * `GET /api/teams/:teamId/apps/:scopeId/observability/logs?invocationId=` (#1525, #2170).
  *
  * Driven through the WORKER because the fact under test is a route forwarding a
  * parameter: the authority's own suite proves `tenantLogs` can put the id on the wire, and
@@ -122,7 +122,7 @@ describe('the app logs route forwards an invocation id (#1525)', () => {
 
   const read = (scope: string, query = '') =>
     app.request(
-      `/api/apps/${scope}/observability/logs${query}`,
+      `/api/teams/${tenant}/apps/${scope}/observability/logs${query}`,
       { headers: { cookie: 'sb_session=sub-owner' } },
       env,
     );
@@ -162,7 +162,7 @@ describe('the app logs route forwards an invocation id (#1525)', () => {
     expect((await asked(`invocation?invocationId=${CALL}`)).status).toBe(404);
     expect((await asked(`cause?eventId=${CALL}`)).status).toBe(404);
     expect((await asked(`effects?eventId=${CALL}`)).status).toBe(404);
-    expect((await asked(`observability/logs?invocationId=${CALL}`)).status).toBe(404);
+    expect((await app.request(`/api/teams/${tenant}/apps/${stranger}/observability/logs?invocationId=${CALL}`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(404);
     expect(planeReads).toEqual([]);
     expect(logReads).toEqual([]);
   });

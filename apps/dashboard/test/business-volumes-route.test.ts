@@ -291,6 +291,9 @@ describe('the business volumes route (#1750)', () => {
       '/observability/metrics', '/observability/logs', `/apps/${appScope}/observability/metrics`,
       '/observability/tenant-metrics-series', '/observability/connector-calls',
       '/observability/business-volumes', '/observability/traffic', '/observability/app-metrics',
+      `/apps/${appScope}/observability/logs`, `/apps/${appScope}/observability/requests/volume`,
+      `/apps/${appScope}/observability/requests/facets`, `/apps/${appScope}/observability/requests/list`,
+      `/apps/${appScope}/observability/log-patterns`,
     ];
     const headers = { cookie: `sb_session=${OWNER_SUB}; sb_team=${tenant}` };
     for (const path of paths) {

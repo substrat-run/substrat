@@ -286,7 +286,7 @@ function MapNode({ n, on, dim, onPick }: { n: LaidNode; on: boolean; dim: boolea
  * so the absence is left unmarked rather than shown as a shut control. "Same call" is the
  * attempt that gave up; the emitting call is offered beside it only when it differs.
  */
-function DeadLetterRow({ scopeId, d }: { scopeId: string; d: DeadLetter }) {
+function DeadLetterRow({ teamId, scopeId, d }: { teamId: string; scopeId: string; d: DeadLetter }) {
   const [open, setOpen] = useState<string | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const calls = deadLetterCalls(d);
@@ -331,7 +331,7 @@ function DeadLetterRow({ scopeId, d }: { scopeId: string; d: DeadLetter }) {
       }
     >
       {logsOpen && attemptId !== null && (
-        <InvocationLogsStrip scopeId={scopeId} invocationId={attemptId} occurredAt={d.at} anchorNoun="last delivery attempt" />
+        <InvocationLogsStrip teamId={teamId} scopeId={scopeId} invocationId={attemptId} occurredAt={d.at} anchorNoun="last delivery attempt" />
       )}
       {opened && (
         <InvocationStrip
@@ -361,7 +361,7 @@ interface DeadLetterState {
  * question in most incidents. An in-scope consumer does not retry, so every row waits for
  * a person, and a list that failed to load says so rather than reading as a clean bill.
  */
-function DeadLetters({ app, state, onMore }: { app: AppRow; state: DeadLetterState; onMore: () => void }) {
+function DeadLetters({ teamId, app, state, onMore }: { teamId: string; app: AppRow; state: DeadLetterState; onMore: () => void }) {
   const { entries, nextCursor, failed, loading } = state;
   const n = entries?.length ?? 0;
   return (
@@ -375,7 +375,7 @@ function DeadLetters({ app, state, onMore }: { app: AppRow; state: DeadLetterSta
       )}
       {entries !== null && n === 0 && <p style={note('plain')}>No delivery in this app has given up.</p>}
       {entries?.map((d) => (
-        <DeadLetterRow key={`${d.eventId}|${d.consumer}`} scopeId={app.app_scope_id} d={d} />
+        <DeadLetterRow key={`${d.eventId}|${d.consumer}`} teamId={teamId} scopeId={app.app_scope_id} d={d} />
       ))}
       {nextCursor !== null && (
         <div style={{ padding: '7px 14px', borderTop: '1px solid var(--border-subtle)' }}>
@@ -585,7 +585,7 @@ function Legend({ unknown }: { unknown: boolean }) {
  * dead letters are their own paged read — a different question about different rows —
  * held here so the map can mark the consumers they name.
  */
-export function Flow({ app }: { app: AppRow }) {
+export function Flow({ teamId, app }: { teamId: string; app: AppRow }) {
   const [view, setView] = useState<FlowView | null>(null);
   const [dead, setDead] = useState<DeadLetterState>({ entries: null, nextCursor: null, failed: false, loading: false });
 
@@ -648,7 +648,7 @@ export function Flow({ app }: { app: AppRow }) {
           </div>
         )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0, flex: '1 1 340px' }}>
-          <DeadLetters app={app} state={dead} onMore={more} />
+          <DeadLetters teamId={teamId} app={app} state={dead} onMore={more} />
           <OperationHealth view={view.operations} app={app} />
           <ConnectionUsage view={view.connectionSweep} app={app} />
           <DeclaredVsObserved view={view.findings} app={app} />

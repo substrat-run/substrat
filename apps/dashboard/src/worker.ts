@@ -4652,18 +4652,14 @@ async function appMetricsIn({ c, host, node }: TeamContext) {
   return deriveAppMetrics({ rows, scopeIds, cap: TENANT_METRICS_LIMIT });
 }
 
-app.get('/api/apps/:scopeId/observability/logs', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+async function appObservabilityLogsIn(ctx: TeamContext, app: string) {
+  const { c, node } = ctx;
+  const appRow = await appByScopeId(await teamScope(ctx), app);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
   const hours = Number(c.req.query('hours') ?? '24');
   const limit = Number(c.req.query('limit') ?? '100');
-  return c.json(
-    await cpObservability(() =>
+  return cpObservability(() =>
       cp.tenantLogs({
         scopeId: appRow.app_scope_id,
         level: c.req.query('level') || undefined,
@@ -4681,9 +4677,8 @@ app.get('/api/apps/:scopeId/observability/logs', async (c) => {
         until: c.req.query('until') || undefined,
         limit: Number.isFinite(limit) ? limit : 100,
       }),
-    ),
   );
-});
+}
 
 /**
  * The query keys a request read may pass to the plane (#1746): the window, the facet
@@ -4703,19 +4698,14 @@ const REQUEST_READ_KEYS = [
  * tenant from the session, the scope from this team's own app rows, so a foreign scope is
  * a 404.
  */
-app.get('/api/apps/:scopeId/observability/requests/:kind', async (c) => {
-  const kind = c.req.param('kind');
-  if (kind !== 'volume' && kind !== 'facets' && kind !== 'list') throw new HTTPException(404, { message: 'not found' });
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+async function appRequestsIn(ctx: TeamContext, app: string, kind: 'volume' | 'facets' | 'list') {
+  const { c, node } = ctx;
+  const appRow = await appByScopeId(await teamScope(ctx), app);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const params = REQUEST_READ_KEYS.flatMap((k) => (c.req.queries(k) ?? []).map((v) => [k, v] as const));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(await cpObservability(() => cp.tenantRequests(kind, appRow.app_scope_id, params)));
-});
+  return cpObservability(() => cp.tenantRequests(kind, appRow.app_scope_id, params));
+}
 
 /** The query keys the pattern read may pass on (#1747) — as for the request reads above. */
 const LOG_PATTERN_KEYS = ['hours', 'since', 'until', 'level', 'operation', 'buckets'] as const;
@@ -4724,17 +4714,14 @@ const LOG_PATTERN_KEYS = ['hours', 'since', 'until', 'level', 'operation', 'buck
  * ONE app's `ctx.log` lines grouped by template (#1747). The same two narrowings as every
  * per-app read here: the tenant from the session, the scope from this team's app rows.
  */
-app.get('/api/apps/:scopeId/observability/log-patterns', async (c) => {
-  const host = hostFor(c.env);
-  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
-  const appRow = await appByScopeId(dash, c.req.param('scopeId'));
+async function appLogPatternsIn(ctx: TeamContext, app: string) {
+  const { c, node } = ctx;
+  const appRow = await appByScopeId(await teamScope(ctx), app);
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const params = LOG_PATTERN_KEYS.flatMap((k) => (c.req.queries(k) ?? []).map((v) => [k, v] as const));
   const cp = controlPlaneFor(c.env, node.tenantId, node.principal);
-  return c.json(await cpObservability(() => cp.tenantLogPatterns(appRow.app_scope_id, params)));
-});
+  return cpObservability(() => cp.tenantLogPatterns(appRow.app_scope_id, params));
+}
 
 /**
  * A chart window from `?hours=`, in whole hours on [1, 72]. Rounded, not just clamped:
@@ -5466,6 +5453,11 @@ const routeHandlers = {
   'dashboard/business-volumes': async (ctx) => businessVolumesIn(ctx),
   'dashboard/team-traffic': async (ctx) => teamTrafficIn(ctx),
   'dashboard/app-metrics': async (ctx) => appMetricsIn(ctx),
+  'dashboard/app-observability-logs': async (ctx, { scopeId: app }) => appObservabilityLogsIn(ctx, app),
+  'dashboard/app-request-volume': async (ctx, { scopeId: app }) => appRequestsIn(ctx, app, 'volume') as Promise<z.infer<typeof dashboardRoutes['dashboard/app-request-volume']['output']>>,
+  'dashboard/app-request-facets': async (ctx, { scopeId: app }) => appRequestsIn(ctx, app, 'facets') as Promise<z.infer<typeof dashboardRoutes['dashboard/app-request-facets']['output']>>,
+  'dashboard/app-requests': async (ctx, { scopeId: app }) => appRequestsIn(ctx, app, 'list') as Promise<z.infer<typeof dashboardRoutes['dashboard/app-requests']['output']>>,
+  'dashboard/app-log-patterns': async (ctx, { scopeId: app }) => appLogPatternsIn(ctx, app) as Promise<z.infer<typeof dashboardRoutes['dashboard/app-log-patterns']['output']>>,
   'dashboard/list-deployments': async (ctx) => listDeploymentsFromCp(teamPlane(ctx)),
   'dashboard/promote-deployment': async (ctx, body) => promoteDeploymentIn(ctx, body),
   'dashboard/get-promotion-review': async (ctx, { slug, versionId }) => promotionReviewIn(ctx, slug, versionId),

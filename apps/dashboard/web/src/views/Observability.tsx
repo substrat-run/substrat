@@ -135,10 +135,10 @@ export function Observability({
   const slideOver = (
     <>
       {rec && (rec.scopeId ?? scopeId) && (
-        <RecordPanel key={`${rec.entityType}:${rec.entityId}`} scopeId={(rec.scopeId ?? scopeId)!} entityType={rec.entityType} entityId={rec.entityId} onClose={closeRecordInUrl} />
+        <RecordPanel key={`${rec.entityType}:${rec.entityId}`} teamId={teamId} scopeId={(rec.scopeId ?? scopeId)!} entityType={rec.entityType} entityId={rec.entityId} onClose={closeRecordInUrl} />
       )}
       {open && (open.scopeId ?? scopeId) && (
-        <RequestSlideOver key={open.invocationId} scopeId={(open.scopeId ?? scopeId)!} invocationId={open.invocationId} atMs={open.atMs} onClose={closeRequestInUrl} teamApps={apps.map((a) => a.app_scope_id)} />
+        <RequestSlideOver key={open.invocationId} teamId={teamId} scopeId={(open.scopeId ?? scopeId)!} invocationId={open.invocationId} atMs={open.atMs} onClose={closeRequestInUrl} teamApps={apps.map((a) => a.app_scope_id)} />
       )}
     </>
   );
@@ -249,9 +249,10 @@ export function Observability({
         {!app ? (
           <PickApp section={section} apps={apps} onPick={(s) => onNav({ app: s, view: sub })} />
         ) : sub === 'flow' ? (
-          <Flow key={`${app.app_scope_id}:${nonce}`} app={app} />
+          <Flow key={`${app.app_scope_id}:${nonce}`} teamId={teamId} app={app} />
         ) : (
           <ProcessMap
+            teamId={teamId}
             app={app}
             entity={q.entity}
             period={period}
@@ -310,6 +311,7 @@ export function Observability({
           )}
           {logMode === 'requests' && (
             <RequestsMode
+              teamId={teamId}
               scopeId={scopeId}
               q={q}
               window={panelWindow}
@@ -322,6 +324,7 @@ export function Observability({
           )}
           {logMode === 'patterns' && (
             <PatternsMode
+              teamId={teamId}
               scopeId={scopeId}
               window={panelWindow}
               nonce={nonce}
@@ -401,6 +404,7 @@ function LinesMode({
   const requests = metrics?.available ? metrics.rows.find((r) => r.scopeId === scopeId)?.requests : undefined;
   return (
     <TenantLogs
+      teamId={teamId}
       embedded
       scopeId={scopeId}
       filters={q}

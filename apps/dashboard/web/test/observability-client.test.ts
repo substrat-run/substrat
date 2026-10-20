@@ -43,4 +43,25 @@ describe('observability team paths (#2170)', () => {
     await expect(api.observabilityLogs('team-b', { services: ['one', 'two'] })).rejects.toThrow('no such team');
     expect(seen).toEqual(['/api/teams/team-b/observability/logs?service=one&service=two']);
   });
+
+  it('uses each tab’s team for app logs, request reads and patterns, preserving repeated filters', async () => {
+    const seen: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+      seen.push(String(url));
+      return Response.json({});
+    }) as typeof fetch;
+    const filters = new URLSearchParams([['level', 'warn'], ['level', 'error']]);
+    await api.appTenantLogs('team-a', 'app-1', { hours: 24 });
+    await api.appRequestVolume('team-b', 'app-2', filters);
+    await api.appRequestFacets('team-a', 'app-1', filters);
+    await api.appRequests('team-b', 'app-2', filters);
+    await api.appLogPatterns('team-a', 'app-1', filters);
+    expect(seen).toEqual([
+      '/api/teams/team-a/apps/app-1/observability/logs?hours=24',
+      '/api/teams/team-b/apps/app-2/observability/requests/volume?level=warn&level=error',
+      '/api/teams/team-a/apps/app-1/observability/requests/facets?level=warn&level=error',
+      '/api/teams/team-b/apps/app-2/observability/requests/list?level=warn&level=error',
+      '/api/teams/team-a/apps/app-1/observability/log-patterns?level=warn&level=error',
+    ]);
+  });
 });

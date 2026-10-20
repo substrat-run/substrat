@@ -318,6 +318,13 @@ export interface DashboardClient {
   addDomain(input: { hostname: string; appScopeId: string; surface?: string }): Promise<{ hostname: string; status: string; statusNote?: string | null; validationRecords?: ({ type: string; name: string; value: string; status?: string | null })[] }>;
 
   /**
+   * Log templates for one of this team's installed apps
+   *
+   * `GET /apps/{scopeId}/observability/log-patterns` — `dashboard/app-log-patterns`
+   */
+  appLogPatterns(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string; operation?: string; buckets?: string }): Promise<{ total: number; bucketMs: number; patterns: { template: string; count: number; share: number; levels: { debug: number; info: number; warn: number; error: number }; dominant: string; buckets: { start: string; count: number }[] }[]; truncated: boolean; estimated: boolean }>;
+
+  /**
    * One traffic summary row per installed app for this team's Apps table
    *
    * `GET /observability/app-metrics` — `dashboard/app-metrics`
@@ -325,11 +332,39 @@ export interface DashboardClient {
   appMetrics(input: { hours?: string }): Promise<{ available: boolean; cap: number | null; rows: ({ scopeId: string; requests: number | null; errors: number | null; p95: number | null })[] }>;
 
   /**
+   * Log lines for one of this team's installed apps
+   *
+   * `GET /apps/{scopeId}/observability/logs` — `dashboard/app-observability-logs`
+   */
+  appObservabilityLogs(input: { scopeId: string; hours?: string; limit?: string; level?: string; search?: string; invocationId?: string; template?: string; since?: string; until?: string }): Promise<({ timestamp: number | null; level: string | null; message: string | null; service: string | null; outcome: string | null; trigger: string | null; invocation: string | null; entrypoint: string | null; requestId: string | null; invocationId?: string | null; cpuTimeMs: number | null; wallTimeMs: number | null; raw?: unknown })[]>;
+
+  /**
    * One installed app's traffic at this team's tenant grain
    *
    * `GET /apps/{scopeId}/observability/metrics` — `dashboard/app-observability-metrics`
    */
   appObservabilityMetrics(input: { scopeId: string; hours?: string; since?: string; until?: string }): Promise<({ scopeId: string; vertical: string | null; surface: string | null; requests: number; errors: number; durationP50: number; durationP95: number })[]>;
+
+  /**
+   * Request facet counts for one of this team's installed apps
+   *
+   * `GET /apps/{scopeId}/observability/requests/facets` — `dashboard/app-request-facets`
+   */
+  appRequestFacets(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string; operation?: string; principalKind?: string; problemCode?: string; surface?: string; status?: string; kind?: string; buckets?: string; facet?: string; limit?: string }): Promise<{ total: number; facets: Record<string, ({ value: string | number; count: number })[]>; estimated: boolean }>;
+
+  /**
+   * Request histogram for one of this team's installed apps
+   *
+   * `GET /apps/{scopeId}/observability/requests/volume` — `dashboard/app-request-volume`
+   */
+  appRequestVolume(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string; operation?: string; principalKind?: string; problemCode?: string; surface?: string; status?: string; kind?: string; buckets?: string; facet?: string; limit?: string }): Promise<{ bucketMs: number; buckets: { start: string; info: number; warn: number; error: number; unrecorded: number }[]; estimated: boolean }>;
+
+  /**
+   * Request records for one of this team's installed apps
+   *
+   * `GET /apps/{scopeId}/observability/requests/list` — `dashboard/app-requests`
+   */
+  appRequests(input: { scopeId: string; hours?: string; since?: string; until?: string; level?: string; operation?: string; principalKind?: string; problemCode?: string; surface?: string; status?: string; kind?: string; buckets?: string; facet?: string; limit?: string }): Promise<({ timestamp: number | null; invocationId: string | null; scopeId: string | null; vertical: string | null; surface: string | null; method: string | null; path: string | null; status: number | null; threw: boolean; durationMs: number | null; level: string | null; operation: string | null; problemCode: string | null; principalKind: string | null; eventCount: number | null; eventTypes: string[]; entities: string[]; versionId: string | null; kind?: string; outcome?: string | null; eventType?: string | null; eventId?: string | null; attempt?: number | null; latenessMs?: number | null; outboundCalls?: ({ host: string; path: string; method: string; status: number | null; outcome: string; durationMs: number; atMs: number; reason?: string })[]; outboundCallsDropped?: number })[]>;
 
   /**
    * Attach a custom domain to a preview's scope: what makes a pinned preview a long-lived test environment
@@ -738,10 +773,20 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/hostnames`, "POST", omit(input, ["scopeId"]), undefined),
     addDomain: (input: Args) =>
       send("/domains", "POST", input, undefined),
+    appLogPatterns: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/log-patterns`, "GET", undefined, omit(input, ["scopeId"])),
     appMetrics: (input: Args) =>
       send("/observability/app-metrics", "GET", undefined, input),
+    appObservabilityLogs: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/logs`, "GET", undefined, omit(input, ["scopeId"])),
     appObservabilityMetrics: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/metrics`, "GET", undefined, omit(input, ["scopeId"])),
+    appRequestFacets: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/requests/facets`, "GET", undefined, omit(input, ["scopeId"])),
+    appRequestVolume: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/requests/volume`, "GET", undefined, omit(input, ["scopeId"])),
+    appRequests: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/requests/list`, "GET", undefined, omit(input, ["scopeId"])),
     bindPreviewDomain: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/previews/${encodeURIComponent(String(input.tag))}/domain`, "POST", omit(input, ["slug","tag"]), undefined),
     businessVolumes: (input: Args) =>

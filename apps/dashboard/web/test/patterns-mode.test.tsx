@@ -84,15 +84,15 @@ describe('PatternsMode', () => {
   });
   const render = async () => {
     const onOpenPattern = vi.fn();
-    await act(async () => root.render(<PatternsMode scopeId="app-a" window={window} nonce={0} onOpenPattern={onOpenPattern} />));
+    await act(async () => root.render(<PatternsMode teamId="team-a" scopeId="app-a" window={window} nonce={0} onOpenPattern={onOpenPattern} />));
     return onOpenPattern;
   };
 
   it('asks for the page window verbatim and draws each template with its slots marked', async () => {
     const read = vi.spyOn(api, 'appLogPatterns').mockResolvedValue(answer);
     const onOpenPattern = await render();
-    const q = read.mock.calls[0]![1] as URLSearchParams;
-    expect(read.mock.calls[0]![0]).toBe('app-a');
+    const q = read.mock.calls[0]![2] as URLSearchParams;
+    expect(read.mock.calls[0]!.slice(0, 2)).toEqual(['team-a', 'app-a']);
     expect(q.get('since')).toBe(window.from);
     expect(q.get('until')).toBe(window.to);
     expect(q.get('hours')).toBeNull();

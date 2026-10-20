@@ -196,22 +196,22 @@ it('Logs reads the URL window and filters; refresh and URL replay preserve them,
   const initial = obsPath({ app: 'app-a', view: 'logs', from: windowRange.since, to: windowRange.until, level: 'error', search: 'failure' });
   window.history.replaceState(null, '', initial);
   await act(async () => root.render(<UrlPage />));
-  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ ...windowRange, level: 'error', search: 'failure' }));
+  expect(logs).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ ...windowRange, level: 'error', search: 'failure' }));
   // A narrower window — what a bar click on the app page links here with.
   await act(async () => {
     window.history.pushState(null, '', obsPath({ app: 'app-a', view: 'logs', from: next.since, to: next.until, level: 'error', search: 'failure' }));
     window.dispatchEvent(new PopStateEvent('popstate'));
   });
-  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ ...next, level: 'error', search: 'failure' }));
+  expect(logs).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ ...next, level: 'error', search: 'failure' }));
   const calls = logs.mock.calls.length;
   await act(async () => click(button('Refresh')));
   expect(logs.mock.calls.length).toBe(calls + 1);
-  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ ...next, level: 'error', search: 'failure' }));
+  expect(logs).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ ...next, level: 'error', search: 'failure' }));
   await act(async () => {
     window.history.replaceState(null, '', initial);
     window.dispatchEvent(new PopStateEvent('popstate'));
   });
-  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ ...windowRange, level: 'error', search: 'failure' }));
+  expect(logs).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ ...windowRange, level: 'error', search: 'failure' }));
   // The filters are chips, read back from the URL.
   expect(container.querySelector('[data-chip="message"]')!.textContent).toContain('failure');
   expect(container.querySelector('[data-chip="level"]')!.textContent).toContain('error');
@@ -235,13 +235,13 @@ it('Logs filter chips round-trip the URL: Enter adds one, × removes it, Clear r
   };
   await type('timeout');
   expect(readObsQuery(window.location.search)).toEqual({ app: 'app-a', view: 'logs', hours: '1', search: 'timeout' });
-  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ search: 'timeout' }));
+  expect(logs).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ search: 'timeout' }));
   await type('level:warn');
   expect(readObsQuery(window.location.search)).toMatchObject({ search: 'timeout', level: 'warn' });
   expect(container.querySelectorAll('[data-chip]')).toHaveLength(2);
   await act(async () => click(container.querySelector('[aria-label="Remove message filter"]')!));
   expect(readObsQuery(window.location.search)).toEqual({ app: 'app-a', view: 'logs', hours: '1', level: 'warn' });
-  expect(logs).toHaveBeenLastCalledWith('app-a', expect.objectContaining({ level: 'warn', search: undefined }));
+  expect(logs).toHaveBeenLastCalledWith('team-a', 'app-a', expect.objectContaining({ level: 'warn', search: undefined }));
   // A malformed filter is refused with its reason, and the URL does not move.
   await type('invocation:nope');
   expect(container.querySelector('[role="alert"]')!.textContent).toContain('ULID');

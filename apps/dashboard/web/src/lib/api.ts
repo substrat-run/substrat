@@ -1935,6 +1935,7 @@ export const api = {
   /** `since`/`until` are the chart's time cursor — a window ending in the past, which
    *  `hours` cannot name. Sent instead of `hours`, never beside it. */
   appTenantLogs: (
+    teamId: string,
     scopeId: string,
     q: {
       level?: string;
@@ -1951,20 +1952,20 @@ export const api = {
   ) => {
     const p = tenantLogsQuery(q);
     return call<ObservabilityLogEvent[]>(
-      `/apps/${encodeURIComponent(scopeId)}/observability/logs?${p.toString()}`,
+      `/teams/${encodeURIComponent(teamId)}/apps/${encodeURIComponent(scopeId)}/observability/logs?${p.toString()}`,
     );
   },
   /** #1746: one app's request histogram, facet counts and request list. `query` is built
    *  by `requestReadQuery`, so the three reads always carry the same window and filters. */
-  appRequestVolume: (scopeId: string, query: URLSearchParams) =>
-    call<RequestVolume>(`/apps/${encodeURIComponent(scopeId)}/observability/requests/volume?${query.toString()}`),
-  appRequestFacets: (scopeId: string, query: URLSearchParams) =>
-    call<RequestFacets>(`/apps/${encodeURIComponent(scopeId)}/observability/requests/facets?${query.toString()}`),
+  appRequestVolume: (teamId: string, scopeId: string, query: URLSearchParams) =>
+    call<RequestVolume>(`/teams/${encodeURIComponent(teamId)}/apps/${encodeURIComponent(scopeId)}/observability/requests/volume?${query.toString()}`),
+  appRequestFacets: (teamId: string, scopeId: string, query: URLSearchParams) =>
+    call<RequestFacets>(`/teams/${encodeURIComponent(teamId)}/apps/${encodeURIComponent(scopeId)}/observability/requests/facets?${query.toString()}`),
   /** #1747: one app's `ctx.log` lines grouped by template. */
-  appLogPatterns: (scopeId: string, query: URLSearchParams) =>
-    call<LogPatterns>(`/apps/${encodeURIComponent(scopeId)}/observability/log-patterns?${query.toString()}`),
-  appRequests: (scopeId: string, query: URLSearchParams) =>
-    call<RequestRecord[]>(`/apps/${encodeURIComponent(scopeId)}/observability/requests/list?${query.toString()}`),
+  appLogPatterns: (teamId: string, scopeId: string, query: URLSearchParams) =>
+    call<LogPatterns>(`/teams/${encodeURIComponent(teamId)}/apps/${encodeURIComponent(scopeId)}/observability/log-patterns?${query.toString()}`),
+  appRequests: (teamId: string, scopeId: string, query: URLSearchParams) =>
+    call<RequestRecord[]>(`/teams/${encodeURIComponent(teamId)}/apps/${encodeURIComponent(scopeId)}/observability/requests/list?${query.toString()}`),
   /** The tenant's GitHub-import state — connection status + the selected account's repos. */
   gitRepos: (account?: string) =>
     call<GitReposResult>(`/github/repos${account ? `?account=${encodeURIComponent(account)}` : ''}`),

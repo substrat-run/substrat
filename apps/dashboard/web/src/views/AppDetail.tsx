@@ -193,6 +193,7 @@ export function AppDetail({
     <Page style={{ gap: 16 }}>
       {openRecord && (
         <RecordPanel
+          teamId={teamId}
           key={`${openRecord.entityType}:${openRecord.entityId}`}
           scopeId={openRecord.scopeId ?? app.app_scope_id}
           entityType={openRecord.entityType}
@@ -203,6 +204,7 @@ export function AppDetail({
       {openRequest && (
         <RequestSlideOver
           key={openRequest.invocationId}
+          teamId={teamId}
           scopeId={openRequest.scopeId ?? app.app_scope_id}
           invocationId={openRequest.invocationId}
           atMs={openRequest.atMs}
@@ -2227,7 +2229,7 @@ const DATA_PAGE = 50;
  * `_substrat_*` spine grouped apart). Right: a paged view of the selected table.
  * Read-only by design — raw writes would bypass the event log and forge invariants.
  */
-function DataBrowser({ app }: { app: AppRow }) {
+function DataBrowser({ teamId, app }: { teamId: string; app: AppRow }) {
   const [scopes, setScopes] = useState<AppScope[] | null>(null);
   const [activeScope, setActiveScope] = useState<string>(app.app_scope_id);
   const [tables, setTables] = useState<ScopeTable[] | null>(null);
@@ -2433,6 +2435,7 @@ function DataBrowser({ app }: { app: AppRow }) {
       </div>
       {history && (
         <EntityTimeline
+          teamId={teamId}
           scopeId={history.scopeId}
           entityType={history.entityType}
           entityId={history.entityId}
@@ -3112,7 +3115,7 @@ export function Data({ teamId, app, section, onSection }: { teamId: string; app:
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Tabs tabs={DATA_SECTIONS} value={section} onChange={onSection} />
-      {section === 'tables' && <DataBrowser app={app} />}
+      {section === 'tables' && <DataBrowser teamId={teamId} app={app} />}
       {section === 'schema' && (
         <div style={{ display: 'grid', gap: 16 }}>
           <FieldCoverage app={app} />
