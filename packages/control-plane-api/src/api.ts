@@ -10191,6 +10191,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         throw e;
       }
     };
+    /**
+     * #1722 for a fork (#2450): a source that a staff move carried to another script while the fork
+     * read it was wiped where it was read, and its pages then read as the tombstone it left. A fork
+     * never loads that, as a carry never does (`carryFinish`).
+     */
+    const refuseWipedSource = (meta: ScopeDumpTable[], sourceId: ScopeId): void => {
+      if (dumpMetaValue(meta, CARRIED_AWAY_KEY) !== null) {
+        throw new ControlPlaneError(
+          412,
+          `the source of preview '${opts.tag}' (scope ${sourceId}) was carried to another script and wiped while it ` +
+            `was copied, so nothing was moved. Run the create again`,
+        );
+      }
+    };
     const abandonFork = async (previewId: ScopeId, fork: { moveId: string } | null, targetRef: string | null): Promise<void> => {
       // The fork stays named for reap and erasure; if this request had died instead, the sweep
       // would settle the entry once its lease ran out.
@@ -10247,21 +10261,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const finishForkJob = async (preview: Scope, job: CopyJobRecord) => {
       const { spec } = job;
       const fork = { moveId: spec.moveId };
-      const dump = job.done?.dump;
+      const done = job.done;
       try {
         return await finishingJob(c, job, async () => {
           let load: () => Promise<unknown>;
           let parent: Scope | null;
           try {
             const lease = await c.var.admin.renewScopeScriptCopy(actor, tenantId, preview.id, spec.moveId, { leaseMs: copyLeaseMs });
-            if (!lease || !target || !dump || !preview.forkedFrom) {
+            if (!lease || !target || !done || !preview.forkedFrom) {
               throw new ControlPlaneError(409, `the copy into preview '${opts.tag}' was settled before it could be loaded; nothing was moved`);
             }
             const forkedFrom = preview.forkedFrom;
+            refuseWipedSource(done.meta, forkedFrom);
             parent = (await c.var.admin.getScopeRecord(actor, tenantId, forkedFrom)) ?? null;
             const lineage = copyLineageOf({ kind: preview.kind ?? '', forkedFrom });
             const fence = copyRestoreFence(spec.moveId, lease.renewedAt, copyLeaseMs, spec.erasureEpoch);
-            load = () => target.restoreScope(tenantId, preview.id, dump, {
+            load = () => target.restoreScope(tenantId, preview.id, done.dump, {
               sourceScopeId: forkedFrom, exact: true, ...(lineage ? { markCopy: lineage } : {}),
               loadStamp: spec.restoredStamp, fence,
             });
@@ -10495,8 +10510,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // (K-31: no copied data without a record) and ahead of the restore's own retries, so a
       // restore blip reloads the same stage and an export fault is not recorded as a restore's.
       forkData = sourceClient
-        ? async () =>
-          (await transferScope(sourceClient, target, { from: source.id, to: previewId }, { retry: retryTransient, stamp: false })).dump
+        ? async () => {
+          const moved = await transferScope(sourceClient, target, { from: source.id, to: previewId }, { retry: retryTransient, stamp: false });
+          refuseWipedSource(moved.meta, source.id);
+          return moved.dump;
+        }
         : async () => canonical.tables;
       // Directory row FIRST as `provisioning` (K-31 two-phase): a crash before the data
       // copy leaves an inert row that — carrying `forkedFrom` + `expiresAt` — the GC sweep
@@ -10593,6 +10611,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             }
             return copyingAnswer(job);
           }
+          refuseWipedSource(begun.done.meta, forkPaged.sourceScopeId);
           dump = begun.done.dump;
         } else {
           dump = forkData ? await forkData() : undefined;

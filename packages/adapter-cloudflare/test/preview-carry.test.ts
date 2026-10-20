@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { errorCodeOf, platformActorId, scopeId, substratError, tenantId, type ScopeDumpTable, type ScopeId, type ScopeLineage, type TenantId } from '@substrat-run/contracts';
-import { CARRIED_AWAY_KEY, COPY_RESTORE_FENCE_LAPSED, LOAD_STAMP_KEY, SCOPE_COPY_LEASE_MS, WRITE_REVISION_KEY, dumpMetaValue, type CopyRestoreFence, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
+import { CARRIED_AWAY_KEY, COPY_RESTORE_FENCE_LAPSED, LOAD_STAMP_KEY, SCOPE_COPY_LEASE_MS, WRITE_REVISION_KEY, carriedAwayDump, dumpMetaValue, type CopyRestoreFence, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   ControlPlaneError,
   createControlPlaneApi,
@@ -2933,6 +2933,45 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       );
       expect(await noStage('v2', pid)).toEqual([]);
       expect(await served(h)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+    });
+
+    it('a fork never loads a source that was carried to another script and wiped while it was read', async () => {
+      const prodRef = (await served(prodHostname)).ref;
+      const prodHost = hostOf.get(prodRef)!;
+      // What a staff rebind or adopt of the source leaves where the fork reads it.
+      const wipeProd = () => prodHost.restoreScopeLocal(
+        prod, carriedAwayDump({ to: 'carry-vert-elsewhere', at: new Date().toISOString() }), { sourceScopeId: prod, exact: true },
+      );
+      try {
+        // Wiped while the job copies: what it reads from then on is the tombstone, and its finish
+        // refuses it.
+        const started = await pushBg('bg-25', 'v1');
+        expect(started.status).toBe(202);
+        const sid = started.body.scopeId;
+        await wipeProd();
+        await pumpToDone();
+        const read = jobs.jobs.get(`fork:${sid}`)!;
+        expect(read.status).toBe('done');
+        expect(dumpMetaValue(read.done!.meta, CARRIED_AWAY_KEY)).not.toBeNull();
+        const refused = await poll('bg-25', 'v1');
+        expect(refused.status).toBe(412);
+        expect(reason(refused)).toMatch(/carried to another script and wiped while it was copied/);
+        expect(jobs.jobs.has(`fork:${sid}`)).toBe(false);
+        expect(await noStage('v1', sid)).toEqual([]);
+        expect((await dir.admin.getScopeRecord(staff, t, sid))?.status).toBe('provisioning');
+        // Wiped before the fork begins: the one page it reads in its request is refused there.
+        const early = await pushBg('bg-25', 'v1');
+        expect(early.status).toBe(412);
+        expect(reason(early)).toMatch(/carried to another script and wiped/);
+      } finally {
+        await prodHost.restoreScopeLocal(prod, notes(...rows));
+      }
+      // Its twin: the same source, whole, forks.
+      expect((await pushBg('bg-25', 'v1')).status).toBe(202);
+      await pumpToDone();
+      const made = await poll('bg-25', 'v1');
+      expect(made.status).toBe(201);
+      expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
     });
 
     it('an older push never reaps or forks while a newer one replaces its fork, whichever moment it calls in', async () => {
