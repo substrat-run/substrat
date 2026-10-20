@@ -176,4 +176,27 @@ describe('memoryCopyJobs (#2450)', () => {
     await jobs.forget(spec.id);
     expect(await jobs.get(spec.id)).toBeNull();
   });
+
+  it("a step writes its answer over its own record, never over a job started again while it ran", async () => {
+    // While a step renews its lease, the route settles the job (forget) and a newer push starts its own.
+    let during: (() => Promise<void>) | null = null;
+    const h = harness({ renew: () => (during ? (void during(), true) : true) });
+    const jobs = memoryCopyJobs(h.deps, { stepMs: 0 });
+    const state = await h.begin();
+    const old = h.spec();
+    await jobs.start(old, state);
+    // Without interference, the step's answer is stored: one more page moved.
+    await jobs.pump(old.id);
+    expect(await jobs.get(old.id)).toMatchObject({ spec: { moveId: 'move-1' }, pages: 2 });
+
+    const newer = h.spec({ moveId: 'move-2', versionId: 'v3' });
+    during = async () => {
+      during = null;
+      await jobs.forget(old.id);
+      await jobs.start(newer, state);
+    };
+    await jobs.pump(old.id);
+    // The old step's answer (move-1, three pages) is dropped: the newer job is as it started.
+    expect(await jobs.get(old.id)).toMatchObject({ spec: { moveId: 'move-2', versionId: 'v3' }, pages: 1 });
+  });
 });

@@ -188,8 +188,9 @@ export function memoryCopyJobs(deps: CopyJobDeps, opts: { stepMs?: number } = {}
       for (const [key, job] of [...jobs]) {
         if (id !== undefined && key !== id) continue;
         const next = await advanceCopyJob(deps, job, opts);
-        // A cancel that landed while the step ran wins, as in the Durable Object.
-        if (jobs.get(key)?.status === 'copying') jobs.set(key, next);
+        // A cancel, a forget, or a forget and a new start, that landed while the step ran wins, as
+        // in the Durable Object: each stores a record of its own, so the one this step read is gone.
+        if (jobs.get(key) === job) jobs.set(key, next);
       }
     },
   };
