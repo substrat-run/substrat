@@ -33,7 +33,7 @@ describe('a store read on /meters (#2212)', () => {
       fetch: (() => Promise.reject(new Error('unused'))) as unknown as FetchLike,
       sweepers: {},
       drainRetries: false,
-      drainPlatformRequestsFn: async () => ({ drained: 0, done: 0, failed: 0, pending: 0 }),
+      drainPlatformRequestsFn: async () => ({ drained: 0, done: 0, failed: 0, pending: 0, attempted: [] }),
       storageGauge: { read: async () => 5, readStores },
     });
     const storage = (await host.admin.readMeters(staff, { tenantId: t })).perTenant[0]!.storage;

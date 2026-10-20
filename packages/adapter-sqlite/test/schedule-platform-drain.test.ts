@@ -34,7 +34,7 @@ describe('a sweep drains what its schedules just enqueued (#2431)', () => {
         const pending = (await host.listPlatformRequests(tenant, scope)).filter(isPlatformRequest);
         seen.push(pending.filter((r) => r.kind === SCHED_REQUEST_KIND).map((r) => (r.payload as { n: number }).n).sort());
         for (const r of pending) await host.settlePlatformRequest(tenant, scope, r.id, { status: 'done' });
-        return { drained: pending.length, done: pending.length, failed: 0, pending: 0 };
+        return { drained: pending.length, done: pending.length, failed: 0, pending: 0, attempted: [] };
       },
     });
 

@@ -1417,7 +1417,9 @@ export interface ScheduleRunReport {
    * no such drain (D-40): there the count is reported, and the requests wait for the control
    * plane's sweep. Whatever is not counted waits for the next drain, as it always did. Absent
    * when the count is zero, and from a host that predates the field. A purge horizon's runs
-   * are not counted: the purges run inside the scope, which reports no count for them.
+   * count what the host can see: on the node host every purge is an invoke and counts like
+   * one; on the Durable Object host the purges run inside the scope, so only the deliveries
+   * their events route to the platform are counted, not the requests the purges make themselves.
    */
   platformRequests?: number;
 }

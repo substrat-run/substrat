@@ -6406,12 +6406,14 @@ export class CloudflareScopeHost implements ScopeHost {
           // call and transaction — and the SCOPE decides which are due and runs them, so purge
           // authority is never an argument any stub can pass (`runPurgeSweep`).
           // #2192: under the run's own id, so the purges and their deliveries join this run's line.
-          // #2431: what the purges enqueue is not counted (`ScheduleRunReport.platformRequests`).
+          // #2431: the purges' own requests run inside the scope, which reports no count for them;
+          // the deliveries their events route to the platform are counted below, as an invoke's are.
           const pass = await door.through((instance) =>
             stub.runPurgeSweep(schedule.operation, tenantId, scopeId, instance, invocationId),
           );
           // The purges' events, delivered the way each invoke's own tail delivers them.
-          await this.drainExecutors(tenantId, scopeId, invocationId);
+          const delivered = await this.drainExecutors(tenantId, scopeId, invocationId);
+          platformRequests += delivered.routedToPlatform ?? 0;
           stillDue = purgeStillDue(pass);
           const outcome = purgeReportOf(schedule.operation, schedule.purge.entityType, pass);
           report.errors.push(...outcome.errors);

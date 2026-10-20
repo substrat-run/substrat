@@ -148,11 +148,23 @@ export interface PlatformSweepOptions {
   drainPlatformRequestsFn?: (
     tenantId: TenantId,
     scopeId: ScopeId,
+    /**
+     * #2431: always passed by the sweep. `skip` is the intents an earlier drain of this scope
+     * tried in the same pass; a fn leaves them alone — each run is an attempt toward the
+     * intent's ceiling — and drains only the rest. Absent on the pass's first drain of a scope.
+     */
+    opts?: { skip?: readonly string[] },
   ) => Promise<{
     drained: number;
     done: number;
     failed: number;
     pending: number;
+    /**
+     * #2431: the ids this drain tried, which a second drain in the same pass is told to skip —
+     * `[]` when it tried none. Required, so a fn that leaves it out does not compile, rather than
+     * having its intents silently tried twice.
+     */
+    attempted: string[];
     /** No deployment could be reached for this scope, so nothing was drained or counted (#1840). */
     unreachable?: boolean;
     /** Pending intents nothing could run or settle — their stored id is not an id (#1637). */
@@ -972,19 +984,39 @@ export interface PlatformRequestDrainTotals {
 export type PlatformRequestDrain = Awaited<ReturnType<NonNullable<PlatformSweepOptions['drainPlatformRequestsFn']>>>;
 
 /**
- * Fold one scope's platform-intent drain into the pass's totals. `earlier` is the same scope's
- * drain from earlier in the pass, when the schedule phase drains it again (#2431): its work stays
- * counted, and its `pending` and `unsettleable` give way to the later drain's.
+ * Fold one scope's platform-intent drain into the pass's totals — the one place a drain's answer
+ * is read, unreachable included.
+ *
+ * `earlier` is the same scope's drain from earlier in the pass, when the schedule phase drains it
+ * again (#2431). That second drain skipped every intent the first one tried, so its counts are
+ * new intents only and add to the first's; only `unsettleable`, which every listing reports
+ * whole, gives way to the later answer. A second drain that reached no deployment changes no
+ * count — the first drain reached the scope and is already counted — and lands in `errors`,
+ * since what the schedules just enqueued is then missing from the totals.
  */
 function tallyPlatformDrain(report: PlatformSweepReport, s: Scope, r: PlatformRequestDrain, earlier?: PlatformRequestDrain): void {
   const totals = report.platformRequestTotals;
+  if (r.unreachable && earlier) {
+    report.errors.push({
+      kind: 'platform-request',
+      id: s.id,
+      error: 'the second drain of this pass reached no deployment; what the schedules enqueued waits for the next pass',
+    });
+    return;
+  }
   if (r.unreachable) totals.unreachable += 1;
   if (r.drained > 0 && !earlier?.drained) totals.scopes += 1;
   totals.drained += r.drained;
   totals.done += r.done;
   totals.failed += r.failed;
-  totals.pending += r.pending - (earlier?.pending ?? 0);
+  totals.pending += r.pending;
   totals.unsettleable += (r.unsettleable?.count ?? 0) - (earlier?.unsettleable?.count ?? 0);
+  if (!earlier) {
+    if (r.unsettleable) {
+      (report.platformRequestUnsettleable ??= []).push({ tenantId: s.tenantId, scopeId: s.id, ...r.unsettleable });
+    }
+    return;
+  }
   const listed = (report.platformRequestUnsettleable ?? []).filter((u) => u.scopeId !== s.id);
   if (r.unsettleable) listed.push({ tenantId: s.tenantId, scopeId: s.id, ...r.unsettleable });
   if (listed.length > 0) report.platformRequestUnsettleable = listed;
@@ -1205,7 +1237,7 @@ export async function runPlatformSweep(
         return;
       }
       try {
-        const r = await drain(s.tenantId, s.id);
+        const r = await drain(s.tenantId, s.id, {});
         if (!r.unreachable) {
           reachedThisPass.set(s.id, s);
           drainedThisPass.set(s.id, r);
@@ -1376,17 +1408,14 @@ export async function runPlatformSweep(
         // than leave them a sweep interval. After the schedules, not instead of the drain above:
         // that one gives them the scope's whole headroom under the pending cap. Once, firing
         // nothing, so it cannot loop, and only on a scope the drain phase reached; any other waits
-        // for the next pass. The cost: an intent the first drain left pending is tried again here,
-        // one more attempt toward its ceiling. A second drain that reached no deployment saw no
-        // queue, so the first drain's figures stand, as they do when it throws. It is counted
-        // `unreachable`, as a thrown one lands in `errors`: what the schedules just enqueued is
-        // missing from the totals, and the drain row says they are a floor.
+        // for the next pass. It skips every intent the first drain tried, so no intent spends two
+        // attempts toward its ceiling in one pass and none is counted twice. What it reports, an
+        // unreachable answer included, is read by `tallyPlatformDrain`; a throw lands in `errors`.
         const earlier = drainedThisPass.get(s.id);
-        if (!earlier || !drain) return;
+        if (!earlier) return;
         try {
-          const again = await drain(s.tenantId, s.id);
-          if (again.unreachable) report.platformRequestTotals.unreachable += 1;
-          else tallyPlatformDrain(report, s, again, earlier);
+          const again = await drain!(s.tenantId, s.id, { skip: earlier.attempted });
+          tallyPlatformDrain(report, s, again, earlier);
         } catch (err) {
           report.errors.push({ kind: 'platform-request', id: s.id, error: message(err) });
         }

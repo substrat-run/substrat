@@ -8,7 +8,7 @@
  *     `SWEEPER` binding, and the var that hands its roster to `mountPlatformSurface`;
  *   - `/internal/provision` puts the scope on that sweeper's roster — no hook of the vertical's;
  *   - a pass runs the due schedule on the scope, through the host the vertical registered, and
- *     counts and logs the platform requests it enqueued (#2431);
+ *     counts the platform requests it enqueued, and logs nothing for a routine pass (#2431);
  *   - `/internal/delete-scope` takes the scope off the roster.
  */
 import { SELF, env, runInDurableObject } from 'cloudflare:test';
@@ -81,10 +81,10 @@ describe('the platform-supplied sweeper runs a vertical that wires none (#1902)'
       expect(report.schedules.fired).toBeGreaterThan(0);
       expect(await ticksOn(s)).toBe(1);
       // #2431: the tick's platform request waits for the platform's drain sweep — nothing routes
-      // this alarm to kick one — so the pass counts it, and the supplied sweeper logs the counts.
+      // this alarm to kick one — so the pass counts it. A pass like that is routine, and the
+      // supplied sweeper logs only a failing one, so no line here buries the ones that matter.
       expect(report.schedules.platformRequests).toBe(1);
-      const lines = sweepLines(logged.mock.calls);
-      expect(lines).toEqual([{ substrat: 'scope-sweep', scopes: 1, schedules: report.schedules }]);
+      expect(sweepLines(logged.mock.calls)).toEqual([]);
 
       // Not due again for an hour: the next pass leaves it alone, enqueues nothing and logs nothing.
       logged.mockClear();
