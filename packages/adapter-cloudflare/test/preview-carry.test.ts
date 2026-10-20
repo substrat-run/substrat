@@ -3009,11 +3009,11 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         try {
           const replacing = pushBg(tag, 'v3', {}, held.api);
           await held.there;
-          // The older push's poll finds no job of its own, and leaves every row as it is.
+          // The older push's poll is superseded, and leaves every row as it is.
           const before = (await rowsFor(tag)).map((s) => s.id);
           const polled = await poll(tag, 'v1');
           expect(polled.status).toBe(409);
-          expect(reason(polled)).toMatch(/is no longer running/);
+          expect(reason(polled)).toMatch(/superseded/);
           // A create of a push older than v3 is superseded before it acts.
           const stale = await pushBg(tag, 'v2');
           expect(stale.status).toBe(409);
@@ -3064,6 +3064,24 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       await settle();
       expect((await call('bg-21', 'v1', { poll: true })).status).toBe(200);
       expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+
+      // A copy that outlasts the hold its first call took: the poll that finishes it is the push's
+      // last call, and holds the mark from there.
+      skew = 0;
+      expect((await call('bg-26', 'v3')).status).toBe(202);
+      skew = 15 * 60_000 + 1;
+      await settle();
+      const long = await call('bg-26', 'v3', { poll: true });
+      expect(long.status).toBe(201);
+      const after = await call('bg-26', 'v1');
+      expect(after.status).toBe(409);
+      expect(reason(after)).toMatch(/superseded/);
+      // And 15 min after that poll, v1 is taken.
+      skew += 15 * 60_000 + 1;
+      expect((await call('bg-26', 'v1')).status).toBe(202);
+      await settle();
+      expect((await call('bg-26', 'v1', { poll: true })).status).toBe(200);
+      expect(await served(long.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
     });
   });
 });

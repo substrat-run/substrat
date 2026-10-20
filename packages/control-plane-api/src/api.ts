@@ -3756,11 +3756,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       : null;
 
   /**
-   * #2450: a create for an older version than one another create of the same preview marked within
-   * `PREVIEW_CREATE_BOUND_MS` (`CopyJobs.markNewest`). It covers the moments no job record names the
-   * newer push: a newer push forgets the fork job it replaces, then reaps that row and provisions its
-   * own. Once the mark's hold has run out, and no newer push's job is copying, an older version (a
-   * deliberate re-preview) is taken like any other create.
+   * #2450: a create for an older version than one another call (a poll included) to the same preview
+   * marked within `PREVIEW_CREATE_BOUND_MS` (`CopyJobs.markNewest`). It covers the moments no job
+   * record names the newer push: a newer push forgets the fork job it replaces, then reaps that row
+   * and provisions its own; and the time after its copy has landed and its job is forgotten. Once the
+   * mark's hold has run out, and no newer push's job is copying, an older version (a deliberate
+   * re-preview) is taken like any other create.
    */
   const supersededByMark = (newest: string, mine: { versionId: string }, tag: string): ControlPlaneError =>
     new ControlPlaneError(
@@ -10061,16 +10062,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (options.copyJobs && !incoming) throw new ControlPlaneError(404, `unknown version ${opts.versionId} for vertical '${slug}'`);
     // Compared only where a job is found, which is only on such a host, where it was read.
     const mine = { versionId: opts.versionId, order: incoming ? versionOrderOf(incoming) : '' };
-    // A poll goes on only to a fork job (below, where one for another version refuses it) or a live
-    // preview (the carry, below). Anything else is a copy gone: never reaped, never forked afresh.
-    if (poll && !(existing && (forkJob || existing.status === 'active'))) throw copyGone();
-    // Every other create marks itself the newest of this preview's, for as long as a create's request
-    // can run, before it acts: an older one meanwhile is refused, whatever the rows and jobs say then.
-    if (options.copyJobs && !poll) {
+    // Every call marks its push the newest of this preview's, for as long as a create's request can
+    // run, before it acts: an older one meanwhile is refused, whatever the rows and jobs say then. A
+    // poll marks too, so the hold runs on past the push's last call however long its copy took.
+    if (options.copyJobs) {
       const tagId = copyTagId(tenantId, previewSlug(slug, opts.tag));
       const newest = await options.copyJobs.markNewest(tagId, mine.order, PREVIEW_CREATE_BOUND_MS);
       if (newest > mine.order) throw supersededByMark(newest, mine, opts.tag);
     }
+    // A poll goes on only to a fork job (below, where one for another version refuses it) or a live
+    // preview (the carry, below). Anything else is a copy gone: never reaped, never forked afresh.
+    if (poll && !(existing && (forkJob || existing.status === 'active'))) throw copyGone();
 
     // A preview only HAS data once its two-phase create finished: the directory row lands
     // first as `provisioning` (K-31), the fork's export→restore runs, and `activateScope`
