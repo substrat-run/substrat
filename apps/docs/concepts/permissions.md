@@ -55,8 +55,8 @@ declarations (`modules: [{ id, permissions, ownerGrants? }]`). At publish, the p
 the key rows from those declarations and refuses a registry that disagrees about its keys,
 descriptions, declaring modules or `holder` marks. A CLI too old to send `modules` remains
 accepted without this consistency check; its registry is still checked by the older row rules.
-This check compares two claims shipped by the same builder. Third-party module declarations
-remain author-asserted until the known-engine catalog in #2446's next step.
+This check compares two claims shipped by the same builder. The next step of #2446 will verify
+known engine manifests against a platform catalog; third-party modules remain author-asserted.
 
 At runtime, a host reads the reservations off the modules it registers and the modules its
 `permissions` lists, and refuses at these doors:

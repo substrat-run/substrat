@@ -108,6 +108,10 @@ describe('POST /verticals/:slug/deploy holds ownerGrants to the registry’s res
     expect(bad.status).toBe(400);
     expect(((await bad.json()) as { error: string }).error).toContain('crm:sync-run: registry holder disagrees with module declarations');
     expect(uploads.length).toBe(before);
+    const reservedGrant = await push({ marked: true, modules: [{ ...modules[0], ownerGrants: ['crm:sync-run'] }] });
+    expect(reservedGrant.status).toBe(400);
+    expect(((await reservedGrant.json()) as { error: string }).error).toContain('owner grants of crm → crm:sync-run');
+    expect(uploads.length).toBe(before);
     expect((await push({ marked: true, modules })).status).toBe(201);
   });
 });

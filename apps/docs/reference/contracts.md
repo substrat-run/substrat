@@ -268,8 +268,8 @@ stores stay in `tenantStores` and blobs stay in `blobStores`. It also carries
 `RUNTIME_BASELINE`. Optional `modules` carries each loaded module's `{ id, permissions: [{
 key, description, holder? }], ownerGrants? }` declarations. When present, the control plane
 recomputes the registry's key rows at publish and refuses a disagreement; absence keeps older
-CLI manifests readable and publishable. These declarations are builder-supplied. Third-party
-module declarations remain author-asserted until the known-engine catalog in #2446's next step.
+CLI manifests readable and publishable. These declarations are builder-supplied. The next step
+of #2446 will verify known engine manifests; third-party modules remain author-asserted.
 One schema, two parses, no drift.
 
 ## Connections (`connections.ts`)

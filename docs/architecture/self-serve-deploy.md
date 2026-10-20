@@ -82,8 +82,8 @@ whatever the pusher claims, so the permission/migration checkpoint is advisory h
 The deploy manifest now carries module permission declarations beside the permission registry;
 publish checks that the registry's key rows agree with those declarations. This is consistency
 between builder-supplied claims, not independent verification of module authorship. Manifests
-from older CLIs without the declarations remain accepted. Third-party modules remain
-author-asserted until #2446's known-engine catalog step.
+from older CLIs without the declarations remain accepted. #2446's next step will verify known
+engine manifests; third-party modules remain author-asserted.
 
 **C — Phased (recommended).** The deploy endpoint + `substrat push` + pending/admission is one
 shared foundation regardless. Open it first under **B, for vetted builders** (a closed set,
