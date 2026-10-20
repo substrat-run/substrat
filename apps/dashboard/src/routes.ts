@@ -445,6 +445,12 @@ const requestRecordView = z.object({
   })).optional(),
   outboundCallsDropped: z.number().optional(),
 });
+const appRequestInput = z.object({
+  scopeId: z.string().min(1), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional(),
+  level: z.string().optional(), operation: z.string().optional(), principalKind: z.string().optional(),
+  problemCode: z.string().optional(), surface: z.string().optional(), status: z.string().optional(),
+  kind: z.string().optional(), buckets: z.string().optional(), facet: z.string().optional(), limit: z.string().optional(),
+});
 const logPatternsView = z.object({
   total: z.number(), bucketMs: z.number(),
   patterns: z.array(z.object({
@@ -766,19 +772,19 @@ export const dashboardRoutes = defineRoutes({
   },
   'dashboard/app-request-volume': {
     summary: "Request histogram for one of this team's installed apps",
-    input: z.object({ scopeId: z.string().min(1), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional(), level: z.string().optional(), operation: z.string().optional(), principalKind: z.string().optional(), problemCode: z.string().optional(), surface: z.string().optional(), status: z.string().optional(), kind: z.string().optional(), buckets: z.string().optional(), facet: z.string().optional(), limit: z.string().optional() }),
+    input: appRequestInput,
     output: requestVolumeView,
     http: { method: 'GET', path: '/apps/{scopeId}/observability/requests/volume' },
   },
   'dashboard/app-request-facets': {
     summary: "Request facet counts for one of this team's installed apps",
-    input: z.object({ scopeId: z.string().min(1), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional(), level: z.string().optional(), operation: z.string().optional(), principalKind: z.string().optional(), problemCode: z.string().optional(), surface: z.string().optional(), status: z.string().optional(), kind: z.string().optional(), buckets: z.string().optional(), facet: z.string().optional(), limit: z.string().optional() }),
+    input: appRequestInput,
     output: requestFacetsView,
     http: { method: 'GET', path: '/apps/{scopeId}/observability/requests/facets' },
   },
   'dashboard/app-requests': {
     summary: "Request records for one of this team's installed apps",
-    input: z.object({ scopeId: z.string().min(1), hours: z.string().optional(), since: z.string().optional(), until: z.string().optional(), level: z.string().optional(), operation: z.string().optional(), principalKind: z.string().optional(), problemCode: z.string().optional(), surface: z.string().optional(), status: z.string().optional(), kind: z.string().optional(), buckets: z.string().optional(), facet: z.string().optional(), limit: z.string().optional() }),
+    input: appRequestInput,
     output: z.array(requestRecordView),
     http: { method: 'GET', path: '/apps/{scopeId}/observability/requests/list' },
   },

@@ -4660,23 +4660,23 @@ async function appObservabilityLogsIn(ctx: TeamContext, app: string) {
   const hours = Number(c.req.query('hours') ?? '24');
   const limit = Number(c.req.query('limit') ?? '100');
   return cpObservability(() =>
-      cp.tenantLogs({
-        scopeId: appRow.app_scope_id,
-        level: c.req.query('level') || undefined,
-        search: c.req.query('search') || undefined,
-        // Raw, so an empty value reaches the plane and is refused there rather than
-        // being read as "no filter" (#1525).
-        invocationId: c.req.query('invocationId'),
-        // #1747: one pattern's lines. Raw like the id: an empty one is the plane's 400.
-        template: c.req.query('template'),
-        hours: Number.isFinite(hours) ? hours : 24,
-        // The chart's time cursor, passed on as the strings they arrived as: the plane
-        // is what judges an instant (ISO, ordered, inside the same 72h ceiling `hours`
-        // carries), and a second reading of them here could only disagree with it.
-        since: c.req.query('since') || undefined,
-        until: c.req.query('until') || undefined,
-        limit: Number.isFinite(limit) ? limit : 100,
-      }),
+    cp.tenantLogs({
+      scopeId: appRow.app_scope_id,
+      level: c.req.query('level') || undefined,
+      search: c.req.query('search') || undefined,
+      // Raw, so an empty value reaches the plane and is refused there rather than
+      // being read as "no filter" (#1525).
+      invocationId: c.req.query('invocationId'),
+      // #1747: one pattern's lines. Raw like the id: an empty one is the plane's 400.
+      template: c.req.query('template'),
+      hours: Number.isFinite(hours) ? hours : 24,
+      // The chart's time cursor, passed on as the strings they arrived as: the plane
+      // is what judges an instant (ISO, ordered, inside the same 72h ceiling `hours`
+      // carries), and a second reading of them here could only disagree with it.
+      since: c.req.query('since') || undefined,
+      until: c.req.query('until') || undefined,
+      limit: Number.isFinite(limit) ? limit : 100,
+    }),
   );
 }
 
@@ -4695,7 +4695,7 @@ const REQUEST_READ_KEYS = [
 /**
  * ONE app's requests (#1746): `volume` is the level histogram, `facets` the facet counts,
  * `list` the requests themselves. The same two narrowings as the logs route above — the
- * tenant from the session, the scope from this team's own app rows, so a foreign scope is
+ * tenant from the path's membership, the scope from this team's own app rows, so a foreign scope is
  * a 404.
  */
 async function appRequestsIn(ctx: TeamContext, app: string, kind: 'volume' | 'facets' | 'list') {
@@ -4712,7 +4712,7 @@ const LOG_PATTERN_KEYS = ['hours', 'since', 'until', 'level', 'operation', 'buck
 
 /**
  * ONE app's `ctx.log` lines grouped by template (#1747). The same two narrowings as every
- * per-app read here: the tenant from the session, the scope from this team's app rows.
+ * per-app read here: the tenant from the path's membership, the scope from this team's app rows.
  */
 async function appLogPatternsIn(ctx: TeamContext, app: string) {
   const { c, node } = ctx;
