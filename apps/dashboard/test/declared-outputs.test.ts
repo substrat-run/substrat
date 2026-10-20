@@ -10,7 +10,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { MODULES, provisionDashboard, type DashboardNode } from '../src/index.js';
 import { registerDashboardMembership } from '../src/membership.js';
 import { dashboardOperations } from '../src/module.js';
-import { walkAll } from '../src/walk-all.js';
+import { allApps, appByScopeId, walkAll } from '../src/walk-all.js';
 
 /**
  * The dashboard's declared outputs are real schemas (#2426), and its six list reads page.
@@ -196,6 +196,81 @@ describe('the dashboard’s declared outputs (#2426)', () => {
     expect(asc.entries.map((r) => r.id)).toEqual(rows.map((r) => r.id).reverse());
     // A call that names no page gets the default one, never the whole table.
     expect((await own.invoke<Page<unknown>>('dashboard/list-apps')).entries).toHaveLength(5);
+  });
+
+  /** `own`, counting every invoke made through it. */
+  function counted() {
+    const calls: Array<{ operation: string; input: unknown }> = [];
+    const scope = {
+      invoke: <O>(operation: string, input?: unknown): Promise<O> => {
+        calls.push({ operation, input });
+        return own.invoke<O>(operation, input);
+      },
+    };
+    return { scope, calls };
+  }
+
+  it('appByScopeId finds one app in ONE invoke, however many apps the team has (#2437)', async () => {
+    // More apps than one walk page, so a lookup by walking needs a second read to reach the oldest.
+    const scopes = Array.from({ length: WALK_PAGE_LIMIT + 50 }, () => scopeId.parse(ulid()));
+    for (const [i, appScopeId] of scopes.entries()) {
+      await own.invoke('dashboard/provision-app', { appScopeId, verticalSlug: 'protocol', name: `App ${i}` });
+    }
+    const walked = counted();
+    expect(await allApps(walked.scope)).toHaveLength(scopes.length);
+    expect(walked.calls.length).toBeGreaterThan(1);
+
+    // The oldest app is the last row of the newest-first walk: the worst case for a lookup that walks.
+    for (const appScopeId of [scopes[0]!, scopes.at(-1)!]) {
+      const lookup = counted();
+      const row = await appByScopeId(lookup.scope, appScopeId);
+      expect(row).toMatchObject({ app_scope_id: appScopeId, vertical_slug: 'protocol' });
+      expect(lookup.calls).toHaveLength(1);
+      expect(lookup.calls[0]).toMatchObject({ operation: 'dashboard/list-apps', input: { appScopeId } });
+    }
+  });
+
+  it('a list-apps filter only narrows: another team’s, a deleted and an unknown scope id answer nothing', async () => {
+    const mine = scopeId.parse(ulid());
+    const gone = scopeId.parse(ulid());
+    await own.invoke('dashboard/provision-app', { appScopeId: mine, verticalSlug: 'protocol', name: 'Mine' });
+    await own.invoke('dashboard/provision-app', { appScopeId: gone, verticalSlug: 'protocol', name: 'Gone' });
+    await own.invoke('dashboard/delete-app', { appScopeId: gone });
+
+    const otherNode = await provisionDashboard(host, {
+      tenantId: tenantId.parse(ulid()),
+      scopeId: scopeId.parse(ulid()),
+      owner: principalId.parse(ulid()),
+      slug: 'other',
+      name: 'Other',
+    });
+    const other = await host.getScope(otherNode.principal, otherNode.tenantId, otherNode.scopeId);
+    const theirs = scopeId.parse(ulid());
+    await other.invoke('dashboard/provision-app', { appScopeId: theirs, verticalSlug: 'protocol', name: 'Theirs' });
+
+    const nothing = { entries: [], nextCursor: null };
+    for (const appScopeId of [theirs, gone, scopeId.parse(ulid())]) {
+      await expect(own.invoke('dashboard/list-apps', { appScopeId }), appScopeId).resolves.toEqual(nothing);
+      await expect(appByScopeId(own, appScopeId), appScopeId).resolves.toBeUndefined();
+    }
+    // Positive twins: the same filter finds each team's own app, and nobody else's.
+    await expect(appByScopeId(own, mine)).resolves.toMatchObject({ app_scope_id: mine });
+    await expect(appByScopeId(other, theirs)).resolves.toMatchObject({ app_scope_id: theirs });
+    await expect(appByScopeId(other, mine)).resolves.toBeUndefined();
+
+    // An empty filter is refused by the read, and the helper never sends one: the absence of
+    // the filter is the whole list, which a lookup must not turn into an answer.
+    await expect(own.invoke('dashboard/list-apps', { appScopeId: '' })).rejects.toThrow();
+    const none = counted();
+    await expect(appByScopeId(none.scope, '')).resolves.toBeUndefined();
+    await expect(appByScopeId(none.scope, undefined)).resolves.toBeUndefined();
+    expect(none.calls).toEqual([]);
+
+    // A bare call and an unfiltered page are unchanged (#2418): both answer the live apps.
+    for (const input of [undefined, {}] as const) {
+      const page = await own.invoke<Page<{ app_scope_id: string }>>('dashboard/list-apps', input);
+      expect(page.entries.map((a) => a.app_scope_id)).toEqual([mine]);
+    }
   });
 
   it('app-events pages newest first', async () => {
