@@ -1,7 +1,7 @@
 export type { AuthProvider, AuthSubject, ResolveOptions } from './provider.js';
 export { oidcAuthProvider, type DelegationOption, type OidcConfig } from './oidc.js';
 export { oidcRpAuthProvider, type OidcRpConfig } from './oidc-rp-provider.js';
-export { IdentityDO, doAuthProvider, type IdentityDoEnv, type IdentityStub } from './identity-do.js';
+export { IdentityDO, type IdentityDoEnv, type IdentityStub } from './identity-do.js';
 export { resolveCookieDomain } from './cookie-domain.js';
 export { FIRST_SIGN_IN_WINDOW_MS, OWNER_CLAIM_TTL_MS, type OwnerSeat, type OwnerTransfer } from './owner-seat.js';
 export {

@@ -61,3 +61,8 @@ test('a dynamic import of a builtin is not a static one', async () => {
     w.done();
   }
 });
+
+test('the shared IdentityDO bundles for a flagless OIDC worker', async () => {
+  const path = new URL('../packages/vertical-auth/src/identity-do.ts', import.meta.url).pathname;
+  assert.deepEqual(await refusedBuiltins(path, []), { refused: [], importedBy: [] });
+});

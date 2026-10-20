@@ -333,8 +333,7 @@ export function ownerSeat(sql: RegistrySql, scopeId: string, now: number): Owner
  * Map a verified subject to a principal in this scope. Bound ⇒ that principal. Unbound with
  * the seat pending AND the first-sign-in window open ⇒ claim it. Otherwise null — a valid
  * login with no seat has no access, and a closed window is "no seat" for THIS path (the
- * claim link is the other). Provider-agnostic: the subject may come from Better Auth or an
- * OIDC issuer.
+ * claim link is the other). The subject is verified by the configured OIDC issuer.
  */
 export function resolvePrincipal(sql: RegistrySql, scopeId: string, sub: string, now: number): string | null {
   const bound = [...sql.exec('SELECT principal FROM identity WHERE scope_id = ? AND sub = ?', scopeId, sub)][0] as
