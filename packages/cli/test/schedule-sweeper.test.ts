@@ -32,6 +32,15 @@ const ENGINE_SCHEDULE = [{ moduleId: '@substrat-run/engine-absence', operation: 
 
 function tree(files: Record<string, string>): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'substrat-cli-sweeper-')));
+  // The push preflight bundles the entry. Give this fixture's imported helper a resolvable
+  // package, just as an installed vertical has one.
+  files = {
+    'node_modules/@substrat-run/adapter-cloudflare/package.json': JSON.stringify({
+      name: '@substrat-run/adapter-cloudflare', type: 'module', main: 'index.js',
+    }),
+    'node_modules/@substrat-run/adapter-cloudflare/index.js': 'export const defineScopeSweeperDO = () => class {};',
+    ...files,
+  };
   for (const [path, content] of Object.entries(files)) {
     mkdirSync(join(dir, path, '..'), { recursive: true });
     writeFileSync(join(dir, path), content);

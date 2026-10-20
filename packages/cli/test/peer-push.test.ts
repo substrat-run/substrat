@@ -10,6 +10,7 @@ it.each([undefined, [], ['acme/crm']])('push sends an explicit calls declaration
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'board', type: 'module', substrat: { permissions: 'permissions.mjs', ...(calls === undefined ? {} : { calls }) } }));
     writeFileSync(join(dir, 'permissions.mjs'), 'export const permissions = { modules: [], roles: [], entityGrants: [] };');
     writeFileSync(join(dir, 'wrangler.jsonc'), JSON.stringify({ main: 'worker.ts', compatibility_date: '2026-07-01' }));
+    writeFileSync(join(dir, 'worker.ts'), 'export default { fetch: () => new Response("ok") };');
     // A real Node module loader can import the runtime-built permission file; Vitest cannot.
     // Replace only wrangler's subprocess. Metadata, manifest validation and upload stay real.
     const result = spawnSync(process.execPath, ['--input-type=module'], {
