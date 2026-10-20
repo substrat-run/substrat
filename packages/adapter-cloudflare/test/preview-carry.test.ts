@@ -2277,6 +2277,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid })).map((e) => `${e.moveId}:${e.role}:${e.state}`);
     const noStage = async (v: keyof typeof version, sid: ScopeId) =>
       (await hostFor(v).introspectScopeTables(sid)).map((tb) => tb.name).filter((n) => n.startsWith('_substrat_stage'));
+    /** The ledger with each entry's lease: a call that renews a move's lease moves it. */
+    const leases = async (sid: ScopeId) =>
+      (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid })).map((e) => `${e.moveId}:${e.role}:${e.state}:${e.leaseUntil}`);
+    const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
     /**
      * An API over the same jobs, whose first `get` of job `id` (or first successful `claim` of it)
      * is held until the test releases it: one call of two that read the same job, made slow.
@@ -2471,8 +2475,12 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const finisher = holding('claim', () => `fork:${sid}`);
       const finishing = pushBg('bg-6', 'v1', {}, finisher.api);
       await finisher.there;
+      const held = await leases(sid);
       expect((await pushBg('bg-6', 'v1')).status).toBe(202);
       expect((await pushBg('bg-6', 'v2')).status).toBe(202);
+      // Neither renewed, settled nor expired anything: the move is as the holder found it.
+      expect(await leases(sid)).toEqual(held);
+      expect((await dir.admin.getScopeRecord(staff, t, sid))?.expiresAt).not.toBeNull();
       // The job is still the finisher's: neither call cancelled, settled or replaced it.
       expect(jobs.jobs.get(`fork:${sid}`)).toMatchObject({ status: 'done', spec: { versionId: version.v1 } });
       finisher.release();
@@ -2504,6 +2512,45 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await ledger(sid)).toEqual(settled);
       expect(await served(seven)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
       expect((await pushBg('bg-7', 'v2')).status).toBe(200);
+
+      // While one call holds the next done carry, another of the same push waits and touches
+      // nothing, and the holder's finish lands.
+      expect((await pushBg('bg-7', 'v3')).status).toBe(202);
+      await pumpToDone();
+      const finisher = holding('claim', () => `carry:${sid}`);
+      const finishing = pushBg('bg-7', 'v3', {}, finisher.api);
+      await finisher.there;
+      const held = await leases(sid);
+      expect((await pushBg('bg-7', 'v3')).status).toBe(202);
+      expect(await leases(sid)).toEqual(held);
+      expect(jobs.jobs.get(`carry:${sid}`)).toMatchObject({ status: 'done', spec: { versionId: version.v3 } });
+      finisher.release();
+      expect((await finishing).status).toBe(200);
+      expect(await served(seven)).toEqual({ ref: refOf.get(version.v3), bodies: rows });
+      expect(jobs.jobs.has(`carry:${sid}`)).toBe(false);
+    });
+
+    it('a call that claimed a done job and died holds it only until its hold runs out; the next call then finishes it', async () => {
+      const sid = (await pushBg('bg-8', 'v1')).body.scopeId;
+      await pumpToDone();
+      // The dead call's claim, with a hold short enough to outlive here.
+      expect(await jobs.claim(`fork:${sid}`, 50)).not.toBeNull();
+      expect((await pushBg('bg-8', 'v1')).status).toBe(202);
+      await pause(80);
+      const made = await pushBg('bg-8', 'v1');
+      expect(made.status).toBe(201);
+      expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+      expect(jobs.jobs.has(`fork:${sid}`)).toBe(false);
+
+      // The same for a re-push's carry.
+      expect((await pushBg('bg-8', 'v2')).status).toBe(202);
+      await pumpToDone();
+      expect(await jobs.claim(`carry:${sid}`, 50)).not.toBeNull();
+      expect((await pushBg('bg-8', 'v2')).status).toBe(202);
+      await pause(80);
+      expect((await pushBg('bg-8', 'v2')).status).toBe(200);
+      expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
+      expect(jobs.jobs.has(`carry:${sid}`)).toBe(false);
     });
 
     it('of two pushes that both began a copy, the one whose job lost the start leaves no page staged', async () => {
