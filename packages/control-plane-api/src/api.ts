@@ -3839,8 +3839,34 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     } catch (e) {
       await settleJobEntries(c, job);
       await discardJobStages(job);
-      throw e;
+      throw finishRefusal(c, job, e);
     }
+  };
+
+  /**
+   * A finish of a claimed job that failed, as the route answers it (#2450). A refusal is answered as
+   * itself. A fault (a 5xx: a load or a bind that failed past its own retries) is answered 409 naming
+   * its status, as a job's own failure is (`refuseFailedJob`): the copy it finished is settled, and
+   * only a new create starts it over, so it is no status to retry. The fault lands its ops-failure
+   * row here, unless the step that met it recorded it.
+   */
+  const finishRefusal = (c: ReqCtx, job: CopyJobRecord, e: unknown): unknown => {
+    const { status, body } = mapError(e);
+    if (status < 500) return e;
+    const recorded = typeof e === 'object' && e !== null && recordedCauses.has(e);
+    if (!recorded && status !== 501) {
+      recordFailure({
+        actor: c.get('actor'),
+        operation: 'preview.create',
+        stage: 'finish',
+        tenantId: job.spec.tenantId,
+        scopeId: job.spec.scopeId,
+        version: job.spec.versionId,
+        status,
+        message: messageOfThrow(e),
+      }, e);
+    }
+    return new ControlPlaneError(409, `the background copy failed with ${status} while it was finished: ${body.detail ?? 'internal error'}`);
   };
 
   /**
@@ -10445,6 +10471,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           clearServingRef: true,
           recarry: () => carryOntoVersion(c, existing, opts.versionId, { dropServingRef: true }),
         });
+      } catch (e) {
+        // A job's bind that failed is that copy's end, as its load's is (`finishRefusal`).
+        throw finishedJob ? finishRefusal(c, finishedJob, e) : e;
       } finally {
         // #2450: a job this call finished stays claimed until its bind has landed or failed, so a
         // newer push polling meanwhile waits, rather than carry from the binding this one replaces.

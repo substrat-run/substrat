@@ -109,9 +109,10 @@ Two adapter implementations behind one interface, mirroring the whole platform:
     provision its own, and once its copy has landed and its job is forgotten. After that, an older
     version (a deliberate re-preview) is taken like any other create.
   - A copy's failure is answered with the status a refusal had, and with 409 naming the fault
-    when the copy met a 5xx (its deadline, an end it could not reach): the call reporting it did
-    not fail, so it is never a status a client retries as a gateway's. The fault still lands an
-    ops-failure row.
+    when the copy met a 5xx (its deadline, an end it could not reach, a load or a bind that failed
+    while the job was finished): the copy is settled by then, and only a new create starts it over,
+    so it is never a status a client retries as a gateway's. The fault still lands an ops-failure
+    row.
 
   Only previews run this way; a rebind or adopt of a live scope still copies in its request. One
   step remains open in #2450: an online copy with catch-up, for a busy scope at GB scale.

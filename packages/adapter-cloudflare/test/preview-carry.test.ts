@@ -2916,7 +2916,10 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       await pumpToDone();
       const fork = jobs.jobs.get(`fork:${sid}`)!;
       expect(await noStage('v1', sid)).not.toEqual([]);
-      expect((await pushBg('bg-23', 'v1', { poll: true }, renewDrops())).status).toBe(500);
+      // A copy's end, answered as one (`finishRefusal`): 409, naming the fault.
+      const dropped = await pushBg('bg-23', 'v1', { poll: true }, renewDrops());
+      expect(dropped.status).toBe(409);
+      expect(reason(dropped)).toMatch(/background copy failed with 500 while it was finished/);
       expect(jobs.jobs.has(fork.spec.id)).toBe(false);
       expect(await entriesOf(sid, fork.spec.moveId)).toEqual([`${fork.spec.moveId}:destination:retained`]);
       expect(await noStage('v1', sid)).toEqual([]);
@@ -2931,13 +2934,56 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       await pumpToDone();
       const carry = jobs.jobs.get(`carry:${pid}`)!;
       expect(await noStage('v2', pid)).not.toEqual([]);
-      expect((await pushBg('bg-24', 'v2', { poll: true }, renewDrops())).status).toBe(500);
+      expect((await pushBg('bg-24', 'v2', { poll: true }, renewDrops())).status).toBe(409);
       expect(jobs.jobs.has(carry.spec.id)).toBe(false);
       expect((await entriesOf(pid, carry.spec.moveId)).sort()).toEqual(
         [`${carry.spec.moveId}:destination:retained`, `${carry.spec.moveId}:source:retained`],
       );
       expect(await noStage('v2', pid)).toEqual([]);
       expect(await served(h)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+    });
+
+    it("a finish whose load meets a fault is that copy's end: 409 naming it, recorded once, and the next poll is told it is gone", async () => {
+      const failing = (ref: string, sid: ScopeId): Hook => async (r, s) => {
+        if (r === ref && s === sid) throw new Error('the destination went away under the load');
+      };
+      const faultsOf = async (sid: ScopeId) => (await dir.admin.listOpsFailures(staff, { scopeId: sid })).filter((f) => f.status >= 500);
+
+      // A fork: its restore retries, records the fault as the restore's, and the finish answers it.
+      const sid = (await pushBg('bg-31', 'v1')).body.scopeId;
+      await pumpToDone();
+      hooks.restore = failing(refOf.get(version.v1)!, sid);
+      try {
+        const failed = await poll('bg-31', 'v1');
+        expect(failed.status).toBe(409);
+        expect(reason(failed)).toMatch(/background copy failed with 500 while it was finished: .*went away under the load/);
+      } finally {
+        delete hooks.restore;
+      }
+      await vi.waitFor(async () => expect((await faultsOf(sid)).map((f) => f.stage)).toEqual(['restore']));
+      expect(jobs.jobs.has(`fork:${sid}`)).toBe(false);
+      expect(await noStage('v1', sid)).toEqual([]);
+      expect(reason(await poll('bg-31', 'v1'))).toMatch(/is no longer running/);
+
+      // A carry: the finish records it itself.
+      const made = (await pushBg('bg-32', 'v1')).body.scopeId;
+      await pumpToDone();
+      const { hostname: h } = (await poll('bg-32', 'v1')).body;
+      expect((await pushBg('bg-32', 'v2')).status).toBe(202);
+      await pumpToDone();
+      hooks.restore = failing(refOf.get(version.v2)!, made);
+      try {
+        const failed = await poll('bg-32', 'v2');
+        expect(failed.status).toBe(409);
+        expect(reason(failed)).toMatch(/background copy failed with 500 while it was finished/);
+      } finally {
+        delete hooks.restore;
+      }
+      await vi.waitFor(async () => expect((await faultsOf(made)).map((f) => f.stage)).toEqual(['finish']));
+      expect(jobs.jobs.has(`carry:${made}`)).toBe(false);
+      expect(await noStage('v2', made)).toEqual([]);
+      expect(await served(h)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+      expect(reason(await poll('bg-32', 'v2'))).toMatch(/is no longer running/);
     });
 
     it('a fork never loads a source that was carried to another script and wiped while it was read', async () => {
