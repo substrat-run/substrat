@@ -148,6 +148,26 @@ describe('advanceCopyJob (#2450)', () => {
     expect(stuck.error!.message).toMatch(new RegExp(`after ${COPY_JOB_MAX_FAULTS} attempts`));
   });
 
+  it('at the default 30 min lease a step runs its whole 20 s and a retry waits its whole backoff, as before', async () => {
+    // Each page takes 10 s on this clock, and a fault would back off 32 s.
+    const h = harness();
+    const slow = (fail: boolean) => ({ ...h.deps, clientForRef: async (ref: string) => {
+      const client = await h.deps.clientForRef(ref);
+      if (ref !== 'src' || !client) return client;
+      return { ...client, exportScopePage: async (...args: Parameters<VerticalClient['exportScopePage']>) => {
+        h.clock.now += 10_000;
+        if (fail) throw new ControlPlaneError(503, 'down');
+        return client.exportScopePage(...args);
+      } } as unknown as VerticalClient;
+    } });
+    expect(h.spec().leaseMs).toBe(SCOPE_COPY_LEASE_MS);
+    const state = await h.begin();
+    // No step budget given: COPY_JOB_STEP_MS, two 10 s pages after the one the route staged.
+    expect(await advanceCopyJob(slow(false), newCopyJob(h.spec(), state, h.clock.now))).toMatchObject({ status: 'copying', pages: 3 });
+    const faulty = { ...newCopyJob(h.spec(), state, h.clock.now), faults: 4 };
+    expect(await advanceCopyJob(slow(true), faulty)).toMatchObject({ status: 'copying', faults: 5, nextDelayMs: 32_000 });
+  });
+
   it('a short lease bounds both a step and the wait before a retry to a quarter of it', async () => {
     // An 8 s lease: each page takes 1 s on this clock, and a fault would back off 16 s.
     const pageMs = (h: ReturnType<typeof harness>, fail?: (n: number) => boolean) => ({ ...h.deps, clientForRef: async (ref: string) => {
