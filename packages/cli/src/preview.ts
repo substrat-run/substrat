@@ -253,9 +253,17 @@ export async function createPreview(opts: {
   sleep?: (ms: number) => Promise<void>;
 }): Promise<PreviewCreated> {
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const giveUpAt = Date.now() + (opts.waitMs ?? PREVIEW_COPY_WAIT_MS);
+  const waitMs = opts.waitMs ?? PREVIEW_COPY_WAIT_MS;
+  const giveUpAt = Date.now() + waitMs;
+  /** Why this stopped waiting, and what running it again does: every way the wait ends unfinished. */
+  const gaveUp = (why: string, cause?: unknown): Error =>
+    new Error(
+      `preview create failed: ${why}. Running this command again pushes a new version, whose copy starts over and replaces this one.`,
+      cause === undefined ? undefined : { cause },
+    );
   let pollMs = 5_000;
   let faults = 0;
+  let pages = 0;
   // Whether the last 202 named this create's own version: the call after it continues that copy (a
   // poll), which the control plane never answers by starting another. A 202 naming another push's
   // copy (one being finished) leaves the next call free to start this push's own.
@@ -296,8 +304,14 @@ export async function createPreview(opts: {
       // A poll that still fails the way a gateway or the network fails is polled again, inside
       // the wait: one blip among thousands of polls must not end a six-hour copy. A definite
       // answer (a 4xx, a 500) ends it, as does a control plane that stays unreachable.
-      if (!polling || !pollFaultIsTransient(e) || ++faults > PREVIEW_POLL_FAULTS || Date.now() >= giveUpAt) throw e;
+      if (!polling || !pollFaultIsTransient(e)) throw e;
       const why = e instanceof PreviewCallFailed ? String(e.status) : `network error: ${e instanceof Error ? e.message : String(e)}`;
+      if (++faults > PREVIEW_POLL_FAULTS) {
+        throw gaveUp(`polling the copy failed ${faults} times in a row (the last: ${why}), so this stopped waiting; the copy may still be running`, e);
+      }
+      if (Date.now() >= giveUpAt) {
+        throw gaveUp(`the preview's data was still being copied after ${Math.round(waitMs / 60_000)} min (${pages} pages when last polled), and the last poll failed (${why})`, e);
+      }
       console.warn(`preview create: polling the copy failed (${why}); polling again in ${pollMs / 1000}s (${faults} of ${PREVIEW_POLL_FAULTS})`);
       await sleep(pollMs);
       continue;
@@ -305,11 +319,9 @@ export async function createPreview(opts: {
     faults = 0;
     if (!isCopying(out)) return out;
     polling = out.versionId === opts.versionId;
+    pages = out.progress.pages;
     if (Date.now() >= giveUpAt) {
-      throw new Error(
-        `preview create failed: the preview's data was still being copied after ${Math.round((opts.waitMs ?? PREVIEW_COPY_WAIT_MS) / 60_000)} min ` +
-          `(${out.progress.pages} pages so far). Running this command again pushes a new version, whose copy starts over and replaces this one.`,
-      );
+      throw gaveUp(`the preview's data was still being copied after ${Math.round(waitMs / 60_000)} min (${pages} pages so far)`);
     }
     const attempt = out.progress.attempt > 1 ? `, attempt ${out.progress.attempt}: the source changed while it was read` : '';
     console.warn(`preview create: copying the preview's data (${out.progress.pages} pages, ${out.progress.rows} rows so far${attempt})`);

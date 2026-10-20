@@ -504,9 +504,31 @@ describe('preview create retries a transient platform fault (#1918)', () => {
       const settled = createPreview(polling).then((v) => ({ v }), (e: unknown) => ({ e }));
       await vi.advanceTimersByTimeAsync(120_000);
       const r = await settled;
-      expect('e' in r && String(r.e)).toMatch(/\(502\)/);
+      // It says it stopped waiting, that the copy may still run, and what running it again does.
+      expect('e' in r && String(r.e)).toMatch(
+        /polling the copy failed 11 times in a row \(the last: 502\), so this stopped waiting; the copy may still be running\. Running this command again pushes a new version, whose copy starts over and replaces this one/,
+      );
+      expect('e' in r && (r.e as Error).cause).toBeInstanceOf(Error);
       // The first call, then eleven polls of three tries each: ten ridden out, the eleventh thrown.
       expect(bodies).toHaveLength(1 + 11 * 3);
+    });
+
+    it('a wait that runs out during failed polls says so, with the progress last seen', async () => {
+      vi.useFakeTimers();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const bodies = scriptThrowing([
+        () => Response.json({ copying: true, scopeId: 'S1', versionId: '01J', progress: { pages: 7, rows: 70, attempt: 1 }, retryAfter: 5 }, { status: 202 }),
+        () => fault('down'),
+      ]);
+      // The wait is spent by the time the first poll has failed.
+      const settled = createPreview({ ...polling, waitMs: 1 }).then((v) => ({ v }), (e: unknown) => ({ e }));
+      await vi.advanceTimersByTimeAsync(20_000);
+      const r = await settled;
+      expect('e' in r && String(r.e)).toMatch(
+        /still being copied after 0 min \(7 pages when last polled\), and the last poll failed \(502\)\. Running this command again pushes a new version/,
+      );
+      // The first call, then one poll of three tries.
+      expect(bodies).toHaveLength(1 + 3);
     });
   });
 });

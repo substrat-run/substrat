@@ -452,7 +452,9 @@ unchanged routing and co-located incoming versions need no copy. Migrations roll
 same data, but writes during a copy may be lost (see
 [what a push copies](/guide/environments-and-previews#previews-the-non-prod-primitive)).
 A fork or a copy too large for one request runs in the background: `create` prints its progress
-and waits until the preview is ready, for up to six hours. If the CLI stops waiting (its CI job is
+and waits until the preview is ready, for up to six hours. A poll that fails as a gateway or the
+network fails is polled again, up to ten in a row; past that, `create` stops waiting and says the
+copy may still be running. If the CLI stops waiting (its CI job is
 cancelled, say), the preview is left as it was: a new one is not ready, and one being updated keeps
 serving the previous push. Running `create` again pushes a new version, whose copy starts over and
 replaces the one left running. A copy that fails, or that a newer push, a refresh or a delete
