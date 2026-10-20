@@ -111,6 +111,18 @@ export interface CopyJobs {
 export const copyJobHeld = (job: CopyJobRecord, now: number): boolean =>
   job.status === 'done' && (job.claimedUntil ?? 0) > now;
 
+/**
+ * Whether `job` can still move or land its push's data, at `now` (epoch ms): copying, and not past
+ * its deadline by more than a lease (a step fails it there, so one still copying has lost its steps);
+ * or done and still finishable, held by the call finishing it or inside the lease its last step
+ * renewed. A failed or cancelled job cannot, nor can one left done past that lease: its claim would
+ * find the lease gone.
+ */
+export const copyJobLive = (job: CopyJobRecord, now: number): boolean => {
+  if (job.status === 'copying') return now <= job.spec.deadline + job.spec.leaseMs;
+  return job.status === 'done' && (copyJobHeld(job, now) || now < job.updatedAt + job.spec.leaseMs);
+};
+
 /** What a step needs: the two deployments, and the ledger to renew the lease in. */
 export interface CopyJobDeps {
   clientForRef(ref: string): Promise<VerticalClient | undefined>;

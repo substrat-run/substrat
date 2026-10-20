@@ -3017,7 +3017,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
           // A create of a push older than v3 is superseded before it acts.
           const stale = await pushBg(tag, 'v2');
           expect(stale.status).toBe(409);
-          expect(reason(stale)).toMatch(/newer push \(version \w+\) to preview .* is replacing its copy.*superseded/);
+          expect(reason(stale)).toMatch(/newer push \(version \w+\) to preview .* called within the last 15 min, so this push .* was superseded/);
           expect((await rowsFor(tag)).map((s) => s.id)).toEqual(before);
           held.release();
           const newer = await replacing;
@@ -3035,18 +3035,26 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       }
     });
 
-    it("an older version is taken again once the newer push's mark has run out, and on another preview at any time", async () => {
-      // The same jobs as everything else would be, on a clock this test moves.
-      let skew = 0;
-      const clocked = memoryCopyJobs(
-        { clientForRef: async (ref) => (hostOf.has(ref) ? clientFor(ref) : undefined), admin: dir.admin, now: () => Date.now() + skew },
+    /** An API over jobs of its own, whose clock the test moves (`clock.skew`, ms): for the mark's hold. */
+    const clockedPlane = () => {
+      const clock = { skew: 0 };
+      const store = memoryCopyJobs(
+        { clientForRef: async (ref) => (hostOf.has(ref) ? clientFor(ref) : undefined), admin: dir.admin, now: () => Date.now() + clock.skew },
         { stepMs: 0 },
       );
-      const plane = createControlPlaneApi({ ...apiOptions, copyJobs: clocked });
-      const call = (tag: string, v: keyof typeof version, extra: object = {}) => pushBg(tag, v, extra, plane);
-      const settle = async () => {
-        for (let i = 0; i < 200 && [...clocked.jobs.values()].some((j) => j.status === 'copying'); i++) await clocked.pump();
+      const plane = createControlPlaneApi({ ...apiOptions, copyJobs: store });
+      return {
+        clock,
+        store,
+        call: (tag: string, v: keyof typeof version, extra: object = {}) => pushBg(tag, v, extra, plane),
+        settle: async () => {
+          for (let i = 0; i < 200 && [...store.jobs.values()].some((j) => j.status === 'copying'); i++) await store.pump();
+        },
       };
+    };
+
+    it("an older version is taken again once the newer push's mark has run out, and on another preview at any time", async () => {
+      const { clock, call, settle } = clockedPlane();
       expect((await call('bg-21', 'v3')).status).toBe(202);
       await settle();
       const made = await call('bg-21', 'v3', { poll: true });
@@ -3054,12 +3062,12 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       // A re-preview of v1 straight after is superseded, there and only there.
       const early = await call('bg-21', 'v1');
       expect(early.status).toBe(409);
-      expect(reason(early)).toMatch(/superseded.*15 min have passed since that push's last call/);
+      expect(reason(early)).toMatch(/called within the last 15 min, so .* was superseded.*taken again 15 min after a newer push's last call/);
       expect((await call('bg-22', 'v1')).status).toBe(202);
       await settle();
       expect((await call('bg-22', 'v1', { poll: true })).status).toBe(201);
       // Once the mark's hold has run out, v1 is taken like any other create: its carry runs, and lands.
-      skew = 15 * 60_000 + 1;
+      clock.skew = 15 * 60_000 + 1;
       expect((await call('bg-21', 'v1')).status).toBe(202);
       await settle();
       expect((await call('bg-21', 'v1', { poll: true })).status).toBe(200);
@@ -3067,9 +3075,9 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
 
       // A copy that outlasts the hold its first call took: the poll that finishes it is the push's
       // last call, and holds the mark from there.
-      skew = 0;
+      clock.skew = 0;
       expect((await call('bg-26', 'v3')).status).toBe(202);
-      skew = 15 * 60_000 + 1;
+      clock.skew = 15 * 60_000 + 1;
       await settle();
       const long = await call('bg-26', 'v3', { poll: true });
       expect(long.status).toBe(201);
@@ -3077,11 +3085,52 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(after.status).toBe(409);
       expect(reason(after)).toMatch(/superseded/);
       // And 15 min after that poll, v1 is taken.
-      skew += 15 * 60_000 + 1;
+      clock.skew += 15 * 60_000 + 1;
       expect((await call('bg-26', 'v1')).status).toBe(202);
       await settle();
       expect((await call('bg-26', 'v1', { poll: true })).status).toBe(200);
       expect(await served(long.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+    });
+
+    it("a newer push's job that failed, or was left unfinished past its lease, holds no older version off", async () => {
+      const { clock, store, call, settle } = clockedPlane();
+      // A newer push's fork that fails past its deadline.
+      const started = await call('bg-27', 'v3');
+      expect(started.status).toBe(202);
+      const id = `fork:${started.body.scopeId}`;
+      const fork = store.jobs.get(id)!;
+      store.jobs.set(id, { ...fork, spec: { ...fork.spec, deadline: Date.now() - 1 } });
+      await store.pump(id);
+      expect(store.jobs.get(id)?.status).toBe('failed');
+      // Within the newer push's hold an older version is superseded, on the mark.
+      expect(reason(await call('bg-27', 'v1'))).toMatch(/called within the last 15 min/);
+      // Past it, the failed job holds nothing off: v1 is taken, and lands.
+      clock.skew = 15 * 60_000 + 1;
+      expect((await call('bg-27', 'v1')).status).toBe(202);
+      await settle();
+      expect((await call('bg-27', 'v1', { poll: true })).status).toBe(201);
+
+      // A newer push's carry, done and never finished: while the lease its last step renewed lasts,
+      // it is finishing, and holds an older version off past the mark's hold too.
+      clock.skew = 0;
+      expect((await call('bg-28', 'v1')).status).toBe(202);
+      await settle();
+      const { scopeId: sid, hostname: h } = (await call('bg-28', 'v1', { poll: true })).body;
+      expect((await call('bg-28', 'v3')).status).toBe(202);
+      await settle();
+      const carry = store.jobs.get(`carry:${sid}`)!;
+      expect(carry.status).toBe('done');
+      clock.skew = 15 * 60_000 + 1;
+      const finishing = await call('bg-28', 'v2');
+      expect(finishing.status).toBe(409);
+      expect(reason(finishing)).toMatch(/newer push \(version \w+\) to preview 'bg-28' is finishing its copy, so this push .* was superseded/);
+      // Past that lease, it holds nothing off: v2 replaces it, and lands.
+      store.jobs.set(carry.spec.id, { ...carry, updatedAt: Date.now() - carry.spec.leaseMs - 1 });
+      expect((await call('bg-28', 'v2')).status).toBe(202);
+      expect(store.jobs.get(`carry:${sid}`)?.spec.versionId).toBe(version.v2);
+      await settle();
+      expect((await call('bg-28', 'v2', { poll: true })).status).toBe(200);
+      expect(await served(h)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
     });
   });
 });

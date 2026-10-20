@@ -6,6 +6,7 @@ import {
   COPY_JOB_MAX_FAULTS,
   advanceCopyJob,
   copyJobId,
+  copyJobLive,
   copyJobThrewRetryMs,
   memoryCopyJobs,
   newCopyJob,
@@ -365,6 +366,26 @@ describe('advanceCopyJob (#2450)', () => {
     const h = harness();
     const job = await advanceCopyJob(h.deps, newCopyJob(h.spec({ destRef: 'gone' }), await h.begin(), h.clock.now));
     expect(job).toMatchObject({ status: 'copying', faults: 1 });
+  });
+});
+
+describe('copyJobLive (#2450)', () => {
+  it('a job is live while it can still land its data: copying in time, or done and still finishable', async () => {
+    const h = harness();
+    const state = await h.begin();
+    const now = h.clock.now;
+    const copying = newCopyJob(h.spec({ deadline: now + 1_000 }), state, now);
+    const lease = copying.spec.leaseMs;
+    expect(copyJobLive(copying, now)).toBe(true);
+    // Past its deadline by less than a lease, a step still fails it; by more, its steps are gone.
+    expect(copyJobLive(copying, now + 1_000 + lease)).toBe(true);
+    expect(copyJobLive(copying, now + 1_000 + lease + 1)).toBe(false);
+    const done = { ...copying, status: 'done' as const, updatedAt: now };
+    expect(copyJobLive(done, now + lease - 1)).toBe(true);
+    expect(copyJobLive(done, now + lease)).toBe(false);
+    // Held by the call finishing it, it is live past that lease too.
+    expect(copyJobLive({ ...done, claimedUntil: now + 2 * lease }, now + lease + 1)).toBe(true);
+    for (const status of ['failed', 'cancelled'] as const) expect(copyJobLive({ ...copying, status }, now)).toBe(false);
   });
 });
 

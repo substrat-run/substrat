@@ -185,7 +185,7 @@ import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } fro
 import { mintTenantToken } from './tenant-token.js';
 import { beginTransfer, connectionGrantsForScope, transferScope, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
 import {
-  COPY_JOB_MAX_MS, copyJobHeld, copyJobId, copyTagId, versionIdOfOrder, versionOrderOf, type CopyJobRecord, type CopyJobs,
+  COPY_JOB_MAX_MS, copyJobHeld, copyJobId, copyJobLive, copyTagId, versionIdOfOrder, versionOrderOf, type CopyJobRecord, type CopyJobs,
 } from './copy-job.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
@@ -3740,17 +3740,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   /**
    * #2450: a push older than the one a preview's job is copying for is refused, never allowed to
    * replace it. Otherwise two CI runs for one preview would cancel each other's copy at every poll.
-   * Older by `versionOrderOf`: when the registry recorded each version, whatever its id.
+   * Older by `versionOrderOf`: when the registry recorded each version, whatever its id. Only a job
+   * that can still land its push's data holds an older one off (`copyJobLive`): one that failed, was
+   * cancelled or was left unfinished past its lease is replaced like any other.
    */
   const supersededRefusal = (
     job: CopyJobRecord,
     mine: { versionId: string; order: string },
     tag: string,
   ): ControlPlaneError | null =>
-    mine.order < job.spec.versionOrder
+    mine.order < job.spec.versionOrder && copyJobLive(job, Date.now())
       ? new ControlPlaneError(
         409,
-        `a newer push (version ${job.spec.versionId}) to preview '${tag}' is copying its data, so this push ` +
+        `a newer push (version ${job.spec.versionId}) to preview '${tag}' ` +
+          `${job.status === 'copying' ? 'is copying its data' : 'is finishing its copy'}, so this push ` +
           `(version ${mine.versionId}) was superseded and did nothing`,
       )
       : null;
@@ -3763,13 +3766,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * mark's hold has run out, and no newer push's job is copying, an older version (a deliberate
    * re-preview) is taken like any other create.
    */
-  const supersededByMark = (newest: string, mine: { versionId: string }, tag: string): ControlPlaneError =>
-    new ControlPlaneError(
+  const supersededByMark = (newest: string, mine: { versionId: string }, tag: string): ControlPlaneError => {
+    const minutes = PREVIEW_CREATE_BOUND_MS / 60_000;
+    return new ControlPlaneError(
       409,
-      `a newer push (version ${versionIdOfOrder(newest)}) to preview '${tag}' is replacing its copy, so this push ` +
-        `(version ${mine.versionId}) was superseded and did nothing. An older version is taken again once that ` +
-        `copy is over and ${PREVIEW_CREATE_BOUND_MS / 60_000} min have passed since that push's last call`,
+      `a newer push (version ${versionIdOfOrder(newest)}) to preview '${tag}' called within the last ${minutes} min, ` +
+        `so this push (version ${mine.versionId}) was superseded and did nothing. An older version is taken again ` +
+        `${minutes} min after a newer push's last call, once no newer push's copy is running`,
     );
+  };
 
   /**
    * How long a call that claimed a done job holds it to finish it (#2450): twice the copy lease. The
