@@ -4,9 +4,9 @@
  *
  * workerd resolves `node:async_hooks` only under `nodejs_als` or `nodejs_compat`, and every
  * other `node:*` module only under `nodejs_compat`. Without the flag a bundle that imports one
- * builds, uploads, and then fails to start: `No such module "node:async_hooks"`. No node suite
- * can see that, because node has every module, and a workerd suite runs under the pool's own
- * flags. A static import in a shared package (vertical-host's invocation log, which every
+ * builds, uploads, and then fails to start: `No such module "node:async_hooks"`. A node suite
+ * cannot see that, because node has every module, and a workerd suite may run under its own
+ * flags. An import in a shared package (vertical-host's invocation log, which every
  * deployed vertical and the dashboard bundle) breaks every flagless worker at once — the
  * dashboard's deploy in a release would fail after the control plane and the router had already
  * shipped.
@@ -106,10 +106,7 @@ async function main() {
   }
 
   if (offences.length) {
-    console.error(
-      `worker-node-imports: ${offences.length} worker(s) would not start on workerd:\n\n  ${offences.join('\n  ')}\n\n` +
-        `  Remove the unsupported imports or declare nodejs_compat for that worker.`,
-    );
+    console.error(`worker-node-imports: ${offences.length} worker(s) would not start on workerd:\n\n  ${offences.join('\n  ')}`);
     process.exit(1);
   }
   console.log(`worker-node-imports: ${checked.length} worker bundle(s) without nodejs_compat import no builtin their flags lack:\n  ${checked.join('\n  ')}`);

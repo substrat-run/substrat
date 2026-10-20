@@ -1,5 +1,5 @@
-import { builtinModules } from 'node:module';
 import { realpathSync } from 'node:fs';
+import { builtinModules } from 'node:module';
 import { relative, resolve } from 'node:path';
 import { build } from 'esbuild';
 
@@ -37,7 +37,8 @@ export async function refusedBuiltins(entry: string, flags: readonly string[]): 
     logLevel: 'silent',
   });
   const inputs = result.metafile.inputs;
-  const first = Object.keys(inputs).find((file) => realpathSync(resolve(file)) === realpathSync(entry));
+  const entryPath = realpathSync(entry);
+  const first = Object.keys(inputs).find((file) => realpathSync(resolve(file)) === entryPath);
   if (!first) throw new Error(`the Worker entry ${entry} was absent from its bundle graph`);
 
   const paths = new Map<string, string[]>([[first, [first]]]);
