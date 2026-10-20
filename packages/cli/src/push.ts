@@ -683,6 +683,13 @@ export function formatPermissionSurface(surface: PermissionSurface, label?: stri
       lines.push(`  ${g.entityType}: ${g.permissions.join(', ')}`);
     }
   }
+  // #2316: the key every connection of a provider is granted, which the digest also covers.
+  if (registry.connections?.length) {
+    lines.push('', 'connection landings:');
+    for (const l of registry.connections) {
+      lines.push(`  ${l.provider}: ${l.operation} holding ${l.permission}`);
+    }
+  }
   if (surface.envSpec) {
     lines.push('', `env keys (code-declared, #1206): ${surface.envSpec.length}`);
     for (const e of surface.envSpec) {

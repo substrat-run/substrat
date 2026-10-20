@@ -110,6 +110,8 @@ export const INDEX_VALUE_EXPORTS = [
   // #2321: the migration replay `substrat push` calls through a vertical's own kernel, and its version.
   'MIGRATION_REPLAY_API',
   'MODEL_USAGE_RETENTION_DAYS',
+  // #2316: the text a connector sweep row carries when a connection has no binding.
+  'NO_BINDING',
   'NotListable',
   'NotSearchable',
   'OPS_FAILURE_RETENTION_DAYS',
