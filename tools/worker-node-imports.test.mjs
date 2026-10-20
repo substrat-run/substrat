@@ -16,7 +16,6 @@ test('root import gates rebuild the CLI rule and the pre-push hook runs the lint
     assert.match(scripts[name], /^pnpm --filter @substrat-run\/cli\.\.\. build && node /);
   }
   assert.match(readFileSync(new URL('.githooks/pre-push', root), 'utf8'), /pnpm run lint:worker-node-imports/);
-  assert.equal(existsSync(new URL('../packages/cli/dist/worker-node-imports.js', import.meta.url)), true);
 });
 
 /** A worker entry on disk that imports `specifiers` statically (and `dynamic` through import()). */

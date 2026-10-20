@@ -1658,9 +1658,8 @@ export async function push(
     opts.preparedWorker.root === resolve(opts.dir) ? opts.preparedWorker : undefined;
   const { cfg, needs } = prepared ?? resolveWranglerConfig(opts.dir);
 
-  // Before anything is built: a UI in the tree that this push would not serve (#881).
-  // Refused here rather than after the bundle, so the remedy arrives in a second instead
-  // of at the end of a wrangler build the vertical was going to ship broken anyway.
+  // Direct callers check the UI before building; command callers already checked it
+  // before the prepared bundle was built (#881).
   assertUiIsServed(opts.dir, needs, readAssetsNeed(cfg, needs), opts.allowUnservedUi);
 
   const { bindings, doClasses } = declaredStoresOf(cfg);

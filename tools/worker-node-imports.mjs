@@ -11,8 +11,8 @@
  * dashboard's deploy in a release would fail after the control plane and the router had already
  * shipped.
  *
- * So this bundles each worker under workerd conditions and refuses reachable static and
- * dynamic imports of a builtin its flags do not give it, including guarded imports. The
+ * So this bundles each worker under workerd conditions and refuses reachable static,
+ * dynamic, and CommonJS imports of a builtin its flags do not give it, including guards. The
  * shared rule lives in the CLI, which also runs it before upload. The platform entry the
  * control plane puts in front of a pushed vertical is not part of any bundle here; the
  * uploader adds `nodejs_als` for it (`withPlatformEntry`).
@@ -24,7 +24,7 @@
  *   pnpm lint:worker-node-imports
  *   pnpm test:worker-node-imports     the rule, on fixtures
  *
- * Needs the build (`packages/cli/dist`), like every tool that derives a push's config.
+ * The root scripts build `packages/cli/dist` before loading this shared rule.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';

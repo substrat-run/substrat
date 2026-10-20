@@ -462,11 +462,11 @@ async function cmdPush(): Promise<void> {
   // it throws like every other failure of the gate.
   reportOutbound(dir, meta.outbound, jsonCheck ? console.error : console.log);
 
-  // `--check` (#1205): everything the push does to the DECLARED SURFACE, and nothing else.
+  // `--check` (#1205): the push's declared surface and local gates.
   // It resolves `substrat.permissions`, imports the entry, derives the registry and hashes
   // it — the same code path the push ships from, so a vertical gating this in CI needs no
   // second implementation and no deep import of the CLI's build output. Returns BEFORE
-  // `resolveAuth`/`nextVersion`, so it needs no login and makes no network call; the layer
+  // `resolveAuth`/`nextVersion`, so it needs no login and makes no registry call; the layer
   // rules above have already run, which makes `substrat push --check` the whole local gate.
   // Every failure throws (main() prints it and exits non-zero) — that is the gate.
   if (argv.includes('--check')) {

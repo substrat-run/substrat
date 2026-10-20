@@ -669,9 +669,10 @@ Before upload, `push`, `preview` and `push --check` bundle the Worker under work
 conditions and refuse a static import, `import('node:…')`, or CommonJS `require('node:…')`
 of a Node builtin its compatibility flags do not allow, even when a dependency loads it or a
 `typeof` guard surrounds it. The diagnostic shows the chain of imports. An `import(variable)`
-cannot be resolved statically and is outside this preflight. Remove the dependency or use a Worker API; if Node compatibility is
-intended, declare `needsNodeCompat: true` in `substrat.runtimeNeeds` (or `nodejs_compat` in a
-hand-authored Wrangler config). `nodejs_als` allows only `node:async_hooks`.
+cannot be resolved statically and is outside this preflight. Remove the dependency or use a
+Worker API; if Node compatibility is intended, declare `needsNodeCompat: true` in
+`substrat.runtimeNeeds` (or `nodejs_compat` in a hand-authored Wrangler config). `nodejs_als`
+allows only `node:async_hooks`.
 
 ### Declared outbound hosts
 

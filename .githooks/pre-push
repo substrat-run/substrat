@@ -26,7 +26,7 @@
 set -euo pipefail
 
 if ! command -v pnpm >/dev/null 2>&1; then
-  echo "pre-push: pnpm not found on PATH — skipping typecheck (install pnpm to enable the gate)" >&2
+  echo "pre-push: pnpm not found on PATH — skipping local gates (install pnpm to enable them)" >&2
   exit 0
 fi
 
