@@ -1,5 +1,15 @@
 # @substrat-run/dev-issuer
 
+## 0.2.37
+
+### Patch Changes
+
+- Updated dependencies [6933146]
+- Updated dependencies [35bdba2]
+- Updated dependencies [8122e15]
+  - @substrat-run/contracts@0.155.0
+  - @substrat-run/vertical-auth@0.26.0
+
 ## 0.2.36
 
 ### Patch Changes
