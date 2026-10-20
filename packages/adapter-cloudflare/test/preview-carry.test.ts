@@ -3038,6 +3038,24 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await expiry(sid)).toBeGreaterThan(Date.now() + hour - 60_000);
     });
 
+    it('a fork bind that committed but lost its answer has landed: the preview is answered, not abandoned', async () => {
+      const sid = (await pushBg('bg-37', 'v1')).body.scopeId;
+      await pumpToDone();
+      const made = await pushBg('bg-37', 'v1', { poll: true }, adminDrops('bindScopeVersion', { answerLost: true }));
+      expect(made.status).toBe(201);
+      const row = await dir.admin.getScopeRecord(staff, t, sid);
+      expect(row).toMatchObject({ status: 'active', verticalVersionId: version.v1 });
+      expect(Date.parse(row!.expiresAt!)).toBeGreaterThan(Date.now() + 3_600_000);
+      expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+      // Its twin: a bind dropped before it committed is the copy's end, and the row is expired.
+      const other = (await pushBg('bg-38', 'v1')).body.scopeId;
+      await pumpToDone();
+      const dropped = await pushBg('bg-38', 'v1', { poll: true }, adminDrops('bindScopeVersion'));
+      expect(dropped.status).toBe(409);
+      expect(reason(dropped)).toMatch(/background copy failed with 500 while it was finished/);
+      expect(Date.parse((await dir.admin.getScopeRecord(staff, t, other))!.expiresAt!)).toBeLessThanOrEqual(Date.now());
+    });
+
     it('a carry whose bind landed but whose job was never forgotten is answered the preview, never finished again', async () => {
       const sid = (await pushBg('bg-33', 'v1')).body.scopeId;
       await pumpToDone();

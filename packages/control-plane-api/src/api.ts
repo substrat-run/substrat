@@ -10312,6 +10312,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         await c.var.admin.bindScopeVersion(actor, tenantId, p.previewId, opts.versionId,
           p.fork ? { confirmMove: { moveId: p.fork.moveId, source: 'retained' } } : undefined);
       } catch (e) {
+        // A bind that committed and lost only its answer has landed the fork: abandoning it would
+        // expire a row that serves this version. The carry draws the same line (`bindAfterCarry`'s caller).
+        const now = await c.var.admin.getScopeRecord(actor, tenantId, p.previewId).catch(() => undefined);
+        if (now?.status === 'active' && now.verticalVersionId === opts.versionId) return;
         await abandonFork(p.previewId, p.fork, p.targetRef);
         throw e;
       }
