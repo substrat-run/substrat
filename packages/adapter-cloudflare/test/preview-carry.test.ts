@@ -2947,7 +2947,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const failing = (ref: string, sid: ScopeId): Hook => async (r, s) => {
         if (r === ref && s === sid) throw new Error('the destination went away under the load');
       };
-      const faultsOf = async (sid: ScopeId) => (await dir.admin.listOpsFailures(staff, { scopeId: sid })).filter((f) => f.status >= 500);
+      const faultsOf = async (sid: ScopeId) => (await dir.admin.listOpsFailures(staff, { scopeId: sid })).filter((f) => (f.status ?? 0) >= 500);
 
       // A fork: its restore retries, records the fault as the restore's, and the finish answers it.
       const sid = (await pushBg('bg-31', 'v1')).body.scopeId;
