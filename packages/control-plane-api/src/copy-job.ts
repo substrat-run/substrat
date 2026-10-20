@@ -52,7 +52,10 @@ export type CopyJobStatus = 'copying' | 'done' | 'failed' | 'cancelled';
 export interface CopyJobRecord {
   spec: CopyJobSpec;
   status: CopyJobStatus;
-  /** While `copying`: the copy to resume. */
+  /**
+   * While `copying`: the copy to resume. Kept once the job fails or is cancelled, for the stage it
+   * names, which whoever settles the job discards (`settleJobMove`).
+   */
   state?: TransferState;
   /** Once `done`: what moved, staged at the destination under `dump.stageId`. */
   done?: TransferredScope;
@@ -143,8 +146,17 @@ export async function advanceCopyJob(
   if (job.status !== 'copying' || !job.state) return job;
   const now = deps.now ?? Date.now;
   const { spec } = job;
-  const failed = (status: number, message: string): CopyJobRecord =>
-    ({ ...job, status: 'failed', state: undefined, error: { status, message }, nextDelayMs: 0, updatedAt: now() });
+  const staged = job.state;
+  /**
+   * A failed job's stage is never loaded, so it goes here, best-effort: a job nobody calls again
+   * (its caller gave up) would otherwise leave it until the scope is wiped there. The record keeps
+   * naming it (`state`), so the route's settle (`settleJobMove`) can discard it too.
+   */
+  const failed = async (status: number, message: string): Promise<CopyJobRecord> => {
+    const dest = await deps.clientForRef(spec.destRef).catch(() => undefined);
+    await dest?.discardStagedScope(staged.into, staged.stageId).catch(() => undefined);
+    return { ...job, status: 'failed', error: { status, message }, nextDelayMs: 0, updatedAt: now() };
+  };
   if (now() > spec.deadline) {
     return failed(504, `the copy of scope ${spec.scopeId} ran past its ${Math.round((spec.deadline - spec.startedAt) / 60_000)} min limit; nothing was moved`);
   }
@@ -216,7 +228,8 @@ export function memoryCopyJobs(deps: CopyJobDeps, opts: { stepMs?: number } = {}
       const job = jobs.get(id);
       if (!job) return null;
       if (job.status !== 'copying' && (job.status !== 'done' || copyJobHeld(job, now()))) return job;
-      const cancelled: CopyJobRecord = { ...job, status: 'cancelled', state: undefined, updatedAt: now() };
+      // `state` stays, as in the Durable Object: it names the stage the caller discards next.
+      const cancelled: CopyJobRecord = { ...job, status: 'cancelled', nextDelayMs: 0, updatedAt: now() };
       jobs.set(id, cancelled);
       return cancelled;
     },

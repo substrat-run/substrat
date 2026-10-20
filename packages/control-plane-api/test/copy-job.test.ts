@@ -29,6 +29,7 @@ const PAGES = [[rowsOf('a')], [rowsOf('b')], [rowsOf('c')], [rowsOf('d')], [rows
 /** Two deployments: a source answering `PAGES`, a destination recording what it staged. */
 function deployments(opts: { pageFails?: (n: number) => Error | null } = {}) {
   const staged: { stageId: string; seq: number }[] = [];
+  const discarded: string[] = [];
   const source = {
     exportScope: async () => PAGES.flat(),
     exportScopeStamped: async () => ({ tables: PAGES.flat(), loadStamp: null, revision: null }),
@@ -44,13 +45,15 @@ function deployments(opts: { pageFails?: (n: number) => Error | null } = {}) {
       staged.push({ stageId, seq });
       return { staged: true };
     },
-    discardStagedScope: async () => undefined,
+    discardStagedScope: async (_s: string, stageId: string) => {
+      discarded.push(stageId);
+    },
   } as unknown as VerticalClient;
-  return { source, dest, staged };
+  return { source, dest, staged, discarded };
 }
 
 function harness(opts: { renew?: () => boolean; pageFails?: (n: number) => Error | null; clock?: { now: number } } = {}) {
-  const { source, dest, staged } = deployments(opts);
+  const { source, dest, staged, discarded } = deployments(opts);
   const renewals: string[] = [];
   const clock = opts.clock ?? { now: Date.parse('2026-10-20T10:00:00.000Z') };
   const deps: CopyJobDeps = {
@@ -85,7 +88,7 @@ function harness(opts: { renew?: () => boolean; pageFails?: (n: number) => Error
     const begun = await beginTransfer({ source, dest }, { from: prod, to: preview }, { stamp: false, alwaysStage: true });
     return (begun as { state: TransferState }).state;
   };
-  return { deps, spec, begin, staged, renewals, clock };
+  return { deps, spec, begin, staged, discarded, renewals, clock };
 }
 
 describe('advanceCopyJob (#2450)', () => {
@@ -254,6 +257,31 @@ describe('advanceCopyJob (#2450)', () => {
     expect(stuck.done).toBeUndefined();
   });
 
+  it('a job that fails discards the stage it opened, and its record still names it; a fault it rides out keeps it', async () => {
+    // Refused at its fourth page.
+    const refused = harness({ pageFails: (n) => (n === 3 ? new ControlPlaneError(412, 'the source moved') : null) });
+    const job = await advanceCopyJob(refused.deps, newCopyJob(refused.spec(), await refused.begin(), refused.clock.now));
+    expect(job).toMatchObject({ status: 'failed', error: { status: 412 } });
+    const stageId = refused.staged[0]!.stageId;
+    expect(job.state?.stageId).toBe(stageId);
+    expect(refused.discarded).toEqual([stageId]);
+
+    // Past its deadline, and with its lease gone: the same.
+    const late = harness();
+    const overdue = await advanceCopyJob(late.deps, newCopyJob(late.spec({ deadline: late.clock.now - 1 }), await late.begin(), late.clock.now));
+    expect(overdue).toMatchObject({ status: 'failed', state: { stageId: late.staged[0]!.stageId } });
+    expect(late.discarded).toEqual([late.staged[0]!.stageId]);
+    const lost = harness({ renew: () => false });
+    expect(await advanceCopyJob(lost.deps, newCopyJob(lost.spec(), await lost.begin(), lost.clock.now))).toMatchObject({ status: 'failed' });
+    expect(lost.discarded).toEqual([lost.staged[0]!.stageId]);
+
+    // A transient fault: the next step resumes into the same stage, so it stays.
+    const blip = harness({ pageFails: (n) => (n === 2 ? new ControlPlaneError(503, 'down') : null) });
+    const riding = await advanceCopyJob(blip.deps, newCopyJob(blip.spec(), await blip.begin(), blip.clock.now));
+    expect(riding).toMatchObject({ status: 'copying', faults: 1, state: { stageId: blip.staged[0]!.stageId } });
+    expect(blip.discarded).toEqual([]);
+  });
+
   it('a refusal fails the job at once, with the status the route will answer', async () => {
     const h = harness({ pageFails: (n) => (n === 1 ? new ControlPlaneError(409, 'took writes') : null) });
     const job = await advanceCopyJob(h.deps, newCopyJob(h.spec(), await h.begin(), h.clock.now));
@@ -277,7 +305,8 @@ describe('memoryCopyJobs (#2450)', () => {
     expect(await jobs.start(spec, state)).toBe(started);
     await jobs.pump(spec.id);
     expect((await jobs.get(spec.id))?.status).toBe('copying');
-    expect((await jobs.cancel(spec.id))?.status).toBe('cancelled');
+    // Cancelled, it keeps naming its stage, as the Durable Object's record does, for the settle.
+    expect(await jobs.cancel(spec.id)).toMatchObject({ status: 'cancelled', state: { stageId: state.stageId } });
     await jobs.pump(spec.id);
     expect((await jobs.get(spec.id))?.status).toBe('cancelled');
     await jobs.forget(spec.id);

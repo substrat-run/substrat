@@ -2411,8 +2411,12 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       const job = jobs.jobs.get(`fork:${started.body.scopeId}`)!;
       // Something else settled the move: a staff reap, a sweep after a lost lease.
       await dir.admin.settleScopeScriptCopy(staff, t, started.body.scopeId, job.spec.destRef, job.spec.moveId, 'retained');
+      // Still copying, its pages wait in the stage.
+      expect(await noStage('v1', started.body.scopeId)).not.toEqual([]);
       await jobs.pump();
-      expect(jobs.jobs.get(job.spec.id)?.status).toBe('failed');
+      // Failed, its stage goes with it, and the record still names it for the settle below.
+      expect(jobs.jobs.get(job.spec.id)).toMatchObject({ status: 'failed', state: { stageId: job.state!.stageId } });
+      expect(await noStage('v1', started.body.scopeId)).toEqual([]);
       const refused = await pushBg('bg-2', 'v1');
       expect(refused.status).toBe(409);
       expect(jobs.jobs.has(job.spec.id)).toBe(false);
