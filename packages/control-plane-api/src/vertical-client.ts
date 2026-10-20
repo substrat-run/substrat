@@ -226,6 +226,14 @@ function denialParams(scopeId: ScopeId, filter?: DenialFilter): URLSearchParams 
 export const AUDITED_CALL_DEADLINE_MS = 60_000;
 
 /**
+ * How long one call of a paged copy may run (#2450): a page read, a page staged, a stage dropped.
+ * A page is at most `SCOPE_DUMP_PAGE_MAX_BYTES`, seconds of work, so a call past this has stalled.
+ * Answered 504, it ends the job step it held up as a transient fault: a cancel or forget, which
+ * waits for the step in flight, then waits this long at most past the step's own budget.
+ */
+export const PAGE_CALL_DEADLINE_MS = 60_000;
+
+/**
  * Run the WHOLE exchange `run` under one deadline (#2064): the request, its status, and the
  * body, whether that body is the answer or a refusal. A vertical that answers its headers in
  * time and then stalls the body is held to the same bound as one that never answers. On expiry,
@@ -1397,11 +1405,13 @@ export class VerticalClient {
     const query =
       `scopeId=${encodeURIComponent(scopeId)}${opts.stamp ? '&stamp=1' : ''}` +
       (cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`);
-    const answer = await this.routeAnswer('export-page', FENCED, () =>
-      this.options.fetch(`${base}/internal/export-page?${query}`, {
-        headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
-      }),
-    );
+    const answer = await withDeadline('export-page', PAGE_CALL_DEADLINE_MS, (signal) =>
+      this.routeAnswer('export-page', FENCED, () =>
+        this.options.fetch(`${base}/internal/export-page?${query}`, {
+          headers: { [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
+          signal,
+        }),
+      ));
     if (answer === PREDATES) return 'predates';
     const page = scopeDumpPage.safeParse(answer);
     if (!page.success) throw new ControlPlaneError(502, 'export-page: the vertical answered something that is not a dump page');
@@ -1419,23 +1429,26 @@ export class VerticalClient {
     seq: number,
     tables: ScopeDumpTable[],
   ): Promise<{ staged: boolean } | 'predates'> {
-    const answer = await this.routeAnswer('stage', FENCED, () => this.postRaw('/internal/stage', { scopeId, stageId, seq, tables }));
+    const answer = await withDeadline('stage', PAGE_CALL_DEADLINE_MS, (signal) =>
+      this.routeAnswer('stage', FENCED, () => this.postRaw('/internal/stage', { scopeId, stageId, seq, tables }, signal)));
     if (answer === PREDATES) return 'predates';
     return { staged: (answer as { staged?: unknown } | null)?.staged === true };
   }
 
   /** Drop a stage a carry gave up on (#2450). Best effort: the next stage replaces it anyway. */
   async discardStagedScope(scopeId: ScopeId, stageId: string): Promise<void> {
-    await this.routeAnswer('stage-discard', FENCED, () => this.postRaw('/internal/stage/discard', { scopeId, stageId }));
+    await withDeadline('stage-discard', PAGE_CALL_DEADLINE_MS, (signal) =>
+      this.routeAnswer('stage-discard', FENCED, () => this.postRaw('/internal/stage/discard', { scopeId, stageId }, signal)));
   }
 
   /** A platform-authenticated JSON POST, its response unread, for `routeAnswer`. */
-  private postRaw(path: string, body: unknown): Promise<Response> {
+  private postRaw(path: string, body: unknown, signal?: AbortSignal): Promise<Response> {
     const base = this.options.baseUrl ?? 'https://vertical.invalid';
     return this.options.fetch(`${base}${path}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: this.options.platformSecret },
       body: JSON.stringify(body),
+      ...(signal ? { signal } : {}),
     });
   }
 

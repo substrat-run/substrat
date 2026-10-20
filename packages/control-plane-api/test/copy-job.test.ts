@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { platformActorId, scopeId, tenantId, type ScopeDumpPage, type ScopeDumpTable } from '@substrat-run/contracts';
 import { SCOPE_COPY_LEASE_MS, ulid } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
@@ -13,7 +13,7 @@ import {
   type CopyJobDeps,
   type CopyJobSpec,
 } from '../src/copy-job.js';
-import { beginTransfer, transferStep, type TransferState, type VerticalClient } from '../src/vertical-client.js';
+import { PAGE_CALL_DEADLINE_MS, VerticalClient, beginTransfer, transferStep, type TransferState } from '../src/vertical-client.js';
 
 /**
  * #2450 step 2: a copy that outlasts its request runs as a job. Each step renews the move's lease
@@ -326,6 +326,33 @@ describe('advanceCopyJob (#2450)', () => {
     expect(stopped).toMatchObject({ status: 'copying', state: { stageId: begun.state.stageId } });
     expect(discarded).toEqual([begun.state.stageId]);
     expect(staged.map((s) => s.seq)).toEqual([0]);
+  });
+
+  it('a page call that stalls ends the step at its deadline, as a transient fault', async () => {
+    // What a cancel or forget waits for: the step in flight. A stalled read must not hold it longer.
+    const h = harness();
+    const state = await h.begin();
+    vi.useFakeTimers();
+    try {
+      let aborted = false;
+      const stalled = new VerticalClient({
+        fetch: ((_url: string, init: RequestInit) =>
+          new Promise((_, reject) => {
+            init.signal?.addEventListener('abort', () => {
+              aborted = true;
+              reject(new DOMException('aborted', 'AbortError'));
+            });
+          })) as unknown as typeof fetch,
+        platformSecret: 'secret',
+      });
+      const deps = { ...h.deps, clientForRef: async (ref: string) => (ref === 'src' ? stalled : h.deps.clientForRef(ref)) };
+      const stepping = advanceCopyJob(deps, newCopyJob(h.spec(), state, h.clock.now));
+      await vi.advanceTimersByTimeAsync(PAGE_CALL_DEADLINE_MS);
+      expect(await stepping).toMatchObject({ status: 'copying', faults: 1, state: { stageId: state.stageId } });
+      expect(aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a refusal fails the job at once, with the status the route will answer', async () => {
