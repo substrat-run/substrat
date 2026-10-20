@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /** A Wrangler dry-run stub that performs the configured build and counts uploads. */
-function pushWithGeneratedFile(generated: string): { status: number; output: string } {
+function pushWithGeneratedFile(generated: string, forgedReceipt = false): { status: number; output: string } {
   const dir = mkdtempSync(join(tmpdir(), 'worker-build-preflight-'));
   try {
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: '@acme/board', type: 'module', substrat: { permissions: 'permissions.mjs' } }));
@@ -39,7 +39,8 @@ function pushWithGeneratedFile(generated: string): { status: number; output: str
         const { push } = await import(${JSON.stringify(new URL('../dist/push.js', import.meta.url).href)});
         try {
           await push({ dir, slug: 'board', version: '1.0.0', controlPlaneUrl: 'https://cp.example/api', authHeader: {},
-            linted: { root: dir, gate: 'passed' } });
+            linted: { root: dir, gate: 'passed' },
+            ...(${JSON.stringify(forgedReceipt)} ? { preparedWorker: { root: dir, cfg: { main: 'worker.js', compatibility_date: '2026-07-01' }, out: dir } } : {}) });
           console.log('RESULT:passed');
         } catch (error) {
           console.log('RESULT:' + error.message);
@@ -66,6 +67,12 @@ it('refuses a builtin in a generated import before upload', () => {
   const result = pushWithGeneratedFile(`import 'node:crypto'; export const ready = true;`);
   expect(result.status, result.output).toBe(0);
   expect(result.output).toContain('RESULT:Worker');
+  expect(result.output).toContain('node:crypto');
+  expect(result.output).toContain('BUILDS:1 UPLOADS:0');
+});
+
+it('does not accept a caller-forged build receipt in place of the import check', () => {
+  const result = pushWithGeneratedFile(`import 'node:crypto';`, true);
   expect(result.output).toContain('node:crypto');
   expect(result.output).toContain('BUILDS:1 UPLOADS:0');
 });

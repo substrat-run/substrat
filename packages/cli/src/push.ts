@@ -1602,6 +1602,7 @@ export interface PreparedWorkerBundle {
   needs: RuntimeNeeds | undefined;
   out: string;
 }
+const checkedWorkerBundles = new WeakSet<PreparedWorkerBundle>();
 
 /** Run Wrangler's configured build once, then check the source graph it produced. */
 export async function prepareWorkerBundle(
@@ -1625,7 +1626,9 @@ export async function prepareWorkerBundle(
       if (generated) rmSync(generated, { force: true });
     }
     await checkWorkerImports(dir, cfg);
-    return { root: resolve(dir), cfg, needs, out };
+    const prepared = { root: resolve(dir), cfg, needs, out };
+    checkedWorkerBundles.add(prepared);
+    return prepared;
   } catch (error) {
     rmSync(out, { recursive: true, force: true });
     throw error;
@@ -1651,7 +1654,8 @@ export async function push(
   // authored no wrangler config, so none is read — the CLI derives it. The generated file
   // lands next to the vertical (a relative `main` and the build command's cwd both resolve
   // against the config's directory) and is removed after the build.
-  const prepared = opts.preparedWorker?.root === resolve(opts.dir) ? opts.preparedWorker : undefined;
+  const prepared = opts.preparedWorker && checkedWorkerBundles.has(opts.preparedWorker) &&
+    opts.preparedWorker.root === resolve(opts.dir) ? opts.preparedWorker : undefined;
   const { cfg, needs } = prepared ?? resolveWranglerConfig(opts.dir);
 
   // Before anything is built: a UI in the tree that this push would not serve (#881).
