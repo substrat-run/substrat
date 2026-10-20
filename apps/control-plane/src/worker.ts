@@ -79,7 +79,6 @@ import {
   analyticsEngineConnectorCallRecorder,
   type AnalyticsEngineDatasetLike,
   defineCopyJobDO,
-  type CopyJobDo,
 } from '@substrat-run/adapter-cloudflare';
 import {
   createControlPlaneApi,
@@ -175,10 +174,9 @@ import {
   type ScopeDeploymentLadder,
   advanceCopyJob,
   copyJobThrewRetryMs,
-  newCopyJob,
   type CopyJobRecord,
-  type CopyJobs,
 } from '@substrat-run/control-plane-api';
+import { durableCopyJobs } from './copy-jobs.js';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
@@ -236,18 +234,6 @@ export const ScopeCopyJobDO = defineCopyJobDO<Env, CopyJobRecord>({
   onError: (err) => console.warn('scope copy job: a step threw; it is retried', err),
   threwRetryMs: copyJobThrewRetryMs,
 });
-
-/** The preview route's job store over those objects (#2450): one object per job id. */
-function durableCopyJobs(ns: DurableObjectNamespace): CopyJobs {
-  const stubOf = (id: string) => ns.get(ns.idFromName(id)) as unknown as CopyJobDo<CopyJobRecord>;
-  return {
-    start: (spec, state) => stubOf(spec.id).start(newCopyJob(spec, state)),
-    get: (id) => stubOf(id).get(),
-    claim: (id, holdMs) => stubOf(id).claim(holdMs),
-    cancel: (id) => stubOf(id).cancel(),
-    forget: (id) => stubOf(id).forget(),
-  };
-}
 
 /** One producer's outgoing edges, now: the kick's pass. The sweep's reach, gates and recorder. */
 async function runCrossVerticalPass(env: Env, producer: { tenantId: TenantId; scopeId: ScopeId }): Promise<void> {
