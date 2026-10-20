@@ -10237,8 +10237,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
                 erasureEpoch: move.erasureEpoch, restoredStamp: move.restoredStamp, expected: move.expected,
                 startedAt: Date.now(), deadline: Date.now() + COPY_JOB_MAX_MS,
               }, begun.state);
-              // Another call started this preview's job first: this call's move is not the job's.
-              if (job.spec.moveId !== move.moveId) await settleCarryRetained(c, preview, opts.versionId, move);
+              // Another call started this preview's job first: this call's move is not the job's, so
+              // its entries settle and the page it staged goes. A newer push's job refuses this one
+              // now, as its next call would; an older one's is replaced by that next call.
+              if (job.spec.moveId !== move.moveId) {
+                await settleCarryRetained(c, preview, opts.versionId, move);
+                await move.dest.discardStagedScope(preview.id, begun.state.stageId).catch(() => undefined);
+                const superseded = supersededRefusal(job, opts.versionId, opts.tag);
+                if (superseded) throw superseded;
+              }
               return copyingAnswer(job);
             }
             const done = begun.done;

@@ -2305,6 +2305,28 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       };
       return { api: createControlPlaneApi({ ...apiOptions, copyJobs: held }), there, release };
     };
+    /**
+     * An API over the same jobs, whose next two `start`s wait for each other and then land one after
+     * the other, the one `first` picks first: two calls that each began a copy, racing to store it.
+     */
+    const racing = (first: (spec: Parameters<CopyJobs['start']>[0]) => boolean) => {
+      const arrived: { args: Parameters<CopyJobs['start']>; answer: (job: ReturnType<CopyJobs['start']>) => void }[] = [];
+      const raced: CopyJobs = {
+        ...jobs,
+        start: (...args) => new Promise((answer) => {
+          arrived.push({ args, answer });
+          if (arrived.length < 2) return;
+          void (async () => {
+            for (const a of [...arrived].sort((x, y) => Number(first(y.args[0])) - Number(first(x.args[0])))) {
+              const started = jobs.start(...a.args);
+              a.answer(started);
+              await started.catch(() => undefined);
+            }
+          })();
+        }),
+      };
+      return createControlPlaneApi({ ...apiOptions, copyJobs: raced });
+    };
 
     let preview: ScopeId;
     let hostname: string;
@@ -2482,6 +2504,35 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await ledger(sid)).toEqual(settled);
       expect(await served(seven)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
       expect((await pushBg('bg-7', 'v2')).status).toBe(200);
+    });
+
+    it('of two pushes that both began a copy, the one whose job lost the start leaves no page staged', async () => {
+      // bg-6 serves v2. v1 and v3 both begin a carry, and v1's job is stored first: v3's call is
+      // answered v1's job, and the page it staged in v3's script goes with its move.
+      const olderFirst = racing((spec) => spec.versionId === version.v1);
+      const [older, newer] = await Promise.all([pushBg('bg-6', 'v1', {}, olderFirst), pushBg('bg-6', 'v3', {}, olderFirst)]);
+      expect([older.status, newer.status]).toEqual([202, 202]);
+      expect(jobs.jobs.get(`carry:${six.sid}`)!.spec.versionId).toBe(version.v1);
+      expect(await noStage('v3', six.sid)).toEqual([]);
+      // The job's own stage stays, for its steps.
+      expect(await noStage('v1', six.sid)).not.toEqual([]);
+      // v3's next call replaces v1's copy with its own.
+      expect((await pushBg('bg-6', 'v3')).status).toBe(202);
+      await pumpToDone();
+      expect((await pushBg('bg-6', 'v3')).status).toBe(200);
+
+      // Now on v3. v1 and v2 both begin, and v2's job is stored first: v1 is refused at once, as a
+      // superseded push, rather than answered the newer push's progress, and its page goes too.
+      const newerFirst = racing((spec) => spec.versionId === version.v2);
+      const [stale, fresh] = await Promise.all([pushBg('bg-6', 'v1', {}, newerFirst), pushBg('bg-6', 'v2', {}, newerFirst)]);
+      expect(stale.status).toBe(409);
+      expect(stale.body.detail ?? stale.body.error).toMatch(/superseded/);
+      expect(fresh.status).toBe(202);
+      expect(await noStage('v1', six.sid)).toEqual([]);
+      expect(await noStage('v2', six.sid)).not.toEqual([]);
+      await pumpToDone();
+      expect((await pushBg('bg-6', 'v2')).status).toBe(200);
+      expect(await served(six.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
     });
   });
 });
