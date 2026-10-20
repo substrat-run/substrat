@@ -906,6 +906,7 @@ interface ControlPlaneStub {
   beginScopeScriptReap(tenantId: string, scopeId: string): Promise<'claimed' | 'pending' | 'missing'>;
   settleScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string, state: string, loadStamp: string | null, revision: string | null, claimedBy?: string): Promise<boolean>;
   touchScopeScriptCopy(tenantId: string, scopeId: string, scriptRef: string, moveId: string): Promise<void>;
+  renewScopeScriptCopy(tenantId: string, scopeId: string, moveId: string, leaseMs?: number): Promise<{ renewedAt: number; leaseUntil: string } | null>;
   listScopeScriptCopies(filter: { tenantId?: string; scopeId?: string; state?: string; limit?: number;
     after?: { scriptRef: string; moveId: string } }): Promise<ScopeScriptCopyRow[]>;
   markScopeProvisioned(scopeId: string, versionId: string | null, retirementsFinished?: boolean, boundShapes?: string[]): Promise<void>;
@@ -8534,6 +8535,8 @@ export class CloudflareScopeHost implements ScopeHost {
           opts?.claimedBy),
       touchScopeScriptCopy: async (_actor, tenantId, scopeId, scriptRef, moveId) =>
         this.cp.touchScopeScriptCopy(tenantId, scopeId, scriptRef, moveId),
+      renewScopeScriptCopy: async (_actor, tenantId, scopeId, moveId, opts) =>
+        this.cp.renewScopeScriptCopy(tenantId, scopeId, moveId, ...(opts?.leaseMs !== undefined ? [opts.leaseMs] : [])),
       listScopeScriptCopies: async (_actor, filter) => (await this.cp.listScopeScriptCopies(filter)).map(scopeScriptCopyOf),
       /**
        * Record that this scope's provision has now run against `versionId` (#1172).

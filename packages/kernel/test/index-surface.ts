@@ -43,6 +43,8 @@ export const INDEX_VALUE_EXPORTS = [
   'COPY_MARK_CLEARED_KEY',
   'COPY_MOVE_CONFIRM_SQL',
   'COPY_MOVE_LIVE_PREDICATE',
+  // #2450: a copy longer than one lease renews it, in the SQL both adapters' directories run.
+  'COPY_MOVE_RENEW_SQL',
   'COPY_ORIGIN_DDL',
   'COPY_RESTORE_FENCE_LAPSED',
   'CROSS_VERTICAL_CONSUMERS_PER_PASS',
@@ -279,6 +281,7 @@ export const INDEX_VALUE_EXPORTS = [
   'copyBackfillRefusal',
   'copyMoveConfirmParams',
   'copyMoveLiveParams',
+  'copyMoveRenewParams',
   'copyRestoreFence',
   'copyRestoreFenceLapsed',
   'countChecks',

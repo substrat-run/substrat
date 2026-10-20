@@ -47,6 +47,9 @@ declare namespace Cloudflare {
     KICK_REAL: DurableObjectNamespace;
     KICK_LOG: DurableObjectNamespace;
     KICK_SLOW: DurableObjectNamespace;
+    /** #2450 step 2: the background copy's job object (copy-job-do.test.ts). */
+    COPY_JOB_TEST: DurableObjectNamespace;
+    COPY_JOB_SHORT: DurableObjectNamespace;
     /** #1898: a migration with a foreign key to the spine, and its twin — spine-references.test.ts. */
     SPINE_PARENT_SCOPE: DurableObjectNamespace;
     OWN_PARENT_SCOPE: DurableObjectNamespace;

@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { PLATFORM_SECRET_HEADER, platformActorId, tenantId, scopeId } from '@substrat-run/contracts';
 import { runPlatformSweep, ulid, type ScopeHost } from '@substrat-run/kernel';
 import { VerticalClient, ControlPlaneError } from '../src/index.js';
+import { PAGE_CALL_DEADLINE_MS } from '../src/vertical-client.js';
 
 /**
  * The transport seam (#391): a dispatch/cold-start REJECTION (the fetch itself throws)
@@ -1728,5 +1729,56 @@ describe('VerticalClient.rewindScope (#2314)', () => {
       { path: '/internal/rewind', body: { scopeId: s, bookmark: 'bm-1', force: true, tenantId: t } },
       { path: '/internal/rewind', body: { scopeId: s, bookmark: 'bm-1', force: false } },
     ]);
+  });
+});
+
+describe('the paged copy verbs answer within PAGE_CALL_DEADLINE_MS (#2450)', () => {
+  /** A deployment that takes the request and never answers it, until the request is aborted. */
+  const stalled = () => {
+    const aborted: string[] = [];
+    const client = new VerticalClient({
+      fetch: ((url: string, init: RequestInit) =>
+        new Promise((_, reject) => {
+          init.signal?.addEventListener('abort', () => {
+            aborted.push(new URL(url).pathname);
+            reject(new DOMException('aborted', 'AbortError'));
+          });
+        })) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    return { client, aborted };
+  };
+
+  it('a call that stalls is answered 504 at the deadline, and its request is aborted', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, aborted } = stalled();
+      const calls = [
+        client.exportScopePage(s, null),
+        client.stageScopePage(s, 'stage-1', 0, []),
+        client.discardStagedScope(s, 'stage-1'),
+      ].map((p) => p.then(() => null, (e: unknown) => e));
+      await vi.advanceTimersByTimeAsync(PAGE_CALL_DEADLINE_MS - 1);
+      expect(aborted).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      const errors = await Promise.all(calls);
+      expect(errors.map((e) => (e as ControlPlaneError).status)).toEqual([504, 504, 504]);
+      expect(String(errors[0])).toMatch(/did not answer export-page within 60 s/);
+      expect(aborted.sort()).toEqual(['/internal/export-page', '/internal/stage', '/internal/stage/discard']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a call answered in time is answered as before', async () => {
+    const page = { tables: [], next: null, loadStamp: null, revision: 'r1' };
+    const client = new VerticalClient({
+      fetch: (async (url: string) =>
+        new Response(JSON.stringify(new URL(url).pathname === '/internal/export-page' ? page : { staged: true }), { status: 200 })) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    expect(await client.exportScopePage(s, null)).toEqual(page);
+    expect(await client.stageScopePage(s, 'stage-1', 0, [])).toEqual({ staged: true });
+    await expect(client.discardStagedScope(s, 'stage-1')).resolves.toBeUndefined();
   });
 });

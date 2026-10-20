@@ -109,8 +109,8 @@ describe('preview client', () => {
     expect(out.reused).toBe(false);
     expect(calls[0]!.url).toBe('https://cp.example/api/verticals/helpdesk/previews');
     expect(calls[0]!.method).toBe('POST');
-    // Absent optionals are omitted, not sent as undefined.
-    expect(calls[0]!.body).toEqual({ tag: 'pr-7', versionId: '01J', ttlHours: 72 });
+    // Absent optionals are omitted, not sent as undefined. `async`: this client takes a 202 (#2450).
+    expect(calls[0]!.body).toEqual({ tag: 'pr-7', versionId: '01J', ttlHours: 72, async: true });
   });
 
   it('sends empty:true for a clean-room preview (#509 (b))', async () => {
@@ -120,7 +120,66 @@ describe('preview client', () => {
     }));
     await createPreview({ ...base, tag: 'pr-1', versionId: '01J', empty: true });
     // No sourceScopeId when clean-room; `empty` rides as an explicit true.
-    expect(calls[0]!.body).toEqual({ tag: 'pr-1', versionId: '01J', empty: true });
+    expect(calls[0]!.body).toEqual({ tag: 'pr-1', versionId: '01J', empty: true, async: true });
+  });
+
+  describe('a copy that runs in the background (#2450 step 2)', () => {
+    const created = { scopeId: 'S1', hostname: 'h--pr-9.x', url: 'https://h--pr-9.x', versionId: '01J', reused: false };
+    const copying = (pages: number, attempt = 1) =>
+      ({ status: 202, body: { copying: true, scopeId: 'S1', versionId: '01J', progress: { pages, rows: pages * 10, attempt }, retryAfter: 5 } });
+
+    it('calls again on each 202, waiting as told and printing progress, until the preview is ready', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const answers = [copying(1), copying(4, 2), { status: 201, body: created }];
+      const { calls } = stub(() => answers.shift()!);
+      const waits: number[] = [];
+      const out = await createPreview({ ...base, tag: 'pr-9', versionId: '01J', sleep: async (ms) => void waits.push(ms) });
+      expect(out).toEqual(created);
+      expect(calls).toHaveLength(3);
+      expect(waits).toEqual([5_000, 5_000]);
+      expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([
+        expect.stringMatching(/copying the preview's data \(1 pages, 10 rows so far\)/),
+        expect.stringMatching(/4 pages, 40 rows so far, attempt 2: the source changed/),
+      ]);
+      warn.mockRestore();
+    });
+
+    it("polls only after a 202 naming this create's own copy; after one naming another push's, it may start its own", async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // An older push's copy is being finished, then this push's own copy runs, then it is done.
+      const theirs = { status: 202, body: { ...copying(3).body, versionId: '01H' } };
+      const answers = [theirs, copying(1), copying(2), { status: 201, body: created }];
+      const { calls } = stub(() => answers.shift()!);
+      await createPreview({ ...base, tag: 'pr-9', versionId: '01J', sleep: async () => {} });
+      expect(calls.map((c) => (c.body as { poll?: boolean }).poll)).toEqual([undefined, undefined, true, true]);
+    });
+
+    it('a copy that failed ends the wait with its sentence, after the one call that read it', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const failed = 'the background copy failed with 504: the copy of scope S1 ran past its 360 min limit; nothing was moved';
+      const answers = [copying(1), { status: 409, body: { type: 'about:blank', title: 'Conflict', status: 409, detail: failed } }];
+      const { calls } = stub(() => answers.shift()!);
+      await expect(createPreview({ ...base, tag: 'pr-9', versionId: '01J', sleep: async () => {} }))
+        .rejects.toThrow(`preview create failed (409): ${failed}`);
+      expect(calls).toHaveLength(2);
+    });
+
+    it('sends refresh on the first call only: on a later one it would stop the copy', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const answers = [copying(1), { status: 201, body: created }];
+      const { calls } = stub(() => answers.shift()!);
+      await createPreview({ ...base, tag: 'pr-9', versionId: '01J', refresh: true, sleep: async () => {} });
+      expect(calls.map((c) => (c.body as { refresh?: boolean }).refresh)).toEqual([true, undefined]);
+    });
+
+    it('gives up after its wait, saying a new run is a new push whose copy starts over', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      stub(() => copying(2));
+      // `preview create` pushes first, and a push never reuses a version, so a rerun cannot pick
+      // this copy up: the route replaces it with the newer push's own.
+      await expect(createPreview({ ...base, tag: 'pr-9', versionId: '01J', waitMs: 0, sleep: async () => {} }))
+        .rejects.toThrow(/still being copied.*Running this command again pushes a new version, whose copy starts over and replaces this one/);
+    });
   });
 
   it('surfaces a server error body as the thrown message', async () => {
@@ -385,5 +444,111 @@ describe('preview create retries a transient platform fault (#1918)', () => {
       () => new Response('{"error":"no prod scope to fork"}', { status: 409 }),
     ]);
     await expect(run(createPreview(args))).rejects.not.toThrow(/most likely died/);
+  });
+
+  describe('a poll during a background copy (#2450)', () => {
+    const copying = () =>
+      Response.json({ copying: true, scopeId: 'S1', versionId: '01J', progress: { pages: 1, rows: 10, attempt: 1 }, retryAfter: 5 }, { status: 202 });
+    const dropped = (): Response => {
+      throw new TypeError('fetch failed');
+    };
+    /** As `script`, but an answer may throw, as `fetch` does for a dropped connection. */
+    const scriptThrowing = (answers: Array<() => Response>) => {
+      const bodies: unknown[] = [];
+      globalThis.fetch = (async (_url: string, init: RequestInit = {}) => {
+        bodies.push(init.body ? JSON.parse(init.body as string) : null);
+        return answers[Math.min(bodies.length, answers.length) - 1]!();
+      }) as unknown as typeof fetch;
+      return bodies;
+    };
+    const waits: number[] = [];
+    const polling = { ...args, sleep: async (ms: number) => void waits.push(ms) };
+
+    it('one that fails as a gateway or the network fails is polled again, and the wait goes on', async () => {
+      vi.useFakeTimers();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      waits.length = 0;
+      // A 502 on every try of the second call, then a dropped connection on every try of the third.
+      const bodies = scriptThrowing([
+        copying,
+        () => fault('p1'), () => fault('p2'), () => fault('p3'),
+        dropped, dropped, dropped,
+        copying,
+        () => Response.json(ok, { status: 201 }),
+      ]);
+      await expect(run(createPreview(polling))).resolves.toEqual(ok);
+      expect(bodies).toHaveLength(9);
+      // Each failed poll waited the interval the last answer gave, and said so.
+      expect(waits).toEqual([5_000, 5_000, 5_000, 5_000]);
+      expect(warn.mock.calls.map((c) => String(c[0])).filter((l) => /polling the copy failed/.test(l))).toEqual([
+        expect.stringMatching(/\(502\); polling again in 5s \(1 of 10\)/),
+        expect.stringMatching(/\(network error: fetch failed\); polling again in 5s \(2 of 10\)/),
+      ]);
+    });
+
+    it('a poll answered a 500 that names no reason is polled again; one that names its reason ends the wait', async () => {
+      vi.useFakeTimers();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // The control plane's generic answer to an unmapped throw, then Cloudflare's redacted fault.
+      const generic = () => Response.json({ type: 'about:blank', title: 'Internal Server Error', status: 500, error: 'internal error' }, { status: 500 });
+      const redacted = () => new Response('internal error; reference = r500', { status: 500 });
+      let bodies = scriptThrowing([copying, generic, redacted, () => Response.json(ok, { status: 200 })]);
+      await expect(run(createPreview(polling))).resolves.toEqual(ok);
+      expect(bodies).toHaveLength(4);
+      // A 500 with a reason is a refusal like any other.
+      const named = () => Response.json({ type: 'about:blank', title: 'Internal Server Error', status: 500, detail: 'would serve other code (#527)' }, { status: 500 });
+      bodies = scriptThrowing([copying, named]);
+      await expect(run(createPreview(polling))).rejects.toThrow(/\(500\).*would serve other code/);
+      expect(bodies).toHaveLength(2);
+      // And the first call, which may start a copy, still ends on any 500.
+      bodies = scriptThrowing([generic, copying]);
+      await expect(run(createPreview(polling))).rejects.toThrow(/\(500\)/);
+      expect(bodies).toHaveLength(1);
+    });
+
+    it('a definite answer to a poll ends the wait at once; the first call is still sent once on a dropped connection', async () => {
+      vi.useFakeTimers();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let bodies = scriptThrowing([copying, () => Response.json({ error: 'the copy of scope S1 was cancelled' }, { status: 409 })]);
+      await expect(run(createPreview(polling))).rejects.toThrow(/\(409\).*cancelled/);
+      expect(bodies).toHaveLength(2);
+      bodies = scriptThrowing([dropped, copying]);
+      await expect(run(createPreview(polling))).rejects.toThrow(/fetch failed/);
+      expect(bodies).toHaveLength(1);
+    });
+
+    it('a control plane that stays unreachable ends the wait after its last allowed poll', async () => {
+      vi.useFakeTimers();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const bodies = scriptThrowing([copying, () => fault('down')]);
+      const settled = createPreview(polling).then((v) => ({ v }), (e: unknown) => ({ e }));
+      await vi.advanceTimersByTimeAsync(120_000);
+      const r = await settled;
+      // It says it stopped waiting, that the copy may still run, and what running it again does.
+      expect('e' in r && String(r.e)).toMatch(
+        /polling the copy failed 11 times in a row \(the last: 502\), so this stopped waiting; the copy may still be running\. Running this command again pushes a new version, whose copy starts over and replaces this one/,
+      );
+      expect('e' in r && (r.e as Error).cause).toBeInstanceOf(Error);
+      // The first call, then eleven polls of three tries each: ten ridden out, the eleventh thrown.
+      expect(bodies).toHaveLength(1 + 11 * 3);
+    });
+
+    it('a wait that runs out during failed polls says so, with the progress last seen', async () => {
+      vi.useFakeTimers();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const bodies = scriptThrowing([
+        () => Response.json({ copying: true, scopeId: 'S1', versionId: '01J', progress: { pages: 7, rows: 70, attempt: 1 }, retryAfter: 5 }, { status: 202 }),
+        () => fault('down'),
+      ]);
+      // The wait is spent by the time the first poll has failed.
+      const settled = createPreview({ ...polling, waitMs: 1 }).then((v) => ({ v }), (e: unknown) => ({ e }));
+      await vi.advanceTimersByTimeAsync(20_000);
+      const r = await settled;
+      expect('e' in r && String(r.e)).toMatch(
+        /still being copied after 0 min \(7 pages when last polled\), and the last poll failed \(502\)\. Running this command again pushes a new version/,
+      );
+      // The first call, then one poll of three tries.
+      expect(bodies).toHaveLength(1 + 3);
+    });
   });
 });

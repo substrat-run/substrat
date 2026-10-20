@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { scopeId, type ScopeDumpPage, type ScopeDumpTable } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { ControlPlaneError } from '@substrat-run/control-plane-client';
-import { TRANSFER_ATTEMPTS, transferScope, type VerticalClient } from '../src/vertical-client.js';
+import { TRANSFER_ATTEMPTS, beginTransfer, transferScope, transferStep, type TransferState, type VerticalClient } from '../src/vertical-client.js';
 
 /**
  * #2450: `transferScope` moves a scope a page at a time into the destination's stage, and falls
@@ -147,4 +147,46 @@ describe('transferScope (#2450)', () => {
     expect(calls.filter((c) => c.cursor === null)).toHaveLength(TRANSFER_ATTEMPTS);
     expect(discarded).toHaveLength(TRANSFER_ATTEMPTS);
   });
+
+  describe('in resumable steps, for a copy that outlasts a request', () => {
+    const pages = [[fragment([['a']]), meta], [fragment([['b']])], [fragment([['c']])], [fragment([['d']])]];
+
+    it('a step stops when told, and a state that crossed JSON resumes the same stage to the end', async () => {
+      const { source } = pagedSource(pages);
+      const { dest, staged } = stagingDest();
+      const begun = await beginTransfer({ source, dest }, { from, to });
+      expect('state' in begun).toBe(true);
+      const state = (begun as { state: TransferState }).state;
+      expect(state).toMatchObject({ from, into: to, seq: 0, pages: 1, rows: 2, attempt: 1, cursor: '1' });
+      // One page, then the budget is spent.
+      const one = await transferStep({ source, dest }, JSON.parse(JSON.stringify(state)) as TransferState, { until: () => true });
+      const after = (one as { state: TransferState }).state;
+      expect(after).toMatchObject({ seq: 1, pages: 2, rows: 3, cursor: '2', stageId: state.stageId });
+      // Resumed elsewhere, from its JSON.
+      const rest = await transferStep({ source, dest }, JSON.parse(JSON.stringify(after)) as TransferState);
+      expect(rest).toEqual({ done: { dump: { stageId: state.stageId }, loadStamp: 'stamp', revision: 'r1', meta: [meta] } });
+      expect(staged.map((s) => [s.stageId, s.seq])).toEqual([0, 1, 2, 3].map((n) => [state.stageId, n]));
+    });
+
+    it('alwaysStage stages even a scope that fits one page, so a job never holds it in memory', async () => {
+      const { source } = pagedSource([[fragment([['a']])]]);
+      const { dest, staged } = stagingDest();
+      const begun = await beginTransfer({ source, dest }, { from, to }, { alwaysStage: true });
+      expect(begun).toEqual({ done: { dump: { stageId: staged[0]!.stageId }, loadStamp: 'stamp', revision: 'r1', meta: [] } });
+    });
+
+    it('a step that finds the source written restarts under a new stage, and counts the attempt', async () => {
+      const { source } = pagedSource(pages, (n, attempt) => (attempt === 1 && n === 2 ? 'moved' : `r${attempt}`));
+      const { dest, discarded } = stagingDest();
+      const begun = (await beginTransfer({ source, dest }, { from, to })) as { state: TransferState };
+      // The step that meets the moved revision hands back the fresh copy's first state.
+      const restarted = (await transferStep({ source, dest }, begun.state)) as { state: TransferState };
+      expect(discarded).toEqual([begun.state.stageId]);
+      expect(restarted.state).toMatchObject({ attempt: 2, seq: 0, revision: 'r2', pages: 1 });
+      expect(restarted.state.stageId).not.toBe(begun.state.stageId);
+      const step = await transferStep({ source, dest }, restarted.state);
+      expect(step).toMatchObject({ done: { dump: { stageId: restarted.state.stageId }, revision: 'r2' } });
+    });
+  });
 });
+
