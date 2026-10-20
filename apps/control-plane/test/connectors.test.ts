@@ -38,6 +38,20 @@ describe('connector registry', () => {
     expect(connectionInspectorsFor(ENV)['docusign']).toBeUndefined();
   });
 
+  it('preserves existing provider options on rebind without copying binding metadata', () => {
+    const binder = connectionBindersFor(ENV)['planima']!;
+    const current = {
+      scopeId: 'scope', operation: 'maintenance/record-plan', permission: 'plan:record',
+      organizationId: 42, currency: 'EUR', window: { fromYear: 2026, toYear: 2030 },
+      horizonYears: 50, boundAt: '2026-10-20T00:00:00Z', lastSync: { hash: 'old' },
+    };
+    expect(binder.options!({ horizonYears: 10 }, current)).toEqual({
+      organizationId: 42, currency: 'EUR', window: { fromYear: 2026, toYear: 2030 }, horizonYears: 10,
+    });
+    expect(binder.options!({ organizationId: null }, current)).toMatchObject({ organizationId: null });
+    expect(() => binder.options!({ horizonYear: 10 }, current)).toThrow();
+  });
+
   it('takes the declared grants from the connector, never a second list', () => {
     // The failure this reproduces (#716/#841): a hand-kept copy beside the connector
     // that drifted for months. `toBe` on the identity, not `toEqual` on the contents.

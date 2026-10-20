@@ -56,8 +56,13 @@ export interface ConnectionBinder {
   /**
    * The provider's options, validated, from what a declaration carries. Throws with a reason a
    * person can act on; a provider that takes none refuses any. Absent means the provider takes none.
+   * When `current` is supplied, preserve its provider options unless `raw` overrides them.
+   * Do not copy binding metadata (including the sync cursor) into the options.
    */
-  options?(raw: ConnectionLandingOptions | undefined): Record<string, unknown>;
+  options?(
+    raw: ConnectionLandingOptions | undefined,
+    current?: { scopeId: string; operation: string; permission: string },
+  ): Record<string, unknown>;
   /**
    * True when a binding that matches the declaration must still be re-written, for a fact the
    * connection carries and the declaration does not (Fortnox's company, recorded on bindings
@@ -137,6 +142,7 @@ export class LandingPass {
         existing ??= await binder.list(this.host, connection);
         const current = existing.find((b) => b.scopeId === scopeId);
         if (current && sameLanding(current, landing.operation, landing.permission, options) && !binder.stale?.(current, connection)) continue;
+        const bindingOptions = binder.options ? binder.options(landing.options, current) : options;
         const operationId = ulid();
         const audit = {
           tenantId: connection.tenantId,
@@ -146,10 +152,10 @@ export class LandingPass {
           provider: connection.provider,
           operation: landing.operation,
           permission: landing.permission,
-          ...options,
+          ...bindingOptions,
         };
         await binder.bind(this.host, connection, {
-          ...options,
+          ...bindingOptions,
           tenantId: connection.tenantId,
           scopeId,
           vertical: connection.vertical,

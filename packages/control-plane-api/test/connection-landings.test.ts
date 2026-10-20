@@ -182,7 +182,10 @@ describe('declared connection landings (#2316)', () => {
     planima: {
       list: (h, row) => listPlanimaBindings(h, row.id),
       bind: (h, row, target) => bindPlanimaScope(h, { ...(target as Parameters<typeof bindPlanimaScope>[1]), connectionId: row.id }),
-      options: (raw) => connectionBindingOptions('planima').parse(raw ?? {}),
+      options: (raw, current) => {
+        const schema = connectionBindingOptions('planima');
+        return schema.parse({ ...(current ? schema.strip().parse(current) : {}), ...(raw ?? {}) });
+      },
     },
   };
   const pass = () =>
@@ -286,13 +289,21 @@ describe('declared connection landings (#2316)', () => {
     const plan = await connect('planima');
     await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(DECLARED)));
     await pass();
+    await bindPlanimaScope(host, {
+      connectionId: plan, tenantId: t, scopeId: s, vertical: SLUG,
+      operation: 'maintenance/record-plan', permission: 'plan:record',
+      organizationId: 42, currency: 'EUR', window: { fromYear: 2026, toYear: 2030 }, horizonYears: 50,
+    });
     const narrowed = DECLARED.map((l) => (l.provider === 'planima' ? { ...l, options: { horizonYears: 10 } } : l));
     await host.admin.bindScopeVersion(staff, t, s, await publish(manifestDeclaring(narrowed)));
 
     const report = await pass();
 
     expect(report.connectionLandings).toEqual({ granted: 0, bound: 1, failed: 0 });
-    expect((await listPlanimaBindings(host, plan))[0]).toMatchObject({ horizonYears: 10 });
+    expect((await listPlanimaBindings(host, plan))[0]).toMatchObject({
+      horizonYears: 10, organizationId: 42, currency: 'EUR', window: { fromYear: 2026, toYear: 2030 },
+    });
+    expect((await pass()).connectionLandings).toEqual({ granted: 0, bound: 0, failed: 0 });
   });
 
   it('re-writes a Fortnox binding that predates the company it reads, once', async () => {
