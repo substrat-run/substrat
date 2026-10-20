@@ -6015,40 +6015,32 @@ export function scopeHostContractSuite(
         .toEqual([{ expiresAt: next }, { expiresAt: old }]);
     });
 
-    it('does not keep a preview alive after any copy lease lapses or is claimed', async () => {
+    it.each(['expired lease', 'claimed entry', 'mixed entries'] as const)(
+      'does not keep a preview alive with %s', async (condition) => {
       const s = scopeId.parse(ulid());
       const old = new Date(Date.now() - 60_000).toISOString();
       const next = new Date(Date.now() + 3_600_000).toISOString();
       await host.provisionScope(staff, { tenantId: t1, scopeId: s, kind: 'preview', expiresAt: old });
-      const refused = async (move: string) => {
-        expect(await host.admin.keepAlivePendingScopeCopy(staff, t1, s, move, 'provisioning', old, next)).toBe(false);
-        expect((await host.admin.getScopeRecord(staff, t1, s))?.expiresAt).toBe(old);
-        expect(await host.admin.auditLog(staff, { scopeId: s, action: 'setScopeExpiresAt' })).toEqual([]);
-      };
-
-      const expired = ulid();
-      await host.admin.recordScopeScriptCopy(staff, t1, s, `version-${ulid().toLowerCase()}`, expired,
-        { role: 'destination', leaseMs: 1 });
-      await new Promise((r) => setTimeout(r, 5));
-      await refused(expired);
-
-      const claimed = ulid();
-      await host.admin.recordScopeScriptCopy(staff, t1, s, `version-${ulid().toLowerCase()}`, claimed,
-        { role: 'destination', leaseMs: 1 });
-      await new Promise((r) => setTimeout(r, 5));
-      expect((await host.admin.claimExpiredScopeScriptCopies(staff, {
-        now: new Date().toISOString(), leaseUntil: new Date(Date.now() + 60_000).toISOString(),
-        owner: 'sweep:keep-alive', limit: 1000,
-      })).map((copy) => copy.moveId)).toContain(claimed);
-      await refused(claimed);
-
-      const mixed = ulid();
-      const settledRef = `version-${ulid().toLowerCase()}`;
-      await host.admin.recordScopeScriptCopy(staff, t1, s, settledRef, mixed, { role: 'source' });
-      await host.admin.recordScopeScriptCopy(staff, t1, s, `version-${ulid().toLowerCase()}`, mixed,
-        { role: 'destination' });
-      await host.admin.settleScopeScriptCopy(staff, t1, s, settledRef, mixed, 'retained');
-      await refused(mixed);
+      const move = ulid();
+      const ref = `version-${ulid().toLowerCase()}`;
+      await host.admin.recordScopeScriptCopy(staff, t1, s, ref, move,
+        { role: 'destination', leaseMs: condition === 'mixed entries' ? 60_000 : 1 });
+      if (condition === 'mixed entries') {
+        await host.admin.recordScopeScriptCopy(staff, t1, s, `version-${ulid().toLowerCase()}`, move,
+          { role: 'source' });
+        await host.admin.settleScopeScriptCopy(staff, t1, s, ref, move, 'retained');
+      } else {
+        await new Promise((r) => setTimeout(r, 5));
+        if (condition === 'claimed entry') {
+          expect((await host.admin.claimExpiredScopeScriptCopies(staff, {
+            now: new Date().toISOString(), leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+            owner: 'sweep:keep-alive', limit: 1000,
+          })).map((copy) => copy.moveId)).toContain(move);
+        }
+      }
+      expect(await host.admin.keepAlivePendingScopeCopy(staff, t1, s, move, 'provisioning', old, next)).toBe(false);
+      expect((await host.admin.getScopeRecord(staff, t1, s))?.expiresAt).toBe(old);
+      expect(await host.admin.auditLog(staff, { scopeId: s, action: 'setScopeExpiresAt' })).toEqual([]);
     });
 
     it('a backfilled copy is retained, once per script, never over a ledgered one, and never under a reap claim (#1722)', async () => {
