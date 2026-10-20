@@ -4638,6 +4638,33 @@ describe('control-plane API — vertical registry', () => {
       expect((await post(empty, manifest(empty, rows, []))).status).toBe(400);
     });
 
+    it('requires a registry when module declarations are sent, while accepting a legacy manifest with neither', async () => {
+      const base = (id: string) => ({
+        version: id.toLowerCase(), entry: 'index.js', compatibilityDate: '2026-07-01',
+        digests: { manifest: 'm', permission: 'p', migration: 'g' },
+      });
+      const modules = [{ id: 'fsm', permissions: [{ key: 'fsm:job-run', description: 'Run a job', holder: 'system' }] }];
+      const missing = ulid();
+      const refused = await post(missing, JSON.stringify({ ...base(missing), modules }));
+      expect(refused.status).toBe(400);
+      expect(await refused.json()).toMatchObject({
+        code: 'validation_failed',
+        error: 'manifestJson is not a deploy manifest: registry: required when modules are present',
+      });
+      expect((await get(`/verticals/fsm/versions/${missing}/registry`)).status).toBe(404);
+
+      const legacy = ulid();
+      expect((await post(legacy, JSON.stringify(base(legacy)))).status).toBe(201);
+      const matched = ulid();
+      expect((await post(matched, JSON.stringify({
+        ...base(matched), modules,
+        registry: {
+          permissions: [{ ...modules[0]!.permissions[0]!, declaredBy: ['fsm'] }],
+          roles: [], entityGrants: [],
+        },
+      }))).status).toBe(201);
+    });
+
     it('stores the manifest as sent — a key the schema does not know survives', async () => {
       const id = ulid();
       const sent = JSON.stringify({
