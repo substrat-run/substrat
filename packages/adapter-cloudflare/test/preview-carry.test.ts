@@ -2879,6 +2879,62 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await create(named)).status).toBe(201);
     });
 
+    it('a finish whose renewal throws outright settles its move and discards its stage, as a refused one does', async () => {
+      /** An API over the same jobs whose next renewal of a copy's lease throws, as a dropped call does. */
+      const renewDrops = () => {
+        let armed = true;
+        const admin = new Proxy(dir.admin, {
+          get: (a, key) => {
+            if (key === 'renewScopeScriptCopy' && armed) {
+              return async () => {
+                armed = false;
+                throw new Error('the renewal was dropped on its way');
+              };
+            }
+            const v: unknown = Reflect.get(a, key);
+            return typeof v === 'function' ? v.bind(a) : v;
+          },
+        });
+        const host = new Proxy(dir, {
+          get: (h, key) => {
+            if (key === 'admin') return admin;
+            const v: unknown = Reflect.get(h, key);
+            return typeof v === 'function' ? v.bind(h) : v;
+          },
+        });
+        return createControlPlaneApi({ ...apiOptions, host, copyJobs: jobs });
+      };
+      const entriesOf = async (sid: ScopeId, moveId: string) => (await ledger(sid)).filter((e) => e.startsWith(`${moveId}:`));
+
+      // A fork: done, its pages staged in v1's script.
+      const sid = (await pushBg('bg-23', 'v1')).body.scopeId;
+      await pumpToDone();
+      const fork = jobs.jobs.get(`fork:${sid}`)!;
+      expect(await noStage('v1', sid)).not.toEqual([]);
+      expect((await pushBg('bg-23', 'v1', { poll: true }, renewDrops())).status).toBe(500);
+      expect(jobs.jobs.has(fork.spec.id)).toBe(false);
+      expect(await entriesOf(sid, fork.spec.moveId)).toEqual([`${fork.spec.moveId}:destination:retained`]);
+      expect(await noStage('v1', sid)).toEqual([]);
+      // Its row is expired, so the next create reaps it at once.
+      expect(Date.parse((await dir.admin.getScopeRecord(staff, t, sid))!.expiresAt!)).toBeLessThanOrEqual(Date.now());
+
+      // A carry: the same, while the preview keeps serving what it served.
+      const pid = (await pushBg('bg-24', 'v1')).body.scopeId;
+      await pumpToDone();
+      const { hostname: h } = (await pushBg('bg-24', 'v1', { poll: true })).body;
+      expect((await pushBg('bg-24', 'v2')).status).toBe(202);
+      await pumpToDone();
+      const carry = jobs.jobs.get(`carry:${pid}`)!;
+      expect(await noStage('v2', pid)).not.toEqual([]);
+      expect((await pushBg('bg-24', 'v2', { poll: true }, renewDrops())).status).toBe(500);
+      expect(jobs.jobs.has(carry.spec.id)).toBe(false);
+      expect((await entriesOf(pid, carry.spec.moveId)).sort()).toEqual(
+        [`${carry.spec.moveId}:destination:retained`, `${carry.spec.moveId}:source:retained`],
+      );
+      expect(await noStage('v2', pid)).toEqual([]);
+      expect(await served(h)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+    });
+
     it('an older push never reaps or forks while a newer one replaces its fork, whichever moment it calls in', async () => {
       const prodRef = (await served(prodHostname)).ref;
       // v3 replacing v1's fork is held: after it forgot v1's job and expired its row, before the reap

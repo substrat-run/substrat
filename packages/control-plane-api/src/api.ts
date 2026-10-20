@@ -3792,14 +3792,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // its host keeps a cancel over a step's answer, and a claim takes only a done job.
     const latest = (await jobs.cancel(job.spec.id)) ?? job;
     if (opts.unlessFinishing && copyJobHeld(latest, Date.now())) return false;
+    await settleJobEntries(c, job);
+    await discardJobStages(job, latest);
+    await jobs.forget(job.spec.id);
+    return true;
+  };
+
+  /** A job's move, every entry settled `retained` (#2450), best-effort: a sweep settles what this misses. */
+  const settleJobEntries = async (c: ReqCtx, job: CopyJobRecord): Promise<void> => {
     const { spec } = job;
     const actor = c.get('actor');
     const refs = spec.kind === 'carry' ? [spec.sourceRef, spec.destRef] : [spec.destRef];
     await Promise.allSettled(refs.map((ref) =>
       c.var.admin.settleScopeScriptCopy(actor, spec.tenantId, spec.scopeId, ref, spec.moveId, 'retained')));
-    await discardJobStages(job, latest);
-    await jobs.forget(spec.id);
-    return true;
   };
 
   /**
@@ -3817,14 +3822,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   };
 
   /**
-   * Run the finish of a job this call claimed (#2450). A finish that fails (its load refused, a
-   * fence lapsed, the bind refused) discards the stage it was to load: its caller forgets the job
-   * next, and a refused load keeps its stage.
+   * Run the whole finish of a job this call claimed (#2450), from the lease's renewal on. However it
+   * fails (a refusal, a fence that lapsed, a renewal or a resolve that threw outright), the job's move
+   * settles `retained` and the stage it was to load is discarded: its caller forgets the job next,
+   * after which nothing would, and a refused load keeps its stage.
    */
-  const finishingJob = async <T>(job: CopyJobRecord, finish: () => Promise<T>): Promise<T> => {
+  const finishingJob = async <T>(c: ReqCtx, job: CopyJobRecord, finish: () => Promise<T>): Promise<T> => {
     try {
       return await finish();
     } catch (e) {
+      await settleJobEntries(c, job);
       await discardJobStages(job);
       throw e;
     }
@@ -3857,29 +3864,30 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   /**
    * Finish a carry a job copied (#2450): renew the move's lease, which the restore's fence then
    * counts from, and run the same `carryFinish` an in-request carry runs. A move the job can no
-   * longer finish is settled and refused. A finish that fails forgets the job; one that lands
-   * leaves it claimed, for the caller to forget once its bind has landed or failed: until then the
-   * preview is still bound to the version this carry replaces, and a newer push that found no job
-   * would carry from there.
+   * longer finish is refused. A finish that fails is settled (`finishingJob`) and forgets the job;
+   * one that lands leaves it claimed, for the caller to forget once its bind has landed or failed:
+   * until then the preview is still bound to the version this carry replaces, and a newer push that
+   * found no job would carry from there.
    */
   const finishCarryJob = async (c: ReqCtx, scope: Scope, versionId: string, job: CopyJobRecord): Promise<Carried> => {
     const { spec } = job;
     const done = job.done;
     const actor = c.get('actor');
     try {
-      const lease = await c.var.admin.renewScopeScriptCopy(actor, spec.tenantId, spec.scopeId, spec.moveId, { leaseMs: copyLeaseMs });
-      const [source, dest] = await Promise.all([options.resolveVerticalRef?.(spec.sourceRef), options.resolveVerticalRef?.(spec.destRef)]);
-      if (!lease || !source || !dest || !done || !spec.expected) {
-        await settleJobMove(c, job);
-        throw !lease
-          ? new ControlPlaneError(409, `the copy of scope ${spec.scopeId} was settled before it could be loaded; nothing was moved`)
-          : new ControlPlaneError(502, `the copy of scope ${spec.scopeId} could not reach both of its scripts to finish`);
-      }
-      const expected = spec.expected;
-      return await finishingJob(job, () => carryWith(c, scope, versionId, {
-        moveId: spec.moveId, erasureEpoch: spec.erasureEpoch, from: spec.sourceRef, to: spec.destRef,
-        source, dest, restoredStamp: spec.restoredStamp, leasedAt: lease.renewedAt, expected,
-      }, async () => done));
+      return await finishingJob(c, job, async () => {
+        const lease = await c.var.admin.renewScopeScriptCopy(actor, spec.tenantId, spec.scopeId, spec.moveId, { leaseMs: copyLeaseMs });
+        const [source, dest] = await Promise.all([options.resolveVerticalRef?.(spec.sourceRef), options.resolveVerticalRef?.(spec.destRef)]);
+        if (!lease || !source || !dest || !done || !spec.expected) {
+          throw !lease
+            ? new ControlPlaneError(409, `the copy of scope ${spec.scopeId} was settled before it could be loaded; nothing was moved`)
+            : new ControlPlaneError(502, `the copy of scope ${spec.scopeId} could not reach both of its scripts to finish`);
+        }
+        const expected = spec.expected;
+        return carryWith(c, scope, versionId, {
+          moveId: spec.moveId, erasureEpoch: spec.erasureEpoch, from: spec.sourceRef, to: spec.destRef,
+          source, dest, restoredStamp: spec.restoredStamp, leasedAt: lease.renewedAt, expected,
+        }, async () => done);
+      });
     } catch (e) {
       await options.copyJobs?.forget(spec.id).catch(() => undefined);
       throw e;
@@ -10233,34 +10241,36 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     };
     /**
      * Finish a fork a job copied (#2450): renew its lease, which the restore's fence then counts
-     * from, and load the staged dump into the preview as an in-request fork would have.
+     * from, and load the staged dump into the preview as an in-request fork would have. However it
+     * fails, its move is settled (`finishingJob`) and the row expired, so the next create reaps it.
      */
     const finishForkJob = async (preview: Scope, job: CopyJobRecord) => {
       const { spec } = job;
       const fork = { moveId: spec.moveId };
       const dump = job.done?.dump;
       try {
-        const lease = await c.var.admin.renewScopeScriptCopy(actor, tenantId, preview.id, spec.moveId, { leaseMs: copyLeaseMs });
-        if (!lease || !target || !dump || !preview.forkedFrom) {
-          await settleJobMove(c, job);
-          await abandonFork(preview.id, fork, spec.destRef);
-          throw new ControlPlaneError(409, `the copy into preview '${opts.tag}' was settled before it could be loaded; nothing was moved`);
-        }
-        const forkedFrom = preview.forkedFrom;
-        return await finishingJob(job, async () => {
-          const parent = (await c.var.admin.getScopeRecord(actor, tenantId, forkedFrom)) ?? null;
-          const lineage = copyLineageOf({ kind: preview.kind ?? '', forkedFrom });
-          const fence = copyRestoreFence(spec.moveId, lease.renewedAt, copyLeaseMs, spec.erasureEpoch);
-          return completeFork({
-            previewId: preview.id,
-            parent,
-            fork,
-            targetRef: spec.destRef,
-            load: () => target.restoreScope(tenantId, preview.id, dump, {
+        return await finishingJob(c, job, async () => {
+          let load: () => Promise<unknown>;
+          let parent: Scope | null;
+          try {
+            const lease = await c.var.admin.renewScopeScriptCopy(actor, tenantId, preview.id, spec.moveId, { leaseMs: copyLeaseMs });
+            if (!lease || !target || !dump || !preview.forkedFrom) {
+              throw new ControlPlaneError(409, `the copy into preview '${opts.tag}' was settled before it could be loaded; nothing was moved`);
+            }
+            const forkedFrom = preview.forkedFrom;
+            parent = (await c.var.admin.getScopeRecord(actor, tenantId, forkedFrom)) ?? null;
+            const lineage = copyLineageOf({ kind: preview.kind ?? '', forkedFrom });
+            const fence = copyRestoreFence(spec.moveId, lease.renewedAt, copyLeaseMs, spec.erasureEpoch);
+            load = () => target.restoreScope(tenantId, preview.id, dump, {
               sourceScopeId: forkedFrom, exact: true, ...(lineage ? { markCopy: lineage } : {}),
               loadStamp: spec.restoredStamp, fence,
-            }),
-          });
+            });
+          } catch (e) {
+            // Nothing was loaded: the row goes as a failed load leaves it (`completeFork`).
+            await abandonFork(preview.id, fork, spec.destRef);
+            throw e;
+          }
+          return completeFork({ previewId: preview.id, parent, fork, targetRef: spec.destRef, load });
         });
       } finally {
         await options.copyJobs?.forget(spec.id).catch(() => undefined);
