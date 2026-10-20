@@ -10504,7 +10504,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
               }, begun.state);
               // Another call started this preview's job first: this call's move is not the job's, so
               // its entries settle and the page it staged goes. A newer push's job refuses this one
-              // now, as its next call would; an older one's is replaced by that next call.
+              // now, as its next call would; an older one's is replaced by that next call. A known
+              // limit: two calls of ONE version stage into one store, which keeps a single stage, so
+              // this call's page 0 has replaced the winner's, whose next step then fails (412) with
+              // the preview still serving its old data, and a rerun copies again. Closing it needs
+              // the job's slot taken before the first page is staged.
               if (job.spec.moveId !== move.moveId) {
                 await settleCarryRetained(c, preview, opts.versionId, move);
                 await move.dest.discardStagedScope(preview.id, begun.state.stageId).catch(() => undefined);
