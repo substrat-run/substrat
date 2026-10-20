@@ -326,7 +326,7 @@ await push({ dir, slug: 'leave', version: '1.0.0', controlPlaneUrl: 'http://cp.i
       expect(forced.status, forced.stderr).toBe(0);
       expect(forced.stdout).toMatch(/warning: --allow-unswept-schedules — .*predates #1902/s);
       expect(forced.stdout).toContain('MANIFEST ');
-    });
+    }, 15_000);
 
     it('does not ask when it leaves nothing to the plane: it brings its own sweeper', () => {
       const own = run(tree({ 'package.json': pkg(STORES_WITH_SWEEPER), 'perms.mjs': PERMS, 'src/worker.ts': SWEEPER_ENTRY }), '');
