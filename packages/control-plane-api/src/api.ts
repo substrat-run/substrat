@@ -3772,13 +3772,37 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const refs = spec.kind === 'carry' ? [spec.sourceRef, spec.destRef] : [spec.destRef];
     await Promise.allSettled(refs.map((ref) =>
       c.var.admin.settleScopeScriptCopy(actor, spec.tenantId, spec.scopeId, ref, spec.moveId, 'retained')));
-    const staged = [job, latest].flatMap((r) => [r.state?.stageId, r.done && !Array.isArray(r.done.dump) ? r.done.dump.stageId : undefined]);
+    await discardJobStages(job, latest);
+    await jobs.forget(spec.id);
+    return true;
+  };
+
+  /**
+   * Drop every stage these records of one job name at its destination (#2450), best-effort: once the
+   * job is forgotten nothing else names them, and they would wait for a wipe of the scope there. A
+   * stage that was loaded is gone already, and its discard changes nothing.
+   */
+  const discardJobStages = async (...records: [CopyJobRecord, ...CopyJobRecord[]]): Promise<void> => {
+    const { spec } = records[0];
+    const staged = records.flatMap((r) => [r.state?.stageId, r.done && !Array.isArray(r.done.dump) ? r.done.dump.stageId : undefined]);
     const dest = await options.resolveVerticalRef?.(spec.destRef).catch(() => undefined);
     for (const stageId of new Set(staged.filter((id): id is string => id !== undefined))) {
       await dest?.discardStagedScope(spec.scopeId, stageId).catch(() => undefined);
     }
-    await jobs.forget(spec.id);
-    return true;
+  };
+
+  /**
+   * Run the finish of a job this call claimed (#2450). A finish that fails (its load refused, a
+   * fence lapsed, the bind refused) discards the stage it was to load: its caller forgets the job
+   * next, and a refused load keeps its stage.
+   */
+  const finishingJob = async <T>(job: CopyJobRecord, finish: () => Promise<T>): Promise<T> => {
+    try {
+      return await finish();
+    } catch (e) {
+      await discardJobStages(job);
+      throw e;
+    }
   };
 
   /** Every copy job a preview has (#2450), settled: before it is reaped or replaced. */
@@ -3816,10 +3840,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           ? new ControlPlaneError(409, `the copy of scope ${spec.scopeId} was settled before it could be loaded; nothing was moved`)
           : new ControlPlaneError(502, `the copy of scope ${spec.scopeId} could not reach both of its scripts to finish`);
       }
-      return await carryWith(c, scope, versionId, {
+      const expected = spec.expected;
+      return await finishingJob(job, () => carryWith(c, scope, versionId, {
         moveId: spec.moveId, erasureEpoch: spec.erasureEpoch, from: spec.sourceRef, to: spec.destRef,
-        source, dest, restoredStamp: spec.restoredStamp, leasedAt: lease.renewedAt, expected: spec.expected,
-      }, async () => done);
+        source, dest, restoredStamp: spec.restoredStamp, leasedAt: lease.renewedAt, expected,
+      }, async () => done));
     } finally {
       await options.copyJobs?.forget(spec.id).catch(() => undefined);
     }
@@ -10141,19 +10166,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           await abandonFork(preview.id, fork, spec.destRef);
           throw new ControlPlaneError(409, `the copy into preview '${opts.tag}' was settled before it could be loaded; nothing was moved`);
         }
-        const parent = (await c.var.admin.getScopeRecord(actor, tenantId, preview.forkedFrom)) ?? null;
-        const lineage = copyLineageOf({ kind: preview.kind ?? '', forkedFrom: preview.forkedFrom });
-        const fence = copyRestoreFence(spec.moveId, lease.renewedAt, copyLeaseMs, spec.erasureEpoch);
         const forkedFrom = preview.forkedFrom;
-        return await completeFork({
-          previewId: preview.id,
-          parent,
-          fork,
-          targetRef: spec.destRef,
-          load: () => target.restoreScope(tenantId, preview.id, dump, {
-            sourceScopeId: forkedFrom, exact: true, ...(lineage ? { markCopy: lineage } : {}),
-            loadStamp: spec.restoredStamp, fence,
-          }),
+        return await finishingJob(job, async () => {
+          const parent = (await c.var.admin.getScopeRecord(actor, tenantId, forkedFrom)) ?? null;
+          const lineage = copyLineageOf({ kind: preview.kind ?? '', forkedFrom });
+          const fence = copyRestoreFence(spec.moveId, lease.renewedAt, copyLeaseMs, spec.erasureEpoch);
+          return completeFork({
+            previewId: preview.id,
+            parent,
+            fork,
+            targetRef: spec.destRef,
+            load: () => target.restoreScope(tenantId, preview.id, dump, {
+              sourceScopeId: forkedFrom, exact: true, ...(lineage ? { markCopy: lineage } : {}),
+              loadStamp: spec.restoredStamp, fence,
+            }),
+          });
         });
       } finally {
         await options.copyJobs?.forget(spec.id).catch(() => undefined);

@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { errorCodeOf, platformActorId, scopeId, tenantId, type ScopeDumpTable, type ScopeId, type ScopeLineage, type TenantId } from '@substrat-run/contracts';
+import { errorCodeOf, platformActorId, scopeId, substratError, tenantId, type ScopeDumpTable, type ScopeId, type ScopeLineage, type TenantId } from '@substrat-run/contracts';
 import { CARRIED_AWAY_KEY, COPY_RESTORE_FENCE_LAPSED, LOAD_STAMP_KEY, SCOPE_COPY_LEASE_MS, WRITE_REVISION_KEY, dumpMetaValue, type CopyRestoreFence, ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   ControlPlaneError,
@@ -2551,6 +2551,51 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await pushBg('bg-8', 'v2')).status).toBe(200);
       expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
       expect(jobs.jobs.has(`carry:${sid}`)).toBe(false);
+    });
+
+    it('a finish whose load is refused discards the stage it would have loaded; one that lands consumes its own', async () => {
+      const refuse = (ref: string, sid: ScopeId): Hook => async (r, s) => {
+        if (r === ref && s === sid) throw substratError('precondition_failed', 'the destination moved under the load');
+      };
+      // A fork: the job is done, its pages staged in v1's script, and the load is refused.
+      const sid = (await pushBg('bg-9', 'v1')).body.scopeId;
+      await pumpToDone();
+      expect(await noStage('v1', sid)).not.toEqual([]);
+      hooks.restore = refuse(refOf.get(version.v1)!, sid);
+      try {
+        expect((await pushBg('bg-9', 'v1')).status).toBe(412);
+      } finally {
+        delete hooks.restore;
+      }
+      // The job is forgotten, so nothing names the stage any more: it went with the refusal.
+      expect(jobs.jobs.has(`fork:${sid}`)).toBe(false);
+      expect(await noStage('v1', sid)).toEqual([]);
+      // The retry forks afresh, and its finish loads its own stage, which goes with the load.
+      const again = await pushBg('bg-9', 'v1');
+      expect(again.status).toBe(202);
+      await pumpToDone();
+      const made = await pushBg('bg-9', 'v1');
+      expect(made.status).toBe(201);
+      expect(await noStage('v1', made.body.scopeId)).toEqual([]);
+
+      // A carry: the same, in v2's script, while the preview keeps serving v1.
+      expect((await pushBg('bg-9', 'v2')).status).toBe(202);
+      await pumpToDone();
+      expect(await noStage('v2', made.body.scopeId)).not.toEqual([]);
+      hooks.restore = refuse(refOf.get(version.v2)!, made.body.scopeId);
+      try {
+        expect((await pushBg('bg-9', 'v2')).status).toBe(412);
+      } finally {
+        delete hooks.restore;
+      }
+      expect(jobs.jobs.has(`carry:${made.body.scopeId}`)).toBe(false);
+      expect(await noStage('v2', made.body.scopeId)).toEqual([]);
+      expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+      expect((await pushBg('bg-9', 'v2')).status).toBe(202);
+      await pumpToDone();
+      expect((await pushBg('bg-9', 'v2')).status).toBe(200);
+      expect(await noStage('v2', made.body.scopeId)).toEqual([]);
+      expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
     });
 
     it('of two pushes that both began a copy, the one whose job lost the start leaves no page staged', async () => {
