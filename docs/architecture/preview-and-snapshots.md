@@ -89,6 +89,16 @@ Two adapter implementations behind one interface, mirroring the whole platform:
     `retained`, and discards its stage. The cancel stops a step still running and waits for it, so
     nothing the step does follows the settle or the reap. A newer push waits for a claimed job to
     be finished rather than tear it down.
+  - A call that follows a 202 naming its own version is a poll (`poll: true`). A poll continues
+    that copy and never starts one: it answers 202 while the copy runs, finishes it once it is
+    done, answers the preview again if it already serves the poll's version, and otherwise refuses
+    with 409 (the copy failed, a newer push or a refresh replaced it, or the preview was deleted).
+    Only a new create starts a copy over, so an answer lost on the way back cannot. A call after a
+    202 naming another push's copy is no poll: once that copy is finished, it starts its own.
+  - A copy's failure is answered with the status a refusal had, and with 409 naming the fault
+    when the copy met a 5xx (its deadline, an end it could not reach): the call reporting it did
+    not fail, so it is never a status a client retries as a gateway's. The fault still lands an
+    ops-failure row.
 
   Only previews run this way; a rebind or adopt of a live scope still copies in its request. One
   step remains open in #2450: an online copy with catch-up, for a busy scope at GB scale.

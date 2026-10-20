@@ -158,7 +158,7 @@ async function request<T>(
 /**
  * How sure a caller needs to be that the failed attempt is OVER before it sends another.
  * - `idempotent`: the call is safe to repeat even while the first is still running (read,
- *   delete) — any transient status will do.
+ *   delete, a poll of a background copy) — any transient status will do.
  * - `after-handler-ended`: repeating while the first is still running is NOT useful. A create
  *   whose retry finds its row `provisioning` re-forks only once that create is over — its
  *   own frame marked it failed, or it is past the age bound (#1920) — and otherwise answers
@@ -256,6 +256,10 @@ export async function createPreview(opts: {
   const giveUpAt = Date.now() + (opts.waitMs ?? PREVIEW_COPY_WAIT_MS);
   let pollMs = 5_000;
   let faults = 0;
+  // Whether the last 202 named this create's own version: the call after it continues that copy (a
+  // poll), which the control plane never answers by starting another. A 202 naming another push's
+  // copy (one being finished) leaves the next call free to start this push's own.
+  let polling = false;
   for (let call = 1; ; call++) {
     let out: PreviewCreated | PreviewCopying;
     try {
@@ -278,20 +282,21 @@ export async function createPreview(opts: {
             // #2450 step 2: this client takes a 202 and calls again, so a copy too large for one
             // request runs in the background. A control plane that predates it ignores the field.
             async: true,
+            ...(polling ? { poll: true } : {}),
           }),
         },
-        // The first call converges on the tag: a second call rebinds the same fork, and a create
-        // that died half-built is reaped and re-forked, never duplicated. One still being built
-        // answers 409 (#1920), so it is retried only once the first handler has ended. A later
-        // call is a poll (#2450): it reads the job, or waits on the call finishing it, so it is
-        // safe to repeat while another is still running.
-        { retry: call === 1 ? 'after-handler-ended' : 'idempotent' },
+        // A call that may start a copy converges on the tag: a second call rebinds the same fork,
+        // and a create that died half-built is reaped and re-forked, never duplicated. One still
+        // being built answers 409 (#1920), so it is retried only once the first handler has ended.
+        // A poll (#2450) reads its own job, waits on the call finishing it, or is told the copy is
+        // gone, and starts nothing, so it is safe to repeat while another is still running.
+        { retry: polling ? 'idempotent' : 'after-handler-ended' },
       );
     } catch (e) {
       // A poll that still fails the way a gateway or the network fails is polled again, inside
       // the wait: one blip among thousands of polls must not end a six-hour copy. A definite
       // answer (a 4xx, a 500) ends it, as does a control plane that stays unreachable.
-      if (call === 1 || !pollFaultIsTransient(e) || ++faults > PREVIEW_POLL_FAULTS || Date.now() >= giveUpAt) throw e;
+      if (!polling || !pollFaultIsTransient(e) || ++faults > PREVIEW_POLL_FAULTS || Date.now() >= giveUpAt) throw e;
       const why = e instanceof PreviewCallFailed ? String(e.status) : `network error: ${e instanceof Error ? e.message : String(e)}`;
       console.warn(`preview create: polling the copy failed (${why}); polling again in ${pollMs / 1000}s (${faults} of ${PREVIEW_POLL_FAULTS})`);
       await sleep(pollMs);
@@ -299,6 +304,7 @@ export async function createPreview(opts: {
     }
     faults = 0;
     if (!isCopying(out)) return out;
+    polling = out.versionId === opts.versionId;
     if (Date.now() >= giveUpAt) {
       throw new Error(
         `preview create failed: the preview's data was still being copied after ${Math.round((opts.waitMs ?? PREVIEW_COPY_WAIT_MS) / 60_000)} min ` +

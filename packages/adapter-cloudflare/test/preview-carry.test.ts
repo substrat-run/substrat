@@ -2714,5 +2714,113 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       // Prod as it was, for anything after this.
       await hostOf.get(prodRef)!.restoreScopeLocal(prod, notes(...rows));
     });
+
+    /** The preview rows a tag has in the directory. */
+    const rowsFor = async (tag: string) =>
+      (await dir.admin.listScopes(staff, { tenantId: t, vertical: slug })).filter((s) => s.slug === `${slug}--${tag}`);
+    const poll = (tag: string, v: keyof typeof version) => pushBg(tag, v, { poll: true });
+    const reason = (r: { body: { detail?: string; error?: string } }) => r.body.detail ?? r.body.error;
+
+    it('a copy that failed with a fault is answered 409 naming it, and a poll after that is told it is gone, never a new copy', async () => {
+      const started = await pushBg('bg-12', 'v1');
+      expect(started.status).toBe(202);
+      const sid = started.body.scopeId;
+      // Past its deadline: the job fails with the gateway status the synchronous copy would have met.
+      const id = `fork:${sid}`;
+      const job = jobs.jobs.get(id)!;
+      jobs.jobs.set(id, { ...job, spec: { ...job.spec, deadline: Date.now() - 1 } });
+      await jobs.pump(id);
+      expect(jobs.jobs.get(id)).toMatchObject({ status: 'failed', error: { status: 504 } });
+
+      // The poll that reads it is answered a status no client retries as a gateway's, with the cause.
+      const failed = await poll('bg-12', 'v1');
+      expect(failed.status).toBe(409);
+      expect(reason(failed)).toMatch(/background copy failed with 504: .*ran past its \d+ min limit/);
+      // It lands an ops-failure row all the same: the fault was the platform's.
+      await vi.waitFor(async () => {
+        const recorded = await dir.admin.listOpsFailures(staff, { scopeId: sid });
+        expect(recorded).toEqual([expect.objectContaining({ stage: 'copy', status: 504 })]);
+      });
+
+      // The same poll again (its answer was lost, or it is retried) starts nothing over.
+      const again = await poll('bg-12', 'v1');
+      expect(again.status).toBe(409);
+      expect(reason(again)).toMatch(/is no longer running.*a new create starts the copy over/);
+      expect((await rowsFor('bg-12')).map((s) => s.id)).toEqual([sid]);
+      expect(jobs.jobs.size).toBe(0);
+
+      // A new create (the command run again) does start over.
+      const rerun = await pushBg('bg-12', 'v1');
+      expect(rerun.status).toBe(202);
+      expect(rerun.body.scopeId).not.toBe(sid);
+      await pumpToDone();
+      expect((await poll('bg-12', 'v1')).status).toBe(201);
+    });
+
+    it('a caller that sends neither async nor poll (a CLI before both) is answered within its request, as before', async () => {
+      const legacy = async (v: keyof typeof version) => {
+        const res = await bg.request(`/verticals/${slug}/previews`, {
+          method: 'POST',
+          headers: auth,
+          body: JSON.stringify({ tag: 'bg-15', versionId: version[v], sourceScopeId: prod }),
+        });
+        return { status: res.status, body: (await res.json()) as { scopeId: ScopeId; hostname: string } };
+      };
+      const made = await legacy('v1');
+      expect(made.status).toBe(201);
+      expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+      const moved = await legacy('v2');
+      expect(moved.status).toBe(200);
+      expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
+      expect(jobs.jobs.size).toBe(0);
+    });
+
+    it('a poll whose preview was deleted mid-copy is told so, and never forks it again', async () => {
+      const started = await pushBg('bg-13', 'v1');
+      expect(started.status).toBe(202);
+      expect((await bg.request(`/verticals/${slug}/previews/bg-13`, { method: 'DELETE', headers: auth })).status).toBe(200);
+      const refused = await poll('bg-13', 'v1');
+      expect(refused.status).toBe(409);
+      expect(reason(refused)).toMatch(/is no longer running/);
+      expect(await rowsFor('bg-13')).toEqual([]);
+      expect(jobs.jobs.size).toBe(0);
+      // Its twin, a call that is no poll, is a new create, and forks one.
+      expect((await pushBg('bg-13', 'v1')).status).toBe(202);
+      expect(await rowsFor('bg-13')).toHaveLength(1);
+      await pumpToDone();
+      expect((await poll('bg-13', 'v1')).status).toBe(201);
+    });
+
+    it('a poll after the finish it waited on landed is answered the preview, and one whose carry is gone is refused', async () => {
+      // A fork: the finishing poll's answer is lost, so the next poll finds the preview serving it.
+      const sid = (await pushBg('bg-14', 'v1')).body.scopeId;
+      await pumpToDone();
+      const made = await poll('bg-14', 'v1');
+      expect(made.status).toBe(201);
+      const lost = await poll('bg-14', 'v1');
+      expect(lost.status).toBe(200);
+      expect(lost.body.scopeId).toBe(sid);
+      expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+
+      // A carry, the same.
+      expect((await pushBg('bg-14', 'v2')).status).toBe(202);
+      await pumpToDone();
+      expect((await poll('bg-14', 'v2')).status).toBe(200);
+      expect((await poll('bg-14', 'v2')).status).toBe(200);
+      expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
+
+      // A carry that fails: its poll is answered the failure, and the next one finds no carry of its
+      // own, so it starts none, and the preview keeps serving the version it served.
+      expect((await pushBg('bg-14', 'v3')).status).toBe(202);
+      const carry = jobs.jobs.get(`carry:${sid}`)!;
+      await dir.admin.settleScopeScriptCopy(staff, t, sid, carry.spec.destRef, carry.spec.moveId, 'retained');
+      await jobs.pump(carry.spec.id);
+      expect((await poll('bg-14', 'v3')).status).toBe(409);
+      const gone = await poll('bg-14', 'v3');
+      expect(gone.status).toBe(409);
+      expect(reason(gone)).toMatch(/is no longer running/);
+      expect(jobs.jobs.has(`carry:${sid}`)).toBe(false);
+      expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
+    });
   });
 });

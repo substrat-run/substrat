@@ -144,6 +144,26 @@ describe('preview client', () => {
       warn.mockRestore();
     });
 
+    it("polls only after a 202 naming this create's own copy; after one naming another push's, it may start its own", async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // An older push's copy is being finished, then this push's own copy runs, then it is done.
+      const theirs = { status: 202, body: { ...copying(3).body, versionId: '01H' } };
+      const answers = [theirs, copying(1), copying(2), { status: 201, body: created }];
+      const { calls } = stub(() => answers.shift()!);
+      await createPreview({ ...base, tag: 'pr-9', versionId: '01J', sleep: async () => {} });
+      expect(calls.map((c) => (c.body as { poll?: boolean }).poll)).toEqual([undefined, undefined, true, true]);
+    });
+
+    it('a copy that failed ends the wait with its sentence, after the one call that read it', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const failed = 'the background copy failed with 504: the copy of scope S1 ran past its 360 min limit; nothing was moved';
+      const answers = [copying(1), { status: 409, body: { type: 'about:blank', title: 'Conflict', status: 409, detail: failed } }];
+      const { calls } = stub(() => answers.shift()!);
+      await expect(createPreview({ ...base, tag: 'pr-9', versionId: '01J', sleep: async () => {} }))
+        .rejects.toThrow(`preview create failed (409): ${failed}`);
+      expect(calls).toHaveLength(2);
+    });
+
     it('sends refresh on the first call only: on a later one it would stop the copy', async () => {
       vi.spyOn(console, 'warn').mockImplementation(() => {});
       const answers = [copying(1), { status: 201, body: created }];

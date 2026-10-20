@@ -455,7 +455,9 @@ A fork or a copy too large for one request runs in the background: `create` prin
 and waits until the preview is ready, for up to six hours. If the CLI stops waiting (its CI job is
 cancelled, say), the preview is left as it was: a new one is not ready, and one being updated keeps
 serving the previous push. Running `create` again pushes a new version, whose copy starts over and
-replaces the one left running.
+replaces the one left running. A copy that fails, or that a newer push, a refresh or a delete
+stops, ends `create` with the reason (a `409`), and `create` never starts the copy over by itself:
+only running it again does.
 `--refresh` starts from a clean fork, and stops a copy still running. `--ttl` defaults to `72h`; `--ttl none`
 **pins** the preview until you delete it. Default preview pushes use a semver *prerelease* label, so
 they never advance the release version your repo owns. Because `create` is a push, it takes push's

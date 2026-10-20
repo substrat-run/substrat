@@ -86,7 +86,8 @@ routing stays on the same script or the incoming version is co-located. When a c
   write between two pages is copied again from the start. One that keeps changing through three
   attempts is refused (`409`) with nothing moved; re-run the push when it is quieter.
 - **A failed copy changes nothing.** The preview stays on the previous version with its data, and
-  re-running the push tries again.
+  re-running the push tries again. A background copy that fails ends `preview create` with the
+  reason; it is never started over without a new push.
 
 - **The previous version's copy is wiped once the switch lands.** It is emptied rather than
   deleted, so binding the preview back to that version later copies the data into it again.

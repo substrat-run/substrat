@@ -1093,6 +1093,10 @@ const createPreviewBody = z.object({
   // request then moves in the background, and the 202 says how far it got; the same call, repeated,
   // finishes the preview once it is done. A caller that does not say so is answered as before.
   async: z.boolean().optional(),
+  // #2450: this call follows a 202 that named this call's own version, so it continues that copy and
+  // never starts one: it answers the copy's progress, finishes it once it is done, or says it is gone.
+  // A call after a 202 naming another push's copy (one being finished) is not a poll: it may start its own.
+  poll: z.boolean().optional(),
 });
 
 const listRolesQuery = z.object({
@@ -3815,12 +3819,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   };
 
-  /** A job's failure, as the route answers it: the status and sentence the synchronous copy would have. */
-  const jobRefusal = (job: CopyJobRecord): ControlPlaneError =>
-    new ControlPlaneError(
-      job.error?.status ?? 409,
-      job.error?.message ?? `the copy of scope ${job.spec.scopeId} was cancelled before it finished; nothing was moved`,
-    );
+  /**
+   * A job's failure, as the route answers it (#2450). A refusal keeps the status and sentence the
+   * synchronous copy would have answered. A fault the copy met (a 5xx: its deadline, an end it could
+   * not reach, a stage it could not keep) is answered 409, naming that status: the call reporting it
+   * did not fail, the copy did, earlier. A 502–504 reads to every client as a gateway's, which it
+   * retries, though nothing about the copy will change.
+   */
+  const jobRefusal = (job: CopyJobRecord): ControlPlaneError => {
+    const error = job.error ?? { status: 409, message: `the copy of scope ${job.spec.scopeId} was cancelled before it finished; nothing was moved` };
+    return error.status >= 500
+      ? new ControlPlaneError(409, `the background copy failed with ${error.status}: ${error.message}`)
+      : new ControlPlaneError(error.status, error.message);
+  };
 
   /**
    * Finish a carry a job copied (#2450): renew the move's lease, which the restore's fence then
@@ -9921,7 +9932,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     slug: string,
     // A FORK copies this scope's data; `null` provisions an empty clean-room scope (#509 (b)).
     source: Scope | null,
-    opts: { tag: string; versionId: string; ttlHours?: number | null; surface?: string; refresh?: boolean; async?: boolean },
+    opts: { tag: string; versionId: string; ttlHours?: number | null; surface?: string; refresh?: boolean; async?: boolean; poll?: boolean },
   ): Promise<PreviewCopying | {
     scopeId: ScopeId;
     hostname: string;
@@ -9938,6 +9949,35 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // #2450 step 2: where a copy that outlasts this request may run — only for a caller that takes a
     // 202 and calls again, and on a host whose jobs can reach each end by its script.
     const jobs = opts.async && options.resolveVerticalRef ? options.copyJobs : undefined;
+    // #2450: a call that continues the copy an earlier call of this push started. It never starts a
+    // copy, reaps a row or forks one, so no answer lost or misread on the way back can turn into a
+    // copy started over: only a new create (a new push) does that.
+    const poll = jobs !== undefined && opts.poll === true;
+    /** What a poll is answered when the copy it was waiting on is no longer there. */
+    const copyGone = (): ControlPlaneError =>
+      new ControlPlaneError(
+        409,
+        `the copy for preview '${opts.tag}' (version ${opts.versionId}) is no longer running: it failed, a newer push ` +
+          `or a refresh replaced it, or the preview was deleted. Nothing was moved; a new create starts the copy over`,
+      );
+    /** A job's failure, answered (`jobRefusal`). A fault it met is recorded here, since its answer is no 5xx (#559). */
+    const refuseFailedJob = (job: CopyJobRecord): ControlPlaneError => {
+      const error = job.error;
+      if (error && error.status >= 500 && error.status !== 501) {
+        recordFailure({
+          actor,
+          operation: 'preview.create',
+          stage: 'copy',
+          tenantId,
+          scopeId: job.spec.scopeId,
+          vertical: slug,
+          version: job.spec.versionId,
+          status: error.status,
+          message: error.message,
+        });
+      }
+      return jobRefusal(job);
+    };
     // #527 guard: a preview MUST serve the version it just bound. Routing resolves
     // `COALESCE(scope.servingRef, version.deploymentRef)` (control-plane-do `readRoute`),
     // so a preview that still carries an inherited `serving_ref` — or otherwise resolves away
@@ -9993,6 +10033,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const forkJob = existing?.status === 'provisioning' && options.copyJobs
       ? await options.copyJobs.get(copyJobId('fork', existing.id))
       : null;
+    // A poll goes on only to a fork job (below, where one for another version refuses it) or a live
+    // preview (the carry, below). Anything else is a copy gone: never reaped, never forked afresh.
+    if (poll && !(existing && (forkJob || existing.status === 'active'))) throw copyGone();
 
     // A preview only HAS data once its two-phase create finished: the directory row lands
     // first as `provisioning` (K-31), the fork's export→restore runs, and `activateScope`
@@ -10195,6 +10238,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const superseded = !opts.refresh && supersededRefusal(forkJob, opts.versionId, opts.tag);
       if (superseded) throw superseded;
       const replaced = opts.refresh || forkJob.spec.versionId !== opts.versionId;
+      // A poll's own fork is this one or none: it replaces nothing.
+      if (poll && replaced) throw copyGone();
       const inProgress = (): PreviewCopying => {
         if (jobs) return copyingAnswer(forkJob);
         throw new ControlPlaneError(409, `a create for preview '${opts.tag}' is in progress (its data is still being copied). Retry once it finishes`);
@@ -10209,7 +10254,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // A newer push leaves a finish another call has claimed to that call; a refresh replaces it.
       if (!(await settleJobMove(c, forkJob, { unlessFinishing: !opts.refresh }))) return inProgress();
       await c.var.admin.setScopeExpiresAt(actor, tenantId, existing.id, new Date().toISOString()).catch(() => undefined);
-      if (!replaced) throw jobRefusal(forkJob);
+      if (!replaced) throw refuseFailedJob(forkJob);
       existing = (await c.var.admin.getScopeRecord(actor, tenantId, existing.id)) ?? existing;
     }
 
@@ -10235,19 +10280,30 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         if (held && held.spec.versionId !== opts.versionId) {
           const superseded = supersededRefusal(held, opts.versionId, opts.tag);
           if (superseded) throw superseded;
+          // A poll's own carry is not an older push's: it replaces nothing.
+          if (poll) throw copyGone();
           // An older push's copy: this push replaces it, unless another call is finishing it.
           if (!(await settleJobMove(c, held, { unlessFinishing: true }))) return inProgress(held);
         } else if (held) {
           if (held.status === 'copying') return inProgress(held);
           if (held.status !== 'done') {
             await settleJobMove(c, held);
-            throw jobRefusal(held);
+            throw refuseFailedJob(held);
           }
           // Only the call that claims a done job finishes it; any other waits (see the fork's).
           const claimed = await options.copyJobs?.claim(held.spec.id, copyClaimMs);
           if (!claimed) return inProgress(held);
           carried = await finishCarryJob(c, preview, opts.versionId, claimed);
           finishedJob = claimed;
+        }
+        if (carried === undefined && poll) {
+          // A poll starts no carry. With no job left, either the one it waited on landed (the answer
+          // that said so was lost) and the preview serves this version with nothing left to move,
+          // which is answered again; or the copy is gone.
+          const served = preview.verticalVersionId === opts.versionId &&
+            (await carryEnds(c, preview, opts.versionId, { dropServingRef: true })) === null;
+          if (!served) throw copyGone();
+          carried = null;
         }
         if (carried === undefined && jobs) {
           const move = await carryBegin(c, preview, opts.versionId, { dropServingRef: true });
