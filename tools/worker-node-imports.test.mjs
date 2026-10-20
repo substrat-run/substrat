@@ -89,6 +89,20 @@ test('a transitive dependency is named from entry through importer to builtin', 
   }
 });
 
+test('a transitive CommonJS require of a builtin is refused without nodejs_compat', async () => {
+  const w = entry([]);
+  try {
+    writeFileSync(w.path, `import './dependency.cjs'; export default { fetch: () => new Response('ok') };`);
+    writeFileSync(join(w.path, '..', 'dependency.cjs'), `const crypto = require('node:crypto'); module.exports = crypto;`);
+    const found = await refusedBuiltins(w.path, []);
+    assert.deepEqual(found.refused, ['node:crypto']);
+    assert.match(workerNodeImportOffence(w.path, [], found), /worker\.js -> .*dependency\.cjs -> node:crypto/);
+    assert.deepEqual((await refusedBuiltins(w.path, ['nodejs_compat'])).refused, []);
+  } finally {
+    w.done();
+  }
+});
+
 test('the shared IdentityDO bundles for a flagless OIDC worker', async () => {
   const path = new URL('../packages/vertical-auth/src/identity-do.ts', import.meta.url).pathname;
   assert.deepEqual(await refusedBuiltins(path, []), { refused: [], importPaths: [] });

@@ -6,6 +6,9 @@ import { build } from 'esbuild';
 const NODE_COMPAT = new Set(['nodejs_compat', 'nodejs_compat_v2']);
 const ALS = new Set(['node:async_hooks', 'async_hooks']);
 const BUILTINS = new Set(builtinModules);
+// esbuild's module-loading kinds. `require-resolve` only asks for a path; CSS import kinds
+// and URL tokens do not load a JavaScript builtin in a Worker.
+const LOAD_KINDS = new Set(['import-statement', 'dynamic-import', 'require-call']);
 
 export function builtinsAllowedBy(flags: readonly string[]): 'all' | ReadonlySet<string> {
   if (flags.some((flag) => NODE_COMPAT.has(flag))) return 'all';
@@ -47,7 +50,7 @@ export async function refusedBuiltins(entry: string, flags: readonly string[]): 
   const importPaths: string[][] = [];
   for (const file of pending) {
     for (const item of inputs[file]!.imports) {
-      if ((item.kind === 'import-statement' || item.kind === 'dynamic-import') &&
+      if (LOAD_KINDS.has(item.kind) &&
           (item.path.startsWith('node:') || BUILTINS.has(item.path)) && !allowed.has(item.path)) {
         refused.add(item.path);
         importPaths.push([...paths.get(file)!, item.path]);
