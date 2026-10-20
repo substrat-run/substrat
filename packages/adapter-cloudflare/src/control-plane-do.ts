@@ -3433,7 +3433,8 @@ export class ControlPlaneDO extends DurableObject {
   keepAlivePendingScopeCopy(tenantId: string, scopeId: string, moveId: string, status: string,
     expectedExpiresAt: string | null, expiresAt: string | null): boolean {
     return this.sql.exec(PENDING_COPY_KEEP_ALIVE_SQL,
-      ...pendingCopyKeepAliveParams(expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId)).rowsWritten > 0;
+      ...pendingCopyKeepAliveParams(expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId,
+        new Date().toISOString())).rowsWritten > 0;
   }
 
   async listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]> {

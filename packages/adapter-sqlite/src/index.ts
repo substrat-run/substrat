@@ -10252,7 +10252,8 @@ export class SqliteScopeHost implements ScopeHost {
       },
       keepAlivePendingScopeCopy: async (actor, tenantId, scopeId, moveId, status, expectedExpiresAt, expiresAt) => {
         const changed = this.directory.prepare(PENDING_COPY_KEEP_ALIVE_SQL)
-          .run(...pendingCopyKeepAliveParams(expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId)).changes > 0;
+          .run(...pendingCopyKeepAliveParams(expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId,
+            new Date().toISOString())).changes > 0;
         if (changed) this.recordAdmin(actor, 'setScopeExpiresAt', { tenantId, scopeId },
           { expiresAt: expectedExpiresAt }, { expiresAt });
         return changed;
