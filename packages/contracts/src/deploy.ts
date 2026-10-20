@@ -1617,8 +1617,8 @@ function registryReservedKeyProblems(
 }
 
 /**
- * #2430: the deploy manifest's `ownerGrants` (package.json `substrat.ownerGrants`, which an install
- * grants to its owner, a person) against the reservations its registry's rows mark. The control
+ * #2430/#2446: the deploy manifest's `ownerGrants` and each carried module's `ownerGrants`
+ * (which an install grants to its owner, a person) against the reservations its registry marks. The control
  * plane's push routes call it beside {@link pushedPermissionRegistry}: a manifest cannot carry a
  * refinement, since history is read through an `extend` of it.
  */
@@ -1771,18 +1771,10 @@ function assertKeysMatchModules(
 }
 
 /**
- * Derive the machine-readable {@link permissionRegistry} from a vertical's declared surface —
- * the keys+descriptions each module declares (with `declaredBy`), the role templates, and the
- * entity-grant shapes. `substrat push` calls this on the imported `permissions` entry to build
- * what it ships in the manifest; the permission checkpoint uses the same function, so the
- * derived surface is one code path with no room to disagree.
- *
- * Deterministic: every array is sorted (keys, roles, grants, and the members within each), so
- * the output — and therefore `digests.permission` — is a pure function of content, independent
- * of declaration order.
+ * Derive registry key rows from module declarations. Both `buildPermissionRegistry` and the
+ * publish check use this function, including its holder union and deterministic ordering.
  */
-/** One derivation for the CLI's registry and the control plane's publish check. */
-export function permissionRowsOfModules(
+function permissionRowsOfModules(
   modules: readonly Pick<ModuleManifest, 'id' | 'permissions' | 'ownerGrants'>[],
 ): PermissionRegistryEntry[] {
   const declaredBy = new Map<PermissionRegistryEntry['key'], { description: string; modules: Set<PermissionRegistryEntry['declaredBy'][number]> }>();
@@ -1804,6 +1796,7 @@ export function permissionRowsOfModules(
     .sort((a, b) => a.key.localeCompare(b.key));
 }
 
+/** Build the complete registry from the declared surface, sorted for a stable permission digest. */
 export function buildPermissionRegistry(input: PermissionsInput): PermissionRegistry {
   const cmp = (a: string, b: string) => a.localeCompare(b);
   const sortKeys = <T extends string>(keys: readonly T[]): T[] => [...keys].sort(cmp);
