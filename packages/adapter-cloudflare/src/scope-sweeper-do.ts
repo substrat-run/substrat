@@ -143,8 +143,6 @@ export interface ScopeSweeperDoConfig<Env> {
   concurrency?: number;
   /** Observe each pass — logging or a health metric. Never throws into the loop. */
   onPass?(outcome: ScopeSweepOutcome, env: Env): void;
-  /** Override the best-effort platform drain kick after schedules enqueue requests. */
-  kickPlatformDrain?(env: Env, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
   /**
    * #1232: the version identity the pass reports — read `env.SUBSTRAT_VERSION_ID`
    * here (an accessor rather than a widened Env constraint, so existing workers
@@ -450,9 +448,8 @@ export function defineScopeSweeperDO<Env>(
           }
           // One kick per scope per pass, after every schedule has run. A failed kick affects
           // latency only: the intents are durable and the platform's sweep will find them.
-          const kick = config.kickPlatformDrain ?? kickPlatformDrain;
-          if (needsPlatformDrain && kick) {
-            this.ctx.waitUntil(Promise.resolve().then(() => kick(this.env, tenantId, scopeId)).catch(() => {}));
+          if (needsPlatformDrain) {
+            this.ctx.waitUntil(Promise.resolve().then(() => kickPlatformDrain(this.env, tenantId, scopeId)).catch(() => {}));
           }
         }
       };
