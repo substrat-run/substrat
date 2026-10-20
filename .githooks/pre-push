@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Pre-push gate: run the workspace typecheck before anything reaches the remote.
+# Pre-push gate: run the workspace typecheck and Worker import lint before upload.
 #
 # Every CI failure this repo has hit from a "tests pass locally" push has been a
 # *typecheck* error — vitest does not typecheck, and `pnpm test` therefore misses
@@ -37,3 +37,11 @@ if ! pnpm run typecheck; then
   exit 1
 fi
 echo "pre-push: typecheck clean ✓"
+
+echo "pre-push: pnpm lint:worker-node-imports …"
+if ! pnpm run lint:worker-node-imports; then
+  echo "" >&2
+  echo "pre-push: Worker import lint FAILED — push aborted." >&2
+  exit 1
+fi
+echo "pre-push: Worker import lint clean ✓"

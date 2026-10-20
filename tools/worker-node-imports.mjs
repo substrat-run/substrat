@@ -30,9 +30,13 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { builtinsAllowedBy, refusedBuiltins, workerNodeImportOffence } from '../packages/cli/dist/worker-node-imports.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const cliDist = join(ROOT, 'packages/cli/dist');
+if (!existsSync(join(cliDist, 'worker-node-imports.js')) || !existsSync(join(cliDist, 'push.js'))) {
+  throw new Error('CLI build is missing; run `pnpm --filter @substrat-run/cli... build` before running this tool.');
+}
+const { builtinsAllowedBy, refusedBuiltins, workerNodeImportOffence } = await import(pathToFileURL(join(cliDist, 'worker-node-imports.js')).href);
 
 /** Directories holding a worker: tracked wrangler configs, and verticals declaring runtime needs. */
 function workerDirs() {

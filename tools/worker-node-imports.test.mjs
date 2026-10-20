@@ -1,9 +1,23 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { builtinsAllowedBy, refusedBuiltins, workerNodeImportOffence } from '../packages/cli/dist/worker-node-imports.js';
+const cliRule = new URL('../packages/cli/dist/worker-node-imports.js', import.meta.url);
+if (!existsSync(cliRule)) {
+  throw new Error('CLI build is missing; run `pnpm --filter @substrat-run/cli... build` before running these tests.');
+}
+const { builtinsAllowedBy, refusedBuiltins, workerNodeImportOffence } = await import(cliRule.href);
+
+test('root import gates rebuild the CLI rule and the pre-push hook runs the lint', () => {
+  const root = new URL('../', import.meta.url);
+  const scripts = JSON.parse(readFileSync(new URL('package.json', root), 'utf8')).scripts;
+  for (const name of ['lint:worker-node-imports', 'test:worker-node-imports']) {
+    assert.match(scripts[name], /^pnpm --filter @substrat-run\/cli\.\.\. build && node /);
+  }
+  assert.match(readFileSync(new URL('.githooks/pre-push', root), 'utf8'), /pnpm run lint:worker-node-imports/);
+  assert.equal(existsSync(new URL('../packages/cli/dist/worker-node-imports.js', import.meta.url)), true);
+});
 
 /** A worker entry on disk that imports `specifiers` statically (and `dynamic` through import()). */
 function entry(specifiers, dynamic = []) {
