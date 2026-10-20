@@ -10508,7 +10508,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
               // limit: two calls of ONE version stage into one store, which keeps a single stage, so
               // this call's page 0 has replaced the winner's, whose next step then fails (412) with
               // the preview still serving its old data, and a rerun copies again. Closing it needs
-              // the job's slot taken before the first page is staged.
+              // the job's slot taken before the first page is staged (#2461).
               if (job.spec.moveId !== move.moveId) {
                 await settleCarryRetained(c, preview, opts.versionId, move);
                 await move.dest.discardStagedScope(preview.id, begun.state.stageId).catch(() => undefined);
