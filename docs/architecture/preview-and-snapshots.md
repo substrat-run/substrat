@@ -84,11 +84,14 @@ Two adapter implementations behind one interface, mirroring the whole platform:
     runs the in-request path's own restore and bind, with the fence counted from that renewal. A
     call that finds the job claimed answers its progress instead, and touches nothing. A carry's
     claim is held until its bind is over, so a newer push cannot start from the binding it
-    replaces, and a finish that fails discards the stage it would have loaded.
+    replaces. A finish that fails, however it fails, settles the move and discards the stage it
+    would have loaded, and a fork, like a carry, refuses a source that was carried away and wiped
+    while it was read.
   - A refresh, a delete or a newer push to the preview cancels the job, settles its move
     `retained`, and discards its stage. The cancel stops a step still running and waits for it, so
-    nothing the step does follows the settle or the reap. A newer push waits for a claimed job to
-    be finished rather than tear it down.
+    nothing the step does follows the settle or the reap. Each page call has a 60 s deadline
+    (`PAGE_CALL_DEADLINE_MS`), so that wait is bounded. A newer push waits for a claimed job to be
+    finished rather than tear it down.
   - A call that follows a 202 naming its own version is a poll (`poll: true`). A poll continues
     that copy and never starts one: it answers 202 while the copy runs, finishes it once it is
     done, answers the preview again if it already serves the poll's version, and otherwise refuses
