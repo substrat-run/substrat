@@ -58,6 +58,8 @@ export interface CopyJobRecord {
   done?: TransferredScope;
   /** Once `failed`: what the route answers, as the synchronous path would have. */
   error?: { status: number; message: string };
+  /** Once `done`: until when (epoch ms) the call that claimed it holds it, to finish it (`CopyJobs.claim`). */
+  claimedUntil?: number;
   /** Progress, for the 202 the route answers while copying. */
   pages: number;
   rows: number;
@@ -69,16 +71,32 @@ export interface CopyJobRecord {
   updatedAt: number;
 }
 
-/** Where jobs live. Production: a Durable Object per job. Tests: a map. Every call is idempotent. */
+/**
+ * Where jobs live. Production: a Durable Object per job. Tests: a map. Every call but `claim` is
+ * idempotent, and each is atomic for its job.
+ */
 export interface CopyJobs {
   /** Start `spec` from `state`, or answer the job already started under `spec.id`. */
   start(spec: CopyJobSpec, state: TransferState): Promise<CopyJobRecord>;
   get(id: string): Promise<CopyJobRecord | null>;
-  /** Stop a job that is copying. Its stage stays for the caller to discard; a later step does nothing. */
+  /**
+   * Take a `done` job to finish it: answered, held for `holdMs`, to one caller at a time, and null to
+   * any other (a job held, not done, or gone). Only the holder finishes the job or gives it up, so two
+   * calls that read the same done job never both load it, nor does the slower one undo the faster.
+   */
+  claim(id: string, holdMs: number): Promise<CopyJobRecord | null>;
+  /**
+   * Stop a job that is copying, or done and not held: no later step or claim acts on it. Its stage
+   * stays for the caller to discard. A job another call holds (`claim`) is answered as it is.
+   */
   cancel(id: string): Promise<CopyJobRecord | null>;
   /** Drop a job the route has finished with. */
   forget(id: string): Promise<void>;
 }
+
+/** Whether a call holds `job` to finish it, at `now` (epoch ms): see `CopyJobs.claim`. */
+export const copyJobHeld = (job: CopyJobRecord, now: number): boolean =>
+  job.status === 'done' && (job.claimedUntil ?? 0) > now;
 
 /** What a step needs: the two deployments, and the ledger to renew the lease in. */
 export interface CopyJobDeps {
@@ -180,10 +198,17 @@ export function memoryCopyJobs(deps: CopyJobDeps, opts: { stepMs?: number } = {}
     async get(id) {
       return jobs.get(id) ?? null;
     },
+    async claim(id, holdMs) {
+      const job = jobs.get(id);
+      if (job?.status !== 'done' || copyJobHeld(job, now())) return null;
+      const claimed: CopyJobRecord = { ...job, claimedUntil: now() + holdMs };
+      jobs.set(id, claimed);
+      return claimed;
+    },
     async cancel(id) {
       const job = jobs.get(id);
       if (!job) return null;
-      if (job.status !== 'copying') return job;
+      if (job.status !== 'copying' && (job.status !== 'done' || copyJobHeld(job, now()))) return job;
       const cancelled: CopyJobRecord = { ...job, status: 'cancelled', state: undefined, updatedAt: now() };
       jobs.set(id, cancelled);
       return cancelled;

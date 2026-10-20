@@ -7,6 +7,7 @@ import {
   createControlPlaneApi,
   memoryCopyJobs,
   retryScopeScriptCopies,
+  type CopyJobs,
   settleExpiredScopeScriptCopies,
   DEV_ACTOR_HEADER,
   UNSAFE_devPlatformActorAuth,
@@ -2254,8 +2255,8 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     afterAll(() => {
       paged = false;
     });
-    const pushBg = async (tag: string, v: keyof typeof version, extra: object = {}) => {
-      const res = await bg.request(`/verticals/${slug}/previews`, {
+    const pushBg = async (tag: string, v: keyof typeof version, extra: object = {}, via = bg) => {
+      const res = await via.request(`/verticals/${slug}/previews`, {
         method: 'POST',
         headers: auth,
         body: JSON.stringify({ tag, versionId: version[v], sourceScopeId: prod, async: true, ...extra }),
@@ -2276,6 +2277,34 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid })).map((e) => `${e.moveId}:${e.role}:${e.state}`);
     const noStage = async (v: keyof typeof version, sid: ScopeId) =>
       (await hostFor(v).introspectScopeTables(sid)).map((tb) => tb.name).filter((n) => n.startsWith('_substrat_stage'));
+    /**
+     * An API over the same jobs, whose first `get` of job `id` (or first successful `claim` of it)
+     * is held until the test releases it: one call of two that read the same job, made slow.
+     */
+    const holding = (point: 'get' | 'claim', id: () => string) => {
+      let release!: () => void;
+      let reached!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      const there = new Promise<void>((r) => { reached = r; });
+      let armed = true;
+      const hold = async <T>(jobId: string, answer: T): Promise<T> => {
+        if (armed && jobId === id()) {
+          armed = false;
+          reached();
+          await gate;
+        }
+        return answer;
+      };
+      const held: CopyJobs = {
+        ...jobs,
+        get: async (jobId) => (point === 'get' ? hold(jobId, await jobs.get(jobId)) : jobs.get(jobId)),
+        claim: async (jobId, holdMs) => {
+          const claimed = await jobs.claim(jobId, holdMs);
+          return point === 'claim' && claimed ? hold(jobId, claimed) : claimed;
+        },
+      };
+      return { api: createControlPlaneApi({ ...apiOptions, copyJobs: held }), there, release };
+    };
 
     let preview: ScopeId;
     let hostname: string;
@@ -2387,6 +2416,72 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await dir.admin.getScopeRecord(staff, t, started.body.scopeId)).toBeFalsy();
       await pumpToDone();
       expect((await pushBg('bg-4', 'v1')).status).toBe(201);
+    });
+
+    it('a call that read a done fork another call then finished waits, and leaves that preview as it was finished', async () => {
+      const started = await pushBg('bg-5', 'v1');
+      expect(started.status).toBe(202);
+      const sid = started.body.scopeId;
+      await pumpToDone();
+      // The slow call reads the done job, and is held there while a second call finishes the preview.
+      const slow = holding('get', () => `fork:${sid}`);
+      const late = pushBg('bg-5', 'v1', {}, slow.api);
+      await slow.there;
+      const fast = await pushBg('bg-5', 'v1');
+      expect(fast.status).toBe(201);
+      slow.release();
+      // It waits: it does not renew the move the fast call confirmed, nor expire the preview.
+      expect((await late).status).toBe(202);
+      const record = await dir.admin.getScopeRecord(staff, t, sid);
+      expect(record?.status).toBe('active');
+      expect(Date.parse(record!.expiresAt!)).toBeGreaterThan(Date.now() + 3_600_000);
+      expect(await served(fast.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+      // Its next call finds the finished preview.
+      expect((await pushBg('bg-5', 'v1')).status).toBe(200);
+    });
+
+    let six: { sid: ScopeId; hostname: string };
+
+    it('while one call finishes a done fork, another of the same push waits, and so does a newer push', async () => {
+      const started = await pushBg('bg-6', 'v1');
+      const sid = started.body.scopeId;
+      await pumpToDone();
+      const finisher = holding('claim', () => `fork:${sid}`);
+      const finishing = pushBg('bg-6', 'v1', {}, finisher.api);
+      await finisher.there;
+      expect((await pushBg('bg-6', 'v1')).status).toBe(202);
+      expect((await pushBg('bg-6', 'v2')).status).toBe(202);
+      // The job is still the finisher's: neither call cancelled, settled or replaced it.
+      expect(jobs.jobs.get(`fork:${sid}`)).toMatchObject({ status: 'done', spec: { versionId: version.v1 } });
+      finisher.release();
+      const done = await finishing;
+      expect(done.status).toBe(201);
+      six = { sid, hostname: done.body.hostname };
+      expect(await served(six.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
+      // The newer push then carries the finished preview onto its version.
+      expect((await pushBg('bg-6', 'v2')).status).toBe(202);
+      await pumpToDone();
+      expect((await pushBg('bg-6', 'v2')).status).toBe(200);
+      expect(await served(six.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
+    });
+
+    it('a call that read a done carry another call then finished waits, rather than refusing a push that landed', async () => {
+      const sid = (await pushBg('bg-7', 'v1')).body.scopeId;
+      await pumpToDone();
+      const { hostname: seven } = (await pushBg('bg-7', 'v1')).body;
+      expect((await pushBg('bg-7', 'v2')).status).toBe(202);
+      await pumpToDone();
+      const slow = holding('get', () => `carry:${sid}`);
+      const late = pushBg('bg-7', 'v2', {}, slow.api);
+      await slow.there;
+      expect((await pushBg('bg-7', 'v2')).status).toBe(200);
+      const settled = await ledger(sid);
+      slow.release();
+      // It waits: it neither answers that push a refusal nor touches the move the fast call bound.
+      expect((await late).status).toBe(202);
+      expect(await ledger(sid)).toEqual(settled);
+      expect(await served(seven)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
+      expect((await pushBg('bg-7', 'v2')).status).toBe(200);
     });
   });
 });

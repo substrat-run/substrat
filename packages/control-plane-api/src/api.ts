@@ -184,7 +184,7 @@ import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
 import { beginTransfer, connectionGrantsForScope, transferScope, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
-import { COPY_JOB_MAX_MS, copyJobId, type CopyJobRecord, type CopyJobs } from './copy-job.js';
+import { COPY_JOB_MAX_MS, copyJobHeld, copyJobId, type CopyJobRecord, type CopyJobs } from './copy-job.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
 import type { ScopeStoreEnsurerOptions, StoreCanaryTarget } from './store-script.js';
@@ -3746,15 +3746,27 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       : null;
 
   /**
+   * How long a call that claimed a done job holds it to finish it (#2450): twice the copy lease. The
+   * holder renews the lease straight after claiming and can confirm the move only inside that lease,
+   * so by the time its claim runs out it can no longer finish. One that died leaves the claim to run
+   * out, and the next call then finds the lease gone, settles the move and frees the tag.
+   */
+  const copyClaimMs = 2 * copyLeaseMs;
+
+  /**
    * Stop a preview's copy job and settle its move (#2450): a refresh, a delete, a newer push that
    * replaces it, or the job's own failure. The move's entries settle `retained`, so reap and erasure
    * reach both scripts; the stage it left is discarded best-effort, and goes with any later wipe.
+   * `unlessFinishing` (a newer push): a done job another call has claimed is that call's to finish or
+   * give up, so it is left alone, and the answer is false.
    */
-  const settleJobMove = async (c: ReqCtx, job: CopyJobRecord): Promise<void> => {
+  const settleJobMove = async (c: ReqCtx, job: CopyJobRecord, opts: { unlessFinishing?: boolean } = {}): Promise<boolean> => {
     const jobs = options.copyJobs;
-    if (!jobs) return;
-    // A step running right now writes nothing after this: its host keeps a cancel over its answer.
+    if (!jobs) return true;
+    // A step running right now writes nothing after this, and no call can claim the job after it:
+    // its host keeps a cancel over a step's answer, and a claim takes only a done job.
     const latest = (await jobs.cancel(job.spec.id)) ?? job;
+    if (opts.unlessFinishing && copyJobHeld(latest, Date.now())) return false;
     const { spec } = job;
     const actor = c.get('actor');
     const refs = spec.kind === 'carry' ? [spec.sourceRef, spec.destRef] : [spec.destRef];
@@ -3766,6 +3778,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       await dest?.discardStagedScope(spec.scopeId, stageId).catch(() => undefined);
     }
     await jobs.forget(spec.id);
+    return true;
   };
 
   /** Every copy job a preview has (#2450), settled: before it is reaped or replaced. */
@@ -10151,12 +10164,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const superseded = !opts.refresh && supersededRefusal(forkJob, opts.versionId, opts.tag);
       if (superseded) throw superseded;
       const replaced = opts.refresh || forkJob.spec.versionId !== opts.versionId;
-      if (!replaced && forkJob.status === 'copying') {
+      const inProgress = (): PreviewCopying => {
         if (jobs) return copyingAnswer(forkJob);
         throw new ControlPlaneError(409, `a create for preview '${opts.tag}' is in progress (its data is still being copied). Retry once it finishes`);
+      };
+      if (!replaced && forkJob.status === 'copying') return inProgress();
+      if (!replaced && forkJob.status === 'done') {
+        // Only the call that claims a done job finishes it. Any other waits, and never renews,
+        // settles or expires what that call is finishing (or has just finished).
+        const claimed = await options.copyJobs?.claim(forkJob.spec.id, copyClaimMs);
+        return claimed ? finishForkJob(existing, claimed) : inProgress();
       }
-      if (!replaced && forkJob.status === 'done') return finishForkJob(existing, forkJob);
-      await settleJobMove(c, forkJob);
+      // A newer push leaves a finish another call has claimed to that call; a refresh replaces it.
+      if (!(await settleJobMove(c, forkJob, { unlessFinishing: !opts.refresh }))) return inProgress();
       await c.var.admin.setScopeExpiresAt(actor, tenantId, existing.id, new Date().toISOString()).catch(() => undefined);
       if (!replaced) throw jobRefusal(forkJob);
       existing = (await c.var.admin.getScopeRecord(actor, tenantId, existing.id)) ?? existing;
@@ -10175,21 +10195,25 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       try {
         // #2450 step 2: a carry a job is copying, for this push or an older one.
         const held = options.copyJobs ? await options.copyJobs.get(copyJobId('carry', preview.id)) : null;
+        const inProgress = (job: CopyJobRecord): PreviewCopying => {
+          if (jobs) return copyingAnswer(job);
+          throw new ControlPlaneError(409, `a push to preview '${opts.tag}' is still copying its data. Retry once it finishes`);
+        };
         if (held && held.spec.versionId !== opts.versionId) {
           const superseded = supersededRefusal(held, opts.versionId, opts.tag);
           if (superseded) throw superseded;
-          // An older push's copy: this push replaces it.
-          await settleJobMove(c, held);
+          // An older push's copy: this push replaces it, unless another call is finishing it.
+          if (!(await settleJobMove(c, held, { unlessFinishing: true }))) return inProgress(held);
         } else if (held) {
-          if (held.status === 'copying') {
-            if (jobs) return copyingAnswer(held);
-            throw new ControlPlaneError(409, `a push to preview '${opts.tag}' is still copying its data. Retry once it finishes`);
-          }
+          if (held.status === 'copying') return inProgress(held);
           if (held.status !== 'done') {
             await settleJobMove(c, held);
             throw jobRefusal(held);
           }
-          carried = await finishCarryJob(c, preview, opts.versionId, held);
+          // Only the call that claims a done job finishes it; any other waits (see the fork's).
+          const claimed = await options.copyJobs?.claim(held.spec.id, copyClaimMs);
+          if (!claimed) return inProgress(held);
+          carried = await finishCarryJob(c, preview, opts.versionId, claimed);
         }
         if (carried === undefined && jobs) {
           const move = await carryBegin(c, preview, opts.versionId, { dropServingRef: true });

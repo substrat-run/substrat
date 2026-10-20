@@ -109,6 +109,36 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
     expect(await keys()).toEqual([]);
   });
 
+  it('a done job goes to one claim at a time, even when the claims arrive together', async () => {
+    const stub = stubOf(env.COPY_JOB_TEST, `claim-${crypto.randomUUID()}`);
+    await stub.start(job({ target: 1, holdMs: 40 }));
+    // Still copying: nothing to finish.
+    expect(await stub.claim(60_000)).toBeNull();
+    await until(stub, (j) => j?.status === 'done');
+    const claims = await Promise.all(Array.from({ length: 5 }, () => stub.claim(60_000)));
+    expect(claims.filter((c) => c !== null)).toEqual([expect.objectContaining({ status: 'done', steps: 1 })]);
+    expect((await stub.get())?.claimedUntil).toBeGreaterThan(Date.now());
+    // A cancel leaves a held job to its holder.
+    expect(await stub.cancel()).toMatchObject({ status: 'done' });
+  });
+
+  it('a claim whose hold ran out can be taken again; a cancelled done job cannot be claimed', async () => {
+    const stub = stubOf(env.COPY_JOB_TEST, `claim-again-${crypto.randomUUID()}`);
+    await stub.start(job({ target: 1 }));
+    await until(stub, (j) => j?.status === 'done');
+    expect(await stub.claim(20)).not.toBeNull();
+    expect(await stub.claim(20)).toBeNull();
+    await sleep(40);
+    // The holder died: the next call claims the job.
+    expect(await stub.claim(60_000)).not.toBeNull();
+
+    const other = stubOf(env.COPY_JOB_TEST, `claim-cancel-${crypto.randomUUID()}`);
+    await other.start(job({ target: 1 }));
+    await until(other, (j) => j?.status === 'done');
+    expect(await other.cancel()).toMatchObject({ status: 'cancelled', steps: 1 });
+    expect(await other.claim(60_000)).toBeNull();
+  });
+
   it('a finished job is deleted once its retention has passed', async () => {
     const stub = stubOf(env.COPY_JOB_SHORT, `retain-${crypto.randomUUID()}`);
     await stub.start(job({ target: 1 }));

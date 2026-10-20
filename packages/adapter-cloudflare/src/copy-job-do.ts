@@ -8,18 +8,34 @@ export interface CopyJobDoRecord {
   status: 'copying' | 'done' | 'failed' | 'cancelled';
   nextDelayMs: number;
   updatedAt: number;
+  /** Once `done`: until when (epoch ms) the caller that claimed it holds it (`claim`). Set here. */
+  claimedUntil?: number;
 }
 
-/** The RPC surface a `defineCopyJobDO` class exposes over its stub. Every call is idempotent. */
+/**
+ * The RPC surface a `defineCopyJobDO` class exposes over its stub. Every call but `claim` is
+ * idempotent. Each is one call into this object, so each is atomic for its job.
+ */
 export interface CopyJobDo<R extends CopyJobDoRecord> {
   /** Store `record` and run it, or answer the record already started here. */
   start(record: R): Promise<R>;
   get(): Promise<R | null>;
-  /** Stop a job that is copying; a step running now writes nothing after this. */
+  /**
+   * Take a `done` job to finish it: answered, held for `holdMs`, to one caller at a time, and null to
+   * any other (a job held, not done, or gone).
+   */
+  claim(holdMs: number): Promise<R | null>;
+  /**
+   * Stop a job that is copying, or done and not held: a step running now writes nothing after this,
+   * and no claim takes it. A job a caller holds is answered as it is.
+   */
   cancel(): Promise<R | null>;
   /** Drop the record and its alarm. */
   forget(): Promise<void>;
 }
+
+const claimedNow = (record: CopyJobDoRecord): boolean =>
+  record.status === 'done' && (record.claimedUntil ?? 0) > Date.now();
 
 export interface CopyJobDoConfig<Env, R extends CopyJobDoRecord> {
   /**
@@ -50,7 +66,8 @@ const RUN = 'run';
  * A preview's copy that outlasts the request that started it is stored here, and moved one step
  * per alarm: the step renews the move's lease and moves pages for a bounded time, then this object
  * schedules the next. A finished job (done, failed or cancelled) is kept for `retainMs`, for the
- * route's next call to read and settle, and then deleted.
+ * route's next call to read and settle, and then deleted. A done job goes to one call at a time
+ * (`claim`), so two calls that read it never both finish it.
  *
  * Alarms are one at a time per object, so two steps never run together. A `cancel` or `forget`
  * can arrive while a step's I/O is in flight, and so can a `start` after that `forget`: the step's
@@ -74,10 +91,18 @@ export function defineCopyJobDO<Env, R extends CopyJobDoRecord>(
       return (await this.ctx.storage.get<R>(KEY)) ?? null;
     }
 
+    async claim(holdMs: number): Promise<R | null> {
+      const held = await this.ctx.storage.get<R>(KEY);
+      if (held?.status !== 'done' || claimedNow(held)) return null;
+      const claimed = { ...held, claimedUntil: Date.now() + holdMs } as R;
+      await this.ctx.storage.put(KEY, claimed);
+      return claimed;
+    }
+
     async cancel(): Promise<R | null> {
       const held = await this.ctx.storage.get<R>(KEY);
       if (!held) return null;
-      if (held.status !== 'copying') return held;
+      if (held.status !== 'copying' && (held.status !== 'done' || claimedNow(held))) return held;
       const cancelled = { ...held, status: 'cancelled', nextDelayMs: 0, updatedAt: Date.now() } as R;
       await this.ctx.storage.put(KEY, cancelled);
       await this.ctx.storage.setAlarm(Date.now() + retainMs);

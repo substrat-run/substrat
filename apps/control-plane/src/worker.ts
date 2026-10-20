@@ -240,6 +240,7 @@ function durableCopyJobs(ns: DurableObjectNamespace): CopyJobs {
   return {
     start: (spec, state) => stubOf(spec.id).start(newCopyJob(spec, state)),
     get: (id) => stubOf(id).get(),
+    claim: (id, holdMs) => stubOf(id).claim(holdMs),
     cancel: (id) => stubOf(id).cancel(),
     forget: (id) => stubOf(id).forget(),
   };

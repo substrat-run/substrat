@@ -203,6 +203,34 @@ describe('memoryCopyJobs (#2450)', () => {
     expect(await jobs.get(spec.id)).toBeNull();
   });
 
+  it('a done job goes to one claim at a time, until its hold runs out', async () => {
+    const h = harness();
+    const jobs = memoryCopyJobs(h.deps, { stepMs: 60_000 });
+    const spec = h.spec();
+    await jobs.start(spec, await h.begin());
+    // Not done yet: nothing to finish.
+    expect(await jobs.claim(spec.id, 1_000)).toBeNull();
+    await jobs.pump(spec.id);
+    expect((await jobs.get(spec.id))?.status).toBe('done');
+    const claims = await Promise.all([1, 2, 3].map(() => jobs.claim(spec.id, 1_000)));
+    expect(claims.filter((c) => c !== null)).toEqual([expect.objectContaining({ status: 'done', claimedUntil: h.clock.now + 1_000 })]);
+    // A cancel leaves a held job to its holder.
+    expect(await jobs.cancel(spec.id)).toMatchObject({ status: 'done' });
+    h.clock.now += 1_001;
+    // A holder that died: once its hold has run out, the next call claims the job.
+    expect(await jobs.claim(spec.id, 1_000)).toMatchObject({ status: 'done' });
+  });
+
+  it('a cancel takes a done job no call holds, and then no call can claim it', async () => {
+    const h = harness();
+    const jobs = memoryCopyJobs(h.deps, { stepMs: 60_000 });
+    const spec = h.spec();
+    await jobs.start(spec, await h.begin());
+    await jobs.pump(spec.id);
+    expect(await jobs.cancel(spec.id)).toMatchObject({ status: 'cancelled', done: { dump: expect.anything() } });
+    expect(await jobs.claim(spec.id, 1_000)).toBeNull();
+  });
+
   it("a step writes its answer over its own record, never over a job started again while it ran", async () => {
     // While a step renews its lease, the route settles the job (forget) and a newer push starts its own.
     let during: (() => Promise<void>) | null = null;
