@@ -168,7 +168,7 @@ import {
   type ServingPointer,
 } from '@substrat-run/kernel';
 import {
-  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_RENEW_SQL, copyMoveRenewParams, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS, SERVES_NOW_CONDITION, SERVES_NOW_PREDICATE, servesNowParams, type ExpectedServing,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_RENEW_SQL, copyMoveRenewParams, PENDING_COPY_KEEP_ALIVE_SQL, pendingCopyKeepAliveParams, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS, SERVES_NOW_CONDITION, SERVES_NOW_PREDICATE, servesNowParams, type ExpectedServing,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams,
   type ScopeCopyMoveConfirmation, type ScopeCopyRole, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -3432,18 +3432,8 @@ export class ControlPlaneDO extends DurableObject {
   /** One atomic compare-and-set across the preview row and every entry of its copy move. */
   keepAlivePendingScopeCopy(tenantId: string, scopeId: string, moveId: string, status: string,
     expectedExpiresAt: string | null, expiresAt: string | null): boolean {
-    return this.sql.exec(
-      `UPDATE scopes SET expires_at = ?
-       WHERE tenant_id = ? AND scope_id = ? AND status = ? AND expires_at IS ?
-         AND reap_claimed_at IS NULL
-         AND EXISTS (SELECT 1 FROM scope_script_copies AS move
-           WHERE move.tenant_id = scopes.tenant_id AND move.scope_id = scopes.scope_id
-             AND move.move_id = ? AND move.state = 'pending')
-         AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS move
-           WHERE move.tenant_id = scopes.tenant_id AND move.scope_id = scopes.scope_id
-             AND move.move_id = ? AND move.state <> 'pending')`,
-      expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId, moveId,
-    ).rowsWritten > 0;
+    return this.sql.exec(PENDING_COPY_KEEP_ALIVE_SQL,
+      ...pendingCopyKeepAliveParams(expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId)).rowsWritten > 0;
   }
 
   async listVersions(verticalSlug: string, page?: ListPage): Promise<VersionListRow[]> {

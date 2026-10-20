@@ -843,7 +843,7 @@ import {
 } from '@substrat-run/kernel';
 import { INERT_SCOPE_REASON, isPrimaryScopeRow, normalizeUploadMediaType, type RedeemedUploadLink, type UploadLinkRedeemInput, type UploadTarget } from '@substrat-run/kernel';
 import {
-  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_RENEW_SQL, copyMoveRenewParams, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
+  COPY_BACKFILL_SCOPE_SQL, COPY_BACKFILL_SQL, COPY_BACKFILL_SUPERSEDE_SQL, COPY_CLAIM_SQL, COPY_EXPIRED_SQL, COPY_MOVE_RENEW_SQL, copyMoveRenewParams, PENDING_COPY_KEEP_ALIVE_SQL, pendingCopyKeepAliveParams, copyBackfillParams, copyBackfillRefusal, type CopyBackfillScopeRow, type ErasureEpochStamp, SUBJECT_ERASURE_CLAIM_SQL, subjectErasureClaimParams, type SubjectErasureFence, type ScopeCopyBackfillResult, COPY_MOVE_CONFIRM_SQL, COPY_MOVE_LIVE_PREDICATE, SCOPE_COPY_LEASE_MS,
   SCOPE_SCRIPT_COPY_COLUMNS, copyMoveConfirmParams, copyMoveLiveParams, scopeScriptCopyOf,
   type ScopeCopyMoveConfirmation, type ScopeScriptCopyRow,
 } from '@substrat-run/kernel';
@@ -10251,17 +10251,8 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
       keepAlivePendingScopeCopy: async (actor, tenantId, scopeId, moveId, status, expectedExpiresAt, expiresAt) => {
-        const changed = this.directory.prepare(
-          `UPDATE scopes SET expires_at = ?
-           WHERE tenant_id = ? AND scope_id = ? AND status = ? AND expires_at IS ?
-             AND reap_claimed_at IS NULL
-             AND EXISTS (SELECT 1 FROM scope_script_copies AS move
-               WHERE move.tenant_id = scopes.tenant_id AND move.scope_id = scopes.scope_id
-                 AND move.move_id = ? AND move.state = 'pending')
-             AND NOT EXISTS (SELECT 1 FROM scope_script_copies AS move
-               WHERE move.tenant_id = scopes.tenant_id AND move.scope_id = scopes.scope_id
-                 AND move.move_id = ? AND move.state <> 'pending')`,
-        ).run(expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId, moveId).changes > 0;
+        const changed = this.directory.prepare(PENDING_COPY_KEEP_ALIVE_SQL)
+          .run(...pendingCopyKeepAliveParams(expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId)).changes > 0;
         if (changed) this.recordAdmin(actor, 'setScopeExpiresAt', { tenantId, scopeId },
           { expiresAt: expectedExpiresAt }, { expiresAt });
         return changed;
