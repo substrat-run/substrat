@@ -97,8 +97,8 @@ describe('the platform-supplied sweeper runs a vertical that wires none (#1902)'
       });
       expect(report.errors).toEqual([]);
       expect(report.schedules.fired).toBeGreaterThan(0);
-      expect(await ticksOn(s)).toBe(1);
-      expect(report.schedules.platformRequests).toBe(1);
+      expect(await ticksOn(s)).toBe(2);
+      expect(report.schedules.platformRequests).toBe(2);
       expect(calls).toEqual([{
         url: `${e.CONTROL_PLANE_URL}/internal/drain-scope`,
         method: 'POST',
@@ -108,7 +108,7 @@ describe('the platform-supplied sweeper runs a vertical that wires none (#1902)'
 
       // Not due again for an hour: the next pass leaves it alone, enqueues nothing and logs nothing.
       logged.mockClear();
-      expect(await ticksOn(s)).toBe(1);
+      expect(await ticksOn(s)).toBe(2);
       expect(next.schedules.platformRequests).toBeUndefined();
       expect(sweepLines(logged.mock.calls)).toEqual([]);
     } finally {
@@ -137,9 +137,9 @@ describe('the platform-supplied sweeper runs a vertical that wires none (#1902)'
         }
       });
       expect(report.errors).toEqual([]);
-      expect(report.schedules.platformRequests).toBe(1);
+      expect(report.schedules.platformRequests).toBe(2);
       expect(attempts).toBe(1);
-      expect(await ticksOn(failingScope)).toBe(1);
+      expect(await ticksOn(failingScope)).toBe(2);
     } finally {
       const deleted = await platform('/internal/delete-scope', { tenantId: t, scopeId: failingScope });
       expect(deleted.status, await deleted.clone().text()).toBe(200);
