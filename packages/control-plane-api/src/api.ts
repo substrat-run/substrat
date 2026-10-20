@@ -10145,7 +10145,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     // A poll goes on only to a fork job (below, where one for another version refuses it) or a live
     // preview (the carry, below). Anything else is a copy gone: never reaped, never forked afresh.
-    if (poll && !(existing && (forkJob || existing.status === 'active'))) throw copyGone();
+    // The row was listed before the job was read, so a call finishing the fork meanwhile (a poll
+    // retried beside it) may have activated it since: it is read again before the copy is called gone.
+    if (poll && !(existing && (forkJob || existing.status === 'active'))) {
+      const fresh = existing ? await c.var.admin.getScopeRecord(actor, tenantId, existing.id) : undefined;
+      if (fresh?.status !== 'active') throw copyGone();
+      existing = fresh;
+    }
 
     // A preview only HAS data once its two-phase create finished: the directory row lands
     // first as `provisioning` (K-31), the fork's export→restore runs, and `activateScope`
@@ -10422,6 +10428,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       /** The job this call claimed and finished, if any: forgotten once the bind below is over. */
       let finishedJob: CopyJobRecord | undefined;
       const preview = existing;
+      /** The row the bind below expects: as listed, or as a poll read it again (it may be bound since). */
+      let carryScope: Scope = existing;
       try {
         // #2450 step 2: a carry a job is copying, for this push or an older one.
         const held = await readCopyJob(copyJobId('carry', preview.id));
@@ -10462,10 +10470,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         if (carried === undefined && poll) {
           // A poll starts no carry. With no job left, either the one it waited on landed (the answer
           // that said so was lost) and the preview serves this version with nothing left to move,
-          // which is answered again; or the copy is gone.
-          const served = preview.verticalVersionId === opts.versionId &&
-            (await carryEnds(c, preview, opts.versionId, { dropServingRef: true })) === null;
+          // which is answered again; or the copy is gone. Read on the row as it is now, not as it was
+          // listed: a call finishing the carry (a poll retried beside this one) may have bound it since.
+          const fresh = (await c.var.admin.getScopeRecord(actor, tenantId, preview.id)) ?? preview;
+          const served = fresh.verticalVersionId === opts.versionId &&
+            (await carryEnds(c, fresh, opts.versionId, { dropServingRef: true })) === null;
           if (!served) throw copyGone();
+          carryScope = fresh;
           carried = null;
         }
         if (carried === undefined && jobs) {
@@ -10528,9 +10539,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // per-version script) and not the prod serving script; the OFF positions are re-asserted
       // there (#1674); and the copy left in the old script is wiped.
       try {
-        await bindAfterCarry(c, existing, opts.versionId, carried, {
+        const scope = carryScope;
+        await bindAfterCarry(c, scope, opts.versionId, carried, {
           clearServingRef: true,
-          recarry: () => carryOntoVersion(c, existing, opts.versionId, { dropServingRef: true }),
+          recarry: () => carryOntoVersion(c, scope, opts.versionId, { dropServingRef: true }),
         });
       } catch (e) {
         // A job's bind that failed is that copy's end, as its load's is (`finishRefusal`). A fault

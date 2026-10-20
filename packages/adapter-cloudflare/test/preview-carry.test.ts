@@ -2293,7 +2293,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
      * An API over the same jobs, whose first `get` of job `id` (or first successful `claim` of it)
      * is held until the test releases it: one call of two that read the same job, made slow.
      */
-    const holding = (point: 'get' | 'claim', id: () => string) => {
+    const holding = (point: 'get' | 'claim' | 'before-get', id: () => string) => {
       let release!: () => void;
       let reached!: () => void;
       const gate = new Promise<void>((r) => { release = r; });
@@ -2309,7 +2309,11 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       };
       const held: CopyJobs = {
         ...jobs,
-        get: async (jobId) => (point === 'get' ? hold(jobId, await jobs.get(jobId)) : jobs.get(jobId)),
+        // `get` reads the job, then is held; `before-get` is held, then reads it.
+        get: async (jobId) =>
+          point === 'get' ? hold(jobId, await jobs.get(jobId))
+            : point === 'before-get' ? hold(jobId, null).then(() => jobs.get(jobId))
+              : jobs.get(jobId),
         claim: async (jobId, holdMs) => {
           const claimed = await jobs.claim(jobId, holdMs);
           return point === 'claim' && claimed ? hold(jobId, claimed) : claimed;
@@ -3054,6 +3058,33 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(dropped.status).toBe(409);
       expect(reason(dropped)).toMatch(/background copy failed with 500 while it was finished/);
       expect(Date.parse((await dir.admin.getScopeRecord(staff, t, other))!.expiresAt!)).toBeLessThanOrEqual(Date.now());
+    });
+
+    it('a poll that listed the row before another call finished the copy is answered the served preview', async () => {
+      // A fork: the slow poll lists the row while it is provisioning, and is held at its read of the
+      // job until another poll has finished the fork and forgotten it.
+      const sid = (await pushBg('bg-39', 'v1')).body.scopeId;
+      await pumpToDone();
+      const slow = holding('before-get', () => `fork:${sid}`);
+      const late = pushBg('bg-39', 'v1', { poll: true }, slow.api);
+      await slow.there;
+      const made = await poll('bg-39', 'v1');
+      expect(made.status).toBe(201);
+      slow.release();
+      const answered = await late;
+      expect(answered.status).toBe(200);
+      expect(answered.body.scopeId).toBe(sid);
+
+      // A carry: the same, while the row it listed is still bound to the version it replaces.
+      expect((await pushBg('bg-39', 'v2')).status).toBe(202);
+      await pumpToDone();
+      const slower = holding('before-get', () => `carry:${sid}`);
+      const later = pushBg('bg-39', 'v2', { poll: true }, slower.api);
+      await slower.there;
+      expect((await poll('bg-39', 'v2')).status).toBe(200);
+      slower.release();
+      expect((await later).status).toBe(200);
+      expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
     });
 
     it('a carry whose bind landed but whose job was never forgotten is answered the preview, never finished again', async () => {
