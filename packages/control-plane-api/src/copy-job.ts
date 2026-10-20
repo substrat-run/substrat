@@ -159,8 +159,15 @@ export async function advanceCopyJob(
       throw new ControlPlaneError(502, `the copy of scope ${spec.scopeId} could not reach '${!source ? spec.sourceRef : spec.destRef}'`);
     }
     const until = now() + Math.min(opts.stepMs ?? COPY_JOB_STEP_MS, leaseShareMs(spec.leaseMs));
-    const progress = await transferStep({ source, dest }, job.state, { until: () => now() >= until });
+    // `alwaysStage`: a copy torn mid-way starts again, and one that now fits a page must still be
+    // staged. The job's record holds where the data is, never the data (a page is up to 4 MiB, more
+    // than a Durable Object stores in one value).
+    const progress = await transferStep({ source, dest }, job.state, { until: () => now() >= until, alwaysStage: true });
     if ('done' in progress) {
+      if (Array.isArray(progress.done.dump)) {
+        // Only an end that stopped paging part way answers a whole dump; there is nowhere to keep it.
+        return failed(502, `the copy of scope ${spec.scopeId} could no longer be staged at '${spec.destRef}'; nothing was moved`);
+      }
       return { ...job, status: 'done', state: undefined, done: progress.done, faults: 0, nextDelayMs: 0, updatedAt: now() };
     }
     const { state } = progress;

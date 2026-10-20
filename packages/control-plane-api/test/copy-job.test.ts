@@ -11,7 +11,7 @@ import {
   type CopyJobDeps,
   type CopyJobSpec,
 } from '../src/copy-job.js';
-import { beginTransfer, type TransferState, type VerticalClient } from '../src/vertical-client.js';
+import { beginTransfer, transferStep, type TransferState, type VerticalClient } from '../src/vertical-client.js';
 
 /**
  * #2450 step 2: a copy that outlasts its request runs as a job. Each step renews the move's lease
@@ -191,6 +191,67 @@ describe('advanceCopyJob (#2450)', () => {
     const g = harness();
     const unbound = { ...newCopyJob(g.spec(), await g.begin(), g.clock.now), faults: 3 };
     expect(await advanceCopyJob(pageMs(g, () => true), unbound)).toMatchObject({ faults: 4, nextDelayMs: 16_000 });
+  });
+
+  it('a copy torn part way that now fits one page is staged again, never held in the record', async () => {
+    const h = harness();
+    // Two pages, until the second reads a source written since the first; then it is one page.
+    const tornSource = () => {
+      let torn = false;
+      return {
+        exportScopePage: async (_s: string, cursor: string | null): Promise<ScopeDumpPage> => {
+          if (cursor === null) {
+            return torn
+              ? { tables: [rowsOf('only')], next: null, loadStamp: null, revision: 'r2' }
+              : { tables: [rowsOf('a')], next: '1', loadStamp: null, revision: 'r1' };
+          }
+          torn = true;
+          return { tables: [rowsOf('b')], next: null, loadStamp: null, revision: 'r2' };
+        },
+      } as unknown as VerticalClient;
+    };
+    const staged: { stageId: string; seq: number }[] = [];
+    const dest = {
+      stageScopePage: async (_s: string, stageId: string, seq: number) => {
+        staged.push({ stageId, seq });
+        return { staged: true };
+      },
+      discardStagedScope: async () => undefined,
+    } as unknown as VerticalClient;
+    const begin = async (source: VerticalClient) =>
+      ((await beginTransfer({ source, dest }, { from: prod, to: preview }, { stamp: false, alwaysStage: true })) as { state: TransferState }).state;
+
+    const source = tornSource();
+    const deps = { ...h.deps, clientForRef: async (ref: string) => (ref === 'src' ? source : ref === 'dst' ? dest : undefined) };
+    const job = await advanceCopyJob(deps, newCopyJob(h.spec(), await begin(source), h.clock.now));
+    expect(job.status).toBe('done');
+    // The restarted copy opened a stage of its own, and the record names it.
+    expect(staged.map((s) => s.seq)).toEqual([0, 0]);
+    expect(staged[1]!.stageId).not.toBe(staged[0]!.stageId);
+    expect(job.done?.dump).toEqual({ stageId: staged[1]!.stageId });
+
+    // The in-request copy, torn the same way, may still move it whole: it holds the page itself.
+    const again = tornSource();
+    const inRequest = await transferStep({ source: again, dest }, await begin(again));
+    expect(inRequest).toMatchObject({ done: { dump: [rowsOf('only')] } });
+
+    // A source rolled back to a deployment that cannot page answers the restarted copy whole: a job
+    // has nowhere to keep that, so it fails rather than storing it.
+    let torn = false;
+    const rolledBack = {
+      exportScopePage: async (_s: string, cursor: string | null) => {
+        if (cursor === null) return torn ? 'predates' : { tables: [rowsOf('a')], next: '1', loadStamp: null, revision: 'r1' };
+        torn = true;
+        return { tables: [rowsOf('b')], next: null, loadStamp: null, revision: 'r2' };
+      },
+      exportScope: async () => [rowsOf('whole')],
+    } as unknown as VerticalClient;
+    const stuck = await advanceCopyJob(
+      { ...h.deps, clientForRef: async (ref: string) => (ref === 'src' ? rolledBack : ref === 'dst' ? dest : undefined) },
+      newCopyJob(h.spec(), await begin(rolledBack), h.clock.now),
+    );
+    expect(stuck).toMatchObject({ status: 'failed', error: { status: 502 } });
+    expect(stuck.done).toBeUndefined();
   });
 
   it('a refusal fails the job at once, with the status the route will answer', async () => {
