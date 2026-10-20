@@ -16,13 +16,15 @@ A preview whose data takes more than one page to copy now copies in the backgrou
   - it renews the lease;
   - it moves pages for a bounded time;
   - a refusal fails the job, a transient fault backs off and retries, and a job past six hours fails;
+  - a job that fails discards its stage, and its record keeps naming it;
+  - a copy torn part way is staged again, even when it now fits one page;
   - the step, and the wait before a retry, each stay inside a quarter of the move's lease.
 
-  `defineCopyJobDO` (adapter-cloudflare) runs those steps one per alarm, keeps a finished job for the route to read, and lets a cancel, a forget, or a forget and a new start that lands during a step win. Its `claim` hands a done job to one caller at a time. `memoryCopyJobs` is the same, in memory, for tests.
+  `defineCopyJobDO` (adapter-cloudflare) runs those steps one per alarm and keeps a finished job for the route to read. A cancel or forget that lands during a step stops it (`CopyJobStep.stopped`: no further page, no new stage) and waits for it before it acts. Its `claim` hands a done job to one caller at a time, and `threwRetryMs` sets the wait after a step that threw. `memoryCopyJobs` is the same, in memory, for tests.
 - **The preview route.** With the new `copyJobs` option and a caller that sends `async: true`, `POST /verticals/:slug/previews` copies the first page in the request.
-  - A fork or carry that needs more answers `202` with its progress and `Retry-After`, and the same call, repeated, finishes the preview once the job is done. Only the call that claims the done job finishes it; another call answers `202` meanwhile.
+  - A fork or carry that needs more answers `202` with its progress and `Retry-After`, and the same call, repeated, finishes the preview once the job is done. Only the call that claims the done job finishes it; another call answers `202` meanwhile. A carry's finish keeps the job until its bind is over, and a finish that fails discards the stage it would have loaded.
   - A refresh, a delete or a newer push stops a job still copying and settles its move. A newer push waits for a claimed job to be finished.
   - A caller that does not send `async` is answered as before. While a job copies, that caller gets a `409` saying the copy is in progress.
-- **The CLI.** `substrat preview create` sends `async: true`, prints the copy's progress while it waits (up to six hours), and sends `--refresh` on its first call only.
+- **The CLI.** `substrat preview create` sends `async: true`, prints the copy's progress while it waits (up to six hours), and sends `--refresh` on its first call only. A poll that fails as a gateway or the network fails is polled again, up to ten in a row.
 
 The hosted control plane binds the job object as `COPY_JOBS` (class `ScopeCopyJobDO`, wrangler migration `v4`). A rebind or adopt of a live scope still copies in its request.

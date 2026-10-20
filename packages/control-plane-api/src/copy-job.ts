@@ -89,11 +89,12 @@ export interface CopyJobs {
    */
   claim(id: string, holdMs: number): Promise<CopyJobRecord | null>;
   /**
-   * Stop a job that is copying, or done and not held: no later step or claim acts on it. Its stage
-   * stays for the caller to discard. A job another call holds (`claim`) is answered as it is.
+   * Stop a job that is copying, or done and not held: no later step or claim acts on it. A step
+   * running now is stopped and waited for first, so the record answered names every stage the job
+   * left; it stays for the caller to discard. A job another call holds (`claim`) is answered as it is.
    */
   cancel(id: string): Promise<CopyJobRecord | null>;
-  /** Drop a job the route has finished with. */
+  /** Drop a job the route has finished with, after stopping a step running now and waiting for it. */
   forget(id: string): Promise<void>;
 }
 
