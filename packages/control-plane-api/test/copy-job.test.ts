@@ -74,6 +74,7 @@ function harness(opts: { renew?: () => boolean; pageFails?: (n: number) => Error
     id: copyJobId('fork', preview),
     kind: 'fork',
     tenantId: t,
+    vertical: 'acme/app',
     scopeId: preview,
     versionId: 'v2',
     versionOrder: '2026-10-20T10:00:00.000Z v2',

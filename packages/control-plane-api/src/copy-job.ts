@@ -27,6 +27,8 @@ export interface CopyJobSpec {
   /** A preview's first copy from its source (`fork`), or a re-push moving it on (`carry`). */
   kind: 'fork' | 'carry';
   tenantId: TenantId;
+  /** The vertical the preview is of: what a fault of the copy is recorded under. */
+  vertical: string;
   /** The scope the move is ledgered under: the preview. */
   scopeId: ScopeId;
   versionId: string;

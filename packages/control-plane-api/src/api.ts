@@ -3823,7 +3823,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     stage: 'copy' | 'finish',
     status: number,
     message: string,
-    opts: { cause?: unknown; vertical?: string } = {},
+    opts: { cause?: unknown } = {},
   ): void => {
     if (status === 501) return;
     const entry: OpsFailureInput = {
@@ -3832,7 +3832,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       stage,
       tenantId: job.spec.tenantId,
       scopeId: job.spec.scopeId,
-      ...(opts.vertical ? { vertical: opts.vertical } : {}),
+      vertical: job.spec.vertical,
       version: job.spec.versionId,
       status,
       message,
@@ -10062,7 +10062,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const refuseFailedJob = (job: CopyJobRecord): ControlPlaneError => {
       const error = job.error ?? { status: 409, message: `the copy of scope ${job.spec.scopeId} was cancelled before it finished; nothing was moved` };
       if (error.status < 500) return new ControlPlaneError(error.status, error.message);
-      recordCopyFault(c, job, 'copy', error.status, error.message, { vertical: slug });
+      recordCopyFault(c, job, 'copy', error.status, error.message);
       return new ControlPlaneError(409, `the background copy failed with ${error.status}: ${error.message}`);
     };
     // #527 guard: a preview MUST serve the version it just bound. Routing resolves
@@ -10496,7 +10496,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             }
             if ('state' in begun) {
               const job = await jobs.start({
-                id: copyJobId('carry', preview.id), kind: 'carry', tenantId, scopeId: preview.id, versionId: opts.versionId, versionOrder: mine.order,
+                id: copyJobId('carry', preview.id), kind: 'carry', tenantId, vertical: slug, scopeId: preview.id,
+                versionId: opts.versionId, versionOrder: mine.order,
                 moveId: move.moveId, sourceRef: move.from, destRef: move.to, actor, leaseMs: copyLeaseMs,
                 erasureEpoch: move.erasureEpoch, restoredStamp: move.restoredStamp, expected: move.expected,
                 startedAt: Date.now(), deadline: Date.now() + COPY_JOB_MAX_MS,
@@ -10724,7 +10725,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           );
           if ('state' in begun) {
             const job = await jobs.start({
-              id: copyJobId('fork', previewId), kind: 'fork', tenantId, scopeId: previewId, versionId: opts.versionId, versionOrder: mine.order,
+              id: copyJobId('fork', previewId), kind: 'fork', tenantId, vertical: slug, scopeId: previewId,
+              versionId: opts.versionId, versionOrder: mine.order,
               moveId: move.moveId, sourceRef: forkPaged.sourceRef, destRef: targetRef, actor, leaseMs: copyLeaseMs,
               erasureEpoch: move.erasureEpoch, restoredStamp: move.restoredStamp,
               startedAt: Date.now(), deadline: Date.now() + COPY_JOB_MAX_MS,

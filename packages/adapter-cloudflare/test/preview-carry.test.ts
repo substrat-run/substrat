@@ -2776,7 +2776,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       // It lands an ops-failure row all the same: the fault was the platform's.
       await vi.waitFor(async () => {
         const recorded = await dir.admin.listOpsFailures(staff, { scopeId: sid });
-        expect(recorded).toEqual([expect.objectContaining({ stage: 'copy', status: 504 })]);
+        expect(recorded).toEqual([expect.objectContaining({ stage: 'copy', status: 504, vertical: slug })]);
       });
 
       // The same poll again (its answer was lost, or it is retried) starts nothing over.
@@ -2989,7 +2989,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       } finally {
         delete hooks.restore;
       }
-      await vi.waitFor(async () => expect((await faultsOf(made)).map((f) => f.stage)).toEqual(['finish']));
+      await vi.waitFor(async () => expect((await faultsOf(made)).map((f) => [f.stage, f.vertical])).toEqual([['finish', slug]]));
       expect(jobs.jobs.has(`carry:${made}`)).toBe(false);
       expect(await noStage('v2', made)).toEqual([]);
       expect(await served(h)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
