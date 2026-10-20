@@ -124,6 +124,12 @@ const backoffMs = (faults: number): number => Math.min(60_000, 1_000 * 2 ** faul
  */
 const leaseShareMs = (leaseMs: number): number => Math.floor(leaseMs / 4);
 
+/**
+ * How long a job's host waits after a step that threw outright before the next, ms: 30 s, and like
+ * every other retry inside a quarter of the move's lease (`leaseShareMs`).
+ */
+export const copyJobThrewRetryMs = (job: CopyJobRecord): number => Math.min(30_000, leaseShareMs(job.spec.leaseMs));
+
 export const copyJobId = (kind: CopyJobSpec['kind'], scopeId: string): string => `${kind}:${scopeId}`;
 
 /** A job's first record, around the state `beginTransfer` left. */

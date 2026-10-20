@@ -6,6 +6,7 @@ import {
   COPY_JOB_MAX_FAULTS,
   advanceCopyJob,
   copyJobId,
+  copyJobThrewRetryMs,
   memoryCopyJobs,
   newCopyJob,
   type CopyJobDeps,
@@ -194,6 +195,9 @@ describe('advanceCopyJob (#2450)', () => {
     const g = harness();
     const unbound = { ...newCopyJob(g.spec(), await g.begin(), g.clock.now), faults: 3 };
     expect(await advanceCopyJob(pageMs(g, () => true), unbound)).toMatchObject({ faults: 4, nextDelayMs: 16_000 });
+    // And the wait its host takes after a step that threw outright: the same quarter, 30 s at most.
+    expect(copyJobThrewRetryMs(faulty)).toBe(2_000);
+    expect(copyJobThrewRetryMs(unbound)).toBe(30_000);
   });
 
   it('a copy torn part way that now fits one page is staged again, never held in the record', async () => {

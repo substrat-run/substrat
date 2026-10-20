@@ -49,6 +49,7 @@ export { VerticalClient, AUDITED_CALL_DEADLINE_MS, isRouteMiss } from './vertica
 export {
   advanceCopyJob,
   copyJobId,
+  copyJobThrewRetryMs,
   memoryCopyJobs,
   newCopyJob,
   COPY_JOB_MAX_FAULTS,

@@ -58,9 +58,11 @@ export interface CopyJobDoConfig<Env, R extends CopyJobDoRecord> {
   retainMs?: number;
   /** A step that threw rather than answering a record. Never rethrown; the step is retried. */
   onError?(err: unknown, env: Env): void;
+  /** How long a step that threw waits before the next one, ms. Default 30 s. */
+  threwRetryMs?(record: R): number;
 }
 
-/** How long a step that threw waits before the next one, ms. */
+/** How long a step that threw waits before the next one, ms, unless the config says otherwise. */
 const THREW_RETRY_MS = 30_000;
 const KEY = 'job';
 /**
@@ -188,7 +190,7 @@ export function defineCopyJobDO<Env, R extends CopyJobDoRecord>(
       } catch (err) {
         config.onError?.(err, this.env);
         // Not over a cancel's retention alarm, nor over the alarm a job started since has set.
-        if (await this.stillRunning(run)) await this.ctx.storage.setAlarm(Date.now() + THREW_RETRY_MS);
+        if (await this.stillRunning(run)) await this.ctx.storage.setAlarm(Date.now() + (config.threwRetryMs?.(held) ?? THREW_RETRY_MS));
         return;
       }
       // A cancel, a forget, or a forget and a new start, that landed while the step ran wins: its

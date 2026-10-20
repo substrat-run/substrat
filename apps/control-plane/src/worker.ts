@@ -174,6 +174,7 @@ import {
   type ScopeDeployment,
   type ScopeDeploymentLadder,
   advanceCopyJob,
+  copyJobThrewRetryMs,
   newCopyJob,
   type CopyJobRecord,
   type CopyJobs,
@@ -233,6 +234,7 @@ export const ScopeCopyJobDO = defineCopyJobDO<Env, CopyJobRecord>({
     return advanceCopyJob({ clientForRef, admin: hostFor(env).admin }, job, { stopped: step.stopped });
   },
   onError: (err) => console.warn('scope copy job: a step threw; it is retried', err),
+  threwRetryMs: copyJobThrewRetryMs,
 });
 
 /** The preview route's job store over those objects (#2450): one object per job id. */

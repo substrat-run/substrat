@@ -46,6 +46,13 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
     expect(await until(stub, (j) => j?.status === 'done')).toMatchObject({ status: 'done', steps: 1 });
   });
 
+  it('the wait after a step that threw is the config\'s when it gives one', async () => {
+    // 40 ms here, where the default (above) waits 30 s for an alarm the test has to run itself.
+    const stub = stubOf(env.COPY_JOB_SHORT, `threw-short-${crypto.randomUUID()}`);
+    await stub.start(job({ target: 1, throwUntil: Date.now() + 50 }));
+    expect(await until(stub, (j) => j?.status !== 'copying')).toMatchObject({ status: 'done', steps: 1 });
+  });
+
   it('a cancel stops the step in flight and waits for it: its answer lands first, then the job is cancelled, and no later step runs', async () => {
     const stub = stubOf(env.COPY_JOB_TEST, `cancel-${crypto.randomUUID()}`);
     // A step held for a minute, which only a stop ends early.
