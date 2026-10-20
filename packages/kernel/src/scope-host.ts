@@ -2846,9 +2846,11 @@ export interface HostAdmin {
    * Renew the lease of every entry `moveId` recorded for this scope (#2450), to `leaseMs` from now
    * (default `SCOPE_COPY_LEASE_MS`): all of them, or none. Only while each is still pending,
    * unclaimed and inside its lease, so a move a sweep could already be acting on is never revived.
-   * Answers the lease's new end, which the move's restore fence is then computed from
-   * (`copyRestoreFence` at the renewal), or `null` when nothing was renewed: the move must stop,
-   * since it can no longer be confirmed. For a copy that runs longer than one lease.
+   * A lease only grows: an entry whose lease already ends later keeps that end.
+   * Answers when it renewed (`renewedAt`, which the move's restore fence is then computed from:
+   * `copyRestoreFence` at the renewal) and the end it asked for (`leaseUntil`, now + `leaseMs`,
+   * which an entry that already ran later outlasts), or `null` when nothing was renewed: the move
+   * must stop, since it can no longer be confirmed. For a copy that runs longer than one lease.
    */
   renewScopeScriptCopy(
     actor: PlatformActorId, tenantId: TenantId, scopeId: ScopeId, moveId: string,
