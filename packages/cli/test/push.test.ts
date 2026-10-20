@@ -1285,6 +1285,6 @@ describe('substrat preview create — push overrides reach the same push (#1209)
     const r = runPreview(verticalWithUnservedUi(), '--allow-unserved-ui');
     // Past the preflight: it reached the build (the stubbed npx), so the flag arrived.
     expect(r.stderr).not.toMatch(/nothing in the push would serve/);
-    expect(r.stdout).toMatch(/building helpdesk@0\.0\.1-pr-1\.1/);
+    expect(r.stdout).toMatch(/building Worker/);
   });
 });

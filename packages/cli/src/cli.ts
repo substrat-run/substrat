@@ -36,6 +36,9 @@ import {
   checkPermissionSurface,
   checkWorkerImports,
   prepareWorkerBundle,
+  resolveWranglerConfig,
+  assertUiIsServed,
+  readAssetsNeed,
   deployConfigIfAny,
   formatDeclaredModel,
   formatPermissionSurface,
@@ -430,6 +433,12 @@ function reportOutbound(dir: string, outbound: readonly unknown[] | undefined, l
   checkOutboundDeclared(dir, typeof main === 'string' ? main : undefined, outbound, { strict: argv.includes('--strict'), log });
 }
 
+async function preflightPushWorker(dir: string, allowUnservedUi: boolean) {
+  const resolved = resolveWranglerConfig(dir);
+  assertUiIsServed(dir, resolved.needs, readAssetsNeed(resolved.cfg, resolved.needs), allowUnservedUi);
+  return prepareWorkerBundle(dir, resolved);
+}
+
 async function cmdPush(): Promise<void> {
   // Directory defaults to '.' — run `substrat push` from inside the vertical.
   const dir = argv[1] && !argv[1].startsWith('--') ? argv[1] : '.';
@@ -527,7 +536,7 @@ async function cmdPush(): Promise<void> {
 
   // The local build and import gate runs before auth or registry version lookup. The
   // receipt lets push() use the same Wrangler output without running build.command twice.
-  const preparedWorker = await prepareWorkerBundle(dir);
+  const preparedWorker = await preflightPushWorker(dir, argv.includes('--allow-unserved-ui'));
 
   // Which workspace the push acts for is the PROJECT's call: --tenant → SUBSTRAT_TENANT →
   // package.json `substrat.tenant`. Never the machine-wide login default — the first push
@@ -1098,7 +1107,7 @@ async function cmdPreview(): Promise<void> {
       console.error('no --slug given and none in package.json');
       process.exit(1);
     }
-    const preparedWorker = await prepareWorkerBundle(dir);
+    const preparedWorker = await preflightPushWorker(dir, argv.includes('--allow-unserved-ui'));
     // Workspace resolves exactly as `push` (project pin, never the login default) so the
     // preview push lands in the same workspace the vertical is owned by.
     let tenant = flag('tenant') ?? process.env.SUBSTRAT_TENANT ?? meta.tenant;
