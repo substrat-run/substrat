@@ -1629,8 +1629,6 @@ export async function push(
   const compatibilityFlags = (cfg.compatibility_flags as string[] | undefined) ?? [];
   const mainPath = cfg.main as string;
 
-  await checkWorkerImports(opts.dir, cfg);
-
   // Build the bundle (runs the vertical's own build command first).
   const out = mkdtempSync(join(tmpdir(), 'substrat-build-'));
   console.log(`building ${opts.slug}@${opts.version} …`);
@@ -1645,6 +1643,10 @@ export async function push(
   } finally {
     if (generated) rmSync(generated, { force: true });
   }
+
+  // A build.command may produce modules imported by the entry. Inspect only after Wrangler
+  // has run it, while still refusing unsupported imports before any upload.
+  await checkWorkerImports(opts.dir, cfg);
 
   // Collect the built modules; the entry is the bundled basename of `main`.
   const mainBase = basename(mainPath).replace(/\.[cm]?ts$|\.[cm]?js$/, '');
