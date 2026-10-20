@@ -3108,7 +3108,11 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     });
 
     const refusesLapsedKeepAlive = async (tag: string, changeMove: (sid: ScopeId, move: string) => Promise<void>) => {
-      const sid = (await pushBg(tag, 'v1', { ttlHours: 1 })).body.scopeId;
+      const prodHost = hostOf.get((await served(prodHostname)).ref)!;
+      await prodHost.restoreScopeLocal(prod, notes(...rows));
+      const started = await pushBg(tag, 'v1', { ttlHours: 1 });
+      expect(started.status).toBe(202);
+      const sid = started.body.scopeId;
       const move = jobs.jobs.get(`fork:${sid}`)!.spec.moveId;
       const old = new Date(Date.now() - 60_000).toISOString();
       await dir.admin.setScopeExpiresAt(staff, t, sid, old);
