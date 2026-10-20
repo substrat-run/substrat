@@ -2986,6 +2986,32 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(reason(await poll('bg-32', 'v2'))).toMatch(/is no longer running/);
     });
 
+    it('a carry whose bind landed but whose job was never forgotten is answered the preview, never finished again', async () => {
+      const sid = (await pushBg('bg-33', 'v1')).body.scopeId;
+      await pumpToDone();
+      const { hostname: h } = (await poll('bg-33', 'v1')).body;
+      expect((await pushBg('bg-33', 'v2')).status).toBe(202);
+      await pumpToDone();
+      const done = jobs.jobs.get(`carry:${sid}`)!;
+      expect(done.status).toBe('done');
+      expect((await poll('bg-33', 'v2')).status).toBe(200);
+      expect(jobs.jobs.has(done.spec.id)).toBe(false);
+      // The forget was lost: the done record is back, its claim run out, then still held.
+      for (const claimedUntil of [undefined, Date.now() + 60_000]) {
+        jobs.jobs.set(done.spec.id, { ...done, ...(claimedUntil ? { claimedUntil } : {}) });
+        const again = await poll('bg-33', 'v2');
+        expect(again.status).toBe(200);
+        expect(again.body.scopeId).toBe(sid);
+        expect(jobs.jobs.has(done.spec.id)).toBe(false);
+        expect(await served(h)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
+      }
+      // Its twin: a done carry the preview does not serve yet is claimed and finished.
+      expect((await pushBg('bg-33', 'v3')).status).toBe(202);
+      await pumpToDone();
+      expect((await poll('bg-33', 'v3')).status).toBe(200);
+      expect(await served(h)).toEqual({ ref: refOf.get(version.v3), bodies: rows });
+    });
+
     it('a fork never loads a source that was carried to another script and wiped while it was read', async () => {
       const prodRef = (await served(prodHostname)).ref;
       const prodHost = hostOf.get(prodRef)!;

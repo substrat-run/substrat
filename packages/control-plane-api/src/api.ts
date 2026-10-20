@@ -10392,11 +10392,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             await settleJobMove(c, held);
             throw refuseFailedJob(held);
           }
-          // Only the call that claims a done job finishes it; any other waits (see the fork's).
-          const claimed = await options.copyJobs?.claim(held.spec.id, copyClaimMs);
-          if (!claimed) return inProgress(held);
-          carried = await finishCarryJob(c, preview, opts.versionId, claimed);
-          finishedJob = claimed;
+          if (preview.verticalVersionId === opts.versionId &&
+            (await carryEnds(c, preview, opts.versionId, { dropServingRef: true })) === null) {
+            // Its bind landed and only the job's forget was lost: the preview serves this version
+            // with nothing left to move, so the job goes and the preview is answered, never
+            // finished again. A stage a holder still has is that holder's to load or discard.
+            if (!copyJobHeld(held, Date.now())) await discardJobStages(held);
+            await options.copyJobs?.forget(held.spec.id).catch(() => undefined);
+            carried = null;
+          } else {
+            // Only the call that claims a done job finishes it; any other waits (see the fork's).
+            const claimed = await options.copyJobs?.claim(held.spec.id, copyClaimMs);
+            if (!claimed) return inProgress(held);
+            carried = await finishCarryJob(c, preview, opts.versionId, claimed);
+            finishedJob = claimed;
+          }
         }
         if (carried === undefined && poll) {
           // A poll starts no carry. With no job left, either the one it waited on landed (the answer
