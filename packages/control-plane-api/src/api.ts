@@ -3732,6 +3732,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   });
 
   /**
+   * #2450: a push older than the one a preview's job is copying for is refused, never allowed to
+   * replace it. Otherwise two CI runs for one preview would cancel each other's copy at every poll.
+   * Version ids are ULIDs, so their order is the order they were pushed in.
+   */
+  const supersededRefusal = (job: CopyJobRecord, versionId: string, tag: string): ControlPlaneError | null =>
+    versionId < job.spec.versionId
+      ? new ControlPlaneError(
+        409,
+        `a newer push (version ${job.spec.versionId}) to preview '${tag}' is copying its data, so this push ` +
+          `(version ${versionId}) was superseded and did nothing`,
+      )
+      : null;
+
+  /**
    * Stop a preview's copy job and settle its move (#2450): a refresh, a delete, a newer push that
    * replaces it, or the job's own failure. The move's entries settle `retained`, so reap and erasure
    * reach both scripts; the stage it left is discarded best-effort, and goes with any later wipe.
@@ -10134,6 +10148,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     };
 
     if (existing && forkJob) {
+      const superseded = !opts.refresh && supersededRefusal(forkJob, opts.versionId, opts.tag);
+      if (superseded) throw superseded;
       const replaced = opts.refresh || forkJob.spec.versionId !== opts.versionId;
       if (!replaced && forkJob.status === 'copying') {
         if (jobs) return copyingAnswer(forkJob);
@@ -10160,6 +10176,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // #2450 step 2: a carry a job is copying, for this push or an older one.
         const held = options.copyJobs ? await options.copyJobs.get(copyJobId('carry', preview.id)) : null;
         if (held && held.spec.versionId !== opts.versionId) {
+          const superseded = supersededRefusal(held, opts.versionId, opts.tag);
+          if (superseded) throw superseded;
           // An older push's copy: this push replaces it.
           await settleJobMove(c, held);
         } else if (held) {
@@ -10195,6 +10213,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
                 erasureEpoch: move.erasureEpoch, restoredStamp: move.restoredStamp, expected: move.expected,
                 startedAt: Date.now(), deadline: Date.now() + COPY_JOB_MAX_MS,
               }, begun.state);
+              // Another call started this preview's job first: this call's move is not the job's.
+              if (job.spec.moveId !== move.moveId) await settleCarryRetained(c, preview, opts.versionId, move);
               return copyingAnswer(job);
             }
             const done = begun.done;
@@ -10396,6 +10416,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
               erasureEpoch: move.erasureEpoch, restoredStamp: move.restoredStamp,
               startedAt: Date.now(), deadline: Date.now() + COPY_JOB_MAX_MS,
             }, begun.state);
+            // A job id names the preview, which this create just minted, so no other call can
+            // hold it; a job answered for another move would be a defect, not a race.
+            if (job.spec.moveId !== move.moveId) {
+              throw new ControlPlaneError(500, `preview ${previewId} already had a copy job for another move`);
+            }
             return copyingAnswer(job);
           }
           dump = begun.done.dump;

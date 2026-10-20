@@ -2327,20 +2327,24 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await noStage('v2', preview)).toEqual([]);
     });
 
-    it('a newer push replaces an older one still copying: its move is settled and its stage discarded', async () => {
-      const older = await pushBg('bg-1', 'v3');
+    it('a newer push replaces an older one still copying; the older one is then refused, so two runs never ping-pong', async () => {
+      // Version ids are ULIDs in push order: v1 is older than v3.
+      const older = await pushBg('bg-1', 'v1');
       expect(older.status).toBe(202);
       const olderJob = jobs.jobs.get(`carry:${preview}`)!;
-      expect(olderJob.spec.versionId).toBe(version.v3);
-      const newer = await pushBg('bg-1', 'v1');
+      expect(olderJob.spec.versionId).toBe(version.v1);
+      const newer = await pushBg('bg-1', 'v3');
       expect(newer.status).toBe(202);
-      expect(jobs.jobs.get(`carry:${preview}`)!.spec.versionId).toBe(version.v1);
+      expect(jobs.jobs.get(`carry:${preview}`)!.spec.versionId).toBe(version.v3);
       const settled = (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: preview }))
         .filter((e) => e.moveId === olderJob.spec.moveId).map((e) => e.state);
       expect(settled).toEqual(['retained', 'retained']);
-      expect(await noStage('v3', preview)).toEqual([]);
-      // The older push's own next call is answered with what happened, not a preview.
-      expect((await pushBg('bg-1', 'v3')).status).toBe(202); // it starts again, replacing the v1 copy in turn
+      expect(await noStage('v1', preview)).toEqual([]);
+      // The older push's next poll is told it was superseded, and leaves the newer copy alone.
+      const refused = await pushBg('bg-1', 'v1');
+      expect(refused.status).toBe(409);
+      expect(refused.body.detail ?? refused.body.error).toMatch(/superseded/);
+      expect(jobs.jobs.get(`carry:${preview}`)!.spec.versionId).toBe(version.v3);
       await pumpToDone();
       expect((await pushBg('bg-1', 'v3')).status).toBe(200);
       expect((await served(hostname)).ref).toBe(refOf.get(version.v3));
