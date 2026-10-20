@@ -1,6 +1,6 @@
 import { build } from 'esbuild';
 import { Miniflare } from 'miniflare';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, URL } from 'node:url';
 import { expect, it } from 'vitest';
 import { RUNTIME_BASELINE } from '@substrat-run/contracts';
 
