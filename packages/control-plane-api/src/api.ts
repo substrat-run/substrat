@@ -3807,20 +3807,39 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const finishRefusal = (c: ReqCtx, job: CopyJobRecord, e: unknown): unknown => {
     const { status, body } = mapError(e);
     if (status < 500) return e;
-    const recorded = typeof e === 'object' && e !== null && recordedCauses.has(e);
-    if (!recorded && status !== 501) {
-      recordFailure({
-        actor: c.get('actor'),
-        operation: 'preview.create',
-        stage: 'finish',
-        tenantId: job.spec.tenantId,
-        scopeId: job.spec.scopeId,
-        version: job.spec.versionId,
-        status,
-        message: messageOfThrow(e),
-      }, e);
+    if (!(typeof e === 'object' && e !== null && recordedCauses.has(e))) {
+      recordCopyFault(c, job, 'finish', status, messageOfThrow(e), { cause: e });
     }
     return new ControlPlaneError(409, `the background copy failed with ${status} while it was finished: ${body.detail ?? 'internal error'}`);
+  };
+
+  /**
+   * The ops-failure row of a fault a copy met (#2450), which the route answers 409 rather than as a
+   * 5xx the backstop would record (#559). A 501 is a capability statement, not a fault, and none.
+   */
+  const recordCopyFault = (
+    c: ReqCtx,
+    job: CopyJobRecord,
+    stage: 'copy' | 'finish',
+    status: number,
+    message: string,
+    opts: { cause?: unknown; vertical?: string } = {},
+  ): void => {
+    if (status === 501) return;
+    const entry: OpsFailureInput = {
+      actor: c.get('actor'),
+      operation: 'preview.create',
+      stage,
+      tenantId: job.spec.tenantId,
+      scopeId: job.spec.scopeId,
+      ...(opts.vertical ? { vertical: opts.vertical } : {}),
+      version: job.spec.versionId,
+      status,
+      message,
+    };
+    // A job's own record carries no throw: no cause, rather than an `undefined` one (`recordFailure`).
+    if ('cause' in opts) recordFailure(entry, opts.cause);
+    else recordFailure(entry);
   };
 
   /**
@@ -3842,11 +3861,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     preview: Scope,
     by?: { mine: { versionId: string; order: string }; tag: string },
   ): Promise<void> => {
-    const jobs = options.copyJobs;
-    if (!jobs) return;
+    if (!options.copyJobs) return;
     const held: CopyJobRecord[] = [];
     for (const kind of ['fork', 'carry'] as const) {
-      const job = await jobs.get(copyJobId(kind, preview.id));
+      const job = await readCopyJob(copyJobId(kind, preview.id));
       if (job) held.push(job);
     }
     if (by) {
@@ -10044,19 +10062,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const refuseFailedJob = (job: CopyJobRecord): ControlPlaneError => {
       const error = job.error ?? { status: 409, message: `the copy of scope ${job.spec.scopeId} was cancelled before it finished; nothing was moved` };
       if (error.status < 500) return new ControlPlaneError(error.status, error.message);
-      if (error.status !== 501) {
-        recordFailure({
-          actor,
-          operation: 'preview.create',
-          stage: 'copy',
-          tenantId,
-          scopeId: job.spec.scopeId,
-          vertical: slug,
-          version: job.spec.versionId,
-          status: error.status,
-          message: error.message,
-        });
-      }
+      recordCopyFault(c, job, 'copy', error.status, error.message, { vertical: slug });
       return new ControlPlaneError(409, `the background copy failed with ${error.status}: ${error.message}`);
     };
     // #527 guard: a preview MUST serve the version it just bound. Routing resolves
