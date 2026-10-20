@@ -610,15 +610,17 @@ export default {
 export interface TestCopyJob extends CopyJobDoRecord {
   steps: number;
   target: number;
-  /** Epoch ms: a step before it throws, as a step whose I/O failed outright would. */
+  /** Epoch ms: a step before it throws (after its hold), as a step whose I/O failed outright would. */
   throwUntil?: number;
   /** A step waits this long first, ms: long enough for a test to land a cancel inside it. */
   holdMs?: number;
+  /** Which job a record belongs to, when a test starts a second one under the same id. */
+  name?: string;
 }
 
 const testCopyStep = async (_env: unknown, job: TestCopyJob): Promise<TestCopyJob> => {
-  if (job.throwUntil !== undefined && Date.now() < job.throwUntil) throw new Error('a step that threw');
   if (job.holdMs) await new Promise((r) => setTimeout(r, job.holdMs));
+  if (job.throwUntil !== undefined && Date.now() < job.throwUntil) throw new Error('a step that threw');
   const steps = job.steps + 1;
   return { ...job, steps, status: steps >= job.target ? 'done' : 'copying', nextDelayMs: 0, updatedAt: Date.now() };
 };

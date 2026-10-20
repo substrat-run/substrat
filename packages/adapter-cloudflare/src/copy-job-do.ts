@@ -37,6 +37,12 @@ export interface CopyJobDoConfig<Env, R extends CopyJobDoRecord> {
 /** How long a step that threw waits before the next one, ms. */
 const THREW_RETRY_MS = 30_000;
 const KEY = 'job';
+/**
+ * Which `start` the stored record came from: a token each start writes beside it, and that goes
+ * with it on `forget`. A step compares it after its I/O, so a step of a job that was forgotten and
+ * started again under the same id writes nothing over the new one.
+ */
+const RUN = 'run';
 
 /**
  * `defineCopyJobDO` — one Durable Object per background scope copy (#2450, step 2).
@@ -47,8 +53,9 @@ const KEY = 'job';
  * route's next call to read and settle, and then deleted.
  *
  * Alarms are one at a time per object, so two steps never run together. A `cancel` or `forget`
- * can arrive while a step's I/O is in flight; the step's answer is then dropped, so a cancelled job
- * stays cancelled and a forgotten one stays gone.
+ * can arrive while a step's I/O is in flight, and so can a `start` after that `forget`: the step's
+ * answer is then dropped, and so is its retry, so a cancelled job stays cancelled, a forgotten one
+ * stays gone, and a job started again keeps its own record and its own alarm.
  */
 export function defineCopyJobDO<Env, R extends CopyJobDoRecord>(
   config: CopyJobDoConfig<Env, R>,
@@ -58,7 +65,7 @@ export function defineCopyJobDO<Env, R extends CopyJobDoRecord>(
     async start(record: R): Promise<R> {
       const held = await this.ctx.storage.get<R>(KEY);
       if (held) return held;
-      await this.ctx.storage.put(KEY, record);
+      await this.ctx.storage.put({ [KEY]: record, [RUN]: crypto.randomUUID() });
       await this.ctx.storage.setAlarm(Date.now());
       return record;
     }
@@ -82,8 +89,16 @@ export function defineCopyJobDO<Env, R extends CopyJobDoRecord>(
       await this.ctx.storage.deleteAll();
     }
 
+    /** Whether the job this step read is still the one stored, and still copying. */
+    private async stillRunning(run: string | undefined): Promise<boolean> {
+      const now = await this.ctx.storage.get([KEY, RUN]);
+      return (now.get(KEY) as R | undefined)?.status === 'copying' && now.get(RUN) === run;
+    }
+
     async alarm(): Promise<void> {
-      const held = await this.ctx.storage.get<R>(KEY);
+      const stored = await this.ctx.storage.get([KEY, RUN]);
+      const held = stored.get(KEY) as R | undefined;
+      const run = stored.get(RUN) as string | undefined;
       if (!held) return;
       if (held.status !== 'copying') {
         // Kept for the route to read; gone once it has had its retention.
@@ -96,12 +111,13 @@ export function defineCopyJobDO<Env, R extends CopyJobDoRecord>(
         next = await config.advance(this.env, held);
       } catch (err) {
         config.onError?.(err, this.env);
-        await this.ctx.storage.setAlarm(Date.now() + THREW_RETRY_MS);
+        // Not over a cancel's retention alarm, nor over the alarm a job started since has set.
+        if (await this.stillRunning(run)) await this.ctx.storage.setAlarm(Date.now() + THREW_RETRY_MS);
         return;
       }
-      // A cancel or forget that landed while the step ran wins: its answer is dropped.
-      const now = await this.ctx.storage.get<R>(KEY);
-      if (!now || now.status !== 'copying') return;
+      // A cancel, a forget, or a forget and a new start, that landed while the step ran wins: its
+      // answer is dropped.
+      if (!(await this.stillRunning(run))) return;
       await this.ctx.storage.put(KEY, next);
       await this.ctx.storage.setAlarm(
         next.status === 'copying' ? Date.now() + Math.max(0, next.nextDelayMs) : Date.now() + retainMs,

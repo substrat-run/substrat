@@ -1,4 +1,4 @@
-import { env, runDurableObjectAlarm } from 'cloudflare:test';
+import { env, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import type { CopyJobDo } from '../src/copy-job-do.js';
 import type { TestCopyJob } from './worker.js';
@@ -65,6 +65,48 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
     await sleep(150);
     expect(await stub.get()).toBeNull();
     expect(await runDurableObjectAlarm(stub)).toBe(false);
+  });
+
+  it('a step of a job forgotten and started again under the same id writes nothing over the new job', async () => {
+    // What a newer push does to a preview's job: settle it (cancel, forget), then start its own.
+    const stub = stubOf(env.COPY_JOB_TEST, `restart-${crypto.randomUUID()}`);
+    await stub.start(job({ holdMs: 80, name: 'old' }));
+    await sleep(20);
+    await stub.forget();
+    await stub.start(job({ target: 2, name: 'new' }));
+    // The old step's answer (`old`, one step of three) is dropped: the new job runs its own steps.
+    expect(await until(stub, (j) => j?.status === 'done')).toMatchObject({ name: 'new', steps: 2 });
+  });
+
+  it('a step that throws while its job is replaced does not move the new job\'s alarm', async () => {
+    const stub = stubOf(env.COPY_JOB_TEST, `restart-throw-${crypto.randomUUID()}`);
+    await stub.start(job({ holdMs: 80, throwUntil: Date.now() + 60_000, name: 'old' }));
+    await sleep(20);
+    await stub.forget();
+    await stub.start(job({ target: 1, name: 'new' }));
+    // Its retry would land 30 s out, over the alarm the new start set to now.
+    expect(await until(stub, (j) => j?.status === 'done')).toMatchObject({ name: 'new', steps: 1 });
+  });
+
+  it('a step that throws after a cancel leaves the cancel its retention alarm', async () => {
+    const stub = stubOf(env.COPY_JOB_SHORT, `cancel-throw-${crypto.randomUUID()}`);
+    await stub.start(job({ holdMs: 80, throwUntil: Date.now() + 60_000 }));
+    await sleep(20);
+    expect((await stub.cancel())?.status).toBe('cancelled');
+    // Kept for its 30 ms retention, then deleted: the step's 30 s retry does not replace that alarm.
+    expect(await until(stub, (j) => j === null)).toBeNull();
+  });
+
+  it('the token a step compares lives beside the record, and goes with it', async () => {
+    const stub = stubOf(env.COPY_JOB_TEST, `token-${crypto.randomUUID()}`);
+    const keys = () => runInDurableObject(stub, async (_o, state) => [...(await state.storage.list()).keys()].sort());
+    await stub.start(job({ holdMs: 80 }));
+    expect(await keys()).toEqual(['job', 'run']);
+    await stub.forget();
+    // Nothing is kept in an object whose job is gone, not even after the step in flight ends.
+    expect(await keys()).toEqual([]);
+    await sleep(150);
+    expect(await keys()).toEqual([]);
   });
 
   it('a finished job is deleted once its retention has passed', async () => {
