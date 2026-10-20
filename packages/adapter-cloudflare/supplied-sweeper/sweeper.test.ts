@@ -79,11 +79,16 @@ describe('the platform-supplied sweeper runs a vertical that wires none (#1902)'
     const logged = vi.spyOn(console, 'log');
     try {
       const { report, next, calls } = await runInDurableObject(sweeper(), async (instance) => {
-        const calls: { url: string; method: string; body: unknown }[] = [];
+        const calls: { url: string; method: string; credential: string | null; body: unknown }[] = [];
         const originalFetch = globalThis.fetch;
         globalThis.fetch = async (input, init) => {
           const request = new Request(input, init);
-          calls.push({ url: request.url, method: request.method, body: await request.json() });
+          calls.push({
+            url: request.url,
+            method: request.method,
+            credential: request.headers.get('x-substrat-platform'),
+            body: await request.json(),
+          });
           return new Response(null, { status: 202 });
         };
         try {
@@ -102,6 +107,7 @@ describe('the platform-supplied sweeper runs a vertical that wires none (#1902)'
       expect(calls).toEqual([{
         url: `${e.CONTROL_PLANE_URL}/internal/drain-scope`,
         method: 'POST',
+        credential: e.PLATFORM_SECRET,
         body: { tenantId: t, scopeId: s, platformRequests: true, exports: false },
       }]);
       expect(sweepLines(logged.mock.calls)).toEqual([]);
