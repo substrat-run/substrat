@@ -97,7 +97,8 @@ describe('the app logs route forwards an invocation id (#1525)', () => {
           const u = new URL(String(url));
           const path = u.pathname.replace(/^\/api/, '');
           if (path === '/tenant-tokens') return Response.json({ token: 'tenant-token' });
-          if (path === '/observability/tenant-logs' || path === '/observability/tenant-metrics' || path === '/observability/tenant-metrics-series') {
+          if (path === '/service-refs') return Response.json({ entries: [], verticalsTruncated: false });
+          if (path === '/observability/tenant-logs' || path === '/observability/tenant-metrics' || path === '/observability/tenant-metrics-series' || path === '/observability/metrics' || path === '/observability/logs') {
             logReads.push(u);
             return Response.json([]);
           }
@@ -192,6 +193,19 @@ describe('the app logs route forwards an invocation id (#1525)', () => {
     expect(logReads.at(-1)!.pathname).toBe(`/api/tenants/${tenant}/connections/calls`);
     expect(logReads.at(-1)!.searchParams.get('since')).toBe('2026-09-01T10:00:00.000Z');
     expect((await app.request(`/api/teams/${tenant}/observability/connector-calls`, {}, env)).status).toBe(401);
+  });
+
+  it('serves every declared read for a member of the path team', async () => {
+    const paths = [
+      '/observability/metrics', '/observability/logs?service=unknown',
+      `/apps/${appScope}/observability/metrics`, '/observability/tenant-metrics-series',
+      '/observability/connector-calls', '/observability/business-volumes',
+      '/observability/traffic', '/observability/app-metrics',
+    ];
+    for (const path of paths) {
+      const res = await app.request(`/api/teams/${tenant}${path}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+      expect(res.status, `${path}: ${await res.clone().text()}`).toBe(200);
+    }
   });
 
 });

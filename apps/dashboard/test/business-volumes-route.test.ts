@@ -233,6 +233,12 @@ describe('the business volumes route (#1750)', () => {
     expect(body.apps).toEqual([{ scopeId: appScope, unavailable: null }]);
   });
 
+  it('keeps every repeated scopeId filter through the declared route', async () => {
+    const body = await read(`?scopeId=${appScope}&scopeId=${emptyScope}`);
+    expect(body.apps.map((a) => a.scopeId).sort()).toEqual([appScope, emptyScope].sort());
+    expect((await get(OWNER_SUB, `?scopeId=${appScope}&scopeId=${otherScope}`)).status).toBe(404);
+  });
+
   describe('an app with no rows says why', () => {
     it('no-version: nothing is running, so nothing is read', async () => {
       const body = await read(`?scopeId=${emptyScope}`);
