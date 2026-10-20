@@ -69,9 +69,23 @@ Two adapter implementations behind one interface, mirroring the whole platform:
   "*Clean* because the DO is single-threaded" now holds per page only, since each page is read
   in one turn. The pages are one consistent read only while the source's write revision stays
   where the first page read it. A copy that it moves under is started again, and refused after
-  three attempts. Two steps remain open in #2450:
-  - running the copy as a durable job outside the request;
-  - an online copy with catch-up, for a busy scope at GB scale.
+  three attempts.
+
+  A preview's copy that needs more than one page runs as a job (#2450, step 2):
+  - The request reads and stages the first page and records the move in the copy ledger as
+    before, then hands the rest to a Durable Object per job (`ScopeCopyJobDO`). It answers 202.
+  - Each step of the job, one per alarm, renews the move's lease
+    (`HostAdmin.renewScopeScriptCopy`) and then moves pages for up to 20 s. The ledger keeps
+    naming a live move, so no sweep, reap or erasure can act on it while it runs. A job that
+    passes six hours fails and stops renewing.
+  - The same create call, repeated, finds the job. While it copies, the call answers its progress.
+    Once it is done, the call renews the lease and runs the in-request path's own restore and bind,
+    with the fence counted from that renewal.
+  - A refresh, a delete or a newer push to the preview cancels the job, settles its move
+    `retained`, and discards its stage.
+
+  Only previews run this way; a rebind or adopt of a live scope still copies in its request. One
+  step remains open in #2450: an online copy with catch-up, for a busy scope at GB scale.
 
 Once a cloud export lands in a local file it's a real SQLite again — `cp`, `VACUUM INTO`,
 Datasette, a step debugger all return. **Pull once (logical, governed); branch freely after.**

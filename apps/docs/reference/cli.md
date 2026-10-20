@@ -451,7 +451,10 @@ per-version resolver, routing between distinct version deployments copies the da
 unchanged routing and co-located incoming versions need no copy. Migrations roll forward on the
 same data, but writes during a copy may be lost (see
 [what a push copies](/guide/environments-and-previews#previews-the-non-prod-primitive)).
-`--refresh` starts from a clean fork. `--ttl` defaults to `72h`; `--ttl none`
+A fork or a copy too large for one request runs in the background: `create` prints its progress
+and waits until the preview is ready, for up to six hours. If it stops waiting (the job is
+cancelled, say), the copy goes on, and running the same command again picks it up.
+`--refresh` starts from a clean fork, and stops a copy still running. `--ttl` defaults to `72h`; `--ttl none`
 **pins** the preview until you delete it. Default preview pushes use a semver *prerelease* label, so
 they never advance the release version your repo owns. Because `create` is a push, it takes push's
 own overrides: `--skip-lint`, `--allow-unserved-ui` and `--allow-unswept-schedules` mean the same thing here as they do there.
