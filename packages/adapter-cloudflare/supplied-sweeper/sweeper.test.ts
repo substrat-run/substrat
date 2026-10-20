@@ -28,8 +28,8 @@ interface TestEnv {
   SCOPE: DurableObjectNamespace;
   SWEEPER: DurableObjectNamespace;
   SUBSTRAT_SCOPE_SWEEPER?: string;
-  PLATFORM_SECRET: string;
-  CONTROL_PLANE_URL: string;
+  PLATFORM_SECRET?: string;
+  CONTROL_PLANE_URL?: string;
 }
 const e = env as unknown as TestEnv;
 
@@ -44,7 +44,7 @@ const roster = () =>
 const platform = (path: string, body: unknown) =>
   SELF.fetch(`https://fixture.test${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-substrat-platform': e.PLATFORM_SECRET },
+    headers: { 'content-type': 'application/json', 'x-substrat-platform': e.PLATFORM_SECRET! },
     body: JSON.stringify(body),
   });
 const ticksOn = async (s: ScopeId): Promise<number> => {
@@ -156,6 +156,62 @@ describe('the platform-supplied sweeper runs a vertical that wires none (#1902)'
       expect(deleted.status, await deleted.clone().text()).toBe(200);
     }
   });
+
+  it.each(['CONTROL_PLANE_URL', 'PLATFORM_SECRET'] as const)(
+    'a scheduled write with no %s succeeds without a drain fetch',
+    async (missing) => {
+      const writeScope = scopeId.parse(ulid());
+      const provision = await platform('/internal/provision', { tenantId: t, scopeId: writeScope, owner });
+      expect(provision.status, await provision.clone().text()).toBe(201);
+      try {
+        const { report, fetches, drainUrls } = await runInDurableObject(sweeper(), async (instance, state) => {
+          const active = instance as unknown as { env: TestEnv };
+          const originalEnv = active.env;
+          active.env = Object.create(originalEnv, { [missing]: { value: undefined } }) as TestEnv;
+          expect(active.env[missing]).toBeUndefined();
+          expect(active.env[missing === 'CONTROL_PLANE_URL' ? 'PLATFORM_SECRET' : 'CONTROL_PLANE_URL']).toBeDefined();
+          const pending: Promise<unknown>[] = [];
+          const waitUntil = vi.spyOn(state, 'waitUntil').mockImplementation((promise) => {
+            pending.push(promise);
+          });
+          const originalFetch = globalThis.fetch;
+          const urlGlobal = globalThis as unknown as { URL: typeof URL };
+          const OriginalURL = URL;
+          let fetches = 0;
+          let drainUrls = 0;
+          urlGlobal.URL = class extends OriginalURL {
+            constructor(input: string | URL, base?: string | URL) {
+              if (input === '/internal/drain-scope') drainUrls += 1;
+              super(input, base);
+            }
+          };
+          globalThis.fetch = async () => {
+            fetches += 1;
+            return new Response(null, { status: 202 });
+          };
+          try {
+            const report = asReport(await (instance as unknown as SweeperStub).sweepNow());
+            expect(pending).toHaveLength(1);
+            await Promise.all(pending);
+            return { report, fetches, drainUrls };
+          } finally {
+            globalThis.fetch = originalFetch;
+            urlGlobal.URL = OriginalURL;
+            waitUntil.mockRestore();
+            active.env = originalEnv;
+          }
+        });
+        expect(report.errors).toEqual([]);
+        expect(report.schedules.platformRequests).toBe(2);
+        expect(fetches).toBe(0);
+        expect(drainUrls).toBe(0);
+        expect(await ticksOn(writeScope)).toBe(2);
+      } finally {
+        const deleted = await platform('/internal/delete-scope', { tenantId: t, scopeId: writeScope });
+        expect(deleted.status, await deleted.clone().text()).toBe(200);
+      }
+    },
+  );
 
   it('delete-scope takes the scope off the roster', async () => {
     const res = await platform('/internal/delete-scope', { tenantId: t, scopeId: s });
