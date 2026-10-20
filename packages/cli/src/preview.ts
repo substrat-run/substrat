@@ -264,7 +264,7 @@ export async function createPreview(opts: {
     if (Date.now() >= giveUpAt) {
       throw new Error(
         `preview create failed: the preview's data was still being copied after ${Math.round((opts.waitMs ?? PREVIEW_COPY_WAIT_MS) / 60_000)} min ` +
-          `(${out.progress.pages} pages so far). The copy goes on; run the same command again to pick it up.`,
+          `(${out.progress.pages} pages so far). Running this command again pushes a new version, whose copy starts over and replaces this one.`,
       );
     }
     const attempt = out.progress.attempt > 1 ? `, attempt ${out.progress.attempt}: the source changed while it was read` : '';

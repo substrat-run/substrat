@@ -452,8 +452,10 @@ unchanged routing and co-located incoming versions need no copy. Migrations roll
 same data, but writes during a copy may be lost (see
 [what a push copies](/guide/environments-and-previews#previews-the-non-prod-primitive)).
 A fork or a copy too large for one request runs in the background: `create` prints its progress
-and waits until the preview is ready, for up to six hours. If it stops waiting (the job is
-cancelled, say), the copy goes on, and running the same command again picks it up.
+and waits until the preview is ready, for up to six hours. If the CLI stops waiting (its CI job is
+cancelled, say), the preview is left as it was: a new one is not ready, and one being updated keeps
+serving the previous push. Running `create` again pushes a new version, whose copy starts over and
+replaces the one left running.
 `--refresh` starts from a clean fork, and stops a copy still running. `--ttl` defaults to `72h`; `--ttl none`
 **pins** the preview until you delete it. Default preview pushes use a semver *prerelease* label, so
 they never advance the release version your repo owns. Because `create` is a push, it takes push's

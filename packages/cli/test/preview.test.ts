@@ -152,11 +152,13 @@ describe('preview client', () => {
       expect(calls.map((c) => (c.body as { refresh?: boolean }).refresh)).toEqual([true, undefined]);
     });
 
-    it('gives up after its wait, saying the copy goes on and how to pick it up', async () => {
+    it('gives up after its wait, saying a new run is a new push whose copy starts over', async () => {
       vi.spyOn(console, 'warn').mockImplementation(() => {});
       stub(() => copying(2));
+      // `preview create` pushes first, and a push never reuses a version, so a rerun cannot pick
+      // this copy up: the route replaces it with the newer push's own.
       await expect(createPreview({ ...base, tag: 'pr-9', versionId: '01J', waitMs: 0, sleep: async () => {} }))
-        .rejects.toThrow(/still being copied.*run the same command again/);
+        .rejects.toThrow(/still being copied.*Running this command again pushes a new version, whose copy starts over and replaces this one/);
     });
   });
 
