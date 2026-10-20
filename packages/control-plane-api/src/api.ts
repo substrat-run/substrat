@@ -10093,6 +10093,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // after its first creation no matter how alive it is (preview-and-snapshots.md §9).
     const expiresAt =
       opts.ttlHours === null ? null : new Date(Date.now() + (opts.ttlHours ?? 72) * 3_600_000).toISOString();
+    /**
+     * #2450: a preview whose copy a job is running keeps its deadline counted from the latest call,
+     * as a finished create's is, so a copy longer than the TTL is not met by the sweep's reap. Each
+     * write is audited, so it is written only once the stored deadline has fallen more than
+     * `PREVIEW_CREATE_BOUND_MS` behind this call's. Best-effort: the finish writes it again.
+     */
+    const keepAlive = async (row: Scope): Promise<void> => {
+      const due = expiresAt === null
+        ? row.expiresAt !== null
+        : row.expiresAt === null || Date.parse(row.expiresAt) < Date.parse(expiresAt) - PREVIEW_CREATE_BOUND_MS;
+      if (due) await c.var.admin.setScopeExpiresAt(actor, tenantId, row.id, expiresAt).catch(() => undefined);
+    };
     // Residency (K-7/K-32): forking pins the copy's EXECUTION to the preview deployment.
     // Anything tighter than `global` cannot be honoured until Regional Services, so refuse
     // it here rather than record a residency claim with no mechanism (same gate as export).
@@ -10358,6 +10370,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           await landFork(landing);
           return landing;
         });
+        // Its row's deadline counts from this create, as every create's does: the copy may have
+        // outlasted the one its first call set.
+        await c.var.admin.setScopeExpiresAt(actor, tenantId, preview.id, expiresAt);
         return await servedFork(landed);
       } finally {
         await options.copyJobs?.forget(spec.id).catch(() => undefined);
@@ -10371,9 +10386,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const replaced = opts.refresh || forkJob.spec.versionId !== opts.versionId;
       // A poll's own fork is this one or none: it replaces nothing.
       if (poll && replaced) throw copyGone();
-      const inProgress = (): PreviewCopying => {
-        if (jobs) return copyingAnswer(forkJob);
-        throw new ControlPlaneError(409, `a create for preview '${opts.tag}' is in progress (its data is still being copied). Retry once it finishes`);
+      const row = existing;
+      const inProgress = async (): Promise<PreviewCopying> => {
+        if (!jobs) throw new ControlPlaneError(409, `a create for preview '${opts.tag}' is in progress (its data is still being copied). Retry once it finishes`);
+        await keepAlive(row);
+        return copyingAnswer(forkJob);
       };
       if (!replaced && forkJob.status === 'copying') return inProgress();
       if (!replaced && forkJob.status === 'done') {
@@ -10404,9 +10421,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       try {
         // #2450 step 2: a carry a job is copying, for this push or an older one.
         const held = await readCopyJob(copyJobId('carry', preview.id));
-        const inProgress = (job: CopyJobRecord): PreviewCopying => {
-          if (jobs) return copyingAnswer(job);
-          throw new ControlPlaneError(409, `a push to preview '${opts.tag}' is still copying its data. Retry once it finishes`);
+        const inProgress = async (job: CopyJobRecord): Promise<PreviewCopying> => {
+          if (!jobs) throw new ControlPlaneError(409, `a push to preview '${opts.tag}' is still copying its data. Retry once it finishes`);
+          await keepAlive(preview);
+          return copyingAnswer(job);
         };
         if (held && held.spec.versionId !== opts.versionId) {
           const superseded = supersededRefusal(held, mine, opts.tag);

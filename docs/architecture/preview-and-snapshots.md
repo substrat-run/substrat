@@ -86,7 +86,9 @@ Two adapter implementations behind one interface, mirroring the whole platform:
     runs the in-request path's own restore and bind, with the fence counted from that renewal. A
     call that finds the job claimed answers its progress instead, and touches nothing. A carry's
     claim is held until its bind is over, so a newer push cannot start from the binding it
-    replaces. A finish that fails, however it fails, settles the move and discards the stage it
+    replaces. The preview's deadline counts from the latest call, as every create's does: the
+    calls during a copy keep it alive, and the finish applies it again. A finish that fails,
+    however it fails, settles the move and discards the stage it
     would have loaded, and a fork, like a carry, refuses a source that was carried away and wiped
     while it was read.
   - A refresh, a delete or a newer push to the preview cancels the job, settles its move

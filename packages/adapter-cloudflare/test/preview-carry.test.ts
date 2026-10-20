@@ -2884,14 +2884,18 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await create(named)).status).toBe(201);
     });
 
-    /** An API over the same jobs whose next call of `method` on the directory throws, as a dropped call does. */
-    const adminDrops = (method: string) => {
+    /**
+     * An API over the same jobs whose next call of `method` on the directory throws, as a dropped call
+     * does: on its way there, or (`answerLost`) once it has committed, on the answer's way back.
+     */
+    const adminDrops = (method: string, opts: { answerLost?: boolean } = {}) => {
       let armed = true;
       const admin = new Proxy(dir.admin, {
         get: (a, key) => {
           if (key === method && armed) {
-            return async () => {
+            return async (...args: unknown[]) => {
               armed = false;
+              if (opts.answerLost) await (Reflect.get(a, key) as (...xs: unknown[]) => Promise<unknown>).apply(a, args);
               throw new Error(`${method} was dropped on its way`);
             };
           }
@@ -3008,6 +3012,30 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(reason(carried) ?? '').not.toMatch(/background copy failed/);
       expect((await poll('bg-35', 'v2')).status).toBe(200);
       expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
+    });
+
+    it("a fork a job finishes counts its deadline from the latest call, during the copy and once it lands", async () => {
+      const expiry = async (sid: ScopeId) => Date.parse((await dir.admin.getScopeRecord(staff, t, sid))!.expiresAt!);
+      const hour = 3_600_000;
+      const started = await pushBg('bg-36', 'v1', { ttlHours: 1 });
+      expect(started.status).toBe(202);
+      const sid = started.body.scopeId;
+      // The TTL ran out while the copy runs: a poll keeps the preview alive.
+      await dir.admin.setScopeExpiresAt(staff, t, sid, new Date(Date.now() - 1).toISOString());
+      expect((await poll('bg-36', 'v1')).status).toBe(202);
+      expect(await expiry(sid)).toBeGreaterThan(Date.now() + hour - 60_000);
+      // A deadline still near this call's is left alone: each write is audited.
+      const near = new Date(Date.now() + hour - 60_000).toISOString();
+      await dir.admin.setScopeExpiresAt(staff, t, sid, near);
+      expect((await pushBg('bg-36', 'v1', { ttlHours: 1, poll: true })).status).toBe(202);
+      expect(await expiry(sid)).toBe(Date.parse(near));
+      // And once more by the time the copy is done: the finish counts it from its own call.
+      await pumpToDone();
+      await dir.admin.setScopeExpiresAt(staff, t, sid, new Date(Date.now() - 1).toISOString());
+      const made = await pushBg('bg-36', 'v1', { ttlHours: 1, poll: true });
+      expect(made.status).toBe(201);
+      expect((await dir.admin.getScopeRecord(staff, t, sid))?.status).toBe('active');
+      expect(await expiry(sid)).toBeGreaterThan(Date.now() + hour - 60_000);
     });
 
     it('a carry whose bind landed but whose job was never forgotten is answered the preview, never finished again', async () => {
