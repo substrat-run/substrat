@@ -3092,6 +3092,42 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await served(long.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
     });
 
+    it("a refresh replaces whatever is there but a newer push's live copy, which it refuses as any create does", async () => {
+      const { clock, store, call, settle } = clockedPlane();
+      // A newer push's fork, still copying once the mark's hold has run out.
+      const forking = await call('bg-29', 'v3');
+      expect(forking.status).toBe(202);
+      clock.skew = 15 * 60_000 + 1;
+      const older = await call('bg-29', 'v1', { refresh: true });
+      expect(older.status).toBe(409);
+      expect(reason(older)).toMatch(/newer push \(version \w+\) to preview 'bg-29' is copying its data, so this push .* was superseded/);
+      expect(store.jobs.get(`fork:${forking.body.scopeId}`)?.status).toBe('copying');
+      // That push's own refresh replaces it.
+      const fresh = await call('bg-29', 'v3', { refresh: true });
+      expect(fresh.status).toBe(202);
+      expect(fresh.body.scopeId).not.toBe(forking.body.scopeId);
+      await settle();
+      expect((await call('bg-29', 'v3', { poll: true })).status).toBe(201);
+
+      // A newer push's carry, the same.
+      clock.skew = 0;
+      expect((await call('bg-30', 'v1')).status).toBe(202);
+      await settle();
+      const { scopeId: sid } = (await call('bg-30', 'v1', { poll: true })).body;
+      expect((await call('bg-30', 'v3')).status).toBe(202);
+      clock.skew = 15 * 60_000 + 1;
+      const stale = await call('bg-30', 'v1', { refresh: true });
+      expect(stale.status).toBe(409);
+      expect(reason(stale)).toMatch(/is copying its data, so this push .* was superseded/);
+      expect(store.jobs.get(`carry:${sid}`)?.status).toBe('copying');
+      expect((await dir.admin.getScopeRecord(staff, t, sid))?.status).toBe('active');
+      const renewed = await call('bg-30', 'v3', { refresh: true });
+      expect(renewed.status).toBe(202);
+      expect(renewed.body.scopeId).not.toBe(sid);
+      await settle();
+      expect((await call('bg-30', 'v3', { poll: true })).status).toBe(201);
+    });
+
     it("a newer push's job that failed, or was left unfinished past its lease, holds no older version off", async () => {
       const { clock, store, call, settle } = clockedPlane();
       // A newer push's fork that fails past its deadline.

@@ -3843,14 +3843,30 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   };
 
-  /** Every copy job a preview has (#2450), settled: before it is reaped or replaced. */
-  const cancelPreviewJobs = async (c: ReqCtx, preview: Scope): Promise<void> => {
+  /**
+   * Every copy job a preview has (#2450), settled: before it is reaped or replaced. `by` is a create
+   * replacing it, which a newer push's live copy refuses (`supersededRefusal`) before anything is
+   * settled; a delete passes none, and removes whatever is there.
+   */
+  const cancelPreviewJobs = async (
+    c: ReqCtx,
+    preview: Scope,
+    by?: { mine: { versionId: string; order: string }; tag: string },
+  ): Promise<void> => {
     const jobs = options.copyJobs;
     if (!jobs) return;
+    const held: CopyJobRecord[] = [];
     for (const kind of ['fork', 'carry'] as const) {
       const job = await jobs.get(copyJobId(kind, preview.id));
-      if (job) await settleJobMove(c, job);
+      if (job) held.push(job);
     }
+    if (by) {
+      for (const job of held) {
+        const superseded = supersededRefusal(job, by.mine, by.tag);
+        if (superseded) throw superseded;
+      }
+    }
+    for (const job of held) await settleJobMove(c, job);
   };
 
   /**
@@ -10294,7 +10310,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     };
 
     if (existing && forkJob) {
-      const superseded = !opts.refresh && supersededRefusal(forkJob, mine, opts.tag);
+      // A refresh too: it replaces whatever is there but a newer push's copy, as the mark holds it off.
+      const superseded = supersededRefusal(forkJob, mine, opts.tag);
       if (superseded) throw superseded;
       const replaced = opts.refresh || forkJob.spec.versionId !== opts.versionId;
       // A poll's own fork is this one or none: it replaces nothing.
@@ -10471,8 +10488,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // A marked row is also the GC sweep's to reap (its `expiresAt` has passed), so the sweep
     // can get there between the lookup above and this reap. Gone is what the reap wanted.
     if (existing && stale) {
-      // #2450: a job still copying holds a live lease, which a reap waits on; stop it first.
-      await cancelPreviewJobs(c, existing);
+      // #2450: a job still copying holds a live lease, which a reap waits on; stop it first. A newer
+      // push's copy is not this create's to stop, a refresh's included: it refuses instead.
+      await cancelPreviewJobs(c, existing, { mine, tag: opts.tag });
       await reapPreview(c, existing).catch((e: unknown) => {
         if (errorCodeOf(e) !== 'not_found') throw e;
       });

@@ -91,7 +91,8 @@ Two adapter implementations behind one interface, mirroring the whole platform:
     `retained`, and discards its stage. The cancel stops a step still running and waits for it, so
     nothing the step does follows the settle or the reap. Each page call has a 60 s deadline
     (`PAGE_CALL_DEADLINE_MS`), so that wait is bounded. A newer push waits for a claimed job to be
-    finished rather than tear it down.
+    finished rather than tear it down. A refresh is held to the same rule as any create: it never
+    stops a newer push's live copy, and one for an older version is refused as superseded.
   - A call that follows a 202 naming its own version is a poll (`poll: true`). A poll continues
     that copy and never starts one: it answers 202 while the copy runs, finishes it once it is
     done, answers the preview again if it already serves the poll's version, and otherwise refuses

@@ -460,7 +460,8 @@ serving the previous push. Running `create` again pushes a new version, whose co
 replaces the one left running. A copy that fails, or that a newer push, a refresh or a delete
 stops, ends `create` with the reason (a `409`), and `create` never starts the copy over by itself:
 only running it again does.
-`--refresh` starts from a clean fork, and stops a copy still running. `--ttl` defaults to `72h`; `--ttl none`
+`--refresh` starts from a clean fork, and stops a copy still running, though not a newer push's:
+a refresh of an older version is refused as superseded, as any create of one is. `--ttl` defaults to `72h`; `--ttl none`
 **pins** the preview until you delete it. Default preview pushes use a semver *prerelease* label, so
 they never advance the release version your repo owns. Because `create` is a push, it takes push's
 own overrides: `--skip-lint`, `--allow-unserved-ui` and `--allow-unswept-schedules` mean the same thing here as they do there.
