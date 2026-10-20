@@ -3107,6 +3107,48 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect((await dir.admin.auditLog(staff, { scopeId: sid, action: 'setScopeExpiresAt' })).length).toBe(before);
     });
 
+    const refusesLapsedKeepAlive = async (tag: string, changeMove: (sid: ScopeId, move: string) => Promise<void>) => {
+      const sid = (await pushBg(tag, 'v1', { ttlHours: 1 })).body.scopeId;
+      const move = jobs.jobs.get(`fork:${sid}`)!.spec.moveId;
+      const old = new Date(Date.now() - 60_000).toISOString();
+      await dir.admin.setScopeExpiresAt(staff, t, sid, old);
+      const before = (await dir.admin.auditLog(staff, { scopeId: sid, action: 'setScopeExpiresAt' })).length;
+      await changeMove(sid, move);
+      expect((await pushBg(tag, 'v1', { ttlHours: 1, poll: true })).status).toBe(202);
+      expect((await dir.admin.getScopeRecord(staff, t, sid))?.expiresAt).toBe(old);
+      expect((await dir.admin.auditLog(staff, { scopeId: sid, action: 'setScopeExpiresAt' })).length).toBe(before);
+    };
+
+    it('a 202 poll does not renew a preview when one move entry has an expired lease', async () => {
+      await refusesLapsedKeepAlive('bg-keepalive-expired', async (sid, move) => {
+        await dir.admin.recordScopeScriptCopy(staff, t, sid, `version-${ulid().toLowerCase()}`, move,
+          { role: 'source', leaseMs: 1 });
+        await new Promise((r) => setTimeout(r, 5));
+      });
+    });
+
+    it('a 202 poll does not renew a preview when a sweep claimed one move entry', async () => {
+      await refusesLapsedKeepAlive('bg-keepalive-claimed', async (sid, move) => {
+        await dir.admin.recordScopeScriptCopy(staff, t, sid, `version-${ulid().toLowerCase()}`, move,
+          { role: 'source', leaseMs: 1 });
+        await new Promise((r) => setTimeout(r, 5));
+        expect((await dir.admin.claimExpiredScopeScriptCopies(staff, {
+          now: new Date().toISOString(), leaseUntil: new Date(Date.now() + 60_000).toISOString(),
+          owner: 'sweep:keep-alive', limit: 1000,
+        })).map((copy) => copy.moveId)).toContain(move);
+      });
+    });
+
+    it('a 202 poll does not renew a preview when one move entry is settled', async () => {
+      await refusesLapsedKeepAlive('bg-keepalive-mixed', async (sid, move) => {
+        await dir.admin.recordScopeScriptCopy(staff, t, sid, `version-${ulid().toLowerCase()}`, move,
+          { role: 'source' });
+        const entry = (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid }))
+          .find((copy) => copy.moveId === move && copy.role === 'destination')!;
+        await dir.admin.settleScopeScriptCopy(staff, t, sid, entry.scriptRef, move, 'retained');
+      });
+    });
+
     it('a fork bind that committed but lost its answer has landed: the preview is answered, not abandoned', async () => {
       const sid = (await pushBg('bg-37', 'v1')).body.scopeId;
       await pumpToDone();
