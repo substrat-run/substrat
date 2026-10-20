@@ -2552,12 +2552,17 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     });
 
     it('a call that claimed a done job and died holds it only until its hold runs out; the next call then finishes it', async () => {
+      /** The dead call's hold, run out: as the clock would leave it, without waiting for it. */
+      const holdRunsOut = (id: string) => {
+        const held = jobs.jobs.get(id)!;
+        jobs.jobs.set(id, { ...held, claimedUntil: Date.now() - 1 });
+      };
       const sid = (await pushBg('bg-8', 'v1')).body.scopeId;
       await pumpToDone();
-      // The dead call's claim, with a hold short enough to outlive here.
-      expect(await jobs.claim(`fork:${sid}`, 50)).not.toBeNull();
+      // The dead call's claim.
+      expect(await jobs.claim(`fork:${sid}`, 60_000)).not.toBeNull();
       expect((await pushBg('bg-8', 'v1')).status).toBe(202);
-      await pause(80);
+      holdRunsOut(`fork:${sid}`);
       const made = await pushBg('bg-8', 'v1');
       expect(made.status).toBe(201);
       expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
@@ -2566,9 +2571,9 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       // The same for a re-push's carry.
       expect((await pushBg('bg-8', 'v2')).status).toBe(202);
       await pumpToDone();
-      expect(await jobs.claim(`carry:${sid}`, 50)).not.toBeNull();
+      expect(await jobs.claim(`carry:${sid}`, 60_000)).not.toBeNull();
       expect((await pushBg('bg-8', 'v2')).status).toBe(202);
-      await pause(80);
+      holdRunsOut(`carry:${sid}`);
       expect((await pushBg('bg-8', 'v2')).status).toBe(200);
       expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
       expect(jobs.jobs.has(`carry:${sid}`)).toBe(false);
@@ -2963,6 +2968,13 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
         const early = await pushBg('bg-25', 'v1');
         expect(early.status).toBe(412);
         expect(reason(early)).toMatch(/carried to another script and wiped/);
+        // And for a caller without async, whose fork moves every page in its request.
+        const whole = await bg.request(`/verticals/${slug}/previews`, {
+          method: 'POST',
+          headers: auth,
+          body: JSON.stringify({ tag: 'bg-25', versionId: version.v1, sourceScopeId: prod }),
+        });
+        expect(whole.status).toBe(412);
       } finally {
         await prodHost.restoreScopeLocal(prod, notes(...rows));
       }
