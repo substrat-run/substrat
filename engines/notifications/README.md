@@ -55,6 +55,18 @@ host.registerModule(notificationsModule);
   those four. It moves from `requested` to `sent`, `refused` or `dead_lettered` when the
   platform's outcome event arrives. A delivery that was not sent on its own says why: `muted`,
   `no_address`, or `digest`.
+- **A person's own history.** `notifications/my-deliveries`, under `notifications:self`, pages
+  the caller's deliveries newest first (`listMyDeliveries` in scope). It is `list-deliveries`
+  with the caller's principal pinned in and no `principal` input, so holding the key never
+  reaches anyone else's rows; `status` and `topic` narrow it. The row is narrower than the
+  administrator's: no `principal`, no `dedupe_key` (the caller's idempotency key) and no
+  `request_id` (the platform's send intent). Its `reason` is kept on a `skipped` row,
+  where it is this engine's own word (`muted`, `no_address`, `digest`, `quarantined`), and
+  is `null` on a `refused` or `dead_lettered` one, whose reason is the platform's outcome
+  code and stays with whoever reads the whole log. Digest rows are listed as they are: an
+  occasion held for the digest reads `skipped`/`digest` and gets a `settled_at` once the
+  digest that carried it is written, the digest is a row of its own under `@digest`
+  (`DIGEST_TOPIC`), and a withdrawn one reads `skipped`/`muted`.
 - **Daily digests.** A person can take any topic that is not required as a daily digest
   (`notifications/set-my-preference` with `cadence: 'daily-digest'`). `notify` then records the
   occasion as `skipped` with reason `digest` and holds the rendered message.
@@ -145,14 +157,14 @@ occasion's delivery keeps reason `digest` with no `settled_at`, the way a cancel
 
 Channels other than email (SMS, push, in-app), tenant-edited or per-locale templates
 (including a digest's own wording), quiet hours and a digest's time of day, digest cadences
-other than daily, and a person's own delivery history. See K-47 for where this engine sits and
+other than daily. See K-47 for where this engine sits and
 why it is not kernel code.
 
 ## Permissions
 
 | Key | What it allows |
 | --- | --- |
-| `notifications:self` | Set where your own notifications go and which topics reach you |
+| `notifications:self` | Set where your own notifications go and which topics reach you, and read what became of them |
 | `notifications:read` | Read what became of every notification in the scope |
 | `notifications:send-digests` | The digest schedule's key. The engine's system principal holds it. The manifest declares it `holder: 'system'`, so `lint:permissions` refuses a role or entity grant shape that grants it to a person |
 

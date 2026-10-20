@@ -129,5 +129,26 @@ export const notificationsEntities = defineEntities({
 /** One delivery, as stored and as published — it holds nothing the reader may not see. */
 export const deliveryRow = notificationsEntities['notification-delivery'].fields;
 
+/**
+ * One delivery as the person it went to reads it: what became of it, and what it was about.
+ *
+ * Left out, deliberately: `principal` (always the reader), `dedupe_key` (the caller's idempotency
+ * key — an event id, an entity id — which says nothing to the person), `request_id` (the
+ * platform's send intent). `reason` is kept only where the engine wrote it — on a `skipped`
+ * row — and is `null` on a `refused` or `dead_lettered` one, whose reason is the platform's
+ * outcome code and belongs to whoever reads the whole log (`notifications:read`).
+ */
+export const myDeliveryRow = deliveryRow.pick({
+  id: true,
+  topic: true,
+  channel: true,
+  status: true,
+  reason: true,
+  about_type: true,
+  about_id: true,
+  created_at: true,
+  settled_at: true,
+});
+
 /** One pending digest item, as stored — read back only to compose the digest. */
 export const digestItemRow = notificationsEntities['notification-digest-item'].fields;

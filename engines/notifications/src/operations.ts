@@ -2,13 +2,13 @@
  * The notifications engine's declared operation surface.
  *
  * Two audiences. A person manages their OWN notifications — where they go, and which topics
- * reach them — under `notifications:self`, and every one of those operations acts on the
- * caller's principal and takes no principal as input, so holding the key never reaches
- * anybody else's address. An administrator reads the delivery log for the scope under
- * `notifications:read`, which is how "why did nobody hear about this" gets an answer. The
- * third key, `notifications:send-digests`, is the digest schedule's: the engine's system
- * principal holds it, and the manifest declares it `holder: 'system'`, so `lint:permissions`
- * refuses a role or entity grant shape that would hand it to a person.
+ * reach them — and reads their own delivery history, under `notifications:self`, and every one
+ * of those operations acts on the caller's principal and takes no principal as input, so holding
+ * the key never reaches anybody else's address or deliveries. An administrator reads the
+ * delivery log for the scope under `notifications:read`, which is how "why did nobody hear about
+ * this" gets an answer. The third key, `notifications:send-digests`, is the digest schedule's:
+ * the engine's system principal holds it, and the manifest declares it `holder: 'system'`, so
+ * `lint:permissions` refuses a role or entity grant shape that would hand it to a person.
  *
  * Node checks only, and that is the design: the entities are a person's own preferences and
  * a log about the scope, neither of which narrows to a record somebody else holds a grant on.
@@ -17,7 +17,7 @@
  * `defineEngineRoutes`.
  */
 import { defineOperations, z } from '@substrat-run/contracts';
-import { deliveryRow, digestCadence, notificationsEntities } from './entities.js';
+import { deliveryRow, digestCadence, myDeliveryRow, notificationsEntities } from './entities.js';
 
 /** The keys these operations check. Mirrors `NOTIFICATIONS_PERM` in index.ts. */
 export const NOTIFICATIONS_PERMISSIONS = ['notifications:self', 'notifications:read', 'notifications:send-digests'] as const;
@@ -96,6 +96,30 @@ export const notificationsOperations = defineOperations(notificationsEntities, N
         entity: 'notification-delivery',
         sortable: ['created_at'],
         filterable: ['status', 'topic', 'principal'],
+      },
+      order: 'desc',
+    },
+  },
+
+  'notifications/my-deliveries': {
+    summary: 'What became of each notification sent to the caller, newest first',
+    permission: 'notifications:self',
+    // No `principal`: the caller's own id is pinned in the handler, and an input that named
+    // someone else's would be the whole log under the wrong key. `principal` is filterable on
+    // this entity already (`list-deliveries` declares it, and a scope indexes the union), so
+    // it is not repeated here, where the emitted document would advertise a parameter that
+    // does nothing.
+    input: z.object({
+      status: deliveryRow.shape.status.optional(),
+      topic: z.string().optional(),
+    }),
+    inputOptional: true,
+    output: myDeliveryRow,
+    paged: {
+      over: {
+        entity: 'notification-delivery',
+        sortable: ['created_at'],
+        filterable: ['status', 'topic'],
       },
       order: 'desc',
     },

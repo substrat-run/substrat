@@ -16,7 +16,7 @@
 | `invoicing:export` | Export an invoice basis (makes it immutable) | `@substrat-run/engine-invoicing` | — |
 | `invoicing:read` | Read invoice bases | `@substrat-run/engine-invoicing` | — |
 | `notifications:read` | Read what became of every notification in the scope | `@substrat-run/engine-notifications` | — |
-| `notifications:self` | Set where your own notifications go and which topics reach you | `@substrat-run/engine-notifications` | — |
+| `notifications:self` | Set where your own notifications go and which topics reach you, and read what became of them | `@substrat-run/engine-notifications` | — |
 | `notifications:send-digests` | Send the digests that are due now — the digest schedule's key, held by the engine's system principal and never by a person | `@substrat-run/engine-notifications` | yes |
 | `protocol:attach` | Attach a document to a protocol instance — the sealed signed PDF a signing connector lands on completion, or a human-uploaded document (the attachmentTargets write gate) | `@substrat-run/engine-protocol` | — |
 | `protocol:bind` | Bind vertical-owned document content (ref + hash) to an open document protocol | `@substrat-run/engine-protocol` | — |
@@ -117,6 +117,7 @@ shapes.
 | `invoicing/get` | `invoicing:read` | the scope | `@substrat-run/engine-invoicing` |
 | `invoicing/list` | `invoicing:read` | the scope | `@substrat-run/engine-invoicing` |
 | `notifications/list-deliveries` | `notifications:read` | the scope | `@substrat-run/engine-notifications` |
+| `notifications/my-deliveries` | `notifications:self` | the scope | `@substrat-run/engine-notifications` |
 | `notifications/my-preferences` | `notifications:self` | the scope | `@substrat-run/engine-notifications` |
 | `notifications/send-digests` | `notifications:send-digests` | the scope | `@substrat-run/engine-notifications` |
 | `notifications/set-my-address` | `notifications:self` | the scope | `@substrat-run/engine-notifications` |

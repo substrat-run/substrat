@@ -156,6 +156,30 @@ describe('engine-notifications on workerd', () => {
     await tech.invoke('notifications/set-my-preference', { topic: 'order-assigned', enabled: true });
   });
 
+  it("a person's own history is the paged list pinned to them, on DO SQLite", async () => {
+    type Mine = { id: string; topic: string; status: string; reason: string | null; settled_at: string | null };
+    const mine = (input: Record<string, unknown> = {}) => tech.invoke<Page<Mine>>('notifications/my-deliveries', input);
+    // Everything delivered in this scope so far went to the one person, so the two reads agree.
+    const log = await deliveries();
+    const { entries } = await mine();
+    expect(entries.map((d) => d.id)).toEqual(log.map((d) => d.id));
+
+    const walked: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: Page<Mine> = await mine({ limit: 2, ...(cursor ? { cursor } : {}) });
+      walked.push(...page.entries.map((d) => d.id));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(walked).toEqual(entries.map((d) => d.id));
+
+    expect((await mine({ status: 'sent' })).entries).toMatchObject([{ topic: 'order-assigned', reason: null }]);
+    expect((await mine({ topic: DIGEST_TOPIC })).entries).toMatchObject([{ status: 'requested' }]);
+    // The key to the whole log is not the key to one's own, nor the reverse.
+    await expect(() => admin.invoke('notifications/my-deliveries', {})).rejects.toThrow(/permission denied/);
+    await expect(() => tech.invoke('notifications/list-deliveries', {})).rejects.toThrow(/permission denied/);
+  });
+
   it("an erasure deletes the address and the held digest items, and cancels the person's held send", async () => {
     await assign('WO-3'); // held for tomorrow's digest
     // The digest's own send, still pending.

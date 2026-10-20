@@ -124,6 +124,14 @@ describe('Handlebar demo scenario (spec §7)', () => {
     );
     expect(entries).toMatchObject([{ topic: 'repair-assigned', principal: w.mans, status: 'requested' }]);
 
+    // Måns reads his own history under the key he already holds; the lead's own is empty, since
+    // the mail went to him, and neither row carries the principal or the idempotency key.
+    const own = await mans.invoke<Page<Record<string, unknown>>>('notifications/my-deliveries');
+    expect(own.entries).toMatchObject([{ topic: 'repair-assigned', status: 'requested', reason: null }]);
+    expect(own.entries[0]).not.toHaveProperty('dedupe_key');
+    expect(own.entries[0]).not.toHaveProperty('principal');
+    expect((await greta.invoke<Page<unknown>>('notifications/my-deliveries')).entries).toEqual([]);
+
     // Måns switches the topic off; the next assignment is recorded as skipped, not mailed.
     await mans.invoke('notifications/set-my-preference', { topic: 'repair-assigned', enabled: false });
     await expect(mans.invoke('notifications/list-deliveries')).rejects.toThrow(/permission denied/);
