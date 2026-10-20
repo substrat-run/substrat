@@ -33,6 +33,7 @@ import {
   assertLayerRules,
   assertSchedulesAreSwept,
   checkPermissionSurface,
+  checkWorkerImports,
   deployConfigIfAny,
   formatDeclaredModel,
   formatPermissionSurface,
@@ -467,6 +468,7 @@ async function cmdPush(): Promise<void> {
     // config has no bindings to judge; the push itself names that refusal.
     const deployCfg = deployConfigIfAny(dir);
     if (deployCfg) {
+      await checkWorkerImports(dir, deployCfg);
       assertSchedulesAreSwept(
         dir,
         deployCfg,

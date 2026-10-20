@@ -340,6 +340,13 @@ registry, print every key with the module that declares it and its description, 
 every entity-grant shape, and the digest promotion compares. It needs **no login and makes no
 network call**, so it belongs in a pull-request job:
 
+It also bundles the Worker entry under workerd export conditions and refuses static or dynamic
+imports of Node builtins that its compatibility flags do not provide. This includes imports in
+dependencies and imports behind a `typeof` guard. The error traces the path from the entry to
+the builtin. Remove the Node dependency, use a Worker-compatible API, or declare
+`nodejs_compat` when the Worker actually requires it. `nodejs_als` permits only
+`node:async_hooks`. `push` and `preview` apply the same check before upload.
+
 ```text
 permission surface — helpdesk: 19 key(s), 7 role(s), 1 entity-grant shape(s)
 

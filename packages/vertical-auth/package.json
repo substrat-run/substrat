@@ -68,7 +68,9 @@
     "@cloudflare/workers-types": "catalog:",
     "@types/better-sqlite3": "^9.6.0",
     "better-sqlite3": "catalog:",
+    "esbuild": "^0.28.2",
     "hono": "catalog:",
+    "miniflare": "^4.20260310.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

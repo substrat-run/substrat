@@ -11,13 +11,9 @@
  * dashboard's deploy in a release would fail after the control plane and the router had already
  * shipped.
  *
- * So this bundles the entry of each worker that lacks `nodejs_compat` the way wrangler does
- * (esbuild, workerd conditions, `node:*` and `cloudflare:*` left as imports) and refuses a
- * static import of a node builtin (`node:*` or bare) its flags do not give it. `nodejs_als`
- * gives `node:async_hooks` alone, so a worker declaring only it may import nothing else. A
- * `require()` or `import()` fails only when reached, and a guarded one never does, so those
- * are left alone; a `process.getBuiltinModule('node:…')` call is not an import at all, which
- * is how vertical-host reaches `AsyncLocalStorage` without one. The platform entry the
+ * So this bundles each worker under workerd conditions and refuses reachable static and
+ * dynamic imports of a builtin its flags do not give it, including guarded imports. The
+ * shared rule lives in the CLI, which also runs it before upload. The platform entry the
  * control plane puts in front of a pushed vertical is not part of any bundle here; the
  * uploader adds `nodejs_als` for it (`withPlatformEntry`).
  *
@@ -30,69 +26,13 @@
  *
  * Needs the build (`packages/cli/dist`), like every tool that derives a push's config.
  */
-import { build } from 'esbuild';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { builtinModules } from 'node:module';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { builtinsAllowedBy, refusedBuiltins, workerNodeImportOffence } from '../packages/cli/dist/worker-node-imports.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-
-/** Flags that give a worker every node builtin. */
-const ALL_OF_NODE = ['nodejs_compat', 'nodejs_compat_v2'];
-/** `nodejs_als` gives `node:async_hooks` and nothing else. */
-const ALS_ONLY = ['node:async_hooks', 'async_hooks'];
-
-/**
- * Which node builtins a worker with these flags may import statically: `'all'` under
- * `nodejs_compat`, `node:async_hooks` alone under `nodejs_als`, none otherwise.
- * @param {readonly string[]} flags
- * @returns {'all' | ReadonlySet<string>}
- */
-export function builtinsAllowedBy(flags) {
-  if (flags.some((f) => ALL_OF_NODE.includes(f))) return 'all';
-  return new Set(flags.includes('nodejs_als') ? ALS_ONLY : []);
-}
-
-/**
- * Bundle one worker entry the way wrangler does and name the node builtins it imports
- * statically that its flags do not give it. A `require()` or `import()` of a builtin fails
- * only when reached, and a guarded one (a library probing for node's `crypto`) never fails at
- * all: those are not this gate's. Throws when the entry cannot be bundled.
- * @param {string} entry  absolute path of the worker's main module
- * @param {readonly string[]} flags  its compatibility flags
- * @returns {Promise<{ refused: string[]; importedBy: string[] }>}
- */
-export async function refusedBuiltins(entry, flags) {
-  const allowed = builtinsAllowedBy(flags);
-  if (allowed === 'all') return { refused: [], importedBy: [] };
-  const result = await build({
-    entryPoints: [entry],
-    bundle: true,
-    format: 'esm',
-    platform: 'neutral',
-    target: 'es2022',
-    conditions: ['workerd', 'worker', 'browser'],
-    mainFields: ['module', 'main'],
-    external: ['node:*', 'cloudflare:*', ...builtinModules],
-    // Non-code assets a worker imports are irrelevant to which modules it imports.
-    loader: { '.html': 'text', '.txt': 'text', '.md': 'text', '.css': 'text', '.svg': 'text', '.wasm': 'binary' },
-    metafile: true,
-    write: false,
-    logLevel: 'silent',
-  });
-  const refusedImport = (i) =>
-    i.kind === 'import-statement' && (i.path.startsWith('node:') || builtinModules.includes(i.path)) && !allowed.has(i.path);
-  const refused = new Set();
-  const importedBy = [];
-  for (const [file, input] of Object.entries(result.metafile.inputs)) {
-    const hits = input.imports.filter(refusedImport);
-    for (const i of hits) refused.add(i.path);
-    if (hits.length) importedBy.push(file);
-  }
-  return { refused: [...refused], importedBy };
-}
 
 /** Directories holding a worker: tracked wrangler configs, and verticals declaring runtime needs. */
 function workerDirs() {
@@ -161,20 +101,14 @@ async function main() {
       continue;
     }
     checked.push(`${w.name} ${JSON.stringify(flags)}`);
-    if (found.refused.length) {
-      const by = found.importedBy;
-      offences.push(
-        `${w.name}: deployed with flags ${JSON.stringify(flags)}, which do not give it ${found.refused.join(', ')}, but its bundle imports them\n` +
-          `    imported by: ${by.slice(0, 5).join(', ')}${by.length > 5 ? ', …' : ''}`,
-      );
-    }
+    const offence = workerNodeImportOffence(entry, flags, found);
+    if (offence) offences.push(`${w.name}: ${offence}`);
   }
 
   if (offences.length) {
     console.error(
       `worker-node-imports: ${offences.length} worker(s) would not start on workerd:\n\n  ${offences.join('\n  ')}\n\n` +
-        `  Reach a node API without importing it (vertical-host's invocation log uses process.getBuiltinModule),\n` +
-        `  or declare nodejs_compat for that worker.`,
+        `  Remove the unsupported imports or declare nodejs_compat for that worker.`,
     );
     process.exit(1);
   }

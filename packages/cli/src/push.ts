@@ -61,6 +61,7 @@ import { checkMigrationDataLoss, type DataLossCheck, type ReplayInputs } from '.
 import { parseJsonBody } from './http.js';
 import { planeFor } from './plane.js';
 import { failureMessage } from './problem.js';
+import { assertWorkerNodeImports } from './worker-node-imports.js';
 import {
   exportedSweeperNamesOf,
   platformCanSupplySweeper,
@@ -1517,6 +1518,13 @@ export function deployConfigIfAny(dir: string): Record<string, unknown> | undefi
   return existsSync(path) ? readJsonc(path) : undefined;
 }
 
+/** The same Worker import check for push, preview, and push --check. */
+export async function checkWorkerImports(dir: string, cfg: Record<string, unknown>): Promise<void> {
+  if (typeof cfg.main !== 'string') return;
+  const flags = Array.isArray(cfg.compatibility_flags) ? cfg.compatibility_flags as string[] : [];
+  await assertWorkerNodeImports(resolve(dir, cfg.main), flags);
+}
+
 /**
  * A vertical's OWN stores, as the push declares them to the control plane: its DO
  * bindings and D1 databases (e.g. a Better-Auth AUTH_DB), and the DO classes they bind.
@@ -1620,6 +1628,8 @@ export async function push(
   // built-ins) can't start without them, and the runtime rejects the upload.
   const compatibilityFlags = (cfg.compatibility_flags as string[] | undefined) ?? [];
   const mainPath = cfg.main as string;
+
+  await checkWorkerImports(opts.dir, cfg);
 
   // Build the bundle (runs the vertical's own build command first).
   const out = mkdtempSync(join(tmpdir(), 'substrat-build-'));
