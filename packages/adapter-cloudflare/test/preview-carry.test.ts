@@ -2320,13 +2320,16 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     /**
      * An API over the same jobs, whose next two `start`s wait for each other and then land one after
      * the other, the one `first` picks first: two calls that each began a copy, racing to store it.
+     * `firstIn` says the first has reached its `start`, so the other can be sent after it.
      */
     const racing = (first: (spec: Parameters<CopyJobs['start']>[0]) => boolean) => {
       const arrived: { args: Parameters<CopyJobs['start']>; answer: (job: ReturnType<CopyJobs['start']>) => void }[] = [];
+      const firstIn = deferred();
       const raced: CopyJobs = {
         ...jobs,
         start: (...args) => new Promise((answer) => {
           arrived.push({ args, answer });
+          firstIn.resolve();
           if (arrived.length < 2) return;
           void (async () => {
             for (const a of [...arrived].sort((x, y) => Number(first(y.args[0])) - Number(first(x.args[0])))) {
@@ -2337,7 +2340,7 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
           })();
         }),
       };
-      return createControlPlaneApi({ ...apiOptions, copyJobs: raced });
+      return { api: createControlPlaneApi({ ...apiOptions, copyJobs: raced }), firstIn: firstIn.promise };
     };
 
     let preview: ScopeId;
@@ -2391,26 +2394,32 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     });
 
     it('a newer push replaces an older one still copying; the older one is then refused, so two runs never ping-pong', async () => {
-      // Version ids are ULIDs in push order: v1 is older than v3.
-      const older = await pushBg('bg-1', 'v1');
+      // A preview on v1. Versions are in push order: v2 is older than v3.
+      const sid = (await pushBg('bg-1b', 'v1')).body.scopeId;
+      await pumpToDone();
+      const { hostname: oneB } = (await pushBg('bg-1b', 'v1')).body;
+      const older = await pushBg('bg-1b', 'v2');
       expect(older.status).toBe(202);
-      const olderJob = jobs.jobs.get(`carry:${preview}`)!;
-      expect(olderJob.spec.versionId).toBe(version.v1);
-      const newer = await pushBg('bg-1', 'v3');
+      const olderJob = jobs.jobs.get(`carry:${sid}`)!;
+      expect(olderJob.spec.versionId).toBe(version.v2);
+      const newer = await pushBg('bg-1b', 'v3');
       expect(newer.status).toBe(202);
-      expect(jobs.jobs.get(`carry:${preview}`)!.spec.versionId).toBe(version.v3);
-      const settled = (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: preview }))
+      expect(jobs.jobs.get(`carry:${sid}`)!.spec.versionId).toBe(version.v3);
+      const settled = (await dir.admin.listScopeScriptCopies(staff, { tenantId: t, scopeId: sid }))
         .filter((e) => e.moveId === olderJob.spec.moveId).map((e) => e.state);
       expect(settled).toEqual(['retained', 'retained']);
-      expect(await noStage('v1', preview)).toEqual([]);
-      // The older push's next poll is told it was superseded, and leaves the newer copy alone.
-      const refused = await pushBg('bg-1', 'v1');
-      expect(refused.status).toBe(409);
-      expect(refused.body.detail ?? refused.body.error).toMatch(/superseded/);
-      expect(jobs.jobs.get(`carry:${preview}`)!.spec.versionId).toBe(version.v3);
+      expect(await noStage('v2', sid)).toEqual([]);
+      // The older push's next poll, and any other call of it, is told it was superseded, and leaves
+      // the newer copy alone.
+      for (const extra of [{ poll: true }, {}]) {
+        const refused = await pushBg('bg-1b', 'v2', extra);
+        expect(refused.status).toBe(409);
+        expect(refused.body.detail ?? refused.body.error).toMatch(/superseded/);
+        expect(jobs.jobs.get(`carry:${sid}`)!.spec.versionId).toBe(version.v3);
+      }
       await pumpToDone();
-      expect((await pushBg('bg-1', 'v3')).status).toBe(200);
-      expect((await served(hostname)).ref).toBe(refOf.get(version.v3));
+      expect((await pushBg('bg-1b', 'v3')).status).toBe(200);
+      expect((await served(oneB)).ref).toBe(refOf.get(version.v3));
     });
 
     it('a job whose lease was settled under it fails, and its next call answers the refusal and frees the tag', async () => {
@@ -2656,32 +2665,43 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
     });
 
     it('of two pushes that both began a copy, the one whose job lost the start leaves no page staged', async () => {
-      // bg-6 serves v2. v1 and v3 both begin a carry, and v1's job is stored first: v3's call is
-      // answered v1's job, and the page it staged in v3's script goes with its move.
-      const olderFirst = racing((spec) => spec.versionId === version.v1);
-      const [older, newer] = await Promise.all([pushBg('bg-6', 'v1', {}, olderFirst), pushBg('bg-6', 'v3', {}, olderFirst)]);
-      expect([older.status, newer.status]).toEqual([202, 202]);
-      expect(jobs.jobs.get(`carry:${six.sid}`)!.spec.versionId).toBe(version.v1);
-      expect(await noStage('v3', six.sid)).toEqual([]);
-      // The job's own stage stays, for its steps.
-      expect(await noStage('v1', six.sid)).not.toEqual([]);
-      // v3's next call replaces v1's copy with its own.
-      expect((await pushBg('bg-6', 'v3')).status).toBe(202);
-      await pumpToDone();
-      expect((await pushBg('bg-6', 'v3')).status).toBe(200);
+      /** A preview on v1, then v2 and v3 both begin a carry, v2's call first, and `first`'s job is stored first. */
+      const race = async (tag: string, first: keyof typeof version) => {
+        const sid = (await pushBg(tag, 'v1')).body.scopeId;
+        await pumpToDone();
+        const { hostname: h } = (await pushBg(tag, 'v1')).body;
+        const raced = racing((spec) => spec.versionId === version[first]);
+        const older = pushBg(tag, 'v2', {}, raced.api);
+        await raced.firstIn;
+        const newer = await pushBg(tag, 'v3', {}, raced.api);
+        return { sid, hostname: h, older: await older, newer };
+      };
 
-      // Now on v3. v1 and v2 both begin, and v2's job is stored first: v1 is refused at once, as a
-      // superseded push, rather than answered the newer push's progress, and its page goes too.
-      const newerFirst = racing((spec) => spec.versionId === version.v2);
-      const [stale, fresh] = await Promise.all([pushBg('bg-6', 'v1', {}, newerFirst), pushBg('bg-6', 'v2', {}, newerFirst)]);
-      expect(stale.status).toBe(409);
-      expect(stale.body.detail ?? stale.body.error).toMatch(/superseded/);
-      expect(fresh.status).toBe(202);
-      expect(await noStage('v1', six.sid)).toEqual([]);
-      expect(await noStage('v2', six.sid)).not.toEqual([]);
+      // v2's job is stored first: v3's call is answered v2's job, and the page it staged in v3's
+      // script goes with its move.
+      const a = await race('bg-17', 'v2');
+      expect([a.older.status, a.newer.status]).toEqual([202, 202]);
+      expect(jobs.jobs.get(`carry:${a.sid}`)!.spec.versionId).toBe(version.v2);
+      expect(await noStage('v3', a.sid)).toEqual([]);
+      // The job's own stage stays, for its steps.
+      expect(await noStage('v2', a.sid)).not.toEqual([]);
+      // v3's next call (no poll: its 202 named v2's copy) replaces v2's copy with its own.
+      expect((await pushBg('bg-17', 'v3')).status).toBe(202);
       await pumpToDone();
-      expect((await pushBg('bg-6', 'v2')).status).toBe(200);
-      expect(await served(six.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: rows });
+      expect((await pushBg('bg-17', 'v3')).status).toBe(200);
+      expect(await served(a.hostname)).toEqual({ ref: refOf.get(version.v3), bodies: rows });
+
+      // v3's job is stored first: v2 is refused at once, as a superseded push, rather than answered
+      // the newer push's progress, and its page goes too.
+      const b = await race('bg-18', 'v3');
+      expect(b.older.status).toBe(409);
+      expect(b.older.body.detail ?? b.older.body.error).toMatch(/superseded/);
+      expect(b.newer.status).toBe(202);
+      expect(await noStage('v2', b.sid)).toEqual([]);
+      expect(await noStage('v3', b.sid)).not.toEqual([]);
+      await pumpToDone();
+      expect((await pushBg('bg-18', 'v3')).status).toBe(200);
+      expect(await served(b.hostname)).toEqual({ ref: refOf.get(version.v3), bodies: rows });
     });
 
     it('a delete that lands while a step pages stops the step and waits for it, so nothing it does outlives the reap', async () => {
@@ -2857,6 +2877,86 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(refused.body.detail).toMatch(/superseded/);
       await pumpToDone();
       expect((await create(named)).status).toBe(201);
+    });
+
+    it('an older push never reaps or forks while a newer one replaces its fork, whichever moment it calls in', async () => {
+      const prodRef = (await served(prodHostname)).ref;
+      // v3 replacing v1's fork is held: after it forgot v1's job and expired its row, before the reap
+      // (its read of the row's jobs there); and after it reaped that row and provisioned its own,
+      // before its own job is stored (its first page's read of prod).
+      const moments = [
+        { tag: 'bg-19', hold: (old: ScopeId) => {
+          const h = holding('get', () => `carry:${old}`);
+          return { api: h.api, there: h.there, release: h.release, done: () => {} };
+        } },
+        { tag: 'bg-20', hold: () => {
+          const h = holdFirst((ref, sid) => ref === prodRef && sid === prod);
+          hooks.export = h.hook;
+          return { api: bg, there: h.reached, release: h.release, done: () => void delete hooks.export };
+        } },
+      ];
+      for (const { tag, hold } of moments) {
+        const old = (await pushBg(tag, 'v1')).body.scopeId;
+        expect(jobs.jobs.get(`fork:${old}`)?.status).toBe('copying');
+        const held = hold(old);
+        try {
+          const replacing = pushBg(tag, 'v3', {}, held.api);
+          await held.there;
+          // The older push's poll finds no job of its own, and leaves every row as it is.
+          const before = (await rowsFor(tag)).map((s) => s.id);
+          const polled = await poll(tag, 'v1');
+          expect(polled.status).toBe(409);
+          expect(reason(polled)).toMatch(/is no longer running/);
+          // A create of a push older than v3 is superseded before it acts.
+          const stale = await pushBg(tag, 'v2');
+          expect(stale.status).toBe(409);
+          expect(reason(stale)).toMatch(/newer push \(version \w+\) to preview .* is replacing its copy.*superseded/);
+          expect((await rowsFor(tag)).map((s) => s.id)).toEqual(before);
+          held.release();
+          const newer = await replacing;
+          expect(newer.status).toBe(202);
+          expect(newer.body.scopeId).not.toBe(old);
+        } finally {
+          held.done();
+        }
+        // The newer push lands, on its own code.
+        await pumpToDone();
+        const made = await poll(tag, 'v3');
+        expect(made.status).toBe(201);
+        expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v3), bodies: rows });
+        expect((await rowsFor(tag)).map((s) => s.id)).toEqual([made.body.scopeId]);
+      }
+    });
+
+    it("an older version is taken again once the newer push's mark has run out, and on another preview at any time", async () => {
+      // The same jobs as everything else would be, on a clock this test moves.
+      let skew = 0;
+      const clocked = memoryCopyJobs(
+        { clientForRef: async (ref) => (hostOf.has(ref) ? clientFor(ref) : undefined), admin: dir.admin, now: () => Date.now() + skew },
+        { stepMs: 0 },
+      );
+      const plane = createControlPlaneApi({ ...apiOptions, copyJobs: clocked });
+      const call = (tag: string, v: keyof typeof version, extra: object = {}) => pushBg(tag, v, extra, plane);
+      const settle = async () => {
+        for (let i = 0; i < 200 && [...clocked.jobs.values()].some((j) => j.status === 'copying'); i++) await clocked.pump();
+      };
+      expect((await call('bg-21', 'v3')).status).toBe(202);
+      await settle();
+      const made = await call('bg-21', 'v3', { poll: true });
+      expect(made.status).toBe(201);
+      // A re-preview of v1 straight after is superseded, there and only there.
+      const early = await call('bg-21', 'v1');
+      expect(early.status).toBe(409);
+      expect(reason(early)).toMatch(/superseded.*15 min have passed since that push's last call/);
+      expect((await call('bg-22', 'v1')).status).toBe(202);
+      await settle();
+      expect((await call('bg-22', 'v1', { poll: true })).status).toBe(201);
+      // Once the mark's hold has run out, v1 is taken like any other create: its carry runs, and lands.
+      skew = 15 * 60_000 + 1;
+      expect((await call('bg-21', 'v1')).status).toBe(202);
+      await settle();
+      expect((await call('bg-21', 'v1', { poll: true })).status).toBe(200);
+      expect(await served(made.body.hostname)).toEqual({ ref: refOf.get(version.v1), bodies: rows });
     });
   });
 });

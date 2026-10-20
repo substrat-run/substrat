@@ -184,7 +184,9 @@ import { TENANT_HEADER, confinedTenant } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal, TenantServiceAuth } from './auth.js';
 import { mintTenantToken } from './tenant-token.js';
 import { beginTransfer, connectionGrantsForScope, transferScope, type StagedDump, type TransferProgress, type TransferredScope, type VerticalClient } from './vertical-client.js';
-import { COPY_JOB_MAX_MS, copyJobHeld, copyJobId, versionOrderOf, type CopyJobRecord, type CopyJobs } from './copy-job.js';
+import {
+  COPY_JOB_MAX_MS, copyJobHeld, copyJobId, copyTagId, versionIdOfOrder, versionOrderOf, type CopyJobRecord, type CopyJobs,
+} from './copy-job.js';
 import type { DeclaredScopeStore, PlatformScopeStores } from './platform-scope-stores.js';
 import { runningVersionOf, runningVersionStoresOf, scopeStoreReachOf, scopeStoresOf, unrouteScope, type RunningVersion } from './platform-scope-stores.js';
 import type { ScopeStoreEnsurerOptions, StoreCanaryTarget } from './store-script.js';
@@ -3752,6 +3754,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           `(version ${mine.versionId}) was superseded and did nothing`,
       )
       : null;
+
+  /**
+   * #2450: a create for an older version than one another create of the same preview marked within
+   * `PREVIEW_CREATE_BOUND_MS` (`CopyJobs.markNewest`). It covers the moments no job record names the
+   * newer push: a newer push forgets the fork job it replaces, then reaps that row and provisions its
+   * own. Once the mark's hold has run out, and no newer push's job is copying, an older version (a
+   * deliberate re-preview) is taken like any other create.
+   */
+  const supersededByMark = (newest: string, mine: { versionId: string }, tag: string): ControlPlaneError =>
+    new ControlPlaneError(
+      409,
+      `a newer push (version ${versionIdOfOrder(newest)}) to preview '${tag}' is replacing its copy, so this push ` +
+        `(version ${mine.versionId}) was superseded and did nothing. An older version is taken again once that ` +
+        `copy is over and ${PREVIEW_CREATE_BOUND_MS / 60_000} min have passed since that push's last call`,
+    );
 
   /**
    * How long a call that claimed a done job holds it to finish it (#2450): twice the copy lease. The
@@ -10045,6 +10062,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // A poll goes on only to a fork job (below, where one for another version refuses it) or a live
     // preview (the carry, below). Anything else is a copy gone: never reaped, never forked afresh.
     if (poll && !(existing && (forkJob || existing.status === 'active'))) throw copyGone();
+    // Every other create marks itself the newest of this preview's, for as long as a create's request
+    // can run, before it acts: an older one meanwhile is refused, whatever the rows and jobs say then.
+    if (options.copyJobs && !poll) {
+      const tagId = copyTagId(tenantId, previewSlug(slug, opts.tag));
+      const newest = await options.copyJobs.markNewest(tagId, mine.order, PREVIEW_CREATE_BOUND_MS);
+      if (newest > mine.order) throw supersededByMark(newest, mine, opts.tag);
+    }
 
     // A preview only HAS data once its two-phase create finished: the directory row lands
     // first as `provisioning` (K-31), the fork's export→restore runs, and `activateScope`

@@ -390,6 +390,18 @@ describe('memoryCopyJobs (#2450)', () => {
     expect(h.staged.map((s) => s.seq)).toEqual([0, 1]);
   });
 
+  it("keeps a key's newest mark while it is held, and takes an older one once it is not", async () => {
+    const h = harness();
+    const jobs = memoryCopyJobs(h.deps);
+    expect(await jobs.markNewest('tag:a', 'b', 1_000)).toBe('b');
+    expect(await jobs.markNewest('tag:a', 'a', 1_000)).toBe('b');
+    // Another key is its own.
+    expect(await jobs.markNewest('tag:other', 'a', 1_000)).toBe('a');
+    h.clock.now += 1_001;
+    expect(await jobs.markNewest('tag:a', 'a', 1_000)).toBe('a');
+    expect(await jobs.markNewest('tag:a', 'b', 1_000)).toBe('b');
+  });
+
   it('a done job goes to one claim at a time, until its hold runs out', async () => {
     const h = harness();
     const jobs = memoryCopyJobs(h.deps, { stepMs: 60_000 });

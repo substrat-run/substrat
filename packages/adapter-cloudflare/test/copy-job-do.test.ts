@@ -159,6 +159,25 @@ describe('defineCopyJobDO (#2450 step 2)', () => {
     expect(await other.claim(60_000)).toBeNull();
   });
 
+  it('keeps the newest mark while it is held, takes an older one once it is not, and drops it by alarm', async () => {
+    const stub = stubOf(env.COPY_JOB_TEST, `mark-${crypto.randomUUID()}`);
+    const keys = () => runInDurableObject(stub, async (_o, state) => [...(await state.storage.list()).keys()].sort());
+    expect(await stub.markNewest('b', 60_000)).toBe('b');
+    // An older order is answered the newer one, which stays; the same one is held again; a newer one wins.
+    expect(await stub.markNewest('a', 60_000)).toBe('b');
+    expect(await stub.markNewest('b', 60_000)).toBe('b');
+    expect(await stub.markNewest('c', 40)).toBe('c');
+    expect(await stub.markNewest('b', 60_000)).toBe('c');
+    // Once its hold has run out, an older order is taken.
+    await sleep(60);
+    expect(await stub.markNewest('a', 40)).toBe('a');
+    expect(await keys()).toEqual(['mark']);
+    // Its alarm drops it once held; no job runs here.
+    for (let i = 0; i < 200 && (await keys()).length > 0; i++) await sleep(10);
+    expect(await keys()).toEqual([]);
+    expect(await stub.get()).toBeNull();
+  });
+
   it('a finished job is deleted once its retention has passed', async () => {
     const stub = stubOf(env.COPY_JOB_SHORT, `retain-${crypto.randomUUID()}`);
     await stub.start(job({ target: 1 }));

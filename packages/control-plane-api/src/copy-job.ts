@@ -98,6 +98,13 @@ export interface CopyJobs {
   cancel(id: string): Promise<CopyJobRecord | null>;
   /** Drop a job the route has finished with, after stopping a step running now and waiting for it. */
   forget(id: string): Promise<void>;
+  /**
+   * Mark `order` (`versionOrderOf`) as the newest create of the preview `key` names (`copyTagId`),
+   * held for `holdMs` from now, unless a later one's mark is still held. Answers the mark held after
+   * the call: one later than `order` means its caller was superseded. Atomic per `key`; a mark is
+   * gone once its hold runs out, so an older version is then taken like any other.
+   */
+  markNewest(key: string, order: string, holdMs: number): Promise<string>;
 }
 
 /** Whether a call holds `job` to finish it, at `now` (epoch ms): see `CopyJobs.claim`. */
@@ -142,6 +149,15 @@ export const copyJobId = (kind: CopyJobSpec['kind'], scopeId: string): string =>
  */
 export const versionOrderOf = (version: { id: string; createdAt: string }): string =>
   `${new Date(version.createdAt).toISOString()} ${version.id}`;
+
+/** The version id a `versionOrderOf` place names. */
+export const versionIdOfOrder = (order: string): string => order.slice(order.indexOf(' ') + 1);
+
+/**
+ * Where a preview's newest-create mark is kept (`CopyJobs.markNewest`): under its tag, which outlives
+ * any one row of it (a newer push reaps the row it replaces), and never under a job's id.
+ */
+export const copyTagId = (tenantId: string, previewSlug: string): string => `tag:${tenantId}:${previewSlug}`;
 
 /** A job's first record, around the state `beginTransfer` left. */
 export function newCopyJob(spec: CopyJobSpec, state: TransferState, now: number = Date.now()): CopyJobRecord {
@@ -232,6 +248,7 @@ export function memoryCopyJobs(deps: CopyJobDeps, opts: { stepMs?: number } = {}
   jobs: Map<string, CopyJobRecord>;
 } {
   const jobs = new Map<string, CopyJobRecord>();
+  const marks = new Map<string, { order: string; until: number }>();
   const now = deps.now ?? Date.now;
   /** The step `pump` runs now, per job: a cancel or forget stops it and waits for it, as the Durable Object's do. */
   const running = new Map<string, { stopped: boolean; over: Promise<void> }>();
@@ -276,6 +293,12 @@ export function memoryCopyJobs(deps: CopyJobDeps, opts: { stepMs?: number } = {}
       return whileStopped(id, () => {
         jobs.delete(id);
       });
+    },
+    async markNewest(key, order, holdMs) {
+      const held = marks.get(key);
+      if (held && held.order > order && held.until > now()) return held.order;
+      marks.set(key, { order, until: now() + holdMs });
+      return order;
     },
     /** Run one step of `id` (or of every job copying), as an alarm would. */
     async pump(id) {

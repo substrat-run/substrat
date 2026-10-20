@@ -13,5 +13,6 @@ export function durableCopyJobs(ns: DurableObjectNamespace): CopyJobs {
     claim: (id, holdMs) => stubOf(id).claim(holdMs),
     cancel: (id) => stubOf(id).cancel(),
     forget: (id) => stubOf(id).forget(),
+    markNewest: (key, order, holdMs) => stubOf(key).markNewest(order, holdMs),
   };
 }

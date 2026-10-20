@@ -67,6 +67,13 @@ describe('the preview copy jobs through ScopeCopyJobDO (#2450)', () => {
     expect(await jobs.get(id)).toBeNull();
   });
 
+  it("a preview's newest-push mark is kept in an object of its own, which holds no job", async () => {
+    const key = `tag:${ulid()}:app--pr-1`;
+    expect(await jobs.markNewest(key, 'b', 60_000)).toBe('b');
+    expect(await jobs.markNewest(key, 'a', 60_000)).toBe('b');
+    expect(await jobs.get(key)).toBeNull();
+  });
+
   it('a started job steps through the deployed advance: with no dispatch namespace here it fails, still naming its stage', async () => {
     const sid = scope();
     const id = copyJobId('fork', sid);

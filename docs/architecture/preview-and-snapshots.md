@@ -95,6 +95,13 @@ Two adapter implementations behind one interface, mirroring the whole platform:
     with 409 (the copy failed, a newer push or a refresh replaced it, or the preview was deleted).
     Only a new create starts a copy over, so an answer lost on the way back cannot. A call after a
     202 naming another push's copy is no poll: once that copy is finished, it starts its own.
+  - Of two pushes to one preview, the newer is the one the registry recorded later. A create for
+    an older version is refused (409, superseded) while a newer push's job is copying, and for 15
+    minutes after that push's last call: every create but a poll marks itself the newest of its
+    preview for that long (`CopyJobs.markNewest`, kept under the preview's tag rather than its
+    row). The mark covers the moments no job record names the newer push, when it has forgotten
+    the fork job it replaces and is reaping that row to provision its own. After that, an older
+    version (a deliberate re-preview) is taken like any other create.
   - A copy's failure is answered with the status a refusal had, and with 409 naming the fault
     when the copy met a 5xx (its deadline, an end it could not reach): the call reporting it did
     not fail, so it is never a status a client retries as a gateway's. The fault still lands an

@@ -33,6 +33,12 @@ export interface CopyJobDo<R extends CopyJobDoRecord> {
   cancel(): Promise<R | null>;
   /** Drop the record and its alarm, after stopping a step running now and waiting for it. */
   forget(): Promise<void>;
+  /**
+   * Keep `order` as the newest mark here for `holdMs` from now, unless a later one is still held
+   * (orders compare as text), and answer the mark held after the call. Gone once its hold runs out.
+   * An object that keeps marks runs no job: the caller names them apart.
+   */
+  markNewest(order: string, holdMs: number): Promise<string>;
 }
 
 const claimedNow = (record: CopyJobDoRecord): boolean =>
@@ -71,6 +77,9 @@ const KEY = 'job';
  * started again under the same id writes nothing over the new one.
  */
 const RUN = 'run';
+/** `markNewest`'s mark, and until when (epoch ms) it holds. */
+const MARK = 'mark';
+type Mark = { order: string; until: number };
 
 /**
  * `defineCopyJobDO` — one Durable Object per background scope copy (#2450, step 2).
@@ -88,6 +97,10 @@ const RUN = 'run';
  * meet a record that changed under it (a forget, or a forget and a new `start`), its answer and its
  * retry are dropped, by the run token: a cancelled job stays cancelled, a forgotten one stays gone,
  * and a job started again keeps its own record and its own alarm.
+ *
+ * An object of the same class under another name keeps a mark instead (`markNewest`): the newest of
+ * the orders it was given while each was held, which the route uses to tell which of two pushes to
+ * one preview is the newer, in the moments no job record says so.
  */
 export function defineCopyJobDO<Env, R extends CopyJobDoRecord>(
   config: CopyJobDoConfig<Env, R>,
@@ -152,6 +165,17 @@ export function defineCopyJobDO<Env, R extends CopyJobDoRecord>(
       });
     }
 
+    async markNewest(order: string, holdMs: number): Promise<string> {
+      const now = Date.now();
+      const held = await this.ctx.storage.get<Mark>(MARK);
+      if (held && held.order > order && held.until > now) return held.order;
+      const mark: Mark = { order, until: now + holdMs };
+      await this.ctx.storage.put(MARK, mark);
+      // Its alarm drops it once held; never over a job's alarm, should a caller ever share an object.
+      if (!(await this.ctx.storage.get(KEY))) await this.ctx.storage.setAlarm(mark.until);
+      return order;
+    }
+
     /** Whether the job this step read is still the one stored, and still copying. */
     private async stillRunning(run: string | undefined): Promise<boolean> {
       const now = await this.ctx.storage.get([KEY, RUN]);
@@ -172,10 +196,16 @@ export function defineCopyJobDO<Env, R extends CopyJobDoRecord>(
     }
 
     private async runStep(step: { stopped: boolean }): Promise<void> {
-      const stored = await this.ctx.storage.get([KEY, RUN]);
+      const stored = await this.ctx.storage.get([KEY, RUN, MARK]);
       const held = stored.get(KEY) as R | undefined;
       const run = stored.get(RUN) as string | undefined;
-      if (!held) return;
+      if (!held) {
+        // An object that keeps a mark: gone once it has had its hold.
+        const mark = stored.get(MARK) as Mark | undefined;
+        if (mark && mark.until <= Date.now()) await this.ctx.storage.delete(MARK);
+        else if (mark) await this.ctx.storage.setAlarm(mark.until);
+        return;
+      }
       if (held.status !== 'copying') {
         // Kept for the route to read; gone once it has had its retention.
         if (Date.now() - held.updatedAt >= retainMs) await this.ctx.storage.deleteAll();
