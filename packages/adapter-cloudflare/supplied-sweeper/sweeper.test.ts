@@ -127,8 +127,12 @@ describe('the platform-supplied sweeper runs a vertical that wires none (#1902)'
     const provision = await platform('/internal/provision', { tenantId: t, scopeId: failingScope, owner });
     expect(provision.status, await provision.clone().text()).toBe(201);
     try {
-      const { report, attempts } = await runInDurableObject(sweeper(), async (instance) => {
+      const { report, attempts } = await runInDurableObject(sweeper(), async (instance, state) => {
         let attempts = 0;
+        const pending: Promise<unknown>[] = [];
+        const waitUntil = vi.spyOn(state, 'waitUntil').mockImplementation((promise) => {
+          pending.push(promise);
+        });
         const originalFetch = globalThis.fetch;
         globalThis.fetch = async () => {
           attempts += 1;
@@ -136,10 +140,11 @@ describe('the platform-supplied sweeper runs a vertical that wires none (#1902)'
         };
         try {
           const report = asReport(await (instance as unknown as SweeperStub).sweepNow());
-          await vi.waitFor(() => expect(attempts).toBe(1));
+          await expect(Promise.all(pending)).resolves.toEqual([undefined]);
           return { report, attempts };
         } finally {
           globalThis.fetch = originalFetch;
+          waitUntil.mockRestore();
         }
       });
       expect(report.errors).toEqual([]);
