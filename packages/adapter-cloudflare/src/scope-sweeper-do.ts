@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
+import { PLATFORM_SECRET_HEADER } from '@substrat-run/contracts/wire-headers';
 import type { ScopeId, TenantId, SweepRunsPayload } from '@substrat-run/contracts';
 import type {
   ExecutorDrainReport,
@@ -142,7 +143,7 @@ export interface ScopeSweeperDoConfig<Env> {
   concurrency?: number;
   /** Observe each pass — logging or a health metric. Never throws into the loop. */
   onPass?(outcome: ScopeSweepOutcome, env: Env): void;
-  /** Best-effort platform drain kick after a scope's schedules enqueue requests. */
+  /** Override the best-effort platform drain kick after schedules enqueue requests. */
   kickPlatformDrain?(env: Env, tenantId: TenantId, scopeId: ScopeId): Promise<void>;
   /**
    * #1232: the version identity the pass reports — read `env.SUBSTRAT_VERSION_ID`
@@ -449,7 +450,7 @@ export function defineScopeSweeperDO<Env>(
           }
           // One kick per scope per pass, after every schedule has run. A failed kick affects
           // latency only: the intents are durable and the platform's sweep will find them.
-          const kick = config.kickPlatformDrain;
+          const kick = config.kickPlatformDrain ?? kickPlatformDrain;
           if (needsPlatformDrain && kick) {
             this.ctx.waitUntil(Promise.resolve().then(() => kick(this.env, tenantId, scopeId)).catch(() => {}));
           }
@@ -464,3 +465,14 @@ export function defineScopeSweeperDO<Env>(
 }
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/** The router's existing per-scope drain call, also used after an unattended pass. */
+async function kickPlatformDrain<Env>(env: Env, tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+  const platform = env as { CONTROL_PLANE_URL?: string; PLATFORM_SECRET?: string };
+  if (!platform.CONTROL_PLANE_URL || !platform.PLATFORM_SECRET) return;
+  await fetch(new URL('/internal/drain-scope', platform.CONTROL_PLANE_URL), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [PLATFORM_SECRET_HEADER]: platform.PLATFORM_SECRET },
+    body: JSON.stringify({ tenantId, scopeId, platformRequests: true, exports: false }),
+  });
+}
