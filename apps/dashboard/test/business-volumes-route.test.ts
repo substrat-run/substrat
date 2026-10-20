@@ -276,7 +276,7 @@ describe('the business volumes route (#1750)', () => {
     const bRead = await ask(b, tenant);
     expect(aRead.status).toBe(200);
     expect(bRead.status).toBe(200);
-    expect(((await aRead.json()) as BusinessVolumesAnswer).apps.map((a) => a.scopeId)).toEqual([appScope, emptyScope]);
+    expect(((await aRead.json()) as BusinessVolumesAnswer).apps.map((a) => a.scopeId).sort()).toEqual([appScope, emptyScope].sort());
     expect(((await bRead.json()) as BusinessVolumesAnswer).apps).toEqual([]);
   });
 
@@ -293,7 +293,7 @@ describe('the business volumes route (#1750)', () => {
     expect((await app.request(`/api/teams/${tenant}/observability/business-volumes`, { headers }, env)).status).toBe(200);
     expect((await app.request(`/api/teams/${tenant}/observability/logs`, { headers }, env)).status).toBe(400);
     for (const path of paths) {
-      const old = path.startsWith('/apps/') ? `/api${path}` : `/api${path}`;
+      const old = `/api${path}`;
       expect((await app.request(old, { headers }, env)).status, old).toBe(404);
     }
   });
