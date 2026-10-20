@@ -486,6 +486,26 @@ describe('preview create retries a transient platform fault (#1918)', () => {
       ]);
     });
 
+    it('a poll answered a 500 that names no reason is polled again; one that names its reason ends the wait', async () => {
+      vi.useFakeTimers();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      // The control plane's generic answer to an unmapped throw, then Cloudflare's redacted fault.
+      const generic = () => Response.json({ type: 'about:blank', title: 'Internal Server Error', status: 500, error: 'internal error' }, { status: 500 });
+      const redacted = () => new Response('internal error; reference = r500', { status: 500 });
+      let bodies = scriptThrowing([copying, generic, redacted, () => Response.json(ok, { status: 200 })]);
+      await expect(run(createPreview(polling))).resolves.toEqual(ok);
+      expect(bodies).toHaveLength(4);
+      // A 500 with a reason is a refusal like any other.
+      const named = () => Response.json({ type: 'about:blank', title: 'Internal Server Error', status: 500, detail: 'would serve other code (#527)' }, { status: 500 });
+      bodies = scriptThrowing([copying, named]);
+      await expect(run(createPreview(polling))).rejects.toThrow(/\(500\).*would serve other code/);
+      expect(bodies).toHaveLength(2);
+      // And the first call, which may start a copy, still ends on any 500.
+      bodies = scriptThrowing([generic, copying]);
+      await expect(run(createPreview(polling))).rejects.toThrow(/\(500\)/);
+      expect(bodies).toHaveLength(1);
+    });
+
     it('a definite answer to a poll ends the wait at once; the first call is still sent once on a dropped connection', async () => {
       vi.useFakeTimers();
       vi.spyOn(console, 'warn').mockImplementation(() => {});

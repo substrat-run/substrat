@@ -149,7 +149,11 @@ async function request<T>(
         await backoff(action, attempt, attempts, `${res.status}${ref ? `, reference = ${ref}` : ''}`);
         continue;
       }
-      throw new PreviewCallFailed(failureMessage(action, res.status, body) + retriedInFlight(opts.retry, attempt, res.status, body), res.status);
+      throw new PreviewCallFailed(
+        failureMessage(action, res.status, body) + retriedInFlight(opts.retry, attempt, res.status, body),
+        res.status,
+        unexplained500(res.status, body),
+      );
     }
     return parseJsonBody<T>(body, url);
   }
@@ -197,17 +201,40 @@ const TRANSIENT_STATUS: ReadonlySet<number> = new Set([502, 503, 504]);
 
 /** A preview call the control plane answered with a status this client does not take. */
 class PreviewCallFailed extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(
+    message: string,
+    readonly status: number,
+    /** A 500 that names no reason (`unexplained500`). */
+    readonly unexplained = false,
+  ) {
     super(message);
   }
 }
 
 /**
- * Whether a poll failed the way a gateway or the network fails (#2450): a 502–504, or no response
- * at all (`fetch` rejects with a `TypeError` for a dropped connection, before or during the body).
+ * Whether a 500 says only that something threw (#2450): the control plane's generic answer to a
+ * throw it does not map (no `detail`, `error: 'internal error'`), or Cloudflare's redacted fault.
+ * A 500 that names its reason is a definite answer.
+ */
+function unexplained500(status: number, body: string): boolean {
+  if (status !== 500) return false;
+  if (/\binternal error; reference\s*=\s*[a-z0-9]+/i.test(body)) return true;
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown; error?: unknown };
+    return !parsed.detail && parsed.error === 'internal error';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether a poll failed the way a gateway or the network fails (#2450): a 502–504, no response at
+ * all (`fetch` rejects with a `TypeError` for a dropped connection, before or during the body), or a
+ * 500 that names no reason. A poll starts nothing, and the next one may find the copy done or the
+ * preview served (a fault after a finish's bind is answered as itself).
  */
 const pollFaultIsTransient = (e: unknown): boolean =>
-  e instanceof PreviewCallFailed ? TRANSIENT_STATUS.has(e.status) : e instanceof TypeError;
+  e instanceof PreviewCallFailed ? TRANSIENT_STATUS.has(e.status) || e.unexplained : e instanceof TypeError;
 /** The wait before each further attempt — two extra attempts, bounded. */
 const RETRY_BACKOFF_MS = [1_000, 3_000] as const;
 
@@ -303,7 +330,8 @@ export async function createPreview(opts: {
     } catch (e) {
       // A poll that still fails the way a gateway or the network fails is polled again, inside
       // the wait: one blip among thousands of polls must not end a six-hour copy. A definite
-      // answer (a 4xx, a 500) ends it, as does a control plane that stays unreachable.
+      // answer (a 4xx, a 500 that names its reason) ends it, as does a control plane that stays
+      // unreachable.
       if (!polling || !pollFaultIsTransient(e)) throw e;
       const why = e instanceof PreviewCallFailed ? String(e.status) : `network error: ${e instanceof Error ? e.message : String(e)}`;
       if (++faults > PREVIEW_POLL_FAULTS) {
