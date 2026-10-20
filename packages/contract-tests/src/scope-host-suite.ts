@@ -6015,8 +6015,8 @@ export function scopeHostContractSuite(
         .toEqual([{ expiresAt: next }, { expiresAt: old }]);
     });
 
-    it.each(['expired lease', 'claimed entry', 'mixed entries'] as const)(
-      'does not keep a preview alive with %s', async (condition) => {
+    const lapsedMoveConditions = ['expired lease', 'claimed entry', 'mixed entries'] as const;
+    it.each(lapsedMoveConditions)('does not keep a preview alive with %s', async (condition) => {
       const s = scopeId.parse(ulid());
       const old = new Date(Date.now() - 60_000).toISOString();
       const next = new Date(Date.now() + 3_600_000).toISOString();
