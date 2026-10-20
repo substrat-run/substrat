@@ -89,6 +89,7 @@ describe('the platform-supplied sweeper runs a vertical that wires none (#1902)'
         try {
           const report = asReport(await (instance as unknown as SweeperStub).sweepNow());
           const next = asReport(await (instance as unknown as SweeperStub).sweepNow());
+          await vi.waitFor(() => expect(calls).toHaveLength(1));
           return { report, next, calls };
         } finally {
           globalThis.fetch = originalFetch;
@@ -129,6 +130,7 @@ describe('the platform-supplied sweeper runs a vertical that wires none (#1902)'
         };
         try {
           const report = asReport(await (instance as unknown as SweeperStub).sweepNow());
+          await vi.waitFor(() => expect(attempts).toBe(1));
           return { report, attempts };
         } finally {
           globalThis.fetch = originalFetch;
