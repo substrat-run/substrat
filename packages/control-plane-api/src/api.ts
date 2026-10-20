@@ -3672,53 +3672,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     restoredStamp: string;
   };
 
-  /**
-   * Carry a scope's data onto the script a version bind is about to route it to (#1710).
-   * The caller binds only after this returns.
-   *
-   * A scope that is not on the serving script routes by its bound version's own
-   * per-version script (`COALESCE(servingRef, deploymentRef)`), and a Durable Object
-   * namespace belongs to its script. So a bind to a version with a DIFFERENT
-   * `deploymentRef` points the scope at an empty namespace. Previews live there by design
-   * (#527), and so does a forked scope that `scope bind` re-points. This moves the data
-   * first, in adopt-serving's order: export from the script the router resolves the scope
-   * to TODAY, then restore into the incoming version's script.
-   *
-   * After validating the incoming version, it reads no scope data and carries nothing
-   * when the route does not move: the incoming
-   * version has no script of its own (co-located), the two refs are the same script, the
-   * scope stays pinned to the serving script (the version pointer never touches its
-   * route), or the scope's data is not in a named script. It also carries nothing on a
-   * host with no per-version resolver, because such a host has no per-version namespaces
-   * to move between. `dropServingRef` is for a caller that clears the pin in the same act:
-   * the route then does move, off the serving script.
-   *
-   * A failure strands nothing. The pointer has not moved and the source copy is untouched,
-   * and the restore is one transaction in the target DO (drop-then-replay). So a failed
-   * carry leaves the scope serving its data from the old script, and a retry carries again
-   * over any partial copy. A retry after a bind that landed finds the same script on both
-   * ends and carries nothing.
-   *
-   * #1722: the export is checked before anything is restored. The scope is read again, and a
-   * binding or pin that moved since the caller read it is refused (412): another carry bound
-   * away from this script, which may already have wiped it, and an export from a wiped DO comes
-   * back as an empty store. A dump that carries the `carried_away` tombstone is refused the same
-   * way. The caller binds with `bindAfterCarry`, which wipes the source copy once the bind
-   * lands, so neither check can pass on an export from a copy that is about to go.
-   *
-   * The restore is conditional too. Before the check above, the carry reads the destination's
-   * `LoadMarker` (load stamp and write revision), and the restore is refused inside its own
-   * transaction if the store moved since. So a carry held before its restore cannot overwrite
-   * a store that another carry into the same script has loaded, or that went live under that
-   * carry's bind and took a write: a CI retry of the same version. A deployment built before
-   * #1722 cannot read a marker, and there the binding re-read is all that guards the restore.
-   * Its window: a bind that lands between that re-read and the restore, followed by a write.
-   *
-   * What it does not do:
-   * - Carry writes that land on the source between the export and the bind. Those are lost.
-   * - Cross lineages. A version of another vertical reads as absent here, and moving a scope
-   *   between lineages is `rebindScopeOntoVertical`'s job, behind its migration gate.
-   */
   /** #2450 step 2: what the preview route answers while a job copies: 202, and how far it got. */
   type PreviewCopying = {
     copying: true;
@@ -3928,6 +3881,53 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   };
 
+  /**
+   * Carry a scope's data onto the script a version bind is about to route it to (#1710).
+   * The caller binds only after this returns.
+   *
+   * A scope that is not on the serving script routes by its bound version's own
+   * per-version script (`COALESCE(servingRef, deploymentRef)`), and a Durable Object
+   * namespace belongs to its script. So a bind to a version with a DIFFERENT
+   * `deploymentRef` points the scope at an empty namespace. Previews live there by design
+   * (#527), and so does a forked scope that `scope bind` re-points. This moves the data
+   * first, in adopt-serving's order: export from the script the router resolves the scope
+   * to TODAY, then restore into the incoming version's script.
+   *
+   * After validating the incoming version, it reads no scope data and carries nothing
+   * when the route does not move: the incoming
+   * version has no script of its own (co-located), the two refs are the same script, the
+   * scope stays pinned to the serving script (the version pointer never touches its
+   * route), or the scope's data is not in a named script. It also carries nothing on a
+   * host with no per-version resolver, because such a host has no per-version namespaces
+   * to move between. `dropServingRef` is for a caller that clears the pin in the same act:
+   * the route then does move, off the serving script.
+   *
+   * A failure strands nothing. The pointer has not moved and the source copy is untouched,
+   * and the restore is one transaction in the target DO (drop-then-replay). So a failed
+   * carry leaves the scope serving its data from the old script, and a retry carries again
+   * over any partial copy. A retry after a bind that landed finds the same script on both
+   * ends and carries nothing.
+   *
+   * #1722: the export is checked before anything is restored. The scope is read again, and a
+   * binding or pin that moved since the caller read it is refused (412): another carry bound
+   * away from this script, which may already have wiped it, and an export from a wiped DO comes
+   * back as an empty store. A dump that carries the `carried_away` tombstone is refused the same
+   * way. The caller binds with `bindAfterCarry`, which wipes the source copy once the bind
+   * lands, so neither check can pass on an export from a copy that is about to go.
+   *
+   * The restore is conditional too. Before the check above, the carry reads the destination's
+   * `LoadMarker` (load stamp and write revision), and the restore is refused inside its own
+   * transaction if the store moved since. So a carry held before its restore cannot overwrite
+   * a store that another carry into the same script has loaded, or that went live under that
+   * carry's bind and took a write: a CI retry of the same version. A deployment built before
+   * #1722 cannot read a marker, and there the binding re-read is all that guards the restore.
+   * Its window: a bind that lands between that re-read and the restore, followed by a write.
+   *
+   * What it does not do:
+   * - Carry writes that land on the source between the export and the bind. Those are lost.
+   * - Cross lineages. A version of another vertical reads as absent here, and moving a scope
+   *   between lineages is `rebindScopeOntoVertical`'s job, behind its migration gate.
+   */
   const carryOntoVersion = async (
     c: ReqCtx,
     scope: Scope,
