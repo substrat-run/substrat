@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { expect, it } from 'vitest';
 import { permissionKey, platformActorId, tenantId } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { reservedRoleRefusal, ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 
 it('adds the directory holder column without rewriting an old role, then persists its new definition', async () => {
@@ -25,7 +25,9 @@ it('adds the directory holder column without rewriting an old role, then persist
 
     const after = new SqliteScopeHost({ dir });
     try {
-      expect((await after.admin.listRoles(staff, { tenantId: tenant }))[0]?.holder).toBeUndefined();
+      const oldRole = (await after.admin.listRoles(staff, { tenantId: tenant }))[0]!;
+      expect(oldRole.holder).toBeUndefined();
+      expect(reservedRoleRefusal(oldRole, new Set(['rsv:run']), 'platform')).toBeNull();
       await after.admin.defineRole(staff, tenant, { ...definition, holder: 'system' });
       expect((await after.admin.listRoles(staff, { tenantId: tenant }))[0]?.holder).toBe('system');
     } finally {

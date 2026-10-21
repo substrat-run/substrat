@@ -45,7 +45,7 @@ export function reservedRoleRefusal(
   const others = role.permissions.filter((p) => !reserved.has(p));
   if (others.length === 0) {
     if (role.holder === 'person') {
-      return `role '${role.key}' holds ${keys}, reserved to a system principal: its stored holder is person`;
+      return `role '${role.key}' holds ${keys}, reserved to a system principal: its stored holder is person; a role made only of reserved keys must declare holder: 'system'`;
     }
     return null;
   }

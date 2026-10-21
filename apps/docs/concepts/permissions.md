@@ -81,6 +81,9 @@ At runtime, a host reads the reservations off the modules it registers and the m
   row from before this field keeps a null holder and the earlier key-only decision until the
   definition is written again. The directory and scope projection both carry the holder.
 
+A role made only of reserved keys must declare `holder: 'system'`, or the platform door
+refuses it; roles defined before the migration are unaffected until redefined.
+
 Not covered yet:
 
 - a role or grant a host seats or composes itself;

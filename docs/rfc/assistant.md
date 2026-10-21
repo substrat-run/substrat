@@ -1008,6 +1008,8 @@ For a role declared `holder: 'system'` (K-55), the directory and scope projectio
 marker with the role definition (#2444). New roles without the marker store `person`; older
 role rows retain a null holder and their earlier key-only runtime door decision. The record
 does not identify the kind of principal seated in that role; that remains a separate question.
+A role made only of reserved keys must declare `holder: 'system'`, or the platform door
+refuses it; roles defined before the migration are unaffected until redefined.
 
 Two of these live outside this repository. Adopting the assistant there means a release of
 the host and engine packages, a version bump in each app, and a re-push, so the release cycle

@@ -2,7 +2,7 @@ import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, expect, it } from 'vitest';
 import { permissionKey, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { permMod } from '@substrat-run/contract-tests';
-import { ulid, UNSAFE_allowAllChecker } from '@substrat-run/kernel';
+import { reservedRoleRefusal, ulid, UNSAFE_allowAllChecker } from '@substrat-run/kernel';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
 import { createLocalControlPlaneReader } from '../src/checker.js';
 import { defineScopeDO } from '../src/scope-do.js';
@@ -14,7 +14,7 @@ beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
 it('adds the directory holder column to an old role and persists the same role redefined', async () => {
   const stub = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName(`role-holder-${ulid()}`)) as unknown as {
     defineRole(tenantId: string, role: { key: string; permissions: string[]; source: 'vertical'; holder?: 'system' }): Promise<unknown>;
-    getRole(tenantId: string, key: string): Promise<{ holder?: string } | undefined>;
+    getRole(tenantId: string, key: string): Promise<{ key: string; permissions: string[]; holder?: 'person' | 'system' } | undefined>;
   };
   const tenant = ulid();
   const role = { key: 'runner', permissions: ['rsv:run'], source: 'vertical' as const };
@@ -27,7 +27,9 @@ it('adds the directory holder column to an old role and persists the same role r
   });
   expect(staged.old).toEqual([{ role_key: 'runner', permissions: '["rsv:run"]' }]);
   expect(staged.row).toEqual([{ holder: null }]);
-  expect((await stub.getRole(tenant, 'runner'))?.holder).toBeUndefined();
+  const oldRole = (await stub.getRole(tenant, 'runner'))!;
+  expect(oldRole.holder).toBeUndefined();
+  expect(reservedRoleRefusal(oldRole, new Set(['rsv:run']), 'platform')).toBeNull();
   await stub.defineRole(tenant, { ...role, holder: 'system' });
   expect((await stub.getRole(tenant, 'runner'))?.holder).toBe('system');
 });
@@ -46,6 +48,7 @@ it('adds the scope projection column to an old role and reads a new holder', asy
     return createLocalControlPlaneReader(state.storage.sql).getRole(tenant, 'runner');
   });
   expect(old?.holder).toBeUndefined();
+  expect(reservedRoleRefusal(old!, new Set(['rsv:run']), 'platform')).toBeNull();
   await stub.projectRole(tenant, { ...role, holder: 'system' });
   const current = await runInDurableObject(stub as never, async (_instance, state) =>
     createLocalControlPlaneReader(state.storage.sql).getRole(tenant, 'runner'));

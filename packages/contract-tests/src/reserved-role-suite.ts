@@ -103,7 +103,7 @@ export function reservedRoleContractSuite(
         await expectRefusal(
           host.admin.assignRole(staff, { principalId: who, roleKey: 'person-runner', node: { tenantId: t1, scopeId: scope } }),
           'forbidden',
-          /role 'person-runner' holds rsv:run.*stored holder is person/,
+          /role 'person-runner' holds rsv:run.*stored holder is person.*must declare holder: 'system'/,
         );
         expect(await holds(who, RSV_RUN)).toBe(false);
       });

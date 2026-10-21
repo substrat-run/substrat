@@ -39,9 +39,11 @@ describe('reservedRoleRefusal', () => {
   });
 
   it('uses the persisted holder for new rows and keeps the legacy NULL decision', () => {
-    expect(reservedRoleRefusal({ ...role(['a:run']), holder: 'person' }, reserved, 'platform')).toMatch(/stored holder is person/);
+    expect(reservedRoleRefusal({ ...role(['a:run']), holder: 'person' }, reserved, 'platform')).toBe(
+      "role 'r' holds a:run, reserved to a system principal: its stored holder is person; a role made only of reserved keys must declare holder: 'system'",
+    );
     expect(reservedRoleRefusal({ ...role(['a:run']), holder: 'system' }, reserved, 'platform')).toBeNull();
-    expect(reservedRoleRefusal(role(['a:run']), reserved, 'platform')).toBeNull();
+    expect(reservedRoleRefusal({ ...role(['a:run']), holder: undefined }, reserved, 'platform')).toBeNull();
   });
 
   it('a role with no reserved key passes either door', () => {
