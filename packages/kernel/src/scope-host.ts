@@ -1995,11 +1995,10 @@ export interface HostAdmin {
   listRoles(actor: PlatformActorId, filter?: RoleFilter): Promise<TenantRole[]>;
   // ^ pages over (tenant_id, role_key); the cursor is `${tenantId}|${roleKey}`.
   /**
-   * Assign a role at a node — the platform's door. Throws `forbidden` (#2430) for a role that
-   * mixes a key reserved to a system principal with other keys. A role made only of reserved
-   * keys is admitted: that is the shape a role declared `holder: 'system'` has (K-55), and a
-   * stored role does not record its holder, so this door cannot tell it from a person's role
-   * made the same way.
+   * Assign a role at a node — the platform's door. Throws `forbidden` (#2430, K-55) for a role
+   * that mixes a key reserved to a system principal with other keys. A role made only of
+   * reserved keys is admitted when its stored holder is `system`; a legacy row with no holder
+   * keeps the earlier key-only decision. A person-held role made only of reserved keys is refused.
    */
   assignRole(actor: PlatformActorId, assignment: RoleAssignment): Promise<void>;
   /**
