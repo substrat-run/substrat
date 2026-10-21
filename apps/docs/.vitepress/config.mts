@@ -134,7 +134,7 @@ export default withMermaid(defineConfig({
     },
 
     footer: {
-      message: 'The hard parts, hosted.',
+      message: 'The hard parts, hosted. · <a href="/privacy.html">Privacy policy</a> · <a href="/terms.html">Terms of service</a>',
     },
   },
 }));
