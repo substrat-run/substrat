@@ -48,7 +48,7 @@ You control what you build and share using Substrat and are responsible for
 reviewing generated code and AI output before relying on them. AI output may
 be inaccurate or incomplete. Keep appropriate backups of important data.
 
-Our [privacy policy](/privacy.html) explains how we handle personal information.
+Our [privacy policy](/privacy) explains how we handle personal information.
 
 ## Substrat software and third-party services
 
