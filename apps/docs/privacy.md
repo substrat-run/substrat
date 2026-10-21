@@ -61,15 +61,23 @@ browser storage does not delete information already submitted to the service.
 ## Sharing and service providers
 
 We use service providers for hosting, authentication, email delivery, and AI
-features. They process the information needed to perform those functions.
+features. These include Cloudflare for hosting and infrastructure, Resend for
+support desk email delivery, and AI providers such as Anthropic when selected
+to answer support messages. Google processes sign-in information when you choose
+Google sign-in. Providers process the information needed to perform those functions.
 Information you put in a team or application may also be available to its
 authorized members and administrators. We may disclose information when required
 by law or necessary to investigate abuse, protect the service, or protect people's
 rights and safety. We do not sell personal information.
 
-Providers may process information in countries other than your own. Where
-applicable law requires safeguards for international transfers, those safeguards
-must apply to the transfer.
+Providers, including Cloudflare, may process information in the United States
+and other countries outside your own. For transfers from the European Economic
+Area, applicable safeguards include the EU–US Data Privacy Framework where the
+recipient is certified and the transfer is covered, or the European Commission's
+Standard Contractual Clauses. Cloudflare describes its transfer safeguards in its
+[Data Processing Addendum](https://www.cloudflare.com/cloudflare-customer-dpa/).
+You can contact us to request information about the safeguards applicable to
+your data.
 
 ## Retention and security
 

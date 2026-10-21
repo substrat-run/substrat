@@ -1,6 +1,6 @@
 ---
 title: Terms of service
-description: Terms for using the Substrat website and hosted platform.
+description: Terms governing accounts, acceptable use, content, availability, and liability on the Substrat website and hosted platform.
 sidebar: false
 prev: false
 next: false
@@ -42,7 +42,7 @@ You control what you build and share using Substrat and are responsible for
 reviewing generated code and AI output before relying on them. AI output may
 be inaccurate or incomplete. Keep appropriate backups of important data.
 
-Our [privacy policy](/privacy) explains how we handle personal information.
+Our [privacy policy](/privacy.html) explains how we handle personal information.
 
 ## Substrat software and third-party services
 
@@ -81,6 +81,13 @@ or data, arising from use of the service.
 
 Nothing in these terms excludes liability or limits rights that cannot legally
 be excluded or limited, including mandatory consumer rights.
+
+## Governing law and disputes
+
+These terms are governed by the laws of Spain. Disputes are subject to the
+competent courts of Spain. If you are a consumer, this does not deprive you of
+mandatory protections under the law of your country of residence or your right
+to bring proceedings in courts available to you under applicable law.
 
 ## Changes to these terms
 

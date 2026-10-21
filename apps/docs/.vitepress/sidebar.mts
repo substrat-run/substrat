@@ -291,7 +291,14 @@ export function fileForLink(link: string): string {
 export function tableOfContents(): IndexedSection[] {
   // Every section the site publishes, not just the guide's — a page missing from
   // here is a page missing from llms.txt, and `lint:llms --check` fails on it.
-  return [...bookSidebar(), ...guideSidebar(), ...changelogSidebar()].map((section) => {
+  const legal = {
+    text: 'Legal',
+    items: [
+      { text: 'Privacy policy', link: '/privacy' },
+      { text: 'Terms of service', link: '/terms' },
+    ],
+  };
+  return [...bookSidebar(), ...guideSidebar(), ...changelogSidebar(), legal].map((section) => {
     const pages: IndexedPage[] = [];
     for (const item of section.items) {
       if ('link' in item && item.link) {
