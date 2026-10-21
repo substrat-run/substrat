@@ -29,14 +29,15 @@ about what "admitted" can even mean when the author is untrusted.
 ## 1. The flow, and the one thing that makes it hard
 
 ```
-substrat push ─▶ deploy endpoint ─▶ WfP namespace ─▶ pending version ─▶ admission ─▶ serve
-  (builder)       (platform-held      (isolated       (deploymentRef    (the gate)    (bound
-                   CF credential)      execution)       set, not live)                 scope)
+substrat push ─▶ deploy endpoint ─▶ WfP namespace ─▶ version ─▶ admission ─▶ serve
+  (builder)       (platform-held      (isolated       (deploymentRef    (by audience)   (bound
+                   CF credential)      execution)       set, not live)                  scope)
 ```
 
-Every box except one is mechanical and already designed (orchestration.md): the push lands a
-**pending** version, `bindScopeVersion`/`promoteVersion` refuse anything not admitted, WfP
-isolates the running script. **The hard box is `admission`.** For our own verticals, admission
+Every box except one is mechanical and already designed (orchestration.md): a private
+push lands auto-admitted, a listed push lands pending for staff admission, and
+`bindScopeVersion`/`promoteVersion` refuse anything not admitted. WfP isolates the
+running script. **The hard box is `admission`.** For our own verticals, admission
 is real: our CI ran `boundary-lint`, and the `permission`/`migration` digests are computed
 from source we control, so the digest-diff checkpoint means something. For an untrusted
 builder, the artifact is an **opaque, minified bundle** — you cannot boundary-lint it, and you
@@ -103,9 +104,10 @@ code; see [the current trust boundary](../strategy/hosting-and-certification.md#
   (`defineScopeDO` — the vertical IS a DO) and data stores. The upload rejects a declared
   control-plane binding and cross-script DO binding. Ownership of a declared static D1
   database id is not structurally proved (below).
-- **Platform-supplied bindings.** The uploader injects credentials for verifying platform
-  and router calls, as well as a Workers AI binding. The binding check above applies to
-  the vertical's declared set, not to these platform-supplied capabilities.
+- **Platform-supplied bindings.** After checking the vertical's declared set, the uploader
+  appends shared platform credentials, the platform origin and the version id. It also
+  appends a Workers AI binding when the version declares model use. The pushed script
+  holds these bindings; the declared-binding check does not apply to them.
 - **Provisioning stays pull (K-31).** The customer worker cannot create tenants/entitlements;
   the platform calls *it* to provision, exactly as today.
 - **Outbound + resource limits.** WfP per-script CPU/subrequest caps; the dispatch egress
@@ -443,9 +445,10 @@ a fourth blob, so a refusal of a host the vertical never named traces back to wh
 - **The deploy endpoint** (dashboard or control-plane worker, platform-controlled, holds the
   WfP-scoped CF credential): authenticates the builder → validates the declared bindings
   against §4 → uploads to the `substrat-verticals` namespace under `deploymentRef =
-  <builder>-<slug>@<version>` → records a **pending** `verticalVersion`. It never promotes or
-  binds — admission does, separately. A version **label is consumed only on a successful
-  upload**: the endpoint records the pending version *after* the upload returns, so a push
+  <builder>-<slug>@<version>` → records a `verticalVersion` (**auto-admitted** for a private
+  vertical, **pending** for a listed one). It never promotes or binds — those happen
+  separately. A version **label is consumed only on a successful
+  upload**: the endpoint records the version *after* the upload returns, so a push
   that fails at the upload step (a bad-bundle rejection, e.g. a module-top-level throw) never
   registers the label and the same `--version` is reusable on retry. The failure is answered
   honestly — a runtime 4xx as a `422 deploy rejected` (the builder's script), a 5xx as a
@@ -472,7 +475,7 @@ a fourth blob, so a refusal of a host the vertical never named traces back to wh
 ## 7. Recommendation & phasing
 
 1. **Foundation (trust-agnostic, buildable now):** `substrat push` + the deploy endpoint +
-   the §4 binding-contract check, landing a pending version. Verify end-to-end with **our own**
+   the §4 binding-contract check, landing a version under D-36's admission rule. Verify end-to-end with **our own**
    fsm vertical (trusted) — this is also orchestration.md Phase 2's uploader, reached from a CLI
    instead of a curl.
 2. **Vetted self-serve (model B):** open the endpoint to a closed set of named builders with
@@ -483,7 +486,8 @@ a fourth blob, so a refusal of a host the vertical never named traces back to wh
 ## 8. Definition of done (foundation)
 
 `substrat push` from a vertical's repo uploads its bundle to `substrat-verticals` as a
-**pending** version whose declared bindings satisfy §4; the console shows it pending; admitting
-+ promoting + binding a scope makes it serve through the router — with the builder never
+version whose declared bindings satisfy §4; a private push self-admits, while a listed
+push waits for staff admission. The console shows its admission state; promotion and
+binding a scope make an admitted version serve through the router — with the builder never
 holding a Cloudflare credential and the platform never running the builder's build in
 production. When that passes for fsm, the foundation is real and models B/A are scoped work.
