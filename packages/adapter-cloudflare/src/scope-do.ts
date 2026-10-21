@@ -1008,8 +1008,9 @@ type CheckedLoad =
 const STAGE_GONE = 'the staged load is not here any more (another carry replaced it, or it was already loaded); nothing was loaded';
 /** A competing page zero must leave the stage a live copy owns intact. */
 const STAGE_IN_PROGRESS = 'a different staged load is in progress; retry after its copy finishes';
-// A job can copy for six hours, then hold a completed stage for one lease before a finish
-// is claimed, and the finish claim lasts two leases. Beyond that, no job can load it.
+// Failed, cancelled and superseded jobs normally discard their stages. This is only a backstop
+// for a lost job record: a job can copy for six hours, then hold a completed stage for one lease
+// before a finish is claimed, and the finish claim lasts two leases. Beyond that, no job can load it.
 const STAGE_MAX_AGE_MS = 6 * 3_600_000 + 3 * SCOPE_COPY_LEASE_MS;
 
 /** A table a load replays (#2450): its schema, and its rows, read when the load reaches them. */
