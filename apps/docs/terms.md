@@ -10,7 +10,10 @@ next: false
 
 Last updated: 21 October 2026
 
-These terms govern your use of substrat.net and the Substrat hosted platform.
+Substrat is operated by **Ahlstrand Technologies SL**, NIF **B76309178**
+(“Substrat”, “we”, “us”). These terms form an agreement between you and
+Ahlstrand Technologies SL and govern your use of substrat.net and the Substrat
+hosted platform.
 By using the service, you agree to these terms. If you use Substrat on behalf of
 an organization, you must have authority to agree on its behalf. If you do not
 agree, do not use the service. For questions, contact our

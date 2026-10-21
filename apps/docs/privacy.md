@@ -10,7 +10,13 @@ next: false
 
 Last updated: 21 October 2026
 
-This policy explains how Substrat handles personal information when you use
+Substrat is operated by **Ahlstrand Technologies SL**, NIF **B76309178**
+(“Substrat”, “we”, “us”). Ahlstrand Technologies SL is the data controller for
+the account, website, and support information described in this policy. When we
+process application data on behalf of a customer organization, that organization
+is the data controller and we act as its processor.
+
+This policy explains how we handle personal information when you use
 substrat.net and the Substrat hosted platform. For questions or privacy requests,
 contact the Substrat team through our [support desk](/guide/support).
 
