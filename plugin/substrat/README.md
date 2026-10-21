@@ -28,6 +28,9 @@ In Claude Desktop: **+** → Plugins → Add plugin.
   acknowledgement checkpoints. Our ack flags make deploying a *safer* thing to guide than
   most deploy automation, because the human stop is already mechanical: the skill's job is
   to present the permission and migration diffs well, never to click through them.
+- **`/substrat-pr-preview`** — the Substrat repository's changeset → PR → per-PR preview
+  workflow. It checks published-package bumps, shows permission and migration diffs for
+  human review, surfaces the preview URL and reaps the preview when the PR closes.
 - **`/substrat:review`** — checks a change against Substrat's own rules (scope isolation,
   permission checks, generated files, migration losses, personal data, lifecycles, secrets,
   tests) before you push. It checks Substrat's rules only; run the editor's own review

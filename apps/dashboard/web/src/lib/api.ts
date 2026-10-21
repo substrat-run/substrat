@@ -1643,9 +1643,6 @@ export const api = {
   /** Switch the active team; the server pins it in a cookie, so the caller reloads after. */
   switchTeam: (teamId: string) =>
     call<void>('/teams/switch', { method: 'POST', body: JSON.stringify({ teamId }) }),
-  /** Delete the current organization (owner-only; confirmed by retyping its name). */
-  deleteTeam: (confirm: string) =>
-    call<void>('/teams/delete', { method: 'POST', body: JSON.stringify({ confirm }) }),
   catalog: () => call<CatalogEntry[]>('/catalog'),
   /** Preview an invite (unauthenticated): the team + invited email, for prefill + the accept screen. */
   previewInvite: (token: string) =>

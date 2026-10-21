@@ -26,6 +26,7 @@ const NOT_THE_PLANES: Record<string, string> = {
   'dashboard/remove-app removed': ACK,
   'dashboard/revoke-invite revoked': ACK,
   'dashboard/leave-team left': ACK,
+  'dashboard/delete-team deleted': ACK,
   'dashboard/promote-deployment promoted': ACK,
   'dashboard/delete-deployment removed': ACK,
   'dashboard/get-deployment-traffic markers[].kind': 'derived in this worker from the push and go-live instants',

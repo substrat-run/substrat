@@ -416,6 +416,13 @@ export interface DashboardClient {
   deletePreview(input: { slug: string; tag: string }): Promise<{ deleted: string | null }>;
 
   /**
+   * Delete this team after its owner types its name: deprovision apps, revoke members and tombstone the tenant
+   *
+   * `POST /delete` — `dashboard/delete-team`
+   */
+  deleteTeam(input: { confirm: string }): Promise<{ deleted: true }>;
+
+  /**
    * An app's durable install record: directory, provision, activate, hostname, identity
    *
    * `GET /apps/{scopeId}/steps` — `dashboard/get-app-install-steps`
@@ -801,6 +808,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/deployments/${encodeURIComponent(String(input.slug))}`, "DELETE", undefined, omit(input, ["slug"])),
     deletePreview: (input: Args) =>
       send(`/deployments/${encodeURIComponent(String(input.slug))}/previews/${encodeURIComponent(String(input.tag))}`, "DELETE", undefined, omit(input, ["slug","tag"])),
+    deleteTeam: (input: Args) =>
+      send("/delete", "POST", input, undefined),
     getAppInstallSteps: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/steps`, "GET", undefined, omit(input, ["scopeId"])),
     getDeploymentReleases: (input: Args) =>

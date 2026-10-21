@@ -1035,7 +1035,7 @@ export function App() {
           canManageFindings={canManageFindings(members, me.principal)}
         />
       ) : route.section === 'settings' ? (
-        <Settings org={org} />
+        <Settings org={org} teamId={me.currentTeamId} />
       ) : null}
 
       {palette && (
