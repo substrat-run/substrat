@@ -54,6 +54,28 @@ still a breach** — which makes the certification story and the two human check
 the same mechanism seen from opposite ends. The permission diff exists precisely because
 the one thing that cannot be inherited is whether *this* tenant's grants are right.
 
+### Pushed vertical code: the current boundary
+
+A pushed vertical runs in a per-scope Durable Object, with permission checks at the
+kernel's doors and a host-wrapped `ctx.sql` that refuses writes to the platform spine.
+The upload checks declared resource bindings; the platform also supplies bindings used
+by the vertical's runtime, including credentials that verify platform and router calls.
+These controls apply regardless of whether the bundle cooperates with source rules.
+See [the deploy sandbox contract](../architecture/self-serve-deploy.md#4-the-sandbox-contract-the-load-bearing-invariant)
+for their scope.
+
+That contract does **not** establish containment of hostile bundle code. The CLI's
+source checks and their push receipt do not verify the uploaded bundle at the platform.
+The outbound worker refuses undeclared worker-context egress, but does not intercept
+Durable-Object-originated requests; observe-only reporting does not refuse them. A
+bundle can therefore exfiltrate to destinations that this egress control does not block,
+and source rules do not constrain an uncooperative bundle at runtime. This limit is
+separate from [D-36's admission boundary](../decisions/D-036-the-staff-admission-gate-moves-to-the-audience-boundary-a-pr.md):
+admission records who may serve a version and to which audience, not proof that its code
+obeys the source rules. [D-61](../decisions/D-061-do-originated-egress-is-observed-and-never-refused-d-46-s-limit.md)
+records the observe-only choice as **proposed**; [#1579](https://github.com/substrat-run/substrat/issues/1579)
+holds the remaining design question.
+
 ---
 
 ## Draft 1 — Decision log entry

@@ -7,7 +7,7 @@ description: The untrusted trust model and the sandbox contract.
 # Self-serve vertical deploy — the untrusted trust model
 
 **Status:** foundation **built** (§7.1 / §8) — `substrat push` + the deploy endpoint land a
-pending version that admission gates; the `substrat` CLI (`packages/cli`) ships it and every pushed
+version under D-36's admission rules; the `substrat` CLI (`packages/cli`) ships it and every pushed
 vertical deploys through it. The untrusted-builder models B/A (§3) remain design. Extends
 [orchestration](orchestration.md), whose
 Phases 1–3 are the **platform-owned** (trusted-author) deploy: *we* build and upload *our*
@@ -95,23 +95,22 @@ named, accountable builder, WfP isolation alone is not a trust model.
 
 ## 4. The sandbox contract (the load-bearing invariant)
 
-Whatever the model, a customer's uploaded worker must be structurally incapable of reaching
-platform infrastructure. This is what WfP dispatch buys and what the upload metadata must
-enforce:
+Whatever the model, the upload checks declared bindings and WfP dispatch isolates the
+running script. Those are narrower guarantees than containment of uncooperative bundle
+code; see [the current trust boundary](../strategy/hosting-and-certification.md#pushed-vertical-code-the-current-boundary).
 
-- **Its own resources only.** A customer vertical defines and binds its *own* DO classes
-  (`defineScopeDO` — the vertical IS a DO) and its own data stores. It gets **no `CONTROL_PLANE`
-  binding, no platform secrets, no `AUTH_DB` it did not create.** The platform's control-plane
-  DO and secrets are never in a customer script's binding set — the uploader rejects an upload
-  that declares them.
-- **No ambient authority.** `PLATFORM_SECRET`/`ROUTER_SECRET` are the platform's; a customer
-  worker verifies the *router's* secret (K-27) to trust an inbound node, but never holds the
-  platform's. It cannot call the control plane as the platform.
+- **Declared resources.** A customer vertical declares its *own* DO classes
+  (`defineScopeDO` — the vertical IS a DO) and data stores. The upload rejects a declared
+  control-plane binding and cross-script DO binding. Ownership of a declared static D1
+  database id is not structurally proved (below).
+- **Platform-supplied bindings.** The uploader injects credentials for verifying platform
+  and router calls, as well as a Workers AI binding. The binding check above applies to
+  the vertical's declared set, not to these platform-supplied capabilities.
 - **Provisioning stays pull (K-31).** The customer worker cannot create tenants/entitlements;
   the platform calls *it* to provision, exactly as today.
-- **Outbound + resource limits.** WfP per-script CPU/subrequest caps; outbound egress is the
-  vertical's **declared outbound surface**, enforced at the dispatch egress worker (§4.2,
-  D-46) — least-privilege by declaration, not by an undecided default.
+- **Outbound + resource limits.** WfP per-script CPU/subrequest caps; the dispatch egress
+  worker enforces the vertical's declared outbound surface for worker-context requests
+  (§4.2, D-46). Durable-Object-originated requests remain outside that enforcement.
 
 ### 4.1 The binding allowlist (positive, not by omission)
 
@@ -138,8 +137,9 @@ Every refusal names the offending binding and its type and points here.
 
 **D1 ownership caveat (model B).** A static shared `d1` binding names a `database_id`, and the
 check does **not** prove the vertical *owns* that id rather than pointing at another tenant's DB.
-Under model B that gap is closed by **human admission** — a named, accountable builder's declared
-bindings are trusted before a version can serve — not by this structural check.
+The structural check does not close that gap. D-36 self-admits private pushes; the
+staff admission rule for listed versions records a human vouch, not independent proof
+of ownership of a declared store.
 
 **Per-tenant relational stores (#301) close the gap by construction, not by trust.** A vertical
 whose model is one SQL database *per tenant* (a latency-sensitive multi-tenant auth/OIDC provider
