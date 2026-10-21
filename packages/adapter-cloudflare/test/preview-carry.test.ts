@@ -2397,6 +2397,55 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
       expect(await noStage('v2', preview)).toEqual([]);
     });
 
+    it('two carries of one version keep the first stage, then the loser retries after it lands', async () => {
+      const tag = 'bg-same-version';
+      const sid = (await pushBg(tag, 'v1')).body.scopeId;
+      await pumpToDone();
+      const ready = await pushBg(tag, 'v1');
+      expect([200, 201]).toContain(ready.status);
+      await hostFor('v1').restoreScopeLocal(sid, notes(...many(30, 'same version')));
+
+      // Hold the first call after it staged page zero, before its job is visible. The other
+      // call must not replace that stage or make its cleanup discard it.
+      const reached = deferred();
+      const release = deferred();
+      let held = false;
+      const gatedJobs: CopyJobs = {
+        ...jobs,
+        start: async (spec, state) => {
+          if (!held && spec.id === `carry:${sid}`) {
+            held = true;
+            reached.resolve();
+            await release.promise;
+          }
+          return jobs.start(spec, state);
+        },
+      };
+      const gated = createControlPlaneApi({ ...apiOptions, copyJobs: gatedJobs });
+      const winner = pushBg(tag, 'v2', {}, gated);
+      try {
+        await reached.promise;
+        const stageBefore = await noStage('v2', sid);
+        expect(stageBefore.length).toBeGreaterThan(0);
+        const loser = await pushBg(tag, 'v2', {}, gated);
+        expect(loser.status).toBe(503);
+        expect(loser.body.detail ?? loser.body.error).toMatch(/is staging its first page; retry/);
+        expect(await noStage('v2', sid)).toEqual(stageBefore);
+      } finally {
+        release.resolve();
+      }
+      expect((await winner).status).toBe(202);
+      // The same-version retry gets the winner's 202 grammar and polls that job.
+      const retry = await pushBg(tag, 'v2', {}, gated);
+      expect(retry.status).toBe(202);
+      expect(retry.body.scopeId).toBe(sid);
+      await pumpToDone();
+      expect((await pushBg(tag, 'v2', {}, gated)).status).toBe(200);
+      expect((await pushBg(tag, 'v2', {}, gated)).status).toBe(200);
+      expect(await served(ready.body.hostname)).toEqual({ ref: refOf.get(version.v2), bodies: many(30, 'same version') });
+      expect(await noStage('v2', sid)).toEqual([]);
+    });
+
     it('a newer push replaces an older one still copying; the older one is then refused, so two runs never ping-pong', async () => {
       // A preview on v1. Versions are in push order: v2 is older than v3.
       const sid = (await pushBg('bg-1b', 'v1')).body.scopeId;
