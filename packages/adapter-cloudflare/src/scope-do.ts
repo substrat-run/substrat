@@ -1009,8 +1009,9 @@ const STAGE_GONE = 'the staged load is not here any more (another carry replaced
 /** A competing page zero must leave the stage a live copy owns intact. */
 const STAGE_IN_PROGRESS = 'a different staged load is in progress; retry after its copy finishes';
 // Failed, cancelled and superseded jobs normally discard their stages. This is only a backstop
-// for a lost job record: a job can copy for six hours, then hold a completed stage for one lease
-// before a finish is claimed, and the finish claim lasts two leases. Beyond that, no job can load it.
+// for a lost job record: six hours of copying plus one 30-minute lease while done and a possible
+// two-lease finish claim. At the default lease, the stage is reclaimable after 7.5 hours, when
+// no job can still load it.
 const STAGE_MAX_AGE_MS = 6 * 3_600_000 + 3 * SCOPE_COPY_LEASE_MS;
 
 /** A table a load replays (#2450): its schema, and its rows, read when the load reaches them. */
