@@ -4,8 +4,8 @@ Notifications engine for [Substrat](https://github.com/substrat-run/substrat). I
 occasion a vertical names into email to the people it concerns, with per-person
 preferences, escaped templates and tracked deliveries.
 
-**Not published yet** (`private: true`). The Handlebar demo uses it in-repo until its first
-release is set up.
+Configured for **public npm publication**; the first npm release is pending. The Handlebar
+demo already uses it in-repo.
 
 ## How a vertical uses it
 

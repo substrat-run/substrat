@@ -6,7 +6,7 @@ description: Turning an occasion a vertical names into email — preferences, te
 
 # `engine-notifications` — an occasion, turned into email
 
-Status: **built** — in the repo, composed by the Handlebar demo; not yet published to npm
+Status: **built** — composed by the Handlebar demo and configured for public npm publication; first npm release pending
 
 > Placement and reasons: [K-47](../decisions/K-047-notifications-are-an-engine-composed-by-call-the-kernel-s-part.md).
 > Implementation of [#118](https://github.com/substrat-run/substrat/issues/118). The package's

@@ -68,7 +68,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 | `packages/engine-test-kit` | What an engine's own suite is written against | AGPL, private |
 | `packages/builder-generator` · `packages/builder-workspace` | The builder studio's agent loop and its workspace/snapshot half | AGPL, private |
 | `packages/ui` | Shared UI primitives (dashboard + console) | AGPL, private |
-| `engines/*` | The nine domain engines — `workorder`, `invoicing`, `booking`, `protocol`, `invites`, `metering`, `absence`, `notifications`, `assistant`. `notifications` and `assistant` are private until their first release is set up | AGPL + commercial |
+| `engines/*` | The nine domain engines — `workorder`, `invoicing`, `booking`, `protocol`, `invites`, `metering`, `absence`, `notifications`, `assistant`. `notifications` is configured for public publication; `assistant` is private until its first release is set up | AGPL + commercial |
 | `connectors/*` | Third-party capability connectors (D-18 bucket 3) — host code, never module code. `scrive`, `fortnox` and `planima` are published; `microsoft365` is private until its first release is set up | AGPL + commercial |
 | `demos/*` | Eight directories: the seven demo verticals — `todo`, `ticket0`, `meridian`, `manyfold`, `shop`, `handlebar`, `tock` — plus `auth-server` (a Better Auth issuer, not a vertical) | Apache-2.0, private |
 | `apps/router` | The environment-wide router — hostname → (tenant, scope, surface), then dispatch | private |
