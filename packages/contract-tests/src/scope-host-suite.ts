@@ -118,7 +118,7 @@ export function scopeAdminAuditTransactionSuite(
           const oldExpiry = new Date(Date.now() + 60_000).toISOString();
           await host.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: slug,
             ...(operation === 'keepAlivePendingScopeCopy' ? { kind: 'preview' as const, expiresAt: oldExpiry } : {}) });
-          await host.admin.activateScope(staff, tenant, scope);
+          if (operation !== 'keepAlivePendingScopeCopy') await host.admin.activateScope(staff, tenant, scope);
           const nextExpiry = new Date(Date.now() + 3_600_000).toISOString();
           const move = ulid();
           if (operation === 'keepAlivePendingScopeCopy') {
