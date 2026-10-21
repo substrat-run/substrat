@@ -450,7 +450,7 @@ import type {
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, scopeTupleReader, type ControlPlaneReader } from './checker.js';
 import { settlePlatformRequestIn, type PlatformRequestSettle } from '@substrat-run/kernel';
-import { loadDropsRowsOf } from '@substrat-run/kernel';
+import { loadDropsRowsOf, SCOPE_COPY_LEASE_MS, ulidTime } from '@substrat-run/kernel';
 import { CARRIED_AWAY_KEY, COPY_MARK_CLEARED_KEY, KEPT_COPY_REFUSAL, KEPT_DIVERGENT_KEY, LOAD_STAMP_KEY, STORE_LOCAL_META_KEYS, WRITE_REVISION_KEY, carriedAwayDump, isCopyMarkInsert, isWriteStatement, type CarriedAway, type KeptCopy, type LoadMarker, assertSpineTablesBuilt, clearCopyMarker, dumpRowsInsert, isSpineTable, markCopyOrigin, repointScopeGrants, settleCopiedWork, emittedHere, IS_COPY_SQL, isCopyLoad, isLifecycleWrite, readLifecycle, settleLifecycleAfterLoad, writeLifecycle, spineColumnAdditions, type RepointSource } from '@substrat-run/kernel';
 import { GRANT_CHILDREN_INDEX_DDL, SHAPE_MARKER_INDEX_DDL, grantedEntitiesForContext, type ShapeCursor } from '@substrat-run/kernel';
 
@@ -1007,6 +1007,13 @@ type CheckedLoad =
 
 /** #2450: a commit or a page naming a stage this store no longer holds. */
 const STAGE_GONE = 'the staged load is not here any more (another carry replaced it, or it was already loaded); nothing was loaded';
+/** A competing page zero must leave the stage a live copy owns intact. */
+const STAGE_IN_PROGRESS = 'a different staged load is in progress; retry after its copy finishes';
+// Failed, cancelled and superseded jobs normally discard their stages. This is only a backstop
+// for a lost job record: six hours of copying plus one 30-minute lease while done and a possible
+// two-lease finish claim. At the default lease, the stage is reclaimable after 7.5 hours, when
+// no job can still load it.
+const STAGE_MAX_AGE_MS = 6 * 3_600_000 + 3 * SCOPE_COPY_LEASE_MS;
 
 /** A table a load replays (#2450): its schema, and its rows, read when the load reaches them. */
 type LoadTable = { name: string; ddl: string; columns: string[]; rows: () => Iterable<unknown[]> };
@@ -7521,8 +7528,9 @@ export function defineScopeDO(
      * Stage one page of a dump for a later `commitStagedDump` (#2450). The rows go into this
      * store's own staging tables, untyped, so every cell is kept as it arrived; nothing of the
      * scope's data is touched, and the write revision does not move, so the marker a carry read
-     * here before staging still holds at the commit. Page `0` of a new stage replaces any
-     * other; the following pages must arrive in order. A page already staged (page `0` included)
+     * here before staging still holds at the commit. Page `0` of a different stage is refused
+     * while the current stage can still be loaded; an expired stage can be replaced. The
+     * following pages must arrive in order. A page already staged (page `0` included)
      * answers `staged: false` and changes nothing, so a retried page is harmless.
      */
     stageDumpPage(stageId: string, seq: number, tables: ScopeDumpTable[]): Promise<DoReply<{ staged: boolean }>> {
@@ -7537,8 +7545,20 @@ export function defineScopeDO(
       this.revisionSuspended = true;
       try {
         return this.revision.transactionSync(() => {
+          const held = this.stageHead();
           // A page 0 that already opened this stage is a retry, answered below as one.
-          if (seq === 0 && this.stageHead()?.stageId !== stageId) {
+          if (seq === 0 && held?.stageId !== stageId) {
+            if (held) {
+              // beginTransfer mints stage IDs as ULIDs. A stage from an older caller with a
+              // non-ULID ID cannot prove it has expired, so only its owner may discard it.
+              let openedAt: number;
+              try {
+                openedAt = ulidTime(held.stageId);
+              } catch {
+                throw substratError('conflict', STAGE_IN_PROGRESS);
+              }
+              if (Date.now() - openedAt <= STAGE_MAX_AGE_MS) throw substratError('conflict', STAGE_IN_PROGRESS);
+            }
             this.dropStage();
             for (const ddl of STAGE_TABLES_DDL) this.sql.exec(ddl);
             this.sql.exec(`INSERT INTO _substrat_stage (stage_id, next_seq) VALUES (?, 0)`, stageId);
@@ -7616,14 +7636,16 @@ export function defineScopeDO(
 
     /** Drop a staged load (#2450), if it is still `stageId`'s. A carry that gave up calls it. */
     discardStagedDump(stageId: string): { discarded: boolean } {
-      if (this.stageHead()?.stageId !== stageId) return { discarded: false };
       this.revisionSuspended = true;
       try {
-        this.revision.transactionSync(() => this.dropStage());
+        return this.revision.transactionSync(() => {
+          if (this.stageHead()?.stageId !== stageId) return { discarded: false };
+          this.dropStage();
+          return { discarded: true };
+        });
       } finally {
         this.revisionSuspended = false;
       }
-      return { discarded: true };
     }
 
     /** One staged table's rows, in the order they were staged, a batch at a time. */

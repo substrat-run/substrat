@@ -471,6 +471,13 @@ serving the previous push. Running `create` again pushes a new version, whose co
 replaces the one left running. A copy that fails, or that a newer push, a refresh or a delete
 stops, ends `create` with the reason (a `409`), and `create` never starts the copy over by itself:
 only running it again does.
+If two creates of the same version reach the same preview before either copy job starts, the
+destination keeps the first staged copy. The competing request receives `503` while that first
+page is being staged; the CLI retries this transient response. Once the winner's job is visible,
+the competing request receives the usual `202` progress answer and polls that job. If the short
+`503` retry window ends first, rerun `create` after the active copy finishes. A failed, cancelled
+or superseded job discards its own staged copy. A stage whose job record is lost can be reclaimed
+only after the six-hour copy limit plus its lease safety margin.
 `--refresh` starts from a clean fork, and stops a copy still running, though not a newer push's:
 a refresh of an older version is refused as superseded, as any create of one is. `--ttl` defaults to `72h`; `--ttl none`
 **pins** the preview until you delete it. Default preview pushes use a semver *prerelease* label, so

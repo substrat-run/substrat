@@ -10494,6 +10494,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
                 { retry: retryTransient, alwaysStage: true });
             } catch (e) {
               await settleCarryRetained(c, preview, opts.versionId, move);
+              // The destination keeps one stage. Its refusal proves this call staged nothing:
+              // another carry owns page zero, but may not have started its job yet. A visible
+              // job gives the CLI its normal 202 poll; in the short gap before that, 503 makes
+              // its existing first-call retry wait for the winning handler to finish.
+              if (e instanceof ControlPlaneError && e.status === 409 &&
+                e.message === 'a different staged load is in progress; retry after its copy finishes') {
+                const winner = await readCopyJob(copyJobId('carry', preview.id));
+                if (winner) {
+                  const superseded = supersededRefusal(winner, mine, opts.tag);
+                  if (superseded) throw superseded;
+                  return inProgress(winner);
+                }
+                throw new ControlPlaneError(503, `a carry to preview '${opts.tag}' is staging its first page; retry`);
+              }
               throw e;
             }
             if ('state' in begun) {
@@ -10505,12 +10519,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
                 startedAt: Date.now(), deadline: Date.now() + COPY_JOB_MAX_MS,
               }, begun.state);
               // Another call started this preview's job first: this call's move is not the job's, so
-              // its entries settle and the page it staged goes. A newer push's job refuses this one
-              // now, as its next call would; an older one's is replaced by that next call. A known
-              // limit: two calls of ONE version stage into one store, which keeps a single stage, so
-              // this call's page 0 has replaced the winner's, whose next step then fails (412) with
-              // the preview still serving its old data, and a rerun copies again. Closing it needs
-              // the job's slot taken before the first page is staged (#2461).
+              // its entries settle and its own stage is discarded. The store checks that stage ID,
+              // leaving the winner's stage alone. A newer push's job refuses this one now, as its
+              // next call would; an older one's is replaced by that next call.
               if (job.spec.moveId !== move.moveId) {
                 await settleCarryRetained(c, preview, opts.versionId, move);
                 await move.dest.discardStagedScope(preview.id, begun.state.stageId).catch(() => undefined);
@@ -10525,7 +10536,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         }
         if (carried === undefined) carried = await carryOntoVersion(c, preview, opts.versionId, { dropServingRef: true });
       } catch (e) {
-        if (e instanceof ControlPlaneError && e.status >= 500 && e.status !== 501) {
+        if (e instanceof ControlPlaneError && e.status >= 500 && e.status !== 501 &&
+          !(e.status === 503 && e.message.includes('is staging its first page; retry'))) {
           recordFailure({
             actor,
             operation: 'preview.create',
