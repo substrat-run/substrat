@@ -558,14 +558,12 @@ describe('protected-resource metadata (RFC 9728)', () => {
     );
   });
 
-  /**
-   * A challenge naming a document nobody serves is worse than one naming nothing: the
-   * client spends a round trip on a 404 and learns less than the bare scheme told it.
-   */
-  it('challenges with the bare scheme when no metadata is configured', async () => {
+  it('publishes discovery by default even without an explicit issuer', async () => {
     const res = await post(unauthenticated());
     expect(res.status).toBe(401);
-    expect(res.headers.get('WWW-Authenticate')).toBe('Bearer');
+    expect(res.headers.get('WWW-Authenticate')).toBe(
+      'Bearer resource_metadata="http://localhost/.well-known/oauth-protected-resource/api/mcp"',
+    );
   });
 
   it('keeps the vertical’s own error envelope on the challenged 401', async () => {
@@ -573,8 +571,10 @@ describe('protected-resource metadata (RFC 9728)', () => {
     expect(res.headers.get('content-type')).toMatch(/problem\+json/);
   });
 
-  it('serves no well-known document when metadata is not configured', async () => {
-    expect((await unauthenticated().request('/.well-known/oauth-protected-resource/api/mcp')).status).toBe(404);
+  it('serves metadata without claiming an issuer when auth discovery is unavailable', async () => {
+    const response = await unauthenticated().request('/.well-known/oauth-protected-resource/api/mcp');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ resource: 'http://localhost/api/mcp', bearer_methods_supported: ['header'] });
   });
 });
 
@@ -788,13 +788,13 @@ describe('a token minted for another audience is refused before the resolver', (
     expect(resolved()).toBe(1);
   });
 
-  it('refuses with the bare scheme when no metadata is configured, audience still enforced', async () => {
+  it('enforces audience with default metadata', async () => {
     const a = new Hono();
     mountOperations(a, operations, async () => ({ invoke: async () => ({ ok: true }) }) as never);
     const res = await call(a, A, `Bearer ${jwt({ aud: `${B}/api/mcp` })}`);
     expect(res.status).toBe(401);
     expect(res.headers.get('WWW-Authenticate')).toBe(
-      `Bearer error="invalid_token", error_description="this token was not issued for ${A}/api/mcp"`,
+      `Bearer resource_metadata="${A}/.well-known/oauth-protected-resource/api/mcp", error="invalid_token", error_description="this token was not issued for ${A}/api/mcp"`,
     );
   });
 });

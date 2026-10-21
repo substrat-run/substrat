@@ -20,6 +20,7 @@ import { mcpResourceOf } from '@substrat-run/contracts';
 import type { AuthProvider, AuthSubject, ResolveOptions } from './provider.js';
 import { oidcAuthProvider, type DelegationOption } from './oidc.js';
 import { cookieDomainDecision } from './cookie-domain.js';
+import { mcpDiscovery } from './mcp-discovery.js';
 
 /**
  * Standard OIDC as a full RELYING PARTY `AuthProvider` — the browser-login counterpart
@@ -193,6 +194,8 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
   const env = envOf(cfg);
 
   async function handle(request: Request): Promise<Response> {
+    const discovery = mcpDiscovery(request, cfg.issuer);
+    if (discovery) return discovery;
     const url = new URL(request.url);
     const origin = url.origin;
     // The flow cookie stays HOST-ONLY even with a cookieDomain: the code flow begins and

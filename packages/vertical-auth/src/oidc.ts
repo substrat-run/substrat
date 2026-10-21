@@ -1,6 +1,7 @@
 import { jwtVerify, createRemoteJWKSet, type JWTPayload, type JWTVerifyGetKey } from 'jose';
 import { discoverIssuer, isAllowedEndpoint, issuerRefusal } from '@substrat-run/oidc-rp/discovery';
 import type { AuthProvider, AuthSubject, ResolveOptions } from './provider.js';
+import { mcpDiscovery } from './mcp-discovery.js';
 
 /**
  * Standard OIDC as an `AuthProvider` — token-based, so it covers Supabase (now an OIDC
@@ -9,8 +10,8 @@ import type { AuthProvider, AuthSubject, ResolveOptions } from './provider.js';
  * VERIFIES the presented JWT against the issuer's JWKS and reads the subject. There are no
  * server-side auth endpoints to run, so `handle` is informational.
  *
- * workerd-safe: `jose`, Web Crypto and `@substrat-run/oidc-rp/discovery` (the bound discovery
- * the login path uses; no login flow and no `hono`).
+ * workerd-safe: `jose`, Web Crypto, the shared discovery path, and
+ * `@substrat-run/oidc-rp/discovery` (no login flow and no `hono`).
  */
 export interface OidcConfig {
   /**
@@ -362,7 +363,9 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
   }
 
   return {
-    async handle() {
+    async handle(request) {
+      const discovery = mcpDiscovery(request, cfg.issuer);
+      if (discovery) return discovery;
       return Response.json({
         provider: 'oidc',
         issuer: cfg.issuer,

@@ -81,21 +81,19 @@ WWW-Authenticate: Bearer resource_metadata="https://desk.example/.well-known/oau
 }
 ```
 
-**This is the one thing that cannot be derived**, and therefore the one line of wiring:
+The default mount discovers the issuer through the vertical's ordinary `/api/auth/*`
+route. `vertical-auth` answers the read-only `/api/auth/mcp-authorization-servers`
+request from the same configuration as normal sign-in. The lookup stays inside the
+app and resolves per request, so one serving script can answer for many scopes and
+issuers. No per-vertical MCP wiring or manual client ID is needed with the team Auth
+Server, which supports anonymous dynamic client registration.
 
-```ts
-import { authorizationServersOf } from '@substrat-run/vertical-auth';
-
-mountApi(app, stub, async (c) => authorizationServersOf(await instanceConfig(c.env, nodeFor(c.req.raw, c.env))));
-```
-
-The only thing that knows a vertical's issuer is its auth composition, and on a hosted
-install the issuer is *per-scope configuration* — one serving script answers for many
-desks, each with its own. So it is resolved per request rather than fixed at mount.
-
-Omit it and the endpoint still works; the challenge is a bare `Bearer` and a token is
-configured out of band. A challenge is never pointed at a document that is not served —
-naming a 404 costs the client a round trip and tells it less than the bare scheme did.
+Custom auth implementations can explicitly supply
+`mcp.protectedResource.authorizationServers`. An auth implementation without the
+standard discovery route publishes no issuer until that override is configured.
+Existing deployments need updated `vertical-host` and `vertical-auth` packages and a
+redeploy. Both root and path-inserted protected-resource metadata URLs must reach the
+worker rather than an asset fallback.
 
 An instance nobody has configured a login for publishes a document with **no**
 `authorization_servers` rather than an empty list: "this resource has no issuer" and

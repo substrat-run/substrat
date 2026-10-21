@@ -45,7 +45,7 @@ const ORIGIN = 'http://localhost:8877';
 const ADMIN = { email: 'admin@auth.test', password: 'admin-demo-pass', name: 'Demo Admin' };
 const USER = { email: 'member@auth.test', password: 'member-demo-pass', name: 'A Member' };
 /** An MCP client's callback lives at its own vendor, never at the vertical. */
-const CLIENT_REDIRECT = 'https://mcp-client.example/oauth/callback';
+const CLIENT_REDIRECT = 'https://claude.ai/api/mcp/auth_callback';
 
 const DESK_A = 'https://desk-a.example';
 const DESK_B = 'https://desk-b.example';
@@ -121,8 +121,8 @@ async function pkce(): Promise<{ verifier: string; challenge: string }> {
 }
 
 /** A public client, registered by itself — what Claude and every other MCP client does. */
-async function registerMcpClient(): Promise<string> {
-  const res = await call('/api/auth/oauth2/register', {
+async function registerMcpClient(path = '/api/auth/oauth2/register'): Promise<string> {
+  const res = await call(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -220,6 +220,7 @@ async function verticalAt(): Promise<Hono> {
   const jwks = (await (await call('/api/auth/jwks')).json()) as JSONWebKeySet;
   const verifier = oidcAuthProvider({ issuer: ORIGIN, keys: createLocalJWKSet(jwks) });
   const app = new Hono();
+  app.on(['GET', 'POST'], '/api/auth/*', (c) => verifier.handle(c.req.raw));
   mountOperations(
     app,
     { 'desk/whoami': { summary: 'Who is calling', http: { method: 'GET', path: '/me' } } } as const,
@@ -228,7 +229,6 @@ async function verticalAt(): Promise<Hono> {
       if (!subject) throw new HTTPException(401, { message: 'unauthenticated' });
       return { invoke: async () => ({ sub: subject.sub }) } as never;
     },
-    { mcp: { protectedResource: { authorizationServers: [ORIGIN] } } },
   );
   return app;
 }
@@ -257,17 +257,34 @@ describe('an MCP client reaches a vertical with nothing configured by hand (#161
     expect(doc.authorization_servers).toEqual([ORIGIN]);
   });
 
-  it('DCR → authorize with resource → login → token with aud → the vertical accepts it', async () => {
+  it('default discovery → DCR → authorize → login → audience-bound token → tool', async () => {
     register(APP_A, [RESOURCE_A]);
-    const clientId = await registerMcpClient();
-    const tokens = await tokensFor(clientId, RESOURCE_A);
+    const vertical = await verticalAt();
+    const initialize = await vertical.request(`${DESK_A}/api/mcp`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+    });
+    expect(initialize.status).toBe(401);
+    const metadataUrl = initialize.headers.get('www-authenticate')?.match(/resource_metadata="([^"]+)"/)?.[1];
+    expect(metadataUrl).toBe(`${DESK_A}/.well-known/oauth-protected-resource/api/mcp`);
+    const resource = await (await vertical.request(metadataUrl!)).json() as {
+      resource: string; authorization_servers: string[];
+    };
+    expect(resource.resource).toBe(RESOURCE_A);
+    expect(resource.authorization_servers).toEqual([ORIGIN]);
+    const discovery = await call(new URL('/.well-known/oauth-authorization-server', resource.authorization_servers[0]).pathname);
+    expect(discovery.status).toBe(200);
+    const metadata = await discovery.json() as { issuer: string; registration_endpoint: string };
+    expect(metadata.issuer).toBe(resource.authorization_servers[0]);
+    expect(new URL(metadata.registration_endpoint).origin).toBe(metadata.issuer);
+    const clientId = await registerMcpClient(new URL(metadata.registration_endpoint).pathname);
+    const tokens = await tokensFor(clientId, resource.resource);
 
     // A JWT, not an opaque string: the resource made it one, and its audience is the endpoint.
     // `openid` adds the issuer's userinfo endpoint beside it, which the vertical tolerates.
     const aud = decodeJwt(tokens.access_token).aud;
     expect(Array.isArray(aud) ? aud : [aud]).toContain(RESOURCE_A);
 
-    const vertical = await verticalAt();
     const res = await callTool(vertical, DESK_A, tokens.access_token);
     expect(res.status).toBe(200);
     // The tool ran as the person who signed in, so the principal came from THIS token.

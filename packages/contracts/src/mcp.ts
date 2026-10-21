@@ -44,3 +44,6 @@ export function mcpResourceOf(origin: string, path: string = MCP_ENDPOINT_PATH):
  * The dashboard writes it. `demos/auth-server/src/resources.ts` turns it into rows.
  */
 export const MCP_RESOURCES_CONFIG_PREFIX = 'substrat:resources:';
+
+/** Read-only auth-composition discovery, handled locally through the vertical's auth route. */
+export const MCP_AUTHORIZATION_SERVERS_PATH = '/api/auth/mcp-authorization-servers';
