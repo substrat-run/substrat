@@ -115,7 +115,7 @@ describe('EntityTimeline', () => {
     } as never);
     vi.spyOn(api, 'appInvocationEvents').mockResolvedValue({ events: [moved, entry('01Z', { type: 'mail.queued', invocationId: 'INV00000000002' })], truncated: false });
 
-    await act(async () => root.render(<EntityTimeline scopeId="s" entityType="account" entityId="a1" stateField="status" onClose={() => undefined} />));
+    await act(async () => root.render(<EntityTimeline teamId="team-a" scopeId="s" entityType="account" entityId="a1" stateField="status" onClose={() => undefined} />));
     expect(types()).toEqual(['01B', '01A']);
     expect(container.textContent).toContain('append-only · newest first');
 
@@ -137,7 +137,7 @@ describe('EntityTimeline', () => {
     vi.spyOn(api, 'appEntityHistory').mockResolvedValue({ entries: [broken], nextCursor: null } as never);
     vi.spyOn(api, 'appEventCause').mockResolvedValue({ chain: [broken], terminal: 'operation' });
     vi.spyOn(api, 'appEventEffects').mockResolvedValue({ root: { event: broken, deliveries: [], effects: [] }, terminal: 'complete', count: 1 } as never);
-    await act(async () => root.render(<EntityTimeline scopeId="s" entityType="account" entityId="a1" onClose={() => undefined} />));
+    await act(async () => root.render(<EntityTimeline teamId="team-a" scopeId="s" entityType="account" entityId="a1" onClose={() => undefined} />));
     await click(container.querySelector('[data-event-id="01C"] button[aria-expanded]')!);
     expect(container.textContent).toContain('payload could not be read (payload: not valid JSON)');
     expect(container.textContent).not.toContain('payload erased');
@@ -150,11 +150,11 @@ describe('EntityTimeline', () => {
       return { entries: [entry(id === 'a1' ? '01A' : '01B')], nextCursor: id === 'a1' ? 'c1' : 'c2' } as never;
     });
     const later = () => [...container.querySelectorAll('button')].find((b) => /Read later events|Reading…/.test(b.textContent ?? ''))!;
-    await act(async () => root.render(<EntityTimeline scopeId="s" entityType="account" entityId="a1" onClose={() => undefined} />));
+    await act(async () => root.render(<EntityTimeline teamId="team-a" scopeId="s" entityType="account" entityId="a1" onClose={() => undefined} />));
     await click(later());
     expect(later().disabled).toBe(true);
 
-    await act(async () => root.render(<EntityTimeline scopeId="s" entityType="account" entityId="a2" onClose={() => undefined} />));
+    await act(async () => root.render(<EntityTimeline teamId="team-a" scopeId="s" entityType="account" entityId="a2" onClose={() => undefined} />));
     expect(later().textContent).toBe('Read later events');
     expect(later().disabled).toBe(false);
     await click(later());
@@ -168,7 +168,7 @@ describe('EntityTimeline', () => {
       return { entries: [entry(id === 'a1' ? '01A' : '01B')], nextCursor: id === 'a1' ? 'c1' : null } as never;
     });
     const later = () => [...container.querySelectorAll('button')].find((b) => /Read later events|Reading…/.test(b.textContent ?? ''))!;
-    const open = (id: string) => act(async () => root.render(<EntityTimeline scopeId="s" entityType="account" entityId={id} onClose={() => undefined} />));
+    const open = (id: string) => act(async () => root.render(<EntityTimeline teamId="team-a" scopeId="s" entityType="account" entityId={id} onClose={() => undefined} />));
     await open('a1');
     await click(later()); // the first walk's read, left in flight
     await open('a2');
@@ -188,7 +188,7 @@ describe('EntityTimeline', () => {
 
   it('says the newest events are missing when the walk has more pages', async () => {
     vi.spyOn(api, 'appEntityHistory').mockResolvedValue({ entries: [created], nextCursor: 'c1' } as never);
-    await act(async () => root.render(<EntityTimeline scopeId="s" entityType="account" entityId="a1" onClose={() => undefined} />));
+    await act(async () => root.render(<EntityTimeline teamId="team-a" scopeId="s" entityType="account" entityId="a1" onClose={() => undefined} />));
     expect(container.textContent).toContain('the newest are not loaded yet');
   });
 });

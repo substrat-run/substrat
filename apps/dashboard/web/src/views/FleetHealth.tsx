@@ -18,10 +18,12 @@ import { VERDICTS, compact, duration, errorRate, fleetRows, type FleetRow, type 
 const COLS = '120px 200px minmax(0,1fr) 96px 80px 80px';
 
 export function FleetHealth({
+  teamId,
   apps,
   onOpen,
   onRetry,
 }: {
+  teamId: string;
   apps: AppRow[];
   /** Where a row lands — the app page, or on Pulse the app's schedules. */
   onOpen: (scopeId: string) => void;
@@ -34,6 +36,8 @@ export function FleetHealth({
 
   useEffect(() => {
     let live = true;
+    setHealth(undefined);
+    setMetrics(undefined);
     if (DEV_MOCK) {
       setHealth(MOCK_FLEET_HEALTH);
       setMetrics(MOCK_APP_METRICS);
@@ -42,11 +46,11 @@ export function FleetHealth({
     // Two reads, and neither gates the other: a missing verdict still leaves the
     // traffic, and missing traffic still leaves the verdicts.
     api.fleetHealth().then((r) => live && setHealth(r.rows)).catch(() => live && setHealth(null));
-    api.appMetrics(24).then((m) => live && setMetrics(m)).catch(() => live && setMetrics(null));
+    api.appMetrics(teamId, 24).then((m) => live && setMetrics(m)).catch(() => live && setMetrics(null));
     return () => {
       live = false;
     };
-  }, []);
+  }, [teamId]);
 
   const rows = useMemo(() => fleetRows({ apps, health: health ?? null, metrics: metrics ?? null }), [apps, health, metrics]);
   const counts = useMemo(() => {

@@ -970,14 +970,14 @@ export function App() {
         // walked for a deep link — the app is merely unresolved, not missing: the
         // skeleton, never a flashed 404.
         appsLoading || appsCursor !== null ? (
-          <Apps apps={apps} loading onCreate={() => go('/apps/new')} onOpen={() => {}} onRetry={() => {}} />
+          <Apps teamId={me.currentTeamId} apps={apps} loading onCreate={() => go('/apps/new')} onOpen={() => {}} onRetry={() => {}} />
         ) : (
           <NotFound label="That app could not be found." onBack={() => go('/apps')} />
         )
       ) : route.section === 'overview' ? (
         <Overview apps={apps} loading={appsLoading} teamName={org} onCreate={() => go('/apps/new')} onOpen={(s) => go(`/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={loadMoreApps} personName={personName} />
       ) : route.section === 'apps' ? (
-        <Apps apps={apps} loading={appsLoading} onCreate={() => go('/apps/new')} onOpen={(s) => go(`/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={() => void loadMoreApps()} />
+        <Apps teamId={me.currentTeamId} apps={apps} loading={appsLoading} onCreate={() => go('/apps/new')} onOpen={(s) => go(`/apps/${s}/overview`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={() => void loadMoreApps()} />
       ) : route.section === 'verticals' && openVertical ? (
         <VerticalDetail
           teamId={me.currentTeamId}

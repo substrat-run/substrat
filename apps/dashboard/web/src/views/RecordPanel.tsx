@@ -12,11 +12,13 @@ import { useEscapeLayer } from '../lib/escape-stack';
  * has one (#1916); the lifecycle is read here because a link carries only the record.
  */
 export function RecordPanel({
+  teamId,
   scopeId,
   entityType,
   entityId,
   onClose,
 }: {
+  teamId: string;
   scopeId: string;
   entityType: string;
   entityId: string;
@@ -53,6 +55,7 @@ export function RecordPanel({
         {/* Wait for the model: the card reads ahead a different number of pages with a lifecycle. */}
         {lifecycle !== undefined && (
           <EntityTimeline
+            teamId={teamId}
             scopeId={scopeId}
             entityType={entityType}
             entityId={entityId}

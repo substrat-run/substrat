@@ -28,11 +28,13 @@ const LEVEL: Record<LogPattern['dominant'], { tag: string; color: string }> = {
 const GRID = '34px minmax(0,1fr) 180px 72px 56px';
 
 export function PatternsMode({
+  teamId,
   scopeId,
   window,
   nonce,
   onOpenPattern,
 }: {
+  teamId: string;
   scopeId: string;
   /** The window the page shows — sent verbatim, so the histograms are cut on this axis. */
   window: { from: string; to: string };
@@ -50,7 +52,7 @@ export function PatternsMode({
       return;
     }
     const q = new URLSearchParams({ since: window.from, until: window.to, buckets: String(BUCKETS) });
-    api.appLogPatterns(scopeId, q).then(
+    api.appLogPatterns(teamId, scopeId, q).then(
       (a) => live && setAnswer(a),
       (e: unknown) =>
         live &&
@@ -66,7 +68,7 @@ export function PatternsMode({
     return () => {
       live = false;
     };
-  }, [scopeId, window.from, window.to, nonce]);
+  }, [teamId, scopeId, window.from, window.to, nonce]);
 
   const quiet = { padding: 16, fontSize: 13, color: 'var(--text-tertiary)' } as const;
   if (answer === null) return <div style={quiet}>Grouping lines…</div>;

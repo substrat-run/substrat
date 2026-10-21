@@ -52,6 +52,7 @@ function cursorLabel(w: { from: string; to: string }): string {
  * would be a second place the same filter could be half-applied.
  */
 export function TenantLogs({
+  teamId,
   filters = {},
   onFilters,
   onOpenRequest,
@@ -62,6 +63,7 @@ export function TenantLogs({
   window: cursor,
   embedded = false,
 }: {
+  teamId: string;
   scopeId: string;
   filters?: ObsQuery;
   onFilters?: (filters: Partial<ObsQuery>) => void;
@@ -115,7 +117,7 @@ export function TenantLogs({
                     l.timestamp >= Date.parse(cursor.from) &&
                     l.timestamp <= Date.parse(cursor.to))),
             )
-          : await api.appTenantLogs(scopeId, {
+          : await api.appTenantLogs(teamId, scopeId, {
               level,
               search,
               // The cursor's window REPLACES the range; sending both would let `hours`,
@@ -143,7 +145,7 @@ export function TenantLogs({
     return () => {
       live = false;
     };
-  }, [scopeId, level, search, hours, nonce, cursor?.from, cursor?.to, invocationId, template]);
+  }, [teamId, scopeId, level, search, hours, nonce, cursor?.from, cursor?.to, invocationId, template]);
 
   const quiet = { padding: 16, fontSize: 13, color: 'var(--text-tertiary)' };
   return (

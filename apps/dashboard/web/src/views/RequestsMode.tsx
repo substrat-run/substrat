@@ -56,6 +56,7 @@ function failure(e: unknown): { error: string } {
 }
 
 export function RequestsMode({
+  teamId,
   scopeId,
   q,
   window,
@@ -64,6 +65,7 @@ export function RequestsMode({
   onRange,
   onOpenCall,
 }: {
+  teamId: string;
   scopeId: string;
   q: ObsQuery;
   /**
@@ -103,15 +105,15 @@ export function RequestsMode({
       setFacets(mockRequestFacets(where, span));
       setRows(mockRequests(where, span, LIST_LIMIT));
     } else {
-      void settle(setVolume, () => api.appRequestVolume(scopeId, requestReadQuery(q, readWindow, { buckets: BUCKETS })));
-      void settle(setFacets, () => api.appRequestFacets(scopeId, requestReadQuery(q, readWindow)));
-      void settle(setRows, () => api.appRequests(scopeId, requestReadQuery(q, readWindow, { limit: LIST_LIMIT })));
+      void settle(setVolume, () => api.appRequestVolume(teamId, scopeId, requestReadQuery(q, readWindow, { buckets: BUCKETS })));
+      void settle(setFacets, () => api.appRequestFacets(teamId, scopeId, requestReadQuery(q, readWindow)));
+      void settle(setRows, () => api.appRequests(teamId, scopeId, requestReadQuery(q, readWindow, { limit: LIST_LIMIT })));
     }
     return () => {
       live = false;
     };
     // `whereKey` stands for `where`/`q`'s facet keys; the window is its two instants.
-  }, [scopeId, whereKey, window.from, window.to, nonce]);
+  }, [teamId, scopeId, whereKey, window.from, window.to, nonce]);
 
   const levelSel = selected(q, 'level');
   return (

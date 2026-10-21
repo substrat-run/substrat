@@ -21,11 +21,13 @@ import { mockCallLogs } from '../lib/mock-timeline';
  * for a call whose lines were simply outside it.
  */
 export function InvocationLogsStrip({
+  teamId,
   scopeId,
   invocationId,
   occurredAt,
   anchorNoun = 'event',
 }: {
+  teamId: string;
   scopeId: string;
   invocationId: string;
   /** The instant the event was recorded — the anchor the read's window is built around. */
@@ -50,7 +52,7 @@ export function InvocationLogsStrip({
       return;
     }
     api
-      .appTenantLogs(scopeId, { invocationId, since: window.since, until: window.until, limit: 100 })
+      .appTenantLogs(teamId, scopeId, { invocationId, since: window.since, until: window.until, limit: 100 })
       .then((r) => live && setLogs(r))
       .catch((e) => {
         if (!live) return;
@@ -67,7 +69,7 @@ export function InvocationLogsStrip({
     return () => {
       live = false;
     };
-  }, [scopeId, invocationId, occurredAt, anchorNoun]);
+  }, [teamId, scopeId, invocationId, occurredAt, anchorNoun]);
 
   if (err) return <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{err}</div>;
   if (!logs) return <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Reading the call’s log lines…</div>;

@@ -38,7 +38,7 @@ describe('RequestSlideOver', () => {
   });
 
   const render = async (onClose = vi.fn()) => {
-    await act(async () => root.render(<RequestSlideOver scopeId="app-a" invocationId="CALL1" atMs={END} onClose={onClose} />));
+    await act(async () => root.render(<RequestSlideOver teamId="team-a" scopeId="app-a" invocationId="CALL1" atMs={END} onClose={onClose} />));
     // Let the chained reads settle.
     await act(async () => new Promise((r) => setTimeout(r, 0)));
     return onClose;

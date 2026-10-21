@@ -157,6 +157,7 @@ describe('RequestsMode', () => {
     await act(async () =>
       root.render(
         <RequestsMode
+          teamId="team-a"
           scopeId="app-a"
           q={{}}
           window={window}
@@ -177,8 +178,8 @@ describe('RequestsMode', () => {
     const l = vi.spyOn(api, 'appRequests').mockResolvedValue([row()]);
     await render({ q: { op: 'acme/assign' } });
     for (const spy of [v, f, l]) {
-      const query = spy.mock.calls[0]![1] as URLSearchParams;
-      expect(spy.mock.calls[0]![0]).toBe('app-a');
+      const query = spy.mock.calls[0]![2] as URLSearchParams;
+      expect(spy.mock.calls[0]!.slice(0, 2)).toEqual(['team-a', 'app-a']);
       expect(query.getAll('operation')).toEqual(['acme/assign']);
       // The chart's own window, verbatim — never `hours`, which the plane would anchor to
       // its own clock while the bars are drawn against this one.
@@ -186,7 +187,7 @@ describe('RequestsMode', () => {
       expect(query.get('until')).toBe(window.to);
       expect(query.get('hours')).toBeNull();
     }
-    expect((v.mock.calls[0]![1] as URLSearchParams).get('buckets')).toBe('90');
+    expect((v.mock.calls[0]![2] as URLSearchParams).get('buckets')).toBe('90');
     const text = container.textContent!;
     // The footer names the window's total from the facet read.
     expect(text).toContain('of 60 requests in this window');

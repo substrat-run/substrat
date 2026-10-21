@@ -8,7 +8,7 @@ import { ulid } from '@substrat-run/kernel';
 import { MODULES, provisionDashboard } from '../src/index.js';
 
 /**
- * `GET /api/apps/:scopeId/observability/logs?invocationId=` (#1525).
+ * `GET /api/teams/:teamId/apps/:scopeId/observability/logs?invocationId=` (#1525, #2170).
  *
  * Driven through the WORKER because the fact under test is a route forwarding a
  * parameter: the authority's own suite proves `tenantLogs` can put the id on the wire, and
@@ -97,7 +97,8 @@ describe('the app logs route forwards an invocation id (#1525)', () => {
           const u = new URL(String(url));
           const path = u.pathname.replace(/^\/api/, '');
           if (path === '/tenant-tokens') return Response.json({ token: 'tenant-token' });
-          if (path === '/observability/tenant-logs' || path === '/observability/tenant-metrics' || path === '/observability/tenant-metrics-series') {
+          if (path === '/service-refs') return Response.json({ entries: [], verticalsTruncated: false });
+          if (path === '/observability/tenant-logs' || path === '/observability/tenant-metrics' || path === '/observability/tenant-metrics-series' || path === '/observability/metrics' || path === '/observability/logs') {
             logReads.push(u);
             return Response.json([]);
           }
@@ -121,7 +122,7 @@ describe('the app logs route forwards an invocation id (#1525)', () => {
 
   const read = (scope: string, query = '') =>
     app.request(
-      `/api/apps/${scope}/observability/logs${query}`,
+      `/api/teams/${tenant}/apps/${scope}/observability/logs${query}`,
       { headers: { cookie: 'sb_session=sub-owner' } },
       env,
     );
@@ -161,14 +162,14 @@ describe('the app logs route forwards an invocation id (#1525)', () => {
     expect((await asked(`invocation?invocationId=${CALL}`)).status).toBe(404);
     expect((await asked(`cause?eventId=${CALL}`)).status).toBe(404);
     expect((await asked(`effects?eventId=${CALL}`)).status).toBe(404);
-    expect((await asked(`observability/logs?invocationId=${CALL}`)).status).toBe(404);
+    expect((await app.request(`/api/teams/${tenant}/apps/${stranger}/observability/logs?invocationId=${CALL}`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(404);
     expect(planeReads).toEqual([]);
     expect(logReads).toEqual([]);
   });
 
   it('forwards an absolute metric window and confines both aggregate and chart reads to owned apps', async () => {
     const bounds = new URLSearchParams({ since: '2026-09-01T10:07:00Z', until: '2026-09-01T10:29:00Z', hours: '72' });
-    for (const path of [`/api/apps/${appScope}/observability/metrics`, '/api/observability/traffic']) {
+    for (const path of [`/api/teams/${tenant}/apps/${appScope}/observability/metrics`, `/api/teams/${tenant}/observability/traffic`]) {
       const response = await app.request(`${path}?${bounds}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
       expect(response.status).toBe(200);
       const sent = logReads.at(-1)!;
@@ -179,19 +180,32 @@ describe('the app logs route forwards an invocation id (#1525)', () => {
     }
     const count = logReads.length;
     const foreign = scopeId.parse(ulid());
-    expect((await app.request(`/api/observability/traffic?${bounds}&scopeId=${foreign}`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(404);
+    expect((await app.request(`/api/teams/${tenant}/observability/traffic?${bounds}&scopeId=${foreign}`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(404);
     expect(logReads).toHaveLength(count);
-    expect((await app.request(`/api/observability/traffic?since=bad&until=bad`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(400);
+    expect((await app.request(`/api/teams/${tenant}/observability/traffic?since=bad&until=bad`, { headers: { cookie: 'sb_session=sub-owner' } }, env)).status).toBe(400);
   });
 
   it('uses the session tenant for connector calls on the dashboard route', async () => {
     const bounds = new URLSearchParams({ since: '2026-09-01T10:00:00Z', until: '2026-09-01T10:45:00Z', hours: '1' });
-    const response = await app.request(`/api/observability/connector-calls?${bounds}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+    const response = await app.request(`/api/teams/${tenant}/observability/connector-calls?${bounds}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ available: true, buckets: [{ provider: 'mail', calls: 2, durationP95: 80 }] });
     expect(logReads.at(-1)!.pathname).toBe(`/api/tenants/${tenant}/connections/calls`);
     expect(logReads.at(-1)!.searchParams.get('since')).toBe('2026-09-01T10:00:00.000Z');
-    expect((await app.request('/api/observability/connector-calls', {}, env)).status).toBe(401);
+    expect((await app.request(`/api/teams/${tenant}/observability/connector-calls`, {}, env)).status).toBe(401);
+  });
+
+  it('serves every declared read for a member of the path team', async () => {
+    const paths = [
+      '/observability/metrics', '/observability/logs?service=unknown',
+      `/apps/${appScope}/observability/metrics`, '/observability/tenant-metrics-series',
+      '/observability/connector-calls', '/observability/business-volumes',
+      '/observability/traffic', '/observability/app-metrics',
+    ];
+    for (const path of paths) {
+      const res = await app.request(`/api/teams/${tenant}${path}`, { headers: { cookie: 'sb_session=sub-owner' } }, env);
+      expect(res.status, `${path}: ${await res.clone().text()}`).toBe(200);
+    }
   });
 
 });

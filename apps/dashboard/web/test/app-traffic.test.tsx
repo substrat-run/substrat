@@ -120,7 +120,7 @@ describe('App › Overview traffic card (#1767)', () => {
     );
     vi.spyOn(api, 'appOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
     const metrics = vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
-    await act(async () => root.render(<AppTraffic scopeId="app-a" surfaces={[]} />));
+    await act(async () => root.render(<AppTraffic teamId="team-a" scopeId="app-a" surfaces={[]} />));
     return { traffic, metrics };
   };
 
@@ -135,7 +135,7 @@ describe('App › Overview traffic card (#1767)', () => {
     });
     const zoomed = { since: '2026-09-01T12:00:00.000Z', until: '2026-09-01T14:00:00.000Z' };
     expect(traffic).toHaveBeenLastCalledWith('app-a', 24, zoomed);
-    expect(metrics).toHaveBeenLastCalledWith('app-a', 24, zoomed);
+    expect(metrics).toHaveBeenLastCalledWith('team-a', 'app-a', 24, zoomed);
     expect(container.textContent).toContain('12:00 → 14:00 UTC · 15 min bars');
     await act(async () => [...container.querySelectorAll('a')].find((a) => a.textContent === 'Undo zoom')!.click());
     expect(traffic).toHaveBeenLastCalledWith('app-a', 24, undefined);
@@ -148,7 +148,7 @@ describe('App › Overview traffic card (#1767)', () => {
     vi.spyOn(api, 'appOverlays').mockResolvedValue({ markers: [], spans: [], truncated: false });
     const metrics = vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
     const rows = [{ scopeId: 'app-a', vertical: null, surface: 'api', requests: 1234, errors: 5, durationP50: 10, durationP95: 20 }];
-    await act(async () => root.render(<AppTraffic scopeId="app-a" surfaces={[]} metrics24={{ state: 'ok', rows }} />));
+    await act(async () => root.render(<AppTraffic teamId="team-a" scopeId="app-a" surfaces={[]} metrics24={{ state: 'ok', rows }} />));
     expect(metrics).not.toHaveBeenCalled();
     expect(container.textContent).toContain('1,234');
     const plot = container.querySelector('[data-traffic-plot] rect')!;
@@ -158,7 +158,7 @@ describe('App › Overview traffic card (#1767)', () => {
       pointer(plot, 'pointerup', 280);
     });
     expect(metrics).toHaveBeenCalledTimes(1);
-    expect(metrics).toHaveBeenLastCalledWith('app-a', 24, { since: '2026-09-01T12:00:00.000Z', until: '2026-09-01T14:00:00.000Z' });
+    expect(metrics).toHaveBeenLastCalledWith('team-a', 'app-a', 24, { since: '2026-09-01T12:00:00.000Z', until: '2026-09-01T14:00:00.000Z' });
   });
 
   it('the Overview reads 24h metrics once, and the traffic card rides that read', async () => {
@@ -167,16 +167,16 @@ describe('App › Overview traffic card (#1767)', () => {
     const metrics = vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
     window.matchMedia = ((q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
     const Both = () => {
-      const m = useTenantMetrics('app-a');
+      const m = useTenantMetrics('team-a', 'app-a');
       return (
         <>
-          <AppTraffic scopeId="app-a" surfaces={[]} metrics24={m} />
+          <AppTraffic teamId="team-a" scopeId="app-a" surfaces={[]} metrics24={m} />
         </>
       );
     };
     await act(async () => root.render(<Both />));
     expect(metrics).toHaveBeenCalledTimes(1);
-    expect(metrics).toHaveBeenCalledWith('app-a', 24);
+    expect(metrics).toHaveBeenCalledWith('team-a', 'app-a', 24);
   });
 
   it('a click pins its bar, and the pin opens the logs for exactly that window', async () => {
@@ -201,8 +201,9 @@ describe('App › Overview traffic card (#1767)', () => {
     await act(async () =>
       root.render(
         <>
-          <AppTraffic scopeId="app-a" surfaces={[]} />
+          <AppTraffic teamId="team-a" scopeId="app-a" surfaces={[]} />
           <Pulse
+            teamId="team-a"
             apps={[{ app_scope_id: 'app-a', name: 'App A', vertical_slug: 'helpdesk', status: 'active' } as AppRow]}
             scopeId="app-a"
             hours={24}
@@ -280,11 +281,11 @@ describe('App › Overview traffic card (#1767)', () => {
     vi.spyOn(api, 'appTraffic').mockResolvedValue(series);
     vi.spyOn(api, 'appTenantMetrics').mockResolvedValue([]);
     const overlays = vi.spyOn(api, 'appOverlays').mockRejectedValue(new Error('down'));
-    await act(async () => root.render(<AppTraffic scopeId="app-a" surfaces={[]} />));
+    await act(async () => root.render(<AppTraffic teamId="team-a" scopeId="app-a" surfaces={[]} />));
     expect(container.textContent).toContain('Change overlays are unavailable. Traffic is still shown.');
     expect(container.querySelector('[data-traffic-plot]')).not.toBeNull();
     overlays.mockResolvedValue({ markers: [], spans: [], truncated: false, incompleteSources: ['migrations'], unavailableSources: ['schedules'] });
-    await act(async () => root.render(<AppTraffic scopeId="app-b" surfaces={[]} />));
+    await act(async () => root.render(<AppTraffic teamId="team-a" scopeId="app-b" surfaces={[]} />));
     expect(container.textContent).not.toContain('Change overlays are unavailable');
     expect(container.textContent).toContain('Partial change history: migrations. Older records may be omitted.');
     expect(container.textContent).toContain('Unavailable change sources: schedules.');
