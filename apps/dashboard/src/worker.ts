@@ -4934,12 +4934,13 @@ function teamScope({ host, node }: TeamContext) {
  * ownership and revokes the roster; confirmation is checked against this team's name.
  * Apps are deprovisioned, the tenant is tombstoned, and identity links are severed.
  */
-async function deleteTeamIn({ c, host, node }: TeamContext, confirm: string): Promise<{ deleted: true }> {
+async function deleteTeamIn(ctx: TeamContext, confirm: string): Promise<{ deleted: true }> {
+  const { c, host, node } = ctx;
   const team = await host.admin.getTenant(STAFF, node.tenantId);
   if (!team || confirm.trim().toLowerCase() !== team.name.trim().toLowerCase()) {
     throw new HTTPException(400, { message: 'type the organization name to confirm deletion' });
   }
-  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const dash = await teamScope(ctx);
   // Owner check + roster revocation, in-scope, BEFORE any platform effect.
   const { members } = (await dash.invoke('dashboard/delete-team', {})) as {
     members: Array<{ principal: string; roleKey: string }>;
