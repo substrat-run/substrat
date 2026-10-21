@@ -355,7 +355,7 @@ jobs:
       # the driver's class is constructed. A change that is not re-emitted deploys the
       # old door.
       - run: pnpm lint:store-entry --check
-      # #2245: a worker deployed with no node flag statically imports no node builtin. A shared
+      # #2245: a worker deployed with no node flag loads no statically resolved Node builtin. A shared
       # package growing a `node:async_hooks` import would otherwise pass every suite and fail to
       # start the dashboard (and the scaffold) on workerd.
       - run: pnpm test:worker-node-imports

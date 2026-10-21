@@ -338,7 +338,17 @@ Runs everything a push does **locally** and stops there: the layer rules, then y
 permission surface — resolve `"substrat": { "permissions" }`, import the entry, derive the
 registry, print every key with the module that declares it and its description, every role,
 every entity-grant shape, and the digest promotion compares. It needs **no login and makes no
-network call**, so it belongs in a pull-request job:
+registry request**, so it belongs in a pull-request job. A configured Wrangler build command
+still runs locally and may make its own network calls:
+
+It also bundles the Worker entry under workerd export conditions and refuses static, dynamic,
+or CommonJS imports of Node builtins that its compatibility flags do not provide. This includes
+imports in dependencies and imports behind a `typeof` guard. The error traces the path from the
+entry to the builtin. Remove the Node dependency, use a Worker-compatible API, or declare
+`nodejs_compat` when the Worker actually requires it. `nodejs_als` permits only
+`node:async_hooks`. A single tested Worker crypto fallback in `tweetnacl` has an exact-match
+allowance; there is no general guarded-import exception. `push` and `preview` apply the same
+check before upload.
 
 ```text
 permission surface — helpdesk: 19 key(s), 7 role(s), 1 entity-grant shape(s)
@@ -357,8 +367,9 @@ naming the pointer — which is the whole point of having the command: gate the 
 CLI, not with a second implementation of the derivation and not by importing the CLI's build
 output.
 
-`--json` prints `{ registry, digest }` and nothing else on stdout (the gate's notes move to
-stderr), so `substrat push --check --json > permissions.json` is a diffable artifact.
+`--json` prints `{ registry, digest }` and nothing else on stdout (the gate's notes and any
+configured build command's output move to stderr), so
+`substrat push --check --json > permissions.json` is a diffable artifact.
 
 `--check` (and `push`, and `preview`) also reads the worker entry and the modules it imports for
 `https://host` literals and `new URL('https://…')`, and warns about each host

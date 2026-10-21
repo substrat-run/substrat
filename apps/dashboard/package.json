@@ -66,6 +66,8 @@
     "@substrat-run/demo-meridian": "workspace:^",
     "@substrat-run/engine-absence": "workspace:^",
     "@types/node": "catalog:",
+    "esbuild": "^0.28.2",
+    "miniflare": "^4.20260310.0",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

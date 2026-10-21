@@ -21,6 +21,7 @@
  */
 import { bindConnectionScope, listConnectionBindings } from './connections.js';
 import { join, resolve as resolvePath } from 'node:path';
+import { rmSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { loadConfig, saveConfig, resolveAuth } from './config.js';
 import { browserLogin } from './login.js';
@@ -33,6 +34,11 @@ import {
   assertLayerRules,
   assertSchedulesAreSwept,
   checkPermissionSurface,
+  checkWorkerImports,
+  prepareWorkerBundle,
+  resolveWranglerConfig,
+  assertUiIsServed,
+  readAssetsNeed,
   deployConfigIfAny,
   formatDeclaredModel,
   formatPermissionSurface,
@@ -427,6 +433,12 @@ function reportOutbound(dir: string, outbound: readonly unknown[] | undefined, l
   checkOutboundDeclared(dir, typeof main === 'string' ? main : undefined, outbound, { strict: argv.includes('--strict'), log });
 }
 
+async function preflightPushWorker(dir: string, allowUnservedUi: boolean) {
+  const resolved = resolveWranglerConfig(dir);
+  assertUiIsServed(dir, resolved.needs, readAssetsNeed(resolved.cfg, resolved.needs), allowUnservedUi);
+  return prepareWorkerBundle(dir, resolved);
+}
+
 async function cmdPush(): Promise<void> {
   // Directory defaults to '.' — run `substrat push` from inside the vertical.
   const dir = argv[1] && !argv[1].startsWith('--') ? argv[1] : '.';
@@ -450,11 +462,11 @@ async function cmdPush(): Promise<void> {
   // it throws like every other failure of the gate.
   reportOutbound(dir, meta.outbound, jsonCheck ? console.error : console.log);
 
-  // `--check` (#1205): everything the push does to the DECLARED SURFACE, and nothing else.
+  // `--check` (#1205): the push's declared surface and local gates.
   // It resolves `substrat.permissions`, imports the entry, derives the registry and hashes
   // it — the same code path the push ships from, so a vertical gating this in CI needs no
   // second implementation and no deep import of the CLI's build output. Returns BEFORE
-  // `resolveAuth`/`nextVersion`, so it needs no login and makes no network call; the layer
+  // `resolveAuth`/`nextVersion`, so it needs no login and makes no registry call; the layer
   // rules above have already run, which makes `substrat push --check` the whole local gate.
   // Every failure throws (main() prints it and exits non-zero) — that is the gate.
   if (argv.includes('--check')) {
@@ -467,6 +479,13 @@ async function cmdPush(): Promise<void> {
     // config has no bindings to judge; the push itself names that refusal.
     const deployCfg = deployConfigIfAny(dir);
     if (deployCfg) {
+      const build = deployCfg.build as { command?: unknown } | undefined;
+      if (typeof build?.command === 'string') {
+        const prepared = await prepareWorkerBundle(dir, undefined, 'Worker', jsonCheck ? 'stderr' : 'stdout');
+        rmSync(prepared.out, { recursive: true, force: true });
+      } else {
+        await checkWorkerImports(dir, deployCfg);
+      }
       assertSchedulesAreSwept(
         dir,
         deployCfg,
@@ -515,6 +534,10 @@ async function cmdPush(): Promise<void> {
     );
   }
 
+  // The local build and import gate runs before auth or registry version lookup. The
+  // receipt lets push() use the same Wrangler output without running build.command twice.
+  const preparedWorker = await preflightPushWorker(dir, argv.includes('--allow-unserved-ui'));
+
   // Which workspace the push acts for is the PROJECT's call: --tenant → SUBSTRAT_TENANT →
   // package.json `substrat.tenant`. Never the machine-wide login default — the first push
   // of a slug CLAIMS `<tenant>/<slug>` for whatever tenant resolved, so a silent global
@@ -551,6 +574,7 @@ async function cmdPush(): Promise<void> {
     // does not scan the same tree twice.
     skipLint: argv.includes('--skip-lint'),
     linted,
+    preparedWorker,
     // A data-loss replay (#2321) that was skipped or incomplete is a loud warning; this makes it a refusal.
     requireDataLossCheck: dataLossCheckRequired(argv),
     envSpec: meta.envSpec,
@@ -1083,6 +1107,7 @@ async function cmdPreview(): Promise<void> {
       console.error('no --slug given and none in package.json');
       process.exit(1);
     }
+    const preparedWorker = await preflightPushWorker(dir, argv.includes('--allow-unserved-ui'));
     // Workspace resolves exactly as `push` (project pin, never the login default) so the
     // preview push lands in the same workspace the vertical is owned by.
     let tenant = flag('tenant') ?? process.env.SUBSTRAT_TENANT ?? meta.tenant;
@@ -1113,6 +1138,7 @@ async function cmdPreview(): Promise<void> {
       // …and the same data-loss replay (#2321), which a preview's migrations meet too.
       requireDataLossCheck: dataLossCheckRequired(argv),
       linted,
+      preparedWorker,
       envSpec: meta.envSpec,
       ownerGrants: meta.ownerGrants,
       entitlements: meta.entitlements,

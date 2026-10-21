@@ -859,6 +859,22 @@ export const permissions = {
     expect(r.stdout).not.toContain('uploading');
   });
 
+  it.runIf(built)('refuses a transitive dynamic Node import before a flagless push', () => {
+    const dir = verticalWith(SURFACE, { substrat: { permissions: 'perms.mjs', runtimeNeeds: { entry: 'worker.mjs' } } });
+    writeFileSync(join(dir, 'worker.mjs'), `import './dependency.mjs'; export default { fetch: () => new Response('ok') };`);
+    writeFileSync(join(dir, 'dependency.mjs'), `export const probe = () => typeof process === 'undefined' ? undefined : import('node:crypto');`);
+    const r = runCheck(dir);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/worker\.mjs -> .*dependency\.mjs -> node:crypto/);
+    expect(r.stdout).not.toContain('uploading');
+  });
+
+  it.runIf(built)('accepts the same dependency with nodejs_compat', () => {
+    const dir = verticalWith(SURFACE, { substrat: { permissions: 'perms.mjs', runtimeNeeds: { entry: 'worker.mjs', needsNodeCompat: true } } });
+    writeFileSync(join(dir, 'worker.mjs'), `export const probe = () => import('node:crypto'); export default { fetch: () => new Response('ok') };`);
+    expect(runCheck(dir).status).toBe(0);
+  });
+
   it.runIf(built)('--json prints the same surface as data, digest and all', async () => {
     const r = runCheck(verticalWith(SURFACE), '--json');
     expect(r.status).toBe(0);
@@ -1269,6 +1285,6 @@ describe('substrat preview create — push overrides reach the same push (#1209)
     const r = runPreview(verticalWithUnservedUi(), '--allow-unserved-ui');
     // Past the preflight: it reached the build (the stubbed npx), so the flag arrived.
     expect(r.stderr).not.toMatch(/nothing in the push would serve/);
-    expect(r.stdout).toMatch(/building helpdesk@0\.0\.1-pr-1\.1/);
+    expect(r.stdout).toMatch(/building Worker/);
   });
 });

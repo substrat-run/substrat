@@ -674,7 +674,7 @@ pass it says why with `host-permissions-allow: <reason>`),
 `lint:like-pattern` (`tools/like-pattern-length.mjs`: a `LIKE`/`GLOB` pattern written into
 source is at most 50 bytes, the limit a Durable Object enforces and node does not, #1655),
 `lint:worker-node-imports` (`tools/worker-node-imports.mjs`: a worker deployed without
-`nodejs_compat` — the dashboard, the router, the scaffold — statically imports no node builtin
+`nodejs_compat` — the dashboard, the router, the scaffold — statically or dynamically imports no node builtin
 its flags do not give it, and `nodejs_als` gives `node:async_hooks` alone. workerd refuses to start such a bundle, and no node suite can see it; a shared
 package growing a `node:async_hooks` import would fail every flagless deploy at once, #2245. The
 platform entry in front of a pushed vertical is the exception the uploader answers for itself, by

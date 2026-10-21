@@ -61,6 +61,7 @@ import { checkMigrationDataLoss, type DataLossCheck, type ReplayInputs } from '.
 import { parseJsonBody } from './http.js';
 import { planeFor } from './plane.js';
 import { failureMessage } from './problem.js';
+import { assertWorkerNodeImports } from './worker-node-imports.js';
 import {
   exportedSweeperNamesOf,
   platformCanSupplySweeper,
@@ -1429,6 +1430,8 @@ export interface PushOptions {
    * network call first. Anything else, including a receipt for another directory, lints.
    */
   linted?: LayerRulesChecked;
+  /** A local build and import check already completed by the command before auth. */
+  preparedWorker?: PreparedWorkerBundle;
   controlPlaneUrl: string;
   /** The auth header to send — a bearer session or an x-service-token (see config.resolveAuth). */
   authHeader: Record<string, string>;
@@ -1525,6 +1528,13 @@ export function deployConfigIfAny(dir: string): Record<string, unknown> | undefi
   return existsSync(path) ? readJsonc(path) : undefined;
 }
 
+/** The same Worker import check for push, preview, and push --check. */
+export async function checkWorkerImports(dir: string, cfg: Record<string, unknown>): Promise<void> {
+  if (typeof cfg.main !== 'string') return;
+  const flags = Array.isArray(cfg.compatibility_flags) ? cfg.compatibility_flags as string[] : [];
+  await assertWorkerNodeImports(resolve(dir, cfg.main), flags);
+}
+
 /**
  * A vertical's OWN stores, as the push declares them to the control plane: its DO
  * bindings and D1 databases (e.g. a Better-Auth AUTH_DB), and the DO classes they bind.
@@ -1594,6 +1604,46 @@ export function generatedConfigPath(dir: string): string {
   return resolve(dir, '.wrangler.substrat.json');
 }
 
+export interface PreparedWorkerBundle {
+  root: string;
+  cfg: Record<string, unknown>;
+  needs: RuntimeNeeds | undefined;
+  out: string;
+}
+const checkedWorkerBundles = new WeakSet<PreparedWorkerBundle>();
+
+/** Run Wrangler's configured build once, then check the source graph it produced. */
+export async function prepareWorkerBundle(
+  dir: string,
+  resolved = resolveWranglerConfig(dir),
+  label = 'Worker',
+  output: 'stdout' | 'stderr' = 'stdout',
+): Promise<PreparedWorkerBundle> {
+  const { cfg, needs } = resolved;
+  const out = mkdtempSync(join(tmpdir(), 'substrat-build-'));
+  const generated = needs ? generatedConfigPath(dir) : undefined;
+  (output === 'stderr' ? console.error : console.log)(`building ${label} …`);
+  try {
+    if (generated) writeFileSync(generated, JSON.stringify(cfg, null, 2) + '\n');
+    try {
+      execFileSync(
+        'npx',
+        ['wrangler', 'deploy', '--dry-run', '--outdir', out, ...(generated ? ['--config', generated] : [])],
+        { cwd: dir, stdio: output === 'stderr' ? ['inherit', 2, 2] : 'inherit' },
+      );
+    } finally {
+      if (generated) rmSync(generated, { force: true });
+    }
+    await checkWorkerImports(dir, cfg);
+    const prepared = { root: resolve(dir), cfg, needs, out };
+    checkedWorkerBundles.add(prepared);
+    return prepared;
+  } catch (error) {
+    rmSync(out, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 export async function push(
   opts: PushOptions,
 ): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[]; dataLoss: DataLossCheck }> {
@@ -1613,11 +1663,12 @@ export async function push(
   // authored no wrangler config, so none is read — the CLI derives it. The generated file
   // lands next to the vertical (a relative `main` and the build command's cwd both resolve
   // against the config's directory) and is removed after the build.
-  const { cfg, needs } = resolveWranglerConfig(opts.dir);
+  const prepared = opts.preparedWorker && checkedWorkerBundles.has(opts.preparedWorker) &&
+    opts.preparedWorker.root === resolve(opts.dir) ? opts.preparedWorker : undefined;
+  const { cfg, needs } = prepared ?? resolveWranglerConfig(opts.dir);
 
-  // Before anything is built: a UI in the tree that this push would not serve (#881).
-  // Refused here rather than after the bundle, so the remedy arrives in a second instead
-  // of at the end of a wrangler build the vertical was going to ship broken anyway.
+  // Direct callers check the UI before building; command callers already checked it
+  // before the prepared bundle was built (#881).
   assertUiIsServed(opts.dir, needs, readAssetsNeed(cfg, needs), opts.allowUnservedUi);
 
   const { bindings, doClasses } = declaredStoresOf(cfg);
@@ -1629,20 +1680,8 @@ export async function push(
   const compatibilityFlags = (cfg.compatibility_flags as string[] | undefined) ?? [];
   const mainPath = cfg.main as string;
 
-  // Build the bundle (runs the vertical's own build command first).
-  const out = mkdtempSync(join(tmpdir(), 'substrat-build-'));
-  console.log(`building ${opts.slug}@${opts.version} …`);
-  const generated = needs ? generatedConfigPath(opts.dir) : undefined;
-  if (generated) writeFileSync(generated, JSON.stringify(cfg, null, 2) + '\n');
-  try {
-    execFileSync(
-      'npx',
-      ['wrangler', 'deploy', '--dry-run', '--outdir', out, ...(generated ? ['--config', generated] : [])],
-      { cwd: opts.dir, stdio: 'inherit' },
-    );
-  } finally {
-    if (generated) rmSync(generated, { force: true });
-  }
+  // The command preflights before auth; direct callers build and check here.
+  const out = (prepared ?? await prepareWorkerBundle(opts.dir, { cfg, needs }, `${opts.slug}@${opts.version}`)).out;
 
   // Collect the built modules; the entry is the bundled basename of `main`.
   const mainBase = basename(mainPath).replace(/\.[cm]?ts$|\.[cm]?js$/, '');

@@ -32,6 +32,15 @@ const ENGINE_SCHEDULE = [{ moduleId: '@substrat-run/engine-absence', operation: 
 
 function tree(files: Record<string, string>): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'substrat-cli-sweeper-')));
+  // The push preflight bundles the entry. Give this fixture's imported helper a resolvable
+  // package, just as an installed vertical has one.
+  files = {
+    'node_modules/@substrat-run/adapter-cloudflare/package.json': JSON.stringify({
+      name: '@substrat-run/adapter-cloudflare', type: 'module', main: 'index.js',
+    }),
+    'node_modules/@substrat-run/adapter-cloudflare/index.js': 'export const defineScopeSweeperDO = () => class {};',
+    ...files,
+  };
   for (const [path, content] of Object.entries(files)) {
     mkdirSync(join(dir, path, '..'), { recursive: true });
     writeFileSync(join(dir, path), content);
@@ -317,7 +326,7 @@ await push({ dir, slug: 'leave', version: '1.0.0', controlPlaneUrl: 'http://cp.i
       expect(forced.status, forced.stderr).toBe(0);
       expect(forced.stdout).toMatch(/warning: --allow-unswept-schedules — .*predates #1902/s);
       expect(forced.stdout).toContain('MANIFEST ');
-    });
+    }, 15_000);
 
     it('does not ask when it leaves nothing to the plane: it brings its own sweeper', () => {
       const own = run(tree({ 'package.json': pkg(STORES_WITH_SWEEPER), 'perms.mjs': PERMS, 'src/worker.ts': SWEEPER_ENTRY }), '');
