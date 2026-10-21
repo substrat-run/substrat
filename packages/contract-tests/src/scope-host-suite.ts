@@ -90,6 +90,125 @@ export interface ScopeHostFixture {
   cleanup(): Promise<void>;
 }
 
+/** The adapter fixture installs a directory trigger, so failures exercise the real audit insert. */
+export function scopeAdminAuditTransactionSuite(
+  adapterName: string,
+  makeFixture: () => Promise<ScopeHostFixture & {
+    refuseAdminAction(scope: string, action: string): Promise<() => Promise<void>>;
+  }>,
+): void {
+  describe(`HostAdmin directory audit transaction: ${adapterName}`, () => {
+    it.each(['setScopeExpiresAt', 'bindScopeVersion', 'markScopeProvisioned', 'keepAlivePendingScopeCopy',
+      'setScopeServingRef'] as const)(
+      '%s rolls back on audit failure and writes one row on retry', async (operation) => {
+        const fixture = await makeFixture();
+        const { host } = fixture;
+        const staff = platformActorId.parse(ulid());
+        const tenant = tenantId.parse(ulid());
+        const scope = scopeId.parse(ulid());
+        const slug = `audit-${ulid().toLowerCase()}`;
+        const version = ulid();
+        let lift: (() => Promise<void>) | undefined;
+        try {
+          await host.admin.createTenant(staff, { id: tenant, slug, name: 'Audit transaction test' });
+          await host.admin.registerVertical(staff, { slug, name: 'Audit test', source: 'builtin' });
+          await host.admin.publishVersion(staff, { id: version, verticalSlug: slug,
+            version: `1.0.${version.toLowerCase()}`, manifestDigest: 'm', permissionDigest: 'p',
+            migrationDigest: 'g', deploymentRef: null });
+          await host.admin.admitVersion(staff, version);
+          const oldExpiry = new Date(Date.now() + 60_000).toISOString();
+          await host.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: slug,
+            ...(operation === 'keepAlivePendingScopeCopy' ? { kind: 'preview' as const, expiresAt: oldExpiry } : {}) });
+          if (operation !== 'keepAlivePendingScopeCopy') await host.admin.activateScope(staff, tenant, scope);
+          const nextExpiry = new Date(Date.now() + 3_600_000).toISOString();
+          const servingRef = `version-${ulid().toLowerCase()}`;
+          const move = ulid();
+          if (operation === 'keepAlivePendingScopeCopy') {
+            await host.admin.recordScopeScriptCopy(staff, tenant, scope, `version-${ulid().toLowerCase()}`, move,
+              { role: 'destination', leaseMs: 60_000 });
+          }
+          const action = operation === 'keepAlivePendingScopeCopy' ? 'setScopeExpiresAt' : operation;
+          const call = () => {
+            switch (operation) {
+              case 'setScopeExpiresAt': return host.admin.setScopeExpiresAt(staff, tenant, scope, nextExpiry);
+              case 'bindScopeVersion': return host.admin.bindScopeVersion(staff, tenant, scope, version);
+              case 'markScopeProvisioned': return host.admin.markScopeProvisioned(staff, tenant, scope, version);
+              case 'keepAlivePendingScopeCopy':
+                return host.admin.keepAlivePendingScopeCopy(staff, tenant, scope, move, 'provisioning', oldExpiry, nextExpiry);
+              case 'setScopeServingRef': return host.admin.setScopeServingRef(staff, tenant, scope, servingRef);
+            }
+          };
+          const state = async () => {
+            const row = (await host.admin.getScopeRecord(staff, tenant, scope))!;
+            return [row.expiresAt, row.verticalVersionId, row.provisionedVersionId, row.servingRef];
+          };
+          const before = await state();
+          const rows = () => host.admin.auditLog(staff, { scopeId: scope, action });
+          expect(await rows()).toEqual([]);
+          lift = await fixture.refuseAdminAction(scope, action);
+          await expect(call()).rejects.toThrow();
+          expect(await state()).toEqual(before);
+          expect(await rows()).toEqual([]);
+          await lift();
+          lift = undefined;
+          expect(await call()).not.toBe(false);
+          const after = await state();
+          const column = operation === 'bindScopeVersion' ? 1 : operation === 'markScopeProvisioned' ? 2
+            : operation === 'setScopeServingRef' ? 3 : 0;
+          expect(after[column]).toBe(operation === 'bindScopeVersion' || operation === 'markScopeProvisioned'
+            ? version : operation === 'setScopeServingRef' ? servingRef : nextExpiry);
+          expect(await rows()).toHaveLength(1);
+        } finally {
+          if (lift) await lift();
+          await fixture.cleanup();
+        }
+      },
+    );
+
+    it('private promotion rolls back its scope bind when the audit insert fails', async () => {
+      const fixture = await makeFixture();
+      const { host } = fixture;
+      const staff = platformActorId.parse(ulid());
+      const tenant = tenantId.parse(ulid());
+      const scope = scopeId.parse(ulid());
+      const slug = `tenant-a/audit-${ulid().toLowerCase()}`;
+      let lift: (() => Promise<void>) | undefined;
+      try {
+        await host.admin.createTenant(staff, { id: tenant, slug: `audit-${ulid().toLowerCase()}`, name: 'Audit promotion test' });
+        await host.admin.registerVertical(staff, { slug, name: 'Audit promotion test', source: 'cli', ownerTenant: tenant });
+        const publish = async () => {
+          const id = ulid();
+          await host.admin.publishVersion(staff, { id, verticalSlug: slug, version: `1.0.${id.toLowerCase()}`,
+            manifestDigest: 'm', permissionDigest: 'p', ...(await heldMigrations('g')), deploymentRef: null });
+          return id;
+        };
+        const first = await publish();
+        const second = await publish();
+        const third = await publish();
+        await host.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: slug });
+        await host.admin.activateScope(staff, tenant, scope);
+        await host.admin.bindScopeVersion(staff, tenant, scope, first);
+        await host.admin.promoteVersion(staff, slug, 'prod', first);
+        const rows = () => host.admin.auditLog(staff, { scopeId: scope, action: 'bindScopeVersion' });
+        expect(await rows()).toHaveLength(1);
+        lift = await fixture.refuseAdminAction(scope, 'bindScopeVersion');
+        await expect(host.admin.promoteVersion(staff, slug, 'prod', second)).rejects.toThrow();
+        expect((await host.admin.getScopeRecord(staff, tenant, scope))?.verticalVersionId).toBe(first);
+        expect(await rows()).toHaveLength(1);
+        await lift();
+        lift = undefined;
+        await host.admin.promoteVersion(staff, slug, 'prod', third);
+        expect((await host.admin.getScopeRecord(staff, tenant, scope))?.verticalVersionId).toBe(third);
+        expect(await rows()).toHaveLength(2);
+        expect((await rows()).some((row) => (row.after as { via?: string }).via === 'promoteVersion')).toBe(true);
+      } finally {
+        if (lift) await lift();
+        await fixture.cleanup();
+      }
+    });
+  });
+}
+
 interface OutboxRow {
   id: string;
   type: string;

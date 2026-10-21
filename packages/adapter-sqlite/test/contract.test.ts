@@ -37,6 +37,8 @@ import {
   jobRunContractSuite,
   systemSwitchContractSuite,
   adminRowFaultSql,
+  adminActionFaultSql,
+  scopeAdminAuditTransactionSuite,
   switchRecordFaultSql,
   peerContractSuite,
   verticalResolutionContractSuite,
@@ -80,6 +82,23 @@ scopeHostContractSuite('adapter-sqlite', async () => {
   });
   return {
     host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+scopeAdminAuditTransactionSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-admin-transaction-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
+  return {
+    host,
+    refuseAdminAction: async (scope: string, action: string) => {
+      const { create, drop } = adminActionFaultSql(scope, action);
+      (host as unknown as { directory: { exec(sql: string): void } }).directory.exec(create);
+      return async () => (host as unknown as { directory: { exec(sql: string): void } }).directory.exec(drop);
+    },
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });
