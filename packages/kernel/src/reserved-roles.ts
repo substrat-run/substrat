@@ -19,8 +19,8 @@ import { reservedKeysOf, type ReservedKeySource } from '@substrat-run/contracts'
  * - **The platform's door** (`'platform'`): `HostAdmin.assignRole`. A role that mixes reserved and
  *   other keys is refused, since no valid declaration produces one: a person's role holds no
  *   reserved key, and a system-held role holds nothing else. A role made only of reserved keys is
- *   admitted. That is the shape a system-held role has, and a stored role does not record its
- *   holder, so here it cannot be told from a person's role made the same way (K-55's residual).
+ *   admitted only when its stored holder is `system`. A legacy row with no holder keeps the
+ *   old key-only behavior until its definition is written again.
  *
  * Never asked on a provisioning seat or the owner hand-over, and nothing already held is revoked:
  * a seat that exists keeps working whatever a later engine declares.
@@ -29,7 +29,7 @@ import { reservedKeysOf, type ReservedKeySource } from '@substrat-run/contracts'
  * on giving it, so it is worded for both: no person's bound covers such a role.
  */
 export function reservedRoleRefusal(
-  role: { key: string; permissions: readonly string[] },
+  role: { key: string; permissions: readonly string[]; holder?: 'person' | 'system' },
   reserved: ReadonlySet<string>,
   door: 'person' | 'platform',
 ): string | null {
@@ -43,7 +43,14 @@ export function reservedRoleRefusal(
     );
   }
   const others = role.permissions.filter((p) => !reserved.has(p));
-  if (others.length === 0) return null;
+  if (others.length === 0) {
+    // The wire and stored rows are untrusted at runtime: only a genuinely absent
+    // holder retains the legacy decision. Unknown values fail as person-held.
+    if (role.holder != null && role.holder !== 'system') {
+      return `role '${role.key}' holds ${keys}, reserved to a system principal: its stored holder is person; a role made only of reserved keys must declare holder: 'system'`;
+    }
+    return null;
+  }
   return (
     `role '${role.key}' holds ${keys}, reserved to a system principal, beside ${others.join(', ')}: a role carries ` +
     `a reserved key only when every key it holds is one (a system-held role, K-55)`

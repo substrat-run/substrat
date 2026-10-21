@@ -42,7 +42,7 @@ export const roleDefinition = z.object({
   // `system` is a role for a platform host's own principal (the assistant host's), and is the
   // ONLY place a key reserved to a system principal may appear in a role: `lint:permissions` and
   // `substrat push` refuse such a key in a `person` role, and a system role holding anything else.
-  // A stored role does not keep this field, so at runtime only its keys are read (#2430).
+  // Stored roles keep this field. Legacy rows without it retain the old runtime door behavior.
   // The field is the declaration the permission checkpoint renders, so a standing host
   // principal is a line a reviewer reads, not a grant made outside every artifact (K-55).
   holder: z.enum(['person', 'system']).optional(),

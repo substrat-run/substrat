@@ -103,7 +103,10 @@ changes from an RPC to the singleton into a **local read over projected rows** i
 ScopeDO's own SQLite. Two new scope-local tables (append-only, tombstoned like
 `_substrat_tuples`):
 
-- `_substrat_roles` — the role definitions this scope needs (`key`, `permissions`, `source`).
+- `_substrat_roles` — the role definitions this scope needs (`key`, `permissions`, `source`,
+  `holder`). The holder travels on the projection wire. Older rows and projections omit it;
+  the scope stores a null holder and retains the earlier key-only role-door decision until
+  the definition is written again.
 - `_substrat_tenant_tuples` — the tenant-level assignments/grants/memberships that apply to
   principals acting in this scope, projected as rows the checker reads exactly as it reads
   scope tuples today.

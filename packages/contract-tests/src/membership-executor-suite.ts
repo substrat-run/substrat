@@ -83,7 +83,7 @@ export function membershipExecutorContractSuite(adapterName: string, makeFixture
       // #2430: a role carrying a reserved key beside a person's, and the reserved-only role that
       // lets alice cover it, so the bound passes and the refusal is the reservation's.
       await host.admin.defineRole(staff, t, { key: 'reserved', permissions: [INVITEFIX_A, RSV_RUN], source: 'vertical' });
-      await host.admin.defineRole(staff, t, { key: 'runner', permissions: [RSV_RUN], source: 'vertical' });
+      await host.admin.defineRole(staff, t, { key: 'runner', permissions: [RSV_RUN], source: 'vertical', holder: 'system' });
       await host.admin.createOrg(staff, { id: w.org, tenantId: t, slug: 'team', name: 'Team' });
       await host.admin.assignRole(staff, { principalId: w.alice, roleKey: 'lead', node: { tenantId: t, scopeId: null } });
       await host.admin.assignRole(staff, { principalId: w.alice, roleKey: 'runner', node: { tenantId: t, scopeId: null } });

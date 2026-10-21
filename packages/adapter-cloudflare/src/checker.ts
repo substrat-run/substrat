@@ -75,14 +75,14 @@ export function createLocalControlPlaneReader(sql: SqlStorage): ControlPlaneRead
     async getRole(tenantId, key): Promise<RoleDefinition | undefined> {
       const row = sql
         .exec(
-          `SELECT role_key, permissions, source FROM _substrat_roles
+          `SELECT role_key, permissions, source, holder FROM _substrat_roles
            WHERE tenant_id = ? AND role_key = ? AND revoked_at IS NULL`,
           tenantId,
           key,
         )
-        .toArray()[0] as { role_key: string; permissions: string; source: string } | undefined;
+        .toArray()[0] as { role_key: string; permissions: string; source: string; holder: 'person' | 'system' | null } | undefined;
       if (!row) return undefined;
-      return { key: row.role_key, permissions: JSON.parse(row.permissions), source: row.source } as RoleDefinition;
+      return { key: row.role_key, permissions: JSON.parse(row.permissions), source: row.source, holder: row.holder ?? undefined } as RoleDefinition;
     },
     async listEntitlements(tenantId): Promise<EntitlementView[]> {
       // Only currently-held grants: an expired row is absent from the view exactly as it is

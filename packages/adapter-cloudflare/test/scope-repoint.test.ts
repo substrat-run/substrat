@@ -188,7 +188,8 @@ describe("the ScopeDO's importDump picks the rows to re-point (#1869)", () => {
     };
     await host.restoreScopeLocal(dest, [...dumpFrom(source), roles], { sourceScopeId: source });
     const back = (await host.exportScopeLocal(dest)).find((t) => t.name === '_substrat_roles');
-    expect(back?.rows).toEqual(roles.rows);
+    expect(back?.columns).toEqual(['tenant_id', 'role_key', 'permissions', 'source', 'holder', 'revoked_at']);
+    expect(back?.rows).toEqual([['tenant-a', 'reader', '["perm:read"]', 'vertical', null, null]]);
   });
 });
 

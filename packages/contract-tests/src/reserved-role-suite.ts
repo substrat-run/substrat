@@ -14,7 +14,7 @@ import { RSV_RUN, RSV_USE, reservedRoleMod, unmarkedReservedRoleMod } from './re
  * - A reconcile of declared entity-grant shapes refuses a shape whose keys hold one, before it
  *   tops any holder up; a shape that only retires one reconciles.
  * - The platform's door (`HostAdmin.assignRole`) refuses a role mixing reserved and other keys,
- *   at either node, and admits a role made only of reserved keys (K-55's system-held shape).
+ *   and an all-reserved role stored as person; it admits a system-held role of reserved keys.
  * - A raw grant (`HostAdmin.grant`, `grantToOrg`, `grantEntityShape`, `ctx.grant`) of a reserved
  *   key is refused whoever makes it — a person, or a system actor, which passes `ctx.grant`'s
  *   delegation re-check by construction. Its twin, a key no module reserves, passes.
@@ -60,7 +60,8 @@ export function reservedRoleContractSuite(
       await host.admin.activateScope(staff, t1, s1);
       await host.admin.defineRole(staff, t1, { key: 'member', permissions: [RSV_USE], source: 'vertical' });
       await host.admin.defineRole(staff, t1, { key: 'mixed', permissions: [RSV_USE, RSV_RUN], source: 'vertical' });
-      await host.admin.defineRole(staff, t1, { key: 'runner', permissions: [RSV_RUN], source: 'vertical' });
+      await host.admin.defineRole(staff, t1, { key: 'runner', permissions: [RSV_RUN], source: 'vertical', holder: 'system' });
+      await host.admin.defineRole(staff, t1, { key: 'person-runner', permissions: [RSV_RUN], source: 'vertical' });
       await host.admin.grant(staff, { principalId: alice, permission: RSV_USE, node: { tenantId: t1, scopeId: null }, grantedBy: alice });
       // The platform door admits a role made only of reserved keys, so alice can hold rsv:run.
       await host.admin.assignRole(staff, { principalId: alice, roleKey: 'runner', node: { tenantId: t1, scopeId: null } });
@@ -95,6 +96,22 @@ export function reservedRoleContractSuite(
         const hostPrincipal = person();
         await host.admin.assignRole(staff, { principalId: hostPrincipal, roleKey: 'runner', node: { tenantId: t1, scopeId: scope } });
         expect(await holds(hostPrincipal, RSV_RUN)).toBe(true);
+      });
+
+      it.each([['the tenant node', null], ['a scope node', s1]])('refuses a newly stored person role of only reserved keys at %s', async (_where, scope) => {
+        const who = person();
+        await expectRefusal(
+          host.admin.assignRole(staff, { principalId: who, roleKey: 'person-runner', node: { tenantId: t1, scopeId: scope } }),
+          'forbidden',
+          /role 'person-runner' holds rsv:run.*stored holder is person.*must declare holder: 'system'/,
+        );
+        expect(await holds(who, RSV_RUN)).toBe(false);
+      });
+
+      it('reads the persisted holder in the directory roster', async () => {
+        const roles = await host.admin.listRoles(staff, { tenantId: t1 });
+        expect(roles.find((r) => r.key === 'runner')?.holder).toBe('system');
+        expect(roles.find((r) => r.key === 'person-runner')?.holder).toBe('person');
       });
 
       it('admits a role of person keys', async () => {
