@@ -815,6 +815,7 @@ const KERNEL_DDL = `
     role_key TEXT NOT NULL,
     permissions TEXT NOT NULL,
     source TEXT NOT NULL,
+    holder TEXT,
     -- A removed role tombstones rather than deletes — a tombstoned role reads as
     -- absent (grants nothing) but stays as evidence.
     revoked_at TEXT,
@@ -7067,6 +7068,8 @@ export function defineScopeDO(
         // #2066: the rows already there get the legacy mark below, never a digest.
         'ALTER TABLE _substrat_migrations ADD COLUMN sql_digest TEXT',
         'ALTER TABLE _substrat_tuples ADD COLUMN revoked_at TEXT',
+        // #2444: old projected rows keep NULL, retaining the old role-door decision.
+        'ALTER TABLE _substrat_roles ADD COLUMN holder TEXT',
         // #2126: NULL keeps every existing capability's attachment behavior unchanged.
         'ALTER TABLE _substrat_capabilities ADD COLUMN attachments TEXT',
         // #1686: NULL on every row already there — none is a principal-minted become.
@@ -8856,15 +8859,16 @@ export function defineScopeDO(
     // RPC methods so `CloudflareScopeHost` (and the projection sweep) can call them.
 
     /** Project (upsert) a role definition into this scope. */
-    async projectRole(tenantId: string, role: { key: string; permissions: string[]; source: string }): Promise<void> {
+    async projectRole(tenantId: string, role: { key: string; permissions: string[]; source: string; holder?: 'person' | 'system' }): Promise<void> {
       await this.queue.enqueue(() => {
         this.sql.exec(
-          `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, revoked_at)
-           VALUES (?, ?, ?, ?, NULL)`,
+          `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, holder, revoked_at)
+           VALUES (?, ?, ?, ?, ?, NULL)`,
           tenantId,
           role.key,
           JSON.stringify(role.permissions),
           role.source,
+          role.holder ?? null,
         );
       });
     }
@@ -8929,7 +8933,7 @@ export function defineScopeDO(
      */
     async applyProjection(
       tenantId: string,
-      roles: { role_key: string; permissions: string; source: string }[],
+      roles: { role_key: string; permissions: string; source: string; holder?: 'person' | 'system' | null }[],
       tuples: { subject: string; relation: string; object: string; expires_at: string | null; revoked_at: string | null }[],
       /** The tenant's entitlements (#304) — projected alongside roles/tuples so a hosted
        *  vertical reads them locally. **Preserve-on-undefined**: omitting it (a role-only
@@ -9007,12 +9011,13 @@ export function defineScopeDO(
           this.sql.exec(`DELETE FROM _substrat_roles WHERE tenant_id = ?`, tenantId);
           for (const r of roles) {
             this.sql.exec(
-              `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, revoked_at)
-               VALUES (?, ?, ?, ?, NULL)`,
+              `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, holder, revoked_at)
+               VALUES (?, ?, ?, ?, ?, NULL)`,
               tenantId,
               r.role_key,
               r.permissions,
               r.source,
+              r.holder ?? null,
             );
           }
           this.sql.exec(`DELETE FROM _substrat_tenant_tuples WHERE tenant_id = ?`, tenantId);

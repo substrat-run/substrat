@@ -1802,7 +1802,7 @@ interface ScopeStubRpc {
    *  leaves projected entitlements untouched. */
   applyProjection(
     tenantId: string,
-    roles: { role_key: string; permissions: string; source: string }[],
+    roles: { role_key: string; permissions: string; source: string; holder?: 'person' | 'system' | null }[],
     tuples: { subject: string; relation: string; object: string; expires_at: string | null; revoked_at: string | null }[],
     entitlements?: { entitlement_key: string; expires_at: string | null; quota: number | null; plan: string | null }[],
     /** Scope-level tuples (e.g. the owner grant) seated in the same unit as the flip (#332) —
@@ -7552,6 +7552,7 @@ export class CloudflareScopeHost implements ScopeHost {
             key: r.role_key,
             permissions: JSON.parse(r.permissions),
             source: r.source,
+            holder: r.holder ?? undefined,
           }),
         );
       },
@@ -11457,7 +11458,7 @@ export class CloudflareScopeHost implements ScopeHost {
   private async tenantProjection(
     tenantId: TenantId,
   ): Promise<{
-    roles: { role_key: string; permissions: string; source: string }[];
+    roles: { role_key: string; permissions: string; source: string; holder?: 'person' | 'system' | null }[];
     tuples: { subject: string; relation: string; object: string; expires_at: string | null; revoked_at: string | null }[];
     entitlements: { entitlement_key: string; expires_at: string | null; quota: number | null; plan: string | null }[];
     identities: { provider: string; external_id: string; principal_id: string; scope_id: string | null }[];
@@ -11469,7 +11470,7 @@ export class CloudflareScopeHost implements ScopeHost {
       this.cp.dumpTenantIdentities(tenantId),
     ]);
     return {
-      roles: roleRows.map((r) => ({ role_key: r.role_key, permissions: r.permissions, source: r.source })),
+      roles: roleRows.map((r) => ({ role_key: r.role_key, permissions: r.permissions, source: r.source, holder: r.holder })),
       tuples,
       entitlements: entitlementRows.map((e) => ({
         entitlement_key: e.entitlement_key,

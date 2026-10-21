@@ -282,6 +282,7 @@ export interface RoleRow {
   role_key: string;
   permissions: string;
   source: string;
+  holder: 'person' | 'system' | null;
 }
 
 /** The raw directory row; the coordinator maps it through the `scope` contract. */
@@ -1053,6 +1054,7 @@ const DIRECTORY_DDL = `
     role_key TEXT NOT NULL,
     permissions TEXT NOT NULL,
     source TEXT NOT NULL,
+    holder TEXT,
     PRIMARY KEY (tenant_id, role_key)
   );
   -- #33 widens the SKU flag into a plan: expires_at is enforced at the gate
@@ -1645,6 +1647,8 @@ export class ControlPlaneDO extends DurableObject {
     for (const stmt of DIRECTORY_DDL_PLAN.afterColumns) this.sql.exec(stmt);
     // #2322: a migration's declared moves and discards, on a table created before they were carried.
     this.addColumn('vertical_version_migrations', 'declarations TEXT');
+    // #2444: existing role rows retain NULL and the old key-only door decision.
+    this.addColumn('_substrat_roles', 'holder TEXT');
   }
 
   /**
@@ -2809,12 +2813,13 @@ export class ControlPlaneDO extends DurableObject {
   defineRole(tenantId: string, role: RoleDefinition): RoleDefinition | null {
     const before = this.getRole(tenantId, role.key) ?? null;
     this.sql.exec(
-      `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source)
-       VALUES (?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, holder)
+       VALUES (?, ?, ?, ?, ?)`,
       tenantId,
       role.key,
       JSON.stringify(role.permissions),
       String(role.source),
+      role.holder ?? 'person',
     );
     return before;
   }
@@ -2843,7 +2848,7 @@ export class ControlPlaneDO extends DurableObject {
       params.push(afterTenant, afterTenant, afterKey);
     }
     let sql =
-      'SELECT tenant_id, role_key, permissions, source FROM _substrat_roles' +
+      'SELECT tenant_id, role_key, permissions, source, holder FROM _substrat_roles' +
       (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
       ` ORDER BY tenant_id ${order}, role_key ${order}`;
     if (filter.limit !== undefined) {
@@ -2856,16 +2861,17 @@ export class ControlPlaneDO extends DurableObject {
   getRole(tenantId: string, key: string): RoleDefinition | undefined {
     const row = this.sql
       .exec(
-        'SELECT role_key, permissions, source FROM _substrat_roles WHERE tenant_id = ? AND role_key = ?',
+        'SELECT role_key, permissions, source, holder FROM _substrat_roles WHERE tenant_id = ? AND role_key = ?',
         tenantId,
         key,
       )
-      .toArray()[0] as { role_key: string; permissions: string; source: string } | undefined;
+      .toArray()[0] as { role_key: string; permissions: string; source: string; holder: 'person' | 'system' | null } | undefined;
     if (!row) return undefined;
     return {
       key: row.role_key,
       permissions: JSON.parse(row.permissions),
       source: row.source,
+      holder: row.holder ?? undefined,
     } as RoleDefinition;
   }
 

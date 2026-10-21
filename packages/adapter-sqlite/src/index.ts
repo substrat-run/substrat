@@ -2494,6 +2494,7 @@ export class SqliteScopeHost implements ScopeHost {
         role_key TEXT NOT NULL,
         permissions TEXT NOT NULL,
         source TEXT NOT NULL,
+        holder TEXT,
         PRIMARY KEY (tenant_id, role_key)
       );
       -- Per-tenant SKU flags (control-plane.md §4.3). A module loads for a tenant
@@ -8649,11 +8650,11 @@ export class SqliteScopeHost implements ScopeHost {
         const before = this.roles.get(`${tenantId}/${parsed.key}`) ?? null;
         this.directory
           .prepare(
-            `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source)
-             VALUES (?, ?, ?, ?)`,
+            `INSERT OR REPLACE INTO _substrat_roles (tenant_id, role_key, permissions, source, holder)
+             VALUES (?, ?, ?, ?, ?)`,
           )
-          .run(tenantId, parsed.key, JSON.stringify(parsed.permissions), String(parsed.source));
-        this.roles.set(`${tenantId}/${parsed.key}`, parsed);
+          .run(tenantId, parsed.key, JSON.stringify(parsed.permissions), String(parsed.source), parsed.holder ?? 'person');
+        this.roles.set(`${tenantId}/${parsed.key}`, { ...parsed, holder: parsed.holder ?? 'person' });
         this.recordAdmin(actor, 'defineRole', { tenantId }, before, parsed);
       },
       listRoles: async (actor, filter?: RoleFilter): Promise<TenantRole[]> => {
@@ -8679,7 +8680,7 @@ export class SqliteScopeHost implements ScopeHost {
           params.push(afterTenant, afterTenant, afterKey);
         }
         let sql =
-          'SELECT tenant_id, role_key, permissions, source FROM _substrat_roles' +
+          'SELECT tenant_id, role_key, permissions, source, holder FROM _substrat_roles' +
           (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
           ` ORDER BY tenant_id ${order}, role_key ${order}`;
         if (filter?.limit !== undefined) {
@@ -8691,6 +8692,7 @@ export class SqliteScopeHost implements ScopeHost {
           role_key: string;
           permissions: string;
           source: string;
+          holder: 'person' | 'system' | null;
         }[];
         // Parsed, not cast: `permissions` is a JSON blob in a TEXT column, so the
         // contract is the only thing standing between a corrupted row and the
@@ -8702,6 +8704,7 @@ export class SqliteScopeHost implements ScopeHost {
             key: r.role_key,
             permissions: JSON.parse(r.permissions),
             source: r.source,
+            holder: r.holder ?? undefined,
           }),
         );
       },
@@ -13279,6 +13282,8 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(this.directory, 'hostnames', 'validation_records', 'validation_records TEXT');
     // K-21's tombstone on tenant-level tuples (membership lives here).
     this.ensureColumn(this.directory, '_substrat_tenant_tuples', 'revoked_at', 'revoked_at TEXT');
+    // #2444: old role rows keep NULL and retain the key-only platform door decision.
+    this.ensureColumn(this.directory, '_substrat_roles', 'holder', 'holder TEXT');
     // builder-plane.md Phase 1b: who owns a vertical (NULL = platform-owned).
     this.ensureColumn(this.directory, 'verticals', 'owner_tenant', 'owner_tenant TEXT');
     this.ensureColumn(this.directory, 'verticals', 'env_spec', 'env_spec TEXT');
@@ -13390,13 +13395,14 @@ export class SqliteScopeHost implements ScopeHost {
 
   private loadRoles(): void {
     const rows = this.directory
-      .prepare('SELECT tenant_id, role_key, permissions, source FROM _substrat_roles')
-      .all() as { tenant_id: string; role_key: string; permissions: string; source: string }[];
+      .prepare('SELECT tenant_id, role_key, permissions, source, holder FROM _substrat_roles')
+      .all() as { tenant_id: string; role_key: string; permissions: string; source: string; holder: 'person' | 'system' | null }[];
     for (const r of rows) {
       this.roles.set(`${r.tenant_id}/${r.role_key}`, {
         key: r.role_key,
         permissions: JSON.parse(r.permissions),
         source: r.source,
+        holder: r.holder ?? undefined,
       } as RoleDefinition);
     }
   }
