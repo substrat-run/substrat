@@ -134,16 +134,40 @@ describe('a scope carried in pages lands as the whole dump would (#2450)', () =>
     expect(vertical(await host.exportScopeLocal(dest))).toEqual(vertical(await host.exportScopeLocal(source)));
   });
 
-  it('a new stage replaces an older one, whose commit is then refused with nothing loaded', async () => {
+  it('a competing stage leaves its owner able to finish, and only the named owner may discard it', async () => {
     const source = await seed(10);
     const dest = await seed(2);
     const pages = await readAll(source, { maxBytes: 1_000 });
     const older = ulid();
     await stageAll(dest, older, pages);
-    await stageAll(dest, ulid(), pages);
-    const refused = await host.restoreStagedScopeLocal(dest, older, { sourceScopeId: source }).catch((e: unknown) => e);
+    const loser = ulid();
+    const refused = await host.stageScopePageLocal(dest, loser, 0, pages[0]!.tables).catch((e: unknown) => e);
+    expect(errorCodeOf(refused)).toBe('conflict');
+    expect(await host.discardStagedScopeLocal(dest, loser)).toEqual({ discarded: false });
+    expect(await host.stageScopePageLocal(dest, older, 0, pages[0]!.tables)).toEqual({ staged: false });
+    await host.restoreStagedScopeLocal(dest, older, { sourceScopeId: source });
+    expect(vertical(await host.exportScopeLocal(dest))).toEqual(vertical(await host.exportScopeLocal(source)));
+    // A retry after the winner loaded may open its own stage.
+    await stageAll(dest, loser, pages);
+    expect(await host.discardStagedScopeLocal(dest, older)).toEqual({ discarded: false });
+    expect(await host.discardStagedScopeLocal(dest, loser)).toEqual({ discarded: true });
+  });
+
+  it('an abandoned stage past the copy deadline and leases is reclaimed by a new page zero', async () => {
+    const source = await seed(10);
+    const dest = await seed(2);
+    const pages = await readAll(source, { maxBytes: 1_000 });
+    // A valid ULID from epoch zero: well past the job's six-hour limit and three leases.
+    const abandoned = '00000000000000000000000000';
+    await stageAll(dest, abandoned, pages);
+    const newcomer = ulid();
+    expect(await host.stageScopePageLocal(dest, newcomer, 0, pages[0]!.tables)).toEqual({ staged: true });
+    const refused = await host.restoreStagedScopeLocal(dest, abandoned, { sourceScopeId: source }).catch((e: unknown) => e);
     expect(errorCodeOf(refused)).toBe('precondition_failed');
     expect(vertical(await host.exportScopeLocal(dest)).find((t) => t.name === 'pg_notes')?.rows).toHaveLength(2);
+    for (const [seq, page] of pages.entries()) if (seq > 0) await host.stageScopePageLocal(dest, newcomer, seq, page.tables);
+    await host.restoreStagedScopeLocal(dest, newcomer, { sourceScopeId: source });
+    expect(vertical(await host.exportScopeLocal(dest))).toEqual(vertical(await host.exportScopeLocal(source)));
   });
 
   it('only a carry\'s export mints the source\'s load stamp; a fork\'s writes nothing', async () => {
