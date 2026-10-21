@@ -1,5 +1,17 @@
 # @substrat-run/contracts
 
+## 0.156.0
+
+### Minor Changes
+
+- c5052f9: Persist a role definition's holder in both directories and the scope permission projection. Newly defined roles record `person` when omitted from the declaration; legacy rows keep the prior runtime decision until redefined. The platform role door now distinguishes an explicitly person-held role from a system-held role when all its keys are reserved.
+
+  A role made only of reserved keys must declare `holder: 'system'`, or the platform door refuses it; roles defined before the migration are unaffected until redefined.
+
+- 1344288: Carry each loaded module's permission and owner-grant declarations in the deploy manifest. At publish, the control plane derives the registry's key rows from those declarations and refuses disagreements in keys, descriptions, declaring modules or holder marks (#2446, step 1). Module owner grants are checked against reserved keys too.
+
+  The field is optional so manifests from older CLIs remain accepted without this consistency check. The declarations are supplied by the builder. A later step will verify known engine manifests; third-party modules remain author-asserted.
+
 ## 0.155.0
 
 ### Minor Changes
@@ -6991,7 +7003,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
