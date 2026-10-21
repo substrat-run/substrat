@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, expect, it } from 'vitest';
-import { permissionKey, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
+import { permissionKey, platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
 import { permMod } from '@substrat-run/contract-tests';
 import { ulid, UNSAFE_allowAllChecker } from '@substrat-run/kernel';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
@@ -67,4 +67,26 @@ it('carries the directory holder through the full projection wire into the scope
   const stored = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
     state.storage.sql.exec('SELECT holder FROM _substrat_roles WHERE tenant_id = ? AND role_key = ?', tenant, 'runner').toArray());
   expect(stored).toEqual([{ holder: 'system' }]);
+});
+
+it('keeps the holder on CP-less provision and role repair projections', async () => {
+  const host = new CloudflareScopeHost({ scope: env.SCOPE });
+  const tenant = tenantId.parse(ulid());
+  const scope = scopeId.parse(ulid());
+  const owner = principalId.parse(ulid());
+  await host.provisionScopeLocal({
+    tenantId: tenant,
+    scopeId: scope,
+    owner,
+    roles: [{ key: 'owner', permissions: [permissionKey.parse('perm:use')], source: 'vertical', holder: 'person' }],
+    ownerRoleKey: 'owner',
+  });
+  const holders = () => runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+    state.storage.sql.exec('SELECT role_key, holder FROM _substrat_roles WHERE tenant_id = ? ORDER BY role_key', tenant).toArray());
+  expect(await holders()).toEqual([{ role_key: 'owner', holder: 'person' }]);
+
+  await host.projectRolesLocal(tenant, scope, [
+    { key: 'runner', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'system' },
+  ]);
+  expect(await holders()).toEqual([{ role_key: 'runner', holder: 'system' }]);
 });
