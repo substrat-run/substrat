@@ -5,7 +5,7 @@ description: Guide a Substrat repository change through a hand-written published
 
 # Changeset → PR → preview in the Substrat repository
 
-This workflow is for the Substrat monorepo. Read its `CLAUDE.md` and the project's
+This workflow is for the Substrat monorepo. Read its `CLAUDE.md` and any applicable
 `AGENTS.md` first. A preview exercises a vertical; it does not publish an npm package or
 turn an app-only changeset into a release.
 
