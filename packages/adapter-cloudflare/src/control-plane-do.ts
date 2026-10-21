@@ -282,7 +282,8 @@ export interface RoleRow {
   role_key: string;
   permissions: string;
   source: string;
-  holder: 'person' | 'system' | null;
+  /** Absent on an older control plane's projection wire. */
+  holder?: 'person' | 'system' | null;
 }
 
 /** The raw directory row; the coordinator maps it through the `scope` contract. */

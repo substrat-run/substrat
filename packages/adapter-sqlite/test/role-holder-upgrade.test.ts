@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { expect, it } from 'vitest';
-import { platformActorId, tenantId } from '@substrat-run/contracts';
+import { permissionKey, platformActorId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '../src/index.js';
 
@@ -11,7 +11,7 @@ it('adds the directory holder column without rewriting an old role, then persist
   const dir = mkdtempSync(join(tmpdir(), 'role-holder-upgrade-'));
   const staff = platformActorId.parse(ulid());
   const tenant = tenantId.parse(ulid());
-  const definition = { key: 'runner', permissions: ['rsv:run'], source: 'vertical' as const };
+  const definition = { key: 'runner', permissions: [permissionKey.parse('rsv:run')], source: 'vertical' as const };
   try {
     const before = new SqliteScopeHost({ dir });
     await before.admin.createTenant(staff, { id: tenant, slug: 'acme', name: 'Acme' });
