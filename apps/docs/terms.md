@@ -14,9 +14,15 @@ Substrat is operated by **Ahlstrand Technologies SL**, NIF **B76309178**
 (“Substrat”, “we”, “us”). These terms form an agreement between you and
 Ahlstrand Technologies SL and govern your use of substrat.net and the Substrat
 hosted platform.
+
+**Address:** Calle el Corzo 31, 29651 Mijas, Spain.
+
+**Email:** [info@substrat.net](mailto:info@substrat.net).
+
 By using the service, you agree to these terms. If you use Substrat on behalf of
 an organization, you must have authority to agree on its behalf. If you do not
-agree, do not use the service. For questions, contact our
+agree, do not use the service. For questions, email
+[info@substrat.net](mailto:info@substrat.net) or contact our
 [support desk](/guide/support).
 
 ## Using the service

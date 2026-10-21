@@ -16,9 +16,14 @@ the account, website, and support information described in this policy. When we
 process application data on behalf of a customer organization, that organization
 is the data controller and we act as its processor.
 
+**Address:** Calle el Corzo 31, 29651 Mijas, Spain.
+
+**Email:** [info@substrat.net](mailto:info@substrat.net).
+
 This policy explains how we handle personal information when you use
 substrat.net and the Substrat hosted platform. For questions or privacy requests,
-contact the Substrat team through our [support desk](/guide/support).
+email us at [info@substrat.net](mailto:info@substrat.net) or contact the Substrat
+team through our [support desk](/guide/support).
 
 ## Information we collect and why
 
@@ -97,7 +102,8 @@ service you request, pursue legitimate interests such as security and support,
 comply with legal obligations, or with your consent. You may also complain to
 your local data protection authority.
 
-To exercise these rights, contact our [support desk](/guide/support). We may need
+To exercise these rights, email [info@substrat.net](mailto:info@substrat.net) or
+contact our [support desk](/guide/support). We may need
 to verify your identity. If your information is managed by an organization using
 Substrat, contact that organization first; it controls how its application uses
 your data.
