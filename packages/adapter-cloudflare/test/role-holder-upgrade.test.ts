@@ -1,9 +1,12 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { beforeAll, expect, it } from 'vitest';
-import { ulid } from '@substrat-run/kernel';
+import { permissionKey, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
+import { permMod } from '@substrat-run/contract-tests';
+import { ulid, UNSAFE_allowAllChecker } from '@substrat-run/kernel';
 import { ControlPlaneDO } from '../src/control-plane-do.js';
 import { createLocalControlPlaneReader } from '../src/checker.js';
 import { defineScopeDO } from '../src/scope-do.js';
+import { CloudflareScopeHost } from './test-host.js';
 import { warmControlPlane } from './do-warmup.js';
 
 beforeAll(() => warmControlPlane(env.CONTROL_PLANE));
@@ -47,4 +50,21 @@ it('adds the scope projection column to an old role and reads a new holder', asy
   const current = await runInDurableObject(stub as never, async (_instance, state) =>
     createLocalControlPlaneReader(state.storage.sql).getRole(tenant, 'runner'));
   expect(current?.holder).toBe('system');
+});
+
+it('carries the directory holder through the full projection wire into the scope store', async () => {
+  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, checker: UNSAFE_allowAllChecker, scopeLocalPermissions: true });
+  host.registerModule(permMod);
+  const staff = platformActorId.parse(ulid());
+  const tenant = tenantId.parse(ulid());
+  const scope = scopeId.parse(ulid());
+  await host.admin.createTenant(staff, { id: tenant, slug: `holder-${ulid().toLowerCase()}`, name: 'Holder' });
+  await host.provisionScope(staff, { tenantId: tenant, scopeId: scope, vertical: 'holder-vertical' });
+  await host.admin.activateScope(staff, tenant, scope);
+  await host.admin.defineRole(staff, tenant, {
+    key: 'runner', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'system',
+  });
+  const stored = await runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
+    state.storage.sql.exec('SELECT holder FROM _substrat_roles WHERE tenant_id = ? AND role_key = ?', tenant, 'runner').toArray());
+  expect(stored).toEqual([{ holder: 'system' }]);
 });
