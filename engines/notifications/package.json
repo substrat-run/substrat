@@ -1,7 +1,6 @@
 {
   "name": "@substrat-run/engine-notifications",
   "version": "0.3.0",
-  "private": true,
   "description": "Substrat engine: notifications — an occasion a vertical names becomes email to the people it concerns, through per-user preferences, escaped templates and tracked deliveries",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -22,10 +21,14 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.workerd-test.json --noEmit",
-    "test": "vitest run && vitest run -c vitest.workerd.config.ts"
+    "test": "vitest run && vitest run -c vitest.workerd.config.ts",
+    "prepublishOnly": "node ../../tools/publish-guard.mjs"
   },
   "dependencies": {
     "@substrat-run/contracts": "workspace:^",
