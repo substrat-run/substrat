@@ -2399,6 +2399,8 @@ describe('a preview keeps its data across pushes, on real Durable Object namespa
 
     it('two carries of one version keep the first stage, then the loser retries after it lands', async () => {
       const tag = 'bg-same-version';
+      const prodHost = hostOf.get((await served(prodHostname)).ref)!;
+      await prodHost.restoreScopeLocal(prod, notes(...many(30, 'race seed')));
       const sid = (await pushBg(tag, 'v1')).body.scopeId;
       await pumpToDone();
       const ready = await pushBg(tag, 'v1');
