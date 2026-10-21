@@ -1,6 +1,6 @@
 /**
  * The fixture vertical's permission surface — what `substrat push` reads (`substrat.permissions`),
- * and so where the schedule the platform owes a sweeper for is declared: `fixture/tick`, every
+ * and so where the schedules the platform owes a sweeper for are declared, every
  * hour, under the module's system grant. Its own module rather than contract-tests'
  * `scheduleMod`, because the push imports this file as data, outside any test runner, and
  * contract-tests loads vitest.
@@ -19,6 +19,11 @@ import {
 } from '@substrat-run/kernel';
 
 const TICK = 'fixture:tick' as PermissionKey;
+const tick = (async (ctx) => {
+  assertAllowed(await ctx.check(TICK));
+  ctx.sql.exec('INSERT INTO fixture_ticks (n) VALUES (1)');
+  ctx.requestPlatform({ kind: 'fixture.ticked', payload: {} });
+}) as OperationHandler<never, unknown>;
 
 export const fixtureModule: ModuleRegistration = {
   manifest: moduleManifest.parse({
@@ -30,16 +35,15 @@ export const fixtureModule: ModuleRegistration = {
     migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
     attachmentTargets: [],
     entitlementKey: 'fixture',
-    schedules: [{ operation: 'fixture/tick', cadence: { everyMinutes: 60 }, permissions: [TICK] }],
+    schedules: [
+      { operation: 'fixture/tick', cadence: { everyMinutes: 60 }, permissions: [TICK] },
+      { operation: 'fixture/tick-again', cadence: { everyMinutes: 60 }, permissions: [TICK] },
+    ],
   }),
   migrations: [{ version: '0001-init', sql: 'CREATE TABLE fixture_ticks (n INTEGER NOT NULL)' }],
   ...undeclaredOperations('a fixture vertical that exists to be swept, with no declared surface', {
-    'fixture/tick': (async (ctx) => {
-      assertAllowed(await ctx.check(TICK));
-      ctx.sql.exec('INSERT INTO fixture_ticks (n) VALUES (1)');
-      // #2431: one platform request per tick, which the supplied sweeper's pass counts.
-      ctx.requestPlatform({ kind: 'fixture.ticked', payload: {} });
-    }) as OperationHandler<never, unknown>,
+    'fixture/tick': tick,
+    'fixture/tick-again': tick,
     'fixture/count': ((ctx) =>
       ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM fixture_ticks')[0]!.n) as OperationHandler<never, unknown>,
   }),
