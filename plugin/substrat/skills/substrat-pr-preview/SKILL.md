@@ -83,11 +83,13 @@ substrat preview create . --tag pr-<number>
 ```
 
 The command pushes this tree, forks prod and prints the preview URL. Open that URL and
-give it directly to the reviewer. Re-run the **same** command and tag after a PR push to
-reuse the fork, bind the new version and renew its TTL; do not use `--refresh` unless the
-review calls for a new fork from prod. The default TTL is **72 hours**. A long-lived
-preview needs `--ttl none` and explicit deletion; ordinary PR previews should expire if
-cleanup is missed. `substrat preview ls` shows active previews. If no changed vertical
+give it directly to the reviewer. Re-running the **same** tag after a PR push targets the
+same preview fork and pushes a new version. If its previous data copy is still running,
+this starts the copy over and replaces the running one; let the current invocation finish
+when possible. Once ready, the new version is bound and its TTL renewed. Use `--refresh`
+only when the review calls for a new fork from prod. The default TTL is **72 hours**. A
+long-lived preview needs `--ttl none` and explicit deletion; ordinary PR previews should
+expire if cleanup is missed. `substrat preview ls` shows active previews. If no changed vertical
 can exercise the release, state that limitation in the PR rather than inventing a URL.
 
 ## 4. Reap on close
