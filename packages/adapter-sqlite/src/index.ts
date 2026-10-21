@@ -10129,11 +10129,11 @@ export class SqliteScopeHost implements ScopeHost {
         this.directoryWriteAndAudit(() => this.directory
           .prepare('UPDATE scopes SET provisioned_version_id = ?, retirements_finished_version_id = ?, bound_shapes = ? WHERE scope_id = ?')
           .run(versionId, finished, boundShapesColumn(versionId, outcome?.boundShapes), scopeId).changes > 0,
-        () => this.recordAdmin(actor, 'markScopeProvisioned', { tenantId, scopeId }, null, {
-          versionId,
-          ...(finished ? { retirementsFinished: true } : {}),
-          ...(versionId !== null && outcome?.boundShapes ? { boundShapes: outcome.boundShapes } : {}),
-        }));
+          () => this.recordAdmin(actor, 'markScopeProvisioned', { tenantId, scopeId }, null, {
+            versionId,
+            ...(finished ? { retirementsFinished: true } : {}),
+            ...(versionId !== null && outcome?.boundShapes ? { boundShapes: outcome.boundShapes } : {}),
+          }));
       },
       verticalServing: async (actor, verticalSlug: string) => {
         const r = this.directory
@@ -10242,20 +10242,16 @@ export class SqliteScopeHost implements ScopeHost {
         }
         this.directoryWriteAndAudit(() => this.directory
           .prepare('UPDATE scopes SET expires_at = ? WHERE scope_id = ?')
-          .run(expiresAt, scopeId).changes > 0, () => this.recordAdmin(
-          actor,
-          'setScopeExpiresAt',
-          { tenantId, scopeId },
-          { expiresAt: scope.expires_at },
-          { expiresAt },
-        ));
+          .run(expiresAt, scopeId).changes > 0,
+          () => this.recordAdmin(actor, 'setScopeExpiresAt', { tenantId, scopeId },
+            { expiresAt: scope.expires_at }, { expiresAt }));
       },
       keepAlivePendingScopeCopy: async (actor, tenantId, scopeId, moveId, status, expectedExpiresAt, expiresAt) => {
         return this.directoryWriteAndAudit(() => this.directory.prepare(PENDING_COPY_KEEP_ALIVE_SQL)
           .run(...pendingCopyKeepAliveParams(expiresAt, tenantId, scopeId, status, expectedExpiresAt, moveId,
             new Date().toISOString())).changes > 0,
-        () => this.recordAdmin(actor, 'setScopeExpiresAt', { tenantId, scopeId },
-          { expiresAt: expectedExpiresAt }, { expiresAt }));
+          () => this.recordAdmin(actor, 'setScopeExpiresAt', { tenantId, scopeId },
+            { expiresAt: expectedExpiresAt }, { expiresAt }));
       },
       readUndrainedEvents: async (actor, tenantId, scopeId, limit): Promise<UndrainedEvents> => {
         // The COMMITTED outbox (#1624). On the shared connection this read saw an in-flight
