@@ -72,8 +72,45 @@ it('carries the directory holder through the full projection wire into the scope
   expect(stored).toEqual([{ holder: 'system' }]);
 });
 
+it('normalizes unknown projection holders to person while preserving legacy absence and system', async () => {
+  const stub = env.SCOPE.get(env.SCOPE.idFromName(`role-holder-${ulid()}`)) as unknown as {
+    applyProjection(tenantId: string, roles: { role_key: string; permissions: string; source: string; holder?: string | null }[], tuples: unknown[]): Promise<unknown>;
+  };
+  const tenant = ulid();
+  const row = (holder?: string | null) => ({ role_key: 'runner', permissions: '["rsv:run"]', source: 'vertical', holder });
+  const stored = () => runInDurableObject(stub as never, (_instance, state) =>
+    createLocalControlPlaneReader(state.storage.sql).getRole(tenant, 'runner'));
+  for (const [incoming, expected, refused] of [
+    ['unknown', 'person', true],
+    ['person', 'person', true],
+    ['system', 'system', false],
+    [null, undefined, false],
+    [undefined, undefined, false],
+  ] as const) {
+    await stub.applyProjection(tenant, [row(incoming)], []);
+    const role = (await stored())!;
+    expect(role.holder).toBe(expected);
+    expect(reservedRoleRefusal(role, new Set(['rsv:run']), 'platform') !== null).toBe(refused);
+  }
+});
+
 it('keeps the holder on CP-less provision and role repair projections', async () => {
   const host = new CloudflareScopeHost({ scope: env.SCOPE });
+  const wireHolders: (string | null | undefined)[] = [];
+  const hostStub = host as unknown as { scopeStub(scopeId: string): { applyProjectionReply(...args: unknown[]): Promise<unknown> } };
+  const originalStub = hostStub.scopeStub.bind(host);
+  hostStub.scopeStub = (id) => {
+    const stub = originalStub(id);
+    return new Proxy(stub, {
+      get(target, key) {
+        if (key === 'applyProjectionReply') return (...args: unknown[]) => {
+          wireHolders.push(...(args[1] as { holder?: string | null }[]).map((r) => r.holder));
+          return stub.applyProjectionReply(...args);
+        };
+        return Reflect.get(target, key) as unknown;
+      },
+    });
+  };
   const tenant = tenantId.parse(ulid());
   const scope = scopeId.parse(ulid());
   const owner = principalId.parse(ulid());
@@ -81,15 +118,25 @@ it('keeps the holder on CP-less provision and role repair projections', async ()
     tenantId: tenant,
     scopeId: scope,
     owner,
-    roles: [{ key: 'owner', permissions: [permissionKey.parse('perm:use')], source: 'vertical', holder: 'person' }],
+    roles: [
+      { key: 'owner', permissions: [permissionKey.parse('perm:use')], source: 'vertical', holder: 'person' },
+      { key: 'runner', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'unknown' as never },
+    ],
     ownerRoleKey: 'owner',
   });
   const holders = () => runInDurableObject(env.SCOPE.get(env.SCOPE.idFromName(scope)), (_instance, state) =>
     state.storage.sql.exec('SELECT role_key, holder FROM _substrat_roles WHERE tenant_id = ? ORDER BY role_key', tenant).toArray());
-  expect(await holders()).toEqual([{ role_key: 'owner', holder: 'person' }]);
+  expect(await holders()).toEqual([{ role_key: 'owner', holder: 'person' }, { role_key: 'runner', holder: 'person' }]);
+  expect(wireHolders).toEqual(['person', 'person']);
 
+  await host.projectRolesLocal(tenant, scope, [
+    { key: 'runner', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'unknown' as never },
+  ]);
+  expect(await holders()).toEqual([{ role_key: 'runner', holder: 'person' }]);
+  expect(wireHolders.at(-1)).toBe('person');
   await host.projectRolesLocal(tenant, scope, [
     { key: 'runner', permissions: [permissionKey.parse('rsv:run')], source: 'vertical', holder: 'system' },
   ]);
   expect(await holders()).toEqual([{ role_key: 'runner', holder: 'system' }]);
+  expect(wireHolders.at(-1)).toBe('system');
 });

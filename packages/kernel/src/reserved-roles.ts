@@ -44,7 +44,9 @@ export function reservedRoleRefusal(
   }
   const others = role.permissions.filter((p) => !reserved.has(p));
   if (others.length === 0) {
-    if (role.holder === 'person') {
+    // The wire and stored rows are untrusted at runtime: only a genuinely absent
+    // holder retains the legacy decision. Unknown values fail as person-held.
+    if (role.holder != null && role.holder !== 'system') {
       return `role '${role.key}' holds ${keys}, reserved to a system principal: its stored holder is person; a role made only of reserved keys must declare holder: 'system'`;
     }
     return null;

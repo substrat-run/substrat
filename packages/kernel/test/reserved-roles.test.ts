@@ -44,6 +44,8 @@ describe('reservedRoleRefusal', () => {
     );
     expect(reservedRoleRefusal({ ...role(['a:run']), holder: 'system' }, reserved, 'platform')).toBeNull();
     expect(reservedRoleRefusal({ ...role(['a:run']), holder: undefined }, reserved, 'platform')).toBeNull();
+    expect(reservedRoleRefusal({ ...role(['a:run']), holder: null } as never, reserved, 'platform')).toBeNull();
+    expect(reservedRoleRefusal({ ...role(['a:run']), holder: 'unknown' } as never, reserved, 'platform')).toMatch(/must declare holder: 'system'/);
   });
 
   it('a role with no reserved key passes either door', () => {

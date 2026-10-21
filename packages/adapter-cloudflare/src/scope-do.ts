@@ -9039,7 +9039,7 @@ export function defineScopeDO(
               r.role_key,
               r.permissions,
               r.source,
-              r.holder ?? null,
+              r.holder === 'system' ? 'system' : r.holder == null ? null : 'person',
             );
           }
           this.sql.exec(`DELETE FROM _substrat_tenant_tuples WHERE tenant_id = ?`, tenantId);
