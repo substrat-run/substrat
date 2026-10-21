@@ -107,7 +107,7 @@ describe('Settings delete on the team path (#2170)', () => {
     const t = await team('owner', 'Team A');
     const member = principalId.parse(ulid());
     await host.admin.linkIdentity(staff, { provider: 'authhero', externalId: 'member', principal: member, tenantId: t.tenant, scopeId: t.dashScope });
-    await host.admin.grant(staff, { principalId: member, permission: 'dashboard:read', node: { tenantId: t.tenant, scopeId: null }, grantedBy: t.owner });
+    await host.admin.grant(staff, { principalId: member, permission: 'dashboard:read' as never, node: { tenantId: t.tenant, scopeId: null }, grantedBy: t.owner });
     const res = await deleteTeam(t.tenant, 'Team A', 'member');
     expect(res.status, await res.clone().text()).toBe(403);
     expect((await host.admin.getTenant(staff, t.tenant))?.status).not.toBe('deleting');
