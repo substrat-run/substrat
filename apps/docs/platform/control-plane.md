@@ -46,9 +46,10 @@ Beyond the base registry, a few capabilities have landed that are worth naming:
   script cannot bind `send_email` anyway). So a vertical never sends mail directly. Instead it POSTs to
   the control plane's `POST /internal/email/send` **relay**, and the control plane — the one worker that
   holds an outbound-mail credential — sends on its behalf, but **only** if that vertical holds the
-  staff-granted `emailSender` capability. This is the general shape for giving a hosted vertical a
+  owner-managed `emailSender` capability. This is the general shape for giving a hosted vertical a
   privileged capability without handing it the credential: a manifest *request* (`substrat.sendsEmail`),
-  a staff *grant* (`setVerticalEmailSender`, the twin of the tenant-provisioner grant), and a
+  an explicit *grant* managed in the owning team’s dashboard under **Settings → Permissions**
+  (with a staff override via `setVerticalEmailSender`), and a
   platform-held relay that checks the grant on every call. Authentication reuses the `PLATFORM_SECRET`
   the uploader already injects into every dispatch script; the relay re-derives *which* vertical is
   calling from the named `(tenant, scope)` and checks the grant against that, so holding the shared

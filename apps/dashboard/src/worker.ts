@@ -5392,8 +5392,20 @@ async function bindPreviewDomainIn(
   }
 }
 
+async function appEmailSenderIn(ctx: TeamContext, appScopeId: string, granted?: boolean) {
+  if (granted !== undefined) await assertMayManageApps(ctx.host, ctx.node);
+  const dash = await teamScope(ctx);
+  const row = await appByScopeId(dash, appScopeId);
+  if (!row) throw new HTTPException(404, { message: 'app not found' });
+  const cp = teamPlane(ctx);
+  await assertOwnedFromCp(cp, row.vertical_slug);
+  return granted === undefined ? cp.emailSender(row.vertical_slug) : cp.setEmailSender(row.vertical_slug, granted);
+}
+
 /** One handler per declared route — `satisfies` is what makes a missing or mistyped one a compile error. */
 const routeHandlers = {
+  'dashboard/app-email-sender': (ctx, { scopeId }) => appEmailSenderIn(ctx, scopeId),
+  'dashboard/set-app-email-sender': (ctx, { scopeId, granted }) => appEmailSenderIn(ctx, scopeId, granted),
   'dashboard/list-apps': async ({ c, host, node }, page) => listAppsPage(c, host, node, listPageQuery.parse(page)),
   'dashboard/get-app-install-steps': async ({ host, node }, { scopeId: appScopeId }) =>
     installStepsOf(host, node, appScopeId),

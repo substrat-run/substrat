@@ -184,6 +184,24 @@ describe('the team-scoped deployments write routes ask the caller’s role (#159
 
   /** The declared routes name their team in the path (#2170). */
   const inTeam = `/api/teams/${tenant}`;
+  it('email sending: a viewer can read but cannot change it; an owner can enable and revoke', async () => {
+    const path = `${inTeam}/apps/${peerScope}/email-sender`;
+    const read = await asRole('viewer', 'GET', path);
+    expect(read.status).toBe(200);
+    expect(await read.json()).toEqual({ slug: 'acme/hr', emailSender: false });
+    planeCalls.length = 0;
+    const refused = await asRole('viewer', 'POST', path, { granted: true });
+    expect(refused.status).toBe(403);
+    expect(planeCalls).toEqual([]);
+    for (const granted of [true, false]) {
+      const changed = await asRole('owner', 'POST', path, { granted });
+      expect(changed.status).toBe(200);
+      expect(await changed.json()).toEqual({ slug: 'acme/hr', emailSender: granted });
+      expect((await host.admin.listVerticals(staff)).find((v) => v.slug === 'acme/hr')?.emailSender).toBe(granted);
+    }
+    expect((await asRole('owner', 'POST', `${inTeam}/apps/${ulid()}/email-sender`, { granted: true })).status).toBe(404);
+  });
+
   const PROMOTE = ['POST', `${inTeam}/deployments/acme%2Fhr/promote`, { channel: 'prod', versionId: 'v1' }] as const;
   const DELETE = ['DELETE', `${inTeam}/deployments/acme%2Fhr`, undefined] as const;
   const PREVIEW_CREATE = ['POST', `${inTeam}/deployments/acme%2Fhr/previews`, { tag: 'pr-1', versionId: 'v1' }] as const;

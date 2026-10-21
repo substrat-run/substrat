@@ -1358,6 +1358,8 @@ const UPSTREAM_REFERENCE = /\breference\s*=\s*([a-z0-9]+)/i;
 // tenant id riding along in a place the entry did not think about.
 type TenantPin = 'path' | 'query' | 'catalog' | 'body' | 'owner';
 const TENANT_ROUTES: readonly { method: string; re: RegExp; pin: TenantPin }[] = [
+  { method: 'GET', re: /\/verticals\/[^/]+\/email-sender$/, pin: 'owner' },
+  { method: 'POST', re: /\/verticals\/[^/]+\/email-sender$/, pin: 'owner' },
   // One tenant's own path, route by route (#977). It used to be ONE catch-all entry per
   // method — `/tenants/<pin>/…` cannot address another tenant's row, so it looked safe —
   // but a path that is confined is not a route that is harmless: it reached entitlement
@@ -8190,12 +8192,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json({ slug, tenantProvisioner: granted });
   });
 
-  // Grant/revoke the EMAIL-SENDER capability (#303) — whether this vertical's scopes may POST to
-  // the /internal/email/send relay and have transactional mail sent for them. Staff-only (not in
-  // BUILDER_ROUTES): outbound authority is a platform decision, not the owner's. The relay handler
-  // reads the flag on every send.
+  // Email sending is owner-managed from the dashboard; the registry grant applies to
+  // every installation of this vertical. Tenant credentials must own the vertical.
+  app.get('/verticals/:slug/email-sender', async (c) => {
+    const slug = c.req.param('slug');
+    if (await notOwned(c.get('principal'), slug)) return refuse(c, 'forbidden', 'forbidden');
+    const vertical = await verticalOf(c.get('actor'), slug);
+    if (!vertical) return refuse(c, 'not_found', 'vertical not found');
+    return c.json({ slug, emailSender: !!vertical.emailSender });
+  });
   app.post('/verticals/:slug/email-sender', async (c) => {
     const slug = c.req.param('slug');
+    if (await notOwned(c.get('principal'), slug)) return refuse(c, 'forbidden', 'forbidden');
     const { granted } = z.object({ granted: z.boolean() }).parse(await c.req.json());
     await c.var.admin.setVerticalEmailSender(c.get('actor'), slug, granted);
     return c.json({ slug, emailSender: granted });

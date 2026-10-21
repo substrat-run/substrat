@@ -318,6 +318,13 @@ export interface DashboardClient {
   addDomain(input: { hostname: string; appScopeId: string; surface?: string }): Promise<{ hostname: string; status: string; statusNote?: string | null; validationRecords?: ({ type: string; name: string; value: string; status?: string | null })[] }>;
 
   /**
+   * Read email sending permission for a vertical owned by this team
+   *
+   * `GET /apps/{scopeId}/email-sender` — `dashboard/app-email-sender`
+   */
+  appEmailSender(input: { scopeId: string }): Promise<{ slug: string; emailSender: boolean }>;
+
+  /**
    * Log templates for one of this team's installed apps
    *
    * `GET /apps/{scopeId}/observability/log-patterns` — `dashboard/app-log-patterns`
@@ -689,6 +696,13 @@ export interface DashboardClient {
   revokeInvite(input: { invitationId: string }): Promise<{ revoked: true }>;
 
   /**
+   * Enable or disable email sending across all installations of this team’s vertical
+   *
+   * `POST /apps/{scopeId}/email-sender` — `dashboard/set-app-email-sender`
+   */
+  setAppEmailSender(input: { scopeId: string; granted: boolean }): Promise<{ slug: string; emailSender: boolean }>;
+
+  /**
    * Acknowledge, resolve or reopen one of this team's findings
    *
    * `PUT /findings/{id}/status` — `dashboard/set-finding-status`
@@ -780,6 +794,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/hostnames`, "POST", omit(input, ["scopeId"]), undefined),
     addDomain: (input: Args) =>
       send("/domains", "POST", input, undefined),
+    appEmailSender: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/email-sender`, "GET", undefined, omit(input, ["scopeId"])),
     appLogPatterns: (input: Args) =>
       send(`/apps/${encodeURIComponent(String(input.scopeId))}/observability/log-patterns`, "GET", undefined, omit(input, ["scopeId"])),
     appMetrics: (input: Args) =>
@@ -886,6 +902,8 @@ export function createClient(options: ClientOptions = {}): DashboardClient {
       send(`/findings/rules/${encodeURIComponent(String(input.ruleId))}`, "DELETE", undefined, omit(input, ["ruleId"])),
     revokeInvite: (input: Args) =>
       send(`/members/invites/${encodeURIComponent(String(input.invitationId))}`, "DELETE", undefined, omit(input, ["invitationId"])),
+    setAppEmailSender: (input: Args) =>
+      send(`/apps/${encodeURIComponent(String(input.scopeId))}/email-sender`, "POST", omit(input, ["scopeId"]), undefined),
     setFindingStatus: (input: Args) =>
       send(`/findings/${encodeURIComponent(String(input.id))}/status`, "PUT", omit(input, ["id"]), undefined),
     teamTraffic: (input: Args) =>
