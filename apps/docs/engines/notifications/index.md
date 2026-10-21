@@ -8,7 +8,7 @@ one delivery per occasion, topic and person.
 
 | | |
 |---|---|
-| **Package** | `@substrat-run/engine-notifications` (not yet published to npm) |
+| **Package** | `@substrat-run/engine-notifications` (public publication configured; first npm release pending) |
 | **Entitlement key** | `notifications` |
 | **Composed** | by call: `notify(ctx, …)` inside your own transaction |
 | **Owns** | the topics a scope has used, where each person's notifications go, which topics they muted or take as a digest, what is held for each digest, and what became of every delivery |
