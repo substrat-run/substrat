@@ -914,7 +914,7 @@ interface ControlPlaneStub {
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
   ): Promise<void>;
-  setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation): Promise<boolean>;
+  setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number, confirmMove?: ScopeCopyMoveConfirmation, audit?: AdminEntry): Promise<boolean>;
   setScopeExpiresAt(scopeId: string, expiresAt: string | null, audit: AdminEntry): Promise<void>;
   keepAlivePendingScopeCopy(tenantId: string, scopeId: string, moveId: string, status: string,
     expectedExpiresAt: string | null, expiresAt: string | null, audit: AdminEntry): Promise<boolean>;
@@ -8403,14 +8403,12 @@ export class CloudflareScopeHost implements ScopeHost {
           if (prev && prev.migration_digest !== incoming.migration_digest) {
             await this.snapshotScope(actor, s.tenant_id as TenantId, s.scope_id as ScopeId);
           }
-          await this.cp.bindScopeVersion(s.scope_id, versionId, verticalSlug);
-          await this.recordAdmin(
-            actor,
-            'bindScopeVersion',
-            { tenantId: s.tenant_id as TenantId, scopeId: s.scope_id as ScopeId },
-            prev ? { versionId: prev.id, version: prev.version } : null,
-            { versionId, vertical: verticalSlug, version: incoming.version, via: 'promoteVersion' },
-          );
+          await this.cp.bindScopeVersion(s.scope_id, versionId, verticalSlug,
+            undefined, undefined, undefined, undefined, undefined,
+            this.adminEntry(actor, 'bindScopeVersion',
+              { tenantId: s.tenant_id as TenantId, scopeId: s.scope_id as ScopeId },
+              prev ? { versionId: prev.id, version: prev.version } : null,
+              { versionId, vertical: verticalSlug, version: incoming.version, via: 'promoteVersion' }));
         }
         await this.recordAdmin(
           actor,
@@ -8632,16 +8630,12 @@ export class CloudflareScopeHost implements ScopeHost {
           const breaks = await this.bindBreaks(actor, mapScope(scope), bound, servingRef);
           if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
         }
-        if (!await this.cp.setScopeServingRef(scopeId, servingRef, opts?.expectedErasureEpoch, opts?.confirmMove)) {
+        if (!await this.cp.setScopeServingRef(scopeId, servingRef, opts?.expectedErasureEpoch, opts?.confirmMove,
+          this.adminEntry(actor, 'setScopeServingRef', { tenantId, scopeId },
+            { servingRef: scope.serving_ref ?? null },
+            { servingRef, ...(ack.exportBreak ? { acknowledged: ack } : {}) }))) {
           throw substratError('precondition_failed', 'scope erasure or reap changed; reload and retry');
         }
-        await this.recordAdmin(
-          actor,
-          'setScopeServingRef',
-          { tenantId, scopeId },
-          { servingRef: scope.serving_ref ?? null },
-          { servingRef, ...(ack.exportBreak ? { acknowledged: ack } : {}) },
-        );
       },
       recordKeptCopyResolution: async (actor, tenantId, scopeId, r) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);

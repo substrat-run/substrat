@@ -9864,16 +9864,16 @@ export class SqliteScopeHost implements ScopeHost {
           if (prev && prev.migrationDigest !== incoming.migrationDigest) {
             await this.snapshotScope(actor, s.tenant_id as TenantId, s.scope_id as ScopeId);
           }
-          this.directory
+          this.directoryWriteAndAudit(() => this.directory
             .prepare('UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?')
-            .run(versionId, verticalSlug, s.scope_id);
-          this.recordAdmin(
-            actor,
-            'bindScopeVersion',
-            { tenantId: s.tenant_id as TenantId, scopeId: s.scope_id as ScopeId },
-            prev ? { versionId: prev.id, version: prev.version } : null,
-            { versionId, vertical: verticalSlug, version: incoming.version, via: 'promoteVersion' },
-          );
+            .run(versionId, verticalSlug, s.scope_id).changes > 0,
+            () => this.recordAdmin(
+              actor,
+              'bindScopeVersion',
+              { tenantId: s.tenant_id as TenantId, scopeId: s.scope_id as ScopeId },
+              prev ? { versionId: prev.id, version: prev.version } : null,
+              { versionId, vertical: verticalSlug, version: incoming.version, via: 'promoteVersion' },
+            ));
         }
 
         // The acknowledgement is recorded, not just enforced: that is what turns
@@ -10207,16 +10207,12 @@ export class SqliteScopeHost implements ScopeHost {
           const breaks = await this.bindBreaks(actor, mapScope(scope), bound, servingRef);
           if (breaks.length > 0) throw substratError('precondition_failed', bindExportBreakRefusal(breaks));
         }
-        if (!this.moveScopeRow('serving_ref = ?', [servingRef], tenantId, scopeId, opts)) {
+        if (!this.moveScopeRow('serving_ref = ?', [servingRef], tenantId, scopeId, opts,
+          () => this.recordAdmin(actor, 'setScopeServingRef', { tenantId, scopeId },
+            { servingRef: scope.serving_ref },
+            { servingRef, ...(ack.exportBreak ? { acknowledged: ack } : {}) }))) {
           throw substratError('precondition_failed', 'scope erasure or reap changed; reload and retry');
         }
-        this.recordAdmin(
-          actor,
-          'setScopeServingRef',
-          { tenantId, scopeId },
-          { servingRef: scope.serving_ref },
-          { servingRef, ...(ack.exportBreak ? { acknowledged: ack } : {}) },
-        );
       },
       recordKeptCopyResolution: async (actor, tenantId, scopeId, r) => {
         const scope = this.directory

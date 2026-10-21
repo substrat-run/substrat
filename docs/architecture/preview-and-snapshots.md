@@ -91,7 +91,8 @@ Two adapter implementations behind one interface, mirroring the whole platform:
     unclaimed and inside its lease, and the deadline is still the one the call read; overlapping
     polls extend and audit it once. The expiry write and its admin row commit in one directory
     transaction; an audit insert failure leaves the prior deadline in place for a retry. The same
-    directory rule covers a direct expiry change, version bind, and provision receipt. A refused
+    directory rule covers a direct expiry change, a version bind (including a private promotion's
+    scope rebind), a serving-reference move, and a provision receipt. A refused
     conditional write records no audit row. Copy backfill keeps its own transaction because its
     audit row carries the erasure epoch read in that unit. The finish
     applies the deadline again. A finish that fails,

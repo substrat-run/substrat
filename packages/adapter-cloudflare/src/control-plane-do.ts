@@ -3420,8 +3420,8 @@ export class ControlPlaneDO extends DurableObject {
    *  conditional move lost its compare-and-set: the host throws, since a refusal thrown here
    *  would cross the RPC boundary without its code. */
   setScopeServingRef(scopeId: string, servingRef: string | null, expectedErasureEpoch?: number,
-    confirmMove?: ScopeCopyMoveConfirmation): boolean {
-    return this.moveScopeRow('serving_ref = ?', [servingRef], scopeId, { expectedErasureEpoch, confirmMove });
+    confirmMove?: ScopeCopyMoveConfirmation, audit?: AdminEntryInput): boolean {
+    return this.moveScopeRow('serving_ref = ?', [servingRef], scopeId, { expectedErasureEpoch, confirmMove }, audit);
   }
 
   /** Move a fork's GC deadline forward, or pin it (`null`) — preview-and-snapshots.md §9. */
