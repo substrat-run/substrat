@@ -1,3 +1,7 @@
+---
+description: "Register the assistant engine, drive its single-writer run loop, and resume turns after approval decisions while handling tool execution recovery."
+---
+
 # Composing & extending
 
 
