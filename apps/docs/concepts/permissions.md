@@ -76,9 +76,10 @@ At runtime, a host reads the reservations off the modules it registers and the m
   topped up: the reconcile would give the key to every holder of the shape, and record it as what
   a binding link gives. A shape may still list a reserved key in `retired`, which takes it back.
 - **The platform's own role assignment** refuses a role that mixes a reserved key with keys a
-  person may hold. It admits a role made only of reserved keys, because that is the shape a
-  system-held role has. A stored role does not record its holder, so this door cannot tell such
-  a role from a person's role made the same way.
+  person may hold. It also refuses an all-reserved role stored as person-held, and admits one
+  stored as system-held. New role definitions record `person` when `holder` is omitted. A role
+  row from before this field keeps a null holder and the earlier key-only decision until the
+  definition is written again. The directory and scope projection both carry the holder.
 
 Not covered yet:
 
