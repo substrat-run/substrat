@@ -22,6 +22,8 @@ export const built = existsSync(pushJs);
  *  as its manifest declares them (#1677: the host derives index migrations from those). */
 export type ModuleSpec = {
   id: string;
+  reserved?: boolean;
+  ownerGrants?: string[];
   migrations?: { version: string; sql: string; moves?: Record<string, string>; discards?: Record<string, string> }[];
   searchables?: unknown[];
   lists?: unknown[];
@@ -58,7 +60,8 @@ export function vertical(
   const entries = modules.map((m) => ({
     manifest: {
       id: m.id,
-      permissions: [{ key: `${m.id.split('/').pop()}:read`, description: 'Read' }],
+      permissions: [{ key: `${m.id.split('/').pop()}:read`, description: 'Read', ...(m.reserved ? { holder: 'system' } : {}) }],
+      ...(m.ownerGrants ? { ownerGrants: m.ownerGrants } : {}),
       ...(m.searchables ? { searchables: m.searchables } : {}),
       ...(m.lists ? { lists: m.lists } : {}),
       ...(m.attachmentTargets ? { attachmentTargets: m.attachmentTargets } : {}),

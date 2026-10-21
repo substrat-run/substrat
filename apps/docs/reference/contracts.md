@@ -265,7 +265,12 @@ re-parsed at the control-plane trust boundary and run through the §4 sandbox co
 `blobStores` spelling is the same blob). The manifest a push sends does not: relational
 stores stay in `tenantStores` and blobs stay in `blobStores`. It also carries
 `scopeStores`, one platform-run object per scope, the permission registry, and
-`RUNTIME_BASELINE`. One schema, two parses, no drift.
+`RUNTIME_BASELINE`. Optional `modules` carries each loaded module's `{ id, permissions: [{
+key, description, holder? }], ownerGrants? }` declarations. When present, the control plane
+recomputes the registry's key rows at publish and refuses a disagreement; absence keeps older
+CLI manifests readable and publishable. These declarations are builder-supplied. The next step
+of #2446 will verify known engine manifests; third-party modules remain author-asserted.
+One schema, two parses, no drift.
 
 ## Connections (`connections.ts`)
 

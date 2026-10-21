@@ -214,6 +214,7 @@ import {
   deployManifest,
   storedDeployManifest,
   pushedOwnerGrantProblems,
+  pushedModuleRegistryProblems,
   pushedPermissionRegistry,
   deploymentRefFor,
   stableDeploymentRefFor,
@@ -7960,12 +7961,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         );
       const checked = storedDeployManifest.safeParse(raw);
       if (!checked.success) return refuseManifest(checked.error.issues[0]!);
+      if (checked.data.modules !== undefined && !checked.data.registry) {
+        return refuseManifest({ path: ['registry'], message: 'required when modules are present' });
+      }
       // #1869: a registry handed to this route now is NEW, so it answers to the push-time rule on
       // entity-grant shapes (no kernel namespace as an entity type), as `deployManifest` does.
-      // An absent registry stays accepted, as above.
+      // A legacy manifest with neither modules nor registry stays accepted, as above.
       if (checked.data.registry) {
         const registry = pushedPermissionRegistry.safeParse(checked.data.registry);
         if (!registry.success) return refuseManifest(registry.error.issues[0]!, ['registry']);
+        const moduleProblems = pushedModuleRegistryProblems(checked.data.modules, registry.data);
+        if (moduleProblems.length > 0) return refuseManifest({ path: ['registry', 'permissions'], message: moduleProblems.join('; ') });
       }
       // #2430: an owner grant is a person's, so it holds no key the registry reserves.
       const ownerGrants = pushedOwnerGrantProblems(checked.data);
@@ -8727,7 +8733,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const form = await c.req.formData();
     const raw = form.get('manifest');
     if (typeof raw !== 'string') return refuse(c, 'validation_failed', 'missing manifest part');
-    const manifest = deployManifest.parse(JSON.parse(raw));
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed !== null && typeof parsed === 'object' && 'modules' in parsed && !('registry' in parsed)) {
+      return refuse(c, 'validation_failed', 'manifest registry: required when modules are present');
+    }
+    const manifest = deployManifest.parse(parsed);
+    const moduleProblems = pushedModuleRegistryProblems(manifest.modules, manifest.registry);
+    if (moduleProblems.length > 0) return refuse(c, 'validation_failed', `manifest registry.permissions: ${moduleProblems.join('; ')}`);
     // #2430: an owner grant is a person's, so it holds no key the registry reserves.
     const ownerGrants = pushedOwnerGrantProblems(manifest);
     if (ownerGrants.length > 0) return refuse(c, 'validation_failed', `manifest ownerGrants: ${ownerGrants.join('; ')}`);

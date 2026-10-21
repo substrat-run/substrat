@@ -348,6 +348,7 @@ export function boundManifest(manifest: DeployManifest, warn: (message: string) 
 
 export interface DeclaredSurface {
   readonly registry: PermissionRegistry;
+  readonly modules: NonNullable<DeployManifest['modules']>;
   /** The entry's `envSpec` export, validated — undefined when the entry exports none. */
   readonly envSpec: EnvVarSpec[] | undefined;
   /** Every module's declared schedules, flattened with the owning module id (#1232) —
@@ -501,6 +502,13 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
     const declaredEvents = flattenDeclaredEvents(mod.permissions);
     return {
       registry: buildPermissionRegistry(mod.permissions),
+      modules: mod.permissions.modules.map(({ manifest }) => ({
+        id: manifest.id,
+        permissions: manifest.permissions.map(({ key, description, holder }) => ({
+          key, description, ...(holder ? { holder } : {}),
+        })),
+        ...(manifest.ownerGrants ? { ownerGrants: manifest.ownerGrants } : {}),
+      })),
       envSpec: spec,
       // #1232: the same import that yields the permission surface already holds every
       // module manifest — the schedules ride out of it with zero extra reads.
@@ -1664,6 +1672,7 @@ export async function push(
   // that ships, and a drifted package.json duplicate refuses the push.
   const {
     registry,
+    modules: declaredModules,
     envSpec: derivedEnvSpec,
     schedules,
     freshness,
@@ -1827,6 +1836,7 @@ export async function push(
     // The declared permission surface travels with the bundle (D-39/D-41): keys+descriptions,
     // role templates, entity-grant shapes. Required — its content hash is digests.permission.
     registry,
+    modules: declaredModules,
     digests: {
       manifest: await sha256(concat),
       permission: await permissionDigest(registry),
