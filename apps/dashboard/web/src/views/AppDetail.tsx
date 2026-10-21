@@ -3153,9 +3153,49 @@ function Settings({ teamId, app, section, onSection, onDeleted, authServers }: {
       {section === 'domains' && <AppDomains teamId={teamId} app={app} />}
       {section === 'integrations' && <AppIntegrations app={app} />}
       {section === 'members' && <AppMembers app={app} />}
-      {section === 'permissions' && <AppPermissions app={app} />}
+      {section === 'permissions' && <><EmailSenderPermission key={`${teamId}/${app.app_scope_id}`} teamId={teamId} app={app} /><AppPermissions app={app} /></>}
     </div>
   );
+}
+
+export function EmailSenderPermission({ teamId, app }: { teamId: string; app: AppRow }) {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setEnabled(null);
+    setError(null);
+    if (DEV_MOCK) { setEnabled(false); return; }
+    teamApi(teamId).appEmailSender({ scopeId: app.app_scope_id })
+      .then((v) => { if (live) setEnabled(v.emailSender); })
+      .catch((e) => { if (live) setError(e instanceof Error ? e.message : String(e)); });
+    return () => { live = false; };
+  }, [teamId, app.app_scope_id]);
+  const toggle = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = DEV_MOCK ? { emailSender: !enabled } : await teamApi(teamId).setAppEmailSender({ scopeId: app.app_scope_id, granted: !enabled });
+      setEnabled(next.emailSender);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally { setBusy(false); }
+  };
+  return <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <Eyebrow>Platform permissions</Eyebrow>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ flex: 1 }}>
+        <div>Send email</div>
+        <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 6 }}>Allow transactional emails through Substrat. Applies to every installation of this vertical. Managed by the team that owns it.</div>
+      </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <input type="checkbox" role="switch" aria-label="Send email" checked={enabled ?? false} disabled={enabled === null || busy} onChange={toggle} />
+        {busy ? 'Saving…' : enabled === null ? 'Unavailable' : enabled ? 'Enabled' : 'Disabled'}
+      </label>
+    </div>
+    {error && <div role="alert" style={{ fontSize: 13, color: 'var(--status-danger-fg)' }}>{error}</div>}
+  </div>;
 }
 
 /**

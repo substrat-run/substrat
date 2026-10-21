@@ -341,7 +341,7 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
     });
   });
 
-  it('the declared surface lists exactly the four lifecycle writes beside the reads', () => {
+  it('the declared app writes include lifecycle actions and email permission', () => {
     expect(
       Object.entries(dashboardRoutes)
         .filter(([name, r]) => r.http.method !== 'GET' && r.http.path.startsWith('/apps') && !name.includes('hostname'))
@@ -350,6 +350,7 @@ describe('the Apps lifecycle writes take their team from the path (#2170)', () =
     ).toEqual([
       'DELETE /apps/{id} dashboard/remove-app',
       'POST /apps dashboard/install-app',
+      'POST /apps/{scopeId}/email-sender dashboard/set-app-email-sender',
       'POST /apps/{scopeId}/resume dashboard/resume-app',
       'POST /apps/{scopeId}/retry dashboard/retry-app',
     ]);

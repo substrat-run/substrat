@@ -908,6 +908,14 @@ export class TenantNarrowedControlPlane {
       }));
   }
 
+  emailSender(slug: string): Promise<{ slug: string; emailSender: boolean }> {
+    return this.call(`/verticals/${encodeURIComponent(slug)}/email-sender`);
+  }
+
+  setEmailSender(slug: string, granted: boolean): Promise<{ slug: string; emailSender: boolean }> {
+    return this.post(`/verticals/${encodeURIComponent(slug)}/email-sender`, { granted });
+  }
+
   /** A vertical's versions (admission state + deploymentRef). `[]` if it has none/unknown. */
   async listVersions(
     verticalSlug: string,

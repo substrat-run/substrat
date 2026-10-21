@@ -112,7 +112,7 @@ export const vertical = z.object({
   /**
    * Holds the EMAIL-SENDER capability (#303) — this vertical's scopes may POST to the control
    * plane's `/internal/email/send` relay and have transactional mail sent on their behalf. A
-   * directory-backed staff grant, not deployment config: flipped by `setVerticalEmailSender`,
+   * directory-backed owner-managed grant, not deployment config: flipped by `setVerticalEmailSender`,
    * audited, and read by the relay handler on every send. Like `tenantProvisioner`, never set at
    * registration and NEVER touched by a re-push refresh — pushing new code must not be able to
    * grant (or silently keep) outbound authority. The platform holds the actual Email Sending

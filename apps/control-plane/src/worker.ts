@@ -2798,7 +2798,7 @@ export default {
       if (!registered?.emailSender) {
         return c.json(
           {
-            error: `vertical '${rec.vertical}' does not hold the email-sender capability — staff grants it in the console (setVerticalEmailSender)`,
+            error: `vertical '${rec.vertical}' does not hold the email-sender capability — enable it in the owning team’s dashboard under Settings → Permissions`,
           },
           403,
         );

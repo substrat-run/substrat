@@ -712,6 +712,19 @@ export const dashboardRoutes = defineRoutes({
     http: { method: 'POST', path: '/leave' },
   },
 
+  'dashboard/app-email-sender': {
+    summary: 'Read email sending permission for a vertical owned by this team',
+    input: z.object({ scopeId: z.string().min(1) }),
+    output: z.object({ slug: z.string(), emailSender: z.boolean() }),
+    http: { method: 'GET', path: '/apps/{scopeId}/email-sender' },
+  },
+  'dashboard/set-app-email-sender': {
+    summary: 'Enable or disable email sending across all installations of this team’s vertical',
+    input: z.object({ scopeId: z.string().min(1), granted: z.boolean() }),
+    output: z.object({ slug: z.string(), emailSender: z.boolean() }),
+    http: { method: 'POST', path: '/apps/{scopeId}/email-sender' },
+  },
+
   // -- settings danger zone (#2170) ------------------------------------------
   'dashboard/delete-team': {
     summary: 'Delete this team after its owner types its name: deprovision apps, revoke members and tombstone the tenant',

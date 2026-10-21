@@ -112,8 +112,8 @@ export function sendEmailHandler(deps: SendEmailDeps): PlatformRequestHandler {
     if (!(await deps.mayEmail(ctx.vertical))) {
       return over(request, EMAIL_REFUSED, about, sender, attempts, {
         error:
-          `not sent: vertical '${ctx.vertical}' does not hold the email-sender capability — staff ` +
-          'grants it in the console (setVerticalEmailSender)',
+          `not sent: vertical '${ctx.vertical}' does not hold the email-sender capability — ` +
+          'enable it in the owning team’s dashboard under Settings → Permissions',
         failure: { origin: 'platform', code: 'permission_denied', permission: null },
       });
     }

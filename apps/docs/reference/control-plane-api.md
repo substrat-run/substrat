@@ -152,9 +152,12 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   `/scopes/:s/subjects/:id/shred`, which redacts the spine payloads and destroys the sealing
   key in one audited, idempotent call — returning **a receipt the DSAR response is written
   from**. Deliberately staff-only: a builder forwards the request, the platform executes it.
-- **Platform grants** — `/verticals/:slug/email-sender` and
-  `/verticals/:slug/tenant-provisioner`: the capabilities a vertical must be *granted*
-  rather than configure for itself.
+- **Email permission** — `GET /verticals/:slug/email-sender` reads `{ slug, emailSender }`;
+  `POST` with `{ granted: boolean }` enables or disables transactional mail for every
+  installation of the vertical. The owning team's dashboard manages this under
+  **Settings → Permissions**; tenant credentials are checked against registry ownership,
+  and staff retain an override. Deployment manifests cannot grant it.
+- **Provisioner grant** — `/verticals/:slug/tenant-provisioner` remains staff-only.
 - **Roles**, **admin-log**, **ops-failures**, **meters**, **model-usage** (meter 3: the lines a vertical's model host raised as `model-usage` intents, listed and folded per tenant × model with the platform's margin applied at read time), and **observability**
   (`/observability/logs`, `/observability/metrics`, `/observability/metrics-series` —
   staff-only, script-grain, and `/observability/tenant-metrics`,

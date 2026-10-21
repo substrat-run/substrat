@@ -208,6 +208,29 @@ describe('tenant tokens', () => {
       rmSync(dir, { recursive: true, force: true });
     });
 
+    it('lets a tenant toggle its own email sender, refusing foreign and unknown verticals', async () => {
+      const own = '/verticals/acme%2Fapp/email-sender';
+      for (const granted of [true, false]) {
+        const result = await app.request(own, { method: 'POST', headers: asA, body: JSON.stringify({ granted }) });
+        expect(result.status).toBe(200);
+        expect(await result.json()).toEqual({ slug: 'acme/app', emailSender: granted });
+        const read = await app.request(own, { headers: asA });
+        expect(read.status).toBe(200);
+        expect(await read.json()).toEqual({ slug: 'acme/app', emailSender: granted });
+      }
+      for (const slug of ['rival%2Fapp', 'missing']) {
+        for (const method of ['GET', 'POST']) {
+          const result = await app.request(`/verticals/${slug}/email-sender`, {
+            method, headers: asA, ...(method === 'POST' ? { body: JSON.stringify({ granted: true }) } : {}),
+          });
+          expect(result.status).toBe(403);
+        }
+      }
+      expect((await host.admin.listVerticals(staff)).find((v) => v.slug === 'rival/app')?.emailSender).toBeFalsy();
+      const malformed = await app.request(own, { method: 'POST', headers: asA, body: JSON.stringify({ granted: 'true' }) });
+      expect(malformed.status).toBe(400);
+    });
+
     // -- the property: the plane refuses, not the dashboard ------------------
 
     it('REFUSES a request naming another tenant in the path — and allows its own', async () => {
